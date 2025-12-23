@@ -4,15 +4,15 @@ Updated via webhooks for real-time updates with minimal overhead
 """
 from typing import Dict, List, Any
 from threading import Lock
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 
 
 class EmbyStreamsManager:
     """Manages active playback sessions per Emby server in memory."""
 
     def __init__(self):
-        self._streams: Dict[str, List[Dict[str, Any]]] = {}
         self._last_updates: Dict[str, datetime] = {}
+        self._streams: Dict[str, List[Dict[str, Any]]] = {}
         self._lock = Lock()
 
     def get_streams(self, server_id: str) -> List[Dict[str, Any]]:
@@ -40,7 +40,7 @@ class EmbyStreamsManager:
             # Add updated session
             session_data["_last_update"] = datetime.now().isoformat()
             self._streams[server_id].append(session_data)
-            self._last_updates[server_id] = datetime.now()
+            self._last_updates[server_id] = datetime.now(timezone.utc)
 
     def remove_stream(self, server_id: str, session_id: str) -> None:
         """Remove a stream when playback stops."""
@@ -52,7 +52,7 @@ class EmbyStreamsManager:
                 s for s in self._streams[server_id]
                 if s.get("Id") != session_id
             ]
-            self._last_updates[server_id] = datetime.now()
+            self._last_updates[server_id] = datetime.now(timezone.utc)
 
     def update_stream(self, server_id: str, session_id: str, data: Dict[str, Any]) -> None:
         """Update stream progress/state."""
@@ -64,7 +64,7 @@ class EmbyStreamsManager:
                 if stream.get("Id") == session_id:
                     stream.update(data)
                     stream["_last_update"] = datetime.now().isoformat()
-                    self._last_updates[server_id] = datetime.now()
+                    self._last_updates[server_id] = datetime.now(timezone.utc)
                     break
 
     def clear_server(self, server_id: str) -> None:
@@ -83,15 +83,18 @@ class EmbyStreamsManager:
             for stream in streams:
                 stream["_last_update"] = datetime.now().isoformat()
             self._streams[server_id] = streams
-            self._last_updates[server_id] = datetime.now()
+            self._last_updates[server_id] = datetime.now(timezone.utc)
 
     def is_stale(self, server_id: str, max_age_seconds: int) -> bool:
-        """Return True if streams are stale or never updated."""
+        """Check if the data for a server is stale (needs API refresh)."""
         with self._lock:
             last_update = self._last_updates.get(server_id)
-        if last_update is None:
-            return True
-        return datetime.now() - last_update > timedelta(seconds=max_age_seconds)
+            if not last_update:
+                return True  # Never updated, so it's stale
+
+            now = datetime.now(timezone.utc)
+            age = (now - last_update).total_seconds()
+            return age > max_age_seconds
 
 
 # Global singleton

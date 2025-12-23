@@ -12,15 +12,18 @@
         <h1>Emby Toolkit</h1>
         <nav class="primary-nav">
             <a href="{{ url_for('dashboard') }}"
-               class="nav-link {% if active_page == 'jellyseerr' %}active{% endif %}">
+               class="nav-link {% if active_page == 'jellyseerr' %}active{% endif %}"
+               title="Apri la dashboard di ricerca">
                 Ricerca
             </a>
             <a href="{{ url_for('emby_dashboard') }}"
-               class="nav-link {% if active_page == 'emby' %}active{% endif %}">
+               class="nav-link {% if active_page == 'emby' %}active{% endif %}"
+               title="Apri Emby Toolkit">
                 Emby Toolkit
             </a>
             <a href="{{ url_for('emby_probe') }}"
-               class="nav-link {% if active_page == 'emby_probe' %}active{% endif %}">
+               class="nav-link {% if active_page == 'emby_probe' %}active{% endif %}"
+               title="Apri STRM Probe">
                 STRM Probe
                 {% if total_blacklist_count > 0 %}
                     <span class="notification-badge">{{ total_blacklist_count }}</span>
@@ -28,6 +31,7 @@
             </a>
             <a href="{{ url_for('auth_logout') }}"
                class="nav-link"
+               title="Esci dall'app"
                style="margin-left: auto;">
                 Logout
             </a>
@@ -42,9 +46,9 @@
 
         <div class="tab-shell">
             <div class="tabs">
-                <button class="tab-btn active" data-tab="actions">Operazioni</button>
-                <button class="tab-btn" data-tab="libraries">Librerie</button>
-                <button class="tab-btn" data-tab="config">Configurazione</button>
+                <button class="tab-btn active" data-tab="actions" title="Operazioni rapide e stato server">Operazioni</button>
+                <button class="tab-btn" data-tab="libraries" title="Gestione librerie Emby">Librerie</button>
+                <button class="tab-btn" data-tab="config" title="Configurazione server Emby">Configurazione</button>
             </div>
 
             <div class="tab-panel active" data-tab-panel="actions">
@@ -52,9 +56,9 @@
                     <h2>Operazioni rapide</h2>
                     <p class="tagline">Avvia le azioni sui server Emby configurati (singoli o tutti insieme).</p>
                     <form class="action-grid" action="{{ url_for('emby_action_all') }}" method="post">
-                        <button class="btn secondary" type="submit" name="action" value="strm_extract">Avvia STRM Extract</button>
-                        <button class="btn primary" type="submit" formaction="{{ url_for('emby_strm_guard_start_all') }}">STRM Extract solo se libero</button>
-                        <button class="btn ghost" type="submit" name="action" value="restart_server">Riavvia tutti</button>
+                        <button class="btn secondary" type="submit" name="action" value="strm_extract" title="Avvia il task STRM Extract su tutti i server">Avvia STRM Extract</button>
+                        <button class="btn primary" type="submit" formaction="{{ url_for('emby_strm_guard_start_all') }}" title="Avvia STRM Extract solo se il server non sta riproducendo">STRM Extract solo se libero</button>
+                        <button class="btn ghost" type="submit" name="action" value="restart_server" title="Riavvia tutti i server Emby configurati">Riavvia tutti</button>
                     </form>
                 </div>
                 <div class="card">
@@ -90,9 +94,9 @@
                                     <div class="server-divider"></div>
                                     <form class="action-grid" action="{{ url_for('emby_action') }}" method="post">
                                         <input type="hidden" name="server_id" value="{{ server.id }}">
-                                        <button class="btn secondary" type="submit" name="action" value="strm_extract">Avvia STRM Extract</button>
-                                        <button class="btn primary" type="submit" formaction="{{ url_for('emby_strm_guard_start') }}">STRM Extract solo se libero</button>
-                                        <button class="btn ghost" type="submit" name="action" value="restart_server">Riavvia server</button>
+                                        <button class="btn secondary" type="submit" name="action" value="strm_extract" title="Avvia STRM Extract su questo server">Avvia STRM Extract</button>
+                                        <button class="btn primary" type="submit" formaction="{{ url_for('emby_strm_guard_start') }}" title="Avvia STRM Extract solo se libero su questo server">STRM Extract solo se libero</button>
+                                        <button class="btn ghost" type="submit" name="action" value="restart_server" title="Riavvia questo server Emby">Riavvia server</button>
                                     </form>
                                     <div class="strm-guard-status" data-strm-guard-status="{{ server.id }}" style="display: none;">
                                         <div class="strm-guard-indicator">
@@ -183,8 +187,8 @@
                     <h2>Librerie – Tutte</h2>
                     <p class="tagline">Avvia operazioni di aggiornamento sulle librerie di tutti i server o selezionane uno.</p>
                     <form class="action-grid" action="{{ url_for('emby_action_all') }}" method="post">
-                        <button class="btn primary" type="submit" name="action" value="refresh_libraries">Scansione dei File</button>
-                        <button class="btn secondary" type="submit" name="action" value="refresh_metadata">Aggiorna Metadati</button>
+                        <button class="btn primary" type="submit" name="action" value="refresh_libraries" title="Avvia la scansione delle librerie su tutti i server">Scansione dei File</button>
+                        <button class="btn secondary" type="submit" name="action" value="refresh_metadata" title="Aggiorna i metadati su tutti i server">Aggiorna Metadati</button>
                     </form>
                     {% if emby_servers %}
                         <div class="server-grid">
@@ -198,8 +202,8 @@
                                     </div>
                                     <form class="action-grid" action="{{ url_for('emby_action') }}" method="post">
                                         <input type="hidden" name="server_id" value="{{ server.id }}">
-                                        <button class="btn primary" type="submit" name="action" value="refresh_libraries">Scansione dei File</button>
-                                        <button class="btn secondary" type="submit" name="action" value="refresh_metadata">Aggiorna Metadati</button>
+                                        <button class="btn primary" type="submit" name="action" value="refresh_libraries" title="Avvia la scansione file su questo server">Scansione dei File</button>
+                                        <button class="btn secondary" type="submit" name="action" value="refresh_metadata" title="Aggiorna metadati su questo server">Aggiorna Metadati</button>
                                     </form>
                                 </article>
                             {% endfor %}
@@ -236,7 +240,7 @@
                             </div>
                         </div>
                         <div class="form-actions">
-                            <button id="save-associations-btn" class="btn primary">Salva Associazioni</button>
+                            <button id="save-associations-btn" class="btn primary" title="Salva le associazioni delle librerie tra i server">Salva Associazioni</button>
                         </div>
                     </div>
                 </div>
@@ -295,7 +299,7 @@
                                             </div>
                                         </details>
                                         <div class="server-actions">
-                                            <button class="btn primary" type="submit">Salva server</button>
+                                            <button class="btn primary" type="submit" title="Salva o aggiorna questo server">Salva server</button>
                                         </div>
                                     </form>
                                 </article>
@@ -343,7 +347,7 @@
                             </div>
                         </details>
                         <div class="server-actions">
-                            <button class="btn primary" type="submit">Salva server</button>
+                            <button class="btn primary" type="submit" title="Aggiungi un nuovo server Emby">Salva server</button>
                         </div>
                     </form>
                 </div>

@@ -193,10 +193,13 @@
         return `<table class="widget-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
     };
     const updateStreamPanel = (card, payload) => {
+        if (card.classList.contains('compact')) {
+            return;
+        }
         const list = card.querySelector('[data-stream-list]');
         const statusLabel = card.querySelector('[data-stream-status]');
         if (!list || !statusLabel) {
-            console.warn('[updateStreamPanel] Elementi DOM non trovati');
+            console.warn('[updateStreamPanel] Elementi DOM non trovati per server:', payload.server_id);
             return;
         }
         list.innerHTML = '';
@@ -204,13 +207,11 @@
         let foundExpanded = false;
         if (!payload || payload.streams_error) {
             const errorMsg = payload && payload.streams_error ? payload.streams_error : 'Errore stream';
-            console.log('[updateStreamPanel] Errore stream:', errorMsg);
             statusLabel.textContent = errorMsg;
             list.innerHTML = '<li class="tagline">Nessuno stream disponibile.</li>';
             return;
         }
         const streams = payload.streams || [];
-        console.log('[updateStreamPanel] Streams ricevuti:', streams.length);
         if (!streams.length) {
             statusLabel.textContent = 'Nessuno stream attivo';
             list.innerHTML = '<li class="tagline">Nessuno stream attivo.</li>';
@@ -350,9 +351,12 @@
         }
     };
     const updateRunningTasks = (card, payload) => {
+        if (card.classList.contains('compact')) {
+            return;
+        }
         const tasksContainer = card.querySelector('.server-tasks');
         if (!tasksContainer) {
-            console.warn('[updateRunningTasks] Tasks container non trovato');
+            console.warn('[updateRunningTasks] Tasks container non trovato per server:', payload.server_id);
             return;
         }
         const tasksList = tasksContainer.querySelector('[data-tasks-list]');
@@ -361,7 +365,6 @@
             console.warn('[updateRunningTasks] Elementi DOM non trovati:', {tasksList: !!tasksList, tasksEmpty: !!tasksEmpty});
         }
         const runningTasks = Array.isArray(payload.running_tasks) ? payload.running_tasks : [];
-        console.log('[updateRunningTasks] Tasks ricevuti:', runningTasks.length, runningTasks);
         if (tasksList) {
             tasksList.innerHTML = '';
             runningTasks.forEach(task => {
@@ -1294,7 +1297,7 @@
             }
             const data = await response.json();
             const servers = data.servers || {};
-            document.querySelectorAll('.server-card[data-server-id]').forEach(card => {
+            document.querySelectorAll('.tab-panel[data-tab-panel="actions"] .server-card[data-server-id]').forEach(card => {
                 const serverId = card.dataset.serverId;
                 const list = card.querySelector('[data-stream-list]');
                 const statusLabel = card.querySelector('[data-stream-status]');
@@ -1334,7 +1337,7 @@
             return;
         }
         const poll = async () => {
-            const cards = document.querySelectorAll('.server-card[data-server-id]');
+            const cards = document.querySelectorAll('.tab-panel[data-tab-panel="actions"] .server-card[data-server-id]');
             await Promise.all(Array.from(cards).map(async (card) => {
                 const serverId = card.dataset.serverId;
                 if (!serverId) {
@@ -1366,7 +1369,7 @@
                         version.textContent = status.version || 'N/D';
                     }
                     updateRunningTasks(card, { ...data, server_id: serverId });
-                    updateStreamPanel(card, data);
+                    updateStreamPanel(card, { ...data, server_id: serverId });
                     applyDateFormatting(card);
                 } catch (err) {
                     // ignore
@@ -1388,12 +1391,6 @@
             sseSource.close();
         }
 
-        // Stop polling if active
-        if (statusPollTimer) {
-            clearInterval(statusPollTimer);
-            statusPollTimer = null;
-        }
-
         sseSource = new EventSource('/emby/status-stream');
         let reconnectTimer = null;
         let watchdogTimer = null;
@@ -1413,6 +1410,8 @@
             }, 15000);
         };
 
+        resetWatchdog();
+
         sseSource.addEventListener('open', () => {
             console.log('SSE connesso');
             resetWatchdog();
@@ -1422,7 +1421,6 @@
             if (!event.data) {
                 return;
             }
-            hasReceivedData = true;
             let payload;
             try {
                 payload = JSON.parse(event.data);
@@ -1434,10 +1432,14 @@
                 console.warn('Payload SSE non valido:', payload);
                 return;
             }
+            hasReceivedData = true;
+            if (statusPollTimer) {
+                clearInterval(statusPollTimer);
+                statusPollTimer = null;
+            }
             resetWatchdog();
-            console.log('[SSE] Dati ricevuti per', Object.keys(payload.servers).length, 'server(s)');
             Object.entries(payload.servers).forEach(([serverId, serverData]) => {
-                const card = document.querySelector(`.server-card[data-server-id="${serverId}"]`);
+                const card = document.querySelector(`.tab-panel[data-tab-panel="actions"] .server-card[data-server-id="${serverId}"]`);
                 if (!card) {
                     console.warn('[SSE] Card non trovata per server:', serverId);
                     return;
@@ -1459,7 +1461,6 @@
                 if (version) {
                     version.textContent = status.version || 'N/D';
                 }
-                console.log('[SSE] Aggiornamento server:', serverId, 'streams:', serverData.streams?.length || 0);
                 updateRunningTasks(card, serverData);
                 updateStreamPanel(card, serverData);
                 applyDateFormatting(card);
@@ -1491,9 +1492,8 @@
 
     // SSE funziona con Waitress (WSGI server)
     // Se usi Flask dev server (python app.py), commenta la riga sotto e usa startStatusPolling()
-    if (!startStatusStream()) {
-        startStatusPolling();
-    }
+    startStatusPolling();
+    startStatusStream();
     loadGroupedLibraries();
     loadAssociationManager();
     setupServerDragAndDrop();
@@ -1592,7 +1592,7 @@
                 running_tasks: data.running_tasks || [],
                 server_id: serverId
             });
-            updateStreamPanel(card, data);
+            updateStreamPanel(card, { ...data, server_id: serverId });
             applyDateFormatting(card);
         } catch (err) {
             showToast('Errore aggiornamento informazioni server.', 'error');

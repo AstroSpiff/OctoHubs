@@ -20,15 +20,18 @@
 
         <nav class="primary-nav">
             <a href="{{ url_for('dashboard') }}"
-               class="nav-link {% if active_page == 'jellyseerr' %}active{% endif %}">
+               class="nav-link {% if active_page == 'jellyseerr' %}active{% endif %}"
+               title="Apri la dashboard di ricerca">
                 Ricerca
             </a>
             <a href="{{ url_for('emby_dashboard') }}"
-               class="nav-link {% if active_page == 'emby' %}active{% endif %}">
+               class="nav-link {% if active_page == 'emby' %}active{% endif %}"
+               title="Apri Emby Toolkit">
                 Emby Toolkit
             </a>
             <a href="{{ url_for('emby_probe') }}"
-               class="nav-link {% if active_page == 'emby_probe' %}active{% endif %}">
+               class="nav-link {% if active_page == 'emby_probe' %}active{% endif %}"
+               title="Apri STRM Probe">
                 STRM Probe
                 {% if total_blacklist_count > 0 %}
                     <span class="notification-badge">{{ total_blacklist_count }}</span>
@@ -36,15 +39,16 @@
             </a>
             <a href="{{ url_for('auth_logout') }}"
                class="nav-link"
+               title="Esci dall'app"
                style="margin-left: auto;">
                 Logout
             </a>
         </nav>
         <div class="tab-shell">
             <div class="tabs">
-                <button class="tab-btn active" data-tab="scan">Ricerche &amp; Riepilogo</button>
-                <button class="tab-btn" data-tab="rules">Regole &amp; Richieste</button>
-                <button class="tab-btn" data-tab="config">Servizi &amp; Automazioni</button>
+                <button class="tab-btn active" data-tab="scan" title="Panoramica ricerche e risultati">Ricerche &amp; Riepilogo</button>
+                <button class="tab-btn" data-tab="rules" title="Regole di ricerca e richieste attive">Regole &amp; Richieste</button>
+                <button class="tab-btn" data-tab="config" title="Configura servizi e automazioni">Servizi &amp; Automazioni</button>
             </div>
             <div class="tab-panel active" data-tab-panel="scan">
                 <div class="card">
@@ -116,8 +120,8 @@
                             <span class="tagline" id="scan-selected-status"></span>
                         </div>
                         <div class="tabs results-tabs">
-                            <button class="tab-btn active" data-tab="results-movies">Film ({{ movie_items|length }})</button>
-                            <button class="tab-btn" data-tab="results-tv">Serie TV ({{ tv_items|length }})</button>
+                            <button class="tab-btn active" data-tab="results-movies" title="Mostra risultati film">Film ({{ movie_items|length }})</button>
+                            <button class="tab-btn" data-tab="results-tv" title="Mostra risultati serie TV">Serie TV ({{ tv_items|length }})</button>
                         </div>
                         <div class="tab-panel active" data-tab-panel="results-movies">
                             {{ macros.results_table(movie_items, qb_available, results) }}

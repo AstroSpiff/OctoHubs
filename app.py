@@ -1157,8 +1157,14 @@ def _configure_security(app: Flask):
         pass
     app.config.setdefault("SESSION_COOKIE_HTTPONLY", True)
     app.config.setdefault("SESSION_COOKIE_SAMESITE", "Lax")
-    if os.environ.get("SESSION_COOKIE_SECURE", "").lower() in {"1", "true", "yes"}:
-        app.config["SESSION_COOKIE_SECURE"] = True
+    secure_env = os.environ.get("SESSION_COOKIE_SECURE")
+    if secure_env is not None:
+        app.config["SESSION_COOKIE_SECURE"] = secure_env.lower() in {"1", "true", "yes"}
+        app.config["SESSION_COOKIE_SECURE_AUTO"] = False
+    else:
+        # Auto mode: allow HTTP locally, force secure cookies on HTTPS.
+        app.config["SESSION_COOKIE_SECURE"] = False
+        app.config["SESSION_COOKIE_SECURE_AUTO"] = True
     csrf.init_app(app)
 
 
@@ -1262,6 +1268,21 @@ def create_dashboard_app():
 
     # Configure Emby Probe Manager
     get_probe_manager().configure(_ensure_db_backend)
+
+    @app.before_request
+    def _ensure_cookie_security():
+        if not app.config.get("SESSION_COOKIE_SECURE_AUTO"):
+            return
+        proto = request.headers.get("X-Forwarded-Proto", request.scheme)
+        app.config["SESSION_COOKIE_SECURE"] = proto == "https"
+
+    @app.before_request
+    def _refresh_session_cookie():
+        if not app.config.get("SESSION_COOKIE_SECURE_AUTO"):
+            return
+        if current_user.is_authenticated or session:
+            # Force cookie refresh so Secure flag matches current scheme.
+            session.modified = True
 
     @app.before_request
     def _audit_state_changes():
@@ -1429,7 +1450,7 @@ def create_dashboard_app():
         config, is_valid = load_config()
         emby_config = (config or {}).get("EMBY") if config else _default_emby_settings()
         raw_servers = (emby_config.get("SERVERS") if emby_config else []) or []
-        emby_servers = _prepare_emby_servers_for_view(raw_servers)
+        emby_servers = _prepare_emby_servers_for_view(raw_servers, lazy=True)
         total_blacklist_count = _get_total_blacklist_count()
         return render_template(
             'emby_dashboard.html',
@@ -1451,7 +1472,7 @@ def create_dashboard_app():
             return redirect(url_for('emby_dashboard'))
         emby_config = config.get("EMBY") or _default_emby_settings()
         raw_servers = (emby_config.get("SERVERS") if emby_config else []) or []
-        emby_servers = _prepare_emby_servers_for_view(raw_servers)
+        emby_servers = _prepare_emby_servers_for_view(raw_servers, lazy=True)
         total_blacklist_count = _get_total_blacklist_count()
         return render_template(
             'emby_probe.html',
@@ -1596,8 +1617,14 @@ def create_dashboard_app():
             return jsonify({"success": False, "error": str(e)}), 200
 
     @app.route('/emby/status-stream')
-    @login_required
     def emby_status_stream():
+        """
+        SSE endpoint - no @login_required because EventSource doesn't always send session cookies.
+        We check authentication at the start instead.
+        """
+        if not current_user.is_authenticated:
+            return jsonify({"success": False, "error": "Unauthorized"}), 401
+
         def event_stream():
             print("[SSE] Client connesso")
             try:
@@ -1635,9 +1662,9 @@ def create_dashboard_app():
                                 streams_mgr = get_streams_manager()
                                 streams_error = None
                                 try:
-                                    refresh_age = int(os.environ.get("STREAMS_REFRESH_SECONDS", "15"))
+                                    refresh_age = int(os.environ.get("STREAMS_REFRESH_SECONDS", "5"))
                                 except ValueError:
-                                    refresh_age = 15
+                                    refresh_age = 5
                                 if streams_mgr.is_stale(server_id, refresh_age):
                                     streams_api, streams_error = _fetch_emby_active_sessions(server)
                                     if streams_error is None:
@@ -1659,9 +1686,8 @@ def create_dashboard_app():
                                 }
                             payload = {"success": True, "servers": data}
                         msg = f"data: {json.dumps(payload, cls=DateTimeEncoder)}\n\n"
-                        print(f"[SSE] Invio dati: {len(msg)} bytes")
                         yield msg
-                        time.sleep(5)  # Reduced from 3s to 5s since streams are updated via webhooks
+                        time.sleep(2)  # Reduced from 3s to 2s for faster UI updates
                     except Exception as e:
                         print(f"[SSE] Errore nel loop: {e}")
                         import traceback

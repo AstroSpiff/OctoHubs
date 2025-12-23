@@ -465,15 +465,18 @@
         <h1>Emby Probe - Gestionale STRM</h1>
         <nav class="primary-nav">
             <a href="{{ url_for('dashboard') }}"
-               class="nav-link {% if active_page == 'jellyseerr' %}active{% endif %}">
+               class="nav-link {% if active_page == 'jellyseerr' %}active{% endif %}"
+               title="Apri la dashboard di ricerca">
                 Ricerca
             </a>
             <a href="{{ url_for('emby_dashboard') }}"
-               class="nav-link {% if active_page == 'emby' %}active{% endif %}">
+               class="nav-link {% if active_page == 'emby' %}active{% endif %}"
+               title="Apri Emby Toolkit">
                 Emby Toolkit
             </a>
             <a href="{{ url_for('emby_probe') }}"
-               class="nav-link {% if active_page == 'emby_probe' %}active{% endif %}">
+               class="nav-link {% if active_page == 'emby_probe' %}active{% endif %}"
+               title="Apri STRM Probe">
                 STRM Probe
                 {% if total_blacklist_count > 0 %}
                     <span class="notification-badge">{{ total_blacklist_count }}</span>
@@ -481,6 +484,7 @@
             </a>
             <a href="{{ url_for('auth_logout') }}"
                class="nav-link"
+               title="Esci dall'app"
                style="margin-left: auto;">
                 Logout
             </a>
@@ -502,6 +506,7 @@
                 {% for server in emby_servers %}
                 <button class="server-tab {% if loop.first %}active{% endif %}"
                         data-server-id="{{ server.id }}"
+                        title="Seleziona questo server"
                         onclick="switchServer('{{ server.id }}')">
                     {{ server.name or server.url }}
                 </button>
@@ -547,8 +552,8 @@
                     </div>
                     <div class="worker-log" data-discovery-log>In attesa...</div>
                     <div class="worker-controls">
-                        <button class="btn primary" data-discovery-start>Avvia Ricerca</button>
-                        <button class="btn ghost" data-discovery-stop disabled>Stop</button>
+                        <button class="btn primary" data-discovery-start title="Avvia la discovery per popolare la coda">Avvia Ricerca</button>
+                        <button class="btn ghost" data-discovery-stop disabled title="Ferma la discovery in corso">Stop</button>
                     </div>
                 </div>
 
@@ -598,9 +603,9 @@
                     </div>
                     <div class="worker-log" data-processing-log>In attesa...</div>
                     <div class="worker-controls">
-                        <button class="btn primary" data-processing-start-smart>Avvia (Smart)</button>
-                        <button class="btn secondary" data-processing-start-forced>Avvia (Forced)</button>
-                        <button class="btn ghost" data-processing-stop disabled>Stop</button>
+                        <button class="btn primary" data-processing-start-smart title="Avvia processing con pausa automatica durante lo streaming">Avvia (Smart)</button>
+                        <button class="btn secondary" data-processing-start-forced title="Avvia processing forzato senza pausa">Avvia (Forced)</button>
+                        <button class="btn ghost" data-processing-stop disabled title="Ferma il processing in corso">Stop</button>
                     </div>
                 </div>
             </div>
@@ -608,9 +613,9 @@
 
         <!-- Tabs -->
         <div class="tabs">
-            <button class="tab-btn active" data-tab="queue">Da Processare</button>
-            <button class="tab-btn" data-tab="history">Storico</button>
-            <button class="tab-btn" data-tab="blacklist">
+            <button class="tab-btn active" data-tab="queue" title="Coda in attesa di processing">Da Processare</button>
+            <button class="tab-btn" data-tab="history" title="Storico delle operazioni">Storico</button>
+            <button class="tab-btn" data-tab="blacklist" title="Elementi in blacklist (errori ripetuti)">
                 Blacklist (3+ Errori)
                 <span class="tab-badge" data-blacklist-count style="background: #dc2626; color: white; padding: 0.15rem 0.5rem; border-radius: 10px; font-size: 0.75rem; margin-left: 0.5rem;">0</span>
             </button>
@@ -622,8 +627,8 @@
                 <div class="section-header">
                     <h3>Coda di Lavorazione</h3>
                     <div class="section-actions">
-                        <button class="btn secondary" data-queue-refresh>Aggiorna Lista</button>
-                        <button class="btn ghost" data-queue-clear>Svuota Coda</button>
+                        <button class="btn secondary" data-queue-refresh title="Ricarica la coda dal server">Aggiorna Lista</button>
+                        <button class="btn ghost" data-queue-clear title="Rimuove tutti gli elementi dalla coda">Svuota Coda</button>
                     </div>
                 </div>
                 <div data-queue-container>
@@ -638,9 +643,9 @@
                 <div class="section-header">
                     <h3>Storico Operazioni</h3>
                     <div class="section-actions">
-                        <button class="btn primary" data-history-retry-all>Riprova Tutti (Errori/Incompleti)</button>
-                        <button class="btn secondary" data-history-refresh>Aggiorna Storico</button>
-                        <button class="btn ghost" data-history-clear>Svuota Storico</button>
+                        <button class="btn primary" data-history-retry-all title="Riprova tutti gli elementi con errori o incompleti">Riprova Tutti (Errori/Incompleti)</button>
+                        <button class="btn secondary" data-history-refresh title="Ricarica lo storico dal server">Aggiorna Storico</button>
+                        <button class="btn ghost" data-history-clear title="Svuota lo storico delle operazioni">Svuota Storico</button>
                     </div>
                 </div>
                 <div class="filter-controls">
@@ -661,8 +666,8 @@
                 <div class="section-header">
                     <h3>File in Blacklist (3+ Tentativi Falliti)</h3>
                     <div class="section-actions">
-                        <button class="btn secondary" data-blacklist-refresh>Aggiorna Lista</button>
-                        <button class="btn ghost" data-blacklist-clear>Svuota Blacklist</button>
+                        <button class="btn secondary" data-blacklist-refresh title="Ricarica la blacklist dal server">Aggiorna Lista</button>
+                        <button class="btn ghost" data-blacklist-clear title="Svuota la blacklist">Svuota Blacklist</button>
                     </div>
                 </div>
                 <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
@@ -1212,7 +1217,7 @@
                                 <div class="item-meta">${item.path || ''}</div>
                             </div>
                             <div class="item-actions">
-                                <button class="btn ghost small" onclick="removeFromQueue('${item.item_id}', '${item.media_source_id || ''}')">Rimuovi</button>
+                                <button class="btn ghost small" title="Rimuove l'elemento dalla coda" onclick="removeFromQueue('${item.item_id}', '${item.media_source_id || ''}')">Rimuovi</button>
                             </div>
                         </div>`;
                     });
@@ -1228,7 +1233,7 @@
                             <div class="item-meta">${item.path || ''}</div>
                         </div>
                         <div class="item-actions">
-                            <button class="btn ghost small" onclick="removeFromQueue('${item.item_id}', '${item.media_source_id || ''}')">Rimuovi</button>
+                            <button class="btn ghost small" title="Rimuove l'elemento dalla coda" onclick="removeFromQueue('${item.item_id}', '${item.media_source_id || ''}')">Rimuovi</button>
                         </div>
                     </div>`;
                 });
@@ -1416,7 +1421,7 @@
                 }
                 const duration = item.duration_ms ? (item.duration_ms / 1000).toFixed(2) + 's' : '-';
                 const retryBtn = (item.status === 'ERROR' || item.status === 'INCOMPLETE') ?
-                    `<button class="btn ghost small" onclick="retryItem('${item.item_id}', '${item.media_source_id || ''}', this)">Riprova</button>` :
+                    `<button class="btn ghost small" title="Riprova il processamento dell'elemento" onclick="retryItem('${item.item_id}', '${item.media_source_id || ''}', this)">Riprova</button>` :
                     '';
                 html += `<tr>
                     <td>${date}</td>
@@ -1474,8 +1479,8 @@
                     <td><span style="background: #dc2626; color: white; padding: 0.25rem 0.5rem; border-radius: 4px; font-weight: 600;">${item.retry_count}</span></td>
                     <td>${item.reason || '-'}</td>
                     <td>
-                        <button class="btn ghost small" onclick="removeFromBlacklist('${item.item_id}', '${item.media_source_id || ''}')">Rimuovi</button>
-                        <button class="btn primary small" onclick="retryFromBlacklist('${item.item_id}', '${item.media_source_id || ''}', this)">Riprova</button>
+                        <button class="btn ghost small" title="Rimuove l'elemento dalla blacklist" onclick="removeFromBlacklist('${item.item_id}', '${item.media_source_id || ''}')">Rimuovi</button>
+                        <button class="btn primary small" title="Riprova il processamento dell'elemento" onclick="retryFromBlacklist('${item.item_id}', '${item.media_source_id || ''}', this)">Riprova</button>
                     </td>
                 </tr>`;
             });

@@ -453,15 +453,26 @@ def _execute_emby_action(server, action_key):
     )
 
 
-def _prepare_emby_servers_for_view(servers):
+def _prepare_emby_servers_for_view(servers, lazy=False):
     prepared = []
     for server in servers or []:
         decorated = copy.deepcopy(server)
-        decorated["status"] = _fetch_emby_status(server)
-        decorated["server_id"] = decorated["status"].get("server_id")
-        tasks, error = _fetch_emby_scheduled_tasks(server)
-        decorated["scheduled_tasks"] = tasks
-        decorated["scheduled_tasks_error"] = error
+        if lazy:
+            decorated["status"] = {
+                "ok": None,
+                "version": None,
+                "name": decorated.get("name") or "Server Emby",
+                "last_check": None,
+                "server_id": decorated.get("server_id")
+            }
+            decorated["scheduled_tasks"] = []
+            decorated["scheduled_tasks_error"] = None
+        else:
+            decorated["status"] = _fetch_emby_status(server)
+            decorated["server_id"] = decorated["status"].get("server_id")
+            tasks, error = _fetch_emby_scheduled_tasks(server)
+            decorated["scheduled_tasks"] = tasks
+            decorated["scheduled_tasks_error"] = error
         prepared.append(decorated)
     return prepared
 
