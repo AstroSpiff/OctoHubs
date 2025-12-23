@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 import re
-from datetime import datetime, timezone, time as dt_time, timedelta
+from datetime import datetime, date, timezone, time as dt_time, timedelta
 from functools import wraps
 
 import requests
@@ -99,6 +99,14 @@ RESULTS_FILE = "last_results.json"
 
 # Shared CSRF protection
 csrf = CSRFProtect()
+
+
+class DateTimeEncoder(json.JSONEncoder):
+    """JSON encoder that serializes datetime/date as ISO strings."""
+    def default(self, obj):
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        return super().default(obj)
 
 DEFAULT_SORT_MODE = "seeders_desc"
 
@@ -1650,7 +1658,7 @@ def create_dashboard_app():
                                     "probe_status": probe_status
                                 }
                             payload = {"success": True, "servers": data}
-                        msg = f"data: {json.dumps(payload)}\n\n"
+                        msg = f"data: {json.dumps(payload, cls=DateTimeEncoder)}\n\n"
                         print(f"[SSE] Invio dati: {len(msg)} bytes")
                         yield msg
                         time.sleep(5)  # Reduced from 3s to 5s since streams are updated via webhooks

@@ -4,8 +4,7 @@ Updated via webhooks for real-time updates with minimal overhead
 """
 from typing import Dict, List, Any
 from threading import Lock
-from datetime import datetime
-from time import time
+from datetime import datetime, timedelta
 
 
 class EmbyStreamsManager:
@@ -13,7 +12,7 @@ class EmbyStreamsManager:
 
     def __init__(self):
         self._streams: Dict[str, List[Dict[str, Any]]] = {}
-        self._last_update: Dict[str, float] = {}
+        self._last_updates: Dict[str, datetime] = {}
         self._lock = Lock()
 
     def get_streams(self, server_id: str) -> List[Dict[str, Any]]:
@@ -41,7 +40,7 @@ class EmbyStreamsManager:
             # Add updated session
             session_data["_last_update"] = datetime.now().isoformat()
             self._streams[server_id].append(session_data)
-            self._last_update[server_id] = time()
+            self._last_updates[server_id] = datetime.now()
 
     def remove_stream(self, server_id: str, session_id: str) -> None:
         """Remove a stream when playback stops."""
@@ -53,7 +52,7 @@ class EmbyStreamsManager:
                 s for s in self._streams[server_id]
                 if s.get("Id") != session_id
             ]
-            self._last_update[server_id] = time()
+            self._last_updates[server_id] = datetime.now()
 
     def update_stream(self, server_id: str, session_id: str, data: Dict[str, Any]) -> None:
         """Update stream progress/state."""
@@ -65,14 +64,14 @@ class EmbyStreamsManager:
                 if stream.get("Id") == session_id:
                     stream.update(data)
                     stream["_last_update"] = datetime.now().isoformat()
-                    self._last_update[server_id] = time()
+                    self._last_updates[server_id] = datetime.now()
                     break
 
     def clear_server(self, server_id: str) -> None:
         """Clear all streams for a server."""
         with self._lock:
             self._streams.pop(server_id, None)
-            self._last_update.pop(server_id, None)
+            self._last_updates.pop(server_id, None)
 
     def refresh_from_api(self, server_id: str, streams: List[Dict[str, Any]]) -> None:
         """
@@ -84,15 +83,15 @@ class EmbyStreamsManager:
             for stream in streams:
                 stream["_last_update"] = datetime.now().isoformat()
             self._streams[server_id] = streams
-            self._last_update[server_id] = time()
+            self._last_updates[server_id] = datetime.now()
 
     def is_stale(self, server_id: str, max_age_seconds: int) -> bool:
         """Return True if streams are stale or never updated."""
         with self._lock:
-            last_update = self._last_update.get(server_id)
-        if not last_update:
+            last_update = self._last_updates.get(server_id)
+        if last_update is None:
             return True
-        return (time() - last_update) > max_age_seconds
+        return datetime.now() - last_update > timedelta(seconds=max_age_seconds)
 
 
 # Global singleton

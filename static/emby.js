@@ -1396,10 +1396,26 @@
 
         sseSource = new EventSource('/emby/status-stream');
         let reconnectTimer = null;
+        let watchdogTimer = null;
         let hasReceivedData = false;
+
+        const resetWatchdog = () => {
+            if (watchdogTimer) {
+                clearTimeout(watchdogTimer);
+            }
+            watchdogTimer = setTimeout(() => {
+                console.warn('SSE watchdog timeout, passo a polling');
+                if (sseSource) {
+                    sseSource.close();
+                    sseSource = null;
+                }
+                startStatusPolling();
+            }, 15000);
+        };
 
         sseSource.addEventListener('open', () => {
             console.log('SSE connesso');
+            resetWatchdog();
         });
 
         sseSource.addEventListener('message', (event) => {
@@ -1418,6 +1434,7 @@
                 console.warn('Payload SSE non valido:', payload);
                 return;
             }
+            resetWatchdog();
             console.log('[SSE] Dati ricevuti per', Object.keys(payload.servers).length, 'server(s)');
             Object.entries(payload.servers).forEach(([serverId, serverData]) => {
                 const card = document.querySelector(`.server-card[data-server-id="${serverId}"]`);
@@ -1452,6 +1469,10 @@
             console.error('SSE errore:', err, 'readyState:', sseSource.readyState);
             sseSource.close();
             sseSource = null;
+            if (watchdogTimer) {
+                clearTimeout(watchdogTimer);
+                watchdogTimer = null;
+            }
             if (reconnectTimer) {
                 clearTimeout(reconnectTimer);
             }

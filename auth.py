@@ -4,7 +4,7 @@ Manages user accounts, password hashing, and session management.
 """
 import os
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Any
 
 from flask import Flask
 from flask_login import LoginManager, UserMixin
@@ -291,13 +291,13 @@ def set_user_role(user: User, role: str) -> bool:
         return False
 
 
-def log_audit_event(user: Optional[User], action: str, detail: Optional[str] = None,
+def log_audit_event(user: Optional[Any], action: str, detail: Optional[str] = None,
                     request_obj=None) -> None:
     """Store an audit log entry for a user action."""
     if not db_session:
         return
-    username = user.username if user else None
-    user_id = user.id if user else None
+    username = getattr(user, "username", None) if user else None
+    user_id = getattr(user, "id", None) if user else None
     ip_address = None
     path = None
     method = None
