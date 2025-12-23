@@ -1,5 +1,7 @@
 # OctoHub
 
+[![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+
 Minimal setup and deployment guide.
 
 ## Requirements
