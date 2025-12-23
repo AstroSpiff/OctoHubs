@@ -44,6 +44,7 @@ Ruoli:
 - SESSION_TIMEOUT_MINUTES: durata sessione (default 60)
 - CSRF_TIME_LIMIT_SECONDS: validita token CSRF (default 3600)
 - SESSION_COOKIE_SECURE: true per HTTPS
+- STREAMS_REFRESH_SECONDS: refresh fallback streams senza webhook (default 15)
 
 ## PostgreSQL (opzionale)
 Se vuoi usare PostgreSQL per auth (o per estendere in futuro):

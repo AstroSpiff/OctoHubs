@@ -1623,19 +1623,22 @@ def create_dashboard_app():
                                     if task.get("is_running"):
                                         running.append(task)
 
-                                # Get streams from in-memory cache (updated via webhooks)
+                                # Get streams from cache and refresh periodically when webhooks are missing.
                                 streams_mgr = get_streams_manager()
-                                streams = streams_mgr.get_streams(server_id)
                                 streams_error = None
-
-                                # Fallback: if no streams in cache, fetch from API
-                                # This handles initial load and when webhooks are not configured
-                                if not streams:
+                                try:
+                                    refresh_age = int(os.environ.get("STREAMS_REFRESH_SECONDS", "15"))
+                                except ValueError:
+                                    refresh_age = 15
+                                if streams_mgr.is_stale(server_id, refresh_age):
                                     streams_api, streams_error = _fetch_emby_active_sessions(server)
-                                    if streams_api and not streams_error:
-                                        # Update cache for next time
+                                    if streams_error is None:
                                         streams_mgr.refresh_from_api(server_id, streams_api)
                                         streams = streams_api
+                                    else:
+                                        streams = streams_mgr.get_streams(server_id)
+                                else:
+                                    streams = streams_mgr.get_streams(server_id)
 
                                 probe_status = get_probe_manager().get_status(server_id)
                                 data[server_id] = {
