@@ -1,0 +1,920 @@
+{% import 'macros.html' as macros %}
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <title>Dashboard OctoHub</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}"></head>
+<body>
+    <div class="wrapper">
+        <h1>Dashboard OctoHub</h1>
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for msg in messages %}
+                    <div class="alert" data-toast="success">{{ msg }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <nav class="primary-nav">
+            <a href="{{ url_for('dashboard') }}"
+               class="nav-link {% if active_page == 'jellyseerr' %}active{% endif %}">
+                Ricerca
+            </a>
+            <a href="{{ url_for('emby_dashboard') }}"
+               class="nav-link {% if active_page == 'emby' %}active{% endif %}">
+                Emby Toolkit
+            </a>
+            <a href="{{ url_for('emby_probe') }}"
+               class="nav-link {% if active_page == 'emby_probe' %}active{% endif %}">
+                STRM Probe
+                {% if total_blacklist_count > 0 %}
+                    <span class="notification-badge">{{ total_blacklist_count }}</span>
+                {% endif %}
+            </a>
+            <a href="{{ url_for('auth_logout') }}"
+               class="nav-link"
+               style="margin-left: auto;">
+                Logout
+            </a>
+        </nav>
+        <div class="tab-shell">
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="scan">Ricerche &amp; Riepilogo</button>
+                <button class="tab-btn" data-tab="rules">Regole &amp; Richieste</button>
+                <button class="tab-btn" data-tab="config">Servizi &amp; Automazioni</button>
+            </div>
+            <div class="tab-panel active" data-tab-panel="scan">
+                <div class="card">
+                    <h2>Controllo ricerche</h2>
+                    <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem;">
+                        <p class="tagline" style="margin: 0;">Stato corrente: <span id="scan-status-text">{{ status.message }}</span></p>
+                        <form action="/run-scan" method="post" style="display: inline-block; margin: 0;">
+                            <button class="btn small ghost"
+                                    type="submit"
+                                    id="start-scan-btn"
+                                    data-has-config="{{ 'true' if has_config else 'false' }}"
+                                    title="Esegue una ricerca completa applicando tutte le regole e le richieste abilitate"
+                                    {% if not has_config %}disabled{% endif %}>
+                                Avvia ricerca completa
+                            </button>
+                        </form>
+                        <form action="/stop-scan" method="post" style="display: inline-block; margin: 0;">
+                            <button class="btn small ghost"
+                                    type="submit"
+                                    id="stop-scan-btn"
+                                    title="Chiede al sistema di interrompere la ricerca in corso"
+                                    disabled>
+                                Ferma ricerca in corso
+                            </button>
+                        </form>
+                    </div>
+                    {% if results and results.generated_at %}
+                        <p class="tagline" style="margin-bottom: 0.5rem;">
+                            Generato il <span id="last-scan-time">{{ results.generated_at }}</span> · Richieste analizzate: {{ results.checked_requests }} · Risultati trovati: {{ results.found }}
+                        </p>
+                    {% endif %}
+                    <div class="progress-container">
+                        <div class="progress-bar" id="scan-progress"></div>
+                    </div>
+                    <div class="tagline" id="scan-progress-label">
+                        {% if status.total %}
+                            Avanzamento: {{ status.completed }} / {{ status.total }}
+                        {% else %}
+                            Avanzamento: in attesa
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="card">
+                    <h2>Ultimo Riepilogo</h2>
+                    {% if results %}
+                        {% set total_items = results.get('items') or [] %}
+                        {% set movie_items = total_items | selectattr('media_type', 'equalto', 'movie') | list %}
+                        {% set tv_items = total_items | selectattr('media_type', 'equalto', 'tv') | list %}
+                        {% set ns_counts = namespace(updated=0, stale=0) %}
+                        {% for entry in total_items %}
+                            {% if entry.is_stale %}
+                                {% set ns_counts.stale = ns_counts.stale + 1 %}
+                            {% else %}
+                                {% set ns_counts.updated = ns_counts.updated + 1 %}
+                            {% endif %}
+                        {% endfor %}
+                        <p class="tagline">Aggiornate nell'ultima ricerca: {{ ns_counts.updated }} · Risultati mantenuti da ricerche precedenti: {{ ns_counts.stale }}</p>
+                        {% if ns_counts.stale > 0 %}
+                            <p class="tagline">Il fondo grigio indica risultati più datati, non aggiornati nell'ultima esecuzione.</p>
+                        {% endif %}
+                        <div class="scan-toolbar">
+                            <button type="button"
+                                    class="btn light"
+                                    id="scan-selected-btn"
+                                    title="Avvia una ricerca mirata solo sulle richieste selezionate nel riepilogo"
+                                    disabled>
+                                Avvia ricerche selezionate
+                            </button>
+                            <span class="tagline" id="scan-selected-status"></span>
+                        </div>
+                        <div class="tabs results-tabs">
+                            <button class="tab-btn active" data-tab="results-movies">Film ({{ movie_items|length }})</button>
+                            <button class="tab-btn" data-tab="results-tv">Serie TV ({{ tv_items|length }})</button>
+                        </div>
+                        <div class="tab-panel active" data-tab-panel="results-movies">
+                            {{ macros.results_table(movie_items, qb_available, results) }}
+                        </div>
+                        <div class="tab-panel" data-tab-panel="results-tv">
+                            {{ macros.results_table(tv_items, qb_available, results) }}
+                        </div>
+                    {% else %}
+                        <p class="tagline">Esegui una ricerca per generare risultati.</p>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="tab-panel" data-tab-panel="rules">
+                <div class="card">
+                    <h2>Regole di ricerca</h2>
+                    {% if not has_config %}
+                        <p class="tagline">Collega Jellyseerr e almeno un indexer per controllare queste regole.</p>
+                    {% else %}
+                        <form action="/update-rules" method="post">
+                            <div class="rule-note tagline">Queste opzioni determinano come vengono costruite le query (Termini di ricerca) e quali risultati vengono accettati (Filtri risultati). Le lingue possono essere impostate separatamente per query e filtri.</div>
+                            <div class="rule-sections">
+                                <section class="rule-block">
+                                    <h4>Termini di ricerca</h4>
+                                    <div class="rule-grid three-cols">
+                                        <div>
+                                            <label for="target_languages_query" title="Lingue aggiunte direttamente alle stringhe di ricerca">
+                                                Lingue target per la query
+                                            </label>
+                                            <input type="text"
+                                                   id="target_languages_query"
+                                                   name="query_languages"
+                                                   value="{{ (search_rules.query_languages if search_rules.query_languages is defined else (config.TARGET_LANGUAGES if config else [])) | join(',') }}"
+                                                   placeholder="ita,italian"
+                                                   title="Separare con virgole; es. ita,italian">
+                                            <label style="font-weight:400;margin-top:0.2rem;display:inline-flex;align-items:center;gap:0.25rem;font-size:0.85rem;">
+                                                <input type="checkbox"
+                                                       id="include_target_lang_base"
+                                                       name="include_target_lang_base"
+                                                       {% if search_rules.include_target_lang_base %}checked{% endif %}
+                                                       title="Quando attivo genera due varianti: con e senza lingua esplicita.">
+                                                Prova anche senza lingua
+                                            </label>
+                                        </div>
+                                        <div>
+                                            <label for="query_terms" title="Parole aggiuntive sempre presenti nelle query (risoluzioni, codec, ecc.)">
+                                                Risoluzioni / Termini query
+                                            </label>
+                                            <input type="text"
+                                                   id="query_terms"
+                                                   name="query_terms"
+                                                   value="{{ search_rules.query_terms | join(',') }}"
+                                                   placeholder="2160p,webdl"
+                                                   title="Separare con virgole; esempio 2160p,remux">
+                                            <div class="tagline">Aggiunti a ogni ricerca (separati da virgola).</div>
+                                        </div>
+                                        <div class="wide-field">
+                                            <label for="season_templates" title="Template usati per rappresentare la stagione nelle query">
+                                                Varianti stagione
+                                            </label>
+                                            <input type="text"
+                                                   id="season_templates"
+                                                   name="season_templates"
+                                                   value="{{ search_rules.season_templates | join(',') }}"
+                                                   placeholder="S{season02},{season}x,Stagione {season}"
+                                                   title="Usa {season} o {season02}; esempio S{season02}, {season}x">
+                                            <div class="tagline">Usa {season} o {season02} come segnaposto del numero.</div>
+                                        </div>
+                                    </div>
+                                </section>
+                                <section class="rule-block">
+                                    <h4>Filtri risultati</h4>
+                                    <div class="rule-grid">
+                                        <div>
+                                            <label for="target_languages_filters" title="Lingue audio richieste nei risultati filtrati">
+                                                Lingue target nei risultati
+                                            </label>
+                                            <input type="text"
+                                                   id="target_languages_filters"
+                                                   name="target_languages"
+                                                   value="{{ (config.TARGET_LANGUAGES if config else []) | join(',') }}"
+                                                   placeholder="ita,italian"
+                                                   title="Lista separata da virgole; es. ita,italian">
+                                            <div class="tagline">Separate da virgola. Serve per verificare la lingua del risultato.</div>
+                                        </div>
+                                        <div>
+                                            <label for="filter_terms" title="Parole obbligatorie nel titolo del risultato">
+                                                Termini filtrati
+                                            </label>
+                                            <input type="text"
+                                                   id="filter_terms"
+                                                   name="filter_terms"
+                                                   value="{{ search_rules.filter_terms | join(',') }}"
+                                                   placeholder="2160p,remux"
+                                                   title="Ogni termine va separato da virgole">
+                                            <div class="tagline">Almeno uno deve comparire nel titolo.</div>
+                                        </div>
+                                        <div>
+                                            <label for="exclude_tags" title="Tag che, se presenti come parole isolate, causano l’esclusione del risultato">
+                                                Tag da escludere
+                                            </label>
+                                            <input type="text"
+                                                   id="exclude_tags"
+                                                   name="exclude_tags"
+                                                   value="{{ (config.EXCLUDE_TAGS if config else []) | join(',') }}"
+                                                   placeholder="cam,ts"
+                                                   title="Esempio: cam,ts,md">
+                                        </div>
+                                        <div>
+                                            <label for="min_seeders" title="Numero minimo di seeders richiesto per accettare un risultato">
+                                                Seeders minimi
+                                            </label>
+                                            <input type="number"
+                                                   id="min_seeders"
+                                                   name="min_seeders"
+                                                   value="{{ search_rules.min_seeders }}"
+                                                   min="0"
+                                                   title="Imposta 0 per accettare qualsiasi numero di seeders">
+                                        </div>
+                                    </div>
+                                </section>
+                            </div>
+                            <div class="sort-grid">
+                                <div class="sort-column">
+                                    <h4>Film</h4>
+                                    <div class="sort-pair">
+                                        <div class="sort-field">
+                                            <label for="movie_sort_primary" title="Ordine principale con cui verranno mostrati i risultati film">
+                                                Primo criterio
+                                            </label>
+                                            <select id="movie_sort_primary" name="movie_sort_primary">
+                                                {% for opt in movie_sort_options %}
+                                                    <option value="{{ opt.value }}" data-sort-group="{{ opt.group }}" {% if search_rules.movie_sort_primary == opt.value %}selected{% endif %}>{{ opt.label }}</option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                        <div class="sort-field">
+                                            <label for="movie_sort_secondary" title="Viene applicato solo in caso di parità del primo criterio">
+                                                Secondo criterio (opzionale)
+                                            </label>
+                                            <select id="movie_sort_secondary" name="movie_sort_secondary">
+                                                <option value="" data-sort-group="" {% if not search_rules.movie_sort_secondary %}selected{% endif %}>Nessuno</option>
+                                                {% for opt in movie_sort_options %}
+                                                    <option value="{{ opt.value }}" data-sort-group="{{ opt.group }}" {% if search_rules.movie_sort_secondary == opt.value %}selected{% endif %}>{{ opt.label }}</option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="sort-column">
+                                    <h4>Serie TV</h4>
+                                    <div class="sort-pair">
+                                        <div class="sort-field">
+                                            <label for="tv_sort_primary" title="Ordine principale per i risultati TV">
+                                                Primo criterio
+                                            </label>
+                                            <select id="tv_sort_primary" name="tv_sort_primary">
+                                                {% for opt in tv_sort_options %}
+                                                    <option value="{{ opt.value }}" data-sort-group="{{ opt.group }}" {% if search_rules.tv_sort_primary == opt.value %}selected{% endif %}>{{ opt.label }}</option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                        <div class="sort-field">
+                                            <label for="tv_sort_secondary" title="Usato come tie-break per i risultati TV">
+                                                Secondo criterio (opzionale)
+                                            </label>
+                                            <select id="tv_sort_secondary" name="tv_sort_secondary">
+                                                <option value="" data-sort-group="" {% if not search_rules.tv_sort_secondary %}selected{% endif %}>Nessuno</option>
+                                                {% for opt in tv_sort_options %}
+                                                    <option value="{{ opt.value }}" data-sort-group="{{ opt.group }}" {% if search_rules.tv_sort_secondary == opt.value %}selected{% endif %}>{{ opt.label }}</option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="sort-note tagline">Seleziona al massimo due criteri per ogni media. Il secondo funge da tie-breaker e non può riutilizzare lo stesso gruppo del primo (seeders, dimensione, ecc.).</div>
+                            <div class="options-sections">
+                                <div class="options-column">
+                                    <h4>Opzioni aggiuntive</h4>
+                                    <label title="Scarta risultati che riportano la lingua solo come sottotitolo">
+                                        <input type="checkbox" name="require_audio_language" {% if search_rules.require_audio_language %}checked{% endif %}>
+                                        Richiedi lingua audio (esclude solo sub)
+                                    </label>
+                                    <label title="Genera query specifiche per ogni episodio mancante">
+                                        <input type="checkbox" id="search_episode_variants" name="search_episode_variants" {% if search_rules.search_episode_variants %}checked{% endif %}>
+                                        Cerca singoli episodi (non conteggiati nel limite)
+                                    </label>
+                                    <div class="nested-option">
+                                        <label>
+                                            <input type="checkbox" id="skip_season_query_when_episode_search" name="skip_season_queries_when_episode_search" {% if search_rules.skip_season_queries_when_episode_search %}checked{% endif %} {% if not search_rules.search_episode_variants %}disabled{% endif %}>
+                                            Escludi dalla ricerca la stagione
+                                        </label>
+                                        <div class="tagline">Con questa opzione vengono create solo query episodiche (es. S01E01, 1x01) e non quelle generiche di stagione.</div>
+                                    </div>
+                                </div>
+                                <div class="options-column">
+                                    <h4>Servizi e filtri globali</h4>
+                                    <label title="Usa Prowlarr per interrogare gli indexer collegati">
+                                        <input type="checkbox" name="use_prowlarr" {% if search_rules.use_prowlarr %}checked{% endif %}>
+                                        Usa Prowlarr
+                                    </label>
+                                    <label title="Usa Jackett per interrogare gli indexer configurati">
+                                        <input type="checkbox" name="use_jackett" {% if search_rules.use_jackett %}checked{% endif %}>
+                                        Usa Jackett
+                                    </label>
+                                    <div class="tagline" style="margin-bottom:0.5rem;">Jackett e Prowlarr devono essere configurati.</div>
+                                    <label title="Rende i titoli più semplici (utile per gli indexer più vecchi)">
+                                        <input type="checkbox" name="sanitize_titles" {% if search_rules.sanitize_titles %}checked{% endif %}>
+                                        Normalizza (rimuove accenti/punteggiatura)
+                                    </label>
+                                    <label title="Evita di includere l’anno nei termini di ricerca per le serie TV">
+                                        <input type="checkbox" name="ignore_year_for_tv" {% if search_rules.ignore_year_for_tv %}checked{% endif %}>
+                                        Ignora anno per serie TV
+                                    </label>
+                                    <label title="Salta automaticamente richieste già soddisfatte su Jellyseerr">
+                                        <input type="checkbox" name="skip_available_content" {% if search_rules.skip_available_content %}checked{% endif %}>
+                                        Escludi episodi già disponibili dalla ricerca
+                                    </label>
+                                    <label title="Salta le richieste con data di uscita futura">
+                                        <input type="checkbox" name="skip_unreleased_content" {% if search_rules.skip_unreleased_content %}checked{% endif %}>
+                                        Escludi stagioni/episodi non pubblicati
+                                    </label>
+                                </div>
+                            </div>
+                            {% if variant_estimate %}
+                                <div class="variant-note">
+                                    Questa configurazione genera circa {{ variant_estimate.base }} combinazioni per titolo/stagione
+                                    {% if variant_estimate.episodes %} (+~{{ variant_estimate.episodes }} query dedicate agli episodi){% endif %}.
+                                </div>
+                            {% endif %}
+                            <button class="btn" type="submit">Salva Regole</button>
+                        </form>
+                    {% endif %}
+                </div>
+                <div class="card">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                        <h2 style="margin: 0;">Richieste Jellyseerr monitorate</h2>
+                        {% if has_config %}
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                <button type="button"
+                                        class="btn small ghost request-action"
+                                        data-action="refresh"
+                                        id="refresh-requests-btn"
+                                        title="Scarica nuovamente le richieste da Jellyseerr e aggiorna lo stato">
+                                    Aggiorna lista
+                                </button>
+                                <span id="requests-refresh-status" class="tagline"></span>
+                            </div>
+                        {% endif %}
+                    </div>
+                    {% if not has_config %}
+                        <p class="tagline">Configura Jellyseerr per visualizzare l'elenco delle richieste.</p>
+                    {% else %}
+                        <p class="tagline">Ogni scheda consente di definire parole chiave aggiuntive, filtri e opzioni di ricerca valide solo per quella richiesta.</p>
+                        {% if requests_updated_at %}
+                            <p class="tagline">Ultimo aggiornamento richieste: {{ requests_updated_at }}</p>
+                        {% else %}
+                            <p class="tagline">Non sono disponibili dati in cache. Usa "Aggiorna lista" per recuperare le richieste da Jellyseerr.</p>
+                        {% endif %}
+                        {% if requests_overview %}
+                            <div class="tabs requests-tabs">
+                                <button class="tab-btn active" data-tab="requests-movies">Film ({{ movie_requests|length }})</button>
+                                <button class="tab-btn" data-tab="requests-tv">Serie TV ({{ tv_requests|length }})</button>
+                            </div>
+                            <form id="request-rules-form">
+                                {% set request_groups = [
+                                    {'label': 'Film', 'entries': movie_requests},
+                                    {'label': 'Serie TV', 'entries': tv_requests}
+                                ] %}
+                                {% set default_use_original = False %}
+                                {% set default_use_alt_original = False %}
+                                {% set default_use_alt_language = False %}
+                                {% set default_alt_language = 'it' %}
+                                {% set default_year_variance = 0 %}
+                                {% set alt_language_choices = [
+                                    {'value': 'it', 'label': 'IT'},
+                                    {'value': 'en', 'label': 'EN'},
+                                    {'value': 'es', 'label': 'ES'},
+                                    {'value': 'fr', 'label': 'FR'},
+                                    {'value': 'de', 'label': 'DE'},
+                                    {'value': 'pt', 'label': 'PT'},
+                                    {'value': 'ru', 'label': 'RU'},
+                                    {'value': 'ja', 'label': 'JA'},
+                                    {'value': 'ko', 'label': 'KO'},
+                                    {'value': 'zh', 'label': 'ZH'},
+                                    {'value': 'ar', 'label': 'AR'}
+                                ] %}
+                                {% for group in request_groups %}
+                                    {% set show_seasons = (group.label != 'Film') %}
+                                    {% set group_key = group.label|lower|replace(' ', '-') %}
+                                    {% set total_count = group.entries|length %}
+                                    {% set not_available = group.entries | selectattr('is_available', 'equalto', False) | list | length %}
+                                    {% set tab_id = 'requests-movies' if group_key == 'film' else 'requests-tv' %}
+                                    {% set is_first = loop.first %}
+                                    <div class="tab-panel {% if is_first %}active{% endif %}" data-tab-panel="{{ tab_id }}">
+                                    <div class="group-header">
+                                        <button type="button"
+                                                class="group-toggle"
+                                                data-target="{{ group_key }}"
+                                                aria-expanded="true"
+                                                title="Comprimi o espandi la lista di {{ group.label }}">
+                                            <span class="group-label">{{ group.label }}</span>
+                                            <span class="group-count">{{ not_available }}/{{ total_count }}</span>
+                                            <span class="toggle-icon">▾</span>
+                                        </button>
+                                    </div>
+                                    <div class="list-actions" data-group="{{ group_key }}">
+                                        <button type="button" class="btn small ghost request-action" data-action="select-all" title="Seleziona tutte le richieste visibili in questo gruppo">Seleziona tutti</button>
+                                        <button type="button" class="btn small ghost request-action" data-action="deselect-all" title="Deseleziona tutte le richieste del gruppo">Deseleziona tutti</button>
+                                        <button type="button" class="btn small ghost request-action" data-action="reset-fields" title="Ripristina termini e opzioni allo stato salvato">Resetta campi</button>
+                                        <label class="availability-toggle" title="Mostra o nascondi le richieste già disponibili">
+                                            <input type="checkbox" class="toggle-available" data-group="{{ group_key }}" checked>
+                                            Nascondi disponibili
+                                        </label>
+                                    </div>
+                            {% if group.entries %}
+                                <div class="request-list" data-group-list="{{ group_key }}">
+                                    {% for req in group.entries %}
+                                        {% set req_rules = req.rules or {} %}
+                                        {% set raw_rule_map = config.REQUEST_RULES if config and config.REQUEST_RULES else {} %}
+                                        {% set raw_rule = raw_rule_map.get(req.id|string) %}
+                                        {% set raw_use_original = raw_rule.get('use_original_title') if raw_rule else none %}
+                                        {% set raw_use_alt_original = raw_rule.get('use_alt_titles_original') if raw_rule else none %}
+                                        {% set raw_use_alt_language = raw_rule.get('use_alt_titles_language') if raw_rule else none %}
+                                        {% set stored_alt_lang = raw_rule.get('alt_titles_language') if raw_rule else none %}
+                                        {% set stored_year_variance = raw_rule.get('year_variance') if raw_rule else none %}
+                                        {% set use_original = raw_use_original if raw_use_original is not none else default_use_original %}
+                                        {% set use_alt_original = raw_use_alt_original if raw_use_alt_original is not none else default_use_alt_original %}
+                                        {% set use_alt_language = raw_use_alt_language if raw_use_alt_language is not none else default_use_alt_language %}
+                                        {% set raw_alt_lang = (stored_alt_lang or default_alt_language)|lower %}
+                                        {% set language_codes = alt_language_choices | map(attribute='value') | list %}
+                                        {% set alt_select_value = raw_alt_lang if raw_alt_lang in language_codes else default_alt_language %}
+                                        {% set year_variance_value = stored_year_variance if stored_year_variance is not none else default_year_variance %}
+                                        {% set is_movie = (req.media_type or '').lower() in ('movie', 'movies', 'film', '') %}
+                                        <div class="request-row"
+                                             data-request-row
+                                             data-group="{{ group.label|lower|replace(' ', '-') }}"
+                                             data-request-id="{{ req.id }}"
+                                             data-available="{{ '1' if req.is_available else '0' }}"
+                                             data-default-use-original="{{ 1 if default_use_original else 0 }}"
+                                             data-default-use-alt-original="{{ 1 if default_use_alt_original else 0 }}"
+                                             data-default-use-alt-language="{{ 1 if default_use_alt_language else 0 }}"
+                                             data-default-alt-language="{{ default_alt_language }}"
+                                             data-default-year-variance="{{ default_year_variance }}">
+                                                        <div class="request-checkbox">
+                                                            <label>
+                                                    <input type="checkbox"
+                                                           name="request-enabled"
+                                                           title="Abilita o disabilita questa richiesta per le ricerche"
+                                                           {% if req.rules.enabled %}checked{% endif %}>
+                                                </label>
+                                            </div>
+                                            <div class="request-card">
+                                                <div class="request-main">
+                                                    <div class="request-info-block">
+                                                        <div class="request-title-block">
+                                                            <div>
+                                                                <strong>{{ req.title }}</strong>
+                                                                {% if req.year %}
+                                                                    <span class="title-year">({{ req.year }})</span>
+                                                                {% endif %}
+                                                            </div>
+                                                            <div>
+                                                                {% if req.is_available %}
+                                                                    <span class="badge info">Già disponibile</span>
+                                                                {% endif %}
+                                                                {% if req.is_unreleased %}
+                                                                    <span class="badge warn">Non ancora pubblicato</span>
+                                                                {% endif %}
+                                                                {% if req.will_skip %}
+                                                                    <span class="badge skip">Ignorata con le regole attuali</span>
+                                                                {% endif %}
+                                                                {% if req.release_date %}
+                                                                    <span class="badge info">Data uscita: {{ req.release_date }}</span>
+                                                                {% endif %}
+                                                            </div>
+                                                        </div>
+                                                        <div class="request-meta">
+                                                            <div class="meta-item">
+                                                                <span class="meta-label">ID</span>
+                                                                <span class="meta-value">{{ req.id }}</span>
+                                                            </div>
+                                                            <div class="meta-item">
+                                                                <span class="meta-label">Tipo</span>
+                                                                <span class="meta-value">{{ req.media_type or 'N/D' }}</span>
+                                                            </div>
+                                                            <div class="meta-item">
+                                                                <span class="meta-label">Richiesta</span>
+                                                                <span class="meta-value">{{ req.age or 'N/D' }}</span>
+                                                            </div>
+                                                        </div>
+                                                        {% if show_seasons %}
+                                                            <div class="request-meta" style="margin-top:0;">
+                                                                <div class="meta-item" style="grid-column: 1 / -1;">
+                                                                    <span class="meta-label">Stagioni</span>
+                                                                    <span class="meta-value">{{ req.seasons | join(', ') if req.seasons else '—' }}</span>
+                                                                </div>
+                                                            </div>
+                                                        {% endif %}
+                                                            {% if req.season_status %}
+                                                            <div class="season-status-line">
+                                                                {% for season in req.season_status %}
+                                                                    {% set label = 'S%02d'|format(season.season) %}
+                                                                    {% set badge_class = season.status_class %}
+                                                                    <button type="button"
+                                                                            class="badge {{ badge_class }} season-tab"
+                                                                            data-panel="season-{{ req.id }}-{{ season.season }}"
+                                                                            title="Mostra gli episodi rilevati per questa stagione">
+                                                                        {{ label }} {{ season.status_display }}
+                                                                    </button>
+                                                                {% endfor %}
+                                                            </div>
+                                                            <div class="season-panels">
+                                                                {% for season in req.season_status %}
+                                                                    {% set panel_id = 'season-' ~ req.id ~ '-' ~ season.season %}
+                                                                    <div class="season-detail-panel" id="{{ panel_id }}">
+                                                                        {% if season.episodes %}
+                                                                            <div class="episode-chips">
+                                                                                {% for ep in season.episodes %}
+                                                                                    <span class="episode-chip status-{{ ep.status }}">
+                                                                                        E{{ '%02d'|format(ep.episode) }}
+                                                                                        {% if ep.status == 'unreleased' and ep.release %}
+                                                                                            <small>({{ ep.release }})</small>
+                                                                                        {% endif %}
+                                                                                    </span>
+                                                                                {% endfor %}
+                                                                            </div>
+                                                                        {% elif season.pending %}
+                                                                            <div class="episode-chips">
+                                                                                {% for missing in season.pending %}
+                                                                                    <span class="episode-chip status-pending">
+                                                                                        E{{ '%02d'|format(missing) }}
+                                                                                    </span>
+                                                                                {% endfor %}
+                                                                            </div>
+                                                                        {% else %}
+                                                                            <div class="episode-chips">
+                                                                                <span class="episode-chip">Nessun episodio rilevato</span>
+                                                                            </div>
+                                                                        {% endif %}
+                                                                    </div>
+                                                                {% endfor %}
+                                                            </div>
+                                                        {% endif %}
+                                                    </div>
+                                                    <div class="request-right-block">
+                                                        <div class="request-fields">
+                                                            <label title="Termini aggiuntivi da aggiungere solo per questa richiesta">
+                                                                Termini query
+                                                                <input type="text" name="request-query" value="{{ req.rules.query_terms }}">
+                                                            </label>
+                                                            <label title="Parole che devono essere presenti nel titolo del risultato per essere accettato">
+                                                                Termini filtrati
+                                                                <input type="text" name="request-filter" value="{{ req.rules.filter_terms }}">
+                                                            </label>
+                                                            <label title="Se compare uno di questi termini, il risultato viene scartato">
+                                                                Termini esclusi
+                                                                <input type="text" name="request-exclude" value="{{ req.rules.exclude_terms }}">
+                                                            </label>
+                                                        </div>
+                                                        <div class="request-options-panel">
+                                                            <div class="request-option-inline option-small-text">
+                                                                <span class="option-label">Cerca anche:</span>
+                                                                {% if is_movie %}
+                                                                    <label title="Amplia la ricerca includendo anni vicini">
+                                                                        Anno +/-
+                                                                        <input type="number"
+                                                                               min="0"
+                                                                               max="10"
+                                                                               step="1"
+                                                                               id="year-variance-{{ req.id }}"
+                                                                               name="year-variance"
+                                                                               class="req-year-variance"
+                                                                               value="{{ year_variance_value }}">
+                                                                    </label>
+                                                                {% endif %}
+                                                                <label title="Include anche il titolo originale (lingua madre)">
+                                                                    <input type="checkbox" name="use-original-title" {% if use_original %}checked{% endif %}>
+                                                                    Titolo VO
+                                                                </label>
+                                                                <label title="Usa eventuali titoli alternativi disponibili nella lingua originale">
+                                                                    <input type="checkbox" name="use-alt-titles-original" {% if use_alt_original %}checked{% endif %}>
+                                                                    Titoli alt. VO
+                                                                </label>
+                                                                <label title="Usa titoli alternativi in una lingua a scelta">
+                                                                    <input type="checkbox" name="use-alt-titles-language" {% if use_alt_language %}checked{% endif %}>
+                                                                    Titoli alt.
+                                                                </label>
+                                                                <select name="alt-titles-language"
+                                                                        class="req-alt-select"
+                                                                        {% if not use_alt_language %}disabled{% endif %}
+                                                                        title="Seleziona la lingua dei titoli alternativi">
+                                                                    {% for opt in alt_language_choices %}
+                                                                        <option value="{{ opt.value }}" {% if alt_select_value == opt.value %}selected{% endif %}>{{ opt.label }}</option>
+                                                                    {% endfor %}
+                                                                </select>
+                                                            </div>
+                                                            {% if not is_movie %}
+                                                                <input type="hidden" name="year-variance" value="{{ year_variance_value }}">
+                                                            {% endif %}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    {% endfor %}
+                                </div>
+                            {% else %}
+                                <p class="tagline">Nessuna richiesta disponibile per questa categoria.</p>
+                            {% endif %}
+                                    </div>
+                                {% endfor %}
+                                <div id="request-rules-status" class="tagline" style="margin-top:0.5rem;"></div>
+                            </form>
+                        {% else %}
+                            <p class="tagline">Nessuna richiesta trovata su Jellyseerr.</p>
+                        {% endif %}
+                    {% endif %}
+                </div>
+            </div>
+            <div class="tab-panel" data-tab-panel="config">
+                <div class="card">
+                    <h2>Automazioni</h2>
+                    {% if not has_config %}
+                        <p class="tagline">Configura Jellyseerr, gli indexer e il database prima di abilitare le automazioni.</p>
+                    {% else %}
+                        {% set scan_auto = auto_tasks.scan if auto_tasks else {} %}
+                        {% set refresh_auto = auto_tasks.refresh if auto_tasks else {} %}
+                        <form id="auto-task-form" action="/update-scheduler" method="post">
+                            <div class="auto-grid">
+                                <section class="auto-section" data-task="scan">
+                                    <div class="auto-header">
+                                        <h3>Ricerca programmata</h3>
+                                        <label class="auto-inline" title="Attiva o disattiva completamente questa automazione">
+                                            <input type="checkbox" name="scan_enabled" class="auto-enable" {% if scan_auto.enabled %}checked{% endif %}>
+                                            Attiva
+                                        </label>
+                                    </div>
+                                    <div class="auto-mode">
+                                        <label class="auto-inline" title="Ripeti la ricerca a intervalli costanti">
+                                            <input type="radio" name="scan_mode" value="interval" {% if scan_auto.mode != 'fixed' %}checked{% endif %}>
+                                            Avvia ogni
+                                        </label>
+                                        <input type="number" name="scan_interval" min="5" value="{{ scan_auto.interval_minutes or 60 }}">
+                                        <span>minuti</span>
+                                    </div>
+                                    <div class="auto-mode">
+                                        <label class="auto-inline" title="Esegui la ricerca in orari precisi (usa 24h)">
+                                            <input type="radio" name="scan_mode" value="fixed" {% if scan_auto.mode == 'fixed' %}checked{% endif %}>
+                                            Orari fissi
+                                        </label>
+                                        <input type="text" name="scan_times" placeholder="08:00, 22:30" value="{{ scan_auto.times | join(', ') }}">
+                                    </div>
+                                    <p class="auto-note">Indica gli orari nel formato HH:MM separati da virgole (es. 08:00, 22:30).</p>
+                                </section>
+                                <section class="auto-section" data-task="refresh">
+                                    <div class="auto-header">
+                                        <h3>Aggiornamento richieste</h3>
+                                        <label class="auto-inline" title="Attiva o disattiva questa automazione">
+                                            <input type="checkbox" name="refresh_enabled" class="auto-enable" {% if refresh_auto.enabled %}checked{% endif %}>
+                                            Attiva
+                                        </label>
+                                    </div>
+                                    <div class="auto-mode">
+                                        <label class="auto-inline" title="Ripeti l'aggiornamento dei dati a intervalli costanti">
+                                            <input type="radio" name="refresh_mode" value="interval" {% if refresh_auto.mode != 'fixed' %}checked{% endif %}>
+                                            Avvia ogni
+                                        </label>
+                                        <input type="number" name="refresh_interval" min="5" value="{{ refresh_auto.interval_minutes or 120 }}">
+                                        <span>minuti</span>
+                                    </div>
+                                    <div class="auto-mode">
+                                        <label class="auto-inline" title="Esegui l'aggiornamento in orari precisi (usa 24h)">
+                                            <input type="radio" name="refresh_mode" value="fixed" {% if refresh_auto.mode == 'fixed' %}checked{% endif %}>
+                                            Orari fissi
+                                        </label>
+                                        <input type="text" name="refresh_times" placeholder="07:00, 19:00" value="{{ refresh_auto.times | join(', ') }}">
+                                    </div>
+                                    <p class="auto-note">L'aggiornamento ricarica elenco richieste e stati Trakt.</p>
+                                </section>
+                            </div>
+                            <p class="tagline" style="margin-top:0.75rem;">Le automazioni lavorano solo sulle richieste abilitate e non avviano una nuova ricerca se ne è già attiva un'altra.</p>
+                            <button class="btn" type="submit">Salva automazioni</button>
+                        </form>
+                    {% endif %}
+                </div>
+                <div class="card">
+                    <h2>Configurazione servizi</h2>
+                    <form action="/update-config" method="post">
+                {% set db = config.DATABASE if config and config.DATABASE else None %}
+                {% set trakt = config.TRAKT if config and config.TRAKT else None %}
+                <div class="config-grid">
+                    <section class="config-box">
+                        <h4>Jellyseerr</h4>
+                        <div class="form-grid">
+                            <div>
+                                <label for="jellyseerr_url">Indirizzo Jellyseerr</label>
+                                <input type="text" id="jellyseerr_url" name="jellyseerr_url" value="{{ config.JELLYSEERR_URL if config else '' }}" required>
+                            </div>
+                            <div>
+                                <label for="jellyseerr_api_key">API Key Jellyseerr</label>
+                                <input type="text" id="jellyseerr_api_key" name="jellyseerr_api_key" value="{{ config.JELLYSEERR_API_KEY if config else '' }}" required>
+                            </div>
+                        </div>
+                    </section>
+                    <section class="config-box">
+                        <h4>Prowlarr</h4>
+                        <div class="form-grid">
+                            <div>
+                                <label for="prowlarr_url">Indirizzo Prowlarr</label>
+                                <input type="text" id="prowlarr_url" name="prowlarr_url" value="{{ config.PROWLARR_URL if config else '' }}" required>
+                            </div>
+                            <div>
+                                <label for="prowlarr_api_key">API Key Prowlarr</label>
+                                <input type="text" id="prowlarr_api_key" name="prowlarr_api_key" value="{{ config.PROWLARR_API_KEY if config else '' }}" required>
+                            </div>
+                        </div>
+                    </section>
+                    <section class="config-box">
+                        <h4>Jackett</h4>
+                        <div class="form-grid">
+                            <div>
+                                <label for="jackett_url">Indirizzo Jackett</label>
+                                <input type="text" id="jackett_url" name="jackett_url" value="{{ config.JACKETT_URL if config else '' }}" placeholder="http://host:9117">
+                            </div>
+                            <div>
+                                <label for="jackett_api_key">Jackett API Key</label>
+                                <input type="text" id="jackett_api_key" name="jackett_api_key" value="{{ config.JACKETT_API_KEY if config else '' }}">
+                            </div>
+                        </div>
+                    </section>
+                    <section class="config-box">
+                        <h4>qBittorrent</h4>
+                        <div class="form-grid">
+                            <div>
+                                <label for="qbittorrent_url">Indirizzo qBittorrent</label>
+                                <input type="text" id="qbittorrent_url" name="qbittorrent_url" value="{{ config.QBITTORRENT_URL if config else '' }}" placeholder="http://host:8080">
+                                <div class="tagline">Lascia vuoto per disabilitare l'invio automatico.</div>
+                            </div>
+                            <div>
+                                <label for="qbittorrent_username">qBittorrent Username</label>
+                                <input type="text" id="qbittorrent_username" name="qbittorrent_username" value="{{ config.QBITTORRENT_USERNAME if config else '' }}">
+                            </div>
+                            <div>
+                                <label for="qbittorrent_password">qBittorrent Password</label>
+                                <input type="password" id="qbittorrent_password" name="qbittorrent_password" value="{{ config.QBITTORRENT_PASSWORD if config else '' }}">
+                            </div>
+                        </div>
+                    </section>
+                    <section class="config-box trakt-config">
+                        <div class="trakt-header">
+                            <h4>Trakt</h4>
+                            <span class="status-pill status-skip" id="trakt-auth-status"
+                                  data-expires-at="{{ trakt.EXPIRES_AT if trakt else '' }}"
+                                  data-has-token="{{ 'true' if trakt and trakt.ACCESS_TOKEN else 'false' }}">
+                                In attesa
+                            </span>
+                        </div>
+                        <div class="tagline trakt-subtitle">Usa la libreria sincronizzata con Emby per capire rapidamente cosa è già disponibile.</div>
+                        <div class="tagline trakt-hint" id="trakt-auth-hint"></div>
+                        <div class="form-grid">
+                            <div style="grid-column:1 / span 2;">
+                                <label>
+                                    <input type="checkbox" name="trakt_enabled" {% if trakt and trakt.ENABLED %}checked{% endif %}>
+                                    Abilita integrazione Trakt
+                                </label>
+                            </div>
+                            <div>
+                                <label for="trakt_client_id">Client ID</label>
+                                <input type="text" id="trakt_client_id" name="trakt_client_id" value="{{ trakt.CLIENT_ID if trakt else '' }}" placeholder="xxxxxxxxxxxxxxxxxxxx">
+                            </div>
+                            <div style="grid-column:1 / span 2;">
+                                <label for="trakt_access_token">Access Token</label>
+                                <input type="text"
+                                       id="trakt_access_token"
+                                       class="read-only"
+                                       value="{{ trakt.ACCESS_TOKEN if trakt else '' }}"
+                                       placeholder="Token personale"
+                                       readonly
+                                       aria-readonly="true"
+                                       title="Questo campo è solo in lettura. Usa 'Collega Trakt' per aggiornarlo.">
+                            </div>
+                            <div style="grid-column:1 / span 2;" class="trakt-actions">
+                                <div class="inline-actions">
+                                    <button type="button" class="btn light" id="trakt-connect-btn">Collega Trakt</button>
+                                    <button type="submit"
+                                            class="btn ghost"
+                                            id="trakt-disconnect-btn"
+                                            formaction="/trakt/clear"
+                                            formmethod="post">
+                                        Disconnetti
+                                    </button>
+                                    <span class="tagline" id="trakt-device-status"></span>
+                                </div>
+                                <div class="trakt-device" id="trakt-device-instructions" style="display:none;">
+                                    <a class="trakt-link" id="trakt-device-link" href="#" target="_blank" rel="noopener">Apri https://trakt.tv/activate</a>
+                                    <span class="trakt-code" id="trakt-device-code"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                    <section class="config-box">
+                        <h4>Database Postgres</h4>
+                        <div class="tagline" style="margin-bottom:0.75rem;">Connessione obbligatoria: inserisci le credenziali del database usato per cache e risultati.</div>
+                        <div class="form-grid">
+                            <div>
+                                <label for="db_host">Host</label>
+                                <input type="text" id="db_host" name="db_host" value="{{ db.HOST if db else 'localhost' }}">
+                            </div>
+                            <div>
+                                <label for="db_port">Porta</label>
+                                <input type="number" id="db_port" name="db_port" value="{{ db.PORT if db else 5432 }}">
+                            </div>
+                            <div>
+                                <label for="db_name">Database</label>
+                                <input type="text" id="db_name" name="db_name" value="{{ db.NAME if db else 'jellychecker' }}">
+                            </div>
+                            <div>
+                                <label for="db_user">Username</label>
+                                <input type="text" id="db_user" name="db_user" value="{{ db.USER if db else '' }}">
+                            </div>
+                            <div>
+                                <label for="db_password">Password</label>
+                                <input type="password" id="db_password" name="db_password" value="{{ db.PASSWORD if db else '' }}">
+                            </div>
+                            <div>
+                                <label for="db_driver">Driver SQLAlchemy</label>
+                                <input type="text" id="db_driver" name="db_driver" value="{{ db.DRIVER if db else 'postgresql+psycopg2' }}">
+                            </div>
+                            <div>
+                                <label for="db_url">Connection URL (opzionale)</label>
+                                <input type="text" id="db_url" name="db_url" value="{{ db.URL if db else '' }}" placeholder="postgresql+psycopg2://user:pass@host:5432/dbname">
+                                <div class="tagline">Se impostato, sovrascrive host/porta/utente/password.</div>
+                            </div>
+                            <div>
+                                <label for="db_params">Parametri extra</label>
+                                <input type="text" id="db_params" name="db_params" value="{{ db.PARAMS if db else '' }}" placeholder="sslmode=require">
+                            </div>
+                        </div>
+                        <div class="tagline">Configura il container Postgres in Docker e inserisci qui le credenziali del servizio.</div>
+                    </section>
+                </div>
+                <button class="btn" type="submit">Salva Configurazione</button>
+            </form>
+            <div style="margin-top: 1rem;">
+                <button class="btn secondary" type="button" id="test-connections-btn" {% if not has_config %}disabled{% endif %}>Verifica connessioni</button>
+                <div class="connection-status" id="connection-status">
+                    <div class="connection-card">
+                        <div class="connection-row">
+                            <strong>Jellyseerr</strong>
+                        </div>
+                        <span class="status-pill status-skip" data-service="jellyseerr-status">In attesa</span>
+                        <div class="tagline" data-service="jellyseerr-msg"></div>
+                    </div>
+                    <div class="connection-card">
+                        <div class="connection-row">
+                            <strong>Prowlarr</strong>
+                        </div>
+                        <span class="status-pill status-skip" data-service="prowlarr-status">In attesa</span>
+                        <div class="tagline" data-service="prowlarr-msg"></div>
+                    </div>
+                    <div class="connection-card">
+                        <div class="connection-row">
+                            <strong>Jackett</strong>
+                        </div>
+                        <span class="status-pill status-skip" data-service="jackett-status">In attesa</span>
+                        <div class="tagline" data-service="jackett-msg"></div>
+                    </div>
+                    <div class="connection-card">
+                        <div class="connection-row">
+                            <strong>qBittorrent</strong>
+                        </div>
+                        <span class="status-pill status-skip" data-service="qbittorrent-status">In attesa</span>
+                        <div class="tagline" data-service="qbittorrent-msg"></div>
+                    </div>
+                    <div class="connection-card">
+                        <div class="connection-row">
+                            <strong>Trakt</strong>
+                        </div>
+                        <span class="status-pill status-skip" data-service="trakt-status">In attesa</span>
+                        <div class="tagline" data-service="trakt-msg"></div>
+                    </div>
+                    <div class="connection-card">
+                        <div class="connection-row">
+                            <strong>Database</strong>
+                        </div>
+                        <span class="status-pill status-skip" data-service="database-status">In attesa</span>
+                        <div class="tagline" data-service="database-msg"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="result-context-menu" class="context-menu">
+        <button type="button" data-field="query">Aggiungi parola a Termini query</button>
+        <button type="button" data-field="filter">Aggiungi parola a Termini filtrati</button>
+        <button type="button" data-field="exclude">Aggiungi parola a Termini esclusi</button>
+    </div>
+    <div id="toast-container"></div>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>

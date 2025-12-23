@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+CLAUDE.md
+CODEX.md
+WEBHOOK_SETUP.md
+
+# Data files (will be volumes)
+*.db
+*.json
+logs/
+data/
+
+# Tests
+tests/
+*.test.py
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# Gemini config
+.gemini/
+
+# OS
+.DS_Store
+Thumbs.db

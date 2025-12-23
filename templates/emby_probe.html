@@ -1,0 +1,1565 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <title>Emby Probe - Gestionale STRM</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='emby.css') }}">
+    <style>
+        /* Server Selector */
+        .server-selector {
+            background: white;
+            border-radius: 10px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            border: 1px solid #dfe3eb;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.08);
+        }
+        .server-selector h3 {
+            margin-top: 0;
+            margin-bottom: 1rem;
+        }
+        .server-tabs {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+        .server-tab {
+            padding: 0.75rem 1.5rem;
+            background: #f1f5f9;
+            border: 2px solid #e2e8f0;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            color: #64748b;
+            transition: all 0.2s;
+        }
+        .server-tab:hover {
+            background: #e2e8f0;
+        }
+        .server-tab.active {
+            background: #2874a6;
+            color: white;
+            border-color: #2874a6;
+        }
+
+        /* Worker Grid */
+        .worker-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        .worker-card {
+            background: white;
+            border-radius: 12px;
+            padding: 1.5rem;
+            border: 1px solid #dfe3eb;
+            box-shadow: 0 4px 12px rgba(15, 23, 42, 0.06);
+        }
+        .worker-card h3 {
+            margin-top: 0;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        /* Library Selection */
+        .library-selection {
+            background: #fff;
+            border-radius: 10px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            border: 1px solid #e2e8f0;
+        }
+        .library-selection h4 {
+            margin: 0 0 0.75rem 0;
+            font-size: 0.9rem;
+            color: #1e293b;
+        }
+        .library-columns {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.75rem;
+        }
+        .library-column {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 0.75rem;
+            min-height: 140px;
+        }
+        .library-column-title {
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #475569;
+            margin-bottom: 0;
+        }
+        .library-column-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        .library-column-meta {
+            display: flex;
+            flex-direction: column;
+            gap: 0.1rem;
+        }
+        .library-column-count {
+            font-size: 0.75rem;
+            color: #64748b;
+        }
+        .column-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            font-size: 0.8rem;
+            color: #475569;
+            cursor: pointer;
+        }
+        .column-toggle input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: #1f618d;
+        }
+        .library-checkboxes {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            max-height: 180px;
+            overflow-y: auto;
+        }
+        .library-column .empty-state {
+            padding: 0.75rem 0;
+            font-size: 0.85rem;
+        }
+        @media (max-width: 900px) {
+            .library-columns {
+                grid-template-columns: 1fr;
+            }
+        }
+        .library-checkbox {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.35rem 0;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        .library-checkbox:last-child {
+            border-bottom: none;
+        }
+        .library-checkbox input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+            accent-color: #1f618d;
+        }
+        .library-checkbox label {
+            cursor: pointer;
+            flex: 1;
+            font-size: 0.9rem;
+            color: #1e293b;
+            word-break: break-word;
+        }
+        .select-all-libraries {
+            margin-bottom: 0.5rem;
+            font-size: 0.85rem;
+            color: #2874a6;
+            cursor: pointer;
+            text-decoration: underline;
+        }
+        .select-all-libraries:hover {
+            color: #1f618d;
+        }
+
+        /* Status Badge */
+        .status-badge {
+            font-size: 0.75rem;
+            padding: 0.25rem 0.75rem;
+            border-radius: 12px;
+            font-weight: 600;
+        }
+        .status-badge.running {
+            background: #10b981;
+            color: white;
+        }
+        .status-badge.idle {
+            background: #64748b;
+            color: white;
+        }
+
+        /* Worker Stats */
+        .worker-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+        .stat-box {
+            background: #f8fafc;
+            padding: 0.75rem;
+            border-radius: 6px;
+            text-align: center;
+        }
+        .stat-label {
+            font-size: 0.75rem;
+            color: #64748b;
+            margin-bottom: 0.25rem;
+        }
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #1e293b;
+        }
+
+        /* Worker Log */
+        .worker-log {
+            background: #1e293b;
+            color: #e2e8f0;
+            padding: 0.75rem;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85rem;
+            margin-bottom: 1rem;
+            min-height: 50px;
+        }
+
+        /* Worker Controls */
+        .worker-controls {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        /* Progress Bar */
+        .progress-container {
+            margin-bottom: 1rem;
+        }
+        .progress-track {
+            height: 24px;
+            background: #e2e8f0;
+            border-radius: 12px;
+            overflow: hidden;
+            margin-bottom: 0.5rem;
+        }
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #1f618d, #2874a6);
+            transition: width 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            padding-right: 0.5rem;
+            color: white;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+            border-bottom: 2px solid #e2e8f0;
+        }
+        .tab-btn {
+            padding: 0.75rem 1.5rem;
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+            color: #64748b;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -2px;
+        }
+        .tab-btn.active {
+            color: #1e293b;
+            border-bottom-color: #2874a6;
+        }
+        .tab-panel {
+            display: none;
+        }
+        .tab-panel.active {
+            display: block;
+        }
+
+        /* Queue and History Sections */
+        .queue-section, .history-section {
+            background: white;
+            border-radius: 10px;
+            padding: 1.5rem;
+            border: 1px solid #dfe3eb;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.06);
+        }
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.5rem;
+        }
+        .section-actions {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        /* Hierarchical Queue Display */
+        .library-group {
+            margin-bottom: 2rem;
+        }
+        .library-header {
+            background: #1e293b;
+            color: white;
+            padding: 0.75rem 1rem;
+            border-radius: 6px;
+            font-weight: 700;
+            margin-bottom: 0.75rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            cursor: pointer;
+        }
+        .library-header:hover {
+            background: #2874a6;
+        }
+        .library-content {
+            margin-left: 1rem;
+            display: none;
+        }
+        .library-content.expanded {
+            display: block;
+        }
+
+        .series-group {
+            margin-bottom: 1rem;
+        }
+        .series-header {
+            background: #f1f5f9;
+            padding: 0.6rem 1rem;
+            border-radius: 4px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+            border-left: 4px solid #2874a6;
+        }
+        .series-header:hover {
+            background: #e2e8f0;
+        }
+        .series-title {
+            font-weight: 600;
+            color: #1e293b;
+        }
+        .series-count {
+            font-size: 0.85rem;
+            color: #64748b;
+        }
+
+        .series-episodes {
+            margin-left: 1.5rem;
+            display: none;
+        }
+        .series-episodes.expanded {
+            display: block;
+        }
+
+        .episode-item, .movie-item {
+            padding: 0.5rem 1rem;
+            border-left: 2px solid #cbd5e1;
+            margin-bottom: 0.25rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: white;
+        }
+        .episode-item:hover, .movie-item:hover {
+            background: #f8fafc;
+        }
+        .item-info {
+            flex: 1;
+        }
+        .item-title {
+            font-weight: 500;
+            color: #1e293b;
+        }
+        .item-meta {
+            font-size: 0.85rem;
+            color: #64748b;
+        }
+        .item-actions {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        /* History Table */
+        .history-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .history-table th {
+            background: #f8fafc;
+            padding: 0.75rem;
+            text-align: left;
+            font-weight: 600;
+            border-bottom: 2px solid #e2e8f0;
+        }
+        .history-table td {
+            padding: 0.75rem;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        .history-table tr:hover {
+            background: #f8fafc;
+        }
+        .status-success {
+            color: #10b981;
+            font-weight: 600;
+        }
+        .status-error {
+            color: #dc2626;
+            font-weight: 600;
+        }
+        .status-incomplete {
+            color: #d97706;
+            font-weight: 600;
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 3rem;
+            color: #64748b;
+        }
+
+        /* Filter Controls */
+        .filter-controls {
+            margin-bottom: 1rem;
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+        }
+
+        /* Chevron */
+        .chevron {
+            transition: transform 0.2s;
+            display: inline-block;
+        }
+        .chevron.expanded {
+            transform: rotate(90deg);
+        }
+
+        /* Button Sizes */
+        .btn.small {
+            padding: 0.35rem 0.65rem;
+            font-size: 0.8rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="wrapper">
+        <h1>Emby Probe - Gestionale STRM</h1>
+        <nav class="primary-nav">
+            <a href="{{ url_for('dashboard') }}"
+               class="nav-link {% if active_page == 'jellyseerr' %}active{% endif %}">
+                Ricerca
+            </a>
+            <a href="{{ url_for('emby_dashboard') }}"
+               class="nav-link {% if active_page == 'emby' %}active{% endif %}">
+                Emby Toolkit
+            </a>
+            <a href="{{ url_for('emby_probe') }}"
+               class="nav-link {% if active_page == 'emby_probe' %}active{% endif %}">
+                STRM Probe
+                {% if total_blacklist_count > 0 %}
+                    <span class="notification-badge">{{ total_blacklist_count }}</span>
+                {% endif %}
+            </a>
+            <a href="{{ url_for('auth_logout') }}"
+               class="nav-link"
+               style="margin-left: auto;">
+                Logout
+            </a>
+        </nav>
+
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for msg in messages %}
+                    <div class="alert success" data-toast="success">{{ msg }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <!-- Server Selector -->
+        {% if emby_servers and emby_servers|length > 0 %}
+        <div class="server-selector">
+            <h3>Seleziona Server Emby</h3>
+            <div class="server-tabs" data-server-tabs>
+                {% for server in emby_servers %}
+                <button class="server-tab {% if loop.first %}active{% endif %}"
+                        data-server-id="{{ server.id }}"
+                        onclick="switchServer('{{ server.id }}')">
+                    {{ server.name or server.url }}
+                </button>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Worker Controls -->
+        <div class="card">
+            <h2>Pannello di Controllo</h2>
+            <div class="worker-grid">
+                <!-- Discovery Worker -->
+                <div class="worker-card">
+                    <h3>
+                        Discovery
+                        <span class="status-badge idle" data-discovery-badge>Inattivo</span>
+                    </h3>
+
+                    <!-- Library Selection for Discovery -->
+                    <div class="library-selection">
+                        <h4 style="display: flex; justify-content: space-between; align-items: center;">
+                            <span>Seleziona Librerie da Scansionare</span>
+                            <label style="font-weight: normal; font-size: 0.9rem; display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                                <input type="checkbox" id="discovery-select-all" checked onchange="toggleAllLibraries('discovery', this.checked)">
+                                <span>Seleziona Tutto</span>
+                            </label>
+                        </h4>
+                        <div class="library-columns" data-discovery-libraries>
+                            <div class="empty-state" style="padding: 1rem;">Caricamento librerie...</div>
+                        </div>
+                    </div>
+
+                    <div class="worker-stats">
+                        <div class="stat-box">
+                            <div class="stat-label">Trovati</div>
+                            <div class="stat-value" data-discovery-found>0</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">Scansionati</div>
+                            <div class="stat-value" data-discovery-scanned>0</div>
+                        </div>
+                    </div>
+                    <div class="worker-log" data-discovery-log>In attesa...</div>
+                    <div class="worker-controls">
+                        <button class="btn primary" data-discovery-start>Avvia Ricerca</button>
+                        <button class="btn ghost" data-discovery-stop disabled>Stop</button>
+                    </div>
+                </div>
+
+                <!-- Processing Worker -->
+                <div class="worker-card">
+                    <h3>
+                        Processing
+                        <span class="status-badge idle" data-processing-badge>Inattivo</span>
+                    </h3>
+
+                    <!-- Library Filter for Processing -->
+                    <div class="library-selection">
+                        <h4 style="display: flex; justify-content: space-between; align-items: center;">
+                            <span>Filtra Elaborazione per Libreria</span>
+                            <label style="font-weight: normal; font-size: 0.9rem; display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+                                <input type="checkbox" id="processing-select-all" checked onchange="toggleAllLibraries('processing', this.checked)">
+                                <span>Seleziona Tutto</span>
+                            </label>
+                        </h4>
+                        <div class="library-columns" data-processing-libraries>
+                            <div class="empty-state" style="padding: 1rem;">Caricamento librerie...</div>
+                        </div>
+                    </div>
+
+                    <div class="worker-stats">
+                        <div class="stat-box">
+                            <div class="stat-label">Processati</div>
+                            <div class="stat-value status-success" data-processing-processed>0</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">Incompleti</div>
+                            <div class="stat-value" style="color: #f59e0b;" data-processing-incomplete>0</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">Errori</div>
+                            <div class="stat-value status-error" data-processing-errors>0</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">In Coda</div>
+                            <div class="stat-value" data-processing-total>0</div>
+                        </div>
+                    </div>
+                    <div class="progress-container">
+                        <div class="progress-track">
+                            <div class="progress-bar" data-processing-progress style="width: 0%">0%</div>
+                        </div>
+                    </div>
+                    <div class="worker-log" data-processing-log>In attesa...</div>
+                    <div class="worker-controls">
+                        <button class="btn primary" data-processing-start-smart>Avvia (Smart)</button>
+                        <button class="btn secondary" data-processing-start-forced>Avvia (Forced)</button>
+                        <button class="btn ghost" data-processing-stop disabled>Stop</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab-btn active" data-tab="queue">Da Processare</button>
+            <button class="tab-btn" data-tab="history">Storico</button>
+            <button class="tab-btn" data-tab="blacklist">
+                Blacklist (3+ Errori)
+                <span class="tab-badge" data-blacklist-count style="background: #dc2626; color: white; padding: 0.15rem 0.5rem; border-radius: 10px; font-size: 0.75rem; margin-left: 0.5rem;">0</span>
+            </button>
+        </div>
+
+        <!-- Queue Tab -->
+        <div class="tab-panel active" data-panel="queue">
+            <div class="queue-section">
+                <div class="section-header">
+                    <h3>Coda di Lavorazione</h3>
+                    <div class="section-actions">
+                        <button class="btn secondary" data-queue-refresh>Aggiorna Lista</button>
+                        <button class="btn ghost" data-queue-clear>Svuota Coda</button>
+                    </div>
+                </div>
+                <div data-queue-container>
+                    <div class="empty-state">Caricamento...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- History Tab -->
+        <div class="tab-panel" data-panel="history">
+            <div class="history-section">
+                <div class="section-header">
+                    <h3>Storico Operazioni</h3>
+                    <div class="section-actions">
+                        <button class="btn primary" data-history-retry-all>Riprova Tutti (Errori/Incompleti)</button>
+                        <button class="btn secondary" data-history-refresh>Aggiorna Storico</button>
+                        <button class="btn ghost" data-history-clear>Svuota Storico</button>
+                    </div>
+                </div>
+                <div class="filter-controls">
+                    <label>
+                        <input type="checkbox" data-history-filter-errors>
+                        Mostra solo errori
+                    </label>
+                </div>
+                <div data-history-container>
+                    <div class="empty-state">Caricamento...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Blacklist Tab -->
+        <div class="tab-panel" data-panel="blacklist">
+            <div class="history-section">
+                <div class="section-header">
+                    <h3>File in Blacklist (3+ Tentativi Falliti)</h3>
+                    <div class="section-actions">
+                        <button class="btn secondary" data-blacklist-refresh>Aggiorna Lista</button>
+                        <button class="btn ghost" data-blacklist-clear>Svuota Blacklist</button>
+                    </div>
+                </div>
+                <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
+                    <strong>ℹ️ Nota:</strong> Questi file hanno fallito 3+ volte e non verranno più processati automaticamente.
+                    Puoi rimuoverli dalla blacklist per ritentare, o verranno automaticamente rimossi se il file viene riprodotto con successo su Emby.
+                </div>
+                <div data-blacklist-container>
+                    <div class="empty-state">Caricamento...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {% if emby_servers and emby_servers|length > 0 %}
+    <script>
+        const INITIAL_SERVER_ID = '{{ emby_servers[0].id }}';
+    </script>
+    {% endif %}
+
+    <script>
+        let eventSource = null;
+        let currentServerId = null;
+        let historyData = [];
+        let blacklistData = [];
+        let availableLibraries = {};
+        let libraryTotals = {};
+        const getCsrfToken = () => {
+            const el = document.querySelector('meta[name="csrf-token"]');
+            return el ? el.getAttribute('content') : '';
+        };
+        const csrfFetch = (url, options = {}) => {
+            const opts = options || {};
+            const headers = new Headers(opts.headers || {});
+            const token = getCsrfToken();
+            if (token && !headers.has('X-CSRFToken')) {
+                headers.set('X-CSRFToken', token);
+            }
+            return fetch(url, { ...opts, headers });
+        };
+        const ensureCsrfInForms = () => {
+            const token = getCsrfToken();
+            if (!token) {
+                return;
+            }
+            document.querySelectorAll('form[method="post"]').forEach(form => {
+                if (!form.querySelector('input[name="csrf_token"]')) {
+                    const input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = 'csrf_token';
+                    input.value = token;
+                    form.appendChild(input);
+                }
+            });
+        };
+
+        // Track previous state to detect changes
+        let previousState = {
+            discovery: { found: 0, running: false },
+            processing: { processed: 0, incomplete: 0, errors: 0, total: 0, running: false }
+        };
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            ensureCsrfInForms();
+            if (typeof INITIAL_SERVER_ID !== 'undefined') {
+                currentServerId = INITIAL_SERVER_ID;
+                loadLibraries();
+                initSSE();
+                loadQueue();
+                loadHistory();
+                loadBlacklist();
+                initControllers();
+                initTabs();
+            }
+        });
+
+        // Switch Server
+        function switchServer(serverId) {
+            currentServerId = serverId;
+
+            // Update active tab
+            document.querySelectorAll('.server-tab').forEach(tab => {
+                tab.classList.toggle('active', tab.dataset.serverId === serverId);
+            });
+
+            // Reload all data
+            loadLibraries();
+            loadQueue();
+            loadHistory();
+            loadBlacklist();
+
+            // Restart SSE if needed
+            if (eventSource) {
+                eventSource.close();
+                initSSE();
+            }
+        }
+
+        // Load Libraries
+        function loadLibraries() {
+            csrfFetch('/emby/libraries')
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success && data.servers) {
+                        const serverData = data.servers[currentServerId];
+                        if (serverData && serverData.ok && serverData.libraries) {
+                            availableLibraries[currentServerId] = serverData.libraries;
+                            renderLibraryCheckboxes();
+                        }
+                    }
+                })
+                .catch(err => console.error('Error loading libraries:', err));
+        }
+
+        function renderLibraryCheckboxes() {
+            const libraries = availableLibraries[currentServerId] || [];
+            const grouped = {
+                movies: [],
+                tvshows: [],
+                mixed: []
+            };
+
+            libraries.forEach(lib => {
+                const type = (lib.collection_type || '').toLowerCase();
+                if (type === 'movies') {
+                    grouped.movies.push(lib);
+                } else if (type === 'tvshows') {
+                    grouped.tvshows.push(lib);
+                } else {
+                    grouped.mixed.push(lib);
+                }
+            });
+
+            const discoveryContainer = document.querySelector('[data-discovery-libraries]');
+            discoveryContainer.innerHTML = buildLibraryColumns(grouped, 'discovery');
+
+            const processingContainer = document.querySelector('[data-processing-libraries]');
+            processingContainer.innerHTML = buildLibraryColumns(grouped, 'processing');
+
+            updateAllColumnCounts();
+        }
+
+        function buildLibraryColumns(grouped, prefix) {
+            const hasAny = grouped.movies.length || grouped.tvshows.length || grouped.mixed.length;
+            if (!hasAny) {
+                return '<div class="empty-state" style="padding: 1rem;">Nessuna libreria disponibile</div>';
+            }
+
+            const checkAttr = prefix === 'discovery' ? 'data-discovery-library-check' : 'data-processing-library-check';
+            const prefixId = prefix === 'discovery' ? 'discovery-lib' : 'processing-lib';
+
+            const renderColumn = (libs, title, category) => {
+                let items = '';
+                libs.forEach(lib => {
+                    items += `
+                        <div class="library-checkbox">
+                            <input type="checkbox"
+                                   id="${prefixId}-${lib.id}"
+                                   value="${lib.id}"
+                                   ${checkAttr}
+                                   checked
+                                   onchange="updateColumnCount(this.closest('.library-column'))">
+                            <label for="${prefixId}-${lib.id}">${lib.name}</label>
+                        </div>
+                    `;
+                });
+
+                if (!items) {
+                    items = '<div class="empty-state">Nessuna libreria</div>';
+                }
+
+                return `
+                    <div class="library-column" data-prefix="${prefix}" data-category="${category}">
+                        <div class="library-column-header">
+                            <div class="library-column-meta">
+                                <div class="library-column-title">${title}</div>
+                                <div class="library-column-count" data-column-count>0/0</div>
+                            </div>
+                            <label class="column-toggle">
+                                <input type="checkbox" onchange="toggleLibraryCategorySelect(this, '${prefix}', '${category}')">
+                                <span>Tutte</span>
+                            </label>
+                        </div>
+                        <div class="library-checkboxes">
+                            ${items}
+                        </div>
+                    </div>
+                `;
+            };
+
+            return `
+                ${renderColumn(grouped.movies, 'Film', 'movies')}
+                ${renderColumn(grouped.tvshows, 'Serie TV', 'tvshows')}
+                ${renderColumn(grouped.mixed, 'Miste', 'mixed')}
+            `;
+        }
+
+        function updateColumnCount(column) {
+            if (!column) {
+                return;
+            }
+            const checkboxes = column.querySelectorAll('.library-checkbox input[type="checkbox"]');
+            const total = checkboxes.length;
+            const selected = Array.from(checkboxes).filter(cb => cb.checked).length;
+            const count = column.querySelector('[data-column-count]');
+            if (count) {
+                count.textContent = `${selected}/${total}`;
+            }
+            const toggle = column.querySelector('.column-toggle input[type="checkbox"]');
+            if (toggle) {
+                toggle.indeterminate = selected > 0 && selected < total;
+                toggle.checked = total > 0 && selected === total;
+            }
+        }
+
+        function updateAllColumnCounts() {
+            document.querySelectorAll('.library-column').forEach(column => updateColumnCount(column));
+        }
+
+        function toggleLibraryCategorySelect(toggle, prefix, category) {
+            const column = document.querySelector(`.library-column[data-prefix="${prefix}"][data-category="${category}"]`);
+            if (!column) {
+                return;
+            }
+            const checkboxes = column.querySelectorAll('.library-checkbox input[type="checkbox"]');
+            checkboxes.forEach(cb => { cb.checked = toggle.checked; });
+            updateColumnCount(column);
+        }
+
+        function toggleAllLibraries(prefix, checked) {
+            const attr = prefix === 'discovery' ? '[data-discovery-library-check]' : '[data-processing-library-check]';
+            const checkboxes = document.querySelectorAll(attr);
+            checkboxes.forEach(cb => { cb.checked = checked; });
+            updateAllColumnCounts();
+        }
+
+        function getSelectedDiscoveryLibraries() {
+            const checkboxes = document.querySelectorAll('[data-discovery-library-check]:checked');
+            return Array.from(checkboxes).map(cb => cb.value);
+        }
+
+        function getSelectedProcessingLibraries() {
+            const checkboxes = document.querySelectorAll('[data-processing-library-check]:checked');
+            return Array.from(checkboxes).map(cb => cb.value);
+        }
+
+        // SSE for real-time status updates
+        function initSSE() {
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            eventSource = new EventSource('/emby/status-stream');
+
+            eventSource.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.success && data.servers) {
+                        const serverData = data.servers[currentServerId];
+                        if (serverData && serverData.probe_status) {
+                            updateDiscoveryStatus(serverData.probe_status.discovery || {});
+                            updateProcessingStatus(serverData.probe_status.processing || {});
+                        }
+                    }
+                } catch (e) {
+                    console.error('SSE parse error:', e);
+                }
+            };
+
+            eventSource.onerror = function() {
+                console.error('SSE connection error');
+                setTimeout(initSSE, 5000);
+            };
+        }
+
+        function updateDiscoveryStatus(status) {
+            const badge = document.querySelector('[data-discovery-badge]');
+            const found = document.querySelector('[data-discovery-found]');
+            const scanned = document.querySelector('[data-discovery-scanned]');
+            const log = document.querySelector('[data-discovery-log]');
+            const startBtn = document.querySelector('[data-discovery-start]');
+            const stopBtn = document.querySelector('[data-discovery-stop]');
+
+            if (status.running) {
+                badge.textContent = 'In Esecuzione';
+                badge.className = 'status-badge running';
+                startBtn.disabled = true;
+                stopBtn.disabled = false;
+            } else {
+                badge.textContent = 'Inattivo';
+                badge.className = 'status-badge idle';
+                startBtn.disabled = false;
+                stopBtn.disabled = true;
+            }
+
+            found.textContent = status.found || 0;
+            scanned.textContent = status.total_scanned || 0;
+            log.textContent = status.last_log || 'In attesa...';
+
+            // Detect changes and reload queue automatically
+            const currentFound = status.found || 0;
+            if (currentFound !== previousState.discovery.found) {
+                // New items found - reload queue
+                loadQueue();
+                previousState.discovery.found = currentFound;
+            }
+
+            // Update running state
+            previousState.discovery.running = status.running;
+        }
+
+        function updateProcessingStatus(status) {
+            const badge = document.querySelector('[data-processing-badge]');
+            const processed = document.querySelector('[data-processing-processed]');
+            const incomplete = document.querySelector('[data-processing-incomplete]');
+            const errors = document.querySelector('[data-processing-errors]');
+            const total = document.querySelector('[data-processing-total]');
+            const progress = document.querySelector('[data-processing-progress]');
+            const log = document.querySelector('[data-processing-log]');
+            const startSmartBtn = document.querySelector('[data-processing-start-smart]');
+            const startForcedBtn = document.querySelector('[data-processing-start-forced]');
+            const stopBtn = document.querySelector('[data-processing-stop]');
+
+            if (status.running) {
+                badge.textContent = 'In Esecuzione';
+                badge.className = 'status-badge running';
+                startSmartBtn.disabled = true;
+                startForcedBtn.disabled = true;
+                stopBtn.disabled = false;
+            } else {
+                badge.textContent = 'Inattivo';
+                badge.className = 'status-badge idle';
+                startSmartBtn.disabled = false;
+                startForcedBtn.disabled = false;
+                stopBtn.disabled = true;
+            }
+
+            processed.textContent = status.processed || 0;
+            incomplete.textContent = status.incomplete || 0;
+            errors.textContent = status.errors || 0;
+            total.textContent = status.total || 0;
+            log.textContent = status.last_log || 'In attesa...';
+
+            const totalItems = status.total || 0;
+            const currentIndex = (status.processed || 0) + (status.incomplete || 0) + (status.errors || 0);
+            const percent = totalItems > 0 ? Math.min(100, (currentIndex / totalItems) * 100) : 0;
+            progress.style.width = percent + '%';
+            progress.textContent = Math.round(percent) + '%';
+
+            // Detect changes and reload lists automatically
+            const currentProcessed = status.processed || 0;
+            const currentIncomplete = status.incomplete || 0;
+            const currentErrors = status.errors || 0;
+            const currentTotal = status.total || 0;
+
+            // Check if anything changed
+            const hasChanges =
+                currentProcessed !== previousState.processing.processed ||
+                currentIncomplete !== previousState.processing.incomplete ||
+                currentErrors !== previousState.processing.errors ||
+                currentTotal !== previousState.processing.total;
+
+            if (hasChanges) {
+                // Something changed - reload queue, history, and blacklist
+                loadQueue();
+                loadHistory();
+                loadBlacklist();
+
+                // Update previous state
+                previousState.processing.processed = currentProcessed;
+                previousState.processing.incomplete = currentIncomplete;
+                previousState.processing.errors = currentErrors;
+                previousState.processing.total = currentTotal;
+            }
+
+            // Update running state
+            previousState.processing.running = status.running;
+        }
+
+        // Controllers
+        function initControllers() {
+            // Discovery controls
+            document.querySelector('[data-discovery-start]').addEventListener('click', () => {
+                const selectedLibraries = getSelectedDiscoveryLibraries();
+                const payload = {server_id: currentServerId};
+                if (selectedLibraries.length > 0) {
+                    payload.libraries = selectedLibraries;
+                }
+                callAPI('/api/emby/probe/discovery/start', 'POST', payload);
+            });
+            document.querySelector('[data-discovery-stop]').addEventListener('click', () => {
+                callAPI('/api/emby/probe/discovery/stop', 'POST', {server_id: currentServerId});
+            });
+
+            // Processing controls
+            document.querySelector('[data-processing-start-smart]').addEventListener('click', () => {
+                const selectedLibraries = getSelectedProcessingLibraries();
+                const payload = {server_id: currentServerId, mode: 'smart'};
+                if (selectedLibraries.length > 0) {
+                    payload.libraries = selectedLibraries;
+                }
+                callAPI('/api/emby/probe/processing/start', 'POST', payload);
+            });
+            document.querySelector('[data-processing-start-forced]').addEventListener('click', () => {
+                const selectedLibraries = getSelectedProcessingLibraries();
+                const payload = {server_id: currentServerId, mode: 'forced'};
+                if (selectedLibraries.length > 0) {
+                    payload.libraries = selectedLibraries;
+                }
+                callAPI('/api/emby/probe/processing/start', 'POST', payload);
+            });
+            document.querySelector('[data-processing-stop]').addEventListener('click', () => {
+                callAPI('/api/emby/probe/processing/stop', 'POST', {server_id: currentServerId});
+            });
+
+            // Queue controls
+            document.querySelector('[data-queue-refresh]').addEventListener('click', loadQueue);
+            document.querySelector('[data-queue-clear]').addEventListener('click', () => {
+                if (confirm('Svuotare l\'intera coda?')) {
+                    callAPI('/api/emby/probe/queue', 'DELETE', {server_id: currentServerId}, loadQueue);
+                }
+            });
+
+            // History controls
+            document.querySelector('[data-history-refresh]').addEventListener('click', loadHistory);
+            document.querySelector('[data-history-clear]').addEventListener('click', () => {
+                if (confirm('Svuotare l\'intero storico?')) {
+                    callAPI('/api/emby/probe/history', 'DELETE', {server_id: currentServerId}, loadHistory);
+                }
+            });
+            document.querySelector('[data-history-retry-all]').addEventListener('click', retryAllErrors);
+            document.querySelector('[data-history-filter-errors]').addEventListener('change', renderHistory);
+
+            // Blacklist controls
+            document.querySelector('[data-blacklist-refresh]').addEventListener('click', loadBlacklist);
+            document.querySelector('[data-blacklist-clear]').addEventListener('click', () => {
+                if (confirm('Svuotare l\'intera blacklist? Tutti i file verranno rimossi e potranno essere riprocessati.')) {
+                    callAPI('/api/emby/probe/blacklist', 'DELETE', {server_id: currentServerId}, loadBlacklist);
+                }
+            });
+        }
+
+        // Tabs
+        function initTabs() {
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const tab = btn.dataset.tab;
+                    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+                    btn.classList.add('active');
+                    document.querySelector(`[data-panel="${tab}"]`).classList.add('active');
+                });
+            });
+        }
+
+        // Load Queue
+        function loadQueue() {
+            csrfFetch(`/api/emby/probe/queue?server_id=${currentServerId}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        libraryTotals = data.library_totals || {};
+                        renderQueue(data.queue, libraryTotals);
+                    }
+                })
+                .catch(err => console.error('Error loading queue:', err));
+        }
+
+        function renderQueue(items, totals = {}) {
+            const container = document.querySelector('[data-queue-container]');
+            if (!items || items.length === 0) {
+                container.innerHTML = '<div class="empty-state">Nessun file in coda</div>';
+                return;
+            }
+
+            // Group by library -> series/movies
+            const grouped = {};
+            const seen = new Set();
+            items.forEach(item => {
+                const key = `${item.item_id}:${item.media_source_id || ''}`;
+                if (seen.has(key)) {
+                    return;
+                }
+                seen.add(key);
+                const libraryId = item.library_id || 'unknown';
+                if (!grouped[libraryId]) {
+                    grouped[libraryId] = {
+                        name: item.library_name || 'Libreria Sconosciuta',
+                        series: {},
+                        movies: []
+                    };
+                }
+
+                if (item.series_name) {
+                    // TV Series: group by series_name + year
+                    const seriesKey = `${item.series_name}${item.year ? ' (' + item.year + ')' : ''}`;
+                    if (!grouped[libraryId].series[seriesKey]) {
+                        grouped[libraryId].series[seriesKey] = [];
+                    }
+                    grouped[libraryId].series[seriesKey].push(item);
+                } else {
+                    // Movies
+                    grouped[libraryId].movies.push(item);
+                }
+            });
+
+            let html = '';
+
+            // Render each library
+            for (const [libraryId, content] of Object.entries(grouped)) {
+                const libraryDomId = 'lib-' + Math.random().toString(36).substr(2, 9);
+                const totalItems = Object.values(content.series).flat().length + content.movies.length;
+                const totalAvailable = totals[libraryId];
+                const countLabel = totalAvailable ? `${totalItems} / ${totalAvailable} file` : `${totalItems} file`;
+
+                html += `<div class="library-group">`;
+                html += `<div class="library-header" onclick="toggleLibrary('${libraryDomId}')">
+                    <span><span class="chevron" id="${libraryDomId}-chevron">▶</span> ${content.name}</span>
+                    <span>${countLabel}</span>
+                </div>`;
+                html += `<div class="library-content" id="${libraryDomId}">`;
+
+                // Render series
+                for (const [seriesName, episodes] of Object.entries(content.series)) {
+                    const seriesId = 'series-' + Math.random().toString(36).substr(2, 9);
+
+                    html += `<div class="series-group">
+                        <div class="series-header" onclick="toggleSeries('${seriesId}')">
+                            <span class="series-title">
+                                <span class="chevron" id="${seriesId}-chevron">▶</span> ${seriesName}
+                            </span>
+                            <span class="series-count">${episodes.length} episodi</span>
+                        </div>
+                        <div class="series-episodes" id="${seriesId}">`;
+
+                    // Sort episodes
+                    episodes.sort((a, b) => {
+                        if (a.season_number !== b.season_number) return (a.season_number || 0) - (b.season_number || 0);
+                        return (a.episode_number || 0) - (b.episode_number || 0);
+                    });
+
+                    episodes.forEach(item => {
+                        const epLabel = `S${String(item.season_number || 0).padStart(2, '0')}E${String(item.episode_number || 0).padStart(2, '0')}`;
+                        html += `<div class="episode-item">
+                            <div class="item-info">
+                                <div class="item-title">${epLabel} - ${item.name}</div>
+                                <div class="item-meta">${item.path || ''}</div>
+                            </div>
+                            <div class="item-actions">
+                                <button class="btn ghost small" onclick="removeFromQueue('${item.item_id}', '${item.media_source_id || ''}')">Rimuovi</button>
+                            </div>
+                        </div>`;
+                    });
+
+                    html += `</div></div>`;
+                }
+
+                // Render movies
+                content.movies.forEach(item => {
+                    html += `<div class="movie-item">
+                        <div class="item-info">
+                            <div class="item-title">${item.name}${item.year ? ' (' + item.year + ')' : ''}</div>
+                            <div class="item-meta">${item.path || ''}</div>
+                        </div>
+                        <div class="item-actions">
+                            <button class="btn ghost small" onclick="removeFromQueue('${item.item_id}', '${item.media_source_id || ''}')">Rimuovi</button>
+                        </div>
+                    </div>`;
+                });
+
+                html += `</div></div>`;
+            }
+
+            container.innerHTML = html;
+        }
+
+        function toggleLibrary(id) {
+            const content = document.getElementById(id);
+            const chevron = document.getElementById(id + '-chevron');
+            content.classList.toggle('expanded');
+            chevron.classList.toggle('expanded');
+        }
+
+        function toggleSeries(id) {
+            const episodes = document.getElementById(id);
+            const chevron = document.getElementById(id + '-chevron');
+            episodes.classList.toggle('expanded');
+            chevron.classList.toggle('expanded');
+        }
+
+        function removeFromQueue(itemId, mediaSourceId) {
+            if (confirm('Rimuovere questo file dalla coda?')) {
+                const payload = {server_id: currentServerId, item_id: itemId};
+                if (mediaSourceId) {
+                    payload.media_source_id = mediaSourceId;
+                }
+                callAPI('/api/emby/probe/queue', 'DELETE', payload, loadQueue);
+            }
+        }
+
+        function retryItem(itemId, mediaSourceId, buttonElement) {
+            // Disable button and show loading state
+            if (buttonElement) {
+                buttonElement.disabled = true;
+                buttonElement.textContent = '...';
+            }
+
+            const payload = {server_id: currentServerId, item_id: itemId};
+            if (mediaSourceId) {
+                payload.media_source_id = mediaSourceId;
+            }
+
+            csrfFetch('/api/emby/probe/retry', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    // Reload queue, history and blacklist (this will regenerate buttons)
+                    loadQueue();
+                    loadHistory();
+                    loadBlacklist();
+                } else {
+                    const errorMsg = data.message || 'Operazione fallita';
+                    // Check if file was automatically removed (404 error)
+                    if (errorMsg.includes('rimosso automaticamente')) {
+                        alert(errorMsg);
+                        // Reload all lists to reflect the removal
+                        loadQueue();
+                        loadHistory();
+                        loadBlacklist();
+                    } else {
+                        alert('Errore: ' + errorMsg);
+                        // Re-enable button on error
+                        if (buttonElement) {
+                            buttonElement.disabled = false;
+                            buttonElement.textContent = 'Riprova';
+                        }
+                    }
+                }
+            })
+            .catch(err => {
+                console.error('Retry error:', err);
+                alert('Errore durante il retry');
+                // Re-enable button on error
+                if (buttonElement) {
+                    buttonElement.disabled = false;
+                    buttonElement.textContent = 'Riprova';
+                }
+            });
+        }
+
+        async function retryAllErrors() {
+            // Get all error items from current history data
+            const errorItems = historyData.filter(item => item.status === 'ERROR' || item.status === 'INCOMPLETE');
+
+            if (errorItems.length === 0) {
+                alert('Nessun errore da riprovare');
+                return;
+            }
+
+            if (!confirm(`Riprovare tutti i ${errorItems.length} file in errore/incompleti?`)) {
+                return;
+            }
+
+            const btn = document.querySelector('[data-history-retry-all]');
+            const originalText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = `Elaborazione 0/${errorItems.length}...`;
+
+            let successCount = 0;
+            let errorCount = 0;
+
+            for (let i = 0; i < errorItems.length; i++) {
+                const item = errorItems[i];
+                btn.textContent = `Elaborazione ${i + 1}/${errorItems.length}...`;
+
+                try {
+                    const res = await csrfFetch('/api/emby/probe/retry', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            server_id: currentServerId,
+                            item_id: item.item_id,
+                            media_source_id: item.media_source_id
+                        })
+                    });
+                    const data = await res.json();
+                    if (data.success) {
+                        successCount++;
+                    } else {
+                        errorCount++;
+                    }
+                } catch (err) {
+                    console.error('Retry error for item:', item.item_id, err);
+                    errorCount++;
+                }
+            }
+
+            btn.disabled = false;
+            btn.textContent = originalText;
+
+            alert(`Operazione completata!\nAggiunti alla coda: ${successCount}\nErrori: ${errorCount}`);
+
+            // Reload queue, history and blacklist
+            loadQueue();
+            loadHistory();
+            loadBlacklist();
+        }
+
+        // Load History
+        function loadHistory() {
+            csrfFetch(`/api/emby/probe/history?server_id=${currentServerId}&limit=200`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        historyData = data.history;
+                        renderHistory();
+                    }
+                })
+                .catch(err => console.error('Error loading history:', err));
+        }
+
+        function renderHistory() {
+            const container = document.querySelector('[data-history-container]');
+            const filterErrors = document.querySelector('[data-history-filter-errors]').checked;
+
+            let items = historyData;
+            if (filterErrors) {
+                items = items.filter(item => item.status === 'ERROR' || item.status === 'INCOMPLETE');
+            }
+
+            if (!items || items.length === 0) {
+                container.innerHTML = '<div class="empty-state">Nessun record nello storico</div>';
+                return;
+            }
+
+            let html = '<table class="history-table"><thead><tr>';
+            html += '<th>Data</th><th>Libreria</th><th>Titolo</th><th>Stato</th><th>Dettagli</th><th>Durata</th><th>Azioni</th>';
+            html += '</tr></thead><tbody>';
+
+            items.forEach(item => {
+                const date = new Date(item.processed_at).toLocaleString('it-IT');
+                let statusLabel = '<span class="status-error">Errore</span>';
+                if (item.status === 'SUCCESS') {
+                    statusLabel = '<span class="status-success">Successo</span>';
+                } else if (item.status === 'INCOMPLETE') {
+                    statusLabel = '<span class="status-incomplete">Incompleto</span>';
+                }
+                const duration = item.duration_ms ? (item.duration_ms / 1000).toFixed(2) + 's' : '-';
+                const retryBtn = (item.status === 'ERROR' || item.status === 'INCOMPLETE') ?
+                    `<button class="btn ghost small" onclick="retryItem('${item.item_id}', '${item.media_source_id || ''}', this)">Riprova</button>` :
+                    '';
+                html += `<tr>
+                    <td>${date}</td>
+                    <td>${item.library_name || '-'}</td>
+                    <td>${item.name}</td>
+                    <td>${statusLabel}</td>
+                    <td>${item.error_details || '-'}</td>
+                    <td>${duration}</td>
+                    <td>${retryBtn}</td>
+                </tr>`;
+            });
+
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        }
+
+        // Load Blacklist
+        function loadBlacklist() {
+            csrfFetch(`/api/emby/probe/blacklist?server_id=${currentServerId}&min_retry=3`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        blacklistData = data.blacklist;
+                        renderBlacklist();
+                        updateBlacklistBadge();
+                    }
+                })
+                .catch(err => console.error('Error loading blacklist:', err));
+        }
+
+        function updateBlacklistBadge() {
+            const badge = document.querySelector('[data-blacklist-count]');
+            if (badge) {
+                badge.textContent = blacklistData.length;
+            }
+        }
+
+        function renderBlacklist() {
+            const container = document.querySelector('[data-blacklist-container]');
+
+            if (!blacklistData || blacklistData.length === 0) {
+                container.innerHTML = '<div class="empty-state">Nessun file in blacklist</div>';
+                return;
+            }
+
+            let html = '<table class="history-table"><thead><tr>';
+            html += '<th>Data Ultimo Errore</th><th>Titolo</th><th>Tentativo</th><th>Ultimo Errore</th><th>Azioni</th>';
+            html += '</tr></thead><tbody>';
+
+            blacklistData.forEach(item => {
+                const date = new Date(item.failed_at).toLocaleString('it-IT');
+                html += `<tr>
+                    <td>${date}</td>
+                    <td>${item.item_name}</td>
+                    <td><span style="background: #dc2626; color: white; padding: 0.25rem 0.5rem; border-radius: 4px; font-weight: 600;">${item.retry_count}</span></td>
+                    <td>${item.reason || '-'}</td>
+                    <td>
+                        <button class="btn ghost small" onclick="removeFromBlacklist('${item.item_id}', '${item.media_source_id || ''}')">Rimuovi</button>
+                        <button class="btn primary small" onclick="retryFromBlacklist('${item.item_id}', '${item.media_source_id || ''}', this)">Riprova</button>
+                    </td>
+                </tr>`;
+            });
+
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        }
+
+        function removeFromBlacklist(itemId, mediaSourceId) {
+            if (confirm('Rimuovere questo file dalla blacklist? Potrà essere riprocessato.')) {
+                const payload = {server_id: currentServerId, item_id: itemId};
+                if (mediaSourceId) {
+                    payload.media_source_id = mediaSourceId;
+                }
+                callAPI('/api/emby/probe/blacklist', 'DELETE', payload, loadBlacklist);
+            }
+        }
+
+        function retryFromBlacklist(itemId, mediaSourceId, buttonElement) {
+            // First remove from blacklist, then retry
+            if (buttonElement) {
+                buttonElement.disabled = true;
+                buttonElement.textContent = '...';
+            }
+
+            const payload = {server_id: currentServerId, item_id: itemId};
+            if (mediaSourceId) {
+                payload.media_source_id = mediaSourceId;
+            }
+
+            // Remove from blacklist
+            csrfFetch('/api/emby/probe/blacklist', {
+                method: 'DELETE',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    // Now retry the item
+                    return retryItem(itemId, mediaSourceId, null);
+                } else {
+                    throw new Error(data.message || 'Errore rimozione dalla blacklist');
+                }
+            })
+            .then(() => {
+                // Reload blacklist and queue
+                loadBlacklist();
+                loadQueue();
+            })
+            .catch(err => {
+                console.error('Retry from blacklist error:', err);
+                alert('Errore: ' + err.message);
+                if (buttonElement) {
+                    buttonElement.disabled = false;
+                    buttonElement.textContent = 'Riprova';
+                }
+            });
+        }
+
+        // API Helper
+        function callAPI(endpoint, method, data, callback) {
+            const options = {
+                method: method,
+                headers: {'Content-Type': 'application/json'}
+            };
+            if (method !== 'GET') {
+                options.body = JSON.stringify(data);
+            }
+
+            csrfFetch(endpoint, options)
+                .then(res => res.json())
+                .then(result => {
+                    if (result.success) {
+                        if (callback) callback();
+                    } else {
+                        alert('Errore: ' + (result.message || 'Operazione fallita'));
+                    }
+                })
+                .catch(err => {
+                    console.error('API error:', err);
+                    alert('Errore di connessione');
+                });
+        }
+    </script>
+</body>
+</html>
