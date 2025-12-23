@@ -1492,26 +1492,26 @@ def create_dashboard_app():
         and add custom header: X-Webhook-Secret: your-secret-value
         """
         try:
-        # Optional security check
-        webhook_secret = os.environ.get("WEBHOOK_SECRET")
-        if webhook_secret:
-            received_secret = request.headers.get("X-Webhook-Secret")
-            if received_secret != webhook_secret:
-                print("[WEBHOOK] Secret non valido, rifiuto richiesta")
-                return jsonify({"success": False, "error": "Unauthorized"}), 401
+            # Optional security check
+            webhook_secret = os.environ.get("WEBHOOK_SECRET")
+            if webhook_secret:
+                received_secret = request.headers.get("X-Webhook-Secret")
+                if received_secret != webhook_secret:
+                    print("[WEBHOOK] Secret non valido, rifiuto richiesta")
+                    return jsonify({"success": False, "error": "Unauthorized"}), 401
 
-        # Optional IP whitelist
-        ip_whitelist = os.environ.get("WEBHOOK_IP_WHITELIST")
-        if ip_whitelist:
-            allowed_ips = {ip.strip() for ip in ip_whitelist.split(",") if ip.strip()}
-            request_ip = (
-                request.headers.get("X-Real-IP")
-                or request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-                or request.remote_addr
-            )
-            if request_ip not in allowed_ips:
-                print(f"[WEBHOOK] IP non autorizzato: {request_ip}")
-                return jsonify({"success": False, "error": "Forbidden"}), 403
+            # Optional IP whitelist
+            ip_whitelist = os.environ.get("WEBHOOK_IP_WHITELIST")
+            if ip_whitelist:
+                allowed_ips = {ip.strip() for ip in ip_whitelist.split(",") if ip.strip()}
+                request_ip = (
+                    request.headers.get("X-Real-IP")
+                    or request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+                    or request.remote_addr
+                )
+                if request_ip not in allowed_ips:
+                    print(f"[WEBHOOK] IP non autorizzato: {request_ip}")
+                    return jsonify({"success": False, "error": "Forbidden"}), 403
 
             data = request.get_json(silent=True) or {}
 
