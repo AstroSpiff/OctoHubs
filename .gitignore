@@ -11,12 +11,30 @@ env/
 .env/
 .env
 *.log
+*.sql
+*.csv
 *.sqlite3
 *.db
 data/
 logs/
+secrets/
+instance/
 nginx/ssl/
 nginx/logs/
 certs/
 config.json
 last_results.json
+
+# Docker
+docker-compose.override.yml
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# AI Context
+CODEX.md
+CLAUDE.md
+.claude/
+.gemini/

@@ -18,30 +18,38 @@ ENV/
 # Git
 .git/
 .gitignore
+.gitattributes
 
 # Documentation
 *.md
-CLAUDE.md
-CODEX.md
-WEBHOOK_SETUP.md
 
 # Data files (will be volumes)
 *.db
 *.json
+*.sql
+*.csv
 logs/
 data/
+secrets/
+instance/
 
 # Tests
 tests/
 *.test.py
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Docker
 Dockerfile
 .dockerignore
 docker-compose*.yml
+nginx/
+certs/
 
 # Gemini config
 .gemini/
+.claude/
 
 # OS
 .DS_Store
