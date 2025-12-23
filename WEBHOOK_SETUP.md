@@ -1,117 +1,56 @@
-# Configurazione Webhook Emby per Aggiornamenti in Tempo Reale
+# Configurazione Webhook Emby (Avanzata)
 
-## Vantaggi dei Webhook
+Questa guida spiega come configurare i webhook Emby per aggiornamenti in tempo reale degli stream e delle dashboard.
 
-**Prima (Polling ogni 5 secondi):**
-- 12 richieste HTTP al minuto per server
-- Latenza fino a 5 secondi per vedere nuovi stream
-- Carico continuo sul server Emby
+## Perche usare i webhook
+Senza webhook, OctoHub usa un polling periodico (`STREAMS_REFRESH_SECONDS`).
+Con webhook:
+- aggiornamenti quasi immediati
+- meno richieste verso Emby
+- stato stream piu affidabile
 
-**Dopo (Webhook):**
-- 0 richieste in idle
-- Latenza < 100ms per aggiornamenti
-- Carico server quasi zero
-- Aggiornamenti istantanei
+## Prerequisiti
+- OctoHub raggiungibile da Emby (LAN o Internet).
+- URL pubblico o IP/porta locali validi.
+- Se usi HTTPS, certificato valido consigliato.
 
-## Configurazione Emby
+## 1) Crea il webhook su Emby
+1. Emby Server > Dashboard > Server > Webhooks
+2. Add Webhook
 
-### 1. Accedi alle Impostazioni Webhook
+URL consigliato:
+- Produzione con HTTPS: `https://tuo-dominio/webhook/emby`
+- LAN: `http://IP_OCTOHUB:PORTA/webhook/emby`
 
-1. Apri Emby Server
-2. Vai su **Dashboard** > **Server** > **Webhooks**
-3. Clicca su **Add Webhook** (Aggiungi Webhook)
+Eventi da abilitare:
+- `Playback Started` (playback.start)
+- `Playback Stopped` (playback.stop)
+- `Playback Paused` (playback.pause)
+- `Playback Unpaused` (playback.unpause)
 
-### 2. Configura il Webhook
-
-**URL Webhook:**
-```
-http://tuo-server:porta/webhook/emby
-```
-
-Esempio: `http://192.168.1.100:5000/webhook/emby`
-
-**Eventi da Monitorare:**
-Seleziona questi eventi:
-- ✅ **Playback Started** (playback.start)
-- ✅ **Playback Stopped** (playback.stop)
-- ✅ **Playback Paused** (playback.pause)
-- ✅ **Playback Unpaused** (playback.unpause)
-
-**Filtri Utente/Dispositivo:**
-Lascia vuoto per monitorare tutti gli utenti e dispositivi.
-
-### 3. Sicurezza Opzionale
-
-Per proteggere l'endpoint webhook da accessi non autorizzati:
-
-**Imposta la variabile d'ambiente:**
-```bash
-export WEBHOOK_SECRET="tuo-segreto-sicuro-qui"
+## 2) Sicurezza (consigliata)
+### Secret header
+In `.env`:
+```env
+WEBHOOK_SECRET=segreto-lungo-e-unico
 ```
 
-**Aggiungi Header Personalizzato in Emby:**
+In Emby aggiungi header personalizzato:
 - Nome: `X-Webhook-Secret`
-- Valore: `tuo-segreto-sicuro-qui`
+- Valore: lo stesso di `WEBHOOK_SECRET`
 
-⚠️ **Nota**: Se non imposti `WEBHOOK_SECRET`, il webhook accetta tutte le richieste (nessuna autenticazione).
-
-**Whitelist IP (opzionale):**
-```bash
-export WEBHOOK_IP_WHITELIST="1.2.3.4,5.6.7.8"
-```
-Se impostata, solo gli IP presenti possono inviare eventi.
-
-### 4. Test
-
-1. Salva la configurazione webhook in Emby
-2. Avvia la riproduzione di un file
-3. Controlla i log del server:
-
-```bash
-tail -f logs/app.log
+### IP whitelist (opzionale)
+```env
+WEBHOOK_IP_WHITELIST=1.2.3.4,5.6.7.8
 ```
 
-Dovresti vedere:
-```
-[WEBHOOK] Ricevuto evento: playback.start da server: NomeServer (server-id)
-[WEBHOOK] Stream iniziato: session-id-123
-```
+## 3) Mappatura server Emby
+OctoHub abbina gli eventi Emby ai server configurati in `config.json` usando:
+1) `emby_server_id` (se presente)
+2) `name` (fallback)
+3) se c'e un solo server abilitato, usa quello
 
-### 5. Verifica Funzionamento
-
-1. Apri **Emby Toolkit** nella dashboard
-2. Avvia la riproduzione su Emby
-3. Gli **Stream Attivi** dovrebbero aggiornarsi **istantaneamente** (< 1 secondo)
-
-## Risoluzione Problemi
-
-### Webhook non riceve eventi
-
-**Verifica URL raggiungibile:**
-```bash
-curl -X POST http://tuo-server:porta/webhook/emby \
-  -H "Content-Type: application/json" \
-  -d '{"Event":"test"}'
-```
-
-Dovrebbe rispondere: `{"success":true}`
-
-**Controlla firewall:**
-- Emby deve poter raggiungere il server webhook
-- Se webhook e Emby sono su macchine diverse, apri la porta
-
-**Controlla log Emby:**
-Dashboard > Logs > Webhook - verifica errori di connessione
-
-### Stream non si aggiornano
-
-**Controlla mapping server:**
-Il webhook cerca di mappare il server Emby alla configurazione locale usando:
-1. Server ID Emby (`emby_server_id` nel config)
-2. Nome server (`name` nel config)
-3. Fallback: primo server abilitato se è l'unico
-
-**Soluzione**: Aggiungi `emby_server_id` nel config dei server:
+Esempio:
 ```json
 {
   "EMBY": {
@@ -119,9 +58,10 @@ Il webhook cerca di mappare il server Emby alla configurazione locale usando:
       {
         "id": "server-1",
         "name": "Emby Casa",
-        "emby_server_id": "xxx-yyy-zzz",  // ← Aggiungi questo
+        "emby_server_id": "xxx-yyy-zzz",
         "url": "http://emby:8096",
-        "api_key": "..."
+        "api_key": "API_KEY_EMBY",
+        "enabled": true
       }
     ]
   }
@@ -129,38 +69,27 @@ Il webhook cerca di mappare il server Emby alla configurazione locale usando:
 ```
 
 Per trovare `emby_server_id`:
-- Dashboard Emby > Server > About
+- Emby Server > Dashboard > Server > About
 
-### Secret non funziona
+## 4) Test rapido
+```bash
+curl -X POST https://tuo-dominio/webhook/emby \
+  -H "Content-Type: application/json" \
+  -H "X-Webhook-Secret: segreto-lungo-e-unico" \
+  -d '{"Event":"playback.start","Server":{"Name":"Emby Casa","Id":"xxx-yyy-zzz"},"Session":{"Id":"test"}}'
+```
 
-Se vedi `[WEBHOOK] Secret non valido, rifiuto richiesta`:
+Risposta attesa:
+```json
+{"success": true}
+```
 
-1. Verifica variabile d'ambiente impostata:
-   ```bash
-   echo $WEBHOOK_SECRET
-   ```
+## 5) Troubleshooting
+- **401 Unauthorized**: `WEBHOOK_SECRET` non combacia.
+- **403 Forbidden**: IP non in `WEBHOOK_IP_WHITELIST`.
+- **200 ma nessun aggiornamento**: verifica `emby_server_id` o `name` nel config.
+- **SSL self-signed**: se Emby rifiuta, usa HTTP in LAN o certificato valido.
+- **Reverse proxy**: assicurati che `/webhook/emby` sia inoltrato correttamente.
 
-2. Verifica header in Emby sia esattamente: `X-Webhook-Secret`
-
-3. Riavvia l'app dopo aver impostato la variabile
-
-## Fallback Automatico
-
-Se webhook non è configurato o fallisce:
-- Il sistema fa **fallback automatico** al polling API ogni 5 secondi
-- Gli stream continuano a funzionare normalmente
-- Nessuna perdita di dati, solo latenza maggiore
-
-## Performance
-
-**Con webhook attivi:**
-- Latenza aggiornamenti stream: < 100ms
-- Richieste HTTP a Emby: ~2-3 al minuto (solo per tasks/status)
-- Carico CPU: minimo
-- Banda: ~1 KB al minuto
-
-**Senza webhook (fallback):**
-- Latenza aggiornamenti stream: fino a 5 secondi
-- Richieste HTTP a Emby: ~12-15 al minuto
-- Carico CPU: leggero
-- Banda: ~5-10 KB al minuto
+## Fallback automatico
+Se i webhook non arrivano, OctoHub usa il polling (intervallo da `STREAMS_REFRESH_SECONDS`).
