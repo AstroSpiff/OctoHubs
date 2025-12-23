@@ -69,4 +69,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD python -c "import requests; requests.get('http://localhost:5000/login', timeout=5)" || exit 1
 
 # Run with Waitress WSGI server
-CMD ["python", "-m", "waitress", "--host=0.0.0.0", "--port=5000", "--threads=8", "wsgi:application"]
+# Increased threads to 16 to handle SSE + API requests concurrently
+CMD ["python", "-m", "waitress", "--host=0.0.0.0", "--port=5000", "--threads=16", "--channel-timeout=300", "wsgi:application"]

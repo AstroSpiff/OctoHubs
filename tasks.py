@@ -150,10 +150,16 @@ class AutoScheduler:
             else:
                 self._settings = _default_auto_tasks()
                 self._config = None
-            self._next_run = {"scan": None, "refresh": None}
+            # IMPORTANT: Only reset next_run if tasks are newly enabled or config structure changed
+            # Otherwise preserve existing scheduled times to avoid infinite postponement
+            if not hasattr(self, '_next_run') or self._next_run is None:
+                self._next_run = {"scan": None, "refresh": None}
             settings_snapshot = copy.deepcopy(self._settings)
         self._wake.set()
-        self._log_next_runs(settings_snapshot)
+        # Only log next runs on initial config or when explicitly changed
+        if not hasattr(self, '_config_logged') or not self._config_logged:
+            self._log_next_runs(settings_snapshot)
+            self._config_logged = True
 
     def update_config_if_changed(self, config):
         """Update scheduler config only if auto settings changed."""
@@ -258,17 +264,22 @@ class AutoScheduler:
 
     def _trigger_scan(self, config):
         if not self._scan_manager:
+            print("   -> AutoScheduler: scan non avviato (ScanManager non impostato).")
             return False
         if self._scan_manager.is_running():
+            print("   -> AutoScheduler: scan non avviato (scan già in esecuzione).")
             return False
         started = self._scan_manager.start_scan(config, process_requests_func=self._process_requests_func)
         if started:
             print("   -> AutoScheduler: avviata una ricerca programmata.")
+        else:
+            print("   -> AutoScheduler: scan non avviato (start_scan ha ritornato False).")
         return started
 
     def _trigger_refresh(self, config):
         with self._lock:
             if self._refresh_running:
+                print("   -> AutoScheduler: refresh non avviato (refresh già in esecuzione).")
                 return False
             self._refresh_running = True
         try:
@@ -278,7 +289,7 @@ class AutoScheduler:
                 print("   -> AutoScheduler: elenco richieste aggiornato automaticamente.")
                 return True
             else:
-                print("   -> AutoScheduler: callback functions not set, cannot refresh.")
+                print("   -> AutoScheduler: refresh non avviato (callback functions non impostate).")
                 return False
         except Exception as exc:
             print(f"   -> AutoScheduler: aggiornamento automatico non riuscito: {exc}")
