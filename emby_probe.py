@@ -537,21 +537,22 @@ class EmbyProbeManager:
                             metadata_ok, metadata_error = self._verify_probe_metadata(server, item_id, media_source_id)
 
                         if metadata_ok:
+                            # Metadata verified successfully
+                            status = "SUCCESS"
+                            error_details = None
+                            should_requeue = False
+                            db.remove_from_probe_blacklist(server_id, item_id, media_source_id)
+                        elif metadata_error and metadata_error.startswith("API error:"):
+                            # Verification failed due to temporary API issues (timeout, connection error)
+                            # but probe was successful, so assume metadata was written
                             status = "SUCCESS"
                             error_details = None
                             should_requeue = False
                             db.remove_from_probe_blacklist(server_id, item_id, media_source_id)
                         else:
-                            # If verification API fails but probe succeeded, treat as success anyway
-                            # The probe call itself triggers Emby to write metadata
-                            if "API error" in (metadata_error or ""):
-                                status = "SUCCESS"
-                                error_details = None
-                                should_requeue = False
-                                db.remove_from_probe_blacklist(server_id, item_id, media_source_id)
-                            else:
-                                status = "INCOMPLETE"
-                                error_details = metadata_error or "Mediainfo non scritto"
+                            # Verification confirmed metadata is actually missing
+                            status = "INCOMPLETE"
+                            error_details = metadata_error or "Mediainfo non scritto"
 
                     if status != "SUCCESS":
                         retry_count = db.update_probe_blacklist(
