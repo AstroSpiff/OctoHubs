@@ -5,11 +5,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="{{ csrf_token() }}">
-    <title>Dashboard OctoHub</title>
+    <title>Ricerche e richieste</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}"></head>
-<body>
+<body data-qb-available="{{ 'true' if qb_available else 'false' }}">
     <div class="wrapper">
-        <h1>Dashboard OctoHub</h1>
+        <h1>Ricerche e richieste</h1>
         {% with messages = get_flashed_messages() %}
             {% if messages %}
                 {% for msg in messages %}
@@ -46,11 +46,218 @@
         </nav>
         <div class="tab-shell">
             <div class="tabs">
-                <button class="tab-btn active" data-tab="scan" title="Panoramica ricerche e risultati">Ricerche &amp; Riepilogo</button>
+                <button class="tab-btn active" data-tab="independent-search" title="Avvia una ricerca manuale indipendente">Ricerca Indipendente</button>
+                <button class="tab-btn" data-tab="scan" title="Panoramica ricerche e risultati">Ricerche &amp; Riepilogo</button>
                 <button class="tab-btn" data-tab="rules" title="Regole di ricerca e richieste attive">Regole &amp; Richieste</button>
                 <button class="tab-btn" data-tab="config" title="Configura servizi e automazioni">Servizi &amp; Automazioni</button>
             </div>
-            <div class="tab-panel active" data-tab-panel="scan">
+            <div class="tab-panel active" data-tab-panel="independent-search">
+                <div class="card">
+                    <h2>Ricerca Indipendente</h2>
+                    <p class="tagline">Esegui ricerche manuali senza applicare regole automatiche.</p>
+                    <form class="independent-search-form" id="independent-search-form" method="post" action="/api/search/manual">
+                        <div class="search-bar">
+                            <div class="search-field">
+                                <label for="independent-query">Input di Ricerca</label>
+                                <div class="search-input-wrap" id="tmdb-input-wrap">
+                                    <input type="text"
+                                           id="independent-query"
+                                           name="query"
+                                           placeholder="Titolo, persona, keyword"
+                                           autocomplete="off">
+                                    <div class="tmdb-suggestions" id="tmdb-suggestions" role="listbox"></div>
+                                </div>
+                                <div class="selected-title-card is-hidden" id="tmdb-selected-card">
+                                    <div class="selected-poster" id="tmdb-selected-poster" data-empty="true"></div>
+                                    <div class="selected-meta">
+                                        <div class="selected-title" id="tmdb-selected-title"></div>
+                                        <div class="selected-year" id="tmdb-selected-year"></div>
+                                        <div class="selected-original" id="tmdb-selected-original"></div>
+                                        <div class="selected-emby-availability is-hidden" id="tmdb-selected-availability">
+                                            <span class="tagline" id="tmdb-selected-availability-label">Disponibile su:</span>
+                                            <div class="emby-server-icons" id="tmdb-selected-availability-icons"></div>
+                                        </div>
+                                        <div class="selected-emby-browser is-hidden" id="tmdb-selected-emby-browser">
+                                            <div class="emby-browser-header">
+                                                <div class="emby-browser-title" id="tmdb-emby-browser-title">Dettagli Emby</div>
+                                                <button type="button"
+                                                        class="emby-browser-close"
+                                                        id="tmdb-emby-browser-close"
+                                                        aria-label="Chiudi">×</button>
+                                            </div>
+                                            <div class="emby-browser-sections">
+                                                <div class="emby-browser-section" id="tmdb-emby-seasons"></div>
+                                                <div class="emby-browser-section" id="tmdb-emby-episodes"></div>
+                                                <div class="emby-browser-section emby-details" id="tmdb-emby-details"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <button type="button"
+                                            class="clear-selection-btn"
+                                            id="tmdb-clear-btn"
+                                            aria-label="Rimuovi selezione">
+                                        X
+                                    </button>
+                                </div>
+                                <div class="season-picker is-hidden" id="tmdb-season-picker">
+                                    <div class="tagline">Seleziona stagioni</div>
+                                    <div class="season-picker-list checkbox-row" id="tmdb-season-list"></div>
+                                </div>
+                            </div>
+                            <div class="search-history">
+                                <button type="button"
+                                        class="history-toggle-btn"
+                                        id="independent-history-toggle"
+                                        aria-expanded="false"
+                                        aria-controls="independent-history">
+                                    Cronologia
+                                </button>
+                                <div id="independent-history" class="history-dropdown is-hidden" role="listbox"></div>
+                            </div>
+                        </div>
+                        <div class="form-grid">
+                            <div class="indexer-group" data-required-wrapper="independent-indexer">
+                                <label>Selezione Indexer</label>
+                                <div class="checkbox-row">
+                                    <label>
+                                        <input type="checkbox"
+                                               name="indexer"
+                                               value="prowlarr"
+                                               data-required-group="independent-indexer"
+                                               {% if search_rules.use_prowlarr %}checked{% endif %}
+                                               >
+                                        Prowlarr
+                                    </label>
+                                    <label>
+                                        <input type="checkbox"
+                                               name="indexer"
+                                               value="jackett"
+                                               data-required-group="independent-indexer"
+                                               {% if search_rules.use_jackett %}checked{% endif %}>
+                                        Jackett
+                                    </label>
+                                </div>
+                                <div class="tagline">Seleziona almeno un indexer.</div>
+                            </div>
+                            <div>
+                                <label for="independent-media-type">Tipo di Media</label>
+                                <select id="independent-media-type" name="media_type">
+                                    <option value="">Non definito</option>
+                                    <option value="movie">Film</option>
+                                    <option value="tv">Serie TV</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="inline-field" for="independent-jellyseerr">
+                                    <input type="checkbox" id="independent-jellyseerr" name="use_jellyseerr_directives">
+                                    Usa direttive Jellyseerr
+                                </label>
+                            </div>
+                            <div data-manual-option>
+                                <label class="inline-field" for="independent-customize">
+                                    <input type="checkbox" id="independent-customize" name="use_custom_rules">
+                                    Personalizza
+                                </label>
+                            </div>
+                            <div data-manual-option>
+                                <label for="independent-include-filter">Filtro Inclusione</label>
+                                <input type="text"
+                                       id="independent-include-filter"
+                                       name="include_filter"
+                                       placeholder="Parole da includere">
+                            </div>
+                            <div data-manual-option>
+                                <label for="independent-exclude-filter">Filtro Esclusione</label>
+                                <input type="text"
+                                       id="independent-exclude-filter"
+                                       name="exclude_filter"
+                                       placeholder="Parole da escludere">
+                            </div>
+                            <div data-manual-option>
+                                <label for="independent-min-size">Min GB</label>
+                                <input type="number"
+                                       id="independent-min-size"
+                                       name="min_size_gb"
+                                       step="0.1"
+                                       min="0"
+                                       placeholder="0.0">
+                            </div>
+                            <div data-manual-option>
+                                <label for="independent-max-size">Max GB</label>
+                                <input type="number"
+                                       id="independent-max-size"
+                                       name="max_size_gb"
+                                       step="0.1"
+                                       min="0"
+                                       placeholder="0.0">
+                            </div>
+                        </div>
+                        <div class="advanced-options is-hidden" id="independent-advanced-options" data-manual-option>
+                            <h3>Opzioni avanzate</h3>
+                            <div class="advanced-grid">
+                                <div data-media-scope="both">
+                                    <label for="independent-quality">Qualità</label>
+                                    <select id="independent-quality" name="quality">
+                                        <option value="">Non definito</option>
+                                        <option value="2160p">2160p</option>
+                                        <option value="1080p">1080p</option>
+                                        <option value="720p">720p</option>
+                                    </select>
+                                </div>
+                                <div data-media-scope="both">
+                                    <label for="independent-language">Lingua audio</label>
+                                    <select id="independent-language" name="audio_language">
+                                        <option value="">Non definito</option>
+                                        <option value="ita">Italiano</option>
+                                        <option value="eng">Inglese</option>
+                                    </select>
+                                </div>
+                                <div data-media-scope="movie">
+                                    <label for="independent-edition">Edizione</label>
+                                    <select id="independent-edition" name="edition">
+                                        <option value="">Standard</option>
+                                        <option value="extended">Extended</option>
+                                        <option value="directors-cut">Director's Cut</option>
+                                    </select>
+                                </div>
+                                <div data-media-scope="tv">
+                                    <label for="independent-season">Stagione</label>
+                                    <input type="number"
+                                           id="independent-season"
+                                           name="season"
+                                           min="1"
+                                           placeholder="1">
+                                </div>
+                                <div data-media-scope="tv">
+                                    <label for="independent-episode">Episodio</label>
+                                    <input type="number"
+                                           id="independent-episode"
+                                           name="episode"
+                                           min="1"
+                                           placeholder="1">
+                                </div>
+                            </div>
+                        </div>
+                        <input type="hidden" id="tmdb-id" name="tmdb_id">
+                        <input type="hidden" id="tmdb-type" name="tmdb_type">
+                        <input type="hidden" id="tmdb-title" name="tmdb_title">
+                        <input type="hidden" id="tmdb-original-title" name="tmdb_original_title">
+                        <input type="hidden" id="tmdb-year" name="tmdb_year">
+                        <input type="hidden" id="tmdb-poster" name="tmdb_poster">
+                        <div class="search-actions">
+                            <button type="submit" class="btn">Cerca</button>
+                            <button type="button" class="btn ghost is-hidden" id="jellyseerr-request-btn">
+                                Richiedi a Jellyseerr
+                            </button>
+                        </div>
+                    </form>
+                </div>
+                <div class="card">
+                    <h2>Risultati</h2>
+                    <div class="results-placeholder" data-results-target="independent-search"></div>
+                </div>
+            </div>
+            <div class="tab-panel" data-tab-panel="scan">
                 <div class="card">
                     <h2>Controllo ricerche</h2>
                     <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem;">
@@ -771,6 +978,28 @@
                             </div>
                         </div>
                     </section>
+                    <section class="config-box">
+                        <h4>TMDB (The Movie Database)</h4>
+                        <div class="tagline" style="margin-bottom:0.75rem;">API usata per l'autocomplete nella Ricerca Indipendente.</div>
+                        <div class="form-grid">
+                            <div>
+                                <label for="tmdb_api_key">API Key TMDB</label>
+                                <input type="text" id="tmdb_api_key" name="tmdb_api_key" value="{{ config.TMDB_API_KEY if config else '' }}" placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx">
+                            </div>
+                            <div>
+                                <label for="tmdb_language">Lingua di ricerca</label>
+                                <select id="tmdb_language" name="tmdb_language">
+                                    <option value="it-IT" {% if config and config.TMDB_LANGUAGE == 'it-IT' %}selected{% endif %}>Italiano (it-IT)</option>
+                                    <option value="en-US" {% if config and config.TMDB_LANGUAGE == 'en-US' %}selected{% endif %}>English (en-US)</option>
+                                    <option value="fr-FR" {% if config and config.TMDB_LANGUAGE == 'fr-FR' %}selected{% endif %}>Français (fr-FR)</option>
+                                    <option value="de-DE" {% if config and config.TMDB_LANGUAGE == 'de-DE' %}selected{% endif %}>Deutsch (de-DE)</option>
+                                    <option value="es-ES" {% if config and config.TMDB_LANGUAGE == 'es-ES' %}selected{% endif %}>Español (es-ES)</option>
+                                </select>
+                                <div class="tagline">La lingua influenza i risultati e i titoli tradotti.</div>
+                            </div>
+                        </div>
+                        <div class="tagline">Ottieni la tua API key gratuita su <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener">themoviedb.org/settings/api</a></div>
+                    </section>
                     <section class="config-box trakt-config">
                         <div class="trakt-header">
                             <h4>Trakt</h4>
@@ -919,6 +1148,53 @@
         <button type="button" data-field="query">Aggiungi parola a Termini query</button>
         <button type="button" data-field="filter">Aggiungi parola a Termini filtrati</button>
         <button type="button" data-field="exclude">Aggiungi parola a Termini esclusi</button>
+    </div>
+    <div class="modal-backdrop is-hidden" id="emby-details-modal" aria-hidden="true">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="emby-modal-title">
+            <div class="modal-header">
+                <h3 id="emby-modal-title">Dettagli Emby</h3>
+                <button type="button" class="modal-close" data-modal-close aria-label="Chiudi">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="modal-row">
+                    <span class="modal-label">Titolo</span>
+                    <span id="emby-detail-title">—</span>
+                </div>
+                <div class="modal-row">
+                    <span class="modal-label">Anno</span>
+                    <span id="emby-detail-year">—</span>
+                </div>
+                <div class="modal-row">
+                    <span class="modal-label">Server</span>
+                    <span id="emby-detail-server">—</span>
+                </div>
+                <div class="modal-row">
+                    <span class="modal-label">Risoluzione</span>
+                    <span id="emby-detail-resolution">—</span>
+                </div>
+                <div class="modal-row">
+                    <span class="modal-label">Codec Video</span>
+                    <span id="emby-detail-video">—</span>
+                </div>
+                <div class="modal-row">
+                    <span class="modal-label">Codec Audio</span>
+                    <span id="emby-detail-audio">—</span>
+                </div>
+                <div class="modal-row">
+                    <span class="modal-label">Bitrate</span>
+                    <span id="emby-detail-bitrate">—</span>
+                </div>
+                <div class="modal-row">
+                    <span class="modal-label">Path</span>
+                    <span id="emby-detail-path">—</span>
+                </div>
+                <div class="modal-row">
+                    <span class="modal-label">Tracce Audio</span>
+                    <ul id="emby-detail-tracks" class="modal-list"></ul>
+                </div>
+                <div id="emby-detail-message" class="tagline"></div>
+            </div>
+        </div>
     </div>
     <div id="toast-container"></div>
     <script src="{{ url_for('static', filename='script.js') }}"></script>

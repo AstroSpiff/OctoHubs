@@ -65,19 +65,22 @@ def _call_emby_api(server, path, method="GET", params=None, json_payload=None) -
     if not base_url or not token:
         return False, "Credenziali Emby mancanti"
     target = f"{base_url}/{path.lstrip('/')}"
+    merged_params = dict(params or {})
+    if "api_key" not in merged_params:
+        merged_params["api_key"] = token
     headers = {
         "X-Emby-Token": token,
         "Accept": "application/json"
     }
     try:
         if method.upper() == "GET":
-            response = requests.get(target, headers=headers, params=params or {}, timeout=EMBY_REQUEST_TIMEOUT)
+            response = requests.get(target, headers=headers, params=merged_params, timeout=EMBY_REQUEST_TIMEOUT)
         else:
             response = requests.request(
                 method.upper(),
                 target,
                 headers=headers,
-                params=params or {},
+                params=merged_params,
                 json=json_payload,
                 timeout=EMBY_REQUEST_TIMEOUT
             )
@@ -706,6 +709,51 @@ def fetch_media_info(media_entry, config, cache, fallback_media_type=None):
     return None, media_type_candidates[0] if media_type_candidates else fallback_type
 
 
+# --- FUNZIONI DI RICERCA JELLYSEERR ---
+
+def search_jellyseerr(query, config):
+    """Cerca contenuti su Jellyseerr e restituisce la lista results."""
+    if not query:
+        return []
+    if not (config.get("JELLYSEERR_URL") and config.get("JELLYSEERR_API_KEY")):
+        return []
+    headers = {"X-Api-Key": config["JELLYSEERR_API_KEY"]}
+    try:
+        url = f"{config['JELLYSEERR_URL']}/api/v1/search"
+        response = requests.get(url, headers=headers, params={"query": query}, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        if isinstance(data, dict):
+            results = data.get("results") or []
+            return results if isinstance(results, list) else []
+        if isinstance(data, list):
+            return data
+        return []
+    except requests.exceptions.RequestException:
+        return []
+
+
+def submit_jellyseerr_request(payload, config):
+    """Invia una richiesta a Jellyseerr usando l'endpoint /api/v1/request."""
+    if not isinstance(payload, dict):
+        return False, "Payload non valido", None
+    if not (config.get("JELLYSEERR_URL") and config.get("JELLYSEERR_API_KEY")):
+        return False, "Configurazione Jellyseerr incompleta", None
+    headers = {"X-Api-Key": config["JELLYSEERR_API_KEY"]}
+    try:
+        response = requests.post(
+            f"{config['JELLYSEERR_URL']}/api/v1/request",
+            headers=headers,
+            json=payload,
+            timeout=15
+        )
+        response.raise_for_status()
+        data = response.json() if response.content else {}
+        return True, "Richiesta inviata", data
+    except requests.exceptions.RequestException as exc:
+        return False, f"Errore Jellyseerr: {exc}", None
+
+
 # --- FUNZIONI DI RICERCA INDEXER ---
 
 def search_prowlarr(query, media_type, config):
@@ -788,3 +836,276 @@ def search_jackett(query, media_type, config):
     except requests.exceptions.RequestException as exc:
         print(f"   -> Impossibile contattare Jackett: {exc}")
         return []
+
+
+def search_tmdb(api_key: str, query: str, language: str = "it-IT") -> list:
+    """
+    Search TMDB for movies and TV shows.
+
+    Args:
+        api_key: TMDB API key
+        query: Search query
+        language: Language code (e.g., 'it-IT', 'en-US')
+
+    Returns:
+        List of results with title, media_type, tmdb_id, year, overview
+    """
+    if not api_key or not query:
+        return []
+
+    try:
+        # TMDB multi search endpoint
+        url = "https://api.themoviedb.org/3/search/multi"
+        params = {
+            "api_key": api_key,
+            "query": query,
+            "language": language,
+            "include_adult": "false"
+        }
+
+        response = requests.get(url, params=params, timeout=10)
+
+        if response.status_code != 200:
+            print(f"   -> TMDB API error: {response.status_code}")
+            return []
+
+        data = response.json()
+        results = data.get("results", [])
+
+        normalized = []
+        for item in results:
+            media_type = item.get("media_type")
+
+            # Only include movies and TV shows
+            if media_type not in ["movie", "tv"]:
+                continue
+
+            # Get title (different field for movies vs TV)
+            title = item.get("title") if media_type == "movie" else item.get("name")
+
+            # Get year from release_date or first_air_date
+            date_field = item.get("release_date") if media_type == "movie" else item.get("first_air_date")
+            year = None
+            if date_field:
+                try:
+                    year = int(date_field.split("-")[0])
+                except (ValueError, IndexError):
+                    pass
+
+            normalized.append({
+                "title": title,
+                "media_type": media_type,
+                "tmdb_id": item.get("id"),
+                "year": year,
+                "overview": item.get("overview", ""),
+                "poster_path": item.get("poster_path"),
+                "original_title": item.get("original_title") if media_type == "movie" else item.get("original_name")
+            })
+
+        return normalized
+
+    except requests.exceptions.RequestException as exc:
+        print(f"   -> Impossibile contattare TMDB: {exc}")
+        return []
+
+
+def get_tmdb_tv_details(api_key: str, tv_id: int, language: str = "it-IT") -> dict:
+    """
+    Get TV show details from TMDB including seasons.
+
+    Args:
+        api_key: TMDB API key
+        tv_id: TMDB TV show ID
+        language: Language code (e.g., 'it-IT', 'en-US')
+
+    Returns:
+        Dictionary with TV show details including seasons list
+    """
+    if not api_key or not tv_id:
+        return {}
+
+    try:
+        url = f"https://api.themoviedb.org/3/tv/{tv_id}"
+        params = {
+            "api_key": api_key,
+            "language": language
+        }
+
+        response = requests.get(url, params=params, timeout=10)
+
+        if response.status_code != 200:
+            print(f"   -> TMDB API error: {response.status_code}")
+            return {}
+
+        data = response.json()
+
+        # Extract season information
+        seasons = []
+        for season in data.get("seasons", []):
+            season_num = season.get("season_number")
+            # Skip season 0 (specials) if desired, or include it
+            if season_num is not None:
+                seasons.append({
+                    "season_number": season_num,
+                    "name": season.get("name", f"Season {season_num}"),
+                    "episode_count": season.get("episode_count", 0),
+                    "air_date": season.get("air_date")
+                })
+
+        return {
+            "tmdb_id": data.get("id"),
+            "name": data.get("name"),
+            "seasons": seasons,
+            "number_of_seasons": data.get("number_of_seasons", 0),
+            "poster_path": data.get("poster_path")
+        }
+
+    except requests.exceptions.RequestException as exc:
+        print(f"   -> Impossibile contattare TMDB: {exc}")
+        return {}
+
+
+def check_emby_availability(emby_servers: list, tmdb_id: int, media_type: Optional[str] = None) -> list:
+    """
+    Check if content is available on any Emby server using TMDB ID.
+
+    Args:
+        emby_servers: List of Emby server configurations
+        tmdb_id: TMDB ID to search for
+        media_type: Optional media type ("movie" or "tv") to refine search
+
+    Returns:
+        List of server info dicts where content is found, with keys:
+        - server_id: Server ID
+        - server_name: Server name
+        - server_icon: Server icon (emoji or text)
+        - item_id: Emby item ID
+        - item_name: Item name
+    """
+    if not emby_servers or not tmdb_id:
+        return []
+
+    found_servers = []
+    provider_id_key = "Tmdb"
+    normalized_type = _normalize_media_type(media_type)
+    include_types = None
+    if normalized_type == "tv":
+        include_types = "Series"
+    elif normalized_type == "movie":
+        include_types = "Movie"
+
+    for server in emby_servers:
+        try:
+            url = server.get("url", "").rstrip("/")
+            api_key = server.get("api_key", "")
+            server_name = server.get("name", "Emby Server")
+            server_id = server.get("id", "")
+            server_icon = server.get("icon") or "📺"  # Default icon
+
+            if not url or not api_key:
+                continue
+
+            # Search by provider ID (TMDB)
+            search_url = f"{url}/Items"
+            params = {
+                "AnyProviderIdEquals": f"{provider_id_key}.{tmdb_id}",
+                "Recursive": "true",
+                "Fields": "ProviderIds",
+                "api_key": api_key
+            }
+            if include_types:
+                params["IncludeItemTypes"] = include_types
+
+            response = requests.get(search_url, params=params, timeout=5)
+
+            if response.status_code != 200:
+                continue
+
+            data = response.json()
+            items = data.get("Items", [])
+
+            if items:
+                # Content found on this server
+                item = items[0]  # Take first match
+                found_servers.append({
+                    "server_id": server_id,
+                    "server_name": server_name,
+                    "server_icon": server_icon,
+                    "item_id": item.get("Id"),
+                    "item_name": item.get("Name", "")
+                })
+
+        except requests.exceptions.RequestException:
+            # Skip servers that fail
+            continue
+        except Exception:
+            # Skip any other errors
+            continue
+
+    return found_servers
+
+
+def _coerce_jellyseerr_status(value):
+    """Normalize Jellyseerr status to an integer code."""
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered.isdigit():
+            return int(lowered)
+        mapping = {
+            "unknown": 1,
+            "pending": 2,
+            "processing": 3,
+            "partial": 4,
+            "available": 5
+        }
+        return mapping.get(lowered)
+    return None
+
+
+def _describe_jellyseerr_status(status_code):
+    """Return (status_key, status_label, icon) for Jellyseerr status codes."""
+    mapping = {
+        1: ("unknown", "Stato sconosciuto", "❔"),
+        2: ("pending", "Richiesto", "🕒"),
+        3: ("processing", "In lavorazione", "⚙️"),
+        4: ("partial", "Parziale", "🌓"),
+        5: ("available", "Disponibile", "✅")
+    }
+    return mapping.get(status_code, ("present", "Presente", "📌"))
+
+
+def check_jellyseerr_availability(tmdb_id, media_type, config):
+    """Check if a TMDB item is present on Jellyseerr."""
+    if not tmdb_id or not config:
+        return None
+    if not (config.get("JELLYSEERR_URL") and config.get("JELLYSEERR_API_KEY")):
+        return None
+    cache = {}
+    tmdb_payload, resolved_type = _fetch_tmdb_payload(
+        tmdb_id,
+        [_normalize_media_type(media_type)] if media_type else [],
+        config,
+        cache
+    )
+    if not tmdb_payload:
+        return None
+
+    media_info = tmdb_payload.get("mediaInfo") or tmdb_payload.get("media") or {}
+    if not isinstance(media_info, dict) or not media_info:
+        return None
+
+    status_value = media_info.get("status") or tmdb_payload.get("status")
+    status_code = _coerce_jellyseerr_status(status_value)
+    if status_code != 5:
+        return None
+
+    status_key, status_label, icon = _describe_jellyseerr_status(status_code)
+    return {
+        "label": "Jellyseerr",
+        "status": status_key,
+        "status_label": status_label,
+        "icon": icon,
+        "media_type": resolved_type or _normalize_media_type(media_type)
+    }

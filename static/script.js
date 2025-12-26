@@ -550,7 +550,7 @@
             const selectAll = block.querySelector('[data-bucket-select-all]');
             const updateSelectState = () => {
                 if (!selectAll) return;
-                const visibleRows = rows.filter(row => !row.classList.contains('filter-hidden'));
+                const visibleRows = rows.filter(row => !row.classList.contains('filter-hidden') && !row.classList.contains('manual-filter-hidden'));
                 if (!visibleRows.length) {
                     selectAll.checked = false;
                     return;
@@ -583,7 +583,7 @@
             }
             if (selectAll) {
                 selectAll.addEventListener('change', () => {
-                    const visibleRows = rows.filter(row => !row.classList.contains('filter-hidden'));
+                    const visibleRows = rows.filter(row => !row.classList.contains('filter-hidden') && !row.classList.contains('manual-filter-hidden'));
                     visibleRows.forEach(row => {
                         const checkbox = row.querySelector('.result-select');
                         if (checkbox) checkbox.checked = selectAll.checked;
@@ -602,12 +602,15 @@
                     const mainTbody = table.querySelector(':scope > tbody');
                     if (!mainTbody) return;
 
-                    const allCheckboxes = mainTbody.querySelectorAll(':scope > tr[data-result-row] .result-select');
-                    // Additional filter to absolutely exclude any checkboxes inside .duplicates-panel
+                    const allCheckboxes = Array.from(mainTbody.querySelectorAll(':scope > tr[data-result-row] .result-select'))
+                        .filter(cb => {
+                            if (cb.closest('.duplicates-panel')) return false;
+                            const row = cb.closest('tr[data-result-row]');
+                            if (!row) return false;
+                            return !row.classList.contains('filter-hidden') && !row.classList.contains('manual-filter-hidden');
+                        });
                     allCheckboxes.forEach(cb => {
-                        if (!cb.closest('.duplicates-panel')) {
-                            cb.checked = bucketSelectAllCheckbox.checked;
-                        }
+                        cb.checked = bucketSelectAllCheckbox.checked;
                     });
                 });
 
@@ -624,7 +627,12 @@
 
                             // Get all main result checkboxes, explicitly excluding those in .duplicates-panel
                             const allCheckboxes = Array.from(mainTbody.querySelectorAll(':scope > tr[data-result-row] .result-select'))
-                                .filter(cb => !cb.closest('.duplicates-panel'));
+                                .filter(cb => {
+                                    if (cb.closest('.duplicates-panel')) return false;
+                                    const row = cb.closest('tr[data-result-row]');
+                                    if (!row) return false;
+                                    return !row.classList.contains('filter-hidden') && !row.classList.contains('manual-filter-hidden');
+                                });
                             const checkedCount = allCheckboxes.filter(cb => cb.checked).length;
 
                             bucketSelectAllCheckbox.checked = checkedCount === allCheckboxes.length && allCheckboxes.length > 0;
@@ -1525,3 +1533,2036 @@
                 });
             });
         });
+
+        // TMDB Autocomplete for Independent Search
+        const independentQueryInput = document.getElementById('independent-query');
+        const tmdbSuggestions = document.getElementById('tmdb-suggestions');
+        const tmdbSelectedCard = document.getElementById('tmdb-selected-card');
+        const tmdbClearBtn = document.getElementById('tmdb-clear-btn');
+        const tmdbSeasonPicker = document.getElementById('tmdb-season-picker');
+        const tmdbSelectedAvailability = document.getElementById('tmdb-selected-availability');
+        const tmdbSelectedAvailabilityLabel = document.getElementById('tmdb-selected-availability-label');
+        const tmdbSelectedAvailabilityIcons = document.getElementById('tmdb-selected-availability-icons');
+        const tmdbEmbyBrowser = document.getElementById('tmdb-selected-emby-browser');
+        const tmdbEmbyBrowserTitle = document.getElementById('tmdb-emby-browser-title');
+        const tmdbEmbyBrowserClose = document.getElementById('tmdb-emby-browser-close');
+        const tmdbEmbySeasons = document.getElementById('tmdb-emby-seasons');
+        const tmdbEmbyEpisodes = document.getElementById('tmdb-emby-episodes');
+        const tmdbEmbyDetails = document.getElementById('tmdb-emby-details');
+        const jellyseerrBtn = document.getElementById('jellyseerr-request-btn');
+        const mediaTypeSelect = document.getElementById('independent-media-type');
+
+        let tmdbAbortController = null;
+        let tmdbDebounceTimer = null;
+        let selectedTmdbData = null;
+        let activeEmbyServerId = null;
+        let activeEmbyItemId = null;
+        let activeEmbySeasonId = null;
+        let activeEmbySourceIndex = null;
+        let lastEmbyDetails = null;
+        let tmdbRequestToken = 0;
+
+        if (independentQueryInput && tmdbSuggestions) {
+            const setEmbyBrowserVisible = (isVisible) => {
+                if (!tmdbEmbyBrowser) {
+                    return;
+                }
+                tmdbEmbyBrowser.classList.toggle('is-hidden', !isVisible);
+            };
+
+            const clearActiveEmbyServer = () => {
+                activeEmbyServerId = null;
+                activeEmbyItemId = null;
+                activeEmbySeasonId = null;
+                activeEmbySourceIndex = null;
+                if (tmdbSelectedAvailabilityIcons) {
+                    tmdbSelectedAvailabilityIcons.querySelectorAll('.emby-server-btn').forEach(btn => {
+                        btn.classList.remove('is-active');
+                    });
+                }
+            };
+
+            const resetEmbyBrowser = () => {
+                if (tmdbEmbySeasons) tmdbEmbySeasons.innerHTML = '';
+                if (tmdbEmbyEpisodes) tmdbEmbyEpisodes.innerHTML = '';
+                if (tmdbEmbyDetails) tmdbEmbyDetails.innerHTML = '';
+                if (tmdbEmbyBrowserTitle) tmdbEmbyBrowserTitle.textContent = 'Dettagli Emby';
+                activeEmbySourceIndex = null;
+                lastEmbyDetails = null;
+                setEmbyBrowserVisible(false);
+            };
+
+            const clearTmdbSelection = () => {
+                selectedTmdbData = null;
+                if (tmdbSelectedCard) tmdbSelectedCard.classList.add('is-hidden');
+                if (tmdbSeasonPicker) tmdbSeasonPicker.classList.add('is-hidden');
+                if (jellyseerrBtn) jellyseerrBtn.classList.add('is-hidden');
+                if (tmdbSelectedAvailability) tmdbSelectedAvailability.classList.add('is-hidden');
+                if (tmdbSelectedAvailabilityIcons) tmdbSelectedAvailabilityIcons.innerHTML = '';
+                if (tmdbSelectedAvailabilityLabel) tmdbSelectedAvailabilityLabel.textContent = 'Disponibile su:';
+                clearActiveEmbyServer();
+                lastEmbyDetails = null;
+                resetEmbyBrowser();
+
+                // Clear hidden fields
+                const fields = ['tmdb-id', 'tmdb-type', 'tmdb-title', 'tmdb-original-title', 'tmdb-year', 'tmdb-poster'];
+                fields.forEach(id => {
+                    const field = document.getElementById(id);
+                    if (field) field.value = '';
+                });
+
+                // Clear year input if present
+                const yearInput = document.getElementById('independent-year');
+                if (yearInput) yearInput.value = '';
+            };
+
+            const setAvailabilityMessage = (message) => {
+                if (!tmdbSelectedAvailability || !tmdbSelectedAvailabilityLabel) {
+                    return;
+                }
+                tmdbSelectedAvailabilityLabel.textContent = message;
+                if (tmdbSelectedAvailabilityIcons) {
+                    tmdbSelectedAvailabilityIcons.innerHTML = '';
+                }
+                tmdbSelectedAvailability.classList.remove('is-hidden');
+            };
+
+            const renderEmbyAvailability = (servers) => {
+                if (!tmdbSelectedAvailability || !tmdbSelectedAvailabilityLabel || !tmdbSelectedAvailabilityIcons) {
+                    return;
+                }
+                tmdbSelectedAvailabilityIcons.innerHTML = '';
+                if (!Array.isArray(servers) || servers.length === 0) {
+                    tmdbSelectedAvailabilityLabel.textContent = 'Non presente su Emby';
+                    tmdbSelectedAvailability.classList.remove('is-hidden');
+                    return;
+                }
+                tmdbSelectedAvailabilityLabel.textContent = 'Disponibile su:';
+                servers.forEach(entry => {
+                    if (!entry || !entry.server_id || !entry.item_id) {
+                        return;
+                    }
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = 'emby-server-btn';
+                    button.textContent = entry.server_icon || '📺';
+                    button.title = entry.server_name ? `Disponibile su ${entry.server_name}` : 'Disponibile su Emby';
+                    button.dataset.serverId = entry.server_id;
+                    button.dataset.itemId = entry.item_id;
+                    button.dataset.serverName = entry.server_name || '';
+                    button.dataset.serverIcon = entry.server_icon || '📺';
+                    tmdbSelectedAvailabilityIcons.appendChild(button);
+                });
+                tmdbSelectedAvailability.classList.remove('is-hidden');
+            };
+
+            const formatSeasonLabel = (seasonNumber, name) => {
+                if (Number.isFinite(seasonNumber)) {
+                    if (seasonNumber === 0) {
+                        return 'Speciali';
+                    }
+                    return `S${String(seasonNumber).padStart(2, '0')}`;
+                }
+                return name || 'Stagione';
+            };
+
+            const formatEpisodeLabel = (episodeNumber, name) => {
+                if (Number.isFinite(episodeNumber)) {
+                    const base = `E${String(episodeNumber).padStart(2, '0')}`;
+                    return name ? `${base} · ${name}` : base;
+                }
+                return name || 'Episodio';
+            };
+
+            const appendDetailRow = (container, label, value) => {
+                const row = document.createElement('div');
+                row.className = 'emby-detail-row';
+                const labelEl = document.createElement('span');
+                labelEl.className = 'emby-detail-label';
+                labelEl.textContent = label;
+                const valueEl = document.createElement('span');
+                valueEl.className = 'emby-detail-value';
+                valueEl.textContent = value ? String(value) : '—';
+                row.appendChild(labelEl);
+                row.appendChild(valueEl);
+                container.appendChild(row);
+            };
+
+            const buildEmbyDetailTitle = (details) => {
+                if (!details) {
+                    return '';
+                }
+                const seriesName = details.series_name || '';
+                const title = details.title || '';
+                const year = details.year ? ` (${details.year})` : '';
+                const seasonNumber = Number.isFinite(details.season_number) ? details.season_number : null;
+                const episodeNumber = Number.isFinite(details.episode_number) ? details.episode_number : null;
+                const episodeName = details.episode_name || '';
+                if (seriesName && seasonNumber !== null && episodeNumber !== null) {
+                    const code = `S${String(seasonNumber).padStart(2, '0')}E${String(episodeNumber).padStart(2, '0')}`;
+                    const epSuffix = episodeName ? ` - ${episodeName}` : '';
+                    return `${seriesName} · ${code}${epSuffix}`;
+                }
+                if (title) {
+                    return `${title}${year}`;
+                }
+                if (seriesName) {
+                    return `${seriesName}${year}`;
+                }
+                return '';
+            };
+
+            const renderEmbyDetails = (details, options = {}) => {
+                if (!tmdbEmbyDetails) {
+                    return;
+                }
+                tmdbEmbyDetails.innerHTML = '';
+                lastEmbyDetails = details || null;
+                if (!details) {
+                    tmdbEmbyDetails.innerHTML = '<div class="tagline">Dettagli non disponibili.</div>';
+                    return;
+                }
+                const titleText = buildEmbyDetailTitle(details);
+                if (titleText) {
+                    const titleEl = document.createElement('div');
+                    titleEl.className = 'emby-details-title';
+                    titleEl.textContent = titleText;
+                    tmdbEmbyDetails.appendChild(titleEl);
+                }
+                const sources = Array.isArray(details.sources) ? details.sources : [];
+                if (!sources.length) {
+                    tmdbEmbyDetails.innerHTML += '<div class="tagline">Nessun file disponibile.</div>';
+                    return;
+                }
+
+                const preferredResolution = options.preferredResolution || '';
+                let selectedIndex = Number.isFinite(options.sourceIndex) ? options.sourceIndex : null;
+                if (selectedIndex === null && preferredResolution) {
+                    const matchIndex = sources.findIndex(source => {
+                        const label = source.resolution_label || source.resolution || '';
+                        return label === preferredResolution;
+                    });
+                    if (matchIndex >= 0) {
+                        selectedIndex = matchIndex;
+                    }
+                }
+                if (selectedIndex === null && Number.isFinite(activeEmbySourceIndex)) {
+                    selectedIndex = activeEmbySourceIndex;
+                }
+                if (selectedIndex === null || selectedIndex < 0 || selectedIndex >= sources.length) {
+                    selectedIndex = 0;
+                }
+                activeEmbySourceIndex = selectedIndex;
+
+                if (sources.length > 1) {
+                    const chips = document.createElement('div');
+                    chips.className = 'emby-resolution-chips';
+                    sources.forEach((source, index) => {
+                        const label = source.resolution_label || source.resolution || `File ${index + 1}`;
+                        const button = document.createElement('button');
+                        button.type = 'button';
+                        button.className = 'emby-resolution-btn';
+                        if (index === selectedIndex) {
+                            button.classList.add('is-active');
+                        }
+                        button.textContent = label;
+                        button.dataset.sourceIndex = String(index);
+                        chips.appendChild(button);
+                    });
+                    tmdbEmbyDetails.appendChild(chips);
+                }
+
+                const source = sources[selectedIndex];
+                const card = document.createElement('div');
+                card.className = 'emby-source-card';
+                if (sources.length > 1) {
+                    const label = document.createElement('div');
+                    label.className = 'emby-source-title';
+                    label.textContent = `File ${selectedIndex + 1}`;
+                    card.appendChild(label);
+                }
+                appendDetailRow(card, 'Risoluzione', source.resolution_label || source.resolution);
+                appendDetailRow(card, 'Codec video', source.video_codec);
+                appendDetailRow(card, 'Codec audio', source.audio_codec);
+                const bitrateLabel = source.bitrate_mbps ? `${source.bitrate_mbps} Mbps` : '';
+                appendDetailRow(card, 'Bitrate', bitrateLabel);
+                appendDetailRow(card, 'Path', source.path);
+                if (Array.isArray(source.audio_tracks) && source.audio_tracks.length) {
+                    const list = document.createElement('ul');
+                    list.className = 'emby-detail-tracks';
+                    source.audio_tracks.forEach(track => {
+                        const li = document.createElement('li');
+                        li.textContent = track;
+                        list.appendChild(li);
+                    });
+                    card.appendChild(list);
+                }
+                tmdbEmbyDetails.appendChild(card);
+            };
+
+            const loadEmbyItemDetails = async (serverId, itemId, options = {}) => {
+                if (!tmdbEmbyDetails) {
+                    return;
+                }
+                tmdbEmbyDetails.innerHTML = '<div class="tagline">Caricamento dettagli...</div>';
+                const currentServer = activeEmbyServerId;
+                lastEmbyDetails = null;
+                try {
+                    const resp = await csrfFetch(
+                        `/api/emby/item-details?server_id=${encodeURIComponent(serverId)}&item_id=${encodeURIComponent(itemId)}`
+                    );
+                    const data = await resp.json().catch(() => ({}));
+                    if (currentServer !== activeEmbyServerId) {
+                        return;
+                    }
+                    if (!resp.ok || data.success === false) {
+                        tmdbEmbyDetails.innerHTML = `<div class="tagline">${data.message || 'Dettagli non disponibili.'}</div>`;
+                        return;
+                    }
+                    renderEmbyDetails(data.details, options);
+                } catch (err) {
+                    if (currentServer !== activeEmbyServerId) {
+                        return;
+                    }
+                    tmdbEmbyDetails.innerHTML = '<div class="tagline">Errore di rete durante il recupero dettagli.</div>';
+                }
+            };
+
+            const renderEmbySeasons = (seasons) => {
+                if (!tmdbEmbySeasons) {
+                    return;
+                }
+                tmdbEmbySeasons.innerHTML = '';
+                if (!Array.isArray(seasons) || seasons.length === 0) {
+                    tmdbEmbySeasons.innerHTML = '<div class="tagline">Nessuna stagione trovata.</div>';
+                    return;
+                }
+                const title = document.createElement('div');
+                title.className = 'emby-section-title';
+                title.textContent = 'Stagioni presenti';
+                const list = document.createElement('div');
+                list.className = 'emby-season-list';
+                seasons.forEach(season => {
+                    const parsedSeason = Number(season.season_number);
+                    const seasonNumber = Number.isFinite(parsedSeason) ? parsedSeason : null;
+                    const labelBase = formatSeasonLabel(seasonNumber, season.name);
+                    const countSuffix = season.episode_count ? ` (${season.episode_count})` : '';
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = 'emby-chip emby-season-btn';
+                    button.textContent = `${labelBase}${countSuffix}`;
+                    button.dataset.seasonId = season.season_id || '';
+                    if (seasonNumber !== null) {
+                        button.dataset.seasonNumber = String(seasonNumber);
+                    }
+                    list.appendChild(button);
+                });
+                tmdbEmbySeasons.appendChild(title);
+                tmdbEmbySeasons.appendChild(list);
+            };
+
+            const loadEmbySeasons = async (serverId, seriesId) => {
+                if (!tmdbEmbySeasons) {
+                    return;
+                }
+                tmdbEmbySeasons.innerHTML = '<div class="tagline">Caricamento stagioni...</div>';
+                if (tmdbEmbyEpisodes) tmdbEmbyEpisodes.innerHTML = '';
+                if (tmdbEmbyDetails) tmdbEmbyDetails.innerHTML = '';
+                activeEmbySeasonId = null;
+                const currentServer = activeEmbyServerId;
+                try {
+                    const resp = await csrfFetch(
+                        `/api/emby/series-seasons?server_id=${encodeURIComponent(serverId)}&series_id=${encodeURIComponent(seriesId)}`
+                    );
+                    const data = await resp.json().catch(() => ({}));
+                    if (currentServer !== activeEmbyServerId) {
+                        return;
+                    }
+                    if (!resp.ok || data.success === false) {
+                        tmdbEmbySeasons.innerHTML = `<div class="tagline">${data.message || 'Stagioni non disponibili.'}</div>`;
+                        return;
+                    }
+                    renderEmbySeasons(data.seasons || []);
+                } catch (err) {
+                    if (currentServer !== activeEmbyServerId) {
+                        return;
+                    }
+                    tmdbEmbySeasons.innerHTML = '<div class="tagline">Errore di rete durante il recupero stagioni.</div>';
+                }
+            };
+
+            const renderEmbyEpisodes = (episodes) => {
+                if (!tmdbEmbyEpisodes) {
+                    return;
+                }
+                tmdbEmbyEpisodes.innerHTML = '';
+                if (!Array.isArray(episodes) || episodes.length === 0) {
+                    tmdbEmbyEpisodes.innerHTML = '<div class="tagline">Nessun episodio trovato.</div>';
+                    return;
+                }
+                const title = document.createElement('div');
+                title.className = 'emby-section-title';
+                title.textContent = 'Episodi presenti';
+                const list = document.createElement('div');
+                list.className = 'emby-episode-list';
+                episodes.forEach(episode => {
+                    const parsedEpisode = Number(episode.episode_number);
+                    const episodeNumber = Number.isFinite(parsedEpisode) ? parsedEpisode : null;
+                    const label = episodeNumber !== null
+                        ? `E${String(episodeNumber).padStart(2, '0')}`
+                        : 'Episodio';
+                    const row = document.createElement('div');
+                    row.className = 'emby-episode-row';
+                    const labelEl = document.createElement('span');
+                    labelEl.className = 'emby-episode-label';
+                    labelEl.textContent = label;
+                    const dot = document.createElement('span');
+                    dot.className = 'emby-episode-sep';
+                    dot.textContent = '·';
+                    const resWrap = document.createElement('div');
+                    resWrap.className = 'emby-episode-resolutions';
+                    const rawResolutions = Array.isArray(episode.resolutions) ? episode.resolutions : [];
+                    const normalizedResolutions = rawResolutions.map(entry => {
+                        if (typeof entry === 'string') {
+                            return { label: entry, itemId: episode.episode_id };
+                        }
+                        if (entry && typeof entry === 'object') {
+                            return {
+                                label: entry.label || '',
+                                itemId: entry.item_id || entry.itemId || episode.episode_id
+                            };
+                        }
+                        return { label: '', itemId: episode.episode_id };
+                    }).filter(entry => entry.label);
+                    if (!normalizedResolutions.length) {
+                        const placeholder = document.createElement('span');
+                        placeholder.className = 'tagline';
+                        placeholder.textContent = '—';
+                        resWrap.appendChild(placeholder);
+                    } else {
+                        normalizedResolutions.forEach((resolution, index) => {
+                            const chip = document.createElement('button');
+                            chip.type = 'button';
+                            chip.className = 'emby-resolution-chip';
+                            chip.textContent = resolution.label;
+                            chip.dataset.itemId = resolution.itemId || '';
+                            chip.dataset.resolution = resolution.label;
+                            resWrap.appendChild(chip);
+                            if (index < normalizedResolutions.length - 1) {
+                                const sep = document.createElement('span');
+                                sep.className = 'emby-resolution-sep';
+                                sep.textContent = '|';
+                                resWrap.appendChild(sep);
+                            }
+                        });
+                    }
+                    row.appendChild(labelEl);
+                    row.appendChild(dot);
+                    row.appendChild(resWrap);
+                    list.appendChild(row);
+                });
+                tmdbEmbyEpisodes.appendChild(title);
+                tmdbEmbyEpisodes.appendChild(list);
+            };
+
+            const loadEmbyEpisodes = async (serverId, seasonId) => {
+                if (!tmdbEmbyEpisodes) {
+                    return;
+                }
+                tmdbEmbyEpisodes.innerHTML = '<div class="tagline">Caricamento episodi...</div>';
+                if (tmdbEmbyDetails) tmdbEmbyDetails.innerHTML = '';
+                const currentServer = activeEmbyServerId;
+                try {
+                    const resp = await csrfFetch(
+                        `/api/emby/season-episodes?server_id=${encodeURIComponent(serverId)}&season_id=${encodeURIComponent(seasonId)}`
+                    );
+                    const data = await resp.json().catch(() => ({}));
+                    if (currentServer !== activeEmbyServerId) {
+                        return;
+                    }
+                    if (!resp.ok || data.success === false) {
+                        tmdbEmbyEpisodes.innerHTML = `<div class="tagline">${data.message || 'Episodi non disponibili.'}</div>`;
+                        return;
+                    }
+                    renderEmbyEpisodes(data.episodes || []);
+                    if (tmdbEmbyDetails) {
+                        tmdbEmbyDetails.innerHTML = '<div class="tagline">Seleziona una risoluzione per i dettagli.</div>';
+                    }
+                } catch (err) {
+                    if (currentServer !== activeEmbyServerId) {
+                        return;
+                    }
+                    tmdbEmbyEpisodes.innerHTML = '<div class="tagline">Errore di rete durante il recupero episodi.</div>';
+                }
+            };
+
+            const openEmbyServer = async (context) => {
+                if (!context || !context.serverId || !context.itemId) {
+                    return;
+                }
+                activeEmbySourceIndex = null;
+                lastEmbyDetails = null;
+                if (tmdbEmbyBrowserTitle) {
+                    const titleParts = [context.serverIcon, context.serverName].filter(Boolean).join(' ');
+                    tmdbEmbyBrowserTitle.textContent = titleParts || 'Dettagli Emby';
+                }
+                setEmbyBrowserVisible(true);
+                if (selectedTmdbData && selectedTmdbData.media_type === 'tv') {
+                    await loadEmbySeasons(context.serverId, context.itemId);
+                } else {
+                    if (tmdbEmbySeasons) tmdbEmbySeasons.innerHTML = '';
+                    if (tmdbEmbyEpisodes) tmdbEmbyEpisodes.innerHTML = '';
+                    await loadEmbyItemDetails(context.serverId, context.itemId);
+                }
+            };
+
+            const loadEmbyAvailability = async (item) => {
+                if (!tmdbSelectedAvailability || !item || !item.tmdb_id) {
+                    return;
+                }
+                setAvailabilityMessage('Verifica Emby...');
+                try {
+                    const resp = await csrfFetch('/api/emby/availability', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({tmdb_id: item.tmdb_id, media_type: item.media_type})
+                    });
+                    const data = await resp.json().catch(() => ({}));
+                    if (!resp.ok || data.success === false) {
+                        setAvailabilityMessage(data.message || 'Errore verifica Emby');
+                        return;
+                    }
+                    renderEmbyAvailability(data.available_on || []);
+                } catch (err) {
+                    setAvailabilityMessage('Errore verifica Emby');
+                }
+            };
+
+            const showTmdbSelection = async (item) => {
+                selectedTmdbData = item;
+                activeEmbyServerId = null;
+                activeEmbyItemId = null;
+                activeEmbySeasonId = null;
+                resetEmbyBrowser();
+
+                // Update query field with year
+                const yearText = item.year ? ` (${item.year})` : '';
+                independentQueryInput.value = `${item.title}${yearText}`;
+
+                // Set hidden fields
+                const tmdbIdField = document.getElementById('tmdb-id');
+                const tmdbTypeField = document.getElementById('tmdb-type');
+                const tmdbTitleField = document.getElementById('tmdb-title');
+                const tmdbOriginalField = document.getElementById('tmdb-original-title');
+                const tmdbYearField = document.getElementById('tmdb-year');
+                const tmdbPosterField = document.getElementById('tmdb-poster');
+
+                if (tmdbIdField) tmdbIdField.value = item.tmdb_id || '';
+                if (tmdbTypeField) tmdbTypeField.value = item.media_type || '';
+                if (tmdbTitleField) tmdbTitleField.value = item.title || '';
+                if (tmdbOriginalField) tmdbOriginalField.value = item.original_title || '';
+                if (tmdbYearField) tmdbYearField.value = item.year || '';
+                if (tmdbPosterField) tmdbPosterField.value = item.poster_path || '';
+
+                // Set year field
+                const yearInput = document.getElementById('independent-year');
+                if (yearInput && item.year) yearInput.value = item.year;
+
+                // Set media type
+                if (mediaTypeSelect && item.media_type) {
+                    mediaTypeSelect.value = item.media_type;
+                }
+
+                // Show selected card
+                if (tmdbSelectedCard) {
+                    const titleEl = document.getElementById('tmdb-selected-title');
+                    const yearEl = document.getElementById('tmdb-selected-year');
+                    const originalEl = document.getElementById('tmdb-selected-original');
+                    const posterEl = document.getElementById('tmdb-selected-poster');
+
+                    if (titleEl) titleEl.textContent = item.title;
+                    if (yearEl) yearEl.textContent = item.year || '';
+                    if (originalEl && item.original_title && item.original_title !== item.title) {
+                        originalEl.textContent = `Titolo originale: ${item.original_title}`;
+                    } else if (originalEl) {
+                        originalEl.textContent = '';
+                    }
+
+                    // Set poster image
+                    if (posterEl && item.poster_path) {
+                        posterEl.style.backgroundImage = `url(https://image.tmdb.org/t/p/w92${item.poster_path})`;
+                        posterEl.dataset.empty = 'false';
+                    } else if (posterEl) {
+                        posterEl.style.backgroundImage = '';
+                        posterEl.dataset.empty = 'true';
+                    }
+
+                    tmdbSelectedCard.classList.remove('is-hidden');
+                }
+
+                // Show Jellyseerr button if available
+                if (jellyseerrBtn) {
+                    jellyseerrBtn.classList.remove('is-hidden');
+                }
+
+                loadEmbyAvailability(item);
+
+                // Load and show seasons for TV shows
+                if (item.media_type === 'tv' && tmdbSeasonPicker) {
+                    try {
+                        const resp = await csrfFetch(`/api/tmdb/tv/${item.tmdb_id}`);
+                        if (resp.ok) {
+                            const data = await resp.json();
+                            if (data.success && data.details && data.details.seasons) {
+                                const seasonList = document.getElementById('tmdb-season-list');
+                                if (seasonList) {
+                                    seasonList.innerHTML = '';
+
+                                    data.details.seasons.forEach(season => {
+                                        const seasonNum = season.season_number;
+                                        const seasonLabel = seasonNum === 0 ? 'Speciali' : `S${String(seasonNum).padStart(2, '0')}`;
+
+                                        const label = document.createElement('label');
+                                        label.innerHTML = `
+                                            <input type="checkbox"
+                                                   name="seasons"
+                                                   value="${seasonNum}"
+                                                   data-season="${seasonNum}"
+                                                   ${seasonNum === 0 ? '' : 'checked'}>
+                                            ${seasonLabel}
+                                        `;
+                                        seasonList.appendChild(label);
+                                    });
+
+                                    tmdbSeasonPicker.classList.remove('is-hidden');
+                                }
+                            }
+                        }
+                    } catch (err) {
+                        console.error('Error loading TV seasons:', err);
+                    }
+                }
+            };
+
+            if (tmdbEmbyBrowserClose) {
+                tmdbEmbyBrowserClose.addEventListener('click', () => {
+                    clearActiveEmbyServer();
+                    resetEmbyBrowser();
+                });
+            }
+
+            if (tmdbSelectedAvailability) {
+                tmdbSelectedAvailability.addEventListener('click', (event) => {
+                    const button = event.target.closest('.emby-server-btn');
+                    if (!button) {
+                        return;
+                    }
+                    const serverId = button.dataset.serverId;
+                    const itemId = button.dataset.itemId;
+                    if (!serverId || !itemId) {
+                        return;
+                    }
+                    const isAlreadyActive = button.classList.contains('is-active');
+                    if (isAlreadyActive) {
+                        clearActiveEmbyServer();
+                        resetEmbyBrowser();
+                        return;
+                    }
+                    activeEmbyServerId = serverId;
+                    activeEmbyItemId = itemId;
+                    activeEmbySeasonId = null;
+                    if (tmdbSelectedAvailabilityIcons) {
+                        tmdbSelectedAvailabilityIcons.querySelectorAll('.emby-server-btn').forEach(btn => {
+                            btn.classList.toggle('is-active', btn === button);
+                        });
+                    }
+                    openEmbyServer({
+                        serverId,
+                        itemId,
+                        serverName: button.dataset.serverName || '',
+                        serverIcon: button.dataset.serverIcon || ''
+                    });
+                });
+            }
+
+            if (tmdbEmbySeasons) {
+                tmdbEmbySeasons.addEventListener('click', (event) => {
+                    const button = event.target.closest('.emby-season-btn');
+                    if (!button || !activeEmbyServerId) {
+                        return;
+                    }
+                    const seasonId = button.dataset.seasonId;
+                    if (!seasonId) {
+                        return;
+                    }
+                    activeEmbySeasonId = seasonId;
+                    tmdbEmbySeasons.querySelectorAll('.emby-season-btn').forEach(btn => {
+                        btn.classList.toggle('is-active', btn === button);
+                    });
+                    loadEmbyEpisodes(activeEmbyServerId, seasonId);
+                });
+            }
+
+            if (tmdbEmbyEpisodes) {
+                tmdbEmbyEpisodes.addEventListener('click', (event) => {
+                    const button = event.target.closest('.emby-resolution-chip');
+                    if (!button || !activeEmbyServerId) {
+                        return;
+                    }
+                    const itemId = button.dataset.itemId;
+                    if (!itemId) {
+                        return;
+                    }
+                    const resolution = button.dataset.resolution || '';
+                    tmdbEmbyEpisodes.querySelectorAll('.emby-resolution-chip').forEach(btn => {
+                        btn.classList.toggle('is-active', btn === button);
+                    });
+                    loadEmbyItemDetails(activeEmbyServerId, itemId, { preferredResolution: resolution });
+                });
+            }
+
+            if (tmdbEmbyDetails) {
+                tmdbEmbyDetails.addEventListener('click', (event) => {
+                    const button = event.target.closest('.emby-resolution-btn');
+                    if (!button || !lastEmbyDetails) {
+                        return;
+                    }
+                    const index = Number(button.dataset.sourceIndex);
+                    if (!Number.isFinite(index)) {
+                        return;
+                    }
+                    renderEmbyDetails(lastEmbyDetails, { sourceIndex: index });
+                });
+            }
+
+            const clearTmdbAutocomplete = () => {
+                if (tmdbSuggestions) {
+                    tmdbSuggestions.innerHTML = '';
+                    tmdbSuggestions.classList.add('is-hidden');
+                }
+            };
+
+            const showTmdbAutocomplete = async (query) => {
+                if (!query || query.length < 2) {
+                    clearTmdbAutocomplete();
+                    return;
+                }
+
+                const requestToken = ++tmdbRequestToken;
+                if (tmdbAbortController) {
+                    tmdbAbortController.abort();
+                }
+                tmdbAbortController = new AbortController();
+
+                try {
+                    const resp = await csrfFetch(`/api/tmdb/search?query=${encodeURIComponent(query)}`, {
+                        signal: tmdbAbortController.signal
+                    });
+                    if (requestToken !== tmdbRequestToken) {
+                        return;
+                    }
+
+                    if (!resp.ok) {
+                        const data = await resp.json().catch(() => ({}));
+                        console.error('TMDB search error:', data.message || 'Unknown error');
+                        clearTmdbAutocomplete();
+                        return;
+                    }
+
+                    const data = await resp.json();
+                    if (requestToken !== tmdbRequestToken) {
+                        return;
+                    }
+                    if (!data.success || !data.results || !data.results.length) {
+                        clearTmdbAutocomplete();
+                        return;
+                    }
+
+                    tmdbSuggestions.innerHTML = '';
+
+                    // Check availability for all items in parallel
+                    const availabilityPromises = data.results.map(item =>
+                        csrfFetch('/api/tmdb/check-availability', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({tmdb_id: item.tmdb_id, media_type: item.media_type})
+                        })
+                        .then(resp => resp.ok ? resp.json() : {success: false, available_on: []})
+                        .then(avData => ({...item, available_on: avData.available_on || []}))
+                        .catch(() => ({...item, available_on: []}))
+                    );
+
+                    const itemsWithAvailability = await Promise.all(availabilityPromises);
+                    if (requestToken !== tmdbRequestToken) {
+                        return;
+                    }
+                    tmdbSuggestions.innerHTML = '';
+
+                    itemsWithAvailability.forEach(item => {
+                        const li = document.createElement('li');
+                        li.className = 'tmdb-suggestion-item';
+                        li.setAttribute('role', 'option');
+
+                        const mediaTypeLabel = item.media_type === 'movie' ? 'Film' : 'Serie TV';
+                        const yearText = item.year ? ` (${item.year})` : '';
+
+                        // Build availability icons HTML
+                        let serverIconsHtml = '';
+                        if (item.available_on && item.available_on.length > 0) {
+                            const icons = item.available_on
+                                .map(entry => {
+                                    const label = entry.label || entry.server_name || 'Jellyseerr';
+                                    const icon = entry.icon || entry.server_icon || 'JS';
+                                    const statusLabel = entry.status_label ? `: ${entry.status_label}` : '';
+                                    return `<span class="emby-icon" title="${label}${statusLabel}">${icon}</span>`;
+                                })
+                                .join(' ');
+                            serverIconsHtml = `<span class="emby-availability">${icons}</span>`;
+                        }
+
+                        li.innerHTML = `
+                            <div class="suggestion-title">
+                                <span class="suggestion-title-text">${item.title}${yearText}</span>
+                                ${serverIconsHtml}
+                            </div>
+                            <div class="suggestion-meta">${mediaTypeLabel} • TMDB ID: ${item.tmdb_id}</div>
+                        `;
+
+                        li.addEventListener('click', () => {
+                            showTmdbSelection(item);
+                            clearTmdbAutocomplete();
+                        });
+
+                        tmdbSuggestions.appendChild(li);
+                    });
+
+                    tmdbSuggestions.classList.remove('is-hidden');
+
+                } catch (err) {
+                    if (err.name !== 'AbortError') {
+                        console.error('TMDB autocomplete error:', err);
+                    }
+                    clearTmdbAutocomplete();
+                }
+            };
+
+            // Input event handler
+            independentQueryInput.addEventListener('input', (e) => {
+                const query = e.target.value.trim();
+
+                // Clear selection if user is typing
+                clearTmdbSelection();
+
+                if (tmdbDebounceTimer) {
+                    clearTimeout(tmdbDebounceTimer);
+                }
+
+                if (!query || query.length < 2) {
+                    clearTmdbAutocomplete();
+                    return;
+                }
+
+                tmdbDebounceTimer = setTimeout(() => {
+                    showTmdbAutocomplete(query);
+                }, 300);
+            });
+
+            // Blur event handler
+            independentQueryInput.addEventListener('blur', () => {
+                setTimeout(() => {
+                    clearTmdbAutocomplete();
+                }, 200);
+            });
+
+            // Clear button handler
+            if (tmdbClearBtn) {
+                tmdbClearBtn.addEventListener('click', () => {
+                    independentQueryInput.value = '';
+                    clearTmdbSelection();
+                    independentQueryInput.focus();
+                });
+            }
+
+            // Click outside to close
+            document.addEventListener('click', (e) => {
+                if (!tmdbSuggestions.contains(e.target) && e.target !== independentQueryInput) {
+                    clearTmdbAutocomplete();
+                }
+            });
+        }
+
+        const initIndependentSearchCustomize = () => {
+            const customizeToggle = document.getElementById('independent-customize');
+            const advancedPanel = document.getElementById('independent-advanced-options');
+            const manualMediaTypeSelect = document.getElementById('independent-media-type');
+            if (!customizeToggle || !advancedPanel) {
+                return;
+            }
+
+            const updateMediaOptions = () => {
+                const selectedType = manualMediaTypeSelect ? manualMediaTypeSelect.value : '';
+                advancedPanel.querySelectorAll('[data-media-scope]').forEach(block => {
+                    const scope = block.dataset.mediaScope;
+                    const shouldShow = scope === 'both' || (selectedType && scope === selectedType);
+                    block.classList.toggle('is-hidden', !shouldShow);
+                });
+            };
+
+            const updatePanelVisibility = () => {
+                advancedPanel.classList.toggle('is-hidden', !customizeToggle.checked);
+                updateMediaOptions();
+            };
+
+            customizeToggle.addEventListener('change', updatePanelVisibility);
+            if (manualMediaTypeSelect) {
+                manualMediaTypeSelect.addEventListener('change', updateMediaOptions);
+            }
+            updatePanelVisibility();
+        };
+
+        const initManualSearch = () => {
+            const form = document.getElementById('independent-search-form');
+            const resultsTarget = document.querySelector('[data-results-target="independent-search"]');
+            if (!form || !resultsTarget) {
+                return;
+            }
+            const queryInput = document.getElementById('independent-query');
+            const manualMediaTypeSelect = document.getElementById('independent-media-type');
+            const jellyseerrToggle = document.getElementById('independent-jellyseerr');
+            const customizeToggle = document.getElementById('independent-customize');
+            const advancedPanel = document.getElementById('independent-advanced-options');
+            const indexerInputs = form.querySelectorAll('input[name="indexer"]');
+            const includeFilter = document.getElementById('independent-include-filter');
+            const excludeFilter = document.getElementById('independent-exclude-filter');
+            const minSizeFilter = document.getElementById('independent-min-size');
+            const maxSizeFilter = document.getElementById('independent-max-size');
+            const submitButton = form.querySelector('button[type="submit"]');
+            const historyContainer = document.getElementById('independent-history');
+            const historyToggle = document.getElementById('independent-history-toggle');
+            const tmdbIdField = document.getElementById('tmdb-id');
+            const tmdbTypeField = document.getElementById('tmdb-type');
+            const tmdbTitleField = document.getElementById('tmdb-title');
+            const tmdbOriginalField = document.getElementById('tmdb-original-title');
+            const tmdbYearField = document.getElementById('tmdb-year');
+            const tmdbPosterField = document.getElementById('tmdb-poster');
+            const tmdbClearButton = document.getElementById('tmdb-clear-btn');
+            const tmdbInputWrap = document.getElementById('tmdb-input-wrap');
+            const tmdbSelectedCard = document.getElementById('tmdb-selected-card');
+            const seasonPicker = document.getElementById('tmdb-season-picker');
+            const seasonList = document.getElementById('tmdb-season-list');
+            const jellyseerrRequestButton = document.getElementById('jellyseerr-request-btn');
+            const embyModal = document.getElementById('emby-details-modal');
+            const embyModalTitle = document.getElementById('emby-detail-title');
+            const embyModalYear = document.getElementById('emby-detail-year');
+            const embyModalServer = document.getElementById('emby-detail-server');
+            const embyModalResolution = document.getElementById('emby-detail-resolution');
+            const embyModalVideo = document.getElementById('emby-detail-video');
+            const embyModalAudio = document.getElementById('emby-detail-audio');
+            const embyModalBitrate = document.getElementById('emby-detail-bitrate');
+            const embyModalPath = document.getElementById('emby-detail-path');
+            const embyModalTracks = document.getElementById('emby-detail-tracks');
+            const embyModalMessage = document.getElementById('emby-detail-message');
+            const manualOptionBlocks = form.querySelectorAll('[data-manual-option]');
+            const HISTORY_KEY = 'manualSearchHistory';
+            const HISTORY_LIMIT = 10;
+            let historyEntries = [];
+            let lastSearchContext = {};
+            let historyOpen = false;
+
+            const setLoading = (isLoading) => {
+                if (submitButton) {
+                    submitButton.disabled = isLoading;
+                    submitButton.classList.toggle('is-loading', isLoading);
+                }
+            };
+
+            const renderLoading = () => {
+                resultsTarget.classList.remove('has-results');
+                resultsTarget.innerHTML = `
+                    <div class="manual-results manual-loading">
+                        <div class="manual-spinner" aria-hidden="true"></div>
+                        <div class="tagline">Ricerca in corso...</div>
+                    </div>
+                `;
+            };
+
+            const escapeHtml = (value) => {
+                const text = String(value ?? '');
+                return text.replace(/[&<>"']/g, (match) => ({
+                    '&': '&amp;',
+                    '<': '&lt;',
+                    '>': '&gt;',
+                    '"': '&quot;',
+                    "'": '&#39;'
+                }[match]));
+            };
+
+            const normalizeHistoryEntry = (entry) => {
+                if (!entry || typeof entry.query !== 'string') {
+                    return null;
+                }
+                const query = entry.query.trim();
+                if (!query) {
+                    return null;
+                }
+                const mediaType = entry.media_type || 'unknown';
+                const indexers = Array.isArray(entry.indexers)
+                    ? Array.from(new Set(entry.indexers)).filter(Boolean).sort()
+                    : [];
+                return { query, media_type: mediaType, indexers };
+            };
+
+            const historyKeyFor = (entry) => {
+                const normalized = normalizeHistoryEntry(entry);
+                if (!normalized) {
+                    return '';
+                }
+                return `${normalized.query.toLowerCase()}|${normalized.media_type}|${normalized.indexers.join(',')}`;
+            };
+
+            const loadHistory = () => {
+                try {
+                    const stored = localStorage.getItem(HISTORY_KEY);
+                    const parsed = stored ? JSON.parse(stored) : [];
+                    return Array.isArray(parsed) ? parsed : [];
+                } catch (err) {
+                    return [];
+                }
+            };
+
+            const saveHistory = (entries) => {
+                try {
+                    localStorage.setItem(HISTORY_KEY, JSON.stringify(entries));
+                } catch (err) {
+                    // ignore storage errors
+                }
+            };
+
+            const storeHistoryEntry = (entry) => {
+                const normalized = normalizeHistoryEntry(entry);
+                if (!normalized) {
+                    return;
+                }
+                const key = historyKeyFor(normalized);
+                const items = loadHistory()
+                    .map(item => normalizeHistoryEntry(item))
+                    .filter(Boolean);
+                const filtered = items.filter(item => historyKeyFor(item) !== key);
+                filtered.unshift(normalized);
+                saveHistory(filtered.slice(0, HISTORY_LIMIT));
+            };
+
+            const formatMediaType = (value) => {
+                if (value === 'movie') {
+                    return 'Film';
+                }
+                if (value === 'tv') {
+                    return 'Serie TV';
+                }
+                return 'Non definito';
+            };
+
+            const formatIndexers = (indexers) => {
+                const labels = (indexers || []).map((entry) => {
+                    if (entry === 'prowlarr') {
+                        return 'Prowlarr';
+                    }
+                    if (entry === 'jackett') {
+                        return 'Jackett';
+                    }
+                    return entry;
+                });
+                return labels.join(', ');
+            };
+
+            const getSelectedSeasons = () => {
+                if (!seasonList) {
+                    return [];
+                }
+                return Array.from(seasonList.querySelectorAll('input[type="checkbox"][data-season]'))
+                    .filter(input => input.checked)
+                    .map(input => Number(input.value))
+                    .filter(value => Number.isFinite(value));
+            };
+
+            const clearTmdbSelection = () => {
+                if (tmdbClearButton) {
+                    tmdbClearButton.click();
+                    return;
+                }
+                if (tmdbSelectedCard) {
+                    tmdbSelectedCard.classList.add('is-hidden');
+                }
+                if (tmdbInputWrap) {
+                    tmdbInputWrap.classList.remove('is-hidden');
+                }
+                if (tmdbIdField) tmdbIdField.value = '';
+                if (tmdbTypeField) tmdbTypeField.value = '';
+                if (tmdbTitleField) tmdbTitleField.value = '';
+                if (tmdbOriginalField) tmdbOriginalField.value = '';
+                if (tmdbYearField) tmdbYearField.value = '';
+                if (tmdbPosterField) tmdbPosterField.value = '';
+                if (seasonList) {
+                    seasonList.innerHTML = '';
+                }
+                if (seasonPicker) {
+                    seasonPicker.classList.add('is-hidden');
+                }
+                if (jellyseerrRequestButton) {
+                    jellyseerrRequestButton.classList.add('is-hidden');
+                }
+            };
+
+            const renderHistoryList = () => {
+                if (!historyContainer) {
+                    return;
+                }
+                historyEntries = loadHistory()
+                    .map(entry => normalizeHistoryEntry(entry))
+                    .filter(Boolean);
+                if (!historyEntries.length) {
+                    historyContainer.innerHTML = '<div class="tagline history-empty">Nessuna ricerca salvata.</div>';
+                    return;
+                }
+                const items = historyEntries.map((entry, index) => `
+                    <div class="history-item" data-history-index="${index}">
+                        <div class="history-info">
+                            <div class="history-title">${escapeHtml(entry.query)}</div>
+                            <div class="history-meta">
+                                ${escapeHtml(formatMediaType(entry.media_type))} · ${escapeHtml(formatIndexers(entry.indexers))}
+                            </div>
+                        </div>
+                        <div class="history-actions">
+                            <button type="button"
+                                    class="icon-btn"
+                                    data-history-index="${index}"
+                                    data-history-action="run"
+                                    title="Ripeti ricerca">
+                                <img src="/static/icon/repeat.svg" alt="Ripeti">
+                            </button>
+                            <button type="button"
+                                    class="icon-btn"
+                                    data-history-index="${index}"
+                                    data-history-action="edit"
+                                    title="Modifica ricerca">
+                                <img src="/static/icon/edit.svg" alt="Modifica">
+                            </button>
+                            <button type="button"
+                                    class="icon-btn"
+                                    data-history-index="${index}"
+                                    data-history-action="delete"
+                                    title="Rimuovi dalla cronologia">
+                                <img src="/static/icon/trash.svg" alt="Elimina">
+                            </button>
+                        </div>
+                    </div>
+                `).join('');
+                historyContainer.innerHTML = items;
+            };
+
+            const hideHistoryList = () => {
+                if (!historyContainer) {
+                    return;
+                }
+                historyContainer.classList.add('is-hidden');
+                historyOpen = false;
+                if (historyToggle) {
+                    historyToggle.setAttribute('aria-expanded', 'false');
+                }
+            };
+
+            const showHistoryList = () => {
+                if (!historyContainer) {
+                    return;
+                }
+                renderHistoryList();
+                historyContainer.classList.remove('is-hidden');
+                historyOpen = true;
+                if (historyToggle) {
+                    historyToggle.setAttribute('aria-expanded', 'true');
+                }
+            };
+
+            const applyHistoryEntry = (entry, shouldSubmit) => {
+                if (!entry || !queryInput) {
+                    return;
+                }
+                clearTmdbSelection();
+                queryInput.value = entry.query || '';
+                if (manualMediaTypeSelect) {
+                    const mediaValue = entry.media_type === 'unknown' ? '' : (entry.media_type || '');
+                    manualMediaTypeSelect.value = mediaValue;
+                    manualMediaTypeSelect.dispatchEvent(new Event('change'));
+                }
+                indexerInputs.forEach(input => {
+                    input.checked = entry.indexers.includes(input.value);
+                    input.dispatchEvent(new Event('change'));
+                });
+                hideHistoryList();
+                if (shouldSubmit) {
+                    if (typeof form.requestSubmit === 'function') {
+                        form.requestSubmit();
+                    } else {
+                        form.dispatchEvent(new Event('submit', { cancelable: true }));
+                    }
+                } else {
+                    queryInput.focus();
+                }
+            };
+
+            const renderMessage = (message) => {
+                resultsTarget.classList.remove('has-results');
+                resultsTarget.innerHTML = `
+                    <div class="manual-results manual-empty">
+                        <div class="tagline">${escapeHtml(message)}</div>
+                    </div>
+                `;
+            };
+
+            const formatSize = (sizeGb) => {
+                if (!sizeGb || Number.isNaN(Number(sizeGb))) {
+                    return '—';
+                }
+                return `${Number(sizeGb).toFixed(2)} GB`;
+            };
+
+            const qbAvailable = document.body?.dataset.qbAvailable === 'true';
+            const normalizeBucket = (value) => {
+                const lowered = String(value || '').toLowerCase();
+                if (['2160p', '1080p', '720p', 'other'].includes(lowered)) {
+                    return lowered;
+                }
+                return 'other';
+            };
+            const renderResultActions = (item) => {
+                const actions = [];
+                const badgeIcon = item.server_icon || item.emby_icon || '📺';
+                const titleValue = String(item.title || '');
+                const yearValue = item.year ? String(item.year) : '';
+                const libraryBadge = item.in_library
+                    ? `<button type="button"
+                              class="badge success action emby-lookup-btn"
+                              data-title="${escapeHtml(titleValue)}"
+                              data-year="${escapeHtml(yearValue)}"
+                              data-emby-icon="${escapeHtml(badgeIcon)}"
+                              title="Dettagli Emby">${escapeHtml(badgeIcon)}</button>`
+                    : '';
+                if (libraryBadge) {
+                    actions.push(libraryBadge);
+                }
+                const qbLink = item.magnet || item.torrent || '';
+                if (qbAvailable && qbLink) {
+                    actions.push(`
+                        <button type="button" class="icon-btn qb-button" data-link="${escapeHtml(qbLink)}" title="Invia a qBittorrent">
+                            <img src="/static/icon/add.svg" alt="qBittorrent" class="action-icon-small">
+                        </button>
+                    `);
+                }
+                if (item.magnet) {
+                    actions.push(`
+                        <a class="icon-link" href="${escapeHtml(item.magnet)}" title="Apri magnet">
+                            <img src="/static/icon/magnet.svg" alt="Magnet" class="action-icon-small">
+                        </a>
+                    `);
+                }
+                if (item.torrent) {
+                    actions.push(`
+                        <a class="icon-link" href="${escapeHtml(item.torrent)}" title="Scarica torrent">
+                            <img src="/static/icon/down.svg" alt="Torrent" class="action-icon-small">
+                        </a>
+                    `);
+                }
+                if (item.web) {
+                    actions.push(`
+                        <a class="icon-link" href="${escapeHtml(item.web)}" target="_blank" rel="noopener" title="Apri pagina">
+                            <img src="/static/icon/link.svg" alt="Link" class="action-icon-small">
+                        </a>
+                    `);
+                }
+                if (!actions.length) {
+                    return '';
+                }
+                return `<span class="result-actions">${actions.join('')}</span>`;
+            };
+
+            const buildResolutionBlocks = (items, requestId, showEpisode) => {
+                const buckets = { '2160p': [], '1080p': [], '720p': [], 'other': [] };
+                items.forEach(item => {
+                    const bucket = normalizeBucket(item.resolution_bucket || item.resolution);
+                    buckets[bucket].push(item);
+                });
+                const labels = {
+                    '2160p': '2160p / 4K',
+                    '1080p': '1080p Full HD',
+                    '720p': '720p HD',
+                    'other': 'Altre risoluzioni'
+                };
+                const bucketOrder = ['2160p', '1080p', '720p', 'other'];
+                return bucketOrder.map(bucket => {
+                    const entries = buckets[bucket];
+                    if (!entries.length) {
+                        return '';
+                    }
+                    const sorted = showEpisode
+                        ? entries.slice().sort((a, b) => {
+                            const aSort = Number.isFinite(a.episode_sort) ? a.episode_sort : Number.POSITIVE_INFINITY;
+                            const bSort = Number.isFinite(b.episode_sort) ? b.episode_sort : Number.POSITIVE_INFINITY;
+                            if (aSort !== bSort) {
+                                return aSort - bSort;
+                            }
+                            return String(a.title || '').localeCompare(String(b.title || ''));
+                        })
+                        : entries;
+                    const rows = sorted.map(item => {
+                        const rawTitle = String(item.title || 'Titolo sconosciuto');
+                        const sizeValue = Number(item.size_gb);
+                        const sizeAttr = Number.isFinite(sizeValue) ? sizeValue.toFixed(2) : '';
+                        const source = escapeHtml(String(item.indexer || 'N/A'));
+                        const episodeCode = showEpisode ? (item.episode_code || '—') : '';
+                        return `
+                            <tr data-result-row
+                                data-request-id="${escapeHtml(requestId)}"
+                                data-bucket="${escapeHtml(bucket)}"
+                                data-magnet="${escapeHtml(item.magnet || '')}"
+                                data-torrent="${escapeHtml(item.torrent || '')}"
+                                data-web="${escapeHtml(item.web || '')}"
+                                data-title="${escapeHtml(rawTitle.toLowerCase())}"
+                                data-size-gb="${escapeHtml(sizeAttr)}">
+                                <td class="result-select-cell col-select">
+                                    <input type="checkbox" class="result-select">
+                                </td>
+                                ${showEpisode ? `<td class="col-episode">${escapeHtml(episodeCode)}</td>` : ''}
+                                <td class="col-title">
+                                    <div class="result-title">
+                                        <span class="title-text" data-original="${escapeHtml(rawTitle)}" data-request-id="${escapeHtml(requestId)}">${escapeHtml(rawTitle)}</span>
+                                        ${renderResultActions(item)}
+                                    </div>
+                                </td>
+                                <td class="col-size">${formatSize(item.size_gb)}</td>
+                                <td class="col-seed">${item.seeders ?? 0}</td>
+                                <td class="col-source">${source}</td>
+                            </tr>
+                        `;
+                    }).join('');
+                    return `
+                        <div class="resolution-block" data-bucket="${escapeHtml(bucket)}" data-request-id="${escapeHtml(requestId)}">
+                            <div class="resolution-header">
+                                <div class="resolution-header-row">
+                                    <h4 title="Raggruppamento automatico per risoluzione">${labels[bucket]} (${entries.length})</h4>
+                                    <input type="text"
+                                           class="block-filter"
+                                           placeholder="Filtra termini"
+                                           data-bucket-filter
+                                           title="Mostra solo i risultati che contengono questi termini (separa con virgole)">
+                                </div>
+                                <div class="batch-actions-icons">
+                                    <button type="button"
+                                            class="batch-icon-btn"
+                                            data-batch-action="qb"
+                                            title="Invia tutti i selezionati a qBittorrent"
+                                            ${qbAvailable ? '' : 'disabled'}>
+                                        <img src="/static/icon/add.svg" alt="qBittorrent" class="action-icon-batch">
+                                    </button>
+                                    <button type="button"
+                                            class="batch-icon-btn"
+                                            data-batch-action="magnet"
+                                            title="Scarica i magnet di tutti i selezionati">
+                                        <img src="/static/icon/magnet.svg" alt="Magnet" class="action-icon-batch">
+                                    </button>
+                                    <button type="button"
+                                            class="batch-icon-btn"
+                                            data-batch-action="torrent"
+                                            title="Scarica i file .torrent dei selezionati (se disponibili)">
+                                        <img src="/static/icon/down.svg" alt="Torrent" class="action-icon-batch">
+                                    </button>
+                                </div>
+                            </div>
+                            <table class="inner-table">
+                                <thead>
+                                    <tr>
+                                        <th class="result-select-cell col-select">
+                                            <input type="checkbox"
+                                                   class="bucket-select-all-checkbox"
+                                                   data-bucket="${escapeHtml(bucket)}"
+                                                   data-request-id="${escapeHtml(requestId)}"
+                                                   title="Seleziona/deseleziona tutti i risultati di questa risoluzione">
+                                        </th>
+                                        ${showEpisode ? '<th class="col-episode">Ep.</th>' : ''}
+                                        <th class="col-title">Titolo</th>
+                                        <th class="col-size">Dim (GB)</th>
+                                        <th class="col-seed">Seed</th>
+                                        <th class="col-source">Fonte</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${rows}
+                                </tbody>
+                            </table>
+                        </div>
+                    `;
+                }).join('');
+            };
+
+            const buildSeasonGroups = (items, mediaType) => {
+                if (mediaType !== 'tv') {
+                    return [{
+                        key: 'all',
+                        season: null,
+                        season_tag: '',
+                        items
+                    }];
+                }
+                const groups = new Map();
+                items.forEach(item => {
+                    const seasonNumber = Number.isFinite(item.season_number) ? item.season_number : null;
+                    const label = item.season_label ? String(item.season_label) : '';
+                    const tag = label
+                        ? (label.startsWith('S') ? label : `S${label}`)
+                        : (seasonNumber !== null ? `S${String(seasonNumber).padStart(2, '0')}` : 'Stagione completa');
+                    const key = tag ? tag.replace(/\s+/g, '_') : 'all';
+                    if (!groups.has(key)) {
+                        groups.set(key, { key, season: seasonNumber, season_tag: tag, items: [] });
+                    }
+                    groups.get(key).items.push(item);
+                });
+                return Array.from(groups.values()).sort((a, b) => {
+                    const aNum = Number.isFinite(a.season) ? a.season : Number.POSITIVE_INFINITY;
+                    const bNum = Number.isFinite(b.season) ? b.season : Number.POSITIVE_INFINITY;
+                    if (aNum !== bNum) {
+                        return aNum - bNum;
+                    }
+                    return String(a.key).localeCompare(String(b.key));
+                });
+            };
+
+            const resolveMediaType = (items, fallback) => {
+                if (fallback === 'movie' || fallback === 'tv') {
+                    return fallback;
+                }
+                const hasSeason = items.some(item => Number.isFinite(item.season_number) || item.season_label);
+                return hasSeason ? 'tv' : 'movie';
+            };
+
+            const renderResults = (results, warnings = []) => {
+                if (!Array.isArray(results) || results.length === 0) {
+                    renderMessage('Nessun risultato trovato.');
+                    return;
+                }
+                const warningBlock = warnings.length
+                    ? `<div class="tagline manual-warning">${warnings.map(escapeHtml).join(' · ')}</div>`
+                    : '';
+                const resolvedType = resolveMediaType(results, lastSearchContext.media_type);
+                const searchTitle = (lastSearchContext.title || '').trim() || 'Ricerca manuale';
+                const searchYear = lastSearchContext.year ? String(lastSearchContext.year) : '';
+                const titleLabel = searchYear ? `${searchTitle} (${searchYear})` : searchTitle;
+                const headingLabel = resolvedType === 'tv' ? 'Serie TV' : 'Film';
+                const groups = buildSeasonGroups(results, resolvedType);
+                const baseId = `manual-${Date.now()}`;
+                const rows = groups.map((group, index) => {
+                    const requestId = `${baseId}-${index}`;
+                    const seasonKey = group.key || 'all';
+                    const seasonSuffix = resolvedType === 'tv' && group.season_tag
+                        ? ` — ${group.season_tag}`
+                        : '';
+                    const detailKey = `${requestId}-${seasonKey}`;
+                    const detailsHtml = buildResolutionBlocks(group.items, requestId, resolvedType === 'tv');
+                    return `
+                        <tr class="results-row manual-results-row"
+                            data-request-id="${escapeHtml(requestId)}"
+                            data-season="${escapeHtml(seasonKey)}"
+                            data-sort-id="${index}"
+                            data-sort-title="${escapeHtml(titleLabel.toLowerCase())}"
+                            data-sort-results="${group.items.length}">
+                            <td class="select-col col-select"></td>
+                            <td class="col-id">—</td>
+                            <td class="title-cell clickable col-title">
+                                <strong>${escapeHtml(titleLabel)}${escapeHtml(seasonSuffix)}</strong>
+                            </td>
+                            <td class="actions-col col-actions">
+                                <span class="tagline">Manuale</span>
+                            </td>
+                            <td class="details-cell clickable col-results">
+                                <div class="result-updated">Risultati ricerca manuale</div>
+                                <div class="results-count">${group.items.length} risultati</div>
+                            </td>
+                        </tr>
+                        <tr class="details-row expanded" data-details-for="${escapeHtml(detailKey)}">
+                            <td colspan="5" class="details-content">
+                                ${detailsHtml}
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+
+                resultsTarget.innerHTML = `
+                    <div class="manual-results">
+                        <div class="manual-results-header">
+                            <div class="tagline">Risultati ${headingLabel.toLowerCase()}: ${results.length}</div>
+                        </div>
+                        ${warningBlock}
+                        <table class="results-table sortable-table manual-results-table">
+                            <thead>
+                                <tr>
+                                    <th class="select-col col-select"></th>
+                                    <th class="col-id">ID</th>
+                                    <th class="col-title">Titolo</th>
+                                    <th class="actions-col col-actions">Azioni</th>
+                                    <th class="col-results">Risultati</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${rows}
+                            </tbody>
+                        </table>
+                        <p class="tagline manual-empty-state" data-manual-empty>
+                            Nessun risultato corrisponde ai filtri selezionati.
+                        </p>
+                    </div>
+                `;
+                resultsTarget.classList.add('has-results');
+                resultsTarget.querySelectorAll('.resolution-block').forEach(block => {
+                    if (typeof setupResolutionBlock === 'function') {
+                        setupResolutionBlock(block);
+                    }
+                });
+                applyManualFilters();
+            };
+
+            const parseTerms = (value) => (value || '')
+                .split(',')
+                .map(term => term.trim().toLowerCase())
+                .filter(Boolean);
+
+            const applyManualFilters = () => {
+                const jellyseerrActive = jellyseerrToggle ? jellyseerrToggle.checked : false;
+                const includeTerms = jellyseerrActive ? [] : parseTerms(includeFilter ? includeFilter.value : '');
+                const excludeTerms = jellyseerrActive ? [] : parseTerms(excludeFilter ? excludeFilter.value : '');
+                const minSizeValue = jellyseerrActive || !minSizeFilter ? NaN : parseFloat(minSizeFilter.value);
+                const maxSizeValue = jellyseerrActive || !maxSizeFilter ? NaN : parseFloat(maxSizeFilter.value);
+                const minSize = Number.isNaN(minSizeValue) ? null : minSizeValue;
+                const maxSize = Number.isNaN(maxSizeValue) ? null : maxSizeValue;
+                const rows = resultsTarget.querySelectorAll('tr[data-result-row]');
+                let visibleCount = 0;
+                rows.forEach(row => {
+                    const title = row.dataset.title || '';
+                    const includeOk = includeTerms.length === 0 || includeTerms.every(term => title.includes(term));
+                    const excludeOk = excludeTerms.length === 0 || !excludeTerms.some(term => title.includes(term));
+                    let sizeOk = true;
+                    if (minSize !== null || maxSize !== null) {
+                        const sizeRaw = parseFloat(row.dataset.sizeGb || '');
+                        if (Number.isNaN(sizeRaw)) {
+                            sizeOk = false;
+                        } else {
+                            if (minSize !== null && sizeRaw < minSize) {
+                                sizeOk = false;
+                            }
+                            if (maxSize !== null && sizeRaw > maxSize) {
+                                sizeOk = false;
+                            }
+                        }
+                    }
+                    const shouldShow = includeOk && excludeOk && sizeOk;
+                    row.classList.toggle('manual-filter-hidden', !shouldShow);
+                    if (shouldShow) {
+                        visibleCount += 1;
+                    }
+                });
+                resultsTarget.querySelectorAll('.resolution-block').forEach(block => {
+                    const blockRows = Array.from(block.querySelectorAll('tr[data-result-row]'));
+                    const hasVisible = blockRows.some(row => !row.classList.contains('manual-filter-hidden') && !row.classList.contains('filter-hidden'));
+                    block.classList.toggle('is-hidden', !hasVisible);
+                });
+                const emptyState = resultsTarget.querySelector('[data-manual-empty]');
+                if (emptyState) {
+                    emptyState.classList.toggle('is-hidden', visibleCount > 0);
+                }
+            };
+
+            const updateManualOptionsState = () => {
+                const jellyseerrActive = jellyseerrToggle ? jellyseerrToggle.checked : false;
+                manualOptionBlocks.forEach(block => {
+                    block.classList.toggle('is-disabled', jellyseerrActive);
+                    block.querySelectorAll('input, select, textarea, button').forEach(field => {
+                        field.disabled = jellyseerrActive;
+                    });
+                });
+                if (customizeToggle) {
+                    if (jellyseerrActive && customizeToggle.checked) {
+                        customizeToggle.checked = false;
+                        customizeToggle.dispatchEvent(new Event('change'));
+                    }
+                    customizeToggle.disabled = jellyseerrActive;
+                }
+                if (advancedPanel && jellyseerrActive) {
+                    advancedPanel.classList.add('is-hidden');
+                }
+                applyManualFilters();
+            };
+
+            const setModalText = (element, value, fallback = '—') => {
+                if (!element) {
+                    return;
+                }
+                element.textContent = value ? String(value) : fallback;
+            };
+
+            const resetEmbyModal = () => {
+                setModalText(embyModalTitle, '');
+                setModalText(embyModalYear, '');
+                setModalText(embyModalServer, '');
+                setModalText(embyModalResolution, '');
+                setModalText(embyModalVideo, '');
+                setModalText(embyModalAudio, '');
+                setModalText(embyModalBitrate, '');
+                setModalText(embyModalPath, '');
+                if (embyModalTracks) {
+                    embyModalTracks.innerHTML = '';
+                }
+                if (embyModalMessage) {
+                    embyModalMessage.textContent = '';
+                }
+            };
+
+            const showEmbyModal = (visible) => {
+                if (!embyModal) {
+                    return;
+                }
+                embyModal.classList.toggle('is-hidden', !visible);
+                embyModal.setAttribute('aria-hidden', visible ? 'false' : 'true');
+            };
+
+            if (embyModal) {
+                embyModal.addEventListener('click', (event) => {
+                    if (event.target === embyModal || event.target.closest('[data-modal-close]')) {
+                        showEmbyModal(false);
+                    }
+                });
+                document.addEventListener('keydown', (event) => {
+                    if (event.key === 'Escape' && !embyModal.classList.contains('is-hidden')) {
+                        showEmbyModal(false);
+                    }
+                });
+            }
+
+            const copyMagnet = async (magnet) => {
+                if (!magnet) {
+                    return;
+                }
+                try {
+                    await navigator.clipboard.writeText(magnet);
+                    showToast('Magnet copiato negli appunti', 'success');
+                } catch (err) {
+                    window.prompt('Copia il magnet:', magnet);
+                }
+            };
+
+            if (jellyseerrRequestButton) {
+                jellyseerrRequestButton.addEventListener('click', async () => {
+                    const tmdbId = tmdbIdField ? tmdbIdField.value : '';
+                    const mediaValue = (tmdbTypeField && tmdbTypeField.value)
+                        ? tmdbTypeField.value
+                        : (manualMediaTypeSelect ? manualMediaTypeSelect.value : '');
+                    if (!tmdbId || !mediaValue) {
+                        showToast('Seleziona prima un titolo da richiedere', 'error');
+                        return;
+                    }
+                    const payload = {
+                        mediaId: tmdbId,
+                        mediaType: mediaValue
+                    };
+                    const selectedSeasons = getSelectedSeasons();
+                    if (selectedSeasons.length) {
+                        payload.seasons = selectedSeasons;
+                    }
+                    try {
+                        const response = await csrfFetch('/api/jellyseerr/request', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        const data = await response.json().catch(() => ({}));
+                        if (response.ok && data.success) {
+                            showToast('Richiesta inviata a Jellyseerr', 'success');
+                        } else {
+                            showToast(data.message || 'Errore invio a Jellyseerr', 'error');
+                        }
+                    } catch (err) {
+                        showToast('Errore invio a Jellyseerr', 'error');
+                    }
+                });
+            }
+
+            if (jellyseerrToggle) {
+                jellyseerrToggle.addEventListener('change', updateManualOptionsState);
+                updateManualOptionsState();
+            }
+
+            if (historyContainer && historyToggle) {
+                historyToggle.addEventListener('click', () => {
+                    if (historyOpen) {
+                        hideHistoryList();
+                    } else {
+                        showHistoryList();
+                    }
+                });
+                historyContainer.addEventListener('click', (event) => {
+                    const button = event.target.closest('[data-history-action]');
+                    if (!button) {
+                        return;
+                    }
+                    const index = Number(button.dataset.historyIndex);
+                    const entry = historyEntries[index];
+                    if (!entry) {
+                        return;
+                    }
+                    const action = button.dataset.historyAction;
+                    if (action === 'delete') {
+                        const updated = historyEntries.filter((_, idx) => idx !== index);
+                        saveHistory(updated);
+                        renderHistoryList();
+                        return;
+                    }
+                    applyHistoryEntry(entry, action === 'run');
+                });
+                document.addEventListener('click', (event) => {
+                    const historyWrapper = historyToggle.closest('.search-history');
+                    if (historyWrapper && historyWrapper.contains(event.target)) {
+                        return;
+                    }
+                    hideHistoryList();
+                });
+            }
+
+            const updateSelectionState = () => {
+                const selectAll = resultsTarget.querySelector('.manual-select-all');
+                const checkboxes = Array.from(resultsTarget.querySelectorAll('.manual-result-select'));
+                const checked = checkboxes.filter(cb => cb.checked);
+                if (selectAll) {
+                    selectAll.checked = checked.length > 0 && checked.length === checkboxes.length;
+                    selectAll.indeterminate = checked.length > 0 && checked.length < checkboxes.length;
+                }
+                const bulkButton = resultsTarget.querySelector('[data-manual-bulk]');
+                if (bulkButton) {
+                    bulkButton.disabled = checked.length === 0;
+                    bulkButton.classList.toggle('is-hidden', checked.length === 0);
+                }
+            };
+
+            const attachManualHandlers = () => {
+                const selectAll = resultsTarget.querySelector('.manual-select-all');
+                if (selectAll) {
+                    selectAll.addEventListener('change', () => {
+                        resultsTarget.querySelectorAll('.manual-result-select').forEach(cb => {
+                            cb.checked = selectAll.checked;
+                        });
+                        updateSelectionState();
+                    });
+                }
+                resultsTarget.querySelectorAll('.manual-result-select').forEach(cb => {
+                    cb.addEventListener('change', updateSelectionState);
+                });
+                const bulkButton = resultsTarget.querySelector('[data-manual-bulk]');
+                if (bulkButton) {
+                    bulkButton.addEventListener('click', async () => {
+                        const selectedRows = Array.from(resultsTarget.querySelectorAll('tbody tr'))
+                            .filter(row => row.querySelector('.manual-result-select')?.checked);
+                        if (!selectedRows.length) {
+                            return;
+                        }
+                        bulkButton.disabled = true;
+                        let successCount = 0;
+                        for (const row of selectedRows) {
+                            const link = row.dataset.link || row.dataset.magnet;
+                            if (!link) {
+                                continue;
+                            }
+                            try {
+                                const resp = await csrfFetch('/send-torrent', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ link })
+                                });
+                                if (resp.ok) {
+                                    successCount += 1;
+                                }
+                            } catch (err) {
+                                // ignore
+                            }
+                        }
+                        bulkButton.disabled = false;
+                        updateSelectionState();
+                        showToast(
+                            successCount
+                                ? `Inviati ${successCount} elementi a qBittorrent`
+                                : 'Nessun elemento inviato a qBittorrent',
+                            successCount ? 'success' : 'error'
+                        );
+                    });
+                }
+                updateSelectionState();
+            };
+
+            resultsTarget.addEventListener('click', async (event) => {
+                const downloadBtn = event.target.closest('.manual-download-btn');
+                if (downloadBtn) {
+                    const link = downloadBtn.dataset.link;
+                    if (!link) {
+                        showToast('Link non disponibile per questo risultato', 'error');
+                        return;
+                    }
+                    downloadBtn.disabled = true;
+                    try {
+                        const response = await csrfFetch('/send-torrent', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ link })
+                        });
+                        const payload = await response.json().catch(() => ({}));
+                        if (response.ok && payload.success) {
+                            showToast('Inviato a qBittorrent', 'success');
+                        } else {
+                            showToast(payload.message || 'Errore invio a qBittorrent', 'error');
+                        }
+                    } catch (err) {
+                        showToast('Errore invio a qBittorrent', 'error');
+                    } finally {
+                        downloadBtn.disabled = false;
+                    }
+                    return;
+                }
+
+                const copyBtn = event.target.closest('.manual-copy-btn');
+                if (copyBtn) {
+                    const magnet = copyBtn.dataset.magnet;
+                    if (!magnet) {
+                        return;
+                    }
+                    await copyMagnet(magnet);
+                    return;
+                }
+
+                const embyBtn = event.target.closest('.emby-lookup-btn');
+                if (embyBtn) {
+                    const title = embyBtn.dataset.title;
+                    if (!title) {
+                        return;
+                    }
+                    resetEmbyModal();
+                    if (embyModalMessage) {
+                        embyModalMessage.textContent = 'Recupero dettagli Emby...';
+                    }
+                    showEmbyModal(true);
+                    const params = new URLSearchParams({ title });
+                    const yearValue = embyBtn.dataset.year;
+                    if (yearValue) {
+                        params.set('year', yearValue);
+                    }
+                    try {
+                        const response = await csrfFetch(`/api/emby/lookup?${params.toString()}`);
+                        const data = await response.json().catch(() => ({}));
+                        if (!response.ok || data.success === false) {
+                            if (embyModalMessage) {
+                                embyModalMessage.textContent = data.message || 'Errore durante la ricerca Emby.';
+                            }
+                            return;
+                        }
+                        if (!data.found || !data.details) {
+                            if (embyModalMessage) {
+                                embyModalMessage.textContent = data.message || 'Titolo non trovato in Emby.';
+                            }
+                            return;
+                        }
+                        const details = data.details || {};
+                        setModalText(embyModalTitle, details.title || title);
+                        setModalText(embyModalYear, details.year);
+                        const serverLabel = details.server_icon
+                            ? `${details.server_icon} ${details.server || ''}`.trim()
+                            : details.server;
+                        setModalText(embyModalServer, serverLabel);
+                        setModalText(embyModalResolution, details.resolution);
+                        setModalText(embyModalVideo, details.video_codec);
+                        setModalText(embyModalAudio, details.audio_codec);
+                        setModalText(
+                            embyModalBitrate,
+                            details.bitrate_mbps ? `${details.bitrate_mbps} Mbps` : ''
+                        );
+                        setModalText(embyModalPath, details.path);
+                        if (embyModalTracks) {
+                            embyModalTracks.innerHTML = '';
+                            const tracks = Array.isArray(details.audio_tracks) ? details.audio_tracks : [];
+                            if (tracks.length) {
+                                tracks.forEach(track => {
+                                    const li = document.createElement('li');
+                                    li.textContent = track;
+                                    embyModalTracks.appendChild(li);
+                                });
+                            }
+                        }
+                        if (embyModalMessage) {
+                            embyModalMessage.textContent = '';
+                        }
+                        if (details.server_icon) {
+                            embyBtn.textContent = details.server_icon;
+                            embyBtn.dataset.embyIcon = details.server_icon;
+                        }
+                        if (details.server) {
+                            embyBtn.title = `Disponibile su ${details.server}`;
+                        }
+                    } catch (err) {
+                        if (embyModalMessage) {
+                            embyModalMessage.textContent = 'Errore di rete durante la ricerca Emby.';
+                        }
+                    }
+                    return;
+                }
+            });
+
+            if (includeFilter) {
+                includeFilter.addEventListener('input', applyManualFilters);
+            }
+            if (excludeFilter) {
+                excludeFilter.addEventListener('input', applyManualFilters);
+            }
+            if (minSizeFilter) {
+                minSizeFilter.addEventListener('input', applyManualFilters);
+            }
+            if (maxSizeFilter) {
+                maxSizeFilter.addEventListener('input', applyManualFilters);
+            }
+
+            form.addEventListener('keydown', (event) => {
+                if (event.key !== 'Enter') {
+                    return;
+                }
+                if (event.target && event.target.tagName === 'TEXTAREA') {
+                    return;
+                }
+                event.preventDefault();
+                if (typeof form.requestSubmit === 'function') {
+                    form.requestSubmit();
+                } else {
+                    form.dispatchEvent(new Event('submit', { cancelable: true }));
+                }
+            });
+
+            form.addEventListener('submit', async (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                const queryValue = (queryInput ? queryInput.value : '').trim();
+                if (!queryValue) {
+                    showToast('Inserisci un termine di ricerca', 'error');
+                    return;
+                }
+                const indexers = Array.from(indexerInputs)
+                    .filter(input => input.checked)
+                    .map(input => input.value);
+                if (!indexers.length) {
+                    showToast('Seleziona almeno un indexer', 'error');
+                    return;
+                }
+                const mediaType = (manualMediaTypeSelect && manualMediaTypeSelect.value)
+                    ? manualMediaTypeSelect.value
+                    : (tmdbTypeField ? tmdbTypeField.value : 'unknown');
+
+                const useCustomRules = customizeToggle
+                    ? customizeToggle.checked && !(jellyseerrToggle && jellyseerrToggle.checked)
+                    : false;
+
+                const payload = {
+                    query: queryValue,
+                    media_type: mediaType || 'unknown',
+                    indexers,
+                    use_jellyseerr_logic: jellyseerrToggle ? jellyseerrToggle.checked : false,
+                    use_custom_rules: useCustomRules,
+                    tmdb_id: tmdbIdField ? tmdbIdField.value : ''
+                };
+                lastSearchContext = {
+                    title: (tmdbTitleField && tmdbTitleField.value) ? tmdbTitleField.value : queryValue,
+                    year: tmdbYearField ? tmdbYearField.value : '',
+                    media_type: mediaType || ''
+                };
+
+                const selectedSeasons = getSelectedSeasons();
+                if (selectedSeasons.length) {
+                    payload.seasons = selectedSeasons;
+                }
+
+                // Add custom filters if enabled
+                if (useCustomRules) {
+                    const customRules = {};
+
+                    if (includeFilter && includeFilter.value.trim()) {
+                        customRules.include_filter = includeFilter.value.trim();
+                    }
+                    if (excludeFilter && excludeFilter.value.trim()) {
+                        customRules.exclude_filter = excludeFilter.value.trim();
+                    }
+                    if (minSizeFilter && minSizeFilter.value) {
+                        customRules.min_size_gb = parseFloat(minSizeFilter.value);
+                    }
+                    if (maxSizeFilter && maxSizeFilter.value) {
+                        customRules.max_size_gb = parseFloat(maxSizeFilter.value);
+                    }
+
+                    // Add advanced options
+                    const qualitySelect = document.getElementById('independent-quality');
+                    const languageSelect = document.getElementById('independent-language');
+                    const editionSelect = document.getElementById('independent-edition');
+                    const seasonInput = document.getElementById('independent-season');
+                    const episodeInput = document.getElementById('independent-episode');
+
+                    if (qualitySelect && qualitySelect.value) {
+                        customRules.quality = qualitySelect.value;
+                    }
+                    if (languageSelect && languageSelect.value) {
+                        customRules.audio_language = languageSelect.value;
+                    }
+                    if (editionSelect && editionSelect.value) {
+                        customRules.edition = editionSelect.value;
+                    }
+                    if (seasonInput && seasonInput.value) {
+                        customRules.season = parseInt(seasonInput.value);
+                    }
+                    if (episodeInput && episodeInput.value) {
+                        customRules.episode = parseInt(episodeInput.value);
+                    }
+
+                    if (Object.keys(customRules).length > 0) {
+                        payload.custom_rules = customRules;
+                    }
+                }
+
+                hideHistoryList();
+                setLoading(true);
+                renderLoading();
+                try {
+                    const response = await csrfFetch('/api/search/manual', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    const data = await response.json().catch(() => ({}));
+                    if (!response.ok || data.success === false) {
+                        renderMessage(data.message || 'Errore durante la ricerca.');
+                        setLoading(false);
+                        return;
+                    }
+                    if (Array.isArray(data.warnings) && data.warnings.length) {
+                        showToast(data.warnings.join(' · '), 'error');
+                    }
+                    storeHistoryEntry({
+                        query: queryValue,
+                        media_type: payload.media_type,
+                        indexers: payload.indexers
+                    });
+                    renderResults(data.results || [], data.warnings || []);
+                } catch (err) {
+                    renderMessage('Errore di rete durante la ricerca.');
+                } finally {
+                    setLoading(false);
+                }
+            });
+        };
+
+        initIndependentSearchCustomize();
+        initManualSearch();

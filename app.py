@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import re
+import uuid
 from datetime import datetime, date, timezone, time as dt_time, timedelta
 from functools import wraps
 
@@ -43,6 +44,7 @@ from api_clients import (
     _fetch_emby_scheduled_tasks,
     _stop_emby_task,
     _trigger_library_scan,
+    _call_emby_api,
     EMBY_ACTIONS,
     get_jellyseerr_requests,
     send_to_qbittorrent,
@@ -52,8 +54,14 @@ from api_clients import (
     _ping_qbittorrent,
     fetch_request_details,
     fetch_media_info,
+    search_jellyseerr,
+    submit_jellyseerr_request,
     search_prowlarr,
     search_jackett,
+    search_tmdb,
+    get_tmdb_tv_details,
+    check_emby_availability,
+    check_jellyseerr_availability,
     _extract_tmdb_id,
     _fetch_tmdb_payload
 )
@@ -147,6 +155,8 @@ DEFAULT_CONFIG = {
     "QBITTORRENT_URL": "",
     "QBITTORRENT_USERNAME": "",
     "QBITTORRENT_PASSWORD": "",
+    "TMDB_API_KEY": "",
+    "TMDB_LANGUAGE": "it-IT",
     "TARGET_LANGUAGES": ["ita", "italian"],
     "EXCLUDE_TAGS": ["md", "cam", "ts", "tc", "vmd", "sub", "subs", "forced", "screener"],
     "SEARCH_RULES": {
@@ -228,7 +238,9 @@ CONNECTION_FIELDS = [
     "JACKETT_API_KEY",
     "QBITTORRENT_URL",
     "QBITTORRENT_USERNAME",
-    "QBITTORRENT_PASSWORD"
+    "QBITTORRENT_PASSWORD",
+    "TMDB_API_KEY",
+    "TMDB_LANGUAGE"
 ]
 
 _ACTIVE_CONFIG = copy.deepcopy(DEFAULT_CONFIG)
@@ -246,6 +258,9 @@ _EMBY_STRM_GUARD = None
 EMBY_STRM_GUARD_KEY = "EMBY_STRM_GUARD"
 EMBY_STRM_GUARD_COOLDOWN_SECONDS = 10
 EMBY_STRM_GUARD_POLL_SECONDS = 5
+TMDB_API_BASE = "https://api.themoviedb.org/3"
+TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w342"
+TMDB_SEARCH_LIMIT = 15
 
 # --- UTILS CONFIG ---
 # Nota: _default_search_rules, _default_auto_tasks, _default_emby_settings sono ora importate da config.py
@@ -636,6 +651,121 @@ def _jackett_configured(config):
     """Check if Jackett is configured."""
     return bool(config.get("JACKETT_URL") and config.get("JACKETT_API_KEY"))
 
+def _coerce_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+def _manual_result_key(result):
+    return result.get("magnet") or result.get("torrent") or f"{result.get('title')}|{result.get('size_gb')}"
+
+def _extract_year_from_title(title):
+    if not title:
+        return None
+    match = re.search(r"(19|20)\d{2}", str(title))
+    if not match:
+        return None
+    return match.group(0)
+
+def _extract_season_hint_from_title(title):
+    if not title:
+        return None, None
+    text = str(title)
+    range_patterns = [
+        r"[Ss](\d{1,2})\s*[-–]\s*[Ss]?(\d{1,2})",
+        r"Season\s*(\d{1,2})\s*[-–]\s*(\d{1,2})",
+        r"Stagione\s*(\d{1,2})\s*[-–]\s*(\d{1,2})"
+    ]
+    for pattern in range_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            start = _try_parse_int(match.group(1))
+            end = _try_parse_int(match.group(2))
+            if start is not None and end is not None:
+                return None, f"S{start:02d}-S{end:02d}"
+    single_patterns = [
+        r"(?:^|\b)[Ss](\d{1,2})(?!\d)",
+        r"Season\s*(\d{1,2})",
+        r"Stagione\s*(\d{1,2})"
+    ]
+    for pattern in single_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            season = _try_parse_int(match.group(1))
+            if season is not None:
+                return season, f"S{season:02d}"
+    return None, None
+
+def _normalize_manual_result(raw):
+    title = raw.get("title") or ""
+    if not title:
+        return None
+    size_bytes = raw.get("size") or 0
+    size_gb = round(size_bytes / (1024**3), 2) if size_bytes else 0
+    seeders = _coerce_int(raw.get("seeders"), 0)
+    leechers = _coerce_int(raw.get("leechers") or raw.get("Leechers"), 0)
+    indexer = raw.get("indexer") or "N/A"
+    magnet = raw.get("magnet") or raw.get("magnetUri") or raw.get("magnetUrl")
+    guid = raw.get("guid")
+    if not magnet and isinstance(guid, str) and guid.startswith("magnet:"):
+        magnet = guid
+    torrent = raw.get("downloadUrl")
+    web = raw.get("infoUrl") or raw.get("indexerUrl") or raw.get("details")
+    season_num, episode_num, episode_code, episode_sort = _extract_episode_from_title(title)
+    season_label = None
+    if season_num is None:
+        season_num, season_label = _extract_season_hint_from_title(title)
+    if season_num is not None and season_label is None:
+        season_label = f"S{season_num:02d}"
+    resolution_bucket = _detect_resolution_bucket(title.lower())
+    year = _extract_year_from_title(title)
+    return {
+        "title": title,
+        "size_gb": size_gb,
+        "seeders": seeders,
+        "leechers": leechers,
+        "indexer": indexer,
+        "magnet": magnet,
+        "torrent": torrent,
+        "web": web,
+        "resolution": resolution_bucket,
+        "resolution_bucket": resolution_bucket,
+        "season_number": season_num,
+        "season_label": season_label,
+        "episode_code": episode_code,
+        "episode_sort": episode_sort,
+        "episode_number": episode_num,
+        "normalized_title": sanitize_title(title.lower()),
+        "year": year
+    }
+
+def _load_emby_library_title_index():
+    try:
+        backend = _ensure_db_backend()
+    except Exception:
+        return set()
+    try:
+        entries = backend.get_probe_queue()
+    except Exception:
+        entries = []
+    try:
+        history_entries = backend.get_probe_history(limit=5000)
+    except Exception:
+        history_entries = []
+    titles = set()
+    for entry in entries:
+        for key in ("series_name", "name"):
+            value = entry.get(key)
+            if value:
+                titles.add(sanitize_title(str(value).lower()))
+    for entry in history_entries:
+        for key in ("series_name", "name"):
+            value = entry.get(key)
+            if value:
+                titles.add(sanitize_title(str(value).lower()))
+    return titles
+
 def _should_use_prowlarr(config):
     """Determine if Prowlarr should be used."""
     rules = config.get("SEARCH_RULES", {})
@@ -708,12 +838,19 @@ def _parse_auto_task_payload(form, key, fallback):
 def _build_emby_server_from_form(form, existing):
     """Build Emby server configuration from form data."""
     server = existing.copy() if existing else {}
+
+    # Ensure new servers have an ID
+    if not server.get("id"):
+        server["id"] = str(uuid.uuid4())
+
     name = form.get("server_name") or form.get("emby_name")
     url = form.get("server_url") or form.get("emby_url")
     api_key = form.get("server_api_key") or form.get("emby_api_key")
     enabled = form.get("server_enabled") or form.get("emby_enabled")
     notes = form.get("server_notes")
     strm_task_id = form.get("server_strm_task_id")
+    icon = form.get("server_icon")
+
 
     if name is not None:
         server["name"] = name
@@ -727,6 +864,12 @@ def _build_emby_server_from_form(form, existing):
         server["notes"] = notes
     if strm_task_id is not None:
         server["strm_task_id"] = strm_task_id
+    if icon is not None:
+        server["icon"] = icon if icon.strip() else "📺"
+    else:
+        # Set default icon if not provided
+        if "icon" not in server:
+            server["icon"] = "📺"
 
     return server
 
@@ -2027,6 +2170,375 @@ def create_dashboard_app():
         grouped.sort(key=_group_key)
         return jsonify({"success": True, "groups": grouped})
 
+    def _resolve_emby_server(config, server_id):
+        emby_config = config.get("EMBY") or {}
+        servers = emby_config.get("SERVERS") or []
+        for server in servers:
+            if server.get("id") == server_id:
+                return server
+        return None
+
+    def _resolution_label_from_dims(width, height):
+        if not height:
+            return ""
+        try:
+            height_value = int(height)
+        except (TypeError, ValueError):
+            return ""
+        if height_value >= 2160:
+            return "2160p"
+        if height_value >= 1440:
+            return "1440p"
+        if height_value >= 1080:
+            return "1080p"
+        if height_value >= 720:
+            return "720p"
+        return f"{height_value}p"
+
+    def _extract_emby_media_sources(item):
+        sources = []
+        if not isinstance(item, dict):
+            return sources
+        media_sources = item.get("MediaSources")
+        if not isinstance(media_sources, list) or not media_sources:
+            media_sources = [{
+                "MediaStreams": item.get("MediaStreams") or [],
+                "Path": item.get("Path"),
+                "Bitrate": item.get("Bitrate")
+            }]
+
+        for source in media_sources:
+            if not isinstance(source, dict):
+                continue
+            media_streams = source.get("MediaStreams") or []
+            if not isinstance(media_streams, list):
+                media_streams = []
+            video_stream = None
+            audio_streams = []
+            for stream in media_streams:
+                if not isinstance(stream, dict):
+                    continue
+                stream_type = stream.get("Type")
+                if stream_type == "Video" and video_stream is None:
+                    video_stream = stream
+                elif stream_type == "Audio":
+                    audio_streams.append(stream)
+
+            width = video_stream.get("Width") if isinstance(video_stream, dict) else None
+            height = video_stream.get("Height") if isinstance(video_stream, dict) else None
+            resolution = f"{width}x{height}" if width and height else ""
+            resolution_label = _resolution_label_from_dims(width, height) or resolution
+            video_codec = video_stream.get("Codec") if isinstance(video_stream, dict) else ""
+            audio_codec = audio_streams[0].get("Codec") if audio_streams else ""
+            bitrate = source.get("Bitrate") or (video_stream.get("BitRate") if isinstance(video_stream, dict) else None)
+            bitrate_mbps = round(int(bitrate) / 1_000_000, 2) if bitrate else None
+            path = source.get("Path") or item.get("Path") or ""
+
+            audio_tracks = []
+            for stream in audio_streams:
+                codec = stream.get("Codec") or ""
+                language = stream.get("DisplayLanguage") or stream.get("Language") or ""
+                channels = stream.get("Channels")
+                title_label = stream.get("DisplayTitle") or stream.get("Title") or ""
+                parts = [part for part in [codec, language, f"{channels}ch" if channels else ""] if part]
+                label = title_label or " · ".join(parts) or "Traccia audio"
+                audio_tracks.append(label)
+
+            sources.append({
+                "resolution": resolution,
+                "resolution_label": resolution_label,
+                "width": width,
+                "height": height,
+                "video_codec": video_codec,
+                "audio_codec": audio_codec,
+                "bitrate": bitrate,
+                "bitrate_mbps": bitrate_mbps,
+                "path": path,
+                "audio_tracks": audio_tracks
+            })
+
+        return sources
+
+    def _build_emby_item_details(item, server):
+        sources = _extract_emby_media_sources(item)
+        primary = sources[0] if sources else {}
+        return {
+            "title": item.get("Name") if isinstance(item, dict) else None,
+            "year": item.get("ProductionYear") if isinstance(item, dict) else None,
+            "server": server.get("name") if server else None,
+            "server_icon": server.get("icon") if server else None,
+            "resolution": primary.get("resolution", ""),
+            "video_codec": primary.get("video_codec", ""),
+            "audio_codec": primary.get("audio_codec", ""),
+            "bitrate": primary.get("bitrate"),
+            "bitrate_mbps": primary.get("bitrate_mbps"),
+            "path": primary.get("path", ""),
+            "audio_tracks": primary.get("audio_tracks", []),
+            "sources": sources,
+            "series_name": item.get("SeriesName") if isinstance(item, dict) else None,
+            "season_name": item.get("SeasonName") if isinstance(item, dict) else None,
+            "season_number": item.get("ParentIndexNumber") if isinstance(item, dict) else None,
+            "episode_number": item.get("IndexNumber") if isinstance(item, dict) else None,
+            "episode_name": item.get("Name") if isinstance(item, dict) else None,
+            "item_type": item.get("Type") if isinstance(item, dict) else None,
+            "item_id": item.get("Id") if isinstance(item, dict) else None
+        }
+
+    @app.route('/api/emby/availability', methods=['POST'])
+    @login_required
+    def emby_availability():
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify({"success": False, "message": "Formato non valido"}), 400
+        tmdb_id = _try_parse_int(payload.get("tmdb_id") or payload.get("tmdbId"))
+        media_type = _normalize_media_type(payload.get("media_type") or payload.get("mediaType"))
+        if not tmdb_id:
+            return jsonify({"success": False, "message": "TMDB ID mancante"}), 400
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Config non valida"}), 400
+        emby_config = config.get("EMBY") or {}
+        servers = [server for server in (emby_config.get("SERVERS") or []) if server.get("enabled")]
+        if not servers:
+            return jsonify({"success": True, "available_on": []})
+        found = check_emby_availability(servers, tmdb_id, media_type=media_type)
+        return jsonify({"success": True, "available_on": found})
+
+    @app.route('/api/emby/lookup', methods=['GET'])
+    @login_required
+    def emby_lookup():
+        title = (request.args.get("title") or "").strip()
+        if not title:
+            return jsonify({"success": False, "message": "Titolo mancante"}), 400
+        year = _try_parse_int(request.args.get("year"))
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Config non valida"}), 400
+        emby_config = config.get("EMBY") or {}
+        servers = emby_config.get("SERVERS") or []
+        if not servers:
+            return jsonify({"success": False, "message": "Server Emby non configurati"}), 400
+
+        target_title = sanitize_title(title.lower())
+        best_match = None
+        best_server = None
+        best_score = -1
+        params = {
+            "Recursive": "true",
+            "IncludeItemTypes": "Movie,Series",
+            "SearchTerm": title,
+            "Limit": 10,
+            "Fields": "MediaSources,MediaStreams,Path,ProductionYear"
+        }
+
+        for server in servers:
+            if not server.get("enabled"):
+                continue
+            success, payload = _call_emby_api(server, "Items", params=params)
+            if not success or not isinstance(payload, dict):
+                continue
+            items = payload.get("Items")
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("Name") or item.get("OriginalTitle") or ""
+                if not name:
+                    continue
+                normalized = sanitize_title(name.lower())
+                score = 0
+                if normalized == target_title:
+                    score += 3
+                elif target_title in normalized or normalized in target_title:
+                    score += 1
+                item_year = item.get("ProductionYear")
+                if year and item_year and int(item_year) == year:
+                    score += 2
+                if score > best_score:
+                    best_score = score
+                    best_match = item
+                    best_server = server
+
+        if not best_match or best_score <= 0:
+            return jsonify({"success": True, "found": False, "message": "Nessun elemento trovato in Emby"})
+
+        details = _build_emby_item_details(best_match, best_server)
+        if not details.get("title"):
+            details["title"] = title
+        return jsonify({"success": True, "found": True, "details": details})
+
+    @app.route('/api/emby/item-details', methods=['GET'])
+    @login_required
+    def emby_item_details():
+        server_id = request.args.get("server_id")
+        item_id = request.args.get("item_id")
+        if not server_id or not item_id:
+            return jsonify({"success": False, "message": "Parametri mancanti"}), 400
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Config non valida"}), 400
+        server = _resolve_emby_server(config, server_id)
+        if not server:
+            return jsonify({"success": False, "message": "Server non trovato"}), 404
+        if not server.get("enabled"):
+            return jsonify({"success": False, "message": "Server disabilitato"}), 400
+        params = {
+            "Fields": "MediaSources,MediaStreams,Path,ProductionYear,IndexNumber,ParentIndexNumber,SeriesName,SeasonName"
+        }
+        success, payload = _call_emby_api(server, f"Items/{item_id}", params=params)
+        item_payload = payload if isinstance(payload, dict) else None
+        if not success or item_payload is None:
+            fallback_params = {
+                "Ids": item_id,
+                "Fields": params.get("Fields")
+            }
+            fallback_success, fallback_payload = _call_emby_api(server, "Items", params=fallback_params)
+            if fallback_success and isinstance(fallback_payload, dict):
+                items = fallback_payload.get("Items")
+                if isinstance(items, list) and items:
+                    item_payload = items[0]
+                    success = True
+        if not success or not isinstance(item_payload, dict):
+            return jsonify({"success": False, "message": "Errore recupero dettagli Emby"}), 502
+        details = _build_emby_item_details(item_payload, server)
+        return jsonify({"success": True, "details": details})
+
+    @app.route('/api/emby/series-seasons', methods=['GET'])
+    @login_required
+    def emby_series_seasons():
+        server_id = request.args.get("server_id")
+        series_id = request.args.get("series_id")
+        if not server_id or not series_id:
+            return jsonify({"success": False, "message": "Parametri mancanti"}), 400
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Config non valida"}), 400
+        server = _resolve_emby_server(config, server_id)
+        if not server:
+            return jsonify({"success": False, "message": "Server non trovato"}), 404
+        if not server.get("enabled"):
+            return jsonify({"success": False, "message": "Server disabilitato"}), 400
+        params = {
+            "ParentId": series_id,
+            "IncludeItemTypes": "Season",
+            "Recursive": "false",
+            "Fields": "IndexNumber,Name,ChildCount"
+        }
+        success, payload = _call_emby_api(server, "Items", params=params)
+        if not success or not isinstance(payload, dict):
+            return jsonify({"success": False, "message": "Errore recupero stagioni Emby"}), 502
+        items_payload = payload.get("Items")
+        items = items_payload if isinstance(items_payload, list) else []
+        seasons = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            seasons.append({
+                "season_id": item.get("Id"),
+                "season_number": item.get("IndexNumber"),
+                "name": item.get("Name"),
+                "episode_count": item.get("ChildCount", 0)
+            })
+        seasons.sort(key=lambda entry: entry.get("season_number") if entry.get("season_number") is not None else 999)
+        return jsonify({"success": True, "seasons": seasons})
+
+    @app.route('/api/emby/season-episodes', methods=['GET'])
+    @login_required
+    def emby_season_episodes():
+        server_id = request.args.get("server_id")
+        season_id = request.args.get("season_id")
+        if not server_id or not season_id:
+            return jsonify({"success": False, "message": "Parametri mancanti"}), 400
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Config non valida"}), 400
+        server = _resolve_emby_server(config, server_id)
+        if not server:
+            return jsonify({"success": False, "message": "Server non trovato"}), 404
+        if not server.get("enabled"):
+            return jsonify({"success": False, "message": "Server disabilitato"}), 400
+        params = {
+            "ParentId": season_id,
+            "IncludeItemTypes": "Episode",
+            "Recursive": "false",
+            "Fields": "IndexNumber,Name,ProductionYear,PremiereDate,MediaSources,MediaStreams"
+        }
+        success, payload = _call_emby_api(server, "Items", params=params)
+        if not success or not isinstance(payload, dict):
+            return jsonify({"success": False, "message": "Errore recupero episodi Emby"}), 502
+        items_payload = payload.get("Items")
+        items = items_payload if isinstance(items_payload, list) else []
+        details_map = {}
+        episode_ids = [item.get("Id") for item in items if isinstance(item, dict) and item.get("Id")]
+        if episode_ids:
+            detail_params = {
+                "Ids": ",".join(str(entry) for entry in episode_ids),
+                "Fields": "IndexNumber,Name,ProductionYear,PremiereDate,MediaSources,MediaStreams,Path,Bitrate"
+            }
+            detail_success, detail_payload = _call_emby_api(server, "Items", params=detail_params)
+            if detail_success and isinstance(detail_payload, dict):
+                detail_items_payload = detail_payload.get("Items")
+                if isinstance(detail_items_payload, list):
+                    for detail in detail_items_payload:
+                        if isinstance(detail, dict) and detail.get("Id"):
+                            details_map[str(detail.get("Id"))] = detail
+
+        grouped = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            item_id = item.get("Id")
+            detail = details_map.get(str(item_id), item)
+            episode_number = detail.get("IndexNumber") if isinstance(detail, dict) else item.get("IndexNumber")
+            group_key = episode_number if episode_number is not None else item_id
+            if group_key not in grouped:
+                grouped[group_key] = {
+                    "episode_id": item_id,
+                    "episode_number": episode_number,
+                    "name": detail.get("Name") if isinstance(detail, dict) else item.get("Name"),
+                    "year": detail.get("ProductionYear") if isinstance(detail, dict) else item.get("ProductionYear"),
+                    "resolutions": []
+                }
+            if not grouped[group_key].get("episode_id") and item_id:
+                grouped[group_key]["episode_id"] = item_id
+            sources = _extract_emby_media_sources(detail)
+            for source in sources:
+                label = source.get("resolution_label") or source.get("resolution") or ""
+                if label:
+                    grouped[group_key]["resolutions"].append({
+                        "label": label,
+                        "item_id": item_id
+                    })
+
+        def _resolution_sort_key(value):
+            if isinstance(value, str) and value.endswith("p") and value[:-1].isdigit():
+                return int(value[:-1])
+            return 0
+
+        episodes = []
+        for group in grouped.values():
+            dedupe = {}
+            for entry in group["resolutions"]:
+                label = entry.get("label")
+                if not label or label in dedupe:
+                    continue
+                dedupe[label] = entry.get("item_id")
+            resolutions = [
+                {"label": label, "item_id": item_id}
+                for label, item_id in dedupe.items()
+            ]
+            resolutions.sort(key=lambda entry: _resolution_sort_key(entry.get("label")), reverse=True)
+            episodes.append({
+                "episode_id": group.get("episode_id"),
+                "episode_number": group.get("episode_number"),
+                "name": group.get("name"),
+                "year": group.get("year"),
+                "resolutions": resolutions
+            })
+        episodes.sort(key=lambda entry: entry.get("episode_number") if entry.get("episode_number") is not None else 999)
+        return jsonify({"success": True, "episodes": episodes})
+
     @app.route('/api/emby/scan-library', methods=['POST'])
     @login_required
     def scan_library():
@@ -2376,6 +2888,516 @@ def create_dashboard_app():
             return jsonify({"success": False, "message": f"Errore DB: {exc}"}), 500
         return jsonify({"success": True, "order": order})
 
+    @app.route('/api/media/details', methods=['GET'])
+    @login_required
+    def media_details():
+        tmdb_id = _try_parse_int(request.args.get("tmdb_id"))
+        media_type = _normalize_media_type(request.args.get("media_type"))
+        if not tmdb_id or not media_type:
+            return jsonify({"success": False, "message": "Parametri mancanti"}), 400
+
+        config, _ = load_config()
+        if not config:
+            return jsonify({"success": False, "message": "Config mancante"}), 400
+        if not (config.get("JELLYSEERR_URL") and config.get("JELLYSEERR_API_KEY")):
+            return jsonify({"success": False, "message": "Jellyseerr non configurato"}), 400
+
+        cache = {}
+        tmdb_payload, resolved_type = fetch_media_info(
+            {"tmdbId": tmdb_id, "mediaType": media_type},
+            config,
+            cache,
+            fallback_media_type=media_type
+        )
+        if not tmdb_payload:
+            return jsonify({"success": False, "message": "Dettagli non disponibili"}), 404
+
+        normalized_type = resolved_type or media_type
+        if normalized_type == "movie":
+            original_title = tmdb_payload.get("original_title") or tmdb_payload.get("originalTitle") or ""
+            title = tmdb_payload.get("title") or tmdb_payload.get("name") or ""
+            date_value = tmdb_payload.get("release_date") or tmdb_payload.get("releaseDate") or ""
+        else:
+            original_title = tmdb_payload.get("original_name") or tmdb_payload.get("originalName") or ""
+            title = tmdb_payload.get("name") or tmdb_payload.get("title") or ""
+            date_value = tmdb_payload.get("first_air_date") or tmdb_payload.get("firstAirDate") or ""
+
+        year = ""
+        if isinstance(date_value, str) and date_value:
+            year = date_value.split("-", 1)[0]
+        elif isinstance(date_value, int):
+            year = str(date_value)
+
+        seasons = []
+        if normalized_type == "tv":
+            raw_seasons = tmdb_payload.get("seasons") if isinstance(tmdb_payload, dict) else []
+            if isinstance(raw_seasons, list):
+                for entry in raw_seasons:
+                    if not isinstance(entry, dict):
+                        continue
+                    number = entry.get("season_number") or entry.get("seasonNumber") or entry.get("number") or entry.get("season")
+                    parsed_number = _try_parse_int(number)
+                    if parsed_number is None:
+                        continue
+                    episode_count = entry.get("episode_count") or entry.get("episodeCount") or entry.get("episodes")
+                    parsed_count = None
+                    if isinstance(episode_count, list):
+                        parsed_count = len(episode_count)
+                    else:
+                        parsed_count = _try_parse_int(episode_count)
+                    seasons.append({
+                        "season_number": parsed_number,
+                        "episode_count": parsed_count
+                    })
+            seasons.sort(key=lambda item: item.get("season_number", 0))
+
+        return jsonify({
+            "success": True,
+            "media_type": normalized_type,
+            "title": title or original_title,
+            "original_title": original_title or title,
+            "year": year,
+            "seasons": seasons
+        })
+
+    @app.route('/api/jellyseerr/request', methods=['POST'])
+    @login_required
+    def jellyseerr_request():
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify({"success": False, "message": "Formato non valido"}), 400
+
+        media_id = _try_parse_int(
+            payload.get("mediaId") or payload.get("media_id") or payload.get("tmdb_id")
+        )
+        media_type = _normalize_media_type(payload.get("mediaType") or payload.get("media_type"))
+        if not media_id or not media_type:
+            return jsonify({"success": False, "message": "Parametri mancanti"}), 400
+
+        raw_seasons = payload.get("seasons")
+        if not isinstance(raw_seasons, list):
+            raw_seasons = []
+        seasons = []
+        for entry in raw_seasons:
+            parsed = _try_parse_int(entry)
+            if parsed is not None:
+                seasons.append(parsed)
+
+        request_payload = {"mediaId": media_id, "mediaType": media_type}
+        if seasons and media_type == "tv":
+            request_payload["seasons"] = seasons
+
+        config, _ = load_config()
+        if not config:
+            return jsonify({"success": False, "message": "Config mancante"}), 400
+        if not (config.get("JELLYSEERR_URL") and config.get("JELLYSEERR_API_KEY")):
+            return jsonify({"success": False, "message": "Jellyseerr non configurato"}), 400
+
+        success, message, data = submit_jellyseerr_request(request_payload, config)
+        if not success:
+            return jsonify({"success": False, "message": message}), 502
+
+        return jsonify({"success": True, "message": message, "data": data})
+
+    @app.route('/api/tmdb/search', methods=['GET'])
+    @login_required
+    def tmdb_search():
+        """Search TMDB for movies and TV shows (autocomplete)."""
+        query = request.args.get('query', '').strip()
+
+        if not query:
+            return jsonify({"success": False, "message": "Query mancante"}), 400
+
+        config, is_valid = load_config()
+        if not config:
+            return jsonify({"success": False, "message": "Configurazione mancante"}), 400
+
+        api_key = config.get('TMDB_API_KEY')
+        if not api_key:
+            return jsonify({
+                "success": False,
+                "message": "API Key TMDB non configurata. Vai in Configurazione Servizi."
+            }), 400
+
+        language = config.get('TMDB_LANGUAGE', 'it-IT')
+
+        results = search_tmdb(api_key, query, language)
+
+        return jsonify({
+            "success": True,
+            "results": results
+        })
+
+    @app.route('/api/tmdb/tv/<int:tv_id>', methods=['GET'])
+    @login_required
+    def tmdb_tv_details(tv_id):
+        """Get TV show details including seasons from TMDB."""
+        config, is_valid = load_config()
+        if not config:
+            return jsonify({"success": False, "message": "Configurazione mancante"}), 400
+
+        api_key = config.get('TMDB_API_KEY')
+        if not api_key:
+            return jsonify({
+                "success": False,
+                "message": "API Key TMDB non configurata. Vai in Configurazione Servizi."
+            }), 400
+
+        language = config.get('TMDB_LANGUAGE', 'it-IT')
+
+        details = get_tmdb_tv_details(api_key, tv_id, language)
+
+        if not details:
+            return jsonify({
+                "success": False,
+                "message": "Impossibile ottenere i dettagli della serie TV"
+            }), 404
+
+        return jsonify({
+            "success": True,
+            "details": details
+        })
+
+    @app.route('/api/tmdb/check-availability', methods=['POST'])
+    @login_required
+    def check_tmdb_availability():
+        """Check if TMDB content is present on Jellyseerr."""
+        data = request.get_json(silent=True) or {}
+        tmdb_id = data.get('tmdb_id')
+        media_type = data.get('media_type')
+
+        if not tmdb_id:
+            return jsonify({
+                "success": False,
+                "message": "TMDB ID mancante"
+            }), 400
+
+        config, is_valid = load_config()
+        if not config:
+            return jsonify({"success": False, "message": "Configurazione mancante"}), 400
+
+        if not (config.get("JELLYSEERR_URL") and config.get("JELLYSEERR_API_KEY")):
+            return jsonify({
+                "success": True,
+                "available_on": []
+            })
+
+        found = check_jellyseerr_availability(tmdb_id, media_type, config)
+        found_servers = [found] if found else []
+
+        return jsonify({
+            "success": True,
+            "available_on": found_servers
+        })
+
+    @app.route('/api/search/manual', methods=['POST'])
+    @login_required
+    def manual_search():
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            payload = {}
+        form_payload = {}
+        if request.form:
+            form_payload["query"] = (request.form.get("query") or "").strip()
+            form_payload["media_type"] = request.form.get("media_type") or request.form.get("tmdb_type")
+            form_payload["indexers"] = request.form.getlist("indexer")
+            form_payload["use_jellyseerr_logic"] = bool(request.form.get("use_jellyseerr_directives"))
+            form_payload["use_custom_rules"] = bool(request.form.get("use_custom_rules"))
+            form_payload["tmdb_id"] = request.form.get("tmdb_id") or ""
+            seasons = []
+            for entry in request.form.getlist("seasons"):
+                try:
+                    seasons.append(int(entry))
+                except (TypeError, ValueError):
+                    continue
+            if seasons:
+                form_payload["seasons"] = seasons
+            if form_payload.get("use_custom_rules"):
+                custom_rules = {}
+                include_filter = (request.form.get("include_filter") or "").strip()
+                exclude_filter = (request.form.get("exclude_filter") or "").strip()
+                if include_filter:
+                    custom_rules["include_filter"] = include_filter
+                if exclude_filter:
+                    custom_rules["exclude_filter"] = exclude_filter
+                min_size = request.form.get("min_size_gb")
+                max_size = request.form.get("max_size_gb")
+                if min_size not in (None, ""):
+                    try:
+                        custom_rules["min_size_gb"] = float(min_size)
+                    except ValueError:
+                        pass
+                if max_size not in (None, ""):
+                    try:
+                        custom_rules["max_size_gb"] = float(max_size)
+                    except ValueError:
+                        pass
+                quality = request.form.get("quality")
+                audio_language = request.form.get("audio_language")
+                edition = request.form.get("edition")
+                season_value = request.form.get("season")
+                episode_value = request.form.get("episode")
+                if quality:
+                    custom_rules["quality"] = quality
+                if audio_language:
+                    custom_rules["audio_language"] = audio_language
+                if edition:
+                    custom_rules["edition"] = edition
+                if season_value not in (None, ""):
+                    try:
+                        custom_rules["season"] = int(season_value)
+                    except ValueError:
+                        pass
+                if episode_value not in (None, ""):
+                    try:
+                        custom_rules["episode"] = int(episode_value)
+                    except ValueError:
+                        pass
+                if custom_rules:
+                    form_payload["custom_rules"] = custom_rules
+        if form_payload:
+            for key, value in form_payload.items():
+                if key not in payload or payload.get(key) in (None, "", [], {}):
+                    payload[key] = value
+        if not isinstance(payload, dict) or not payload:
+            return jsonify({"success": False, "message": "Formato non valido"}), 400
+
+        query = (payload.get("query") or "").strip()
+        if not query:
+            return jsonify({"success": False, "message": "Query mancante"}), 400
+
+        media_type = _normalize_media_type(payload.get("media_type"))
+        indexers_value = payload.get("indexers")
+        indexers = indexers_value if isinstance(indexers_value, list) else []
+        selected_indexers = {entry for entry in indexers if entry in {"prowlarr", "jackett"}}
+        if not selected_indexers:
+            return jsonify({"success": False, "message": "Indexer mancanti"}), 400
+
+        tmdb_id = _try_parse_int(payload.get("tmdb_id"))
+        print(f"[manual_search] query={query!r} indexers={sorted(selected_indexers)} tmdb_id={tmdb_id}")
+
+        use_jellyseerr_logic = bool(payload.get("use_jellyseerr_logic"))
+        use_custom_rules = bool(payload.get("use_custom_rules"))
+        custom_rules = payload.get("custom_rules") if isinstance(payload.get("custom_rules"), dict) else None
+        if not use_custom_rules:
+            custom_rules = None
+        if use_jellyseerr_logic:
+            custom_rules = None
+
+        config, is_valid = load_config()
+        if not config or not is_valid:
+            return jsonify({"success": False, "message": "Config non valida"}), 400
+
+        effective_config = copy.deepcopy(config)
+        effective_rules = copy.deepcopy(config.get("SEARCH_RULES", {}))
+        if use_jellyseerr_logic and custom_rules:
+            overrides = {}
+            if isinstance(custom_rules.get("SEARCH_RULES"), dict):
+                overrides.update(custom_rules.get("SEARCH_RULES") or {})
+            if isinstance(custom_rules.get("search_rules"), dict):
+                overrides.update(custom_rules.get("search_rules") or {})
+            for key, value in custom_rules.items():
+                if key in {"SEARCH_RULES", "search_rules", "TARGET_LANGUAGES", "target_languages", "EXCLUDE_TAGS", "exclude_tags"}:
+                    continue
+                if key in effective_rules or key in DEFAULT_CONFIG.get("SEARCH_RULES", {}):
+                    overrides[key] = value
+            if overrides:
+                effective_rules.update(overrides)
+            effective_config["SEARCH_RULES"] = effective_rules
+            if "TARGET_LANGUAGES" in custom_rules or "target_languages" in custom_rules:
+                target_langs = custom_rules.get("TARGET_LANGUAGES")
+                if target_langs is None:
+                    target_langs = custom_rules.get("target_languages")
+                if target_langs is not None:
+                    effective_config["TARGET_LANGUAGES"] = target_langs
+            if "EXCLUDE_TAGS" in custom_rules or "exclude_tags" in custom_rules:
+                exclude_tags = custom_rules.get("EXCLUDE_TAGS")
+                if exclude_tags is None:
+                    exclude_tags = custom_rules.get("exclude_tags")
+                if exclude_tags is not None:
+                    effective_config["EXCLUDE_TAGS"] = exclude_tags
+
+        warnings = []
+        warnings_set = set()
+        raw_results = []
+        debug_queries = []
+        debug_query_set = set()
+
+        query_variants = []
+        search_media_type = media_type
+
+        if use_jellyseerr_logic and tmdb_id and media_type:
+            cache = {}
+            tmdb_payload, resolved_type = fetch_media_info(
+                {"tmdbId": tmdb_id, "mediaType": media_type},
+                effective_config,
+                cache,
+                fallback_media_type=media_type
+            )
+            if tmdb_payload:
+                title_candidates = gather_title_candidates(tmdb_payload, search_rules=effective_rules)
+                _, year_value = extract_title_and_year(tmdb_payload)
+                if not year_value:
+                    year_value = _extract_year_from_title(query)
+                if title_candidates:
+                    search_media_type = resolved_type or media_type
+                    query_variants = build_search_queries(
+                        title_candidates,
+                        year_value,
+                        effective_config,
+                        media_type=search_media_type,
+                        search_rules_override=effective_rules
+                    )
+
+        if not query_variants:
+            query_variants = [query]
+
+        search_types = [search_media_type] if search_media_type else ["movie", "tv"]
+
+        def _add_warning(message):
+            if message in warnings_set:
+                return
+            warnings_set.add(message)
+            warnings.append(message)
+
+        for query_variant in query_variants:
+            normalized_query = (query_variant or "").strip()
+            if not normalized_query:
+                continue
+            if normalized_query not in debug_query_set:
+                debug_queries.append(normalized_query)
+                debug_query_set.add(normalized_query)
+            for entry in search_types:
+                if "prowlarr" in selected_indexers:
+                    if _prowlarr_configured(config):
+                        raw_results.extend(search_prowlarr(normalized_query, entry, config))
+                    else:
+                        _add_warning("Prowlarr non configurato")
+                if "jackett" in selected_indexers:
+                    if _jackett_configured(config):
+                        raw_results.extend(search_jackett(normalized_query, entry, config))
+                    else:
+                        _add_warning("Jackett non configurato")
+
+        prepared = []
+        for item in raw_results:
+            if not isinstance(item, dict):
+                continue
+            magnet_uri = item.get("magnetUri") or item.get("magnetUrl") or item.get("magnet")
+            guid_value = item.get("guid")
+            if magnet_uri and (not isinstance(guid_value, str) or not guid_value.startswith("magnet:")):
+                cloned = dict(item)
+                cloned["guid"] = magnet_uri
+                prepared.append(cloned)
+            else:
+                prepared.append(item)
+
+        library_index = _load_emby_library_title_index()
+        results = []
+
+        if use_jellyseerr_logic:
+            filtered = filter_results(prepared, effective_config, media_type=search_media_type)
+            raw_map = {}
+            for entry in prepared:
+                title = entry.get("title") or ""
+                if not title:
+                    continue
+                size_bytes = entry.get("size") or 0
+                size_gb = round(size_bytes / (1024**3), 2) if size_bytes else 0
+                key = (sanitize_title(title.lower()), size_gb)
+                raw_map.setdefault(key, entry)
+            seen = set()
+            for item in filtered:
+                normalized_title = item.get("normalized_title") or sanitize_title((item.get("title") or "").lower())
+                key = (normalized_title, item.get("size_gb"))
+                raw_item = raw_map.get(key, {})
+                leechers = _coerce_int(raw_item.get("leechers") or raw_item.get("Leechers"), 0)
+                normalized = {
+                    "title": item.get("title"),
+                    "size_gb": item.get("size_gb"),
+                    "seeders": item.get("seeders", 0),
+                    "leechers": leechers,
+                    "indexer": item.get("indexer"),
+                    "magnet": item.get("magnet"),
+                    "torrent": item.get("torrent"),
+                    "web": item.get("web"),
+                    "resolution": item.get("resolution_bucket"),
+                    "resolution_bucket": item.get("resolution_bucket"),
+                    "season_number": item.get("season_number"),
+                    "season_label": item.get("season_label"),
+                    "episode_code": item.get("episode_code"),
+                    "episode_sort": item.get("episode_sort"),
+                    "episode_number": item.get("episode_number"),
+                    "normalized_title": normalized_title,
+                    "year": _extract_year_from_title(item.get("title") or "")
+                }
+                if normalized.get("season_number") is None and not normalized.get("season_label"):
+                    fallback_season, fallback_label = _extract_season_hint_from_title(item.get("title") or "")
+                    if fallback_season is not None:
+                        normalized["season_number"] = fallback_season
+                    if fallback_label:
+                        normalized["season_label"] = fallback_label
+                dedupe_key = _manual_result_key(normalized)
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                normalized["in_library"] = bool(library_index and normalized.get("normalized_title") in library_index)
+                results.append(normalized)
+        else:
+            seen = set()
+            for entry in prepared:
+                normalized = _normalize_manual_result(entry)
+                if not normalized:
+                    continue
+                dedupe_key = _manual_result_key(normalized)
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                normalized["in_library"] = bool(library_index and normalized.get("normalized_title") in library_index)
+                results.append(normalized)
+
+        # Apply custom filters if provided
+        if custom_rules:
+            include_filter = custom_rules.get("include_filter")
+            exclude_filter = custom_rules.get("exclude_filter")
+            min_size_gb = custom_rules.get("min_size_gb")
+            max_size_gb = custom_rules.get("max_size_gb")
+
+            if include_filter or exclude_filter or min_size_gb is not None or max_size_gb is not None:
+                filtered_results = []
+                for result in results:
+                    title_lower = (result.get("title") or "").lower()
+                    size_gb = result.get("size_gb", 0)
+
+                    # Include filter: title must contain at least one of the words
+                    if include_filter:
+                        include_words = [w.strip().lower() for w in include_filter.split(",") if w.strip()]
+                        if include_words and not any(word in title_lower for word in include_words):
+                            continue
+
+                    # Exclude filter: title must not contain any of the words
+                    if exclude_filter:
+                        exclude_words = [w.strip().lower() for w in exclude_filter.split(",") if w.strip()]
+                        if exclude_words and any(word in title_lower for word in exclude_words):
+                            continue
+
+                    # Size filters
+                    if min_size_gb is not None and size_gb < min_size_gb:
+                        continue
+                    if max_size_gb is not None and size_gb > max_size_gb:
+                        continue
+
+                    filtered_results.append(result)
+
+                results = filtered_results
+
+        return jsonify({
+            "success": True,
+            "results": results,
+            "warnings": warnings,
+            "debug_queries": debug_queries
+        })
+
     @app.route('/update-config', methods=['POST'])
     @login_required
     def update_config_route():
@@ -2392,8 +3414,10 @@ def create_dashboard_app():
             ('qbittorrent_url', 'QBITTORRENT_URL'),
             ('qbittorrent_username', 'QBITTORRENT_USERNAME'),
             ('qbittorrent_password', 'QBITTORRENT_PASSWORD'),
+            ('tmdb_api_key', 'TMDB_API_KEY'),
+            ('tmdb_language', 'TMDB_LANGUAGE'),
         ]
-        
+
         for form_key, config_key in connection_mappings:
             raw_config[config_key] = request.form.get(form_key)
         
@@ -2743,6 +3767,144 @@ def create_dashboard_app():
                 "database": {"ok": db_ok, "message": db_msg}
             }
         })
+
+    @app.route('/trakt/device/start', methods=['POST'])
+    @login_required
+    def trakt_device_start():
+        """Start Trakt device authorization flow."""
+        try:
+            data = request.get_json() or {}
+            client_id = (data.get('client_id') or '').strip()
+
+            if not client_id:
+                return jsonify({"success": False, "message": "Client ID mancante"}), 400
+
+            # Request device code from Trakt
+            response = requests.post(
+                'https://api.trakt.tv/oauth/device/code',
+                headers={
+                    'Content-Type': 'application/json'
+                },
+                json={'client_id': client_id},
+                timeout=10
+            )
+
+            if response.status_code != 200:
+                return jsonify({
+                    "success": False,
+                    "message": f"Errore Trakt: {response.status_code}"
+                }), 400
+
+            result = response.json()
+            return jsonify({
+                "success": True,
+                "device_code": result.get('device_code'),
+                "user_code": result.get('user_code'),
+                "verification_url": result.get('verification_url'),
+                "expires_in": result.get('expires_in'),
+                "interval": result.get('interval')
+            })
+
+        except Exception as exc:
+            print(f"   -> Errore avvio device flow Trakt: {exc}")
+            return jsonify({"success": False, "message": str(exc)}), 500
+
+    @app.route('/trakt/device/poll', methods=['POST'])
+    @login_required
+    def trakt_device_poll():
+        """Poll Trakt for device authorization status."""
+        try:
+            data = request.get_json() or {}
+            client_id = (data.get('client_id') or '').strip()
+            device_code = (data.get('device_code') or '').strip()
+
+            if not client_id or not device_code:
+                return jsonify({"success": False, "message": "Parametri mancanti"}), 400
+
+            # Poll Trakt for token
+            response = requests.post(
+                'https://api.trakt.tv/oauth/device/token',
+                headers={
+                    'Content-Type': 'application/json'
+                },
+                json={
+                    'code': device_code,
+                    'client_id': client_id
+                },
+                timeout=10
+            )
+
+            if response.status_code == 400:
+                # Still waiting for user authorization
+                return jsonify({"status": "pending"})
+
+            if response.status_code == 404:
+                # Invalid device code
+                return jsonify({
+                    "success": False,
+                    "message": "Codice device non valido o scaduto"
+                }), 404
+
+            if response.status_code == 410:
+                # Code expired
+                return jsonify({
+                    "success": False,
+                    "message": "Codice scaduto"
+                }), 410
+
+            if response.status_code != 200:
+                return jsonify({
+                    "success": False,
+                    "message": f"Errore Trakt: {response.status_code}"
+                }), 400
+
+            result = response.json()
+            access_token = result.get('access_token')
+            expires_in = result.get('expires_in', 7776000)  # Default 90 days
+
+            if not access_token:
+                return jsonify({
+                    "success": False,
+                    "message": "Token non ricevuto"
+                }), 500
+
+            # Calculate expiration timestamp
+            from datetime import datetime, timedelta, timezone
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+
+            return jsonify({
+                "status": "authorized",
+                "access_token": access_token,
+                "expires_at": expires_at.isoformat()
+            })
+
+        except Exception as exc:
+            print(f"   -> Errore polling device flow Trakt: {exc}")
+            return jsonify({"success": False, "message": str(exc)}), 500
+
+    @app.route('/trakt/clear', methods=['POST'])
+    @login_required
+    def trakt_clear():
+        """Clear Trakt access token from configuration."""
+        try:
+            raw_config = read_raw_config() or {}
+            trakt_config = raw_config.get('TRAKT', {})
+
+            # Clear access token
+            trakt_config['ACCESS_TOKEN'] = ''
+            trakt_config['ENABLED'] = False
+
+            raw_config['TRAKT'] = trakt_config
+            config_write_file(raw_config)
+
+            return jsonify({
+                "success": True,
+                "message": "Token Trakt rimosso"
+            })
+
+        except Exception as exc:
+            print(f"   -> Errore rimozione token Trakt: {exc}")
+            return jsonify({"success": False, "message": str(exc)}), 500
 
     return app
 
