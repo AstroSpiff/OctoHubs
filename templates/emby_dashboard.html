@@ -262,6 +262,11 @@
                                                 <input type="text" name="server_name" value="{{ server.name }}" required>
                                             </label>
                                             <label>
+                                                Icona
+                                                <input type="text" name="server_icon" value="{{ server.icon or '📺' }}" placeholder="📺" maxlength="10">
+                                                <span class="tagline">Emoji o testo per identificare il server (es. 🏠, 🌐, SRV1)</span>
+                                            </label>
+                                            <label>
                                                 URL Emby
                                                 <input type="url" name="server_url" value="{{ server.url }}" required>
                                             </label>
@@ -316,6 +321,11 @@
                             <label>
                                 Nome
                                 <input type="text" name="server_name" required>
+                            </label>
+                            <label>
+                                Icona
+                                <input type="text" name="server_icon" placeholder="📺" maxlength="10" value="📺">
+                                <span class="tagline">Emoji o testo per identificare il server (es. 🏠, 🌐, SRV1)</span>
                             </label>
                             <label>
                                 URL Emby

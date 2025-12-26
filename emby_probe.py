@@ -525,16 +525,27 @@ class EmbyProbeManager:
 
                     if probe_success:
                         # Probe succeeded - this means Emby accepted the PlaybackInfo request
-                        # Now verify that metadata was actually written
-                        time.sleep(0.5)
+                        # Now verify that metadata was actually written using polling
+                        # Emby may take several seconds to complete ffprobe analysis in background
 
-                        # Try to verify metadata, with one retry if it fails
-                        metadata_ok, metadata_error = self._verify_probe_metadata(server, item_id, media_source_id)
+                        max_attempts = 15  # Maximum polling attempts (15 seconds)
+                        attempt = 0
+                        metadata_ok = False
+                        metadata_error = None
 
-                        if not metadata_ok:
-                            # Retry once after a short delay
-                            time.sleep(1)
+                        time.sleep(1)  # Initial delay before first check
+
+                        while attempt < max_attempts and not stop_flag.is_set():
                             metadata_ok, metadata_error = self._verify_probe_metadata(server, item_id, media_source_id)
+
+                            if metadata_ok:
+                                # Metadata verification successful - break out of polling loop
+                                break
+
+                            attempt += 1
+                            if attempt < max_attempts:
+                                # Wait 1 second before next attempt
+                                time.sleep(1)
 
                         if metadata_ok:
                             # Metadata verified successfully
@@ -542,17 +553,12 @@ class EmbyProbeManager:
                             error_details = None
                             should_requeue = False
                             db.remove_from_probe_blacklist(server_id, item_id, media_source_id)
-                        elif metadata_error and metadata_error.startswith("API error:"):
-                            # Verification failed due to temporary API issues (timeout, connection error)
-                            # but probe was successful, so assume metadata was written
-                            status = "SUCCESS"
-                            error_details = None
-                            should_requeue = False
-                            db.remove_from_probe_blacklist(server_id, item_id, media_source_id)
                         else:
-                            # Verification confirmed metadata is actually missing
+                            # Verification failed after all polling attempts
+                            # Either missing metadata or persistent API issues during verification
+                            # Since the probe itself succeeded, treat any verification failure as INCOMPLETE
                             status = "INCOMPLETE"
-                            error_details = metadata_error or "Mediainfo non scritto"
+                            error_details = metadata_error or "Mediainfo non scritto dopo polling"
 
                     if status != "SUCCESS":
                         retry_count = db.update_probe_blacklist(
@@ -788,11 +794,16 @@ class EmbyProbeManager:
         item_id: str,
         media_source_id: str | None = None
     ) -> tuple[bool, str | None]:
+        # Use Items endpoint with Ids parameter instead of Items/{id}
+        # This avoids Emby's heavy caching on single-item endpoint
         success, payload = _call_emby_api(
             server,
-            f"Items/{item_id}",
+            "Items",
             method="GET",
-            params={"Fields": "MediaSources,MediaStreams,RunTimeTicks"}
+            params={
+                "Ids": item_id,
+                "Fields": "MediaSources,MediaStreams,RunTimeTicks"
+            }
         )
         if not success:
             # Return the actual error message from the API
@@ -802,7 +813,16 @@ class EmbyProbeManager:
         if not isinstance(payload, dict):
             return False, "Risposta API non valida"
 
-        sources = payload.get("MediaSources")
+        # Extract item from Items list
+        items = payload.get("Items", [])
+        if not items or not isinstance(items, list):
+            return False, "Item non trovato nella risposta"
+
+        item = items[0]
+        if not isinstance(item, dict):
+            return False, "Formato item non valido"
+
+        sources = item.get("MediaSources")
 
         # If media_source_id is specified, check that specific source
         if media_source_id and isinstance(sources, list):
@@ -822,8 +842,8 @@ class EmbyProbeManager:
             return False, "MediaSource non trovato"
 
         # No media_source_id, check item level or first source
-        streams = payload.get("MediaStreams", [])
-        runtime = payload.get("RunTimeTicks")
+        streams = item.get("MediaStreams", [])
+        runtime = item.get("RunTimeTicks")
 
         # If item-level metadata is missing, try first MediaSource
         if (not runtime or not streams) and isinstance(sources, list) and sources:

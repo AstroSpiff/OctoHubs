@@ -62,6 +62,8 @@ DEFAULT_CONFIG = {
     "QBITTORRENT_URL": "",
     "QBITTORRENT_USERNAME": "",
     "QBITTORRENT_PASSWORD": "",
+    "TMDB_API_KEY": "",
+    "TMDB_LANGUAGE": "it-IT",
     "TARGET_LANGUAGES": ["ita", "italian"],
     "EXCLUDE_TAGS": ["md", "cam", "ts", "tc", "vmd", "sub", "subs", "forced", "screener"],
     "SEARCH_RULES": {
@@ -144,7 +146,9 @@ CONNECTION_FIELDS = [
     "JACKETT_API_KEY",
     "QBITTORRENT_URL",
     "QBITTORRENT_USERNAME",
-    "QBITTORRENT_PASSWORD"
+    "QBITTORRENT_PASSWORD",
+    "TMDB_API_KEY",
+    "TMDB_LANGUAGE"
 ]
 
 # Funzioni di "default"
@@ -236,7 +240,7 @@ def _normalize_emby_server(entry: Optional[Dict]) -> Dict[str, Any]:
     name = (entry.get("name") or "").strip()
     if not name:
         name = f"Server Emby {server_id[:6]}"
-    return {
+    normalized = {
         "id": server_id,
         "name": name,
         "url": (entry.get("url") or "").strip(),
@@ -250,6 +254,10 @@ def _normalize_emby_server(entry: Optional[Dict]) -> Dict[str, Any]:
         },
         "strm_task_id": (entry.get("strm_task_id") or "").strip()
     }
+    icon = (entry.get("icon") or "").strip()
+    if icon:
+        normalized["icon"] = icon
+    return normalized
 
 def _merge_emby_settings(settings: Optional[Dict]) -> Dict[str, Any]:
     """Unisci le impostazioni Emby dell'utente, normalizzando ogni server."""
@@ -362,9 +370,10 @@ def write_config_file(data: Dict):
     persisted = read_raw_config() or {}
     payload = {}
     for key in CONNECTION_FIELDS:
-        value = data.get(key) or persisted.get(key)
-        if value:
-            payload[key] = value
+        # Use data value if explicitly provided (even if empty string), otherwise use persisted
+        value = data.get(key) if key in data else persisted.get(key)
+        # Save all connection fields, even if empty (to allow clearing values)
+        payload[key] = value if value is not None else ""
     database_settings = _merge_database_settings(data.get("DATABASE") or persisted.get("DATABASE"))
     database_settings["ENABLED"] = True  # Forza l'abilitazione durante la scrittura
     payload["DATABASE"] = database_settings

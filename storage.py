@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 try:
-    from sqlalchemy import JSON, Column, DateTime, Integer, String, create_engine, text
+    from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String, create_engine, text
     from sqlalchemy.exc import SQLAlchemyError
     from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -116,6 +116,15 @@ if SQLALCHEMY_AVAILABLE:
         status = Column(String(20), nullable=False)  # type: ignore[assignment]
         error_details = Column(String(1000))  # type: ignore[assignment]
         duration_ms = Column(Integer)  # type: ignore[assignment]
+
+    class JustWatchCache(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "justwatch_cache"
+        id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
+        show_name = Column(String(500), nullable=False, index=True)  # type: ignore[assignment]
+        season = Column(Integer, nullable=False)  # type: ignore[assignment]
+        episode = Column(Integer, nullable=False)  # type: ignore[assignment]
+        is_available = Column(Boolean, nullable=False, default=False)  # type: ignore[assignment]
+        last_checked = Column(DateTime, default=_utcnow, nullable=False, index=True)  # type: ignore[assignment]
 
 
 def is_sqlalchemy_available() -> bool:
@@ -755,6 +764,130 @@ class DatabaseStorage:
         except SQLAlchemyError as exc:  # pragma: no cover
             session.rollback()
             raise StorageError(f"Errore svuotamento storico probe: {exc}") from exc
+        finally:
+            session.close()
+
+    # --- JustWatch Cache ---
+
+    def get_justwatch_cache(
+        self,
+        show_name: str,
+        season: int,
+        episode: int
+    ) -> Optional[Dict[str, Any]]:
+        """Get cached JustWatch availability data for a specific episode."""
+        session = self._get_session()
+        try:
+            entry = (
+                session.query(JustWatchCache)
+                .filter(
+                    JustWatchCache.show_name == show_name,  # type: ignore[attr-defined]
+                    JustWatchCache.season == season,  # type: ignore[attr-defined]
+                    JustWatchCache.episode == episode  # type: ignore[attr-defined]
+                )
+                .first()
+            )
+            if entry:
+                return {
+                    "show_name": entry.show_name,
+                    "season": entry.season,
+                    "episode": entry.episode,
+                    "is_available": entry.is_available,
+                    "last_checked": entry.last_checked
+                }
+            return None
+        finally:
+            session.close()
+
+    def save_justwatch_cache(
+        self,
+        show_name: str,
+        season: int,
+        episode: int,
+        is_available: bool
+    ) -> None:
+        """Save or update JustWatch availability data for an episode."""
+        session = self._get_session()
+        try:
+            entry = (
+                session.query(JustWatchCache)
+                .filter(
+                    JustWatchCache.show_name == show_name,  # type: ignore[attr-defined]
+                    JustWatchCache.season == season,  # type: ignore[attr-defined]
+                    JustWatchCache.episode == episode  # type: ignore[attr-defined]
+                )
+                .first()
+            )
+
+            if entry:
+                # Update existing entry
+                entry.is_available = is_available  # type: ignore[assignment]
+                entry.last_checked = _utcnow()  # type: ignore[assignment]
+            else:
+                # Create new entry
+                new_entry = JustWatchCache(
+                    show_name=show_name,
+                    season=season,
+                    episode=episode,
+                    is_available=is_available
+                )
+                session.add(new_entry)
+
+            session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore salvataggio cache JustWatch: {exc}") from exc
+        finally:
+            session.close()
+
+    def clear_justwatch_cache(self, show_name: Optional[str] = None) -> int:
+        """
+        Clear JustWatch cache entries.
+
+        Args:
+            show_name: If provided, clear only entries for this show.
+                      If None, clear all cache.
+
+        Returns:
+            Number of entries deleted
+        """
+        session = self._get_session()
+        try:
+            query = session.query(JustWatchCache)
+            if show_name:
+                query = query.filter(JustWatchCache.show_name == show_name)  # type: ignore[attr-defined]
+
+            count = query.count()
+            query.delete()
+            session.commit()
+            return count
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore svuotamento cache JustWatch: {exc}") from exc
+        finally:
+            session.close()
+
+    def get_justwatch_cache_stats(self) -> Dict[str, int]:
+        """Get statistics about JustWatch cache."""
+        session = self._get_session()
+        try:
+            total = session.query(JustWatchCache).count()
+            available = (
+                session.query(JustWatchCache)
+                .filter(JustWatchCache.is_available.is_(True))  # type: ignore[attr-defined]
+                .count()
+            )
+            unavailable = (
+                session.query(JustWatchCache)
+                .filter(JustWatchCache.is_available.is_(False))  # type: ignore[attr-defined]
+                .count()
+            )
+
+            return {
+                "total": total,
+                "available": available,
+                "unavailable": unavailable
+            }
         finally:
             session.close()
 
