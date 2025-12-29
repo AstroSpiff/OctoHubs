@@ -319,7 +319,7 @@
 
         const connectionBtn = document.getElementById('test-connections-btn');
         if (connectionBtn) {
-            const services = ['jellyseerr', 'prowlarr', 'jackett', 'qbittorrent', 'trakt', 'database'];
+            const services = ['jellyseerr', 'prowlarr', 'jackett', 'qbittorrent', 'trakt', 'justwatch', 'database'];
             const setConnectionStatus = (service, state, message, label) => {
                 const pill = document.querySelector(`[data-service="${service}-status"]`);
                 const msg = document.querySelector(`[data-service="${service}-msg"]`);
@@ -1390,6 +1390,36 @@
             });
         });
 
+        (function initJustWatchChips() {
+            const chips = Array.from(document.querySelectorAll('.justwatch-checked[data-jw-label]'));
+            if (!chips.length) return;
+            const closeAll = () => {
+                chips.forEach(chip => chip.classList.remove('is-open'));
+            };
+            document.addEventListener('click', (event) => {
+                if (!event.target.closest('.justwatch-checked')) {
+                    closeAll();
+                }
+            });
+            chips.forEach(chip => {
+                chip.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    const isOpen = chip.classList.contains('is-open');
+                    closeAll();
+                    if (!isOpen) chip.classList.add('is-open');
+                });
+                chip.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        chip.click();
+                    } else if (event.key === 'Escape') {
+                        chip.classList.remove('is-open');
+                        chip.blur();
+                    }
+                });
+            });
+        })();
+
         // Format timestamp to Zurich timezone
         (function() {
             const timeElement = document.getElementById('last-scan-time');
@@ -1546,6 +1576,8 @@
         const tmdbEmbyBrowser = document.getElementById('tmdb-selected-emby-browser');
         const tmdbEmbyBrowserTitle = document.getElementById('tmdb-emby-browser-title');
         const tmdbEmbyBrowserClose = document.getElementById('tmdb-emby-browser-close');
+        const tmdbEmbySections = tmdbEmbyBrowser ? tmdbEmbyBrowser.querySelector('.emby-browser-sections') : null;
+        const tmdbEmbyVersions = document.getElementById('tmdb-emby-versions');
         const tmdbEmbySeasons = document.getElementById('tmdb-emby-seasons');
         const tmdbEmbyEpisodes = document.getElementById('tmdb-emby-episodes');
         const tmdbEmbyDetails = document.getElementById('tmdb-emby-details');
@@ -1575,6 +1607,7 @@
                 activeEmbyItemId = null;
                 activeEmbySeasonId = null;
                 activeEmbySourceIndex = null;
+                closeEmbyDetailOverlay();
                 if (tmdbSelectedAvailabilityIcons) {
                     tmdbSelectedAvailabilityIcons.querySelectorAll('.emby-server-btn').forEach(btn => {
                         btn.classList.remove('is-active');
@@ -1583,13 +1616,34 @@
             };
 
             const resetEmbyBrowser = () => {
+                if (tmdbEmbyVersions) tmdbEmbyVersions.innerHTML = '';
                 if (tmdbEmbySeasons) tmdbEmbySeasons.innerHTML = '';
                 if (tmdbEmbyEpisodes) tmdbEmbyEpisodes.innerHTML = '';
                 if (tmdbEmbyDetails) tmdbEmbyDetails.innerHTML = '';
                 if (tmdbEmbyBrowserTitle) tmdbEmbyBrowserTitle.textContent = 'Dettagli Emby';
                 activeEmbySourceIndex = null;
                 lastEmbyDetails = null;
+                closeEmbyDetailOverlay();
                 setEmbyBrowserVisible(false);
+            };
+
+            const setEmbySectionVisibility = (mediaType) => {
+                const isTv = mediaType === 'tv';
+                if (tmdbEmbySections) {
+                    tmdbEmbySections.classList.toggle('is-tv', isTv);
+                }
+                if (tmdbEmbyVersions) {
+                    tmdbEmbyVersions.classList.toggle('is-hidden', isTv);
+                    tmdbEmbyVersions.classList.toggle('is-span', !isTv);
+                }
+                if (tmdbEmbySeasons) {
+                    tmdbEmbySeasons.classList.toggle('is-hidden', !isTv);
+                    tmdbEmbySeasons.classList.remove('is-span');
+                }
+                if (tmdbEmbyEpisodes) {
+                    tmdbEmbyEpisodes.classList.toggle('is-hidden', !isTv);
+                    tmdbEmbyEpisodes.classList.remove('is-span');
+                }
             };
 
             const clearTmdbSelection = () => {
@@ -1674,6 +1728,76 @@
                 return name || 'Episodio';
             };
 
+            const getResolutionColor = (label) => {
+                const value = String(label || '').toLowerCase();
+                if (value.includes('2160') || value.includes('4k')) {
+                    return '#1d4ed8';
+                }
+                if (value.includes('1440')) {
+                    return '#0f766e';
+                }
+                if (value.includes('1080')) {
+                    return '#15803d';
+                }
+                if (value.includes('720')) {
+                    return '#ca8a04';
+                }
+                if (value.includes('576') || value.includes('480')) {
+                    return '#ea580c';
+                }
+                return '#94a3b8';
+            };
+
+            const normalizeEpisodeVersions = (rawResolutions, fallbackItemId) => {
+                const entries = (Array.isArray(rawResolutions) ? rawResolutions : [])
+                    .map((entry, index) => {
+                        if (typeof entry === 'string') {
+                            return {
+                                label: entry,
+                                itemId: fallbackItemId || '',
+                                sourceIndex: null,
+                                sortIndex: index
+                            };
+                        }
+                        if (entry && typeof entry === 'object') {
+                            const sourceIndex = Number.isFinite(Number(entry.source_index))
+                                ? Number(entry.source_index)
+                                : (Number.isFinite(Number(entry.sourceIndex)) ? Number(entry.sourceIndex) : null);
+                            return {
+                                label: entry.label || '',
+                                itemId: entry.item_id || entry.itemId || fallbackItemId || '',
+                                sourceIndex,
+                                sortIndex: index
+                            };
+                        }
+                        return null;
+                    })
+                    .filter(entry => entry && entry.label && entry.itemId);
+
+                const totals = {};
+                entries.forEach(entry => {
+                    totals[entry.label] = (totals[entry.label] || 0) + 1;
+                });
+                const seen = {};
+                entries.forEach((entry) => {
+                    seen[entry.label] = (seen[entry.label] || 0) + 1;
+                    entry.dupIndex = seen[entry.label];
+                    entry.dupCount = totals[entry.label];
+                    entry.uid = `${entry.itemId || 'item'}:${entry.sourceIndex ?? 'x'}:${entry.sortIndex}`;
+                });
+                return entries;
+            };
+
+            const formatVersionLabel = (entry) => {
+                if (!entry || !entry.label) {
+                    return 'Versione';
+                }
+                if (entry.dupCount && entry.dupCount > 1) {
+                    return `${entry.label} · versione ${entry.dupIndex} di ${entry.dupCount}`;
+                }
+                return entry.label;
+            };
+
             const appendDetailRow = (container, label, value) => {
                 const row = document.createElement('div');
                 row.className = 'emby-detail-row';
@@ -1686,6 +1810,164 @@
                 row.appendChild(labelEl);
                 row.appendChild(valueEl);
                 container.appendChild(row);
+            };
+
+            const formatBitrate = (value) => {
+                const parsed = Number(value);
+                if (!Number.isFinite(parsed) || parsed <= 0) {
+                    return '';
+                }
+                return `${(parsed / 1_000_000).toFixed(2)} Mbps`;
+            };
+
+            const formatSampleRate = (value) => {
+                const parsed = Number(value);
+                if (!Number.isFinite(parsed) || parsed <= 0) {
+                    return '';
+                }
+                return `${(parsed / 1000).toFixed(1)} kHz`;
+            };
+
+            const formatFrameRate = (value) => {
+                const parsed = Number(value);
+                if (!Number.isFinite(parsed) || parsed <= 0) {
+                    return '';
+                }
+                return `${parsed.toFixed(2)} fps`;
+            };
+
+            const formatBoolean = (value) => {
+                if (value === true) {
+                    return 'Sì';
+                }
+                if (value === false) {
+                    return 'No';
+                }
+                return '';
+            };
+
+            const buildStreamTable = (title, streams, fields) => {
+                const wrapper = document.createElement('div');
+                wrapper.className = 'emby-stream-table';
+                const heading = document.createElement('div');
+                heading.className = 'emby-stream-title';
+                heading.textContent = title;
+                wrapper.appendChild(heading);
+                if (!streams.length) {
+                    const empty = document.createElement('div');
+                    empty.className = 'tagline';
+                    empty.textContent = 'Nessuna traccia disponibile.';
+                    wrapper.appendChild(empty);
+                    return wrapper;
+                }
+                const table = document.createElement('table');
+                table.className = 'emby-stream-grid';
+                const thead = document.createElement('thead');
+                const headRow = document.createElement('tr');
+                const headLabel = document.createElement('th');
+                headLabel.className = 'emby-stream-label';
+                headLabel.textContent = '';
+                headRow.appendChild(headLabel);
+                streams.forEach(stream => {
+                    const th = document.createElement('th');
+                    th.className = 'emby-stream-track';
+                    th.textContent = `Traccia ${stream.track_number}`;
+                    headRow.appendChild(th);
+                });
+                thead.appendChild(headRow);
+                table.appendChild(thead);
+                const tbody = document.createElement('tbody');
+                fields.forEach(field => {
+                    const values = streams.map(stream => field.value(stream) || '');
+                    if (values.every(value => !value)) {
+                        return;
+                    }
+                    const row = document.createElement('tr');
+                    const labelCell = document.createElement('td');
+                    labelCell.className = 'emby-stream-label';
+                    labelCell.textContent = field.label;
+                    row.appendChild(labelCell);
+                    values.forEach(value => {
+                        const cell = document.createElement('td');
+                        cell.className = 'emby-stream-value';
+                        cell.textContent = value || '—';
+                        row.appendChild(cell);
+                    });
+                    tbody.appendChild(row);
+                });
+                table.appendChild(tbody);
+                wrapper.appendChild(table);
+                return wrapper;
+            };
+
+            const renderStreamTables = (source, target) => {
+                if (!target) {
+                    return;
+                }
+                const streams = Array.isArray(source?.streams) ? source.streams : [];
+                if (!streams.length) {
+                    return;
+                }
+                const ordered = streams
+                    .map((stream, index) => ({ ...stream, index: Number(stream.index ?? index) }))
+                    .sort((a, b) => a.index - b.index);
+                ordered.forEach((stream, idx) => {
+                    stream.track_number = idx + 1;
+                });
+                const videos = ordered.filter(stream => stream.type === 'video');
+                const audios = ordered.filter(stream => stream.type === 'audio');
+                const subs = ordered.filter(stream => stream.type === 'subtitle');
+
+                const videoFields = [
+                    { label: 'Codec', value: (s) => s.codec },
+                    { label: 'Profilo', value: (s) => s.profile },
+                    { label: 'Risoluzione', value: (s) => s.width && s.height ? `${s.width}x${s.height}` : '' },
+                    { label: 'Bitrate', value: (s) => formatBitrate(s.bitrate) },
+                    { label: 'Bit depth', value: (s) => s.bit_depth },
+                    { label: 'Frame rate', value: (s) => formatFrameRate(s.frame_rate) },
+                    { label: 'HDR', value: (s) => s.hdr_type },
+                    { label: 'Color space', value: (s) => s.color_space },
+                    { label: 'Color transfer', value: (s) => s.color_transfer },
+                    { label: 'Color primaries', value: (s) => s.color_primaries },
+                    { label: 'Video range', value: (s) => s.video_range },
+                    { label: 'Titolo', value: (s) => s.title },
+                    { label: 'Lingua', value: (s) => s.language }
+                ];
+
+                const audioFields = [
+                    { label: 'Codec', value: (s) => s.codec },
+                    { label: 'Canali', value: (s) => s.channels ? `${s.channels}${s.channel_layout ? ` (${s.channel_layout})` : ''}` : '' },
+                    { label: 'Lingua', value: (s) => s.language },
+                    { label: 'Bitrate', value: (s) => formatBitrate(s.bitrate) },
+                    { label: 'Sample rate', value: (s) => formatSampleRate(s.sample_rate) },
+                    { label: 'Titolo', value: (s) => s.title },
+                    { label: 'Default', value: (s) => formatBoolean(s.is_default) },
+                    { label: 'Forced', value: (s) => formatBoolean(s.is_forced) }
+                ];
+
+                const subtitleFields = [
+                    { label: 'Codec', value: (s) => s.codec },
+                    { label: 'Lingua', value: (s) => s.language },
+                    { label: 'Titolo', value: (s) => s.title },
+                    { label: 'Default', value: (s) => formatBoolean(s.is_default) },
+                    { label: 'Forced', value: (s) => formatBoolean(s.is_forced) },
+                    { label: 'Esterno', value: (s) => formatBoolean(s.is_external) }
+                ];
+
+                const grid = document.createElement('div');
+                grid.className = 'emby-streams-grid';
+                if (videos.length) {
+                    grid.appendChild(buildStreamTable('Video', videos, videoFields));
+                }
+                if (audios.length) {
+                    grid.appendChild(buildStreamTable('Audio', audios, audioFields));
+                }
+                if (subs.length) {
+                    grid.appendChild(buildStreamTable('Sottotitoli', subs, subtitleFields));
+                }
+                if (grid.children.length) {
+                    target.appendChild(grid);
+                }
             };
 
             const buildEmbyDetailTitle = (details) => {
@@ -1712,14 +1994,16 @@
                 return '';
             };
 
-            const renderEmbyDetails = (details, options = {}) => {
-                if (!tmdbEmbyDetails) {
+            const renderEmbyDetails = (details, options = {}, target = tmdbEmbyDetails) => {
+                if (!target) {
                     return;
                 }
-                tmdbEmbyDetails.innerHTML = '';
-                lastEmbyDetails = details || null;
+                target.innerHTML = '';
+                if (target === tmdbEmbyDetails) {
+                    lastEmbyDetails = details || null;
+                }
                 if (!details) {
-                    tmdbEmbyDetails.innerHTML = '<div class="tagline">Dettagli non disponibili.</div>';
+                    target.innerHTML = '<div class="tagline">Dettagli non disponibili.</div>';
                     return;
                 }
                 const titleText = buildEmbyDetailTitle(details);
@@ -1727,11 +2011,11 @@
                     const titleEl = document.createElement('div');
                     titleEl.className = 'emby-details-title';
                     titleEl.textContent = titleText;
-                    tmdbEmbyDetails.appendChild(titleEl);
+                    target.appendChild(titleEl);
                 }
                 const sources = Array.isArray(details.sources) ? details.sources : [];
                 if (!sources.length) {
-                    tmdbEmbyDetails.innerHTML += '<div class="tagline">Nessun file disponibile.</div>';
+                    target.innerHTML += '<div class="tagline">Nessun file disponibile.</div>';
                     return;
                 }
 
@@ -1769,7 +2053,7 @@
                         button.dataset.sourceIndex = String(index);
                         chips.appendChild(button);
                     });
-                    tmdbEmbyDetails.appendChild(chips);
+                    target.appendChild(chips);
                 }
 
                 const source = sources[selectedIndex];
@@ -1797,7 +2081,20 @@
                     });
                     card.appendChild(list);
                 }
-                tmdbEmbyDetails.appendChild(card);
+                target.appendChild(card);
+                renderStreamTables(source, target);
+            };
+
+            const fetchEmbyItemDetails = async (serverId, itemId) => {
+                const resp = await csrfFetch(
+                    `/api/emby/item-details?server_id=${encodeURIComponent(serverId)}&item_id=${encodeURIComponent(itemId)}`
+                );
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok || data.success === false) {
+                    const message = data.message || 'Dettagli non disponibili.';
+                    throw new Error(message);
+                }
+                return data.details;
             };
 
             const loadEmbyItemDetails = async (serverId, itemId, options = {}) => {
@@ -1808,24 +2105,298 @@
                 const currentServer = activeEmbyServerId;
                 lastEmbyDetails = null;
                 try {
-                    const resp = await csrfFetch(
-                        `/api/emby/item-details?server_id=${encodeURIComponent(serverId)}&item_id=${encodeURIComponent(itemId)}`
-                    );
-                    const data = await resp.json().catch(() => ({}));
+                    const details = await fetchEmbyItemDetails(serverId, itemId);
                     if (currentServer !== activeEmbyServerId) {
                         return;
                     }
-                    if (!resp.ok || data.success === false) {
-                        tmdbEmbyDetails.innerHTML = `<div class="tagline">${data.message || 'Dettagli non disponibili.'}</div>`;
-                        return;
-                    }
-                    renderEmbyDetails(data.details, options);
+                    renderEmbyDetails(details, options);
                 } catch (err) {
                     if (currentServer !== activeEmbyServerId) {
                         return;
                     }
-                    tmdbEmbyDetails.innerHTML = '<div class="tagline">Errore di rete durante il recupero dettagli.</div>';
+                    tmdbEmbyDetails.innerHTML = `<div class="tagline">${err.message || 'Errore di rete durante il recupero dettagli.'}</div>`;
                 }
+            };
+
+            const embyOverlayState = {
+                popover: null,
+                popoverBody: null,
+                popoverTitle: null,
+                modal: null,
+                modalBody: null,
+                modalTitle: null,
+                modalClose: null,
+                anchor: null,
+                mode: null,
+                details: null,
+                detailsTarget: null,
+                lastFocus: null,
+                focusTrapHandler: null,
+                listenersAttached: false
+            };
+
+            const isMobileViewport = () => window.matchMedia('(max-width: 720px)').matches;
+
+            const releaseEmbyFocusTrap = () => {
+                if (!embyOverlayState.modal || !embyOverlayState.focusTrapHandler) {
+                    return;
+                }
+                embyOverlayState.modal.removeEventListener('keydown', embyOverlayState.focusTrapHandler);
+                embyOverlayState.focusTrapHandler = null;
+            };
+
+            const activateEmbyFocusTrap = (container) => {
+                if (!container) {
+                    return;
+                }
+                const handler = (event) => {
+                    if (event.key !== 'Tab') {
+                        return;
+                    }
+                    const focusable = Array.from(container.querySelectorAll(
+                        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+                    )).filter(el => !el.hasAttribute('disabled'));
+                    if (!focusable.length) {
+                        return;
+                    }
+                    const first = focusable[0];
+                    const last = focusable[focusable.length - 1];
+                    if (event.shiftKey && document.activeElement === first) {
+                        last.focus();
+                        event.preventDefault();
+                    } else if (!event.shiftKey && document.activeElement === last) {
+                        first.focus();
+                        event.preventDefault();
+                    }
+                };
+                container.addEventListener('keydown', handler);
+                embyOverlayState.focusTrapHandler = handler;
+            };
+
+            const closeEmbyDetailOverlay = () => {
+                if (embyOverlayState.popover) {
+                    embyOverlayState.popover.classList.add('is-hidden');
+                    embyOverlayState.popoverBody.innerHTML = '';
+                }
+                if (embyOverlayState.modal) {
+                    embyOverlayState.modal.classList.add('is-hidden');
+                    embyOverlayState.modalBody.innerHTML = '';
+                }
+                releaseEmbyFocusTrap();
+                if (embyOverlayState.lastFocus) {
+                    embyOverlayState.lastFocus.focus();
+                }
+                embyOverlayState.anchor = null;
+                embyOverlayState.mode = null;
+                embyOverlayState.details = null;
+                embyOverlayState.detailsTarget = null;
+                embyOverlayState.lastFocus = null;
+            };
+
+            const positionEmbyPopover = () => {
+                if (!embyOverlayState.popover || !embyOverlayState.anchor) {
+                    return;
+                }
+                const anchorRect = embyOverlayState.anchor.getBoundingClientRect();
+                const popover = embyOverlayState.popover;
+                const popoverRect = popover.getBoundingClientRect();
+                const padding = 12;
+                let left = anchorRect.left + window.scrollX;
+                if (left + popoverRect.width > window.innerWidth - padding) {
+                    left = window.innerWidth - popoverRect.width - padding;
+                }
+                if (left < padding) {
+                    left = padding;
+                }
+                let top = anchorRect.bottom + window.scrollY + 8;
+                if (top + popoverRect.height > window.scrollY + window.innerHeight - padding) {
+                    top = anchorRect.top + window.scrollY - popoverRect.height - 8;
+                }
+                if (top < window.scrollY + padding) {
+                    top = window.scrollY + padding;
+                }
+                popover.style.left = `${left}px`;
+                popover.style.top = `${top}px`;
+            };
+
+            const ensureEmbyOverlay = () => {
+                if (!embyOverlayState.popover) {
+                    const popover = document.createElement('div');
+                    popover.className = 'emby-detail-popover is-hidden';
+                    popover.setAttribute('role', 'dialog');
+                    popover.setAttribute('aria-modal', 'false');
+                    popover.addEventListener('click', (event) => {
+                        const button = event.target.closest('.emby-resolution-btn');
+                        if (!button || !embyOverlayState.details || !embyOverlayState.detailsTarget) {
+                            return;
+                        }
+                        const index = Number(button.dataset.sourceIndex);
+                        if (!Number.isFinite(index)) {
+                            return;
+                        }
+                        renderEmbyDetails(embyOverlayState.details, { sourceIndex: index }, embyOverlayState.detailsTarget);
+                    });
+                    const header = document.createElement('div');
+                    header.className = 'emby-detail-popover-header';
+                    const title = document.createElement('div');
+                    title.className = 'emby-detail-popover-title';
+                    const closeBtn = document.createElement('button');
+                    closeBtn.type = 'button';
+                    closeBtn.className = 'emby-detail-popover-close';
+                    closeBtn.setAttribute('aria-label', 'Chiudi dettagli');
+                    closeBtn.textContent = '×';
+                    closeBtn.addEventListener('click', closeEmbyDetailOverlay);
+                    header.appendChild(title);
+                    header.appendChild(closeBtn);
+                    const body = document.createElement('div');
+                    body.className = 'emby-detail-popover-body';
+                    popover.appendChild(header);
+                    popover.appendChild(body);
+                    document.body.appendChild(popover);
+                    embyOverlayState.popover = popover;
+                    embyOverlayState.popoverBody = body;
+                    embyOverlayState.popoverTitle = title;
+                }
+
+                if (!embyOverlayState.modal) {
+                    const modal = document.createElement('div');
+                    modal.className = 'emby-detail-modal is-hidden';
+                    modal.setAttribute('role', 'dialog');
+                    modal.setAttribute('aria-modal', 'true');
+                    const sheet = document.createElement('div');
+                    sheet.className = 'emby-detail-sheet';
+                    sheet.tabIndex = -1;
+                    sheet.addEventListener('click', (event) => {
+                        const button = event.target.closest('.emby-resolution-btn');
+                        if (!button || !embyOverlayState.details || !embyOverlayState.detailsTarget) {
+                            return;
+                        }
+                        const index = Number(button.dataset.sourceIndex);
+                        if (!Number.isFinite(index)) {
+                            return;
+                        }
+                        renderEmbyDetails(embyOverlayState.details, { sourceIndex: index }, embyOverlayState.detailsTarget);
+                    });
+                    const header = document.createElement('div');
+                    header.className = 'emby-detail-sheet-header';
+                    const title = document.createElement('div');
+                    title.className = 'emby-detail-sheet-title';
+                    const closeBtn = document.createElement('button');
+                    closeBtn.type = 'button';
+                    closeBtn.className = 'emby-detail-sheet-close';
+                    closeBtn.setAttribute('aria-label', 'Chiudi dettagli');
+                    closeBtn.textContent = '×';
+                    closeBtn.addEventListener('click', closeEmbyDetailOverlay);
+                    header.appendChild(title);
+                    header.appendChild(closeBtn);
+                    const body = document.createElement('div');
+                    body.className = 'emby-detail-sheet-body';
+                    sheet.appendChild(header);
+                    sheet.appendChild(body);
+                    modal.appendChild(sheet);
+                    modal.addEventListener('click', (event) => {
+                        if (event.target === modal) {
+                            closeEmbyDetailOverlay();
+                        }
+                    });
+                    document.body.appendChild(modal);
+                    embyOverlayState.modal = modal;
+                    embyOverlayState.modalBody = body;
+                    embyOverlayState.modalTitle = title;
+                    embyOverlayState.modalClose = closeBtn;
+                }
+
+                if (!embyOverlayState.listenersAttached) {
+                    document.addEventListener('mousedown', (event) => {
+                        if (embyOverlayState.mode !== 'popover' || !embyOverlayState.popover) {
+                            return;
+                        }
+                        if (embyOverlayState.popover.contains(event.target)) {
+                            return;
+                        }
+                        if (embyOverlayState.anchor && embyOverlayState.anchor.contains(event.target)) {
+                            return;
+                        }
+                        closeEmbyDetailOverlay();
+                    });
+                    document.addEventListener('keydown', (event) => {
+                        if (event.key === 'Escape') {
+                            closeEmbyDetailOverlay();
+                        }
+                    });
+                    window.addEventListener('resize', positionEmbyPopover);
+                    embyOverlayState.listenersAttached = true;
+                }
+            };
+
+            const openEmbyOverlay = (anchor, titleText, content, mode = 'details') => {
+                ensureEmbyOverlay();
+                embyOverlayState.anchor = anchor;
+                embyOverlayState.detailsTarget = content;
+                embyOverlayState.details = null;
+                if (isMobileViewport()) {
+                    embyOverlayState.mode = 'modal';
+                    embyOverlayState.modalTitle.textContent = titleText || (mode === 'menu' ? 'Versioni' : 'Dettagli');
+                    embyOverlayState.modalBody.innerHTML = '';
+                    embyOverlayState.modalBody.appendChild(content);
+                    embyOverlayState.modal.classList.remove('is-hidden');
+                    embyOverlayState.lastFocus = document.activeElement;
+                    embyOverlayState.modalClose.focus();
+                    activateEmbyFocusTrap(embyOverlayState.modal);
+                } else {
+                    embyOverlayState.mode = 'popover';
+                    embyOverlayState.popoverTitle.textContent = titleText || (mode === 'menu' ? 'Versioni' : 'Dettagli');
+                    embyOverlayState.popoverBody.innerHTML = '';
+                    embyOverlayState.popoverBody.appendChild(content);
+                    embyOverlayState.popover.classList.remove('is-hidden');
+                    positionEmbyPopover();
+                }
+            };
+
+            const openEmbyVersionDetails = async (anchor, version) => {
+                if (!activeEmbyServerId || !version || !version.itemId) {
+                    return;
+                }
+                const titleText = formatVersionLabel(version);
+                const content = document.createElement('div');
+                content.className = 'emby-detail-content';
+                content.innerHTML = '<div class="tagline">Caricamento dettagli...</div>';
+                openEmbyOverlay(anchor, titleText, content, 'details');
+                const currentServer = activeEmbyServerId;
+                try {
+                    const details = await fetchEmbyItemDetails(activeEmbyServerId, version.itemId);
+                    if (currentServer !== activeEmbyServerId) {
+                        return;
+                    }
+                    content.innerHTML = '';
+                    renderEmbyDetails(details, {
+                        preferredResolution: version.label,
+                        sourceIndex: Number.isFinite(version.sourceIndex) ? version.sourceIndex : null
+                    }, content);
+                    embyOverlayState.details = details;
+                    positionEmbyPopover();
+                } catch (err) {
+                    content.innerHTML = `<div class="tagline">${err.message || 'Errore durante il recupero dettagli.'}</div>`;
+                }
+            };
+
+            const openEmbyVersionMenu = (anchor, versions) => {
+                if (!Array.isArray(versions) || !versions.length) {
+                    return;
+                }
+                const list = document.createElement('div');
+                list.className = 'emby-version-menu';
+                versions.forEach(version => {
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = 'emby-version-menu-item';
+                    button.textContent = formatVersionLabel(version);
+                    button.addEventListener('click', () => {
+                        openEmbyVersionDetails(anchor, version);
+                    });
+                    list.appendChild(button);
+                });
+                openEmbyOverlay(anchor, 'Versioni', list, 'menu');
             };
 
             const renderEmbySeasons = (seasons) => {
@@ -1840,17 +2411,18 @@
                 const title = document.createElement('div');
                 title.className = 'emby-section-title';
                 title.textContent = 'Stagioni presenti';
+                const scroll = document.createElement('div');
+                scroll.className = 'emby-season-scroll';
                 const list = document.createElement('div');
-                list.className = 'emby-season-list';
+                list.className = 'emby-season-grid';
                 seasons.forEach(season => {
                     const parsedSeason = Number(season.season_number);
                     const seasonNumber = Number.isFinite(parsedSeason) ? parsedSeason : null;
                     const labelBase = formatSeasonLabel(seasonNumber, season.name);
-                    const countSuffix = season.episode_count ? ` (${season.episode_count})` : '';
                     const button = document.createElement('button');
                     button.type = 'button';
-                    button.className = 'emby-chip emby-season-btn';
-                    button.textContent = `${labelBase}${countSuffix}`;
+                    button.className = 'emby-season-btn';
+                    button.textContent = `${labelBase}`;
                     button.dataset.seasonId = season.season_id || '';
                     if (seasonNumber !== null) {
                         button.dataset.seasonNumber = String(seasonNumber);
@@ -1858,7 +2430,8 @@
                     list.appendChild(button);
                 });
                 tmdbEmbySeasons.appendChild(title);
-                tmdbEmbySeasons.appendChild(list);
+                scroll.appendChild(list);
+                tmdbEmbySeasons.appendChild(scroll);
             };
 
             const loadEmbySeasons = async (serverId, seriesId) => {
@@ -1868,6 +2441,7 @@
                 tmdbEmbySeasons.innerHTML = '<div class="tagline">Caricamento stagioni...</div>';
                 if (tmdbEmbyEpisodes) tmdbEmbyEpisodes.innerHTML = '';
                 if (tmdbEmbyDetails) tmdbEmbyDetails.innerHTML = '';
+                closeEmbyDetailOverlay();
                 activeEmbySeasonId = null;
                 const currentServer = activeEmbyServerId;
                 try {
@@ -1904,62 +2478,76 @@
                 title.className = 'emby-section-title';
                 title.textContent = 'Episodi presenti';
                 const list = document.createElement('div');
-                list.className = 'emby-episode-list';
+                list.className = 'emby-episode-grid';
                 episodes.forEach(episode => {
                     const parsedEpisode = Number(episode.episode_number);
                     const episodeNumber = Number.isFinite(parsedEpisode) ? parsedEpisode : null;
                     const label = episodeNumber !== null
                         ? `E${String(episodeNumber).padStart(2, '0')}`
                         : 'Episodio';
-                    const row = document.createElement('div');
-                    row.className = 'emby-episode-row';
-                    const labelEl = document.createElement('span');
-                    labelEl.className = 'emby-episode-label';
-                    labelEl.textContent = label;
-                    const dot = document.createElement('span');
-                    dot.className = 'emby-episode-sep';
-                    dot.textContent = '·';
-                    const resWrap = document.createElement('div');
-                    resWrap.className = 'emby-episode-resolutions';
-                    const rawResolutions = Array.isArray(episode.resolutions) ? episode.resolutions : [];
-                    const normalizedResolutions = rawResolutions.map(entry => {
-                        if (typeof entry === 'string') {
-                            return { label: entry, itemId: episode.episode_id };
-                        }
-                        if (entry && typeof entry === 'object') {
-                            return {
-                                label: entry.label || '',
-                                itemId: entry.item_id || entry.itemId || episode.episode_id
-                            };
-                        }
-                        return { label: '', itemId: episode.episode_id };
-                    }).filter(entry => entry.label);
-                    if (!normalizedResolutions.length) {
-                        const placeholder = document.createElement('span');
-                        placeholder.className = 'tagline';
-                        placeholder.textContent = '—';
-                        resWrap.appendChild(placeholder);
+                    const tile = document.createElement('div');
+                    tile.className = 'emby-episode-tile';
+                    const episodeKey = `${episode.episode_id || ''}-${episodeNumber ?? 'x'}-${list.children.length}`;
+                    tile.dataset.episodeKey = episodeKey;
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = 'emby-episode-card';
+                    button.textContent = label;
+                    button.dataset.episodeKey = episodeKey;
+                    button.dataset.episodeId = episode.episode_id || '';
+                    const strip = document.createElement('div');
+                    strip.className = 'emby-episode-strip';
+                    const versions = normalizeEpisodeVersions(episode.resolutions, episode.episode_id);
+                    if (!versions.length) {
+                        const empty = document.createElement('span');
+                        empty.className = 'emby-episode-segment is-empty';
+                        empty.setAttribute('aria-hidden', 'true');
+                        strip.appendChild(empty);
                     } else {
-                        normalizedResolutions.forEach((resolution, index) => {
-                            const chip = document.createElement('button');
-                            chip.type = 'button';
-                            chip.className = 'emby-resolution-chip';
-                            chip.textContent = resolution.label;
-                            chip.dataset.itemId = resolution.itemId || '';
-                            chip.dataset.resolution = resolution.label;
-                            resWrap.appendChild(chip);
-                            if (index < normalizedResolutions.length - 1) {
-                                const sep = document.createElement('span');
-                                sep.className = 'emby-resolution-sep';
-                                sep.textContent = '|';
-                                resWrap.appendChild(sep);
+                        const visibleVersions = versions.length >= 5 ? versions.slice(0, 3) : versions;
+                        visibleVersions.forEach(version => {
+                            const segment = document.createElement('button');
+                            segment.type = 'button';
+                            segment.className = 'emby-episode-segment';
+                            segment.dataset.itemId = version.itemId;
+                            if (Number.isFinite(version.sourceIndex)) {
+                                segment.dataset.sourceIndex = String(version.sourceIndex);
                             }
+                            segment.dataset.resolution = version.label;
+                            segment.dataset.episodeKey = episodeKey;
+                            segment.dataset.versionIndex = String(version.dupIndex || 1);
+                            segment.dataset.versionCount = String(version.dupCount || 1);
+                            const labelText = formatVersionLabel(version);
+                            segment.title = labelText;
+                            segment.setAttribute('aria-label', labelText);
+                            segment.style.backgroundColor = getResolutionColor(version.label);
+                            strip.appendChild(segment);
                         });
+                        if (versions.length >= 5) {
+                            const more = document.createElement('button');
+                            more.type = 'button';
+                            more.className = 'emby-episode-segment emby-episode-more';
+                            more.textContent = '…';
+                            more.dataset.episodeKey = episodeKey;
+                            more.dataset.moreCount = String(versions.length - 3);
+                            const moreLabel = `Mostra altre ${versions.length - 3} versioni`;
+                            more.title = moreLabel;
+                            more.setAttribute('aria-label', moreLabel);
+                            strip.appendChild(more);
+                        }
+                        if (versions.length) {
+                            tile.dataset.versions = JSON.stringify(versions.map(version => ({
+                                itemId: version.itemId,
+                                sourceIndex: version.sourceIndex,
+                                label: version.label,
+                                dupIndex: version.dupIndex,
+                                dupCount: version.dupCount
+                            })));
+                        }
                     }
-                    row.appendChild(labelEl);
-                    row.appendChild(dot);
-                    row.appendChild(resWrap);
-                    list.appendChild(row);
+                    tile.appendChild(button);
+                    tile.appendChild(strip);
+                    list.appendChild(tile);
                 });
                 tmdbEmbyEpisodes.appendChild(title);
                 tmdbEmbyEpisodes.appendChild(list);
@@ -1971,6 +2559,7 @@
                 }
                 tmdbEmbyEpisodes.innerHTML = '<div class="tagline">Caricamento episodi...</div>';
                 if (tmdbEmbyDetails) tmdbEmbyDetails.innerHTML = '';
+                closeEmbyDetailOverlay();
                 const currentServer = activeEmbyServerId;
                 try {
                     const resp = await csrfFetch(
@@ -1996,6 +2585,91 @@
                 }
             };
 
+            const renderEmbyVersions = (versions, preferredItemId) => {
+                if (!tmdbEmbyVersions) {
+                    return;
+                }
+                tmdbEmbyVersions.innerHTML = '';
+                if (!Array.isArray(versions) || versions.length === 0) {
+                    tmdbEmbyVersions.innerHTML = '<div class="tagline">Nessuna versione trovata.</div>';
+                    return;
+                }
+                const title = document.createElement('div');
+                title.className = 'emby-section-title';
+                title.textContent = 'Versioni disponibili';
+                const list = document.createElement('div');
+                list.className = 'emby-version-list';
+                const entries = [];
+                versions.forEach(version => {
+                    const itemId = version.item_id || version.itemId;
+                    const resList = Array.isArray(version.resolutions) ? version.resolutions : [];
+                    if (resList.length) {
+                        resList.forEach(label => {
+                            entries.push({ label, itemId });
+                        });
+                    } else if (itemId) {
+                        entries.push({ label: version.name || 'Versione', itemId });
+                    }
+                });
+                const dedupe = new Map();
+                entries.forEach(entry => {
+                    if (!entry.itemId || !entry.label) {
+                        return;
+                    }
+                    if (!dedupe.has(entry.label)) {
+                        dedupe.set(entry.label, entry.itemId);
+                    }
+                });
+                const sorted = Array.from(dedupe.entries()).map(([label, itemId]) => ({ label, itemId }));
+                const sortResolution = (value) => {
+                    if (value.endsWith('p') && value.slice(0, -1).match(/^\d+$/)) {
+                        return parseInt(value, 10);
+                    }
+                    return 0;
+                };
+                sorted.sort((a, b) => sortResolution(b.label) - sortResolution(a.label));
+                sorted.forEach(entry => {
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = 'emby-resolution-chip';
+                    button.textContent = entry.label;
+                    button.dataset.itemId = entry.itemId;
+                    button.dataset.resolution = entry.label;
+                    if (preferredItemId && entry.itemId === preferredItemId) {
+                        button.classList.add('is-active');
+                    }
+                    list.appendChild(button);
+                });
+                tmdbEmbyVersions.appendChild(title);
+                tmdbEmbyVersions.appendChild(list);
+            };
+
+            const loadEmbyMovieVersions = async (serverId, tmdbId, preferredItemId) => {
+                if (!tmdbEmbyVersions) {
+                    return;
+                }
+                tmdbEmbyVersions.innerHTML = '<div class="tagline">Caricamento versioni...</div>';
+                if (tmdbEmbyDetails) {
+                    tmdbEmbyDetails.innerHTML = '<div class="tagline">Seleziona una versione per i dettagli.</div>';
+                }
+                try {
+                    const resp = await csrfFetch(
+                        `/api/emby/movie-versions?server_id=${encodeURIComponent(serverId)}&tmdb_id=${encodeURIComponent(tmdbId)}`
+                    );
+                    const data = await resp.json().catch(() => ({}));
+                    if (!resp.ok || data.success === false) {
+                        tmdbEmbyVersions.innerHTML = `<div class="tagline">${data.message || 'Versioni non disponibili.'}</div>`;
+                        return;
+                    }
+                    renderEmbyVersions(data.versions || [], preferredItemId);
+                    if (preferredItemId) {
+                        loadEmbyItemDetails(serverId, preferredItemId);
+                    }
+                } catch (err) {
+                    tmdbEmbyVersions.innerHTML = '<div class="tagline">Errore di rete durante il recupero versioni.</div>';
+                }
+            };
+
             const openEmbyServer = async (context) => {
                 if (!context || !context.serverId || !context.itemId) {
                     return;
@@ -2008,11 +2682,17 @@
                 }
                 setEmbyBrowserVisible(true);
                 if (selectedTmdbData && selectedTmdbData.media_type === 'tv') {
+                    setEmbySectionVisibility('tv');
                     await loadEmbySeasons(context.serverId, context.itemId);
                 } else {
+                    setEmbySectionVisibility('movie');
                     if (tmdbEmbySeasons) tmdbEmbySeasons.innerHTML = '';
                     if (tmdbEmbyEpisodes) tmdbEmbyEpisodes.innerHTML = '';
-                    await loadEmbyItemDetails(context.serverId, context.itemId);
+                    if (selectedTmdbData && selectedTmdbData.tmdb_id) {
+                        await loadEmbyMovieVersions(context.serverId, selectedTmdbData.tmdb_id, context.itemId);
+                    } else {
+                        await loadEmbyItemDetails(context.serverId, context.itemId);
+                    }
                 }
             };
 
@@ -2205,6 +2885,67 @@
 
             if (tmdbEmbyEpisodes) {
                 tmdbEmbyEpisodes.addEventListener('click', (event) => {
+                    const episodeButton = event.target.closest('.emby-episode-card');
+                    if (episodeButton) {
+                        tmdbEmbyEpisodes.querySelectorAll('.emby-episode-card').forEach(btn => {
+                            btn.classList.toggle('is-active', btn === episodeButton);
+                        });
+                        return;
+                    }
+
+                    const moreButton = event.target.closest('.emby-episode-more');
+                    if (moreButton) {
+                        const tile = moreButton.closest('.emby-episode-tile');
+                        if (!tile) {
+                            return;
+                        }
+                        let versions = [];
+                        try {
+                            versions = JSON.parse(tile.dataset.versions || '[]');
+                        } catch (err) {
+                            versions = [];
+                        }
+                        if (versions.length > 3) {
+                            openEmbyVersionMenu(moreButton, versions.slice(3));
+                        }
+                        return;
+                    }
+
+                    const segment = event.target.closest('.emby-episode-segment');
+                    if (!segment || !activeEmbyServerId) {
+                        return;
+                    }
+                    const itemId = segment.dataset.itemId;
+                    if (!itemId) {
+                        return;
+                    }
+                    tmdbEmbyEpisodes.querySelectorAll('.emby-episode-segment').forEach(btn => {
+                        btn.classList.toggle('is-active', btn === segment);
+                    });
+                    const tile = segment.closest('.emby-episode-tile');
+                    if (tile) {
+                        const tileButton = tile.querySelector('.emby-episode-card');
+                        if (tileButton) {
+                            tmdbEmbyEpisodes.querySelectorAll('.emby-episode-card').forEach(btn => {
+                                btn.classList.toggle('is-active', btn === tileButton);
+                            });
+                        }
+                    }
+                    const version = {
+                        itemId,
+                        label: segment.dataset.resolution || '',
+                        sourceIndex: Number.isFinite(Number(segment.dataset.sourceIndex))
+                            ? Number(segment.dataset.sourceIndex)
+                            : null,
+                        dupIndex: Number(segment.dataset.versionIndex) || 1,
+                        dupCount: Number(segment.dataset.versionCount) || 1
+                    };
+                    openEmbyVersionDetails(segment, version);
+                });
+            }
+
+            if (tmdbEmbyVersions) {
+                tmdbEmbyVersions.addEventListener('click', (event) => {
                     const button = event.target.closest('.emby-resolution-chip');
                     if (!button || !activeEmbyServerId) {
                         return;
@@ -2213,10 +2954,10 @@
                     if (!itemId) {
                         return;
                     }
-                    const resolution = button.dataset.resolution || '';
-                    tmdbEmbyEpisodes.querySelectorAll('.emby-resolution-chip').forEach(btn => {
+                    tmdbEmbyVersions.querySelectorAll('.emby-resolution-chip').forEach(btn => {
                         btn.classList.toggle('is-active', btn === button);
                     });
+                    const resolution = button.dataset.resolution || button.textContent || '';
                     loadEmbyItemDetails(activeEmbyServerId, itemId, { preferredResolution: resolution });
                 });
             }

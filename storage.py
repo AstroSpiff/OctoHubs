@@ -82,10 +82,13 @@ if SQLALCHEMY_AVAILABLE:
         server_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
         item_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
         media_source_id = Column(String(36))  # type: ignore[assignment]
+        library_id = Column(String(36))  # type: ignore[assignment]
+        library_name = Column(String(500))  # type: ignore[assignment]
         item_name = Column(String(255), nullable=False)  # type: ignore[assignment]
         failed_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
         reason = Column(String(500), nullable=False)  # type: ignore[assignment]
         retry_count = Column(Integer, nullable=False, default=0)  # type: ignore[assignment]
+        error_type = Column(String(20))  # type: ignore[assignment]
 
     class EmbyProbeQueue(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "emby_probe_queue"
@@ -124,6 +127,7 @@ if SQLALCHEMY_AVAILABLE:
         season = Column(Integer, nullable=False)  # type: ignore[assignment]
         episode = Column(Integer, nullable=False)  # type: ignore[assignment]
         is_available = Column(Boolean, nullable=False, default=False)  # type: ignore[assignment]
+        providers = Column(JSON)  # type: ignore[assignment]
         last_checked = Column(DateTime, default=_utcnow, nullable=False, index=True)  # type: ignore[assignment]
 
 
@@ -189,6 +193,18 @@ class DatabaseStorage:
                 ))
                 conn.execute(text(
                     "ALTER TABLE emby_probe_blacklist ADD COLUMN IF NOT EXISTS media_source_id VARCHAR(36)"
+                ))
+                conn.execute(text(
+                    "ALTER TABLE emby_probe_blacklist ADD COLUMN IF NOT EXISTS library_id VARCHAR(36)"
+                ))
+                conn.execute(text(
+                    "ALTER TABLE emby_probe_blacklist ADD COLUMN IF NOT EXISTS library_name VARCHAR(500)"
+                ))
+                conn.execute(text(
+                    "ALTER TABLE emby_probe_blacklist ADD COLUMN IF NOT EXISTS error_type VARCHAR(20)"
+                ))
+                conn.execute(text(
+                    "ALTER TABLE justwatch_cache ADD COLUMN IF NOT EXISTS providers JSON"
                 ))
         except SQLAlchemyError as exc:  # pragma: no cover
             raise StorageError(f"Errore migrazione probe: {exc}") from exc
@@ -439,10 +455,13 @@ class DatabaseStorage:
                 f"{entry.item_id}:{entry.media_source_id or ''}": {
                     "item_id": entry.item_id,
                     "media_source_id": entry.media_source_id,
+                    "library_id": entry.library_id,
+                    "library_name": entry.library_name,
                     "item_name": entry.item_name,
                     "failed_at": entry.failed_at,
                     "reason": entry.reason,
-                    "retry_count": entry.retry_count
+                    "retry_count": entry.retry_count,
+                    "error_type": entry.error_type or "ERROR"
                 }
                 for entry in entries
             }
@@ -456,7 +475,10 @@ class DatabaseStorage:
         name: str,
         reason: str,
         media_source_id: Optional[str] = None,
-        increment_retry: bool = True
+        increment_retry: bool = True,
+        error_type: Optional[str] = None,
+        library_id: Optional[str] = None,
+        library_name: Optional[str] = None
     ) -> int:
         session = self._get_session()
         try:
@@ -470,6 +492,9 @@ class DatabaseStorage:
                 entry.reason = reason  # type: ignore[assignment]
                 entry.failed_at = _utcnow()  # type: ignore[assignment]
                 entry.media_source_id = media_source_id  # type: ignore[assignment]
+                entry.library_id = library_id  # type: ignore[assignment]
+                entry.library_name = library_name  # type: ignore[assignment]
+                entry.error_type = error_type or entry.error_type  # type: ignore[assignment]
                 if increment_retry:
                     entry.retry_count += 1  # type: ignore[assignment]
                 retry_count = entry.retry_count
@@ -478,9 +503,12 @@ class DatabaseStorage:
                     server_id=server_id,
                     item_id=item_id,
                     media_source_id=media_source_id,
+                    library_id=library_id,
+                    library_name=library_name,
                     item_name=name,
                     reason=reason,
-                    retry_count=1 if increment_retry else 0
+                    retry_count=1 if increment_retry else 0,
+                    error_type=error_type
                 )
                 session.add(new_entry)
                 retry_count = new_entry.retry_count
@@ -507,7 +535,12 @@ class DatabaseStorage:
         finally:
             session.close()
 
-    def get_probe_blacklist(self, server_id: Optional[str] = None, min_retry_count: int = 0) -> list[Dict[str, Any]]:
+    def get_probe_blacklist(
+        self,
+        server_id: Optional[str] = None,
+        min_retry_count: int = 0,
+        error_type: Optional[str] = None
+    ) -> list[Dict[str, Any]]:
         """Get blacklist entries as a list, optionally filtered by server and retry count."""
         session = self._get_session()
         try:
@@ -519,28 +552,62 @@ class DatabaseStorage:
 
             entries = query.order_by(EmbyProbeBlacklist.failed_at.desc()).all()  # type: ignore[attr-defined]
 
+            def _normalize_error_type(entry: EmbyProbeBlacklist) -> str:
+                if entry.error_type:
+                    return entry.error_type
+                reason = (entry.reason or "").lower()
+                if "mediainfo" in reason or "metadati" in reason or "metadata" in reason:
+                    return "INCOMPLETE"
+                return "ERROR"
+
+            if error_type:
+                normalized_type = error_type.upper()
+                entries = [entry for entry in entries if _normalize_error_type(entry) == normalized_type]
+
             return [
                 {
                     "server_id": entry.server_id,
                     "item_id": entry.item_id,
                     "media_source_id": entry.media_source_id,
+                    "library_id": entry.library_id,
+                    "library_name": entry.library_name,
                     "item_name": entry.item_name,
                     "failed_at": entry.failed_at.isoformat() if entry.failed_at else None,
                     "reason": entry.reason,
-                    "retry_count": entry.retry_count
+                    "retry_count": entry.retry_count,
+                    "error_type": _normalize_error_type(entry)
                 }
                 for entry in entries
             ]
         finally:
             session.close()
 
-    def clear_probe_blacklist(self, server_id: str) -> None:
-        """Clear all blacklist entries for a server."""
+    def clear_probe_blacklist(self, server_id: str, error_type: Optional[str] = None) -> None:
+        """Clear all blacklist entries for a server, optionally filtered by error type."""
         session = self._get_session()
         try:
-            session.query(EmbyProbeBlacklist).filter(
+            query = session.query(EmbyProbeBlacklist).filter(
                 EmbyProbeBlacklist.server_id == server_id  # type: ignore[attr-defined]
-            ).delete()
+            )
+            if not error_type:
+                query.delete()
+                session.commit()
+                return
+
+            normalized_type = error_type.upper()
+            entries = query.all()
+
+            def _normalize_error_type(entry: EmbyProbeBlacklist) -> str:
+                if entry.error_type:
+                    return entry.error_type
+                reason = (entry.reason or "").lower()
+                if "mediainfo" in reason or "metadati" in reason or "metadata" in reason:
+                    return "INCOMPLETE"
+                return "ERROR"
+
+            for entry in entries:
+                if _normalize_error_type(entry) == normalized_type:
+                    session.delete(entry)
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
             session.rollback()
@@ -793,6 +860,7 @@ class DatabaseStorage:
                     "season": entry.season,
                     "episode": entry.episode,
                     "is_available": entry.is_available,
+                    "providers": entry.providers,
                     "last_checked": entry.last_checked
                 }
             return None
@@ -804,7 +872,8 @@ class DatabaseStorage:
         show_name: str,
         season: int,
         episode: int,
-        is_available: bool
+        is_available: bool,
+        providers: Optional[list] = None
     ) -> None:
         """Save or update JustWatch availability data for an episode."""
         session = self._get_session()
@@ -822,6 +891,8 @@ class DatabaseStorage:
             if entry:
                 # Update existing entry
                 entry.is_available = is_available  # type: ignore[assignment]
+                if providers is not None:
+                    entry.providers = providers  # type: ignore[assignment]
                 entry.last_checked = _utcnow()  # type: ignore[assignment]
             else:
                 # Create new entry
@@ -829,7 +900,8 @@ class DatabaseStorage:
                     show_name=show_name,
                     season=season,
                     episode=episode,
-                    is_available=is_available
+                    is_available=is_available,
+                    providers=providers
                 )
                 session.add(new_entry)
 

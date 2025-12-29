@@ -86,6 +86,7 @@
                                                         aria-label="Chiudi">×</button>
                                             </div>
                                             <div class="emby-browser-sections">
+                                                <div class="emby-browser-section" id="tmdb-emby-versions"></div>
                                                 <div class="emby-browser-section" id="tmdb-emby-seasons"></div>
                                                 <div class="emby-browser-section" id="tmdb-emby-episodes"></div>
                                                 <div class="emby-browser-section emby-details" id="tmdb-emby-details"></div>
@@ -704,6 +705,19 @@
                                                                 {% if req.release_date %}
                                                                     <span class="badge info">Data uscita: {{ req.release_date }}</span>
                                                                 {% endif %}
+                                                                {% if not show_seasons and req.justwatch_available %}
+                                                                    {% set jw_providers = req.justwatch_providers if req.justwatch_providers else None %}
+                                                                    {% set jw_title = None %}
+                                                                    {% if jw_providers %}
+                                                                        {% set jw_title = 'JustWatch: ' ~ (jw_providers | join(', ')) %}
+                                                                    {% endif %}
+                                                                    <button type="button"
+                                                                            class="justwatch-pill justwatch-checked"
+                                                                            {% if jw_title %}title="{{ jw_title }}"{% endif %}
+                                                                            {% if jw_title %}data-jw-label="{{ jw_title }}"{% endif %}>
+                                                                        Justwatch
+                                                                    </button>
+                                                                {% endif %}
                                                             </div>
                                                         </div>
                                                         <div class="request-meta">
@@ -748,10 +762,29 @@
                                                                         {% if season.episodes %}
                                                                             <div class="episode-chips">
                                                                                 {% for ep in season.episodes %}
-                                                                                    <span class="episode-chip status-{{ ep.status }}">
+                                                                                    {% set jw_providers = ep.justwatch_providers if ep.justwatch_providers else None %}
+                                                                                    {% set jw_title = None %}
+                                                                                    {% if jw_providers %}
+                                                                                        {% set jw_title = 'JustWatch: ' ~ (jw_providers | join(', ')) %}
+                                                                                    {% endif %}
+                                                                                    <span class="episode-chip status-{{ ep.status }}{% if ep.justwatch_available %} justwatch-checked{% endif %}"
+                                                                                          {% if ep.justwatch_available %}tabindex="0" role="button"{% endif %}
+                                                                                          {% if jw_title %}title="{{ jw_title }}"{% endif %}
+                                                                                          {% if jw_title %}data-jw-label="{{ jw_title }}"{% endif %}>
                                                                                         E{{ '%02d'|format(ep.episode) }}
+                                                                                        {% if ep.justwatch %}
+                                                                                            <span class="justwatch-badge" title="Disponibile su JustWatch">JW</span>
+                                                                                        {% endif %}
                                                                                         {% if ep.status == 'unreleased' and ep.release %}
-                                                                                            <small>({{ ep.release }})</small>
+                                                                                            {% set marker = '' %}
+                                                                                            {% if ep.justwatch_checked and ep.release_source == 'trakt' %}
+                                                                                                {% set marker = ' J+T' %}
+                                                                                            {% elif ep.justwatch_checked %}
+                                                                                                {% set marker = ' J' %}
+                                                                                            {% elif ep.release_source == 'trakt' %}
+                                                                                                {% set marker = ' T' %}
+                                                                                            {% endif %}
+                                                                                            <small>({{ ep.release }}{{ marker }})</small>
                                                                                         {% endif %}
                                                                                     </span>
                                                                                 {% endfor %}
@@ -920,6 +953,7 @@
                     <form action="/update-config" method="post">
                 {% set db = config.DATABASE if config and config.DATABASE else None %}
                 {% set trakt = config.TRAKT if config and config.TRAKT else None %}
+                {% set justwatch = config.JUSTWATCH if config and config.JUSTWATCH else None %}
                 <div class="config-grid">
                     <section class="config-box">
                         <h4>Jellyseerr</h4>
@@ -1026,6 +1060,7 @@
                                 <label for="trakt_access_token">Access Token</label>
                                 <input type="text"
                                        id="trakt_access_token"
+                                       name="trakt_access_token"
                                        class="read-only"
                                        value="{{ trakt.ACCESS_TOKEN if trakt else '' }}"
                                        placeholder="Token personale"
@@ -1049,6 +1084,30 @@
                                     <a class="trakt-link" id="trakt-device-link" href="#" target="_blank" rel="noopener">Apri https://trakt.tv/activate</a>
                                     <span class="trakt-code" id="trakt-device-code"></span>
                                 </div>
+                            </div>
+                        </div>
+                    </section>
+                    <section class="config-box">
+                        <h4>JustWatch</h4>
+                        <div class="tagline" style="margin-bottom:0.75rem;">Verifica disponibilità episodi su JustWatch nel locale selezionato.</div>
+                        <div class="form-grid">
+                            <div style="grid-column:1 / span 2;">
+                                <label>
+                                    <input type="checkbox" name="justwatch_enabled" {% if justwatch and justwatch.ENABLED %}checked{% endif %}>
+                                    Abilita integrazione JustWatch
+                                </label>
+                            </div>
+                            <div>
+                                <label for="justwatch_locale">Locale</label>
+                                <select id="justwatch_locale" name="justwatch_locale">
+                                    <option value="it_IT" {% if justwatch and justwatch.LOCALE == 'it_IT' %}selected{% endif %}>Italia (it_IT)</option>
+                                    <option value="en_US" {% if justwatch and justwatch.LOCALE == 'en_US' %}selected{% endif %}>USA (en_US)</option>
+                                    <option value="en_GB" {% if justwatch and justwatch.LOCALE == 'en_GB' %}selected{% endif %}>UK (en_GB)</option>
+                                    <option value="fr_FR" {% if justwatch and justwatch.LOCALE == 'fr_FR' %}selected{% endif %}>Francia (fr_FR)</option>
+                                    <option value="de_DE" {% if justwatch and justwatch.LOCALE == 'de_DE' %}selected{% endif %}>Germania (de_DE)</option>
+                                    <option value="es_ES" {% if justwatch and justwatch.LOCALE == 'es_ES' %}selected{% endif %}>Spagna (es_ES)</option>
+                                </select>
+                                <div class="tagline">Usa il catalogo JustWatch del paese selezionato.</div>
                             </div>
                         </div>
                     </section>
@@ -1132,6 +1191,13 @@
                         </div>
                         <span class="status-pill status-skip" data-service="trakt-status">In attesa</span>
                         <div class="tagline" data-service="trakt-msg"></div>
+                    </div>
+                    <div class="connection-card">
+                        <div class="connection-row">
+                            <strong>JustWatch</strong>
+                        </div>
+                        <span class="status-pill status-skip" data-service="justwatch-status">In attesa</span>
+                        <div class="tagline" data-service="justwatch-msg"></div>
                     </div>
                     <div class="connection-card">
                         <div class="connection-row">

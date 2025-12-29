@@ -18,6 +18,7 @@ from storage import DatabaseStorage, StorageError
 from config import (
     _merge_database_settings,
     _merge_trakt_settings,
+    _merge_justwatch_settings,
     _normalize_sort_settings,
     _clean_sort_mode,
     _normalize_auto_settings,
@@ -66,6 +67,7 @@ from api_clients import (
     _fetch_tmdb_payload
 )
 from library_grouper import group_libraries
+from justwatch_manager import JustWatchManager, JustWatchError, is_justwatch_available
 from utils import (
     _safe_get_dict_value,
     _normalize_form_input,
@@ -89,7 +91,7 @@ from scanner import (
     _contains_isolated_tag
 )
 from tasks import ScanManager, AutoScheduler
-from emby_probe import get_probe_manager
+from emby_probe import get_probe_manager, _format_display_name_from_queue
 from emby_streams import get_streams_manager
 from auth import init_auth, get_user_by_username, log_audit_event
 
@@ -210,6 +212,10 @@ DEFAULT_CONFIG = {
         "CLIENT_ID": "",
         "ACCESS_TOKEN": ""
     },
+    "JUSTWATCH": {
+        "ENABLED": False,
+        "LOCALE": "it_IT"
+    },
     "AUTO_TASKS": {
         "scan": {
             "enabled": False,
@@ -248,6 +254,10 @@ _DB_BACKEND = None
 _DB_BACKEND_SIGNATURE = None
 _TRAKT_CLIENT = None
 _TRAKT_SIGNATURE = None
+_JUSTWATCH_MANAGER = None
+_JUSTWATCH_SIGNATURE = None
+_JUSTWATCH_METADATA_CACHE = {}
+_JUSTWATCH_MEDIA_CACHE = {}
 _REQUESTS_CACHE = {
     "items": [],
     "generated_at": None
@@ -291,6 +301,7 @@ def load_config():
         merged[key] = file_config.get(key, merged.get(key))
     merged["DATABASE"] = database_settings
     merged["TRAKT"] = _merge_trakt_settings(file_config.get("TRAKT"))
+    merged["JUSTWATCH"] = _merge_justwatch_settings(file_config.get("JUSTWATCH"))
     merged["EMBY"] = _merge_emby_settings((file_config or {}).get("EMBY"))
 
     # Setta _ACTIVE_CONFIG subito in modo che _ensure_db_backend possa accedervi
@@ -498,6 +509,7 @@ def _summarize_requests_for_dashboard(config):
     try:
         requests_data = get_jellyseerr_requests(config, silent=True)
         print(f"   -> Dashboard: Jellyseerr ha restituito {len(requests_data)} richieste (pending+approved)")
+        _log_justwatch_status()
     except Exception as exc:
         print(f"   -> Errore durante il recupero richieste Jellyseerr per dashboard: {exc}")
         return []
@@ -529,14 +541,14 @@ def _summarize_requests_for_dashboard(config):
             media_cache,
             force_details=force_details
         )
-        season_status = describe_season_statuses(base_req) if _normalize_media_type(media_type) == "tv" else []
+        normalized_type = _normalize_media_type(media_type)
+        season_status = describe_season_statuses(base_req) if normalized_type == "tv" else []
         seasons = [entry["season"] for entry in season_status]
         release_dt = _request_release_date(base_req)
         release_label = release_dt.strftime("%Y-%m-%d") if release_dt else None
         status_code = base_req.get("media", {}).get("status") or req.get("media", {}).get("status")
         request_rule = _get_request_rule(config, req_id)
         will_skip = False
-        normalized_type = _normalize_media_type(media_type)
         if skip_available and status_code == 5:
             will_skip = True
         if skip_unreleased and release_dt and release_dt > now:
@@ -561,6 +573,22 @@ def _summarize_requests_for_dashboard(config):
                 age_label = f"{seconds // 60}m fa"
             else:
                 age_label = "Pochi secondi fa"
+        justwatch_checked = False
+        justwatch_available = False
+        justwatch_providers = []
+        if normalized_type != "tv" and not (status_code == 5 or (release_dt and release_dt > now)):
+            settings = _active_justwatch_settings()
+            if _justwatch_enabled(settings):
+                manager = _get_justwatch_manager(settings)
+                if manager and title:
+                    try:
+                        justwatch_available, justwatch_providers = manager.check_movie_availability_details(
+                            title,
+                            year=year
+                        )
+                        justwatch_checked = bool(justwatch_available)
+                    except JustWatchError as exc:
+                        print(f"   -> JustWatch: errore verifica movie {title}: {exc}")
         summary.append({
             "id": req_id,
             "title": title or "N/D",
@@ -574,6 +602,9 @@ def _summarize_requests_for_dashboard(config):
             "will_skip": will_skip,
             "age": age_label,
             "season_status": season_status,
+            "justwatch_checked": justwatch_checked,
+            "justwatch_available": justwatch_available,
+            "justwatch_providers": justwatch_providers,
             "rules": {
                 "query_terms": ",".join(request_rule.get("query_terms", [])),
                 "filter_terms": ",".join(request_rule.get("filter_terms", [])),
@@ -583,6 +614,24 @@ def _summarize_requests_for_dashboard(config):
         })
     print(f"   -> Dashboard: Elaborazione completata, {len(summary)} richieste nel summary finale")
     return summary
+
+def _log_justwatch_status():
+    settings = _active_justwatch_settings()
+    if not _justwatch_enabled(settings):
+        return
+    locale = (settings.get("LOCALE") or "it_IT").strip() or "it_IT"
+    if not is_justwatch_available():
+        print("   -> JustWatch: libreria non installata (pip install JustWatch)")
+        return
+    try:
+        manager = _get_justwatch_manager(settings)
+    except Exception as exc:
+        print(f"   -> JustWatch: errore inizializzazione: {exc}")
+        return
+    if manager:
+        print(f"   -> JustWatch: attivo (locale {locale})")
+    else:
+        print("   -> JustWatch: non disponibile (verifica database/config)")
 
 def _ensure_db_backend():
     """Crea o restituisce l'istanza del backend database."""
@@ -628,6 +677,12 @@ def _trakt_enabled(settings):
         return False
     return bool(settings.get("ENABLED"))
 
+def _justwatch_enabled(settings):
+    """Check if JustWatch is enabled in settings."""
+    if not settings:
+        return False
+    return bool(settings.get("ENABLED"))
+
 def _get_trakt_client(settings):
     """Get Trakt client instance from settings."""
     if not settings:
@@ -637,11 +692,39 @@ def _get_trakt_client(settings):
         access_token=settings.get("ACCESS_TOKEN", "")
     )
 
+def _get_justwatch_manager(settings):
+    """Get JustWatch manager instance from settings."""
+    global _JUSTWATCH_MANAGER, _JUSTWATCH_SIGNATURE
+    if not settings:
+        return None
+    if not _justwatch_enabled(settings):
+        return None
+    if not is_justwatch_available():
+        return None
+    db_settings = _ACTIVE_CONFIG.get("DATABASE") if _ACTIVE_CONFIG else None
+    if not _db_enabled(db_settings):
+        return None
+    locale = (settings.get("LOCALE") or "it_IT").strip() or "it_IT"
+    signature = f"{locale}"
+    if _JUSTWATCH_MANAGER is None or _JUSTWATCH_SIGNATURE != signature:
+        try:
+            _JUSTWATCH_MANAGER = JustWatchManager(_ensure_db_backend(), locale=locale)
+            _JUSTWATCH_SIGNATURE = signature
+        except JustWatchError:
+            return None
+    return _JUSTWATCH_MANAGER
+
 def _active_trakt_settings():
     """Get active Trakt settings from global config."""
     if _ACTIVE_CONFIG is None:
         return {}
     return _ACTIVE_CONFIG.get("TRAKT", {})
+
+def _active_justwatch_settings():
+    """Get active JustWatch settings from global config."""
+    if _ACTIVE_CONFIG is None:
+        return {}
+    return _ACTIVE_CONFIG.get("JUSTWATCH", {})
 
 def _prowlarr_configured(config):
     """Check if Prowlarr is configured."""
@@ -2215,7 +2298,8 @@ def create_dashboard_app():
                 media_streams = []
             video_stream = None
             audio_streams = []
-            for stream in media_streams:
+            stream_entries = []
+            for idx, stream in enumerate(media_streams):
                 if not isinstance(stream, dict):
                     continue
                 stream_type = stream.get("Type")
@@ -2223,6 +2307,30 @@ def create_dashboard_app():
                     video_stream = stream
                 elif stream_type == "Audio":
                     audio_streams.append(stream)
+                stream_entries.append({
+                    "type": (stream.get("Type") or "").lower(),
+                    "index": idx,
+                    "codec": stream.get("Codec"),
+                    "profile": stream.get("Profile"),
+                    "bitrate": stream.get("BitRate") or stream.get("Bitrate"),
+                    "bit_depth": stream.get("BitDepth"),
+                    "width": stream.get("Width"),
+                    "height": stream.get("Height"),
+                    "frame_rate": stream.get("AverageFrameRate") or stream.get("RealFrameRate"),
+                    "language": stream.get("DisplayLanguage") or stream.get("Language"),
+                    "channels": stream.get("Channels"),
+                    "channel_layout": stream.get("ChannelLayout"),
+                    "sample_rate": stream.get("SampleRate"),
+                    "title": stream.get("DisplayTitle") or stream.get("Title"),
+                    "is_default": stream.get("IsDefault"),
+                    "is_forced": stream.get("IsForced"),
+                    "is_external": stream.get("IsExternal"),
+                    "hdr_type": stream.get("HdrType"),
+                    "color_space": stream.get("ColorSpace"),
+                    "color_transfer": stream.get("ColorTransfer"),
+                    "color_primaries": stream.get("ColorPrimaries"),
+                    "video_range": stream.get("VideoRange") or stream.get("VideoRangeType")
+                })
 
             width = video_stream.get("Width") if isinstance(video_stream, dict) else None
             height = video_stream.get("Height") if isinstance(video_stream, dict) else None
@@ -2254,7 +2362,8 @@ def create_dashboard_app():
                 "bitrate": bitrate,
                 "bitrate_mbps": bitrate_mbps,
                 "path": path,
-                "audio_tracks": audio_tracks
+                "audio_tracks": audio_tracks,
+                "streams": stream_entries
             })
 
         return sources
@@ -2404,6 +2513,56 @@ def create_dashboard_app():
         details = _build_emby_item_details(item_payload, server)
         return jsonify({"success": True, "details": details})
 
+    @app.route('/api/emby/movie-versions', methods=['GET'])
+    @login_required
+    def emby_movie_versions():
+        server_id = request.args.get("server_id")
+        tmdb_id = request.args.get("tmdb_id")
+        if not server_id or not tmdb_id:
+            return jsonify({"success": False, "message": "Parametri mancanti"}), 400
+        tmdb_value = _try_parse_int(tmdb_id)
+        if not tmdb_value:
+            return jsonify({"success": False, "message": "TMDB ID non valido"}), 400
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Config non valida"}), 400
+        server = _resolve_emby_server(config, server_id)
+        if not server:
+            return jsonify({"success": False, "message": "Server non trovato"}), 404
+        if not server.get("enabled"):
+            return jsonify({"success": False, "message": "Server disabilitato"}), 400
+        params = {
+            "AnyProviderIdEquals": f"Tmdb.{tmdb_value}",
+            "IncludeItemTypes": "Movie",
+            "Recursive": "true",
+            "Fields": "MediaSources,MediaStreams,Path,Bitrate"
+        }
+        success, payload = _call_emby_api(server, "Items", params=params)
+        if not success or not isinstance(payload, dict):
+            return jsonify({"success": False, "message": "Errore recupero versioni Emby"}), 502
+        items_payload = payload.get("Items")
+        items = items_payload if isinstance(items_payload, list) else []
+        versions = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            sources = _extract_emby_media_sources(item)
+            labels = []
+            for source in sources:
+                label = source.get("resolution_label") or source.get("resolution") or ""
+                if label:
+                    labels.append(label)
+            unique_labels = []
+            for label in labels:
+                if label not in unique_labels:
+                    unique_labels.append(label)
+            versions.append({
+                "item_id": item.get("Id"),
+                "name": item.get("Name"),
+                "resolutions": unique_labels
+            })
+        return jsonify({"success": True, "versions": versions})
+
     @app.route('/api/emby/series-seasons', methods=['GET'])
     @login_required
     def emby_series_seasons():
@@ -2503,12 +2662,13 @@ def create_dashboard_app():
             if not grouped[group_key].get("episode_id") and item_id:
                 grouped[group_key]["episode_id"] = item_id
             sources = _extract_emby_media_sources(detail)
-            for source in sources:
+            for source_index, source in enumerate(sources):
                 label = source.get("resolution_label") or source.get("resolution") or ""
                 if label:
                     grouped[group_key]["resolutions"].append({
                         "label": label,
-                        "item_id": item_id
+                        "item_id": item_id,
+                        "source_index": source_index
                     })
 
         def _resolution_sort_key(value):
@@ -2518,16 +2678,7 @@ def create_dashboard_app():
 
         episodes = []
         for group in grouped.values():
-            dedupe = {}
-            for entry in group["resolutions"]:
-                label = entry.get("label")
-                if not label or label in dedupe:
-                    continue
-                dedupe[label] = entry.get("item_id")
-            resolutions = [
-                {"label": label, "item_id": item_id}
-                for label, item_id in dedupe.items()
-            ]
+            resolutions = [entry for entry in group["resolutions"] if entry.get("label")]
             resolutions.sort(key=lambda entry: _resolution_sort_key(entry.get("label")), reverse=True)
             episodes.append({
                 "episode_id": group.get("episode_id"),
@@ -2671,6 +2822,8 @@ def create_dashboard_app():
             try:
                 backend = _ensure_db_backend()
                 queue = backend.get_probe_queue(server_id)
+                for item in queue:
+                    item["display_name"] = _format_display_name_from_queue(item)
                 library_totals = {}
                 if server_id:
                     probe_status = get_probe_manager().get_status(server_id)
@@ -2774,6 +2927,7 @@ def create_dashboard_app():
         if request.method == 'GET':
             server_id = request.args.get("server_id")
             min_retry = request.args.get("min_retry", "3")
+            error_type = request.args.get("type") or request.args.get("error_type")
             try:
                 min_retry_int = int(min_retry)
             except ValueError:
@@ -2781,7 +2935,11 @@ def create_dashboard_app():
 
             try:
                 backend = _ensure_db_backend()
-                blacklist = backend.get_probe_blacklist(server_id, min_retry_count=min_retry_int)
+                blacklist = backend.get_probe_blacklist(
+                    server_id,
+                    min_retry_count=min_retry_int,
+                    error_type=error_type
+                )
             except StorageError as exc:
                 return jsonify({"success": False, "message": f"Errore DB: {exc}"}), 500
             return jsonify({"success": True, "blacklist": blacklist})
@@ -2791,6 +2949,7 @@ def create_dashboard_app():
         server_id = payload.get("server_id") or request.args.get("server_id")
         item_id = payload.get("item_id")
         media_source_id = payload.get("media_source_id")
+        error_type = payload.get("type") or request.args.get("type")
 
         if not server_id:
             return jsonify({"success": False, "message": "server_id mancante"}), 400
@@ -2803,7 +2962,7 @@ def create_dashboard_app():
                 return jsonify({"success": True, "message": "Item rimosso dalla blacklist"})
             else:
                 # Clear entire blacklist for server
-                backend.clear_probe_blacklist(server_id)
+                backend.clear_probe_blacklist(server_id, error_type=error_type)
                 return jsonify({"success": True, "message": "Blacklist svuotata"})
         except StorageError as exc:
             return jsonify({"success": False, "message": f"Errore DB: {exc}"}), 500
@@ -3445,6 +3604,14 @@ def create_dashboard_app():
         }
         raw_config["TRAKT"] = _merge_trakt_settings(trakt_payload)
 
+        # JustWatch config
+        justwatch_defaults = raw_config.get('JUSTWATCH', {})
+        justwatch_payload = {
+            "ENABLED": bool(request.form.get('justwatch_enabled')),
+            "LOCALE": _normalize_form_input(request.form, 'justwatch_locale') or justwatch_defaults.get('LOCALE') or "it_IT"
+        }
+        raw_config["JUSTWATCH"] = _merge_justwatch_settings(justwatch_payload)
+
         config_write_file(raw_config)
         load_config()
         flash("Configurazione aggiornata")
@@ -3755,6 +3922,7 @@ def create_dashboard_app():
         db_ok, db_msg, _ = _ping_database(config)
         trakt_ok, trakt_msg, trakt_configured = _ping_trakt(config)
         jack_ok, jack_msg, jack_configured = _ping_jackett(config)
+        justwatch_ok, justwatch_msg, justwatch_configured = _ping_justwatch(config)
 
         return jsonify({
             "success": True,
@@ -3764,6 +3932,7 @@ def create_dashboard_app():
                 "qbittorrent": {"ok": qb_ok, "message": qb_msg, "configured": qb_configured},
                 "jackett": {"ok": jack_ok, "message": jack_msg, "configured": jack_configured},
                 "trakt": {"ok": trakt_ok, "message": trakt_msg, "configured": trakt_configured},
+                "justwatch": {"ok": justwatch_ok, "message": justwatch_msg, "configured": justwatch_configured},
                 "database": {"ok": db_ok, "message": db_msg}
             }
         })
@@ -3871,6 +4040,19 @@ def create_dashboard_app():
             # Calculate expiration timestamp
             from datetime import datetime, timedelta, timezone
             expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+
+            try:
+                raw_config = read_raw_config() or {}
+                trakt_config = raw_config.get('TRAKT', {})
+                trakt_config['CLIENT_ID'] = client_id
+                trakt_config['ACCESS_TOKEN'] = access_token
+                trakt_config['ENABLED'] = True
+                trakt_config['EXPIRES_AT'] = expires_at.isoformat()
+                raw_config['TRAKT'] = trakt_config
+                config_write_file(raw_config)
+                load_config()
+            except Exception as exc:
+                print(f"   -> Errore salvataggio token Trakt: {exc}")
 
             return jsonify({
                 "status": "authorized",
@@ -3995,6 +4177,18 @@ def _ping_trakt(config):
         return True, "Connessione OK", True
     except TraktAPIError as exc:
         return False, str(exc), True
+
+def _ping_justwatch(config):
+    settings = _merge_justwatch_settings((config or {}).get("JUSTWATCH"))
+    if not _justwatch_enabled(settings):
+        return False, "Non configurato", False
+    if not is_justwatch_available():
+        return False, "Libreria JustWatch non installata", True
+    manager = _get_justwatch_manager(settings)
+    if not manager:
+        return False, "JustWatch non disponibile", True
+    locale = settings.get("LOCALE") or "it_IT"
+    return True, f"Locale {locale}", True
 
 def _check_service_connection(ping_func, config, service_name, error_message_template, show_success=False):
     """
@@ -4258,11 +4452,113 @@ def _describe_trakt_episode_statuses(request_item, season_number):
         described.append({
             "episode": ep_number,
             "status": status,
-            "release": release_dt.strftime("%Y-%m-%d") if release_dt else None
+            "release": release_dt.strftime("%Y-%m-%d") if release_dt else None,
+            "release_source": "trakt" if release_dt else None
         })
     described.sort(key=lambda item: item["episode"])
     print(f"   -> Trakt: trovati {len(described)} episodi per TMDB {tmdb_id} S{season_number:02d}")
-    return described
+    return _apply_justwatch_overrides(request_item, season_number, described)
+
+def _resolve_justwatch_show_metadata(request_item):
+    sources = _collect_metadata_sources(request_item)
+    title, year = extract_title_and_year(request_item, extra_sources=sources)
+    if not title:
+        fallback_sources = [request_item, request_item.get("media"), request_item.get("mediaInfo")]
+        fallback_keys = ["title", "name", "originalTitle", "originalName", "displayName"]
+        for source in fallback_sources:
+            if not isinstance(source, dict):
+                continue
+            for key in fallback_keys:
+                candidate = source.get(key)
+                if candidate:
+                    title = candidate
+                    break
+            if title:
+                break
+    if not title:
+        tmdb_id = _extract_tmdb_id(request_item, request_item.get("media"), request_item.get("mediaInfo"))
+        if tmdb_id:
+            cached = _JUSTWATCH_METADATA_CACHE.get(tmdb_id)
+            if cached:
+                cached_title, cached_year = cached
+                return cached_title, cached_year
+            config = _ACTIVE_CONFIG or {}
+            if config.get("JELLYSEERR_URL") and config.get("JELLYSEERR_API_KEY"):
+                media_type = _normalize_media_type(
+                    request_item.get("type") or request_item.get("media", {}).get("mediaType")
+                )
+                media_payload, _resolved_type = fetch_media_info(
+                    {"tmdbId": tmdb_id, "mediaType": media_type},
+                    config,
+                    _JUSTWATCH_MEDIA_CACHE,
+                    media_type
+                )
+                if media_payload:
+                    title, year = extract_title_and_year(media_payload, extra_sources=_collect_metadata_sources(media_payload))
+                    if not title:
+                        for key in ("title", "name", "originalTitle", "originalName"):
+                            candidate = media_payload.get(key)
+                            if candidate:
+                                title = candidate
+                                break
+                    if title:
+                        parsed_year = _try_parse_int(year) if year is not None else None
+                        _JUSTWATCH_METADATA_CACHE[tmdb_id] = (title, parsed_year)
+                        return title, parsed_year
+    if not year and title:
+        year = _extract_year_from_title(str(title))
+    parsed_year = _try_parse_int(year) if year is not None else None
+    return title, parsed_year
+
+def _apply_justwatch_overrides(request_item, season_number, described):
+    if season_number is None or not described:
+        return described
+    settings = _active_justwatch_settings()
+    if not _justwatch_enabled(settings):
+        return described
+    manager = _get_justwatch_manager(settings)
+    if not manager:
+        return described
+    show_name, year = _resolve_justwatch_show_metadata(request_item)
+    if not show_name:
+        print(f"   -> JustWatch: titolo non disponibile per stagione S{season_number:02d}")
+        return described
+    print(f"   -> JustWatch: verifica {show_name} S{season_number:02d} ({len(described)} episodi)")
+    updated = []
+    for entry in described:
+        status = entry.get("status")
+        if status == "available":
+            updated.append(entry)
+            continue
+        if status == "unreleased":
+            updated.append(entry)
+            continue
+        ep_number = entry.get("episode")
+        if ep_number is None:
+            updated.append(entry)
+            continue
+        try:
+            is_available, providers = manager.check_availability_details(
+                show_name,
+                season_number,
+                ep_number,
+                year=year
+            )
+            updated_entry = dict(entry)
+            updated_entry["justwatch_checked"] = True
+            updated_entry["justwatch_available"] = bool(is_available)
+            if is_available:
+                updated_entry["justwatch"] = True
+                if providers:
+                    updated_entry["justwatch_providers"] = providers
+                print(f"   -> JustWatch: disponibile {show_name} S{season_number:02d}E{int(ep_number):02d}")
+            elif providers:
+                updated_entry["justwatch_providers"] = providers
+            updated.append(updated_entry)
+        except JustWatchError as exc:
+            print(f"   -> JustWatch: errore verifica {show_name} S{season_number:02d}E{ep_number}: {exc}")
+            return described
+    return updated
 
 def describe_episode_statuses(request_item, season_number):
     requested = set(extract_request_seasons(request_item, skip_available=False))
@@ -4298,7 +4594,7 @@ def describe_episode_statuses(request_item, season_number):
         if trakt_details is not None:
             return trakt_details
         count = get_episode_count_for_season(related_sources, season_number)
-        return _placeholder(count)
+        return _apply_justwatch_overrides(request_item, season_number, _placeholder(count))
     episodes = best_entry.get("episodes")
     if not isinstance(episodes, list) or not episodes:
         if trakt_details is None:
@@ -4306,7 +4602,7 @@ def describe_episode_statuses(request_item, season_number):
         if trakt_details is not None:
             return trakt_details
         count = get_episode_count_for_season(related_sources, season_number)
-        return _placeholder(count)
+        return _apply_justwatch_overrides(request_item, season_number, _placeholder(count))
     described = []
     trakt_details = None
     now = datetime.now(timezone.utc)
@@ -4328,14 +4624,15 @@ def describe_episode_statuses(request_item, season_number):
         described.append({
             "episode": ep_number,
             "status": status,
-            "release": release_dt.strftime("%Y-%m-%d") if release_dt else None
+            "release": release_dt.strftime("%Y-%m-%d") if release_dt else None,
+            "release_source": "tmdb" if release_dt else None
         })
     described.sort(key=lambda item: item["episode"])
     if not described:
         trakt_details = _describe_trakt_episode_statuses(request_item, season_number)
         if trakt_details:
             return trakt_details
-    return described
+    return _apply_justwatch_overrides(request_item, season_number, described)
 
 def get_pending_episode_numbers(request_item, season_number):
     if season_number is None:
@@ -5096,7 +5393,17 @@ class TraktClient:
         with self._lock:
             if self._collection_cache and (now - self._collection_timestamp) < max_age:
                 return self._collection_cache
-        payload = self._request("GET", "/sync/collection/shows?extended=episodes") or []
+        try:
+            payload = self._request(
+                "GET",
+                "/sync/collection/shows?extended=episodes",
+                timeout=30
+            ) or []
+        except TraktAPIError:
+            with self._lock:
+                self._collection_cache = {}
+                self._collection_timestamp = now
+            raise
         mapping: Dict[int, Dict[int, set]] = {}
         for entry in payload:
             show = entry.get("show") or {}

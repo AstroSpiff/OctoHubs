@@ -257,12 +257,26 @@ def _fetch_emby_active_sessions(server):
         state = "In pausa" if is_paused else "In riproduzione" if is_paused is not None else ""
         transcoding = entry.get("TranscodingInfo") or {}
         play_method = play_state.get("PlayMethod") or ""
+        play_method_label = str(play_method).lower()
         video_direct = transcoding.get("IsVideoDirect")
         audio_direct = transcoding.get("IsAudioDirect")
-        if video_direct is None and audio_direct is None:
-            is_transcoding = bool(transcoding) or str(play_method).lower() == "transcode"
+        if play_method_label in ("directplay", "directstream"):
+            video_direct = True
+            audio_direct = True
+        elif play_method_label == "transcode":
+            if video_direct is None:
+                video_direct = False
+            if audio_direct is None:
+                audio_direct = False
+        elif video_direct is None and audio_direct is None:
+            is_transcoding = bool(transcoding)
             video_direct = not is_transcoding
             audio_direct = not is_transcoding
+        else:
+            if video_direct is None:
+                video_direct = not bool(transcoding)
+            if audio_direct is None:
+                audio_direct = not bool(transcoding)
         video_mode = "diretta" if video_direct else "transcodifica"
         audio_mode = "diretta" if audio_direct else "transcodifica"
         streams = now_playing.get("MediaStreams") or []

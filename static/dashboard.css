@@ -305,7 +305,7 @@
         }
         .selected-title-card {
             display: flex;
-            align-items: center;
+            align-items: flex-start;
             gap: 0.75rem;
             padding: 0.6rem 0.75rem;
             border-radius: 10px;
@@ -416,8 +416,18 @@
             display: grid;
             grid-template-columns: minmax(120px, 1fr) minmax(180px, 2fr);
             gap: 0.6rem;
+            align-items: start;
+        }
+        .emby-browser-sections.is-tv {
+            grid-template-columns: minmax(140px, 210px) minmax(260px, 1fr);
+        }
+        .emby-browser-section {
+            min-width: 0;
         }
         .emby-browser-section.emby-details {
+            grid-column: 1 / -1;
+        }
+        .emby-browser-section.is-span {
             grid-column: 1 / -1;
         }
         .emby-section-title {
@@ -426,62 +436,146 @@
             color: #4a5867;
             margin-bottom: 0.25rem;
         }
-        .emby-season-list {
-            display: flex;
-            flex-wrap: wrap;
+        .emby-season-scroll {
+            max-height: clamp(180px, 40vh, 320px);
+            overflow-y: auto;
+            padding-right: 0.15rem;
+            min-height: 0;
+        }
+        .emby-season-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
             gap: 0.35rem;
         }
-        .emby-episode-list {
-            display: flex;
-            flex-direction: column;
-            gap: 0.35rem;
-        }
-        .emby-chip {
+        .emby-season-btn {
             border: 1px solid #d5dde5;
             background: #f8fafc;
-            border-radius: 999px;
-            padding: 0.18rem 0.5rem;
-            font-size: 0.78rem;
-            cursor: pointer;
+            border-radius: 8px;
+            padding: 0.22rem 0.4rem;
+            font-size: 0.76rem;
+            font-weight: 600;
+            text-align: center;
             color: #1f2f3f;
+            cursor: pointer;
         }
-        .emby-chip.is-active {
+        .emby-season-btn.is-active {
             background: #1f2f3f;
             border-color: #1f2f3f;
             color: #ffffff;
         }
-        .emby-episode-row {
+        .emby-season-btn:focus-visible {
+            outline: 2px solid #1f2f3f;
+            outline-offset: 2px;
+        }
+        .emby-episode-grid {
+            --emby-episode-tile-width: 92px;
+            --emby-episode-card-height: 36px;
+            --emby-episode-strip-height: 12px;
+            display: grid;
+            grid-template-columns: repeat(auto-fill, var(--emby-episode-tile-width));
+            gap: 0.45rem;
+            align-content: start;
+        }
+        .emby-episode-tile {
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+            width: var(--emby-episode-tile-width);
+        }
+        .emby-episode-card {
+            width: 100%;
+            height: var(--emby-episode-card-height);
+            border-radius: 10px 10px 0 0;
+            border: 1px solid #cbd5e1;
+            border-bottom: 0;
+            background: #e5e7eb;
+            font-weight: 600;
+            font-size: 0.85rem;
+            color: #1f2f3f;
             display: flex;
             align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            box-sizing: border-box;
+        }
+        .emby-episode-card.is-active {
+            background: #cbd5e1;
+            border-color: #1f2f3f;
+            color: #0f172a;
+        }
+        .emby-episode-card:focus-visible {
+            outline: 2px solid #1f2f3f;
+            outline-offset: 2px;
+        }
+        .emby-episode-strip {
+            width: 100%;
+            height: var(--emby-episode-strip-height);
+            display: flex;
+            gap: 2px;
+            flex-wrap: nowrap;
+            overflow: hidden;
+            padding: 0;
+            margin-top: 0;
+            border: 1px solid #cbd5e1;
+            border-top: 0;
+            border-radius: 0 0 10px 10px;
+            background: #f8fafc;
+            box-sizing: border-box;
+        }
+        .emby-episode-segment {
+            flex: 1 1 0;
+            min-width: 0;
+            border: none;
+            border-radius: 0;
+            height: 100%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            appearance: none;
+        }
+        .emby-episode-segment.is-active {
+            box-shadow: inset 0 0 0 2px #1f2f3f;
+        }
+        .emby-episode-segment:focus-visible {
+            outline: none;
+            box-shadow: inset 0 0 0 2px #1f2f3f;
+        }
+        .emby-episode-segment:first-child {
+            border-bottom-left-radius: 8px;
+        }
+        .emby-episode-segment:last-child {
+            border-bottom-right-radius: 8px;
+        }
+        .emby-episode-segment:only-child {
+            border-bottom-left-radius: 8px;
+            border-bottom-right-radius: 8px;
+        }
+        .emby-episode-segment.is-empty {
+            background: #e2e8f0;
+            width: 100%;
+            flex: 1 1 0;
+            cursor: default;
+        }
+        .emby-episode-more {
+            background: #e2e8f0;
+            color: #1f2f3f;
+            font-size: 0.7rem;
+            line-height: 1;
+            font-weight: 700;
+        }
+        .emby-version-list {
+            display: flex;
             flex-wrap: wrap;
             gap: 0.35rem;
-            padding: 0.2rem 0.35rem;
-            border-radius: 6px;
-            background: #f8fafc;
-            border: 1px solid #e6edf4;
-        }
-        .emby-episode-label {
-            font-weight: 600;
-            font-size: 0.78rem;
-            color: #1f2f3f;
-            min-width: 3ch;
-        }
-        .emby-episode-sep {
-            font-size: 0.75rem;
-            color: #9aa3ad;
-        }
-        .emby-episode-resolutions {
-            display: flex;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 0.25rem;
         }
         .emby-resolution-chip {
             border: 1px solid #d5dde5;
             background: #ffffff;
             border-radius: 999px;
-            padding: 0.12rem 0.45rem;
-            font-size: 0.72rem;
+            padding: 0.1rem 0.4rem;
+            font-size: 0.7rem;
             cursor: pointer;
             color: #1f2f3f;
         }
@@ -489,11 +583,6 @@
             background: #1f2f3f;
             border-color: #1f2f3f;
             color: #ffffff;
-        }
-        .emby-resolution-sep {
-            font-size: 0.7rem;
-            color: #9aa3ad;
-            margin: 0 0.15rem;
         }
         .emby-resolution-chips {
             display: flex;
@@ -521,6 +610,62 @@
             display: flex;
             flex-direction: column;
             gap: 0.4rem;
+        }
+        .emby-streams-grid {
+            display: flex;
+            flex-wrap: nowrap;
+            gap: 0.6rem;
+            margin-top: 0.4rem;
+            overflow-x: auto;
+            padding-bottom: 0.25rem;
+        }
+        .emby-stream-table {
+            border: 1px solid #e1e8ef;
+            border-radius: 8px;
+            padding: 0.4rem;
+            background: #ffffff;
+            flex: 0 0 auto;
+        }
+        .emby-stream-title {
+            font-weight: 600;
+            font-size: 0.85rem;
+            color: #1f2f3f;
+            margin-bottom: 0.3rem;
+        }
+        .emby-stream-grid {
+            border-collapse: collapse;
+            width: max-content;
+        }
+        .emby-stream-grid th,
+        .emby-stream-grid td {
+            border: 1px solid #e6edf4;
+            padding: 0.25rem 0.4rem;
+            font-size: 0.75rem;
+            text-align: left;
+            vertical-align: top;
+            background: #ffffff;
+        }
+        .emby-stream-grid thead th {
+            background: #f3f6fa;
+            font-weight: 600;
+            color: #1f2f3f;
+        }
+        .emby-stream-label {
+            font-weight: 600;
+            color: #4a5867;
+            min-width: 90px;
+            position: sticky;
+            left: 0;
+            background: #ffffff;
+            z-index: 1;
+        }
+        .emby-stream-track {
+            min-width: 120px;
+            white-space: nowrap;
+        }
+        .emby-stream-value {
+            min-width: 120px;
+            white-space: nowrap;
         }
         .emby-details-title {
             font-weight: 600;
@@ -559,12 +704,134 @@
             font-size: 0.75rem;
             color: #4a5867;
         }
+        .emby-detail-content {
+            display: flex;
+            flex-direction: column;
+            gap: 0.45rem;
+        }
+        .emby-detail-popover {
+            position: absolute;
+            z-index: 1200;
+            width: min(420px, 92vw);
+            background: #ffffff;
+            border: 1px solid #e1e8ef;
+            border-radius: 12px;
+            box-shadow: 0 12px 30px rgba(15, 23, 42, 0.18);
+        }
+        .emby-detail-popover.is-hidden {
+            display: none;
+        }
+        .emby-detail-popover-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.55rem 0.7rem;
+            border-bottom: 1px solid #eef2f7;
+            background: #f8fafc;
+        }
+        .emby-detail-popover-title {
+            font-weight: 600;
+            font-size: 0.85rem;
+            color: #1f2f3f;
+        }
+        .emby-detail-popover-close {
+            border: none;
+            background: #e3e7ed;
+            color: #2c3e50;
+            border-radius: 999px;
+            width: 26px;
+            height: 26px;
+            cursor: pointer;
+            font-weight: 700;
+            line-height: 1;
+        }
+        .emby-detail-popover-body {
+            max-height: 60vh;
+            overflow: auto;
+            padding: 0.7rem;
+        }
+        .emby-detail-modal {
+            position: fixed;
+            inset: 0;
+            z-index: 1200;
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            background: rgba(15, 23, 42, 0.45);
+        }
+        .emby-detail-modal.is-hidden {
+            display: none;
+        }
+        .emby-detail-sheet {
+            width: min(680px, 100%);
+            background: #ffffff;
+            border-radius: 16px 16px 0 0;
+            max-height: 85vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .emby-detail-sheet-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.7rem 0.9rem;
+            border-bottom: 1px solid #eef2f7;
+            background: #f8fafc;
+        }
+        .emby-detail-sheet-title {
+            font-weight: 600;
+            font-size: 0.9rem;
+            color: #1f2f3f;
+        }
+        .emby-detail-sheet-close {
+            border: none;
+            background: #e3e7ed;
+            color: #2c3e50;
+            border-radius: 999px;
+            width: 28px;
+            height: 28px;
+            cursor: pointer;
+            font-weight: 700;
+            line-height: 1;
+        }
+        .emby-detail-sheet-body {
+            padding: 0.8rem 0.9rem 1rem;
+            overflow: auto;
+        }
+        .emby-version-menu {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+        }
+        .emby-version-menu-item {
+            border: 1px solid #d5dde5;
+            background: #f8fafc;
+            border-radius: 8px;
+            padding: 0.4rem 0.55rem;
+            font-size: 0.78rem;
+            text-align: left;
+            color: #1f2f3f;
+            cursor: pointer;
+        }
+        .emby-version-menu-item:hover {
+            background: #eef2f7;
+        }
+        .emby-version-menu-item:focus-visible {
+            outline: 2px solid #1f2f3f;
+            outline-offset: 2px;
+        }
         @media (max-width: 720px) {
             .emby-browser-sections {
                 grid-template-columns: 1fr;
             }
             .emby-browser-section.emby-details {
                 grid-column: 1 / -1;
+            }
+            .emby-episode-grid {
+                --emby-episode-tile-width: 84px;
+                --emby-episode-card-height: 36px;
+                --emby-episode-strip-height: 12px;
             }
         }
         .clear-selection-btn {
@@ -1290,9 +1557,75 @@
             background: #fdecea;
             color: #c0392b;
         }
+        .episode-chip.status-pending.justwatch-checked {
+            background: #fef3c7;
+            color: #92400e;
+        }
+        .episode-chip.justwatch-checked,
+        .justwatch-pill.justwatch-checked {
+            position: relative;
+        }
+        .justwatch-checked.is-open::after {
+            content: attr(data-jw-label);
+            position: absolute;
+            left: 0;
+            top: calc(100% + 6px);
+            z-index: 10;
+            padding: 0.35rem 0.55rem;
+            border-radius: 8px;
+            background: #111827;
+            color: #f9fafb;
+            font-size: 0.7rem;
+            line-height: 1.2;
+            max-width: 240px;
+            white-space: normal;
+            box-shadow: 0 8px 18px rgba(15, 23, 42, 0.2);
+        }
+        .justwatch-checked.is-open::before {
+            content: "";
+            position: absolute;
+            left: 0.6rem;
+            top: calc(100% + 2px);
+            width: 8px;
+            height: 8px;
+            background: #111827;
+            transform: rotate(45deg);
+            border-radius: 2px;
+            z-index: 9;
+        }
+        .justwatch-pill {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.2rem 0.55rem;
+            border-radius: 999px;
+            border: 1px solid #f59e0b;
+            background: #fef3c7;
+            color: #92400e;
+            font-size: 0.75rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .justwatch-pill:focus {
+            outline: 2px solid rgba(245, 158, 11, 0.5);
+            outline-offset: 2px;
+        }
         .episode-chip.status-unreleased {
             background: #f4f6f7;
             color: #5d6d7e;
+        }
+        .episode-chip[title] {
+            cursor: help;
+        }
+        .episode-chip .justwatch-badge {
+            display: inline-flex;
+            align-items: center;
+            margin-left: 0.25rem;
+            padding: 0.05rem 0.3rem;
+            border-radius: 999px;
+            background: #dbeafe;
+            color: #1e40af;
+            font-size: 0.6rem;
+            font-weight: 600;
         }
         .list-actions {
             display: flex;

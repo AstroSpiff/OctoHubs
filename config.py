@@ -118,6 +118,10 @@ DEFAULT_CONFIG = {
         "CLIENT_ID": "",
         "ACCESS_TOKEN": ""
     },
+    "JUSTWATCH": {
+        "ENABLED": False,
+        "LOCALE": "it_IT"
+    },
     "AUTO_TASKS": {
         "scan": {
             "enabled": False,
@@ -230,6 +234,23 @@ def _merge_trakt_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
         merged["ENABLED"] = bool(merged.get("ENABLED"))
     else:
         merged["ENABLED"] = False
+    return merged
+
+def _merge_justwatch_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
+    """Unisci le impostazioni JustWatch dell'utente con quelle di default."""
+    merged = copy.deepcopy(DEFAULT_CONFIG["JUSTWATCH"])
+    if isinstance(user_settings, dict):
+        for key, value in user_settings.items():
+            if isinstance(value, str):
+                value = value.strip()
+            normalized = key.upper()
+            if normalized in merged:
+                if normalized == "ENABLED":
+                    merged[normalized] = bool(value)
+                else:
+                    merged[normalized] = value or merged.get(normalized, "")
+            else:
+                merged[key] = value
     return merged
 
 def _normalize_emby_server(entry: Optional[Dict]) -> Dict[str, Any]:
@@ -379,6 +400,8 @@ def write_config_file(data: Dict):
     payload["DATABASE"] = database_settings
     trakt_settings = data.get("TRAKT") or persisted.get("TRAKT")
     payload["TRAKT"] = _merge_trakt_settings(trakt_settings)
+    justwatch_settings = data.get("JUSTWATCH") or persisted.get("JUSTWATCH")
+    payload["JUSTWATCH"] = _merge_justwatch_settings(justwatch_settings)
     emby_settings = data.get("EMBY") or persisted.get("EMBY") or DEFAULT_CONFIG["EMBY"]
     payload["EMBY"] = _merge_emby_settings(emby_settings)
     with open(CONFIG_FILE, 'w') as f:
