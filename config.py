@@ -122,6 +122,12 @@ DEFAULT_CONFIG = {
         "ENABLED": False,
         "LOCALE": "it_IT"
     },
+    "RSS_IMPORT": {
+        "ENABLED": False,
+        "POLL_INTERVAL_MINUTES": 30,
+        "DEDUP_KEEP": "newest",
+        "SOURCES": []
+    },
     "AUTO_TASKS": {
         "scan": {
             "enabled": False,
@@ -251,6 +257,40 @@ def _merge_justwatch_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
                     merged[normalized] = value or merged.get(normalized, "")
             else:
                 merged[key] = value
+    return merged
+
+def _merge_rss_import_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
+    """Unisci le impostazioni RSS/Import dell'utente con quelle di default."""
+    merged = copy.deepcopy(DEFAULT_CONFIG["RSS_IMPORT"])
+    if not isinstance(user_settings, dict):
+        return merged
+    for key, value in user_settings.items():
+        normalized = key.upper()
+        if normalized == "ENABLED":
+            merged["ENABLED"] = bool(value)
+        elif normalized == "POLL_INTERVAL_MINUTES":
+            merged["POLL_INTERVAL_MINUTES"] = _coerce_request_int(value, merged.get("POLL_INTERVAL_MINUTES", 30), 5, 1440)
+        elif normalized == "DEDUP_KEEP":
+            keep = (str(value) or "").lower().strip()
+            merged["DEDUP_KEEP"] = "newest" if keep == "newest" else "oldest"
+        elif normalized == "SOURCES":
+            sources = []
+            if isinstance(value, list):
+                for entry in value:
+                    if not isinstance(entry, dict):
+                        continue
+                    url = (entry.get("url") or "").strip()
+                    if not url:
+                        continue
+                    sources.append({
+                        "name": (entry.get("name") or "").strip(),
+                        "url": url,
+                        "tags": _split_csv_field(entry.get("tags")) if isinstance(entry.get("tags"), str) else (entry.get("tags") or []),
+                        "enabled": _coerce_request_bool(entry.get("enabled"), True)
+                    })
+            merged["SOURCES"] = sources
+        else:
+            merged[key] = value
     return merged
 
 def _normalize_emby_server(entry: Optional[Dict]) -> Dict[str, Any]:

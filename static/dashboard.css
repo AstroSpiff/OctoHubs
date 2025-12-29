@@ -1031,6 +1031,9 @@
             box-shadow: 0 20px 50px rgba(15, 23, 42, 0.35);
             overflow: hidden;
         }
+        .rss-items-modal {
+            max-width: 1100px;
+        }
         .modal-header {
             display: flex;
             align-items: center;
@@ -1060,6 +1063,105 @@
             gap: 0.6rem;
             max-height: 70vh;
             overflow-y: auto;
+        }
+        .rss-view-controls {
+            display: flex;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        .rss-view-content {
+            overflow-x: auto;
+        }
+        .rss-view-tabs,
+        .rss-view-actions {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .rss-view-tabs .btn.is-active {
+            background: #0f172a;
+            color: #ffffff;
+        }
+        .rss-view-range {
+            font-size: 0.9rem;
+            color: #5c6b7a;
+        }
+        .rss-items-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .rss-items-table th,
+        .rss-items-table td {
+            border: 1px solid #e2e8f0;
+            padding: 0.5rem 0.6rem;
+            font-size: 0.85rem;
+            vertical-align: top;
+        }
+        .rss-items-table th {
+            background: #f1f5f9;
+            text-align: left;
+        }
+        .rss-html-list {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        .rss-html-item {
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 0.75rem 0.9rem;
+            background: #f8fafc;
+        }
+        .rss-html-item h4 {
+            margin: 0 0 0.35rem 0;
+            font-size: 1rem;
+        }
+        .rss-html-meta {
+            font-size: 0.8rem;
+            color: #64748b;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.6rem;
+            margin-bottom: 0.5rem;
+        }
+        .rss-html-details {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 0.6rem;
+            margin-bottom: 0.75rem;
+        }
+        .rss-html-field {
+            display: flex;
+            flex-direction: column;
+            gap: 0.15rem;
+            font-size: 0.82rem;
+            color: #1f2937;
+        }
+        .rss-html-label {
+            font-weight: 600;
+            color: #334155;
+        }
+        .rss-html-value {
+            color: #475569;
+            word-break: break-word;
+        }
+        .rss-html-section {
+            margin-top: 0.6rem;
+        }
+        .rss-html-section-title {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: #1f2f3f;
+            margin-bottom: 0.3rem;
+        }
+        .rss-html-content {
+            font-size: 0.9rem;
+            color: #1f2937;
+            line-height: 1.4;
         }
         .modal-row {
             display: grid;
@@ -1152,6 +1254,16 @@
             border-radius: 6px;
             border: 1px solid #ccd1d9;
             box-sizing: border-box;
+        }
+        textarea {
+            width: 100%;
+            padding: 0.6rem;
+            border-radius: 6px;
+            border: 1px solid #ccd1d9;
+            box-sizing: border-box;
+            resize: vertical;
+            min-height: 120px;
+            font-family: inherit;
         }
         select {
             width: 100%;
@@ -1311,6 +1423,45 @@
         }
         .config-box h4 {
             margin-top: 0;
+        }
+        .rss-inspect-result {
+            margin-top: 0.75rem;
+            border: 1px solid #e1e6f0;
+            border-radius: 10px;
+            padding: 0.75rem;
+            background: #f8fafc;
+            min-height: 48px;
+        }
+        .rss-inspect-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.6rem;
+            font-size: 0.9rem;
+            color: #52606d;
+            margin-bottom: 0.5rem;
+        }
+        .rss-inspect-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.4rem;
+        }
+        .rss-inspect-chip {
+            padding: 0.2rem 0.45rem;
+            border-radius: 999px;
+            background: #e8eef7;
+            font-size: 0.8rem;
+            color: #1f2f3f;
+        }
+        .rss-inspect-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        .rss-inspect-table th,
+        .rss-inspect-table td {
+            border: 1px solid #dfe6ee;
+            padding: 0.35rem 0.5rem;
+            font-size: 0.85rem;
+            vertical-align: top;
         }
         .tagline {
             font-size: 0.9rem;

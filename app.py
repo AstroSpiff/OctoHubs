@@ -8,7 +8,9 @@ import threading
 import time
 import re
 import uuid
+import xml.etree.ElementTree as ET
 from datetime import datetime, date, timezone, time as dt_time, timedelta
+from email.utils import parsedate_to_datetime
 from functools import wraps
 
 import requests
@@ -19,6 +21,7 @@ from config import (
     _merge_database_settings,
     _merge_trakt_settings,
     _merge_justwatch_settings,
+    _merge_rss_import_settings,
     _normalize_sort_settings,
     _clean_sort_mode,
     _normalize_auto_settings,
@@ -99,6 +102,7 @@ try:
     from flask import Flask, request, render_template, redirect, url_for, jsonify, flash, Response, stream_with_context, session, abort
     from flask_login import login_user, logout_user, login_required, current_user
     from flask_wtf import CSRFProtect
+    from flask_wtf.csrf import CSRFError
 except ImportError:
     print("ERRORE: Flask, Flask-Login o Flask-WTF non sono installati. Esegui 'pip install Flask Flask-Login Flask-WTF' nel tuo ambiente virtuale.")
     sys.exit(1)
@@ -350,6 +354,7 @@ def load_config():
     search_rules.update(app_settings.get("SEARCH_RULES") or {})
     search_rules = _normalize_sort_settings(search_rules)
     auto_settings = _normalize_auto_settings(app_settings.get("AUTO_TASKS"))
+    rss_import_settings = _merge_rss_import_settings(app_settings.get("RSS_IMPORT"))
 
     if need_save or not app_settings or "AUTO_TASKS" not in app_settings:
         persisted = dict(app_settings)
@@ -372,6 +377,7 @@ def load_config():
     merged["SEARCH_RULES"] = search_rules
     merged["REQUEST_RULES"] = request_rules or {}
     merged["AUTO_TASKS"] = auto_settings
+    merged["RSS_IMPORT"] = rss_import_settings
 
     _ACTIVE_CONFIG = merged
     _sync_auto_scheduler(connection_valid)
@@ -581,10 +587,18 @@ def _summarize_requests_for_dashboard(config):
             if _justwatch_enabled(settings):
                 manager = _get_justwatch_manager(settings)
                 if manager and title:
+                    year_int = None
+                    if isinstance(year, int):
+                        year_int = year
+                    elif isinstance(year, str):
+                        try:
+                            year_int = int(year)
+                        except ValueError:
+                            year_int = None
                     try:
                         justwatch_available, justwatch_providers = manager.check_movie_availability_details(
                             title,
-                            year=year
+                            year=year_int
                         )
                         justwatch_checked = bool(justwatch_available)
                     except JustWatchError as exc:
@@ -739,6 +753,257 @@ def _coerce_int(value, default=0):
         return int(value)
     except (TypeError, ValueError):
         return default
+
+def _strip_xml_tag(tag):
+    if not tag:
+        return ""
+    return tag.split("}")[-1].lower()
+
+def _extract_first_text(element, tag_names):
+    for node in element.iter():
+        if _strip_xml_tag(node.tag) in tag_names and node.text:
+            text = node.text.strip()
+            if text:
+                return text
+    return ""
+
+def _extract_link_value(item):
+    for node in item:
+        if _strip_xml_tag(node.tag) != "link":
+            continue
+        href = node.attrib.get("href") if hasattr(node, "attrib") else None
+        rel = node.attrib.get("rel") if hasattr(node, "attrib") else None
+        if href and (not rel or rel == "alternate"):
+            return href
+        if node.text:
+            return node.text.strip()
+    return ""
+
+def _inspect_rss_content(xml_bytes, sample_limit=5):
+    root = ET.fromstring(xml_bytes)
+    root_tag = _strip_xml_tag(root.tag)
+    feed_type = "rss"
+    channel = None
+    items = []
+    if root_tag == "feed":
+        feed_type = "atom"
+        channel = root
+        items = list(root.findall(".//{*}entry"))
+    else:
+        channel = root.find(".//{*}channel") or root
+        items = list(root.findall(".//{*}item"))
+
+    channel_title = _extract_first_text(channel, {"title"})
+    channel_link = _extract_first_text(channel, {"link"})
+    channel_desc = _extract_first_text(channel, {"description", "subtitle"})
+
+    results = []
+    fields = set()
+    for item in items[:sample_limit]:
+        item_fields = {_strip_xml_tag(child.tag) for child in item}
+        fields.update(item_fields)
+        results.append({
+            "title": _extract_first_text(item, {"title"}),
+            "link": _extract_link_value(item) or _extract_first_text(item, {"link"}),
+            "guid": _extract_first_text(item, {"guid", "id"}),
+            "published": _extract_first_text(item, {"pubdate", "published", "updated", "date"}),
+            "author": _extract_first_text(item, {"author", "creator"})
+        })
+
+    return {
+        "feed_type": feed_type,
+        "channel": {
+            "title": channel_title,
+            "link": channel_link,
+            "description": channel_desc
+        },
+        "item_count": len(items),
+        "fields": sorted(fields),
+        "items": results
+    }
+
+def _parse_epoch_value(value):
+    if value is None:
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    if number > 10**14:
+        number = number / 1_000_000
+    elif number > 10**11:
+        number = number / 1_000
+    return datetime.fromtimestamp(number, tz=timezone.utc)
+
+def _parse_rss_date(value):
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return _parse_epoch_value(text)
+    try:
+        dt = parsedate_to_datetime(text)
+    except (TypeError, ValueError, OverflowError):
+        dt = None
+    if dt is None:
+        return _parse_date_value(text)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+def _extract_rss_categories(item):
+    categories = []
+    for node in item.iter():
+        if _strip_xml_tag(node.tag) == "category" and node.text:
+            value = node.text.strip()
+            if value:
+                categories.append(value)
+    return categories
+
+def _parse_rss_feed(xml_bytes):
+    root = ET.fromstring(xml_bytes)
+    root_tag = _strip_xml_tag(root.tag)
+    feed_type = "rss"
+    channel = None
+    entries = []
+    if root_tag == "feed":
+        feed_type = "atom"
+        channel = root
+        entries = list(root.findall(".//{*}entry"))
+    else:
+        channel = root.find(".//{*}channel") or root
+        entries = list(root.findall(".//{*}item"))
+
+    channel_title = _extract_first_text(channel, {"title"})
+    channel_link = _extract_link_value(channel) or _extract_first_text(channel, {"link"})
+    channel_desc = _extract_first_text(channel, {"description", "subtitle"})
+
+    items = []
+    for entry in entries:
+        title = _extract_first_text(entry, {"title"})
+        link = _extract_link_value(entry) or _extract_first_text(entry, {"link"})
+        guid = _extract_first_text(entry, {"guid", "id"})
+        if not link and guid:
+            link = guid
+        author = _extract_first_text(entry, {"author", "creator", "name"})
+        summary = _extract_first_text(entry, {"summary", "description"})
+        content = _extract_first_text(entry, {"content", "encoded"})
+        if not summary and content:
+            summary = content
+        published_text = _extract_first_text(entry, {"pubdate", "published", "updated", "date"})
+        updated_text = _extract_first_text(entry, {"updated", "modified"})
+        published_at = _parse_rss_date(published_text)
+        updated_at = _parse_rss_date(updated_text) or _parse_rss_date(published_text)
+        categories = _extract_rss_categories(entry)
+        raw_xml = ET.tostring(entry, encoding="unicode")
+        items.append({
+            "title": title or None,
+            "link": link or None,
+            "guid": guid or None,
+            "author": author or None,
+            "summary": summary or None,
+            "content": content or None,
+            "categories": categories or None,
+            "published_at": published_at,
+            "updated_at": updated_at,
+            "extra": {
+                "feed_type": feed_type,
+                "raw": raw_xml
+            }
+        })
+
+    return {
+        "feed_type": feed_type,
+        "channel": {
+            "title": channel_title,
+            "link": channel_link,
+            "description": channel_desc
+        },
+        "items": items
+    }
+
+def _extract_json_link(item):
+    for key in ("canonical", "alternate"):
+        value = item.get(key)
+        if isinstance(value, list):
+            for entry in value:
+                if isinstance(entry, dict) and entry.get("href"):
+                    return entry["href"]
+        elif isinstance(value, dict) and value.get("href"):
+            return value["href"]
+    origin = item.get("origin")
+    if isinstance(origin, dict):
+        if origin.get("htmlUrl"):
+            return origin["htmlUrl"]
+    return ""
+
+def _extract_json_summary(item):
+    summary = item.get("summary")
+    if isinstance(summary, dict):
+        return summary.get("content") or ""
+    if isinstance(summary, str):
+        return summary
+    return ""
+
+def _extract_json_source(origin):
+    if not isinstance(origin, dict):
+        return "", "", ""
+    source_title = origin.get("title") or ""
+    source_url = origin.get("htmlUrl") or ""
+    stream_id = origin.get("streamId") or ""
+    if not source_url and isinstance(stream_id, str) and stream_id.startswith("feed/"):
+        source_url = stream_id[5:]
+    return source_title, source_url, stream_id
+
+def _parse_json_import(payload):
+    items = []
+    candidates = []
+    if isinstance(payload, list):
+        candidates = payload
+    elif isinstance(payload, dict):
+        for key in ("items", "entries", "results", "data"):
+            entry = payload.get(key)
+            if isinstance(entry, list):
+                candidates = entry
+                break
+    for entry in candidates:
+        if not isinstance(entry, dict):
+            continue
+        origin = entry.get("origin") if isinstance(entry.get("origin"), dict) else {}
+        source_title, source_url, stream_id = _extract_json_source(origin)
+        summary = _extract_json_summary(entry)
+        link = _extract_json_link(entry)
+        published_at = _parse_epoch_value(entry.get("published"))
+        updated_at = _parse_epoch_value(entry.get("updated")) or _parse_epoch_value(entry.get("crawlTimeMsec"))
+        if updated_at is None:
+            updated_at = _parse_epoch_value(entry.get("timestampUsec"))
+        categories = entry.get("categories")
+        if not isinstance(categories, list):
+            categories = []
+        items.append({
+            "source_name": source_title or None,
+            "source_url": source_url or None,
+            "source_tags": [],
+            "title": entry.get("title") or None,
+            "link": link or None,
+            "guid": entry.get("id") or None,
+            "author": entry.get("author") or None,
+            "summary": summary or None,
+            "content": summary or None,
+            "categories": categories or None,
+            "published_at": published_at,
+            "updated_at": updated_at,
+            "extra": {
+                "origin": origin,
+                "stream_id": stream_id,
+                "raw": entry
+            }
+        })
+    return items
 
 def _manual_result_key(result):
     return result.get("magnet") or result.get("torrent") or f"{result.get('title')}|{result.get('size_gb')}"
@@ -1489,6 +1754,12 @@ def create_dashboard_app():
 
     # Initialize authentication system
     init_auth(app)
+
+    @app.errorhandler(CSRFError)
+    def _handle_csrf_error(error):
+        if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+            return jsonify({"success": False, "message": "Token CSRF non valido o sessione scaduta."}), 400
+        return error.description, 400
 
     _ensure_strm_guard_manager()
 
@@ -3616,6 +3887,264 @@ def create_dashboard_app():
         load_config()
         flash("Configurazione aggiornata")
         return redirect(url_for('dashboard'))
+
+    @app.route('/update-rss-import', methods=['POST'])
+    @login_required
+    def update_rss_import_route():
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            flash("Config non valida. Completa la configurazione.")
+            return redirect(url_for('dashboard'))
+
+        enabled = bool(request.form.get('rss_enabled'))
+        poll_interval = _coerce_request_int(request.form.get('rss_poll_interval') or 30, 30)
+        poll_interval = max(5, min(1440, poll_interval))
+        dedup_keep = request.form.get('rss_dedup_keep') or "oldest"
+        dedup_keep = "newest" if dedup_keep == "newest" else "oldest"
+
+        sources = []
+        sources_text = request.form.get('rss_sources') or ""
+        for line in sources_text.splitlines():
+            entry = line.strip()
+            if not entry:
+                continue
+            parts = [part.strip() for part in entry.split("|")]
+            name = ""
+            url = ""
+            tags = []
+            if len(parts) == 1:
+                url = parts[0]
+            else:
+                name = parts[0]
+                url = parts[1]
+                if len(parts) > 2:
+                    tags = _split_csv_field(parts[2])
+            if not url:
+                continue
+            sources.append({
+                "name": name,
+                "url": url,
+                "tags": tags,
+                "enabled": True
+            })
+
+        payload = {
+            "ENABLED": enabled,
+            "POLL_INTERVAL_MINUTES": poll_interval,
+            "DEDUP_KEEP": dedup_keep,
+            "SOURCES": sources
+        }
+        try:
+            _update_app_settings_overrides({"RSS_IMPORT": payload})
+        except StorageError as exc:
+            flash(f"Errore salvataggio RSS: {exc}")
+            return redirect(url_for('dashboard'))
+        flash("Configurazione RSS aggiornata")
+        return redirect(url_for('dashboard'))
+
+    @app.route('/rss/inspect', methods=['POST'])
+    @login_required
+    def rss_inspect_route():
+        data = request.get_json(silent=True) or {}
+        url = (data.get("url") or "").strip()
+        if not url:
+            return jsonify({"success": False, "message": "URL mancante"}), 400
+        try:
+            response = requests.get(url, timeout=12)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            return jsonify({"success": False, "message": str(exc)}), 400
+        try:
+            inspect = _inspect_rss_content(response.content)
+        except ET.ParseError as exc:
+            return jsonify({"success": False, "message": f"XML non valido: {exc}"}), 400
+        return jsonify({"success": True, "data": inspect})
+
+    @app.route('/rss/inspect-json', methods=['POST'])
+    @login_required
+    def rss_inspect_json_route():
+        if 'json_file' not in request.files:
+            return jsonify({"success": False, "message": "File mancante"}), 400
+        file = request.files['json_file']
+        try:
+            payload = json.load(file.stream)
+        except (ValueError, json.JSONDecodeError) as exc:
+            return jsonify({"success": False, "message": f"JSON non valido: {exc}"}), 400
+
+        root_keys = list(payload.keys()) if isinstance(payload, dict) else []
+        items: list[Any] = []
+        if isinstance(payload, list):
+            items = list(payload)
+        elif isinstance(payload, dict):
+            for key in ("items", "entries", "results", "data"):
+                entry = payload.get(key)
+                if isinstance(entry, list):
+                    items = list(entry)
+                    break
+
+        sample = items[0] if items else {}
+        item_keys = list(sample.keys()) if isinstance(sample, dict) else []
+        return jsonify({
+            "success": True,
+            "data": {
+                "root_type": type(payload).__name__,
+                "root_keys": root_keys,
+                "item_count": len(items),
+                "item_keys": item_keys
+            }
+        })
+
+    @app.route('/rss/import', methods=['POST'])
+    @login_required
+    def rss_import_route():
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Configurazione non valida"}), 400
+        db_settings = config.get("DATABASE", {})
+        if not _db_enabled(db_settings):
+            return jsonify({"success": False, "message": "Database non abilitato"}), 400
+
+        rss_settings = config.get("RSS_IMPORT", {}) or {}
+        sources = rss_settings.get("SOURCES") or []
+        if not sources:
+            return jsonify({"success": False, "message": "Nessuna sorgente RSS configurata"}), 400
+
+        dedup_keep = rss_settings.get("DEDUP_KEEP") or "newest"
+        try:
+            backend = _get_db_backend(db_settings)
+        except StorageError as exc:
+            return jsonify({"success": False, "message": str(exc)}), 400
+
+        totals = {"items": 0, "inserted": 0, "updated": 0, "skipped": 0, "removed": 0}
+        source_results = []
+        for source in sources:
+            if not source.get("enabled", True):
+                continue
+            url = (source.get("url") or "").strip()
+            if not url:
+                continue
+            name = (source.get("name") or "").strip()
+            tags = source.get("tags") or []
+            result = {"name": name or url, "url": url, "items": 0}
+            try:
+                response = requests.get(url, timeout=15)
+                response.raise_for_status()
+            except requests.RequestException as exc:
+                result["error"] = str(exc)
+                source_results.append(result)
+                continue
+            try:
+                parsed = _parse_rss_feed(response.content)
+            except ET.ParseError as exc:
+                result["error"] = f"XML non valido: {exc}"
+                source_results.append(result)
+                continue
+
+            channel = parsed.get("channel", {})
+            channel_title = (channel.get("title") or "").strip()
+            if not name and channel_title:
+                name = channel_title
+            items = parsed.get("items") or []
+            for item in items:
+                item["source_name"] = name or channel_title or None
+                item["source_url"] = url
+                item["source_tags"] = tags
+                item["ingested_at"] = datetime.now(timezone.utc)
+            result["items"] = len(items)
+            try:
+                stats = backend.save_rss_items(items, dedup_keep=dedup_keep)
+            except StorageError as exc:
+                result["error"] = str(exc)
+                source_results.append(result)
+                continue
+            result.update(stats)
+            totals["items"] += result["items"]
+            totals["inserted"] += stats.get("inserted", 0)
+            totals["updated"] += stats.get("updated", 0)
+            totals["skipped"] += stats.get("skipped", 0)
+            totals["removed"] += stats.get("removed", 0)
+            source_results.append(result)
+
+        return jsonify({"success": True, "data": {"summary": totals, "sources": source_results}})
+
+    @app.route('/rss/import-json', methods=['POST'])
+    @login_required
+    def rss_import_json_route():
+        if 'json_file' not in request.files:
+            return jsonify({"success": False, "message": "File mancante"}), 400
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Configurazione non valida"}), 400
+        db_settings = config.get("DATABASE", {})
+        if not _db_enabled(db_settings):
+            return jsonify({"success": False, "message": "Database non abilitato"}), 400
+        rss_settings = config.get("RSS_IMPORT", {}) or {}
+        dedup_keep = rss_settings.get("DEDUP_KEEP") or "newest"
+
+        file = request.files['json_file']
+        try:
+            payload = json.load(file.stream)
+        except (ValueError, json.JSONDecodeError) as exc:
+            return jsonify({"success": False, "message": f"JSON non valido: {exc}"}), 400
+
+        items = _parse_json_import(payload)
+        if not items:
+            return jsonify({"success": False, "message": "Nessun item trovato"}), 400
+        for item in items:
+            item["ingested_at"] = datetime.now(timezone.utc)
+
+        try:
+            backend = _get_db_backend(db_settings)
+        except StorageError as exc:
+            return jsonify({"success": False, "message": str(exc)}), 400
+        try:
+            stats = backend.save_rss_items(items, dedup_keep=dedup_keep)
+        except StorageError as exc:
+            return jsonify({"success": False, "message": str(exc)}), 400
+        stats["items"] = len(items)
+        return jsonify({"success": True, "data": {"summary": stats}})
+
+    @app.route('/rss/deduplicate', methods=['POST'])
+    @login_required
+    def rss_deduplicate_route():
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Configurazione non valida"}), 400
+        db_settings = config.get("DATABASE", {})
+        if not _db_enabled(db_settings):
+            return jsonify({"success": False, "message": "Database non abilitato"}), 400
+        rss_settings = config.get("RSS_IMPORT", {}) or {}
+        dedup_keep = rss_settings.get("DEDUP_KEEP") or "newest"
+
+        try:
+            backend = _get_db_backend(db_settings)
+        except StorageError as exc:
+            return jsonify({"success": False, "message": str(exc)}), 400
+        stats = backend.dedupe_rss_items(dedup_keep=dedup_keep)
+        return jsonify({"success": True, "data": stats})
+
+    @app.route('/rss/items', methods=['GET'])
+    @login_required
+    def rss_items_route():
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Configurazione non valida"}), 400
+        db_settings = config.get("DATABASE", {})
+        if not _db_enabled(db_settings):
+            return jsonify({"success": False, "message": "Database non abilitato"}), 400
+
+        limit = _coerce_request_int(request.args.get("limit") or 50, 50)
+        offset = _coerce_request_int(request.args.get("offset") or 0, 0)
+        limit = max(1, min(200, limit))
+        offset = max(0, offset)
+        try:
+            backend = _get_db_backend(db_settings)
+        except StorageError as exc:
+            return jsonify({"success": False, "message": str(exc)}), 400
+        payload = backend.list_rss_items(limit=limit, offset=offset)
+        payload["limit"] = limit
+        payload["offset"] = offset
+        return jsonify({"success": True, "data": payload})
 
     @app.route('/update-rules', methods=['POST'])
     @login_required

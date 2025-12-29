@@ -9,7 +9,24 @@
             if (token && !headers.has('X-CSRFToken')) {
                 headers.set('X-CSRFToken', token);
             }
-            return fetch(url, { ...opts, headers });
+            if (!headers.has('X-Requested-With')) {
+                headers.set('X-Requested-With', 'XMLHttpRequest');
+            }
+            if (!headers.has('Accept')) {
+                headers.set('Accept', 'application/json');
+            }
+            return fetch(url, { credentials: 'same-origin', ...opts, headers });
+        };
+        const readJsonResponse = async (response) => {
+            const contentType = response.headers.get('content-type') || '';
+            if (!contentType.includes('application/json')) {
+                const text = await response.text();
+                const message = response.redirected
+                    ? 'Sessione scaduta. Ricarica la pagina.'
+                    : `Risposta non JSON (${response.status}).`;
+                throw new Error(message || text || 'Risposta non valida.');
+            }
+            return response.json();
         };
         const ensureCsrfInForms = () => {
             const token = getCsrfToken();
@@ -344,7 +361,7 @@
                 services.forEach(service => setConnectionStatus(service, 'skip', 'Verifica in corso...', '...'));
                 try {
                     const resp = await csrfFetch('/test-connections', {method: 'POST'});
-                    const data = await resp.json();
+                    const data = await readJsonResponse(resp);
                     if (!resp.ok) {
                         throw new Error(data.message || 'Errore durante la verifica');
                     }
@@ -366,6 +383,553 @@
                 } finally {
                     connectionBtn.disabled = false;
                 }
+            });
+        }
+
+        const rssInspectBtn = document.getElementById('rss-inspect-btn');
+        const rssInspectResult = document.getElementById('rss-inspect-result');
+        if (rssInspectBtn && rssInspectResult) {
+            rssInspectBtn.addEventListener('click', async () => {
+                const input = document.getElementById('rss_test_url');
+                const url = input ? input.value.trim() : '';
+                if (!url) {
+                    rssInspectResult.textContent = 'Inserisci un URL valido.';
+                    return;
+                }
+                rssInspectBtn.disabled = true;
+                rssInspectBtn.textContent = 'Analisi...';
+                rssInspectResult.textContent = 'Analisi in corso...';
+                try {
+                    const resp = await csrfFetch('/rss/inspect', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ url })
+                    });
+                    const data = await readJsonResponse(resp);
+                    if (!resp.ok || !data.success) {
+                        throw new Error(data.message || 'Errore analisi feed');
+                    }
+                    const payload = data.data || {};
+                    const fields = payload.fields || [];
+                    const items = payload.items || [];
+                    const channel = payload.channel || {};
+                    const chips = fields.map(field => `<span class="rss-inspect-chip">${field}</span>`).join('');
+                    const rows = items.map(item => `
+                        <tr>
+                            <td>${item.title || '—'}</td>
+                            <td>${item.link || '—'}</td>
+                            <td>${item.published || '—'}</td>
+                        </tr>
+                    `).join('');
+                    rssInspectResult.innerHTML = `
+                        <div class="rss-inspect-meta">
+                            <span>Tipo: ${payload.feed_type || 'n/d'}</span>
+                            <span>Elementi: ${payload.item_count ?? 0}</span>
+                            <span>Feed: ${channel.title || 'n/d'}</span>
+                        </div>
+                        <div class="rss-inspect-list">${chips || '<span class="tagline">Nessun campo rilevato.</span>'}</div>
+                        ${rows ? `
+                            <table class="rss-inspect-table" style="margin-top:0.6rem;">
+                                <thead>
+                                    <tr>
+                                        <th>Titolo</th>
+                                        <th>Link</th>
+                                        <th>Data</th>
+                                    </tr>
+                                </thead>
+                                <tbody>${rows}</tbody>
+                            </table>
+                        ` : ''}
+                    `;
+                } catch (err) {
+                    rssInspectResult.textContent = err.message || 'Errore analisi feed.';
+                } finally {
+                    rssInspectBtn.disabled = false;
+                    rssInspectBtn.textContent = 'Analizza feed';
+                }
+            });
+        }
+
+        const rssJsonBtn = document.getElementById('rss-json-inspect-btn');
+        const rssJsonResult = document.getElementById('rss-json-result');
+        if (rssJsonBtn && rssJsonResult) {
+            rssJsonBtn.addEventListener('click', async () => {
+                const input = document.getElementById('rss_json_file');
+                const file = input && input.files ? input.files[0] : null;
+                if (!file) {
+                    rssJsonResult.textContent = 'Seleziona un file JSON.';
+                    return;
+                }
+                rssJsonBtn.disabled = true;
+                rssJsonBtn.textContent = 'Analisi...';
+                rssJsonResult.textContent = 'Analisi in corso...';
+                try {
+                    const formData = new FormData();
+                    formData.append('json_file', file);
+                    const resp = await csrfFetch('/rss/inspect-json', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    const data = await readJsonResponse(resp);
+                    if (!resp.ok || !data.success) {
+                        throw new Error(data.message || 'Errore analisi JSON');
+                    }
+                    const payload = data.data || {};
+                    const rootKeys = (payload.root_keys || []).map(key => `<span class="rss-inspect-chip">${key}</span>`).join('');
+                    const itemKeys = (payload.item_keys || []).map(key => `<span class="rss-inspect-chip">${key}</span>`).join('');
+                    rssJsonResult.innerHTML = `
+                        <div class="rss-inspect-meta">
+                            <span>Tipo root: ${payload.root_type || 'n/d'}</span>
+                            <span>Elementi: ${payload.item_count ?? 0}</span>
+                        </div>
+                        <div class="tagline">Chiavi root:</div>
+                        <div class="rss-inspect-list">${rootKeys || '<span class="tagline">Nessuna chiave.</span>'}</div>
+                        <div class="tagline" style="margin-top:0.5rem;">Chiavi item:</div>
+                        <div class="rss-inspect-list">${itemKeys || '<span class="tagline">Nessuna chiave.</span>'}</div>
+                    `;
+                } catch (err) {
+                    rssJsonResult.textContent = err.message || 'Errore analisi JSON.';
+                } finally {
+                    rssJsonBtn.disabled = false;
+                    rssJsonBtn.textContent = 'Analizza JSON';
+                }
+            });
+        }
+
+        const rssImportBtn = document.getElementById('rss-import-btn');
+        const rssImportResult = document.getElementById('rss-import-result');
+        if (rssImportBtn && rssImportResult) {
+            rssImportBtn.addEventListener('click', async () => {
+                rssImportBtn.disabled = true;
+                rssImportBtn.textContent = 'Import in corso...';
+                rssImportResult.textContent = 'Importazione RSS in corso...';
+                try {
+                    const resp = await csrfFetch('/rss/import', { method: 'POST' });
+                    const data = await readJsonResponse(resp);
+                    if (!resp.ok || !data.success) {
+                        throw new Error(data.message || 'Errore import RSS');
+                    }
+                    const payload = data.data || {};
+                    const summary = payload.summary || {};
+                    const sources = payload.sources || [];
+                    const rows = sources.map(source => `
+                        <tr>
+                            <td>${source.name || source.url || '—'}</td>
+                            <td>${source.items ?? 0}</td>
+                            <td>${source.inserted ?? 0}</td>
+                            <td>${source.updated ?? 0}</td>
+                            <td>${source.skipped ?? 0}</td>
+                            <td>${source.removed ?? 0}</td>
+                            <td>${source.error || '—'}</td>
+                        </tr>
+                    `).join('');
+                    rssImportResult.innerHTML = `
+                        <div class="rss-inspect-meta">
+                            <span>Elementi: ${summary.items ?? 0}</span>
+                            <span>Inseriti: ${summary.inserted ?? 0}</span>
+                            <span>Aggiornati: ${summary.updated ?? 0}</span>
+                            <span>Duplicati rimossi: ${summary.removed ?? 0}</span>
+                            <span>Saltati: ${summary.skipped ?? 0}</span>
+                        </div>
+                        ${rows ? `
+                            <table class="rss-inspect-table" style="margin-top:0.6rem;">
+                                <thead>
+                                    <tr>
+                                        <th>Sorgente</th>
+                                        <th>Elementi</th>
+                                        <th>Inseriti</th>
+                                        <th>Aggiornati</th>
+                                        <th>Saltati</th>
+                                        <th>Rimossi</th>
+                                        <th>Errore</th>
+                                    </tr>
+                                </thead>
+                                <tbody>${rows}</tbody>
+                            </table>
+                        ` : '<span class="tagline">Nessuna sorgente elaborata.</span>'}
+                    `;
+                } catch (err) {
+                    rssImportResult.textContent = err.message || 'Errore import RSS.';
+                } finally {
+                    rssImportBtn.disabled = false;
+                    rssImportBtn.textContent = 'Importa RSS';
+                }
+            });
+        }
+
+        const rssImportJsonBtn = document.getElementById('rss-import-json-btn');
+        if (rssImportJsonBtn && rssImportResult) {
+            rssImportJsonBtn.addEventListener('click', async () => {
+                const input = document.getElementById('rss_import_json_file');
+                const files = input && input.files ? Array.from(input.files) : [];
+                if (!files.length) {
+                    rssImportResult.textContent = 'Seleziona uno o piu file JSON da importare.';
+                    return;
+                }
+                rssImportJsonBtn.disabled = true;
+                rssImportJsonBtn.textContent = 'Import in corso...';
+                rssImportResult.textContent = 'Importazione JSON in corso...';
+                try {
+                    const rows = [];
+                    let totals = { items: 0, inserted: 0, updated: 0, removed: 0, skipped: 0, failed: 0 };
+                    for (const file of files) {
+                        const formData = new FormData();
+                        formData.append('json_file', file);
+                        const resp = await csrfFetch('/rss/import-json', {
+                            method: 'POST',
+                            body: formData
+                        });
+                        const data = await readJsonResponse(resp);
+                        if (!resp.ok || !data.success) {
+                            totals.failed += 1;
+                            rows.push(`
+                                <tr>
+                                    <td>${file.name}</td>
+                                    <td colspan="5">—</td>
+                                    <td>${data.message || 'Errore import JSON'}</td>
+                                </tr>
+                            `);
+                            continue;
+                        }
+                        const summary = (data.data || {}).summary || {};
+                        totals.items += summary.items ?? 0;
+                        totals.inserted += summary.inserted ?? 0;
+                        totals.updated += summary.updated ?? 0;
+                        totals.removed += summary.removed ?? 0;
+                        totals.skipped += summary.skipped ?? 0;
+                        rows.push(`
+                            <tr>
+                                <td>${file.name}</td>
+                                <td>${summary.items ?? 0}</td>
+                                <td>${summary.inserted ?? 0}</td>
+                                <td>${summary.updated ?? 0}</td>
+                                <td>${summary.removed ?? 0}</td>
+                                <td>${summary.skipped ?? 0}</td>
+                                <td>—</td>
+                            </tr>
+                        `);
+                    }
+                    rssImportResult.innerHTML = `
+                        <div class="rss-inspect-meta">
+                            <span>Elementi: ${totals.items}</span>
+                            <span>Inseriti: ${totals.inserted}</span>
+                            <span>Aggiornati: ${totals.updated}</span>
+                            <span>Duplicati rimossi: ${totals.removed}</span>
+                            <span>Saltati: ${totals.skipped}</span>
+                            <span>File falliti: ${totals.failed}</span>
+                        </div>
+                        ${rows.length ? `
+                            <table class="rss-inspect-table" style="margin-top:0.6rem;">
+                                <thead>
+                                    <tr>
+                                        <th>File</th>
+                                        <th>Elementi</th>
+                                        <th>Inseriti</th>
+                                        <th>Aggiornati</th>
+                                        <th>Rimossi</th>
+                                        <th>Saltati</th>
+                                        <th>Errore</th>
+                                    </tr>
+                                </thead>
+                                <tbody>${rows.join('')}</tbody>
+                            </table>
+                        ` : '<span class="tagline">Nessun file importato.</span>'}
+                    `;
+                } catch (err) {
+                    rssImportResult.textContent = err.message || 'Errore import JSON.';
+                } finally {
+                    rssImportJsonBtn.disabled = false;
+                    rssImportJsonBtn.textContent = 'Importa JSON';
+                }
+            });
+        }
+
+        const rssDedupBtn = document.getElementById('rss-dedup-btn');
+        const rssDedupResult = document.getElementById('rss-dedup-result');
+        if (rssDedupBtn && rssDedupResult) {
+            rssDedupBtn.addEventListener('click', async () => {
+                rssDedupBtn.disabled = true;
+                rssDedupBtn.textContent = 'Pulizia...';
+                rssDedupResult.textContent = 'Rimozione duplicati in corso...';
+                try {
+                    const resp = await csrfFetch('/rss/deduplicate', { method: 'POST' });
+                    const data = await resp.json();
+                    if (!resp.ok || !data.success) {
+                        throw new Error(data.message || 'Errore deduplica');
+                    }
+                    const summary = data.data || {};
+                    rssDedupResult.innerHTML = `
+                        <div class="rss-inspect-meta">
+                            <span>Link duplicati: ${summary.links ?? 0}</span>
+                            <span>Rimossi: ${summary.removed ?? 0}</span>
+                        </div>
+                        <span class="tagline">Deduplica completata.</span>
+                    `;
+                } catch (err) {
+                    rssDedupResult.textContent = err.message || 'Errore deduplica.';
+                } finally {
+                    rssDedupBtn.disabled = false;
+                    rssDedupBtn.textContent = 'Pulisci duplicati';
+                }
+            });
+        }
+
+        const rssViewBtn = document.getElementById('rss-view-btn');
+        const rssModal = document.getElementById('rss-items-modal');
+        const rssViewContent = document.getElementById('rss-view-content');
+        const rssViewRange = document.getElementById('rss-view-range');
+        const rssPrevBtn = document.getElementById('rss-prev-btn');
+        const rssNextBtn = document.getElementById('rss-next-btn');
+        const rssViewTabs = rssModal ? rssModal.querySelectorAll('[data-rss-view]') : [];
+        let rssViewMode = 'table';
+        let rssOffset = 0;
+        let rssTotal = 0;
+        let rssLastItems = [];
+        const rssLimit = 50;
+
+        const escapeRssHtml = (value) => {
+            const text = String(value ?? '');
+            return text.replace(/[&<>"']/g, (match) => ({
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#39;'
+            }[match]));
+        };
+
+        const formatRssDate = (value) => {
+            if (!value) {
+                return '—';
+            }
+            try {
+                const date = new Date(value);
+                if (Number.isNaN(date.getTime())) {
+                    return value;
+                }
+                return date.toLocaleString('it-IT');
+            } catch (err) {
+                return value;
+            }
+        };
+
+        const renderRssTable = (items) => {
+            if (!rssViewContent) {
+                return;
+            }
+            if (!items.length) {
+                rssViewContent.innerHTML = '<span class="tagline">Nessun articolo disponibile.</span>';
+                return;
+            }
+            const rows = items.map(item => `
+                <tr>
+                    <td>${escapeRssHtml(item.title || '—')}</td>
+                    <td>${escapeRssHtml(item.source_name || '—')}</td>
+                    <td>${escapeRssHtml(item.source_url || '—')}</td>
+                    <td>${escapeRssHtml((item.source_tags || []).join(', ') || '—')}</td>
+                    <td>${escapeRssHtml(item.author || '—')}</td>
+                    <td>${escapeRssHtml((item.categories || []).join(', ') || '—')}</td>
+                    <td>${escapeRssHtml(item.guid || '—')}</td>
+                    <td>${formatRssDate(item.published_at)}</td>
+                    <td>${formatRssDate(item.updated_at)}</td>
+                    <td>${formatRssDate(item.ingested_at)}</td>
+                    <td>${item.link ? `<a href="${escapeRssHtml(item.link)}" target="_blank" rel="noopener">Apri</a>` : '—'}</td>
+                    <td>${escapeRssHtml(item.summary || '—')}</td>
+                    <td>${escapeRssHtml(item.content || '—')}</td>
+                </tr>
+            `).join('');
+            rssViewContent.innerHTML = `
+                <table class="rss-items-table">
+                    <thead>
+                        <tr>
+                            <th>Titolo</th>
+                            <th>Sorgente</th>
+                            <th>URL Sorgente</th>
+                            <th>Tag</th>
+                            <th>Autore</th>
+                            <th>Categorie</th>
+                            <th>GUID</th>
+                            <th>Pubblicato</th>
+                            <th>Aggiornato</th>
+                            <th>Importato</th>
+                            <th>Link</th>
+                            <th>Summary</th>
+                            <th>Content</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            `;
+        };
+
+        const renderRssHtml = (items) => {
+            if (!rssViewContent) {
+                return;
+            }
+            if (!items.length) {
+                rssViewContent.innerHTML = '<span class="tagline">Nessun articolo disponibile.</span>';
+                return;
+            }
+            const blocks = items.map(item => {
+                const summaryHtml = item.summary || '';
+                const contentHtml = item.content || '';
+                const safeTitle = escapeRssHtml(item.title || '—');
+                const safeSource = escapeRssHtml(item.source_name || '—');
+                const publishedLabel = formatRssDate(item.published_at);
+                const updatedLabel = formatRssDate(item.updated_at);
+                const ingestedLabel = formatRssDate(item.ingested_at);
+                const linkLabel = item.link ? `<a href="${escapeRssHtml(item.link)}" target="_blank" rel="noopener">Apri sorgente</a>` : '—';
+                const sourceUrl = item.source_url ? `<a href="${escapeRssHtml(item.source_url)}" target="_blank" rel="noopener">${escapeRssHtml(item.source_url)}</a>` : '—';
+                const tagsLabel = escapeRssHtml((item.source_tags || []).join(', ') || '—');
+                const categoriesLabel = escapeRssHtml((item.categories || []).join(', ') || '—');
+                const authorLabel = escapeRssHtml(item.author || '—');
+                const guidLabel = escapeRssHtml(item.guid || '—');
+                return `
+                    <article class="rss-html-item">
+                        <h4>${safeTitle}</h4>
+                        <div class="rss-html-meta">
+                            <span>${safeSource}</span>
+                            <span>${publishedLabel}</span>
+                            <span>${linkLabel}</span>
+                        </div>
+                        <div class="rss-html-details">
+                            <div class="rss-html-field">
+                                <span class="rss-html-label">URL sorgente</span>
+                                <span class="rss-html-value">${sourceUrl}</span>
+                            </div>
+                            <div class="rss-html-field">
+                                <span class="rss-html-label">Tag</span>
+                                <span class="rss-html-value">${tagsLabel}</span>
+                            </div>
+                            <div class="rss-html-field">
+                                <span class="rss-html-label">Autore</span>
+                                <span class="rss-html-value">${authorLabel}</span>
+                            </div>
+                            <div class="rss-html-field">
+                                <span class="rss-html-label">Categorie</span>
+                                <span class="rss-html-value">${categoriesLabel}</span>
+                            </div>
+                            <div class="rss-html-field">
+                                <span class="rss-html-label">GUID</span>
+                                <span class="rss-html-value">${guidLabel}</span>
+                            </div>
+                            <div class="rss-html-field">
+                                <span class="rss-html-label">Aggiornato</span>
+                                <span class="rss-html-value">${updatedLabel}</span>
+                            </div>
+                            <div class="rss-html-field">
+                                <span class="rss-html-label">Importato</span>
+                                <span class="rss-html-value">${ingestedLabel}</span>
+                            </div>
+                        </div>
+                        <div class="rss-html-section">
+                            <div class="rss-html-section-title">Summary</div>
+                            <div class="rss-html-content">${summaryHtml || '<em>Nessun summary disponibile.</em>'}</div>
+                        </div>
+                        <div class="rss-html-section">
+                            <div class="rss-html-section-title">Content</div>
+                            <div class="rss-html-content">${contentHtml || '<em>Nessun contenuto disponibile.</em>'}</div>
+                        </div>
+                    </article>
+                `;
+            }).join('');
+            rssViewContent.innerHTML = `<div class="rss-html-list">${blocks}</div>`;
+        };
+
+        const updateRssRange = (count) => {
+            if (!rssViewRange) {
+                return;
+            }
+            if (!rssTotal) {
+                rssViewRange.textContent = '0 elementi';
+                return;
+            }
+            const start = rssOffset + 1;
+            const end = rssOffset + count;
+            rssViewRange.textContent = `${start}-${end} di ${rssTotal}`;
+        };
+
+        const renderRssView = (items) => {
+            if (rssViewMode === 'html') {
+                renderRssHtml(items);
+            } else {
+                renderRssTable(items);
+            }
+        };
+
+        const loadRssItems = async () => {
+            if (!rssViewContent) {
+                return;
+            }
+            rssViewContent.innerHTML = '<span class="tagline">Caricamento...</span>';
+            try {
+                const resp = await csrfFetch(`/rss/items?limit=${rssLimit}&offset=${rssOffset}`);
+                const data = await readJsonResponse(resp);
+                if (!resp.ok || !data.success) {
+                    throw new Error(data.message || 'Errore caricamento RSS');
+                }
+                const payload = data.data || {};
+                rssTotal = payload.total ?? 0;
+                rssLastItems = payload.items || [];
+                renderRssView(rssLastItems);
+                updateRssRange(rssLastItems.length);
+                if (rssPrevBtn) {
+                    rssPrevBtn.disabled = rssOffset <= 0;
+                }
+                if (rssNextBtn) {
+                    rssNextBtn.disabled = rssOffset + rssLastItems.length >= rssTotal;
+                }
+            } catch (err) {
+                rssViewContent.textContent = err.message || 'Errore caricamento RSS.';
+            }
+        };
+
+        const toggleRssModal = (visible) => {
+            if (!rssModal) {
+                return;
+            }
+            rssModal.classList.toggle('is-hidden', !visible);
+            rssModal.setAttribute('aria-hidden', visible ? 'false' : 'true');
+        };
+
+        if (rssViewBtn && rssModal) {
+            rssViewBtn.addEventListener('click', () => {
+                rssOffset = 0;
+                toggleRssModal(true);
+                loadRssItems();
+            });
+            rssModal.addEventListener('click', (event) => {
+                if (event.target === rssModal || event.target.closest('[data-modal-close]')) {
+                    toggleRssModal(false);
+                }
+            });
+            document.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape' && !rssModal.classList.contains('is-hidden')) {
+                    toggleRssModal(false);
+                }
+            });
+        }
+
+        if (rssViewTabs.length) {
+            rssViewTabs.forEach(tab => {
+                tab.addEventListener('click', () => {
+                    rssViewMode = tab.dataset.rssView || 'table';
+                    rssViewTabs.forEach(btn => btn.classList.toggle('is-active', btn === tab));
+                    renderRssView(rssLastItems);
+                });
+            });
+        }
+
+        if (rssPrevBtn) {
+            rssPrevBtn.addEventListener('click', () => {
+                rssOffset = Math.max(0, rssOffset - rssLimit);
+                loadRssItems();
+            });
+        }
+        if (rssNextBtn) {
+            rssNextBtn.addEventListener('click', () => {
+                rssOffset += rssLimit;
+                loadRssItems();
             });
         }
 

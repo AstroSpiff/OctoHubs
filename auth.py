@@ -6,7 +6,7 @@ import os
 from datetime import datetime
 from typing import Optional, Any
 
-from flask import Flask
+from flask import Flask, jsonify, redirect, request, url_for
 from flask_login import LoginManager, UserMixin
 from flask_bcrypt import Bcrypt
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Text, inspect, text
@@ -115,6 +115,12 @@ def init_auth(app: Flask):
     login_manager.login_message = 'Devi effettuare il login per accedere a questa pagina.'
     login_manager.login_message_category = 'warning'
     login_manager.session_protection = 'strong'
+
+    @login_manager.unauthorized_handler
+    def _unauthorized():
+        if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+            return jsonify({"success": False, "message": "Sessione scaduta. Ricarica la pagina."}), 401
+        return redirect(url_for('auth_login'))
 
     # Database configuration
     db_url = os.environ.get('AUTH_DATABASE_URL')
