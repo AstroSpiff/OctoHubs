@@ -9,6 +9,7 @@ import time
 import re
 import uuid
 import xml.etree.ElementTree as ET
+from urllib.parse import urlencode
 from datetime import datetime, date, timezone, time as dt_time, timedelta
 from email.utils import parsedate_to_datetime
 from functools import wraps
@@ -2663,6 +2664,70 @@ def create_dashboard_app():
             "item_id": item.get("Id") if isinstance(item, dict) else None
         }
 
+    def _runtime_minutes_from_ticks(value):
+        if not value:
+            return None
+        try:
+            ticks = int(value)
+        except (TypeError, ValueError):
+            return None
+        if ticks <= 0:
+            return None
+        return max(1, int(round(ticks / 600_000_000)))
+
+    def _build_emby_latest_item(item, server):
+        if not isinstance(item, dict):
+            return None
+        image_tags = item.get("ImageTags") if isinstance(item.get("ImageTags"), dict) else {}
+        item_id = item.get("Id")
+        image_url = None
+        if server and item_id:
+            query = {
+                "server_id": server.get("id"),
+                "item_id": item_id,
+                "type": "Primary",
+                "max_width": 240
+            }
+            if image_tags.get("Primary"):
+                query["tag"] = image_tags.get("Primary")
+            image_url = f"/api/emby/image?{urlencode(query)}"
+        return {
+            "item_id": item_id,
+            "title": item.get("Name"),
+            "year": item.get("ProductionYear"),
+            "overview": item.get("Overview"),
+            "genres": item.get("Genres") if isinstance(item.get("Genres"), list) else [],
+            "community_rating": item.get("CommunityRating"),
+            "official_rating": item.get("OfficialRating"),
+            "runtime_minutes": _runtime_minutes_from_ticks(item.get("RunTimeTicks")),
+            "added_at": item.get("DateCreated"),
+            "premiere_date": item.get("PremiereDate"),
+            "child_count": item.get("ChildCount"),
+            "image_tag": image_tags.get("Primary"),
+            "image_url": image_url,
+            "server_id": server.get("id") if server else None,
+            "server_name": server.get("name") if server else None,
+            "server_icon": server.get("icon") if server else None,
+            "item_type": item.get("Type")
+        }
+
+    def _fetch_emby_latest_items(server, item_type, limit):
+        params = {
+            "IncludeItemTypes": item_type,
+            "Recursive": "true",
+            "SortBy": "DateCreated",
+            "SortOrder": "Descending",
+            "Limit": limit,
+            "Fields": "DateCreated,Overview,Genres,ProductionYear,RunTimeTicks,CommunityRating,OfficialRating,PremiereDate,ChildCount"
+        }
+        success, payload = _call_emby_api(server, "Items", params=params)
+        if not success or not isinstance(payload, dict):
+            return [], payload
+        items = payload.get("Items")
+        if not isinstance(items, list):
+            return [], "Risposta Items inattesa"
+        return items, None
+
     @app.route('/api/emby/availability', methods=['POST'])
     @login_required
     def emby_availability():
@@ -2782,6 +2847,105 @@ def create_dashboard_app():
             return jsonify({"success": False, "message": "Errore recupero dettagli Emby"}), 502
         details = _build_emby_item_details(item_payload, server)
         return jsonify({"success": True, "details": details})
+
+    @app.route('/api/emby/latest', methods=['GET'])
+    @login_required
+    def emby_latest():
+        limit = _coerce_request_int(request.args.get("limit"), 12, 1, 50)
+        per_server_limit = _coerce_request_int(request.args.get("per_server_limit"), limit, 1, 50)
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Config non valida"}), 400
+        emby_config = config.get("EMBY") or {}
+        servers = [server for server in (emby_config.get("SERVERS") or []) if server.get("enabled")]
+        if not servers:
+            return jsonify({"success": True, "movies": [], "series": [], "errors": []})
+
+        movies = []
+        series = []
+        errors = []
+
+        for server in servers:
+            movie_items, movie_error = _fetch_emby_latest_items(server, "Movie", per_server_limit)
+            if movie_error:
+                errors.append({"server_id": server.get("id"), "message": str(movie_error)})
+            for item in movie_items:
+                entry = _build_emby_latest_item(item, server)
+                if entry:
+                    movies.append(entry)
+
+            series_items, series_error = _fetch_emby_latest_items(server, "Series", per_server_limit)
+            if series_error:
+                errors.append({"server_id": server.get("id"), "message": str(series_error)})
+            for item in series_items:
+                entry = _build_emby_latest_item(item, server)
+                if entry:
+                    series.append(entry)
+
+        def _sort_key(entry):
+            if not isinstance(entry, dict):
+                return datetime.min.replace(tzinfo=timezone.utc)
+            dt_value = _parse_date_value(entry.get("added_at")) or _parse_date_value(entry.get("premiere_date"))
+            return dt_value or datetime.min.replace(tzinfo=timezone.utc)
+
+        movies.sort(key=_sort_key, reverse=True)
+        series.sort(key=_sort_key, reverse=True)
+
+        return jsonify({
+            "success": True,
+            "movies": movies[:limit],
+            "series": series[:limit],
+            "errors": errors
+        })
+
+    @app.route('/api/emby/image', methods=['GET'])
+    @login_required
+    def emby_image():
+        server_id = request.args.get("server_id")
+        item_id = request.args.get("item_id")
+        image_type = request.args.get("type", "Primary")
+        max_width = request.args.get("max_width")
+        max_height = request.args.get("max_height")
+        tag = request.args.get("tag")
+
+        if not server_id or not item_id:
+            return jsonify({"success": False, "message": "Parametri mancanti"}), 400
+
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Config non valida"}), 400
+        server = _resolve_emby_server(config, server_id)
+        if not server:
+            return jsonify({"success": False, "message": "Server non trovato"}), 404
+
+        base_url = (server.get("url") or "").strip().rstrip("/")
+        token = (server.get("api_key") or "").strip()
+        if not base_url or not token:
+            return jsonify({"success": False, "message": "Credenziali Emby mancanti"}), 400
+
+        params = {"api_key": token}
+        if max_width:
+            params["maxWidth"] = max_width
+        if max_height:
+            params["maxHeight"] = max_height
+        if tag:
+            params["tag"] = tag
+
+        url = f"{base_url}/Items/{item_id}/Images/{image_type}"
+        try:
+            response = requests.get(
+                url,
+                headers={"X-Emby-Token": token, "Accept": "image/*"},
+                params=params,
+                stream=True,
+                timeout=15
+            )
+            response.raise_for_status()
+        except requests.RequestException:
+            return jsonify({"success": False, "message": "Errore caricamento immagine"}), 502
+
+        content_type = response.headers.get("Content-Type") or "image/jpeg"
+        return Response(stream_with_context(response.iter_content(chunk_size=8192)), content_type=content_type)
 
     @app.route('/api/emby/movie-versions', methods=['GET'])
     @login_required

@@ -938,27 +938,30 @@ class EmbyProbeManager:
         if not self._db_getter:
             return False, "Database non configurato"
 
-        # Fetch item metadata from Emby API
+        # Fetch item metadata from Emby API (Items endpoint is more reliable than Items/{id})
         success, payload = _call_emby_api(
             server,
-            f"Items/{item_id}",
+            "Items",
             method="GET",
             params={
+                "Ids": item_id,
                 "Fields": "Path,ParentId,SeriesName,IndexNumber,ParentIndexNumber,ProductionYear,SeriesProductionYear,RunTimeTicks,MediaStreams,MediaSources,Type"
             }
         )
 
         if not success or not isinstance(payload, dict):
-            # Check if it's a 404 error (file deleted from Emby)
-            error_str = str(payload)
-            if "404" in error_str or "non può essere trovato" in error_str.lower() or "not found" in error_str.lower():
-                # File doesn't exist anymore - clean it up from all tables
-                db = self._db_getter()
-                db.remove_from_probe_queue(server_id, item_id, media_source_id)
-                db.remove_from_probe_blacklist(server_id, item_id, media_source_id)
-                db.remove_from_probe_history(server_id, item_id, media_source_id)
-                return False, "File non trovato su Emby (rimosso automaticamente dalla coda/blacklist)"
             return False, f"Errore recupero item da Emby: {payload}"
+
+        items = payload.get("Items")
+        if not isinstance(items, list) or not items:
+            # File doesn't exist anymore - clean it up from all tables
+            db = self._db_getter()
+            db.remove_from_probe_queue(server_id, item_id, media_source_id)
+            db.remove_from_probe_blacklist(server_id, item_id, media_source_id)
+            db.remove_from_probe_history(server_id, item_id, media_source_id)
+            return False, "File non trovato su Emby (rimosso automaticamente dalla coda/blacklist)"
+
+        payload = items[0]
 
         # Extract metadata (same mapping as in _discovery_worker)
         item_type = payload.get("Type", "")
@@ -970,15 +973,65 @@ class EmbyProbeManager:
         parent_id = payload.get("ParentId")
         item_path = payload.get("Path", "")
 
+        library_id = None
         library_name = "Libreria"
-        if parent_id:
+
+        ancestors_success, ancestors_payload = _call_emby_api(
+            server,
+            f"Items/{item_id}/Ancestors",
+            method="GET"
+        )
+        if ancestors_success and isinstance(ancestors_payload, list):
+            for ancestor in ancestors_payload:
+                if not isinstance(ancestor, dict):
+                    continue
+                if ancestor.get("Type") == "CollectionFolder":
+                    library_id = ancestor.get("Id") or ancestor.get("ItemId")
+                    library_name = ancestor.get("Name") or library_name
+                    break
+
+        if not library_id and item_path:
+            folders_success, folders_payload = _call_emby_api(
+                server,
+                "Library/VirtualFolders",
+                method="GET"
+            )
+            if folders_success and isinstance(folders_payload, list):
+                best_match = None
+                best_len = 0
+                item_norm = str(item_path).replace("\\", "/").rstrip("/").lower()
+                for folder in folders_payload:
+                    if not isinstance(folder, dict):
+                        continue
+                    locations = folder.get("Locations")
+                    if not isinstance(locations, list):
+                        continue
+                    for location in locations:
+                        if not location:
+                            continue
+                        loc_norm = str(location).replace("\\", "/").rstrip("/").lower()
+                        if not loc_norm:
+                            continue
+                        loc_prefix = loc_norm + "/"
+                        if item_norm.startswith(loc_prefix) and len(loc_prefix) > best_len:
+                            best_len = len(loc_prefix)
+                            best_match = folder
+                if isinstance(best_match, dict):
+                    library_id = best_match.get("Id") or best_match.get("ItemId") or library_id
+                    library_name = best_match.get("Name") or library_name
+
+        if not library_id and parent_id:
             parent_success, parent_payload = _call_emby_api(
                 server,
                 f"Items/{parent_id}",
                 method="GET"
             )
             if parent_success and isinstance(parent_payload, dict):
+                library_id = parent_payload.get("Id") or library_id
                 library_name = parent_payload.get("Name") or library_name
+
+        if not library_id:
+            library_id = parent_id
 
         media_sources = payload.get("MediaSources")
         if not isinstance(media_sources, list) or not media_sources:
@@ -1018,7 +1071,7 @@ class EmbyProbeManager:
                 "server_id": server_id,
                 "item_id": item_id,
                 "media_source_id": source_media_id,
-                "library_id": parent_id,
+                "library_id": library_id,
                 "library_name": library_name,
                 "name": queue_name,
                 "series_name": series_name,

@@ -48,6 +48,7 @@
             <div class="tabs">
                 <button class="tab-btn active" data-tab="actions" title="Operazioni rapide e stato server">Operazioni</button>
                 <button class="tab-btn" data-tab="libraries" title="Gestione librerie Emby">Librerie</button>
+                <button class="tab-btn" data-tab="latest" title="Ultime pubblicazioni dai server Emby">Pubblicazioni</button>
                 <button class="tab-btn" data-tab="config" title="Configurazione server Emby">Configurazione</button>
             </div>
 
@@ -242,6 +243,38 @@
                         <div class="form-actions">
                             <button id="save-associations-btn" class="btn primary" title="Salva le associazioni delle librerie tra i server">Salva Associazioni</button>
                         </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-panel" data-tab-panel="latest">
+                <div class="card">
+                    <div class="latest-header">
+                        <div>
+                            <h2>Ultime pubblicazioni</h2>
+                            <p class="tagline">Film e serie TV aggiunti di recente nei server Emby connessi.</p>
+                        </div>
+                        <button class="btn secondary" type="button" data-latest-refresh title="Aggiorna l'elenco delle ultime pubblicazioni">Aggiorna</button>
+                    </div>
+                    <div class="latest-grid">
+                        <section class="latest-column">
+                            <div class="latest-column-header">
+                                <h3>Film</h3>
+                                <span class="tagline" data-latest-movies-count>0 elementi</span>
+                            </div>
+                            <div class="latest-list" data-latest-movies>
+                                <div class="empty-state">Caricamento...</div>
+                            </div>
+                        </section>
+                        <section class="latest-column">
+                            <div class="latest-column-header">
+                                <h3>Serie TV</h3>
+                                <span class="tagline" data-latest-series-count>0 elementi</span>
+                            </div>
+                            <div class="latest-list" data-latest-series>
+                                <div class="empty-state">Caricamento...</div>
+                            </div>
+                        </section>
                     </div>
                 </div>
             </div>

@@ -149,6 +149,9 @@
                     panel.classList.toggle('active', panel.dataset.tabPanel === target);
                 });
                 localStorage.setItem('embyActiveTab', target);
+                if (target === 'latest') {
+                    loadLatestReleases();
+                }
             };
             tabButtons.forEach(btn => {
                 btn.addEventListener('click', () => setTab(btn.dataset.tab));
@@ -159,6 +162,162 @@
             setTab(initialTab);
             setupTabDragAndDrop();
         })();
+    }
+
+    const latestState = {
+        loaded: false,
+        loading: false
+    };
+    const latestMoviesContainer = document.querySelector('[data-latest-movies]');
+    const latestSeriesContainer = document.querySelector('[data-latest-series]');
+    const latestMoviesCount = document.querySelector('[data-latest-movies-count]');
+    const latestSeriesCount = document.querySelector('[data-latest-series-count]');
+    const latestRefreshBtn = document.querySelector('[data-latest-refresh]');
+
+    const escapeHtml = (value) => {
+        return String(value || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    };
+
+    const formatCount = (value) => {
+        const count = Number(value) || 0;
+        return `${count} ${count === 1 ? 'elemento' : 'elementi'}`;
+    };
+
+    const formatRuntime = (minutes) => {
+        const value = Number(minutes);
+        if (!Number.isFinite(value) || value <= 0) {
+            return '';
+        }
+        const hours = Math.floor(value / 60);
+        const remaining = Math.round(value % 60);
+        if (hours <= 0) {
+            return `${remaining}m`;
+        }
+        return remaining ? `${hours}h ${remaining}m` : `${hours}h`;
+    };
+
+    const formatDate = (value) => {
+        if (!value) {
+            return '';
+        }
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) {
+            return String(value);
+        }
+        return date.toLocaleDateString('it-IT', { day: '2-digit', month: 'short', year: 'numeric' });
+    };
+
+    const buildLatestBadge = (text) => {
+        if (!text) {
+            return '';
+        }
+        return `<span class="latest-badge">${escapeHtml(text)}</span>`;
+    };
+
+    const renderLatestItem = (item) => {
+        const title = escapeHtml(item.title || 'Titolo');
+        const year = item.year ? ` (${escapeHtml(item.year)})` : '';
+        const serverLabel = item.server_name
+            ? `${item.server_icon ? item.server_icon + ' ' : ''}${item.server_name}`
+            : '';
+        const runtime = formatRuntime(item.runtime_minutes);
+        const rating = Number(item.community_rating);
+        const ratingLabel = Number.isFinite(rating) && rating > 0 ? `★ ${rating.toFixed(1)}` : '';
+        const official = item.official_rating || '';
+        const addedAt = formatDate(item.added_at || item.premiere_date);
+        const episodes = item.child_count ? `Episodi ${item.child_count}` : '';
+        const badges = [
+            buildLatestBadge(serverLabel),
+            buildLatestBadge(runtime),
+            buildLatestBadge(episodes),
+            buildLatestBadge(ratingLabel),
+            buildLatestBadge(official),
+            buildLatestBadge(addedAt ? `Aggiunto ${addedAt}` : '')
+        ].filter(Boolean).join('');
+        const genres = Array.isArray(item.genres) && item.genres.length
+            ? escapeHtml(item.genres.join(' · '))
+            : '';
+        const overview = item.overview ? escapeHtml(item.overview) : '';
+        const poster = item.image_url ? `<img src="${item.image_url}" alt="${title}">` : '';
+
+        return `
+            <article class="latest-item">
+                <div class="latest-poster">${poster}</div>
+                <div class="latest-info">
+                    <div class="latest-title">${title}${year}</div>
+                    ${badges ? `<div class="latest-meta">${badges}</div>` : ''}
+                    ${genres ? `<div class="latest-genres">${genres}</div>` : ''}
+                    ${overview ? `<div class="latest-overview">${overview}</div>` : ''}
+                </div>
+            </article>
+        `;
+    };
+
+    const renderLatestList = (items, container, countEl, emptyText) => {
+        if (!container) {
+            return;
+        }
+        const list = Array.isArray(items) ? items : [];
+        if (!list.length) {
+            container.innerHTML = `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
+            if (countEl) {
+                countEl.textContent = formatCount(0);
+            }
+            return;
+        }
+        container.innerHTML = list.map(renderLatestItem).join('');
+        if (countEl) {
+            countEl.textContent = formatCount(list.length);
+        }
+    };
+
+    function loadLatestReleases(force = false) {
+        if (!latestMoviesContainer || !latestSeriesContainer) {
+            return;
+        }
+        if (latestState.loading) {
+            return;
+        }
+        if (latestState.loaded && !force) {
+            return;
+        }
+        latestState.loading = true;
+        latestMoviesContainer.innerHTML = '<div class="empty-state">Caricamento...</div>';
+        latestSeriesContainer.innerHTML = '<div class="empty-state">Caricamento...</div>';
+
+        csrfFetch('/api/emby/latest?limit=12')
+            .then(res => res.json())
+            .then(data => {
+                if (!data || data.success === false) {
+                    const message = data && data.message ? data.message : 'Errore caricamento';
+                    renderLatestList([], latestMoviesContainer, latestMoviesCount, message);
+                    renderLatestList([], latestSeriesContainer, latestSeriesCount, message);
+                    return;
+                }
+                renderLatestList(data.movies, latestMoviesContainer, latestMoviesCount, 'Nessun film trovato');
+                renderLatestList(data.series, latestSeriesContainer, latestSeriesCount, 'Nessuna serie trovata');
+                if (Array.isArray(data.errors) && data.errors.length) {
+                    console.warn('Emby latest errors:', data.errors);
+                }
+                latestState.loaded = true;
+            })
+            .catch(err => {
+                console.error('Error loading latest releases:', err);
+                renderLatestList([], latestMoviesContainer, latestMoviesCount, 'Errore caricamento');
+                renderLatestList([], latestSeriesContainer, latestSeriesCount, 'Errore caricamento');
+            })
+            .finally(() => {
+                latestState.loading = false;
+            });
+    }
+
+    if (latestRefreshBtn) {
+        latestRefreshBtn.addEventListener('click', () => loadLatestReleases(true));
     }
 
     const navItems = document.querySelectorAll('.server-nav-item');

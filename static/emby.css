@@ -492,6 +492,92 @@
         .tab-panel.active {
             display: block;
         }
+        .latest-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 1rem;
+            flex-wrap: wrap;
+            margin-bottom: 1rem;
+        }
+        .latest-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
+        }
+        .latest-column {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+        .latest-column-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 0.5rem;
+        }
+        .latest-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+        .latest-item {
+            display: grid;
+            grid-template-columns: 90px 1fr;
+            gap: 0.75rem;
+            padding: 0.75rem;
+            border-radius: 12px;
+            border: 1px solid #e2e8f0;
+            background: #f8fafc;
+        }
+        .latest-poster {
+            width: 90px;
+            height: 135px;
+            border-radius: 10px;
+            overflow: hidden;
+            background: #e2e8f0;
+        }
+        .latest-poster img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+        .latest-info {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+        }
+        .latest-title {
+            font-weight: 700;
+        }
+        .latest-meta {
+            font-size: 0.85rem;
+            color: #6b7280;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.4rem;
+        }
+        .latest-badge {
+            background: #e2e8f0;
+            color: #334155;
+            padding: 0.15rem 0.45rem;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .latest-genres {
+            font-size: 0.8rem;
+            color: #64748b;
+        }
+        .latest-overview {
+            font-size: 0.85rem;
+            color: #475569;
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
         .stream-header {
             display: flex;
             justify-content: space-between;
@@ -956,4 +1042,3 @@
             min-width: 3rem;
             text-align: right;
         }
-
