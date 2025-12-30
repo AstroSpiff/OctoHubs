@@ -1,76 +1,92 @@
+[Italiano](README_ita.md) | [English](README.md)
+
+Docs: [Docker Deploy](docs/DOCKER_DEPLOY.md) | [Deployment](docs/DEPLOYMENT.md) | [Configuration](docs/CONFIGURATION.md) | [Features](docs/FEATURES.md) | [Webhook Setup](docs/WEBHOOK_SETUP.md) | [JustWatch README](docs/JUSTWATCH_README.md) | [JustWatch Setup](docs/JUSTWATCH_SETUP.md) | [JustWatch Technical](docs/JUSTWATCH_TECHNICAL.md)
+
 # OctoHub
 
 [![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 
-OctoHub e una web app Flask per orchestrare server Emby e servizi collegati (Jellyseerr, Prowlarr, Jackett, qBittorrent, Trakt). Offre dashboard, scansioni librerie, automazioni, webhook realtime e gestione utenti a ruoli.
+OctoHub is a Flask web app to orchestrate Emby servers and related services (Jellyseerr, Prowlarr, Jackett, qBittorrent, Trakt). It provides a dashboard, library scans, automation, realtime webhooks, and role-based user management.
 
-## Funzionalita principali
-- Dashboard con stato scansioni, risultati e metriche principali.
-- Gestione multi-server Emby con azioni rapide.
-- Automazioni per scansioni e refresh programmati.
-- Webhook Emby per aggiornamenti in tempo reale.
-- Gestione utenti con ruoli (admin, user, viewer).
-- Integrazioni opzionali con Jellyseerr, Prowlarr, Jackett, qBittorrent, Trakt.
+## Key features
+- Dashboard with scan status, results, and main metrics.
+- Multi-server Emby management with quick actions.
+- Automated scans and scheduled refresh tasks.
+- RSS and JSON import tools with archive view.
+- STRM Extract and STRM Guard workflows for Emby.
+- Emby webhooks for realtime updates.
+- User management with roles (admin, user, viewer).
+- Optional integrations with Jellyseerr, Prowlarr, Jackett, qBittorrent, Trakt.
 
-## Requisiti
+## Requirements
 - Docker + Docker Compose
-- Certificati SSL per HTTPS (o adatta `nginx.conf`)
+- (Optional) SSL certificates if you enable Nginx (by uncommenting the `nginx` block in the compose)
 
-## File e dati persistenti
-- `.env`: variabili di runtime e sicurezza.
-- `config.json`: configurazione applicativa e integrazioni (gestibile anche via UI).
-- `last_results.json`: cache ultimi risultati.
-- `data/`: database utenti SQLite (`auth.db`).
-- `logs/`: log applicativi.
+## Persistent data layout
+- `/mnt/shared/config/octohub`: `config.json` and Nginx certs (if proxy is enabled).
+- `/mnt/shared/applications/octohub`: `auth.db`, `last_results.json`, app logs, `nginx/logs`, Postgres data.
+- Update the `/mnt/shared/...` paths in `docker-compose.yml` if your storage differs.
 
-## Avvio rapido (Docker)
-1. Copia il file env:
-   - `cp .env.example .env`
-2. Crea le cartelle:
-   - `mkdir -p data logs nginx/ssl nginx/logs`
-3. Metti i certificati SSL in:
-   - `nginx/ssl/fullchain.pem`
-   - `nginx/ssl/privkey.pem`
-4. Avvia:
+## Portainer quick install (copy/paste)
+1. Create a new stack and paste the content of `docker-compose.yml`.
+2. Update the `/mnt/shared/...` paths to your real storage.
+3. Set `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`.
+4. (Optional) If you do not want PostgreSQL, comment out the `postgres` service.
+5. (Optional) For HTTPS, uncomment the `nginx` block and place certs in `/mnt/shared/config/octohub/nginx/ssl`.
+6. Deploy the stack and open `http://IP:5000`.
+
+## Quick start (Docker)
+1. Start:
    - `docker compose up -d --build`
-5. Apri:
-   - `https://tuo-dominio` (o `https://IP`)
+2. Open:
+   - `http://IP:5000`
+`config.json` and `last_results.json` are created automatically under `/mnt/shared/...` as defined in the compose.
+If you do not use PostgreSQL, you can comment out the `postgres` service in `docker-compose.yml`.
 
-## Configurazione .env (minimo)
-Esempio essenziale:
+## HTTPS with Nginx (optional)
+1. Put certificates in `/mnt/shared/config/octohub/nginx/ssl`.
+2. Ensure `nginx.conf` is available (from the repo or mounted in the stack).
+3. Uncomment the `nginx` block in `docker-compose.yml`.
+4. Start:
+   - `docker compose up -d --build`
+
+## Main environment variables (optional)
+You can set them in Portainer or in the Docker environment. If not set, OctoHub generates `FLASK_SECRET_KEY` automatically.
+Essential example:
 ```env
-FLASK_SECRET_KEY=una-chiave-lunga-e-casuale
+FLASK_SECRET_KEY=a-long-random-key
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=PasswordForte
+ADMIN_PASSWORD=StrongPassword
 ADMIN_EMAIL=admin@example.com
 
-# Sicurezza webhook (opzionale ma consigliata)
-# WEBHOOK_SECRET=segreto-webhook
+# Webhook security (optional but recommended)
+# WEBHOOK_SECRET=webhook-secret
 # WEBHOOK_IP_WHITELIST=1.2.3.4,5.6.7.8
 
-# Sessioni e CSRF (opzionale)
+# Sessions and CSRF (optional)
 # SESSION_TIMEOUT_MINUTES=60
 # CSRF_TIME_LIMIT_SECONDS=3600
 # SESSION_COOKIE_SECURE=true
 
-# Fallback polling stream quando i webhook non ci sono
+# Fallback polling stream when webhooks are not available
 # STREAMS_REFRESH_SECONDS=15
 ```
 
-Genera una chiave sicura:
+Generate a secure key:
 ```bash
 python3 -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-## Configurazione `config.json` (minimo)
-`config.json` puo essere compilato a mano o salvato dalla UI. Un minimo valido e:
+## `config.json` (minimal)
+`config.json` can be edited manually or saved from the UI. In Docker it lives at `/mnt/shared/config/octohub/config.json`.
+Minimal example:
 ```json
 {
   "EMBY": {
     "SERVERS": [
       {
         "id": "server-1",
-        "name": "Emby Casa",
+        "name": "Home Emby",
         "url": "http://emby:8096",
         "api_key": "API_KEY_EMBY",
         "enabled": true,
@@ -81,40 +97,39 @@ python3 -c "import secrets; print(secrets.token_hex(32))"
 }
 ```
 
-Se vuoi usare integrazioni e automazioni:
+If you want integrations and automation:
 - `JELLYSEERR_URL`, `JELLYSEERR_API_KEY`
 - `PROWLARR_URL`, `PROWLARR_API_KEY`
 - `JACKETT_URL`, `JACKETT_API_KEY`
 - `QBITTORRENT_URL`, `QBITTORRENT_USERNAME`, `QBITTORRENT_PASSWORD`
-- `TRAKT` (client e token)
+- `TRAKT` (client and token)
 - `AUTO_TASKS` (scan/refresh)
-- `DATABASE` (storage su PostgreSQL per configurazioni e risultati)
+- `DATABASE` (PostgreSQL storage for config and results)
 
-Nota: `config.json` contiene segreti. Non pubblicarlo se contiene credenziali reali.
+Note: `config.json` contains secrets. Do not publish it if it has real credentials.
 
-## Primo accesso
-Admin di default da `.env`:
+## First access
+Default admin from `.env`:
 - `ADMIN_USERNAME` / `ADMIN_PASSWORD` / `ADMIN_EMAIL`
 
-## Gestione utenti
-- Lista utenti:
+## User management
+- List users:
   - `docker compose exec app python manage_users.py list`
-- Crea utente:
-  - `docker compose exec app python manage_users.py create --username mario --password "PasswordForte" --role user`
-- Imposta ruolo:
+- Create user:
+  - `docker compose exec app python manage_users.py create --username mario --password "StrongPassword" --role user`
+- Set role:
   - `docker compose exec app python manage_users.py set-role --username mario --role viewer`
 
 ## Webhook (Emby)
-- URL: `https://tuo-dominio/webhook/emby`
-- Header opzionale: `X-Webhook-Secret` (con `WEBHOOK_SECRET`)
-- IP whitelist opzionale: `WEBHOOK_IP_WHITELIST=1.2.3.4,5.6.7.8`
+- URL: `https://your-domain/webhook/emby`
+- Optional header: `X-Webhook-Secret` (with `WEBHOOK_SECRET`)
+- Optional IP whitelist: `WEBHOOK_IP_WHITELIST=1.2.3.4,5.6.7.8`
 
-## Documentazione avanzata
-- [DEPLOYMENT.md](DEPLOYMENT.md): guida completa per produzione, sicurezza e operativita.
-- [DOCKER_DEPLOY.md](DOCKER_DEPLOY.md): setup Docker passo-passo.
-- [WEBHOOK_SETUP.md](WEBHOOK_SETUP.md): configurazione dettagliata webhook Emby.
+## Docs
+- `docs/DOCKER_DEPLOY.md`, `docs/DEPLOYMENT.md`, `docs/CONFIGURATION.md`, `docs/FEATURES.md`
+- `docs/WEBHOOK_SETUP.md`, `docs/JUSTWATCH_README.md`, `docs/JUSTWATCH_SETUP.md`, `docs/JUSTWATCH_TECHNICAL.md`
 
-## Aggiornamenti rapidi
+## Quick updates
 ```bash
 git pull
 docker compose up -d --build

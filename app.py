@@ -18,6 +18,7 @@ from typing import Dict, Any, cast
 
 from storage import DatabaseStorage, StorageError
 from config import (
+    CONFIG_FILE,
     _merge_database_settings,
     _merge_trakt_settings,
     _merge_justwatch_settings,
@@ -108,8 +109,6 @@ except ImportError:
     sys.exit(1)
 
 # --- COSTANTI ---
-CONFIG_FILE = "config.json"
-RESULTS_FILE = "last_results.json"
 
 # Shared CSRF protection
 csrf = CSRFProtect()

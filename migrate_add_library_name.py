@@ -5,6 +5,7 @@ Migration script to add library_name column to emby_probe_queue and emby_probe_h
 
 import sys
 import json
+import os
 from storage import DatabaseStorage
 from sqlalchemy import text
 
@@ -12,11 +13,12 @@ def main():
     print("=== Database Migration: Add library_name column ===\n")
 
     # Load config manually
+    config_path = os.environ.get("OCTOHUB_CONFIG_FILE", "config.json")
     try:
-        with open('config.json', 'r') as f:
+        with open(config_path, 'r') as f:
             config = json.load(f)
     except Exception as e:
-        print(f"ERROR: Failed to load config.json: {e}")
+        print(f"ERROR: Failed to load {config_path}: {e}")
         return 1
 
     db_config = config.get("DATABASE", {})

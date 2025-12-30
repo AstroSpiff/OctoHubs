@@ -18,8 +18,8 @@ from utils import (
 )
 
 # --- COSTANTI ---
-CONFIG_FILE = "config.json"
-RESULTS_FILE = "last_results.json"
+CONFIG_FILE = os.environ.get("OCTOHUB_CONFIG_FILE", "config.json")
+RESULTS_FILE = os.environ.get("OCTOHUB_RESULTS_FILE", "last_results.json")
 MAX_PRIMARY_QUERY_VARIANTS = 80
 
 DEFAULT_SORT_MODE = "seeders_desc"

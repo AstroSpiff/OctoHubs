@@ -44,6 +44,8 @@ ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     FLASK_SECRET_KEY="" \
+    OCTOHUB_CONFIG_FILE="/app/data/config.json" \
+    OCTOHUB_RESULTS_FILE="/app/data/last_results.json" \
     AUTH_DATABASE_URL="sqlite:////app/data/auth.db" \
     ADMIN_USERNAME="admin" \
     ADMIN_PASSWORD="admin" \
@@ -51,12 +53,13 @@ ENV PATH="/opt/venv/bin:$PATH" \
     WEBHOOK_SECRET="" \
     WEBHOOK_IP_WHITELIST="" \
     SESSION_TIMEOUT_MINUTES="60" \
-    CSRF_TIME_LIMIT_SECONDS="3600" \
-    SESSION_COOKIE_SECURE="true"
+    CSRF_TIME_LIMIT_SECONDS="3600"
 
 # Create directories for data persistence
 RUN mkdir -p /app/data /app/logs && \
     chown -R octohub:octohub /app/data /app/logs
+
+RUN chmod +x /app/docker-entrypoint.sh
 
 # Switch to non-root user
 USER octohub
@@ -70,4 +73,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 
 # Run with Waitress WSGI server
 # Increased threads to 16 to handle SSE + API requests concurrently
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["python", "-m", "waitress", "--host=0.0.0.0", "--port=5000", "--threads=16", "--channel-timeout=300", "wsgi:application"]

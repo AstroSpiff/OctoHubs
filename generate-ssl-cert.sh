@@ -3,7 +3,8 @@
 
 set -e
 
-CERT_DIR="nginx/ssl"
+BASE_DIR="${OCTOHUB_CONFIG_DIR:-/mnt/shared/config/octohub}"
+CERT_DIR="${BASE_DIR%/}/nginx/ssl"
 DAYS_VALID=365
 
 echo "🔐 Generating self-signed SSL certificate for OctoHub..."
@@ -40,7 +41,7 @@ echo "  - $CERT_DIR/privkey.pem (private key)"
 echo ""
 echo "⚠️  NOTE: This is a self-signed certificate."
 echo "   Browsers will show a security warning."
-echo "   For production, use Let's Encrypt (see DEPLOYMENT.md)"
+echo "   For production, use Let's Encrypt (see docs/DEPLOYMENT.md)"
 echo ""
 echo "Next steps:"
 echo "  1. docker-compose up -d"
