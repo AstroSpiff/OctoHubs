@@ -492,6 +492,31 @@
         .tab-panel.active {
             display: block;
         }
+        .server-tabs {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        .server-tab {
+            border: 1px solid #d1d9e6;
+            background: #f8fafc;
+            color: #1f2937;
+            padding: 0.45rem 0.9rem;
+            border-radius: 999px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .server-tab:hover {
+            background: #eef2f7;
+        }
+        .server-tab.active {
+            background: #1f618d;
+            color: #fff;
+            border-color: #154360;
+        }
+        .latest-server-tabs {
+            margin-bottom: 1.25rem;
+        }
         .latest-header {
             display: flex;
             justify-content: space-between;

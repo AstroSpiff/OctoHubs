@@ -256,6 +256,16 @@
                         </div>
                         <button class="btn secondary" type="button" data-latest-refresh title="Aggiorna l'elenco delle ultime pubblicazioni">Aggiorna</button>
                     </div>
+                    {% if emby_servers %}
+                        <div class="server-tabs latest-server-tabs" data-latest-server-tabs>
+                            <button class="server-tab active" type="button" data-latest-server="all">Tutti</button>
+                            {% for server in emby_servers %}
+                                <button class="server-tab" type="button" data-latest-server="{{ server.id }}">
+                                    {{ server.name or server.url }}
+                                </button>
+                            {% endfor %}
+                        </div>
+                    {% endif %}
                     <div class="latest-grid">
                         <section class="latest-column">
                             <div class="latest-column-header">

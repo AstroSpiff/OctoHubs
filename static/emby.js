@@ -166,13 +166,18 @@
 
     const latestState = {
         loaded: false,
-        loading: false
+        loading: false,
+        currentServerId: 'all',
+        movies: [],
+        series: []
     };
     const latestMoviesContainer = document.querySelector('[data-latest-movies]');
     const latestSeriesContainer = document.querySelector('[data-latest-series]');
     const latestMoviesCount = document.querySelector('[data-latest-movies-count]');
     const latestSeriesCount = document.querySelector('[data-latest-series-count]');
     const latestRefreshBtn = document.querySelector('[data-latest-refresh]');
+    const latestServerTabs = document.querySelectorAll('[data-latest-server]');
+    const latestServerTabsContainer = document.querySelector('[data-latest-server-tabs]');
 
     const escapeHtml = (value) => {
         return String(value || '')
@@ -276,6 +281,20 @@
         }
     };
 
+    const filterLatestByServer = (items, serverId) => {
+        if (!serverId || serverId === 'all') {
+            return items;
+        }
+        return (items || []).filter(item => item && item.server_id === serverId);
+    };
+
+    const renderLatestView = () => {
+        const movies = filterLatestByServer(latestState.movies, latestState.currentServerId);
+        const series = filterLatestByServer(latestState.series, latestState.currentServerId);
+        renderLatestList(movies, latestMoviesContainer, latestMoviesCount, 'Nessun film trovato');
+        renderLatestList(series, latestSeriesContainer, latestSeriesCount, 'Nessuna serie trovata');
+    };
+
     function loadLatestReleases(force = false) {
         if (!latestMoviesContainer || !latestSeriesContainer) {
             return;
@@ -299,8 +318,9 @@
                     renderLatestList([], latestSeriesContainer, latestSeriesCount, message);
                     return;
                 }
-                renderLatestList(data.movies, latestMoviesContainer, latestMoviesCount, 'Nessun film trovato');
-                renderLatestList(data.series, latestSeriesContainer, latestSeriesCount, 'Nessuna serie trovata');
+                latestState.movies = Array.isArray(data.movies) ? data.movies : [];
+                latestState.series = Array.isArray(data.series) ? data.series : [];
+                renderLatestView();
                 if (Array.isArray(data.errors) && data.errors.length) {
                     console.warn('Emby latest errors:', data.errors);
                 }
@@ -318,6 +338,21 @@
 
     if (latestRefreshBtn) {
         latestRefreshBtn.addEventListener('click', () => loadLatestReleases(true));
+    }
+
+    if (latestServerTabsContainer && latestServerTabs.length) {
+        latestServerTabs.forEach(tab => {
+            tab.addEventListener('click', () => {
+                latestServerTabs.forEach(btn => btn.classList.remove('active'));
+                tab.classList.add('active');
+                latestState.currentServerId = tab.dataset.latestServer || 'all';
+                if (!latestState.loaded) {
+                    loadLatestReleases(true);
+                } else {
+                    renderLatestView();
+                }
+            });
+        });
     }
 
     const navItems = document.querySelectorAll('.server-nav-item');
