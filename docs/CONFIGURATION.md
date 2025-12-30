@@ -11,6 +11,11 @@ This document describes the `config.json` structure and the main options used by
 - Created automatically on first start if missing.
 - When `DATABASE.ENABLED=true`, OctoHub stores app settings in PostgreSQL and merges them with `config.json`.
 
+## Editing workflow
+- Prefer the UI for settings that are available there.
+- If you edit `config.json` by hand, validate JSON and restart the app container.
+- When the DB is enabled, treat `config.json` as the baseline and keep DB values consistent.
+
 ## Connection fields
 Use these to enable integrations:
 - `JELLYSEERR_URL`, `JELLYSEERR_API_KEY`

@@ -6,6 +6,14 @@ Documenti: [README](../README_ita.md) | [Docker Deploy](DOCKER_DEPLOY_ita.md) | 
 
 Questo documento copre gli strumenti legati a Emby in OctoHub.
 
+## Setup manuale
+- Aggiungi i server Emby in `config.json` con API key admin.
+- Se vuoi automatizzare STRM Extract, imposta `strm_task_id` per il server.
+
+Come trovare `strm_task_id`:
+- Chiama `GET /ScheduledTasks` sul server Emby con l'API key.
+- Cerca il task STRM Extract e copia il valore `Id`.
+
 ## Dashboard Emby
 Dalla dashboard Emby puoi:
 - vedere stato server e sessioni attive
@@ -31,6 +39,9 @@ La pagina STRM Probe consente di ispezionare e analizzare gli STRM:
 - vedere sorgente e metadati
 - ispezionare coda e history (se DB abilitato)
 - verificare lo stato dei processi STRM
+
+Passi manuali:
+- Abilita `DATABASE.ENABLED=true` se vuoi la history nella vista probe.
 
 ## Troubleshooting
 - Task STRM non parte: verifica `strm_task_id` e API key Emby.

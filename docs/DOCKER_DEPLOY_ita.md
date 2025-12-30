@@ -37,7 +37,10 @@ Se il tuo storage e diverso, modifica i path `/mnt/shared/...` in `docker-compos
 3. Imposta `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`.
 4. Opzionale: commenta il servizio `postgres` se non ti serve.
 5. Opzionale: decommenta il blocco `nginx` per HTTPS.
-6. Deploy e apri `http://IP:5000`.
+6. Fai deploy una volta per generare `config.json`.
+7. Modifica `/mnt/shared/config/octohub/config.json` con il tuo server Emby e le integrazioni.
+8. Riavvia il container `app` (o ridisponi la stack).
+9. Apri `http://IP:5000`.
 
 ## Avvio rapido (CLI)
 ```bash
@@ -47,6 +50,7 @@ docker compose up -d --build
 Apri: `http://IP:5000`
 
 `config.json` e `last_results.json` vengono creati automaticamente nei path host definiti nel compose.
+Dopo il primo avvio, modifica `config.json` e riavvia il container `app`.
 
 ## Variabili d'ambiente (opzionali)
 Puoi impostarle in Portainer o nella shell:

@@ -11,6 +11,11 @@ Questo documento descrive la struttura di `config.json` e le principali opzioni 
 - Creato automaticamente al primo avvio se mancante.
 - Quando `DATABASE.ENABLED=true`, OctoHub salva le impostazioni nel DB e le unisce a `config.json`.
 
+## Workflow modifica
+- Usa la UI quando disponibile per le impostazioni.
+- Se modifichi `config.json` a mano, valida il JSON e riavvia il container app.
+- Con DB abilitato, considera `config.json` come base e mantieni i valori in DB coerenti.
+
 ## Campi di connessione
 Usali per abilitare le integrazioni:
 - `JELLYSEERR_URL`, `JELLYSEERR_API_KEY`
