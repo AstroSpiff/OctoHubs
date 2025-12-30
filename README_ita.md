@@ -1,6 +1,6 @@
 [Italiano](README_ita.md) | [English](README.md)
 
-Documenti: [Docker Deploy](docs/DOCKER_DEPLOY_ita.md) | [Deployment](docs/DEPLOYMENT_ita.md) | [Configurazione](docs/CONFIGURATION_ita.md) | [Funzionalita](docs/FEATURES_ita.md) | [Webhook Setup](docs/WEBHOOK_SETUP_ita.md) | [JustWatch README](docs/JUSTWATCH_README_ita.md) | [JustWatch Setup](docs/JUSTWATCH_SETUP_ita.md) | [JustWatch Technical](docs/JUSTWATCH_TECHNICAL_ita.md)
+Documenti: [Docker Deploy](docs/DOCKER_DEPLOY_ita.md) | [Deployment](docs/DEPLOYMENT_ita.md) | [Configurazione](docs/CONFIGURATION_ita.md) | [Funzionalita](docs/FEATURES_ita.md) | [Integrazioni](docs/INTEGRATIONS_ita.md) | [Strumenti Emby](docs/EMBY_TOOLS_ita.md)
 
 # OctoHub
 
@@ -127,7 +127,7 @@ Admin di default da `.env`:
 
 ## Documentazione
 - `docs/DOCKER_DEPLOY_ita.md`, `docs/DEPLOYMENT_ita.md`, `docs/CONFIGURATION_ita.md`, `docs/FEATURES_ita.md`
-- `docs/WEBHOOK_SETUP_ita.md`, `docs/JUSTWATCH_README_ita.md`, `docs/JUSTWATCH_SETUP_ita.md`, `docs/JUSTWATCH_TECHNICAL_ita.md`
+- `docs/INTEGRATIONS_ita.md`, `docs/EMBY_TOOLS_ita.md`
 
 ## Aggiornamenti rapidi
 ```bash

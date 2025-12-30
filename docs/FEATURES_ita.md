@@ -1,6 +1,6 @@
 [Italiano](FEATURES_ita.md) | [English](FEATURES.md)
 
-Documenti: [README](../README_ita.md) | [Docker Deploy](DOCKER_DEPLOY_ita.md) | [Deployment](DEPLOYMENT_ita.md) | [Configurazione](CONFIGURATION_ita.md) | [Funzionalita](FEATURES_ita.md) | [Webhook Setup](WEBHOOK_SETUP_ita.md) | [JustWatch README](JUSTWATCH_README_ita.md) | [JustWatch Setup](JUSTWATCH_SETUP_ita.md) | [JustWatch Technical](JUSTWATCH_TECHNICAL_ita.md)
+Documenti: [README](../README_ita.md) | [Docker Deploy](DOCKER_DEPLOY_ita.md) | [Deployment](DEPLOYMENT_ita.md) | [Configurazione](CONFIGURATION_ita.md) | [Funzionalita](FEATURES_ita.md) | [Integrazioni](INTEGRATIONS_ita.md) | [Strumenti Emby](EMBY_TOOLS_ita.md)
 
 # Funzionalita e Workflow
 
@@ -41,10 +41,8 @@ Nota: RSS import richiede `DATABASE.ENABLED=true`.
 - STRM Guard: avvio STRM Extract solo senza stream attivi.
 - STRM Probe: analisi e monitoraggio STRM dalla pagina Emby Probe.
 
-## Integrazione JustWatch
-- Controllo opzionale disponibilita streaming episodio.
-- Cache DB con ricontrollo ogni 24h se non disponibile.
-- Vedi `JUSTWATCH_README_ita.md`.
+## Integrazioni
+- Servizi esterni (Jellyseerr, Prowlarr, Jackett, qBittorrent, Trakt, TMDB, JustWatch) in `INTEGRATIONS_ita.md`.
 
 ## Utenti e ruoli
 - Ruoli: `admin`, `user`, `viewer`.
@@ -55,9 +53,7 @@ Nota: RSS import richiede `DATABASE.ENABLED=true`.
 - Login e azioni di scrittura salvati nella tabella `audit_logs`.
 
 ## Webhook
-- Endpoint Emby su `/webhook/emby`.
-- Header segreto e IP whitelist opzionali.
-- Vedi `WEBHOOK_SETUP_ita.md`.
+- Dettagli webhook Emby in `INTEGRATIONS_ita.md`.
 
 ## Storage
 - Utenti: SQLite di default (`/mnt/shared/applications/octohub/auth.db`).
