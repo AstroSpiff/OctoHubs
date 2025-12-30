@@ -1240,7 +1240,7 @@
 
             // Render each library
             for (const [libraryId, content] of Object.entries(grouped)) {
-                const libraryKey = `library:${libraryId || content.name}`;
+                const libraryKey = `queue|library:${libraryId || content.name}`;
                 const libraryDomId = stableDomId('lib', libraryKey);
                 const libraryExpanded = expandedLibraries.has(libraryKey);
                 const seriesItems = Object.values(content.series).reduce((sum, entry) => sum + entry.items.length, 0);
@@ -1499,7 +1499,7 @@
             let html = '';
 
             for (const [libraryName, entries] of Object.entries(grouped)) {
-                const libraryKey = `library:${libraryName}`;
+                const libraryKey = `history|library:${libraryName}`;
                 const libraryDomId = stableDomId('lib', libraryKey);
                 const libraryExpanded = expandedLibraries.has(libraryKey);
                 html += `<div class="library-group">`;
@@ -1575,7 +1575,7 @@
             let html = '';
 
             for (const [libraryName, entries] of Object.entries(grouped)) {
-                const libraryKey = `library:${libraryName}`;
+                const libraryKey = `blacklist|library:${libraryName}`;
                 const libraryDomId = stableDomId('lib', libraryKey);
                 const libraryExpanded = expandedLibraries.has(libraryKey);
                 html += `<div class="library-group">`;
@@ -1642,7 +1642,7 @@
             let html = '';
 
             for (const [libraryName, entries] of Object.entries(grouped)) {
-                const libraryKey = `library:${libraryName}`;
+                const libraryKey = `incomplete|library:${libraryName}`;
                 const libraryDomId = stableDomId('lib', libraryKey);
                 const libraryExpanded = expandedLibraries.has(libraryKey);
                 html += `<div class="library-group">`;
