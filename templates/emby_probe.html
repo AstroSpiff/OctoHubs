@@ -264,23 +264,23 @@
         /* Tabs */
         .tabs {
             display: flex;
+            flex-wrap: wrap;
             gap: 0.5rem;
-            margin-bottom: 1.5rem;
-            border-bottom: 2px solid #e2e8f0;
+            border-bottom: 1px solid #dfe6e9;
+            margin-bottom: 1rem;
         }
         .tab-btn {
-            padding: 0.75rem 1.5rem;
-            background: none;
             border: none;
+            background: #e3e7ed;
+            color: #2c3e50;
+            padding: 0.6rem 1rem;
+            border-radius: 6px 6px 0 0;
             cursor: pointer;
+            font-size: 0.95rem;
             font-weight: 600;
-            color: #64748b;
-            border-bottom: 2px solid transparent;
-            margin-bottom: -2px;
         }
         .tab-btn.active {
-            color: #1e293b;
-            border-bottom-color: #2874a6;
+            background: #ffffff;
         }
         .tab-panel {
             display: none;
@@ -452,6 +452,55 @@
         .chevron.expanded {
             transform: rotate(90deg);
         }
+        .probe-mode-tabs {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            margin-bottom: 0.75rem;
+        }
+        .probe-tab-btn {
+            border: 1px solid #d1d9e6;
+            background: #f8fafc;
+            color: #1f2937;
+            padding: 0.35rem 0.75rem;
+            border-radius: 999px;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+        .probe-tab-btn.active {
+            background: #1f618d;
+            color: #fff;
+            border-color: #154360;
+        }
+        .probe-tab-panel {
+            display: none;
+        }
+        .probe-tab-panel.active {
+            display: block;
+        }
+        .probe-main-panel {
+            display: none;
+        }
+        .probe-main-panel.active {
+            display: block;
+        }
+        .probe-mode-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.75rem;
+            gap: 0.5rem;
+        }
+        .mode-label {
+            font-weight: 600;
+        }
+        .recent-config {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+            margin-bottom: 0.75rem;
+        }
 
         /* Button Sizes */
         .btn.small {
@@ -498,26 +547,52 @@
             {% endif %}
         {% endwith %}
 
+        <div class="tab-shell">
+            <div class="tabs probe-main-tabs">
+                <button class="tab-btn probe-main-btn active" type="button" data-probe-main="recent">Ultimi aggiunti</button>
+                <button class="tab-btn probe-main-btn" type="button" data-probe-main="libraries">Librerie</button>
+            </div>
+
+            <div class="probe-main-panel" data-probe-main-panel="libraries">
         <!-- Server Selector -->
         {% if emby_servers and emby_servers|length > 0 %}
-        <div class="server-selector">
+        <div class="server-selector" data-server-scope="libraries">
             <h3>Seleziona Server Emby</h3>
-            <div class="server-tabs" data-server-tabs>
+            <div class="server-tabs">
                 {% for server in emby_servers %}
                 <button class="server-tab {% if loop.first %}active{% endif %}"
                         data-server-id="{{ server.id }}"
+                        data-server-scope="libraries"
+                        data-server-name="{{ server.name or server.url }}"
                         title="Seleziona questo server"
-                        onclick="switchServer('{{ server.id }}')">
+                        onclick="switchServer('libraries', '{{ server.id }}')">
                     {{ server.name or server.url }}
                 </button>
                 {% endfor %}
             </div>
         </div>
         {% endif %}
-
         <!-- Worker Controls -->
         <div class="card">
-            <h2>Pannello di Controllo</h2>
+            <h2>Librerie - Pannello di Controllo</h2>
+
+            <!-- Combo Workflow Buttons (Librerie) -->
+            <div style="margin-bottom: 1.5rem; padding-bottom: 1.5rem; border-bottom: 2px solid #e5e7eb;">
+                <h3 style="margin-bottom: 1rem; font-size: 1.1rem; color: #374151;">Discovery + Processing Automatico</h3>
+                <div class="worker-controls" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem;">
+                    <button class="btn primary" data-libraries-combo-start-smart title="Esegue Discovery e poi Processing in modalità Smart (pausa durante streaming)">
+                        🚀 Discovery + Processing [smart]
+                    </button>
+                    <button class="btn secondary" data-libraries-combo-start-forced title="Esegue Discovery e poi Processing in modalità Forced (senza pause)">
+                        ⚡ Discovery + Processing [forced]
+                    </button>
+                    <button class="btn ghost" data-libraries-combo-stop disabled title="Ferma il combo workflow in corso">
+                        ⏹️ Stop
+                    </button>
+                </div>
+                <div class="worker-log" data-libraries-combo-log style="margin-top: 0.75rem; display: none;"></div>
+            </div>
+
             <div class="worker-grid">
                 <!-- Discovery Worker -->
                 <div class="worker-card">
@@ -526,7 +601,6 @@
                         <span class="status-badge idle" data-discovery-badge>Inattivo</span>
                     </h3>
 
-                    <!-- Library Selection for Discovery -->
                     <div class="library-selection">
                         <h4 style="display: flex; justify-content: space-between; align-items: center;">
                             <span>Seleziona Librerie da Scansionare</span>
@@ -603,8 +677,8 @@
                     </div>
                     <div class="worker-log" data-processing-log>In attesa...</div>
                     <div class="worker-controls">
-                        <button class="btn primary" data-processing-start-smart title="Avvia processing con pausa automatica durante lo streaming">Avvia (Smart)</button>
-                        <button class="btn secondary" data-processing-start-forced title="Avvia processing forzato senza pausa">Avvia (Forced)</button>
+                        <button class="btn primary" data-processing-start-smart title="Avvia processing con pausa automatica durante lo streaming">Avvia [smart]</button>
+                        <button class="btn secondary" data-processing-start-forced title="Avvia processing forzato senza pausa">Avvia [forced]</button>
                         <button class="btn ghost" data-processing-stop disabled title="Ferma il processing in corso">Stop</button>
                     </div>
                 </div>
@@ -612,21 +686,21 @@
         </div>
 
         <!-- Tabs -->
-        <div class="tabs">
-            <button class="tab-btn active" data-tab="queue" title="Coda in attesa di processing">Da Processare</button>
-            <button class="tab-btn" data-tab="history" title="Storico delle operazioni">Storico</button>
-            <button class="tab-btn" data-tab="blacklist" title="Elementi con errori ripetuti">
+        <div class="tabs" data-tab-group="libraries">
+            <button class="tab-btn active" data-tab="queue" data-tab-group="libraries" title="Coda in attesa di processing">Da Processare</button>
+            <button class="tab-btn" data-tab="history" data-tab-group="libraries" title="Storico delle operazioni">Storico</button>
+            <button class="tab-btn" data-tab="blacklist" data-tab-group="libraries" title="Elementi con errori ripetuti">
                 Errori
                 <span class="tab-badge" data-blacklist-count style="background: #dc2626; color: white; padding: 0.15rem 0.5rem; border-radius: 10px; font-size: 0.75rem; margin-left: 0.5rem;">0</span>
             </button>
-            <button class="tab-btn" data-tab="incomplete" title="Elementi incompleti (tentativi ripetuti)">
+            <button class="tab-btn" data-tab="incomplete" data-tab-group="libraries" title="Elementi incompleti (tentativi ripetuti)">
                 Incompleti
                 <span class="tab-badge" data-incomplete-count style="background: #f59e0b; color: white; padding: 0.15rem 0.5rem; border-radius: 10px; font-size: 0.75rem; margin-left: 0.5rem;">0</span>
             </button>
         </div>
 
         <!-- Queue Tab -->
-        <div class="tab-panel active" data-panel="queue">
+        <div class="tab-panel active" data-panel="queue" data-tab-group="libraries">
             <div class="queue-section">
                 <div class="section-header">
                     <h3>Coda di Lavorazione</h3>
@@ -642,7 +716,7 @@
         </div>
 
         <!-- History Tab -->
-        <div class="tab-panel" data-panel="history">
+        <div class="tab-panel" data-panel="history" data-tab-group="libraries">
             <div class="history-section">
                 <div class="section-header">
                     <h3>Storico Operazioni</h3>
@@ -665,7 +739,7 @@
         </div>
 
         <!-- Blacklist Tab -->
-        <div class="tab-panel" data-panel="blacklist">
+        <div class="tab-panel" data-panel="blacklist" data-tab-group="libraries">
             <div class="history-section">
                 <div class="section-header">
                     <h3>Errori (3+ Tentativi Falliti)</h3>
@@ -685,7 +759,7 @@
         </div>
 
         <!-- Incomplete Tab -->
-        <div class="tab-panel" data-panel="incomplete">
+        <div class="tab-panel" data-panel="incomplete" data-tab-group="libraries">
             <div class="history-section">
                 <div class="section-header">
                     <h3>Incompleti (3+ Tentativi Incompleti)</h3>
@@ -703,7 +777,323 @@
                 </div>
             </div>
         </div>
-    </div>
+            </div>
+
+            <div class="probe-main-panel active" data-probe-main-panel="recent">
+        <!-- Server Selector -->
+        {% if emby_servers and emby_servers|length > 0 %}
+        <div class="server-selector" data-server-scope="recent">
+            <h3>Seleziona Server Emby</h3>
+            <div class="server-tabs">
+                <button class="server-tab active"
+                        data-server-id="all"
+                        data-server-scope="recent"
+                        data-server-name="Tutti"
+                        title="Seleziona tutti i server"
+                        onclick="switchServer('recent', 'all')">
+                    Tutti
+                </button>
+                {% for server in emby_servers %}
+                <button class="server-tab"
+                        data-server-id="{{ server.id }}"
+                        data-server-scope="recent"
+                        data-server-name="{{ server.name or server.url }}"
+                        title="Seleziona questo server"
+                        onclick="switchServer('recent', '{{ server.id }}')">
+                    {{ server.name or server.url }}
+                </button>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+        <div class="card">
+            <h2>Ultimi aggiunti - Pannello di Controllo</h2>
+
+            <!-- Combo Workflow Buttons (Ultimi aggiunti) -->
+            <div style="margin-bottom: 1.5rem; padding-bottom: 1.5rem; border-bottom: 2px solid #e5e7eb;">
+                <h3 style="margin-bottom: 1rem; font-size: 1.1rem; color: #374151;">Discovery + Processing Automatico</h3>
+                <div class="worker-controls" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem;">
+                    <button class="btn primary" data-recent-combo-start-smart title="Esegue Discovery e poi Processing in modalità Smart (pausa durante streaming)">
+                        🚀 Discovery + Processing [smart]
+                    </button>
+                    <button class="btn secondary" data-recent-combo-start-forced title="Esegue Discovery e poi Processing in modalità Forced (senza pause)">
+                        ⚡ Discovery + Processing [forced]
+                    </button>
+                    <button class="btn ghost" data-recent-combo-stop disabled title="Ferma il combo workflow in corso">
+                        ⏹️ Stop
+                    </button>
+                </div>
+                <div class="worker-log" data-recent-combo-log style="margin-top: 0.75rem; display: none;"></div>
+            </div>
+
+            <div class="worker-grid">
+                <div class="worker-card">
+                    <h3>
+                        Discovery ultimi aggiunti
+                        <span class="status-badge idle" data-recent-badge>Inattivo</span>
+                    </h3>
+                    <p class="tagline">
+                        Algoritmo ibrido intelligente con scan incrementali. Vedi tab <strong>⚙️ Configurazione</strong> per personalizzare i parametri.
+                    </p>
+                    <div class="worker-stats">
+                        <div class="stat-box">
+                            <div class="stat-label">Trovati</div>
+                            <div class="stat-value" data-recent-found>0</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">Scansionati</div>
+                            <div class="stat-value" data-recent-scanned>0</div>
+                        </div>
+                    </div>
+                    <div class="worker-log" data-recent-log>In attesa...</div>
+                    <div class="worker-controls">
+                        <button class="btn primary" data-recent-start title="Avvia la discovery sugli ultimi aggiunti">Avvia Ricerca</button>
+                        <button class="btn secondary" data-recent-start-all title="Avvia la discovery su tutti i server">Avvia su tutti</button>
+                        <button class="btn ghost" data-recent-stop disabled title="Ferma la discovery ultimi aggiunti">Stop</button>
+                        <button class="btn ghost" data-recent-stop-all disabled title="Ferma la discovery ultimi aggiunti su tutti i server">Stop tutti</button>
+                    </div>
+                </div>
+                <div class="worker-card">
+                    <h3>
+                        Processing ultimi aggiunti
+                        <span class="status-badge idle" data-recent-processing-badge>Inattivo</span>
+                    </h3>
+                    <div class="worker-stats">
+                        <div class="stat-box">
+                            <div class="stat-label">Processati</div>
+                            <div class="stat-value status-success" data-recent-processing-processed>0</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">Incompleti</div>
+                            <div class="stat-value" style="color: #f59e0b;" data-recent-processing-incomplete>0</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">Errori</div>
+                            <div class="stat-value status-error" data-recent-processing-errors>0</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-label">In Coda</div>
+                            <div class="stat-value" data-recent-processing-total>0</div>
+                        </div>
+                    </div>
+                    <div class="progress-container">
+                        <div class="progress-track">
+                            <div class="progress-bar" data-recent-processing-progress style="width: 0%">0%</div>
+                        </div>
+                    </div>
+                    <div class="worker-log" data-recent-processing-log>In attesa...</div>
+                    <div class="worker-controls">
+                        <button class="btn primary" data-recent-processing-start-smart title="Avvia processing con pausa automatica durante lo streaming">Avvia [smart]</button>
+                        <button class="btn secondary" data-recent-processing-start-forced title="Avvia processing forzato senza pausa">Avvia [forced]</button>
+                        <button class="btn ghost" data-recent-processing-stop disabled title="Ferma il processing in corso">Stop</button>
+                        <button class="btn ghost" data-recent-processing-stop-all disabled title="Ferma il processing su tutti i server">Stop tutti</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tabs" data-tab-group="recent">
+            <button class="tab-btn active" data-tab="queue" data-tab-group="recent" title="Coda in attesa di processing">Da Processare</button>
+            <button class="tab-btn" data-tab="history" data-tab-group="recent" title="Storico delle operazioni">Storico</button>
+            <button class="tab-btn" data-tab="blacklist" data-tab-group="recent" title="Elementi con errori ripetuti">
+                Errori
+                <span class="tab-badge" data-recent-blacklist-count style="background: #dc2626; color: white; padding: 0.15rem 0.5rem; border-radius: 10px; font-size: 0.75rem; margin-left: 0.5rem;">0</span>
+            </button>
+            <button class="tab-btn" data-tab="incomplete" data-tab-group="recent" title="Elementi incompleti (tentativi ripetuti)">
+                Incompleti
+                <span class="tab-badge" data-recent-incomplete-count style="background: #f59e0b; color: white; padding: 0.15rem 0.5rem; border-radius: 10px; font-size: 0.75rem; margin-left: 0.5rem;">0</span>
+            </button>
+            <button class="tab-btn" data-tab="config" data-tab-group="recent" title="Parametri configurabili della discovery">⚙️ Configurazione</button>
+        </div>
+
+        <div class="tab-panel active" data-panel="queue" data-tab-group="recent">
+            <div class="queue-section">
+                <div class="section-header">
+                    <h3>Coda di Lavorazione</h3>
+                    <div class="section-actions">
+                        <button class="btn secondary" data-recent-queue-refresh title="Ricarica la coda dal server">Aggiorna Lista</button>
+                        <button class="btn ghost" data-recent-queue-clear title="Rimuove tutti gli elementi dalla coda">Svuota Coda</button>
+                    </div>
+                </div>
+                <div data-recent-queue-container>
+                    <div class="empty-state">Caricamento...</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tab-panel" data-panel="history" data-tab-group="recent">
+            <div class="history-section">
+                <div class="section-header">
+                    <h3>Storico Operazioni</h3>
+                    <div class="section-actions">
+                        <button class="btn primary" data-recent-history-retry-all title="Riprova tutti gli elementi con errori o incompleti">Riprova Tutti (Errori/Incompleti)</button>
+                        <button class="btn secondary" data-recent-history-refresh title="Ricarica lo storico dal server">Aggiorna Storico</button>
+                        <button class="btn ghost" data-recent-history-clear title="Svuota lo storico delle operazioni">Svuota Storico</button>
+                    </div>
+                </div>
+                <div class="filter-controls">
+                    <label>
+                        <input type="checkbox" data-recent-history-filter-errors>
+                        Mostra solo errori/incompleti
+                    </label>
+                </div>
+                <div data-recent-history-container>
+                    <div class="empty-state">Caricamento...</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tab-panel" data-panel="blacklist" data-tab-group="recent">
+            <div class="history-section">
+                <div class="section-header">
+                    <h3>Errori (3+ Tentativi Falliti)</h3>
+                    <div class="section-actions">
+                        <button class="btn secondary" data-recent-blacklist-refresh title="Ricarica gli errori dal server">Aggiorna Lista</button>
+                        <button class="btn ghost" data-recent-blacklist-clear title="Svuota la lista errori">Svuota Errori</button>
+                    </div>
+                </div>
+                <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
+                    <strong>ℹ️ Nota:</strong> Questi file hanno fallito 3+ volte e non verranno più processati automaticamente.
+                    Puoi rimuoverli dalla lista per ritentare, o verranno automaticamente rimossi se il file viene riprodotto con successo su Emby.
+                </div>
+                <div data-recent-blacklist-container>
+                    <div class="empty-state">Caricamento...</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tab-panel" data-panel="incomplete" data-tab-group="recent">
+            <div class="history-section">
+                <div class="section-header">
+                    <h3>Incompleti (3+ Tentativi Incompleti)</h3>
+                    <div class="section-actions">
+                        <button class="btn secondary" data-recent-incomplete-refresh title="Ricarica gli incompleti dal server">Aggiorna Lista</button>
+                        <button class="btn ghost" data-recent-incomplete-clear title="Svuota la lista incompleti">Svuota Incompleti</button>
+                    </div>
+                </div>
+                <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
+                    <strong>ℹ️ Nota:</strong> Questi file hanno completato la probe ma non hanno scritto i mediainfo dopo 3+ tentativi.
+                    Puoi rimuoverli dalla lista per ritentare, o verranno automaticamente rimossi se la probe completa con successo.
+                </div>
+                <div data-recent-incomplete-container>
+                    <div class="empty-state">Caricamento...</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tab-panel" data-panel="config" data-tab-group="recent">
+            <div class="history-section">
+                <div class="section-header">
+                    <h3>Configurazione Discovery Algorithm</h3>
+                    <div class="section-actions">
+                        <button class="btn primary" data-recent-config-save title="Salva le modifiche">Salva Configurazione</button>
+                        <button class="btn secondary" data-recent-config-reset title="Ripristina i valori predefiniti">Ripristina Default</button>
+                    </div>
+                </div>
+
+                <div style="background: #dbeafe; border-left: 4px solid #3b82f6; padding: 1rem; margin-bottom: 1.5rem; border-radius: 4px;">
+                    <strong>ℹ️ Info:</strong> Questi parametri controllano l'algoritmo di discovery ibrido (timestamp tracking + sliding window).
+                    Le modifiche si applicano dal prossimo scan.
+                </div>
+
+                <div style="display: grid; gap: 1.5rem; max-width: 800px;">
+                    <!-- Sliding Window Parameters -->
+                    <div style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1.5rem;">
+                        <h4 style="margin: 0 0 1rem 0; color: #1f2937; font-size: 1.1rem;">Parametri Finestra Scorrevole</h4>
+
+                        <div style="display: grid; gap: 1rem;">
+                            <div>
+                                <label style="display: block; margin-bottom: 0.5rem; font-weight: 500; color: #374151;">
+                                    Dimensione Finestra
+                                    <span style="color: #6b7280; font-weight: 400; font-size: 0.875rem;">(quanti file .strm analizzare per decidere quando fermarsi)</span>
+                                </label>
+                                <input type="number" data-config-window-size value="500" min="100" max="2000" step="100"
+                                    style="width: 100%; padding: 0.5rem; border: 1px solid #d1d5db; border-radius: 4px; font-size: 1rem;">
+                                <small style="color: #6b7280; display: block; margin-top: 0.25rem;">
+                                    <strong>Default: 500</strong> - Più alto = scan più accurato ma più lento | Range: 100-2000
+                                </small>
+                            </div>
+
+                            <div>
+                                <label style="display: block; margin-bottom: 0.5rem; font-weight: 500; color: #374151;">
+                                    Soglia Completamento
+                                    <span style="color: #6b7280; font-weight: 400; font-size: 0.875rem;">(ferma quando questo % della finestra ha già mediainfo)</span>
+                                </label>
+                                <input type="number" data-config-window-threshold value="90" min="50" max="100" step="5"
+                                    style="width: 100%; padding: 0.5rem; border: 1px solid #d1d5db; border-radius: 4px; font-size: 1rem;">
+                                <small style="color: #6b7280; display: block; margin-top: 0.25rem;">
+                                    <strong>Default: 90%</strong> - Es: con 500 file e 90%, si ferma quando 450 hanno mediainfo | Range: 50-100%
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Timestamp Tracking Parameters -->
+                    <div style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1.5rem;">
+                        <h4 style="margin: 0 0 1rem 0; color: #1f2937; font-size: 1.1rem;">Parametri Timestamp Tracking</h4>
+
+                        <div style="display: grid; gap: 1rem;">
+                            <div>
+                                <label style="display: block; margin-bottom: 0.5rem; font-weight: 500; color: #374151;">
+                                    Margine di Sicurezza
+                                    <span style="color: #6b7280; font-weight: 400; font-size: 0.875rem;">(giorni prima dell'ultimo timestamp)</span>
+                                </label>
+                                <input type="number" data-config-safety-margin value="7" min="1" max="30" step="1"
+                                    style="width: 100%; padding: 0.5rem; border: 1px solid #d1d5db; border-radius: 4px; font-size: 1rem;">
+                                <small style="color: #6b7280; display: block; margin-top: 0.25rem;">Default: 7 giorni - Range: 1-30 giorni</small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Stop Conditions -->
+                    <div style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1.5rem;">
+                        <h4 style="margin: 0 0 1rem 0; color: #1f2937; font-size: 1.1rem;">Condizioni di Stop</h4>
+
+                        <div style="display: grid; gap: 1rem;">
+                            <div>
+                                <label style="display: block; margin-bottom: 0.5rem; font-weight: 500; color: #374151;">
+                                    Massimo Giorni
+                                    <span style="color: #6b7280; font-weight: 400; font-size: 0.875rem;">(ferma scan oltre N giorni)</span>
+                                </label>
+                                <input type="number" data-config-max-days value="60" min="7" max="365" step="1"
+                                    style="width: 100%; padding: 0.5rem; border: 1px solid #d1d5db; border-radius: 4px; font-size: 1rem;">
+                                <small style="color: #6b7280; display: block; margin-top: 0.25rem;">Default: 60 giorni - Range: 7-365 giorni</small>
+                            </div>
+
+                            <div>
+                                <label style="display: block; margin-bottom: 0.5rem; font-weight: 500; color: #374151;">
+                                    Massimo Elementi
+                                    <span style="color: #6b7280; font-weight: 400; font-size: 0.875rem;">(ferma scan dopo N elementi controllati)</span>
+                                </label>
+                                <input type="number" data-config-max-items value="2000" min="500" max="10000" step="500"
+                                    style="width: 100%; padding: 0.5rem; border: 1px solid #d1d5db; border-radius: 4px; font-size: 1rem;">
+                                <small style="color: #6b7280; display: block; margin-top: 0.25rem;">Default: 2000 - Range: 500-10000</small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Algorithm Info -->
+                    <div style="background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1.5rem;">
+                        <h4 style="margin: 0 0 1rem 0; color: #1f2937; font-size: 1.1rem;">📖 Come Funziona</h4>
+                        <div style="line-height: 1.8; color: #4b5563;">
+                            <p style="margin: 0 0 1rem 0; font-weight: 500;">
+                                L'algoritmo ibrido combina due strategie per trovare efficientemente i file senza mediainfo:
+                            </p>
+                            <ul style="margin: 0; padding-left: 1.5rem;">
+                                <li><strong>Primo scan:</strong> cerca file fino a <em>Massimo Giorni</em> indietro nel tempo</li>
+                                <li><strong>Scan successivi:</strong> cerca solo nuovi file dall'ultimo scan (con <em>Margine di Sicurezza</em> per evitare gap)</li>
+                                <li><strong>Finestra scorrevole:</strong> analizza gli ultimi <em>Dimensione Finestra</em> file .strm e si ferma quando la <em>Soglia Completamento</em> ha già mediainfo</li>
+                                <li><strong>Stop condizioni:</strong> si ferma anche se supera <em>Massimo Giorni</em> o <em>Massimo Elementi</em> controllati</li>
+                                <li><strong>Processing intelligente:</strong> i file vengono processati dal più vecchio al più recente, così se interrompi il processing non perdi i file recenti (più importanti)</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+            </div>
+        </div>
+</div>
 
     {% if emby_servers and emby_servers|length > 0 %}
     <script>
@@ -714,11 +1104,46 @@
     <script>
         let eventSource = null;
         let currentServerId = null;
-        let historyData = [];
-        let blacklistData = [];
-        let incompleteData = [];
+        let recentServerId = null;
         let availableLibraries = {};
-        let libraryTotals = {};
+        const scopeState = {
+            libraries: {
+                history: [],
+                blacklist: [],
+                incomplete: [],
+                libraryTotals: {}
+            },
+            recent: {
+                history: [],
+                blacklist: [],
+                incomplete: [],
+                libraryTotals: {}
+            }
+        };
+        const scopeLoadVersion = {
+            libraries: 0,
+            recent: 0
+        };
+        const scopeConfig = {
+            libraries: {
+                queueContainer: '[data-queue-container]',
+                historyContainer: '[data-history-container]',
+                blacklistContainer: '[data-blacklist-container]',
+                incompleteContainer: '[data-incomplete-container]',
+                blacklistBadge: '[data-blacklist-count]',
+                incompleteBadge: '[data-incomplete-count]',
+                historyFilter: '[data-history-filter-errors]'
+            },
+            recent: {
+                queueContainer: '[data-recent-queue-container]',
+                historyContainer: '[data-recent-history-container]',
+                blacklistContainer: '[data-recent-blacklist-container]',
+                incompleteContainer: '[data-recent-incomplete-container]',
+                blacklistBadge: '[data-recent-blacklist-count]',
+                incompleteBadge: '[data-recent-incomplete-count]',
+                historyFilter: '[data-recent-history-filter-errors]'
+            }
+        };
         const getCsrfToken = () => {
             const el = document.querySelector('meta[name="csrf-token"]');
             return el ? el.getAttribute('content') : '';
@@ -769,7 +1194,9 @@
         // Track previous state to detect changes
         let previousState = {
             discovery: { found: 0, running: false },
-            processing: { processed: 0, incomplete: 0, errors: 0, total: 0, running: false }
+            processing: { processed: 0, incomplete: 0, errors: 0, total: 0, running: false },
+            recent: { found: 0, running: false },
+            recentProcessing: { processed: 0, incomplete: 0, errors: 0, total: 0, running: false }
         };
 
         // Initialize
@@ -777,42 +1204,49 @@
             ensureCsrfInForms();
             if (typeof INITIAL_SERVER_ID !== 'undefined') {
                 currentServerId = INITIAL_SERVER_ID;
+                const recentAllTab = document.querySelector('.server-tab[data-server-scope="recent"][data-server-id="all"]');
+                recentServerId = recentAllTab ? 'all' : INITIAL_SERVER_ID;
                 loadLibraries();
                 initSSE();
-                loadQueue();
-                loadHistory();
-                loadBlacklist();
-                loadIncomplete();
+                loadScopeData('libraries');
+                loadScopeData('recent');
                 initControllers();
                 initTabs();
+                initProbeMainTabs();
+                updateRecentSelectionUI();
             }
         });
 
         // Switch Server
-        function switchServer(serverId) {
-            currentServerId = serverId;
+        function switchServer(scope, serverId) {
+            const normalizedScope = normalizeScope(scope);
+            if (normalizedScope === 'recent') {
+                recentServerId = serverId;
+            } else {
+                currentServerId = serverId;
+            }
 
-            // Update active tab
-            document.querySelectorAll('.server-tab').forEach(tab => {
+            // Update active tab for the scope
+            document.querySelectorAll(`.server-tab[data-server-scope="${normalizedScope}"]`).forEach(tab => {
                 tab.classList.toggle('active', tab.dataset.serverId === serverId);
             });
 
-            // Reload all data
-            loadLibraries();
-            loadQueue();
-            loadHistory();
-            loadBlacklist();
-            loadIncomplete();
+            scopeLoadVersion[normalizedScope] += 1;
 
-            // Restart SSE if needed
-            if (eventSource) {
-                eventSource.close();
-                initSSE();
+            if (normalizedScope === 'libraries') {
+                loadLibraries();
+                loadScopeData('libraries');
+            } else {
+                loadScopeData('recent');
+                updateRecentSelectionUI();
             }
         }
 
         // Load Libraries
         function loadLibraries() {
+            if (!currentServerId) {
+                return;
+            }
             csrfFetch('/emby/libraries')
                 .then(res => res.json())
                 .then(data => {
@@ -959,6 +1393,98 @@
             return Array.from(checkboxes).map(cb => cb.value);
         }
 
+        function normalizeScope(scope) {
+            return scope === 'recent' ? 'recent' : 'libraries';
+        }
+
+        function getScopeState(scope) {
+            return scopeState[normalizeScope(scope)];
+        }
+
+        function getScopeConfig(scope) {
+            return scopeConfig[normalizeScope(scope)];
+        }
+
+        function getServerIds(scope = 'libraries') {
+            const normalizedScope = normalizeScope(scope);
+            return Array.from(document.querySelectorAll(`.server-tab[data-server-scope="${normalizedScope}"]`))
+                .map(btn => btn.dataset.serverId)
+                .filter(id => id && id !== 'all');
+        }
+
+        function getServerLabel(serverId, scope = 'libraries') {
+            const normalizedScope = normalizeScope(scope);
+            const tab = document.querySelector(`.server-tab[data-server-scope="${normalizedScope}"][data-server-id="${serverId}"]`);
+            if (!tab) {
+                return serverId;
+            }
+            return (tab.dataset.serverName || tab.textContent || serverId).trim();
+        }
+
+        function getScopeServerId(scope) {
+            const normalizedScope = normalizeScope(scope);
+            if (normalizedScope === 'recent') {
+                return recentServerId || currentServerId;
+            }
+            return currentServerId;
+        }
+
+        function resolveActionServerId(scope, itemServerId) {
+            if (itemServerId) {
+                return itemServerId;
+            }
+            const serverId = getScopeServerId(scope);
+            if (!serverId || serverId === 'all') {
+                return null;
+            }
+            return serverId;
+        }
+
+        function updateRecentSelectionUI() {
+            const isAll = getScopeServerId('recent') === 'all';
+            const startSingle = document.querySelector('[data-recent-start]');
+            const startAll = document.querySelector('[data-recent-start-all]');
+            const stopSingle = document.querySelector('[data-recent-stop]');
+            const stopAll = document.querySelector('[data-recent-stop-all]');
+            const procStartSmart = document.querySelector('[data-recent-processing-start-smart]');
+            const procStartForced = document.querySelector('[data-recent-processing-start-forced]');
+            const procStop = document.querySelector('[data-recent-processing-stop]');
+            const procStopAll = document.querySelector('[data-recent-processing-stop-all]');
+
+            if (startSingle) {
+                startSingle.textContent = 'Avvia Ricerca';
+                startSingle.style.display = isAll ? 'none' : '';
+            }
+            if (startAll) {
+                startAll.style.display = isAll ? '' : 'none';
+            }
+            if (stopSingle) {
+                stopSingle.style.display = isAll ? 'none' : '';
+            }
+            if (stopAll) {
+                stopAll.style.display = isAll ? '' : 'none';
+            }
+            if (procStartSmart) {
+                procStartSmart.textContent = isAll ? 'Avvia tutti [smart]' : 'Avvia [smart]';
+            }
+            if (procStartForced) {
+                procStartForced.textContent = isAll ? 'Avvia tutti [forced]' : 'Avvia [forced]';
+            }
+            if (procStop) {
+                procStop.style.display = isAll ? 'none' : '';
+            }
+            if (procStopAll) {
+                procStopAll.style.display = isAll ? '' : 'none';
+            }
+        }
+
+        function loadScopeData(scope) {
+            loadQueue(scope);
+            loadHistory(scope);
+            loadBlacklist(scope);
+            loadIncomplete(scope);
+        }
+
         // SSE for real-time status updates
         function initSSE() {
             if (eventSource) {
@@ -971,10 +1497,26 @@
                 try {
                     const data = JSON.parse(event.data);
                     if (data.success && data.servers) {
-                        const serverData = data.servers[currentServerId];
-                        if (serverData && serverData.probe_status) {
-                            updateDiscoveryStatus(serverData.probe_status.discovery || {});
-                            updateProcessingStatus(serverData.probe_status.processing || {});
+                        const servers = data.servers;
+                        const libraryServer = servers[currentServerId];
+                        if (libraryServer && libraryServer.probe_status) {
+                            updateDiscoveryStatus(libraryServer.probe_status.discovery || {});
+                            updateProcessingStatus(libraryServer.probe_status.processing || {});
+                            updateComboStatus(libraryServer.probe_status.combo_libraries || {}, 'libraries');
+                        }
+
+                        const recentSelection = getScopeServerId('recent');
+                        if (recentSelection === 'all') {
+                            updateRecentStatus(aggregateProbeStatus(servers, 'recent_discovery', ['found', 'total_scanned']));
+                            updateRecentProcessingStatus(aggregateProbeStatus(servers, 'recent_processing', ['processed', 'incomplete', 'errors', 'total']));
+                            updateComboStatus(aggregateProbeStatus(servers, 'combo_recent', []), 'recent');
+                        } else {
+                            const recentServer = servers[recentSelection];
+                            if (recentServer && recentServer.probe_status) {
+                                updateRecentStatus(recentServer.probe_status.recent_discovery || {});
+                                updateRecentProcessingStatus(recentServer.probe_status.recent_processing || {});
+                                updateComboStatus(recentServer.probe_status.combo_recent || {}, 'recent');
+                            }
                         }
                     }
                 } catch (e) {
@@ -986,6 +1528,44 @@
                 console.error('SSE connection error');
                 setTimeout(initSSE, 5000);
             };
+        }
+
+        function aggregateProbeStatus(servers, key, fields) {
+            const summary = { running: false, last_log: 'In attesa...' };
+            let runningCount = 0;
+            let latestLog = null;
+            fields.forEach(field => {
+                summary[field] = 0;
+            });
+            Object.values(servers).forEach(server => {
+                const status = server && server.probe_status ? server.probe_status[key] : null;
+                if (!status) {
+                    return;
+                }
+                fields.forEach(field => {
+                    // For 'total', use max instead of sum (to avoid duplicating global total)
+                    if (field === 'total') {
+                        summary[field] = Math.max(summary[field], status[field] || 0);
+                    } else {
+                        summary[field] += status[field] || 0;
+                    }
+                });
+                if (status.running) {
+                    runningCount += 1;
+                    // Use last_log from running server
+                    if (status.last_log) {
+                        latestLog = status.last_log;
+                    }
+                }
+            });
+            summary.running = runningCount > 0;
+            // Use actual log from running server if available
+            if (latestLog) {
+                summary.last_log = latestLog;
+            } else if (runningCount > 0) {
+                summary.last_log = `${runningCount} server in esecuzione`;
+            }
+            return summary;
         }
 
         function updateDiscoveryStatus(status) {
@@ -1016,12 +1596,76 @@
             const currentFound = status.found || 0;
             if (currentFound !== previousState.discovery.found) {
                 // New items found - reload queue
-                loadQueue();
+                loadQueue('libraries');
                 previousState.discovery.found = currentFound;
             }
 
             // Update running state
             previousState.discovery.running = status.running;
+        }
+
+        function updateRecentStatus(status) {
+            const badge = document.querySelector('[data-recent-badge]');
+            const found = document.querySelector('[data-recent-found]');
+            const scanned = document.querySelector('[data-recent-scanned]');
+            const log = document.querySelector('[data-recent-log]');
+            const startBtn = document.querySelector('[data-recent-start]');
+            const startAllBtn = document.querySelector('[data-recent-start-all]');
+            const stopBtn = document.querySelector('[data-recent-stop]');
+            const stopAllBtn = document.querySelector('[data-recent-stop-all]');
+
+            if (status.running) {
+                if (badge) {
+                    badge.textContent = 'In Esecuzione';
+                    badge.className = 'status-badge running';
+                }
+                if (startBtn) {
+                    startBtn.disabled = true;
+                }
+                if (startAllBtn) {
+                    startAllBtn.disabled = true;
+                }
+                if (stopBtn) {
+                    stopBtn.disabled = false;
+                }
+                if (stopAllBtn) {
+                    stopAllBtn.disabled = false;
+                }
+            } else {
+                if (badge) {
+                    badge.textContent = 'Inattivo';
+                    badge.className = 'status-badge idle';
+                }
+                if (startBtn) {
+                    startBtn.disabled = false;
+                }
+                if (startAllBtn) {
+                    startAllBtn.disabled = false;
+                }
+                if (stopBtn) {
+                    stopBtn.disabled = true;
+                }
+                if (stopAllBtn) {
+                    stopAllBtn.disabled = true;
+                }
+            }
+
+            if (found) {
+                found.textContent = status.found || 0;
+            }
+            if (scanned) {
+                scanned.textContent = status.total_scanned || 0;
+            }
+            if (log) {
+                log.textContent = status.last_log || 'In attesa...';
+            }
+
+            const currentFound = status.found || 0;
+            if (currentFound !== previousState.recent.found) {
+                loadQueue('recent');
+                previousState.recent.found = currentFound;
+            }
+            previousState.recent.running = status.running;
         }
 
         function updateProcessingStatus(status) {
@@ -1050,9 +1694,19 @@
                 stopBtn.disabled = true;
             }
 
-            processed.textContent = status.processed || 0;
-            incomplete.textContent = status.incomplete || 0;
-            errors.textContent = status.errors || 0;
+            // Format counters with retry info
+            const processedCount = status.processed || 0;
+            const processedRetry = status.processed_retry || 0;
+            processed.textContent = processedRetry > 0 ? `${processedCount} + ${processedRetry}` : processedCount;
+
+            const incompleteCount = status.incomplete || 0;
+            const incompleteRetry = status.incomplete_retry || 0;
+            incomplete.textContent = incompleteRetry > 0 ? `${incompleteCount} + ${incompleteRetry}` : incompleteCount;
+
+            const errorsCount = status.errors || 0;
+            const errorsRetry = status.errors_retry || 0;
+            errors.textContent = errorsRetry > 0 ? `${errorsCount} + ${errorsRetry}` : errorsCount;
+
             total.textContent = status.total || 0;
             log.textContent = status.last_log || 'In attesa...';
 
@@ -1077,10 +1731,10 @@
 
             if (hasChanges) {
                 // Something changed - reload queue, history, and blacklist
-                loadQueue();
-                loadHistory();
-                loadBlacklist();
-                loadIncomplete();
+                loadQueue('libraries');
+                loadHistory('libraries');
+                loadBlacklist('libraries');
+                loadIncomplete('libraries');
 
                 // Update previous state
                 previousState.processing.processed = currentProcessed;
@@ -1093,10 +1747,174 @@
             previousState.processing.running = status.running;
         }
 
+        function updateRecentProcessingStatus(status) {
+            const badge = document.querySelector('[data-recent-processing-badge]');
+            const processed = document.querySelector('[data-recent-processing-processed]');
+            const incomplete = document.querySelector('[data-recent-processing-incomplete]');
+            const errors = document.querySelector('[data-recent-processing-errors]');
+            const total = document.querySelector('[data-recent-processing-total]');
+            const progress = document.querySelector('[data-recent-processing-progress]');
+            const log = document.querySelector('[data-recent-processing-log]');
+            const startSmartBtn = document.querySelector('[data-recent-processing-start-smart]');
+            const startForcedBtn = document.querySelector('[data-recent-processing-start-forced]');
+            const stopBtn = document.querySelector('[data-recent-processing-stop]');
+            const stopAllBtn = document.querySelector('[data-recent-processing-stop-all]');
+
+            if (status.running) {
+                if (badge) {
+                    badge.textContent = 'In Esecuzione';
+                    badge.className = 'status-badge running';
+                }
+                if (startSmartBtn) {
+                    startSmartBtn.disabled = true;
+                }
+                if (startForcedBtn) {
+                    startForcedBtn.disabled = true;
+                }
+                if (stopBtn) {
+                    stopBtn.disabled = false;
+                }
+                if (stopAllBtn) {
+                    stopAllBtn.disabled = false;
+                }
+            } else {
+                if (badge) {
+                    badge.textContent = 'Inattivo';
+                    badge.className = 'status-badge idle';
+                }
+                if (startSmartBtn) {
+                    startSmartBtn.disabled = false;
+                }
+                if (startForcedBtn) {
+                    startForcedBtn.disabled = false;
+                }
+                if (stopBtn) {
+                    stopBtn.disabled = true;
+                }
+                if (stopAllBtn) {
+                    stopAllBtn.disabled = true;
+                }
+            }
+
+            if (processed) {
+                const processedCount = status.processed || 0;
+                const processedRetry = status.processed_retry || 0;
+                processed.textContent = processedRetry > 0 ? `${processedCount} + ${processedRetry}` : processedCount;
+            }
+            if (incomplete) {
+                const incompleteCount = status.incomplete || 0;
+                const incompleteRetry = status.incomplete_retry || 0;
+                incomplete.textContent = incompleteRetry > 0 ? `${incompleteCount} + ${incompleteRetry}` : incompleteCount;
+            }
+            if (errors) {
+                const errorsCount = status.errors || 0;
+                const errorsRetry = status.errors_retry || 0;
+                errors.textContent = errorsRetry > 0 ? `${errorsCount} + ${errorsRetry}` : errorsCount;
+            }
+            if (total) {
+                total.textContent = status.total || 0;
+            }
+            if (log) {
+                log.textContent = status.last_log || 'In attesa...';
+            }
+
+            const totalItems = status.total || 0;
+            const currentIndex = (status.processed || 0) + (status.incomplete || 0) + (status.errors || 0);
+            const percent = totalItems > 0 ? Math.min(100, (currentIndex / totalItems) * 100) : 0;
+            if (progress) {
+                progress.style.width = percent + '%';
+                progress.textContent = Math.round(percent) + '%';
+            }
+
+            const currentProcessed = status.processed || 0;
+            const currentIncomplete = status.incomplete || 0;
+            const currentErrors = status.errors || 0;
+            const currentTotal = status.total || 0;
+            const hasChanges =
+                currentProcessed !== previousState.recentProcessing.processed ||
+                currentIncomplete !== previousState.recentProcessing.incomplete ||
+                currentErrors !== previousState.recentProcessing.errors ||
+                currentTotal !== previousState.recentProcessing.total;
+
+            if (hasChanges) {
+                loadQueue('recent');
+                loadHistory('recent');
+                loadBlacklist('recent');
+                loadIncomplete('recent');
+
+                previousState.recentProcessing.processed = currentProcessed;
+                previousState.recentProcessing.incomplete = currentIncomplete;
+                previousState.recentProcessing.errors = currentErrors;
+                previousState.recentProcessing.total = currentTotal;
+            }
+
+            previousState.recentProcessing.running = status.running;
+        }
+
+        function updateComboStatus(status, scope) {
+            // For combo workflow, we need to manage button states and show log messages
+            const prefix = scope === 'recent' ? 'recent' : 'libraries';
+            const comboStartSmart = document.querySelector(`[data-${prefix}-combo-start-smart]`);
+            const comboStartForced = document.querySelector(`[data-${prefix}-combo-start-forced]`);
+            const comboStop = document.querySelector(`[data-${prefix}-combo-stop]`);
+            const comboLog = document.querySelector(`[data-${prefix}-combo-log]`);
+
+            // Disable/enable buttons based on combo workflow state
+            const isComboRunning = status.running || false;
+
+            if (comboStartSmart) comboStartSmart.disabled = isComboRunning;
+            if (comboStartForced) comboStartForced.disabled = isComboRunning;
+            if (comboStop) comboStop.disabled = !isComboRunning;
+
+            // Show/hide log and update message
+            if (comboLog) {
+                if (isComboRunning) {
+                    comboLog.style.display = 'block';
+                    comboLog.textContent = status.last_log || 'Combo workflow in corso...';
+                } else {
+                    comboLog.style.display = 'none';
+                }
+            }
+
+            // When combo is running, disable individual discovery/processing buttons
+            if (scope === 'recent') {
+                const recentStart = document.querySelector('[data-recent-start]');
+                const recentStartAll = document.querySelector('[data-recent-start-all]');
+                const recentProcStartSmart = document.querySelector('[data-recent-processing-start-smart]');
+                const recentProcStartForced = document.querySelector('[data-recent-processing-start-forced]');
+
+                if (recentStart) recentStart.disabled = isComboRunning;
+                if (recentStartAll) recentStartAll.disabled = isComboRunning;
+                if (recentProcStartSmart) recentProcStartSmart.disabled = isComboRunning;
+                if (recentProcStartForced) recentProcStartForced.disabled = isComboRunning;
+            } else if (scope === 'libraries') {
+                const discoveryStart = document.querySelector('[data-discovery-start]');
+                const processingStartSmart = document.querySelector('[data-processing-start-smart]');
+                const processingStartForced = document.querySelector('[data-processing-start-forced]');
+
+                if (discoveryStart) discoveryStart.disabled = isComboRunning;
+                if (processingStartSmart) processingStartSmart.disabled = isComboRunning;
+                if (processingStartForced) processingStartForced.disabled = isComboRunning;
+            }
+        }
+
         // Controllers
         function initControllers() {
+            const bindClick = (selector, handler) => {
+                const el = document.querySelector(selector);
+                if (el) {
+                    el.addEventListener('click', handler);
+                }
+            };
+            const bindChange = (selector, handler) => {
+                const el = document.querySelector(selector);
+                if (el) {
+                    el.addEventListener('change', handler);
+                }
+            };
+
             // Discovery controls
-            document.querySelector('[data-discovery-start]').addEventListener('click', () => {
+            bindClick('[data-discovery-start]', () => {
                 const selectedLibraries = getSelectedDiscoveryLibraries();
                 const payload = {server_id: currentServerId};
                 if (selectedLibraries.length > 0) {
@@ -1104,12 +1922,40 @@
                 }
                 callAPI('/api/emby/probe/discovery/start', 'POST', payload);
             });
-            document.querySelector('[data-discovery-stop]').addEventListener('click', () => {
+            bindClick('[data-discovery-stop]', () => {
                 callAPI('/api/emby/probe/discovery/stop', 'POST', {server_id: currentServerId});
             });
 
+            // Recent discovery controls
+            bindClick('[data-recent-start]', () => {
+                const serverId = getScopeServerId('recent');
+                if (serverId === 'all') {
+                    callAPI('/api/emby/probe/recent/start-all', 'POST', {});
+                    return;
+                }
+                callAPI('/api/emby/probe/recent/start', 'POST', {
+                    server_id: serverId
+                });
+            });
+            bindClick('[data-recent-start-all]', () => {
+                callAPI('/api/emby/probe/recent/start-all', 'POST', {});
+            });
+            bindClick('[data-recent-stop]', () => {
+                const serverId = getScopeServerId('recent');
+                if (serverId === 'all') {
+                    callAPI('/api/emby/probe/recent/stop-all', 'POST', {});
+                    return;
+                }
+                callAPI('/api/emby/probe/recent/stop', 'POST', {
+                    server_id: serverId
+                });
+            });
+            bindClick('[data-recent-stop-all]', () => {
+                callAPI('/api/emby/probe/recent/stop-all', 'POST', {});
+            });
+
             // Processing controls
-            document.querySelector('[data-processing-start-smart]').addEventListener('click', () => {
+            bindClick('[data-processing-start-smart]', () => {
                 const selectedLibraries = getSelectedProcessingLibraries();
                 const payload = {server_id: currentServerId, mode: 'smart'};
                 if (selectedLibraries.length > 0) {
@@ -1117,7 +1963,7 @@
                 }
                 callAPI('/api/emby/probe/processing/start', 'POST', payload);
             });
-            document.querySelector('[data-processing-start-forced]').addEventListener('click', () => {
+            bindClick('[data-processing-start-forced]', () => {
                 const selectedLibraries = getSelectedProcessingLibraries();
                 const payload = {server_id: currentServerId, mode: 'forced'};
                 if (selectedLibraries.length > 0) {
@@ -1125,39 +1971,197 @@
                 }
                 callAPI('/api/emby/probe/processing/start', 'POST', payload);
             });
-            document.querySelector('[data-processing-stop]').addEventListener('click', () => {
+            bindClick('[data-processing-stop]', () => {
                 callAPI('/api/emby/probe/processing/stop', 'POST', {server_id: currentServerId});
             });
 
+            // Recent processing controls
+            bindClick('[data-recent-processing-start-smart]', () => {
+                const serverId = getScopeServerId('recent');
+                if (serverId === 'all') {
+                    callAPI('/api/emby/probe/recent/processing/start-all', 'POST', {mode: 'smart'});
+                    return;
+                }
+                callAPI('/api/emby/probe/recent/processing/start', 'POST', {
+                    server_id: serverId,
+                    mode: 'smart'
+                });
+            });
+            bindClick('[data-recent-processing-start-forced]', () => {
+                const serverId = getScopeServerId('recent');
+                if (serverId === 'all') {
+                    callAPI('/api/emby/probe/recent/processing/start-all', 'POST', {mode: 'forced'});
+                    return;
+                }
+                callAPI('/api/emby/probe/recent/processing/start', 'POST', {
+                    server_id: serverId,
+                    mode: 'forced'
+                });
+            });
+            bindClick('[data-recent-processing-stop]', () => {
+                const serverId = getScopeServerId('recent');
+                if (serverId === 'all') {
+                    callAPI('/api/emby/probe/recent/processing/stop-all', 'POST', {});
+                    return;
+                }
+                callAPI('/api/emby/probe/recent/processing/stop', 'POST', {server_id: serverId});
+            });
+            bindClick('[data-recent-processing-stop-all]', () => {
+                callAPI('/api/emby/probe/recent/processing/stop-all', 'POST', {});
+            });
+
+            // Combo workflow controls (Recent)
+            bindClick('[data-recent-combo-start-smart]', () => {
+                const serverId = getScopeServerId('recent');
+                if (serverId === 'all') {
+                    callAPI('/api/emby/probe/recent/combo/start-all', 'POST', {mode: 'smart'});
+                    return;
+                }
+                callAPI('/api/emby/probe/recent/combo/start', 'POST', {
+                    server_id: serverId,
+                    mode: 'smart'
+                });
+            });
+            bindClick('[data-recent-combo-start-forced]', () => {
+                const serverId = getScopeServerId('recent');
+                if (serverId === 'all') {
+                    callAPI('/api/emby/probe/recent/combo/start-all', 'POST', {mode: 'forced'});
+                    return;
+                }
+                callAPI('/api/emby/probe/recent/combo/start', 'POST', {
+                    server_id: serverId,
+                    mode: 'forced'
+                });
+            });
+            bindClick('[data-recent-combo-stop]', () => {
+                const serverId = getScopeServerId('recent');
+                if (serverId === 'all') {
+                    callAPI('/api/emby/probe/recent/combo/stop-all', 'POST', {});
+                    return;
+                }
+                callAPI('/api/emby/probe/recent/combo/stop', 'POST', {server_id: serverId});
+            });
+
+            // Combo workflow controls (Libraries)
+            bindClick('[data-libraries-combo-start-smart]', () => {
+                const selectedLibraries = getSelectedProcessingLibraries();
+                const payload = {server_id: currentServerId, mode: 'smart'};
+                if (selectedLibraries.length > 0) {
+                    payload.libraries = selectedLibraries;
+                }
+                callAPI('/api/emby/probe/libraries/combo/start', 'POST', payload);
+            });
+            bindClick('[data-libraries-combo-start-forced]', () => {
+                const selectedLibraries = getSelectedProcessingLibraries();
+                const payload = {server_id: currentServerId, mode: 'forced'};
+                if (selectedLibraries.length > 0) {
+                    payload.libraries = selectedLibraries;
+                }
+                callAPI('/api/emby/probe/libraries/combo/start', 'POST', payload);
+            });
+            bindClick('[data-libraries-combo-stop]', () => {
+                callAPI('/api/emby/probe/libraries/combo/stop', 'POST', {server_id: currentServerId});
+            });
+
             // Queue controls
-            document.querySelector('[data-queue-refresh]').addEventListener('click', loadQueue);
-            document.querySelector('[data-queue-clear]').addEventListener('click', () => {
+            bindClick('[data-queue-refresh]', () => loadQueue('libraries'));
+            bindClick('[data-queue-clear]', () => {
                 if (confirm('Svuotare l\'intera coda?')) {
-                    callAPI('/api/emby/probe/queue', 'DELETE', {server_id: currentServerId}, loadQueue);
+                    callAPI('/api/emby/probe/queue', 'DELETE', {server_id: currentServerId, scope: 'libraries'}, () => {
+                        loadQueue('libraries');
+                    });
+                }
+            });
+            bindClick('[data-recent-queue-refresh]', () => loadQueue('recent'));
+            bindClick('[data-recent-queue-clear]', () => {
+                if (confirm('Svuotare l\'intera coda?')) {
+                    const serverId = getScopeServerId('recent');
+                    if (serverId === 'all') {
+                        callAPIMulti('/api/emby/probe/queue', 'DELETE', {scope: 'recent'}, getServerIds('recent'), () => {
+                            loadQueue('recent');
+                        });
+                        return;
+                    }
+                    callAPI('/api/emby/probe/queue', 'DELETE', {server_id: serverId, scope: 'recent'}, () => {
+                        loadQueue('recent');
+                    });
                 }
             });
 
             // History controls
-            document.querySelector('[data-history-refresh]').addEventListener('click', loadHistory);
-            document.querySelector('[data-history-clear]').addEventListener('click', () => {
+            bindClick('[data-history-refresh]', () => loadHistory('libraries'));
+            bindClick('[data-history-clear]', () => {
                 if (confirm('Svuotare l\'intero storico?')) {
-                    callAPI('/api/emby/probe/history', 'DELETE', {server_id: currentServerId}, loadHistory);
+                    callAPI('/api/emby/probe/history', 'DELETE', {server_id: currentServerId, scope: 'libraries'}, () => {
+                        loadHistory('libraries');
+                    });
                 }
             });
-            document.querySelector('[data-history-retry-all]').addEventListener('click', retryAllErrors);
-            document.querySelector('[data-history-filter-errors]').addEventListener('change', renderHistory);
+            bindClick('[data-history-retry-all]', () => retryAllErrors('libraries'));
+            bindChange('[data-history-filter-errors]', () => renderHistory('libraries'));
+            bindClick('[data-recent-history-refresh]', () => loadHistory('recent'));
+            bindClick('[data-recent-history-clear]', () => {
+                if (confirm('Svuotare l\'intero storico?')) {
+                    const serverId = getScopeServerId('recent');
+                    if (serverId === 'all') {
+                        callAPIMulti('/api/emby/probe/history', 'DELETE', {scope: 'recent'}, getServerIds('recent'), () => {
+                            loadHistory('recent');
+                        });
+                        return;
+                    }
+                    callAPI('/api/emby/probe/history', 'DELETE', {server_id: serverId, scope: 'recent'}, () => {
+                        loadHistory('recent');
+                    });
+                }
+            });
+            bindClick('[data-recent-history-retry-all]', () => retryAllErrors('recent'));
+            bindChange('[data-recent-history-filter-errors]', () => renderHistory('recent'));
 
             // Blacklist controls
-            document.querySelector('[data-blacklist-refresh]').addEventListener('click', loadBlacklist);
-            document.querySelector('[data-blacklist-clear]').addEventListener('click', () => {
+            bindClick('[data-blacklist-refresh]', () => loadBlacklist('libraries'));
+            bindClick('[data-blacklist-clear]', () => {
                 if (confirm('Svuotare la lista errori? Tutti i file verranno rimossi e potranno essere riprocessati.')) {
-                    callAPI('/api/emby/probe/blacklist', 'DELETE', {server_id: currentServerId, type: 'error'}, loadBlacklist);
+                    callAPI('/api/emby/probe/blacklist', 'DELETE', {server_id: currentServerId, type: 'error', scope: 'libraries'}, () => {
+                        loadBlacklist('libraries');
+                    });
                 }
             });
-            document.querySelector('[data-incomplete-refresh]').addEventListener('click', loadIncomplete);
-            document.querySelector('[data-incomplete-clear]').addEventListener('click', () => {
+            bindClick('[data-incomplete-refresh]', () => loadIncomplete('libraries'));
+            bindClick('[data-incomplete-clear]', () => {
                 if (confirm('Svuotare la lista incompleti? Tutti i file verranno rimossi e potranno essere riprocessati.')) {
-                    callAPI('/api/emby/probe/blacklist', 'DELETE', {server_id: currentServerId, type: 'incomplete'}, loadIncomplete);
+                    callAPI('/api/emby/probe/blacklist', 'DELETE', {server_id: currentServerId, type: 'incomplete', scope: 'libraries'}, () => {
+                        loadIncomplete('libraries');
+                    });
+                }
+            });
+            bindClick('[data-recent-blacklist-refresh]', () => loadBlacklist('recent'));
+            bindClick('[data-recent-blacklist-clear]', () => {
+                if (confirm('Svuotare la lista errori? Tutti i file verranno rimossi e potranno essere riprocessati.')) {
+                    const serverId = getScopeServerId('recent');
+                    if (serverId === 'all') {
+                        callAPIMulti('/api/emby/probe/blacklist', 'DELETE', {type: 'error', scope: 'recent'}, getServerIds('recent'), () => {
+                            loadBlacklist('recent');
+                        });
+                        return;
+                    }
+                    callAPI('/api/emby/probe/blacklist', 'DELETE', {server_id: serverId, type: 'error', scope: 'recent'}, () => {
+                        loadBlacklist('recent');
+                    });
+                }
+            });
+            bindClick('[data-recent-incomplete-refresh]', () => loadIncomplete('recent'));
+            bindClick('[data-recent-incomplete-clear]', () => {
+                if (confirm('Svuotare la lista incompleti? Tutti i file verranno rimossi e potranno essere riprocessati.')) {
+                    const serverId = getScopeServerId('recent');
+                    if (serverId === 'all') {
+                        callAPIMulti('/api/emby/probe/blacklist', 'DELETE', {type: 'incomplete', scope: 'recent'}, getServerIds('recent'), () => {
+                            loadIncomplete('recent');
+                        });
+                        return;
+                    }
+                    callAPI('/api/emby/probe/blacklist', 'DELETE', {server_id: serverId, type: 'incomplete', scope: 'recent'}, () => {
+                        loadIncomplete('recent');
+                    });
                 }
             });
         }
@@ -1166,30 +2170,242 @@
         function initTabs() {
             document.querySelectorAll('.tab-btn').forEach(btn => {
                 btn.addEventListener('click', () => {
+                    if (!btn.dataset.tab) {
+                        return;
+                    }
                     const tab = btn.dataset.tab;
-                    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-                    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+                    const group = btn.dataset.tabGroup || btn.closest('[data-tab-group]')?.dataset.tabGroup;
+                    const btnSelector = group ? `.tab-btn[data-tab-group="${group}"]` : '.tab-btn';
+                    const panelSelector = group ? `.tab-panel[data-tab-group="${group}"]` : '.tab-panel';
+                    document.querySelectorAll(btnSelector).forEach(b => b.classList.remove('active'));
+                    document.querySelectorAll(panelSelector).forEach(p => p.classList.remove('active'));
                     btn.classList.add('active');
-                    document.querySelector(`[data-panel="${tab}"]`).classList.add('active');
+                    const targetPanel = group
+                        ? document.querySelector(`.tab-panel[data-tab-group="${group}"][data-panel="${tab}"]`)
+                        : document.querySelector(`.tab-panel[data-panel="${tab}"]`);
+                    if (targetPanel) {
+                        targetPanel.classList.add('active');
+                    }
                 });
             });
         }
 
+        function initProbeMainTabs() {
+            const container = document.querySelector('.probe-main-tabs');
+            let buttons = container ? Array.from(container.querySelectorAll('.probe-main-btn')) : [];
+            let panels = Array.from(document.querySelectorAll('.probe-main-panel'));
+            if (!container || !buttons.length || !panels.length) {
+                return;
+            }
+
+            const refresh = () => {
+                buttons = Array.from(container.querySelectorAll('.probe-main-btn'));
+                panels = Array.from(document.querySelectorAll('.probe-main-panel'));
+            };
+
+            const applyOrder = (order) => {
+                order.forEach(key => {
+                    const btn = container.querySelector(`.probe-main-btn[data-probe-main="${key}"]`);
+                    if (btn) {
+                        container.appendChild(btn);
+                    }
+                });
+                order.forEach(key => {
+                    const panel = document.querySelector(`.probe-main-panel[data-probe-main-panel="${key}"]`);
+                    if (panel && panel.parentElement === container.parentElement) {
+                        container.parentElement.appendChild(panel);
+                    }
+                });
+                refresh();
+            };
+
+            const fetchOrder = async () => {
+                try {
+                    const response = await csrfFetch('/api/ui/tab-order?page=emby-probe');
+                    if (!response.ok) {
+                        return null;
+                    }
+                    const data = await response.json();
+                    if (!data || data.success === false || !Array.isArray(data.order)) {
+                        return null;
+                    }
+                    return data.order
+                        .slice()
+                        .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+                        .map(entry => entry.tab_key);
+                } catch (err) {
+                    return null;
+                }
+            };
+
+            const saveOrder = async () => {
+                const order = Array.from(container.querySelectorAll('.probe-main-btn')).map((btn, index) => ({
+                    tab_key: btn.dataset.probeMain,
+                    position: index
+                }));
+                try {
+                    await csrfFetch('/api/ui/tab-order', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ page: 'emby-probe', order })
+                    });
+                } catch (err) {
+                    // ignore
+                }
+            };
+
+            const setPanel = (panelName, persist = true) => {
+                buttons.forEach(btn => {
+                    btn.classList.toggle('active', btn.dataset.probeMain === panelName);
+                });
+                panels.forEach(panel => {
+                    panel.classList.toggle('active', panel.dataset.probeMainPanel === panelName);
+                });
+                if (persist) {
+                    localStorage.setItem('embyProbeMainTab', panelName);
+                }
+            };
+
+            const getTabAfterElement = (x) => {
+                const draggableElements = [...container.querySelectorAll('.probe-main-btn:not(.dragging)')];
+                return draggableElements.reduce((closest, child) => {
+                    const box = child.getBoundingClientRect();
+                    const offset = x - box.left - box.width / 2;
+                    if (offset < 0 && offset > closest.offset) {
+                        return { offset, element: child };
+                    }
+                    return closest;
+                }, { offset: Number.NEGATIVE_INFINITY, element: null }).element;
+            };
+
+            const setupDragAndDrop = () => {
+                buttons.forEach(btn => {
+                    btn.draggable = true;
+                    btn.addEventListener('dragstart', () => {
+                        btn.classList.add('dragging');
+                    });
+                    btn.addEventListener('dragend', () => {
+                        btn.classList.remove('dragging');
+                    });
+                });
+                container.addEventListener('dragover', (event) => {
+                    event.preventDefault();
+                    const dragging = container.querySelector('.probe-main-btn.dragging');
+                    if (!dragging) {
+                        return;
+                    }
+                    const afterElement = getTabAfterElement(event.clientX);
+                    if (afterElement == null) {
+                        container.appendChild(dragging);
+                    } else {
+                        container.insertBefore(dragging, afterElement);
+                    }
+                });
+                container.addEventListener('drop', () => {
+                    const order = Array.from(container.querySelectorAll('.probe-main-btn')).map(btn => btn.dataset.probeMain);
+                    applyOrder(order);
+                    saveOrder();
+                });
+            };
+
+            (async () => {
+                const defaultOrder = buttons.map(btn => btn.dataset.probeMain);
+                const storedOrder = await fetchOrder();
+                if (storedOrder && storedOrder.length) {
+                    applyOrder(storedOrder);
+                } else if (defaultOrder.length) {
+                    applyOrder(defaultOrder);
+                }
+                const storedTab = localStorage.getItem('embyProbeMainTab');
+                const defaultTab = buttons.find(btn => btn.classList.contains('active'))?.dataset.probeMain || buttons[0].dataset.probeMain;
+                const initialTab = storedTab && buttons.some(btn => btn.dataset.probeMain === storedTab)
+                    ? storedTab
+                    : defaultTab;
+                buttons.forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        setPanel(btn.dataset.probeMain);
+                    });
+                });
+                setPanel(initialTab, false);
+                setupDragAndDrop();
+            })();
+        }
+
         // Load Queue
-        function loadQueue() {
-            csrfFetch(`/api/emby/probe/queue?server_id=${currentServerId}`)
+        function loadQueue(scope = 'libraries') {
+            const normalizedScope = normalizeScope(scope);
+            const loadVersion = scopeLoadVersion[normalizedScope];
+            const serverId = getScopeServerId(normalizedScope);
+            if (!serverId) {
+                return;
+            }
+            if (normalizedScope === 'recent' && serverId === 'all') {
+                loadQueueAll(loadVersion);
+                return;
+            }
+            const params = new URLSearchParams({server_id: serverId});
+            if (normalizedScope !== 'libraries') {
+                params.set('scope', normalizedScope);
+            }
+            csrfFetch(`/api/emby/probe/queue?${params.toString()}`)
                 .then(res => res.json())
                 .then(data => {
+                    if (loadVersion !== scopeLoadVersion[normalizedScope]) {
+                        return;
+                    }
                     if (data.success) {
-                        libraryTotals = data.library_totals || {};
-                        renderQueue(data.queue, libraryTotals);
+                        const state = getScopeState(normalizedScope);
+                        state.libraryTotals = data.library_totals || {};
+                        renderQueue(data.queue, state.libraryTotals, normalizedScope);
                     }
                 })
                 .catch(err => console.error('Error loading queue:', err));
         }
 
-        function renderQueue(items, totals = {}) {
-            const container = document.querySelector('[data-queue-container]');
+        async function loadQueueAll(loadVersion) {
+            const serverIds = getServerIds('recent');
+            if (serverIds.length === 0) {
+                renderQueue([], {}, 'recent');
+                return;
+            }
+            const requests = serverIds.map(serverId => {
+                const params = new URLSearchParams({server_id: serverId, scope: 'recent'});
+                return csrfFetch(`/api/emby/probe/queue?${params.toString()}`)
+                    .then(res => res.json())
+                    .then(data => ({ serverId, data }))
+                    .catch(() => ({ serverId, data: null }));
+            });
+            const results = await Promise.all(requests);
+            const combined = [];
+            results.forEach(result => {
+                if (!result.data || !result.data.success) {
+                    return;
+                }
+                const serverLabel = getServerLabel(result.serverId, 'recent');
+                const items = result.data.queue || [];
+                items.forEach(item => {
+                    combined.push({
+                        ...item,
+                        _server_id: result.serverId,
+                        _server_label: serverLabel
+                    });
+                });
+            });
+            const state = getScopeState('recent');
+            state.libraryTotals = {};
+            if (loadVersion !== scopeLoadVersion.recent) {
+                return;
+            }
+            renderQueue(combined, {}, 'recent');
+        }
+
+        function renderQueue(items, totals = {}, scope = 'libraries') {
+            const normalizedScope = normalizeScope(scope);
+            const config = getScopeConfig(normalizedScope);
+            const container = document.querySelector(config.queueContainer);
+            if (!container) {
+                return;
+            }
             if (!items || items.length === 0) {
                 container.innerHTML = '<div class="empty-state">Nessun file in coda</div>';
                 return;
@@ -1201,38 +2417,43 @@
             const grouped = {};
             const seen = new Set();
             items.forEach(item => {
-                const key = `${item.item_id}:${item.media_source_id || ''}`;
+                const key = `${item._server_id || ''}:${item.item_id}:${item.media_source_id || ''}`;
                 if (seen.has(key)) {
                     return;
                 }
                 seen.add(key);
                 const libraryId = item.library_id || 'unknown';
-                if (!grouped[libraryId]) {
-                    grouped[libraryId] = {
-                        name: item.library_name || 'Libreria Sconosciuta',
+                const serverLabel = item._server_label;
+                const baseLibraryName = item.library_name || 'Libreria Sconosciuta';
+                const libraryGroupId = item._server_id ? `${item._server_id}:${libraryId}` : libraryId;
+                const displayLibraryName = serverLabel ? `${serverLabel} - ${baseLibraryName}` : baseLibraryName;
+                if (!grouped[libraryGroupId]) {
+                    grouped[libraryGroupId] = {
+                        name: displayLibraryName,
                         series: {},
-                        movies: []
+                        movies: [],
+                        rawId: libraryId
                     };
                 }
 
                 if (item.series_name) {
                     // TV Series: group by series_name only, keep earliest year
                     const seriesKey = item.series_name;
-                    if (!grouped[libraryId].series[seriesKey]) {
-                        grouped[libraryId].series[seriesKey] = {
+                    if (!grouped[libraryGroupId].series[seriesKey]) {
+                        grouped[libraryGroupId].series[seriesKey] = {
                             name: item.series_name,
                             year: item.year || null,
                             items: []
                         };
                     }
-                    const seriesEntry = grouped[libraryId].series[seriesKey];
+                    const seriesEntry = grouped[libraryGroupId].series[seriesKey];
                     if (item.year && (!seriesEntry.year || item.year < seriesEntry.year)) {
                         seriesEntry.year = item.year;
                     }
                     seriesEntry.items.push(item);
                 } else {
                     // Movies
-                    grouped[libraryId].movies.push(item);
+                    grouped[libraryGroupId].movies.push(item);
                 }
             });
 
@@ -1240,12 +2461,12 @@
 
             // Render each library
             for (const [libraryId, content] of Object.entries(grouped)) {
-                const libraryKey = `queue|library:${libraryId || content.name}`;
+                const libraryKey = `${normalizedScope}|queue|library:${libraryId || content.name}`;
                 const libraryDomId = stableDomId('lib', libraryKey);
                 const libraryExpanded = expandedLibraries.has(libraryKey);
                 const seriesItems = Object.values(content.series).reduce((sum, entry) => sum + entry.items.length, 0);
                 const totalItems = seriesItems + content.movies.length;
-                const totalAvailable = totals[libraryId];
+                const totalAvailable = totals[content.rawId];
                 const countLabel = totalAvailable ? `${totalItems} / ${totalAvailable} file` : `${totalItems} file`;
 
                 html += `<div class="library-group">`;
@@ -1256,14 +2477,14 @@
                 html += `<div class="library-content${libraryExpanded ? ' expanded' : ''}" id="${libraryDomId}" data-key="${libraryKey}">`;
 
                 // Render series
-                for (const [seriesKey, seriesData] of Object.entries(content.series)) {
+                for (const seriesData of Object.values(content.series)) {
                     const seriesName = seriesData.name;
                     const hasYearInName = /\(\d{4}\)/.test(seriesName);
                     const seriesLabel = seriesData.year && !hasYearInName ? `${seriesName} (${seriesData.year})` : seriesName;
                     const episodes = seriesData.items;
-                    const seriesKey = `${libraryKey}|series:${seriesName}`;
-                    const seriesId = stableDomId('series', seriesKey);
-                    const seriesExpanded = expandedSeries.has(seriesKey);
+                    const seriesDomKey = `${libraryKey}|series:${seriesName}`;
+                    const seriesId = stableDomId('series', seriesDomKey);
+                    const seriesExpanded = expandedSeries.has(seriesDomKey);
 
                     html += `<div class="series-group">
                         <div class="series-header" onclick="toggleSeries('${seriesId}')">
@@ -1272,7 +2493,7 @@
                             </span>
                             <span class="series-count">${episodes.length} episodi</span>
                         </div>
-                        <div class="series-episodes${seriesExpanded ? ' expanded' : ''}" id="${seriesId}" data-key="${seriesKey}">`;
+                        <div class="series-episodes${seriesExpanded ? ' expanded' : ''}" id="${seriesId}" data-key="${seriesDomKey}">`;
 
                     // Sort episodes
                     episodes.sort((a, b) => {
@@ -1282,13 +2503,14 @@
 
                     episodes.forEach(item => {
                         const displayName = item.display_name || item.name;
+                        const episodeServerId = item._server_id || '';
                         html += `<div class="episode-item">
                             <div class="item-info">
                                 <div class="item-title">${displayName}</div>
                                 <div class="item-meta">${item.path || ''}</div>
                             </div>
                             <div class="item-actions">
-                                <button class="btn ghost small" title="Rimuove l'elemento dalla coda" onclick="removeFromQueue('${item.item_id}', '${item.media_source_id || ''}')">Rimuovi</button>
+                                <button class="btn ghost small" title="Rimuove l'elemento dalla coda" onclick="removeFromQueue('${normalizedScope}', '${item.item_id}', '${item.media_source_id || ''}', '${episodeServerId}')">Rimuovi</button>
                             </div>
                         </div>`;
                     });
@@ -1299,13 +2521,14 @@
                 // Render movies
                 content.movies.forEach(item => {
                     const displayName = item.display_name || item.name;
+                    const movieServerId = item._server_id || '';
                     html += `<div class="movie-item">
                         <div class="item-info">
                             <div class="item-title">${displayName}</div>
                             <div class="item-meta">${item.path || ''}</div>
                         </div>
                         <div class="item-actions">
-                            <button class="btn ghost small" title="Rimuove l'elemento dalla coda" onclick="removeFromQueue('${item.item_id}', '${item.media_source_id || ''}')">Rimuovi</button>
+                            <button class="btn ghost small" title="Rimuove l'elemento dalla coda" onclick="removeFromQueue('${normalizedScope}', '${item.item_id}', '${item.media_source_id || ''}', '${movieServerId}')">Rimuovi</button>
                         </div>
                     </div>`;
                 });
@@ -1330,29 +2553,45 @@
             chevron.classList.toggle('expanded');
         }
 
-        function removeFromQueue(itemId, mediaSourceId) {
+        function removeFromQueue(scope, itemId, mediaSourceId, itemServerId) {
             if (confirm('Rimuovere questo file dalla coda?')) {
-                const payload = {server_id: currentServerId, item_id: itemId};
+                const resolvedServerId = resolveActionServerId(scope, itemServerId);
+                if (!resolvedServerId) {
+                    alert('Seleziona un server valido per questa operazione.');
+                    return;
+                }
+                const payload = {server_id: resolvedServerId, item_id: itemId, scope: normalizeScope(scope)};
                 if (mediaSourceId) {
                     payload.media_source_id = mediaSourceId;
                 }
-                callAPI('/api/emby/probe/queue', 'DELETE', payload, loadQueue);
+                callAPI('/api/emby/probe/queue', 'DELETE', payload, () => {
+                    loadQueue(scope);
+                });
             }
         }
 
-        function retryItem(itemId, mediaSourceId, buttonElement) {
+        function retryItem(scope, itemId, mediaSourceId, buttonElement, itemServerId) {
             // Disable button and show loading state
             if (buttonElement) {
                 buttonElement.disabled = true;
                 buttonElement.textContent = '...';
             }
 
-            const payload = {server_id: currentServerId, item_id: itemId};
+            const resolvedServerId = resolveActionServerId(scope, itemServerId);
+            if (!resolvedServerId) {
+                alert('Seleziona un server valido per questa operazione.');
+                if (buttonElement) {
+                    buttonElement.disabled = false;
+                    buttonElement.textContent = 'Riprova';
+                }
+                return;
+            }
+            const payload = {server_id: resolvedServerId, item_id: itemId, scope: normalizeScope(scope)};
             if (mediaSourceId) {
                 payload.media_source_id = mediaSourceId;
             }
 
-            csrfFetch('/api/emby/probe/retry', {
+            return csrfFetch('/api/emby/probe/retry', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(payload)
@@ -1361,20 +2600,20 @@
             .then(data => {
                 if (data.success) {
                     // Reload queue, history and blacklist (this will regenerate buttons)
-                    loadQueue();
-                    loadHistory();
-                    loadBlacklist();
-                    loadIncomplete();
+                    loadQueue(scope);
+                    loadHistory(scope);
+                    loadBlacklist(scope);
+                    loadIncomplete(scope);
                 } else {
                     const errorMsg = data.message || 'Operazione fallita';
                     // Check if file was automatically removed (404 error)
                     if (errorMsg.includes('rimosso automaticamente')) {
                         alert(errorMsg);
                         // Reload all lists to reflect the removal
-                        loadQueue();
-                        loadHistory();
-                        loadBlacklist();
-                        loadIncomplete();
+                        loadQueue(scope);
+                        loadHistory(scope);
+                        loadBlacklist(scope);
+                        loadIncomplete(scope);
                     } else {
                         alert('Errore: ' + errorMsg);
                         // Re-enable button on error
@@ -1396,9 +2635,10 @@
             });
         }
 
-        async function retryAllErrors() {
-            // Get all error items from current history data
-            const errorItems = historyData.filter(item => item.status === 'ERROR' || item.status === 'INCOMPLETE');
+        async function retryAllErrors(scope) {
+            const normalizedScope = normalizeScope(scope);
+            const state = getScopeState(normalizedScope);
+            const errorItems = state.history.filter(item => item.status === 'ERROR' || item.status === 'INCOMPLETE');
 
             if (errorItems.length === 0) {
                 alert('Nessun errore da riprovare');
@@ -1409,7 +2649,9 @@
                 return;
             }
 
-            const btn = document.querySelector('[data-history-retry-all]');
+            const btn = normalizedScope === 'recent'
+                ? document.querySelector('[data-recent-history-retry-all]')
+                : document.querySelector('[data-history-retry-all]');
             const originalText = btn.textContent;
             btn.disabled = true;
             btn.textContent = `Elaborazione 0/${errorItems.length}...`;
@@ -1422,13 +2664,19 @@
                 btn.textContent = `Elaborazione ${i + 1}/${errorItems.length}...`;
 
                 try {
+                    const resolvedServerId = item._server_id || resolveActionServerId(normalizedScope, null);
+                    if (!resolvedServerId) {
+                        errorCount++;
+                        continue;
+                    }
                     const res = await csrfFetch('/api/emby/probe/retry', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({
-                            server_id: currentServerId,
+                            server_id: resolvedServerId,
                             item_id: item.item_id,
-                            media_source_id: item.media_source_id
+                            media_source_id: item.media_source_id,
+                            scope: normalizedScope
                         })
                     });
                     const data = await res.json();
@@ -1449,29 +2697,87 @@
             alert(`Operazione completata!\nAggiunti alla coda: ${successCount}\nErrori: ${errorCount}`);
 
             // Reload queue, history and blacklist
-            loadQueue();
-            loadHistory();
-            loadBlacklist();
-            loadIncomplete();
+            loadQueue(normalizedScope);
+            loadHistory(normalizedScope);
+            loadBlacklist(normalizedScope);
+            loadIncomplete(normalizedScope);
         }
 
         // Load History
-        function loadHistory() {
-            csrfFetch(`/api/emby/probe/history?server_id=${currentServerId}&limit=200`)
+        function loadHistory(scope = 'libraries') {
+            const normalizedScope = normalizeScope(scope);
+            const loadVersion = scopeLoadVersion[normalizedScope];
+            const serverId = getScopeServerId(normalizedScope);
+            if (!serverId) {
+                return;
+            }
+            if (normalizedScope === 'recent' && serverId === 'all') {
+                loadHistoryAll(loadVersion);
+                return;
+            }
+            const params = new URLSearchParams({server_id: serverId, limit: '200'});
+            if (normalizedScope !== 'libraries') {
+                params.set('scope', normalizedScope);
+            }
+            csrfFetch(`/api/emby/probe/history?${params.toString()}`)
                 .then(res => res.json())
                 .then(data => {
+                    if (loadVersion !== scopeLoadVersion[normalizedScope]) {
+                        return;
+                    }
                     if (data.success) {
-                        historyData = data.history;
-                        renderHistory();
+                        const state = getScopeState(normalizedScope);
+                        state.history = data.history || [];
+                        renderHistory(normalizedScope);
                     }
                 })
                 .catch(err => console.error('Error loading history:', err));
         }
 
+        async function loadHistoryAll(loadVersion) {
+            const serverIds = getServerIds('recent');
+            if (serverIds.length === 0) {
+                const state = getScopeState('recent');
+                state.history = [];
+                renderHistory('recent');
+                return;
+            }
+            const requests = serverIds.map(serverId => {
+                const params = new URLSearchParams({server_id: serverId, limit: '200', scope: 'recent'});
+                return csrfFetch(`/api/emby/probe/history?${params.toString()}`)
+                    .then(res => res.json())
+                    .then(data => ({ serverId, data }))
+                    .catch(() => ({ serverId, data: null }));
+            });
+            const results = await Promise.all(requests);
+            const combined = [];
+            results.forEach(result => {
+                if (!result.data || !result.data.success) {
+                    return;
+                }
+                const serverLabel = getServerLabel(result.serverId, 'recent');
+                const items = result.data.history || [];
+                items.forEach(item => {
+                    combined.push({
+                        ...item,
+                        _server_id: result.serverId,
+                        _server_label: serverLabel
+                    });
+                });
+            });
+            const state = getScopeState('recent');
+            state.history = combined;
+            if (loadVersion !== scopeLoadVersion.recent) {
+                return;
+            }
+            renderHistory('recent');
+        }
+
         function groupItemsByLibrary(items) {
             const grouped = {};
             items.forEach(item => {
-                const libraryName = item.library_name || 'Libreria Sconosciuta';
+                const baseName = item.library_name || 'Libreria Sconosciuta';
+                const libraryName = item._server_label ? `${item._server_label} - ${baseName}` : baseName;
                 if (!grouped[libraryName]) {
                     grouped[libraryName] = [];
                 }
@@ -1480,11 +2786,18 @@
             return grouped;
         }
 
-        function renderHistory() {
-            const container = document.querySelector('[data-history-container]');
-            const filterErrors = document.querySelector('[data-history-filter-errors]').checked;
+        function renderHistory(scope = 'libraries') {
+            const normalizedScope = normalizeScope(scope);
+            const config = getScopeConfig(normalizedScope);
+            const container = document.querySelector(config.historyContainer);
+            if (!container) {
+                return;
+            }
+            const filterToggle = document.querySelector(config.historyFilter);
+            const filterErrors = filterToggle ? filterToggle.checked : false;
 
-            let items = historyData;
+            const state = getScopeState(normalizedScope);
+            let items = state.history;
             if (filterErrors) {
                 items = items.filter(item => item.status === 'ERROR' || item.status === 'INCOMPLETE');
             }
@@ -1499,7 +2812,7 @@
             let html = '';
 
             for (const [libraryName, entries] of Object.entries(grouped)) {
-                const libraryKey = `history|library:${libraryName}`;
+                const libraryKey = `${normalizedScope}|history|library:${libraryName}`;
                 const libraryDomId = stableDomId('lib', libraryKey);
                 const libraryExpanded = expandedLibraries.has(libraryKey);
                 html += `<div class="library-group">`;
@@ -1521,8 +2834,9 @@
                         statusLabel = '<span class="status-incomplete">Incompleto</span>';
                     }
                     const duration = item.duration_ms ? (item.duration_ms / 1000).toFixed(2) + 's' : '-';
+                    const retryServerId = item._server_id || '';
                     const retryBtn = (item.status === 'ERROR' || item.status === 'INCOMPLETE') ?
-                        `<button class="btn ghost small" title="Riprova il processamento dell'elemento" onclick="retryItem('${item.item_id}', '${item.media_source_id || ''}', this)">Riprova</button>` :
+                        `<button class="btn ghost small" title="Riprova il processamento dell'elemento" onclick="retryItem('${normalizedScope}', '${item.item_id}', '${item.media_source_id || ''}', this, '${retryServerId}')">Riprova</button>` :
                         '';
                     html += `<tr>
                         <td>${date}</td>
@@ -1542,40 +2856,108 @@
         }
 
         // Load Blacklist
-        function loadBlacklist() {
-            csrfFetch(`/api/emby/probe/blacklist?server_id=${currentServerId}&min_retry=3&type=error`)
+        function loadBlacklist(scope = 'libraries') {
+            const normalizedScope = normalizeScope(scope);
+            const loadVersion = scopeLoadVersion[normalizedScope];
+            const serverId = getScopeServerId(normalizedScope);
+            if (!serverId) {
+                return;
+            }
+            if (normalizedScope === 'recent' && serverId === 'all') {
+                loadBlacklistAll(loadVersion);
+                return;
+            }
+            const params = new URLSearchParams({server_id: serverId, min_retry: '3', type: 'error'});
+            if (normalizedScope !== 'libraries') {
+                params.set('scope', normalizedScope);
+            }
+            csrfFetch(`/api/emby/probe/blacklist?${params.toString()}`)
                 .then(res => res.json())
                 .then(data => {
+                    if (loadVersion !== scopeLoadVersion[normalizedScope]) {
+                        return;
+                    }
                     if (data.success) {
-                        blacklistData = data.blacklist;
-                        renderBlacklist();
-                        updateBlacklistBadge();
+                        const state = getScopeState(normalizedScope);
+                        state.blacklist = data.blacklist || [];
+                        renderBlacklist(normalizedScope);
+                        updateBlacklistBadge(normalizedScope);
                     }
                 })
                 .catch(err => console.error('Error loading blacklist:', err));
         }
 
-        function updateBlacklistBadge() {
-            const badge = document.querySelector('[data-blacklist-count]');
+        async function loadBlacklistAll(loadVersion) {
+            const serverIds = getServerIds('recent');
+            if (serverIds.length === 0) {
+                const state = getScopeState('recent');
+                state.blacklist = [];
+                renderBlacklist('recent');
+                updateBlacklistBadge('recent');
+                return;
+            }
+            const requests = serverIds.map(serverId => {
+                const params = new URLSearchParams({server_id: serverId, min_retry: '3', type: 'error', scope: 'recent'});
+                return csrfFetch(`/api/emby/probe/blacklist?${params.toString()}`)
+                    .then(res => res.json())
+                    .then(data => ({ serverId, data }))
+                    .catch(() => ({ serverId, data: null }));
+            });
+            const results = await Promise.all(requests);
+            const combined = [];
+            results.forEach(result => {
+                if (!result.data || !result.data.success) {
+                    return;
+                }
+                const serverLabel = getServerLabel(result.serverId, 'recent');
+                const items = result.data.blacklist || [];
+                items.forEach(item => {
+                    combined.push({
+                        ...item,
+                        _server_id: result.serverId,
+                        _server_label: serverLabel
+                    });
+                });
+            });
+            const state = getScopeState('recent');
+            state.blacklist = combined;
+            if (loadVersion !== scopeLoadVersion.recent) {
+                return;
+            }
+            renderBlacklist('recent');
+            updateBlacklistBadge('recent');
+        }
+
+        function updateBlacklistBadge(scope = 'libraries') {
+            const normalizedScope = normalizeScope(scope);
+            const config = getScopeConfig(normalizedScope);
+            const state = getScopeState(normalizedScope);
+            const badge = document.querySelector(config.blacklistBadge);
             if (badge) {
-                badge.textContent = blacklistData.length;
+                badge.textContent = state.blacklist.length;
             }
         }
 
-        function renderBlacklist() {
-            const container = document.querySelector('[data-blacklist-container]');
+        function renderBlacklist(scope = 'libraries') {
+            const normalizedScope = normalizeScope(scope);
+            const config = getScopeConfig(normalizedScope);
+            const container = document.querySelector(config.blacklistContainer);
+            if (!container) {
+                return;
+            }
+            const state = getScopeState(normalizedScope);
 
-            if (!blacklistData || blacklistData.length === 0) {
+            if (!state.blacklist || state.blacklist.length === 0) {
                 container.innerHTML = '<div class="empty-state">Nessun file con errori</div>';
                 return;
             }
 
             const expandedLibraries = collectExpandedKeys(container, '.library-content.expanded');
-            const grouped = groupItemsByLibrary(blacklistData);
+            const grouped = groupItemsByLibrary(state.blacklist);
             let html = '';
 
             for (const [libraryName, entries] of Object.entries(grouped)) {
-                const libraryKey = `blacklist|library:${libraryName}`;
+                const libraryKey = `${normalizedScope}|blacklist|library:${libraryName}`;
                 const libraryDomId = stableDomId('lib', libraryKey);
                 const libraryExpanded = expandedLibraries.has(libraryKey);
                 html += `<div class="library-group">`;
@@ -1590,14 +2972,15 @@
 
                 entries.forEach(item => {
                     const date = new Date(item.failed_at).toLocaleString('it-IT');
+                    const itemServerId = item._server_id || '';
                     html += `<tr>
                         <td>${date}</td>
                         <td>${item.item_name}</td>
                         <td><span style="background: #dc2626; color: white; padding: 0.25rem 0.5rem; border-radius: 4px; font-weight: 600;">${item.retry_count}</span></td>
                         <td>${item.reason || '-'}</td>
                         <td>
-                            <button class="btn ghost small" title="Rimuove l'elemento dalla lista errori" onclick="removeFromBlacklist('${item.item_id}', '${item.media_source_id || ''}')">Rimuovi</button>
-                            <button class="btn primary small" title="Riprova il processamento dell'elemento" onclick="retryFromBlacklist('${item.item_id}', '${item.media_source_id || ''}', this)">Riprova</button>
+                            <button class="btn ghost small" title="Rimuove l'elemento dalla lista errori" onclick="removeFromBlacklist('${normalizedScope}', '${item.item_id}', '${item.media_source_id || ''}', '${itemServerId}')">Rimuovi</button>
+                            <button class="btn primary small" title="Riprova il processamento dell'elemento" onclick="retryFromBlacklist('${normalizedScope}', '${item.item_id}', '${item.media_source_id || ''}', this, '${itemServerId}')">Riprova</button>
                         </td>
                     </tr>`;
                 });
@@ -1609,40 +2992,108 @@
             container.innerHTML = html;
         }
 
-        function loadIncomplete() {
-            csrfFetch(`/api/emby/probe/blacklist?server_id=${currentServerId}&min_retry=3&type=incomplete`)
+        function loadIncomplete(scope = 'libraries') {
+            const normalizedScope = normalizeScope(scope);
+            const loadVersion = scopeLoadVersion[normalizedScope];
+            const serverId = getScopeServerId(normalizedScope);
+            if (!serverId) {
+                return;
+            }
+            if (normalizedScope === 'recent' && serverId === 'all') {
+                loadIncompleteAll(loadVersion);
+                return;
+            }
+            const params = new URLSearchParams({server_id: serverId, min_retry: '3', type: 'incomplete'});
+            if (normalizedScope !== 'libraries') {
+                params.set('scope', normalizedScope);
+            }
+            csrfFetch(`/api/emby/probe/blacklist?${params.toString()}`)
                 .then(res => res.json())
                 .then(data => {
+                    if (loadVersion !== scopeLoadVersion[normalizedScope]) {
+                        return;
+                    }
                     if (data.success) {
-                        incompleteData = data.blacklist;
-                        renderIncomplete();
-                        updateIncompleteBadge();
+                        const state = getScopeState(normalizedScope);
+                        state.incomplete = data.blacklist || [];
+                        renderIncomplete(normalizedScope);
+                        updateIncompleteBadge(normalizedScope);
                     }
                 })
                 .catch(err => console.error('Error loading incomplete list:', err));
         }
 
-        function updateIncompleteBadge() {
-            const badge = document.querySelector('[data-incomplete-count]');
+        async function loadIncompleteAll(loadVersion) {
+            const serverIds = getServerIds('recent');
+            if (serverIds.length === 0) {
+                const state = getScopeState('recent');
+                state.incomplete = [];
+                renderIncomplete('recent');
+                updateIncompleteBadge('recent');
+                return;
+            }
+            const requests = serverIds.map(serverId => {
+                const params = new URLSearchParams({server_id: serverId, min_retry: '3', type: 'incomplete', scope: 'recent'});
+                return csrfFetch(`/api/emby/probe/blacklist?${params.toString()}`)
+                    .then(res => res.json())
+                    .then(data => ({ serverId, data }))
+                    .catch(() => ({ serverId, data: null }));
+            });
+            const results = await Promise.all(requests);
+            const combined = [];
+            results.forEach(result => {
+                if (!result.data || !result.data.success) {
+                    return;
+                }
+                const serverLabel = getServerLabel(result.serverId, 'recent');
+                const items = result.data.blacklist || [];
+                items.forEach(item => {
+                    combined.push({
+                        ...item,
+                        _server_id: result.serverId,
+                        _server_label: serverLabel
+                    });
+                });
+            });
+            const state = getScopeState('recent');
+            state.incomplete = combined;
+            if (loadVersion !== scopeLoadVersion.recent) {
+                return;
+            }
+            renderIncomplete('recent');
+            updateIncompleteBadge('recent');
+        }
+
+        function updateIncompleteBadge(scope = 'libraries') {
+            const normalizedScope = normalizeScope(scope);
+            const config = getScopeConfig(normalizedScope);
+            const state = getScopeState(normalizedScope);
+            const badge = document.querySelector(config.incompleteBadge);
             if (badge) {
-                badge.textContent = incompleteData.length;
+                badge.textContent = state.incomplete.length;
             }
         }
 
-        function renderIncomplete() {
-            const container = document.querySelector('[data-incomplete-container]');
+        function renderIncomplete(scope = 'libraries') {
+            const normalizedScope = normalizeScope(scope);
+            const config = getScopeConfig(normalizedScope);
+            const container = document.querySelector(config.incompleteContainer);
+            if (!container) {
+                return;
+            }
+            const state = getScopeState(normalizedScope);
 
-            if (!incompleteData || incompleteData.length === 0) {
+            if (!state.incomplete || state.incomplete.length === 0) {
                 container.innerHTML = '<div class="empty-state">Nessun file incompleto</div>';
                 return;
             }
 
             const expandedLibraries = collectExpandedKeys(container, '.library-content.expanded');
-            const grouped = groupItemsByLibrary(incompleteData);
+            const grouped = groupItemsByLibrary(state.incomplete);
             let html = '';
 
             for (const [libraryName, entries] of Object.entries(grouped)) {
-                const libraryKey = `incomplete|library:${libraryName}`;
+                const libraryKey = `${normalizedScope}|incomplete|library:${libraryName}`;
                 const libraryDomId = stableDomId('lib', libraryKey);
                 const libraryExpanded = expandedLibraries.has(libraryKey);
                 html += `<div class="library-group">`;
@@ -1657,14 +3108,15 @@
 
                 entries.forEach(item => {
                     const date = new Date(item.failed_at).toLocaleString('it-IT');
+                    const itemServerId = item._server_id || '';
                     html += `<tr>
                         <td>${date}</td>
                         <td>${item.item_name}</td>
                         <td><span style="background: #f59e0b; color: white; padding: 0.25rem 0.5rem; border-radius: 4px; font-weight: 600;">${item.retry_count}</span></td>
                         <td>${item.reason || '-'}</td>
                         <td>
-                            <button class="btn ghost small" title="Rimuove l'elemento dalla lista incompleti" onclick="removeFromBlacklist('${item.item_id}', '${item.media_source_id || ''}')">Rimuovi</button>
-                            <button class="btn primary small" title="Riprova il processamento dell'elemento" onclick="retryFromBlacklist('${item.item_id}', '${item.media_source_id || ''}', this)">Riprova</button>
+                            <button class="btn ghost small" title="Rimuove l'elemento dalla lista incompleti" onclick="removeFromBlacklist('${normalizedScope}', '${item.item_id}', '${item.media_source_id || ''}', '${itemServerId}')">Rimuovi</button>
+                            <button class="btn primary small" title="Riprova il processamento dell'elemento" onclick="retryFromBlacklist('${normalizedScope}', '${item.item_id}', '${item.media_source_id || ''}', this, '${itemServerId}')">Riprova</button>
                         </td>
                     </tr>`;
                 });
@@ -1676,27 +3128,41 @@
             container.innerHTML = html;
         }
 
-        function removeFromBlacklist(itemId, mediaSourceId) {
+        function removeFromBlacklist(scope, itemId, mediaSourceId, itemServerId) {
             if (confirm('Rimuovere questo file dalla lista? Potrà essere riprocessato.')) {
-                const payload = {server_id: currentServerId, item_id: itemId};
+                const resolvedServerId = resolveActionServerId(scope, itemServerId);
+                if (!resolvedServerId) {
+                    alert('Seleziona un server valido per questa operazione.');
+                    return;
+                }
+                const payload = {server_id: resolvedServerId, item_id: itemId, scope: normalizeScope(scope)};
                 if (mediaSourceId) {
                     payload.media_source_id = mediaSourceId;
                 }
                 callAPI('/api/emby/probe/blacklist', 'DELETE', payload, () => {
-                    loadBlacklist();
-                    loadIncomplete();
+                    loadBlacklist(scope);
+                    loadIncomplete(scope);
                 });
             }
         }
 
-        function retryFromBlacklist(itemId, mediaSourceId, buttonElement) {
+        function retryFromBlacklist(scope, itemId, mediaSourceId, buttonElement, itemServerId) {
             // First remove from blacklist, then retry
             if (buttonElement) {
                 buttonElement.disabled = true;
                 buttonElement.textContent = '...';
             }
 
-            const payload = {server_id: currentServerId, item_id: itemId};
+            const resolvedServerId = resolveActionServerId(scope, itemServerId);
+            if (!resolvedServerId) {
+                alert('Seleziona un server valido per questa operazione.');
+                if (buttonElement) {
+                    buttonElement.disabled = false;
+                    buttonElement.textContent = 'Riprova';
+                }
+                return;
+            }
+            const payload = {server_id: resolvedServerId, item_id: itemId, scope: normalizeScope(scope)};
             if (mediaSourceId) {
                 payload.media_source_id = mediaSourceId;
             }
@@ -1711,16 +3177,16 @@
             .then(data => {
                 if (data.success) {
                     // Now retry the item
-                    return retryItem(itemId, mediaSourceId, null);
+                    return retryItem(scope, itemId, mediaSourceId, null, resolvedServerId);
                 } else {
                     throw new Error(data.message || 'Errore rimozione dalla lista');
                 }
             })
             .then(() => {
                 // Reload blacklist and queue
-                loadBlacklist();
-                loadQueue();
-                loadIncomplete();
+                loadBlacklist(scope);
+                loadQueue(scope);
+                loadIncomplete(scope);
             })
             .catch(err => {
                 console.error('Retry from blacklist error:', err);
@@ -1753,6 +3219,35 @@
                 })
                 .catch(err => {
                     console.error('API error:', err);
+                    alert('Errore di connessione');
+                });
+        }
+
+        function callAPIMulti(endpoint, method, baseData, serverIds, callback) {
+            if (!serverIds || serverIds.length === 0) {
+                if (callback) callback();
+                return;
+            }
+            const options = {
+                method: method,
+                headers: {'Content-Type': 'application/json'}
+            };
+            const requests = serverIds.map(serverId => {
+                const payload = { ...baseData, server_id: serverId };
+                return csrfFetch(endpoint, { ...options, body: JSON.stringify(payload) })
+                    .then(res => res.json())
+                    .catch(() => ({ success: false }));
+            });
+            Promise.all(requests)
+                .then(results => {
+                    const hasError = results.some(result => !result || !result.success);
+                    if (hasError) {
+                        alert('Errore: alcune operazioni non sono andate a buon fine.');
+                    }
+                    if (callback) callback();
+                })
+                .catch(err => {
+                    console.error('API multi error:', err);
                     alert('Errore di connessione');
                 });
         }

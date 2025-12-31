@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 try:
-    from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String, Text, create_engine, func, text
+    from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String, Text, create_engine, func, or_, text
     from sqlalchemy.exc import SQLAlchemyError
     from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -81,6 +81,7 @@ if SQLALCHEMY_AVAILABLE:
         __tablename__ = "emby_probe_blacklist"
         server_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
         item_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
+        scope = Column(String(20))  # type: ignore[assignment]
         media_source_id = Column(String(36))  # type: ignore[assignment]
         library_id = Column(String(36))  # type: ignore[assignment]
         library_name = Column(String(500))  # type: ignore[assignment]
@@ -95,6 +96,7 @@ if SQLALCHEMY_AVAILABLE:
         id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
         server_id = Column(String(36), nullable=False, index=True)  # type: ignore[assignment]
         item_id = Column(String(36), nullable=False, index=True)  # type: ignore[assignment]
+        scope = Column(String(20))  # type: ignore[assignment]
         media_source_id = Column(String(36))  # type: ignore[assignment]
         library_id = Column(String(36))  # type: ignore[assignment]
         library_name = Column(String(500))  # type: ignore[assignment]
@@ -112,6 +114,7 @@ if SQLALCHEMY_AVAILABLE:
         id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
         server_id = Column(String(36), nullable=False, index=True)  # type: ignore[assignment]
         item_id = Column(String(36), nullable=False)  # type: ignore[assignment]
+        scope = Column(String(20))  # type: ignore[assignment]
         media_source_id = Column(String(36))  # type: ignore[assignment]
         name = Column(String(500), nullable=False)  # type: ignore[assignment]
         library_name = Column(String(500))  # type: ignore[assignment]
@@ -147,6 +150,13 @@ if SQLALCHEMY_AVAILABLE:
         updated_at = Column(DateTime, index=True)  # type: ignore[assignment]
         ingested_at = Column(DateTime, default=_utcnow, nullable=False, index=True)  # type: ignore[assignment]
         extra = Column(JSON)  # type: ignore[assignment]
+
+    class EmbyProbeRecentScan(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "emby_probe_recent_scan"
+        server_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
+        library_id = Column(String(36), primary_key=True, default="__all__")  # type: ignore[assignment]
+        oldest_scanned_timestamp = Column(DateTime, nullable=True, index=True)  # type: ignore[assignment]
+        last_scan_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
 
 
 def is_sqlalchemy_available() -> bool:
@@ -207,10 +217,19 @@ class DatabaseStorage:
                     "ALTER TABLE emby_probe_queue ADD COLUMN IF NOT EXISTS media_source_id VARCHAR(36)"
                 ))
                 conn.execute(text(
+                    "ALTER TABLE emby_probe_queue ADD COLUMN IF NOT EXISTS scope VARCHAR(20)"
+                ))
+                conn.execute(text(
                     "ALTER TABLE emby_probe_history ADD COLUMN IF NOT EXISTS media_source_id VARCHAR(36)"
                 ))
                 conn.execute(text(
+                    "ALTER TABLE emby_probe_history ADD COLUMN IF NOT EXISTS scope VARCHAR(20)"
+                ))
+                conn.execute(text(
                     "ALTER TABLE emby_probe_blacklist ADD COLUMN IF NOT EXISTS media_source_id VARCHAR(36)"
+                ))
+                conn.execute(text(
+                    "ALTER TABLE emby_probe_blacklist ADD COLUMN IF NOT EXISTS scope VARCHAR(20)"
                 ))
                 conn.execute(text(
                     "ALTER TABLE emby_probe_blacklist ADD COLUMN IF NOT EXISTS library_id VARCHAR(36)"
@@ -231,6 +250,20 @@ class DatabaseStorage:
         if self._Session is None:
             self.ensure_ready()
         return self._Session()
+
+    def _normalize_probe_scope(self, scope: Optional[str]) -> str:
+        value = (scope or "").strip().lower()
+        if value in ("recent", "libraries"):
+            return value
+        return "libraries"
+
+    def _apply_scope_filter(self, query, model, scope: Optional[str]):
+        if not scope:
+            return query
+        normalized = self._normalize_probe_scope(scope)
+        if normalized == "libraries":
+            return query.filter(or_(model.scope == normalized, model.scope.is_(None)))  # type: ignore[attr-defined]
+        return query.filter(model.scope == normalized)  # type: ignore[attr-defined]
 
     # --- Configuration ---
 
@@ -460,14 +493,14 @@ class DatabaseStorage:
 
     # --- Emby Probe Blacklist ---
 
-    def load_probe_blacklist(self, server_id: str) -> Dict[str, Any]:
+    def load_probe_blacklist(self, server_id: str, scope: Optional[str] = None) -> Dict[str, Any]:
         session = self._get_session()
         try:
             entries = (
                 session.query(EmbyProbeBlacklist)
                 .filter(EmbyProbeBlacklist.server_id == server_id)  # type: ignore[attr-defined]
-                .all()
             )
+            entries = self._apply_scope_filter(entries, EmbyProbeBlacklist, scope).all()
             # Use composite key: item_id + media_source_id to handle multi-source items
             return {
                 f"{entry.item_id}:{entry.media_source_id or ''}": {
@@ -495,17 +528,20 @@ class DatabaseStorage:
         media_source_id: Optional[str] = None,
         increment_retry: bool = True,
         error_type: Optional[str] = None,
+        scope: Optional[str] = None,
         library_id: Optional[str] = None,
         library_name: Optional[str] = None
     ) -> int:
         session = self._get_session()
         try:
+            scope_value = self._normalize_probe_scope(scope)
             entry = session.query(EmbyProbeBlacklist).filter(
                 EmbyProbeBlacklist.server_id == server_id,  # type: ignore[attr-defined]
                 EmbyProbeBlacklist.item_id == item_id  # type: ignore[attr-defined]
             ).first()
 
             if entry:
+                entry.scope = scope_value  # type: ignore[assignment]
                 entry.item_name = name  # type: ignore[assignment]
                 entry.reason = reason  # type: ignore[assignment]
                 entry.failed_at = _utcnow()  # type: ignore[assignment]
@@ -520,6 +556,7 @@ class DatabaseStorage:
                 new_entry = EmbyProbeBlacklist(
                     server_id=server_id,
                     item_id=item_id,
+                    scope=scope_value,
                     media_source_id=media_source_id,
                     library_id=library_id,
                     library_name=library_name,
@@ -539,13 +576,21 @@ class DatabaseStorage:
         finally:
             session.close()
 
-    def remove_from_probe_blacklist(self, server_id: str, item_id: str, media_source_id: Optional[str] = None) -> None:
+    def remove_from_probe_blacklist(
+        self,
+        server_id: str,
+        item_id: str,
+        media_source_id: Optional[str] = None,
+        scope: Optional[str] = None
+    ) -> None:
         session = self._get_session()
         try:
-            session.query(EmbyProbeBlacklist).filter(
+            query = session.query(EmbyProbeBlacklist).filter(
                 EmbyProbeBlacklist.server_id == server_id,  # type: ignore[attr-defined]
                 EmbyProbeBlacklist.item_id == item_id  # type: ignore[attr-defined]
-            ).delete()
+            )
+            query = self._apply_scope_filter(query, EmbyProbeBlacklist, scope)
+            query.delete()
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
             session.rollback()
@@ -557,7 +602,8 @@ class DatabaseStorage:
         self,
         server_id: Optional[str] = None,
         min_retry_count: int = 0,
-        error_type: Optional[str] = None
+        error_type: Optional[str] = None,
+        scope: Optional[str] = None
     ) -> list[Dict[str, Any]]:
         """Get blacklist entries as a list, optionally filtered by server and retry count."""
         session = self._get_session()
@@ -565,6 +611,7 @@ class DatabaseStorage:
             query = session.query(EmbyProbeBlacklist)
             if server_id:
                 query = query.filter(EmbyProbeBlacklist.server_id == server_id)  # type: ignore[attr-defined]
+            query = self._apply_scope_filter(query, EmbyProbeBlacklist, scope)
             if min_retry_count > 0:
                 query = query.filter(EmbyProbeBlacklist.retry_count >= min_retry_count)  # type: ignore[attr-defined]
 
@@ -586,6 +633,7 @@ class DatabaseStorage:
                 {
                     "server_id": entry.server_id,
                     "item_id": entry.item_id,
+                    "scope": entry.scope,
                     "media_source_id": entry.media_source_id,
                     "library_id": entry.library_id,
                     "library_name": entry.library_name,
@@ -600,13 +648,19 @@ class DatabaseStorage:
         finally:
             session.close()
 
-    def clear_probe_blacklist(self, server_id: str, error_type: Optional[str] = None) -> None:
+    def clear_probe_blacklist(
+        self,
+        server_id: str,
+        error_type: Optional[str] = None,
+        scope: Optional[str] = None
+    ) -> None:
         """Clear all blacklist entries for a server, optionally filtered by error type."""
         session = self._get_session()
         try:
             query = session.query(EmbyProbeBlacklist).filter(
                 EmbyProbeBlacklist.server_id == server_id  # type: ignore[attr-defined]
             )
+            query = self._apply_scope_filter(query, EmbyProbeBlacklist, scope)
             if not error_type:
                 query.delete()
                 session.commit()
@@ -643,6 +697,7 @@ class DatabaseStorage:
                 server_id = item_data.get("server_id")
                 item_id = item_data.get("item_id")
                 media_source_id = item_data.get("media_source_id")
+                scope_value = self._normalize_probe_scope(item_data.get("scope"))
 
                 if not server_id or not item_id:
                     continue
@@ -652,6 +707,7 @@ class DatabaseStorage:
                     EmbyProbeQueue.server_id == server_id,  # type: ignore[attr-defined]
                     EmbyProbeQueue.item_id == item_id  # type: ignore[attr-defined]
                 )
+                existing_query = self._apply_scope_filter(existing_query, EmbyProbeQueue, scope_value)
                 if media_source_id is not None:
                     existing_query = existing_query.filter(EmbyProbeQueue.media_source_id == media_source_id)  # type: ignore[attr-defined]
                 else:
@@ -659,11 +715,13 @@ class DatabaseStorage:
                 existing = existing_query.first()
 
                 if media_source_id is not None:
-                    session.query(EmbyProbeQueue).filter(
+                    query = session.query(EmbyProbeQueue).filter(
                         EmbyProbeQueue.server_id == server_id,  # type: ignore[attr-defined]
                         EmbyProbeQueue.item_id == item_id,  # type: ignore[attr-defined]
                         EmbyProbeQueue.media_source_id.is_(None)  # type: ignore[attr-defined]
-                    ).delete(synchronize_session=False)
+                    )
+                    query = self._apply_scope_filter(query, EmbyProbeQueue, scope_value)
+                    query.delete(synchronize_session=False)
 
                 if existing:
                     continue  # Skip duplicates
@@ -671,6 +729,7 @@ class DatabaseStorage:
                 new_entry = EmbyProbeQueue(
                     server_id=server_id,
                     item_id=item_id,
+                    scope=scope_value,
                     media_source_id=media_source_id,
                     library_id=item_data.get("library_id"),
                     library_name=item_data.get("library_name"),
@@ -691,24 +750,38 @@ class DatabaseStorage:
         finally:
             session.close()
 
-    def get_probe_queue(self, server_id: Optional[str] = None, library_ids: Optional[list[str]] = None) -> list[Dict[str, Any]]:
+    def get_probe_queue(
+        self,
+        server_id: Optional[str] = None,
+        library_ids: Optional[list[str]] = None,
+        scope: Optional[str] = None
+    ) -> list[Dict[str, Any]]:
         session = self._get_session()
         try:
             query = session.query(EmbyProbeQueue)
 
             if server_id:
                 query = query.filter(EmbyProbeQueue.server_id == server_id)  # type: ignore[attr-defined]
+            query = self._apply_scope_filter(query, EmbyProbeQueue, scope)
 
             if library_ids:
                 query = query.filter(EmbyProbeQueue.library_id.in_(library_ids))  # type: ignore[attr-defined]
 
-            # Sort: TV shows by series_name, season, episode; Movies by name
-            query = query.order_by(
-                EmbyProbeQueue.series_name,  # type: ignore[attr-defined]
-                EmbyProbeQueue.season_number,  # type: ignore[attr-defined]
-                EmbyProbeQueue.episode_number,  # type: ignore[attr-defined]
-                EmbyProbeQueue.name  # type: ignore[attr-defined]
-            )
+            # Sort order depends on scope
+            normalized_scope = self._normalize_probe_scope(scope)
+            if normalized_scope == "recent":
+                # For recent scope: process oldest items first (ASC by added_at)
+                query = query.order_by(
+                    EmbyProbeQueue.added_at.asc()  # type: ignore[attr-defined]
+                )
+            else:
+                # For libraries scope: alphabetical by series/name
+                query = query.order_by(
+                    EmbyProbeQueue.series_name,  # type: ignore[attr-defined]
+                    EmbyProbeQueue.season_number,  # type: ignore[attr-defined]
+                    EmbyProbeQueue.episode_number,  # type: ignore[attr-defined]
+                    EmbyProbeQueue.name  # type: ignore[attr-defined]
+                )
 
             entries = query.all()
 
@@ -717,6 +790,7 @@ class DatabaseStorage:
                     "id": entry.id,
                     "server_id": entry.server_id,
                     "item_id": entry.item_id,
+                    "scope": entry.scope,
                     "media_source_id": entry.media_source_id,
                     "library_id": entry.library_id,
                     "library_name": entry.library_name,
@@ -734,13 +808,20 @@ class DatabaseStorage:
         finally:
             session.close()
 
-    def remove_from_probe_queue(self, server_id: str, item_id: str, media_source_id: str | None = None) -> None:
+    def remove_from_probe_queue(
+        self,
+        server_id: str,
+        item_id: str,
+        media_source_id: str | None = None,
+        scope: Optional[str] = None
+    ) -> None:
         session = self._get_session()
         try:
             query = session.query(EmbyProbeQueue).filter(
                 EmbyProbeQueue.server_id == server_id,  # type: ignore[attr-defined]
                 EmbyProbeQueue.item_id == item_id  # type: ignore[attr-defined]
             )
+            query = self._apply_scope_filter(query, EmbyProbeQueue, scope)
             if media_source_id is not None:
                 query = query.filter(EmbyProbeQueue.media_source_id == media_source_id)  # type: ignore[attr-defined]
             else:
@@ -753,12 +834,14 @@ class DatabaseStorage:
         finally:
             session.close()
 
-    def clear_probe_queue(self, server_id: str) -> None:
+    def clear_probe_queue(self, server_id: str, scope: Optional[str] = None) -> None:
         session = self._get_session()
         try:
-            session.query(EmbyProbeQueue).filter(
+            query = session.query(EmbyProbeQueue).filter(
                 EmbyProbeQueue.server_id == server_id  # type: ignore[attr-defined]
-            ).delete()
+            )
+            query = self._apply_scope_filter(query, EmbyProbeQueue, scope)
+            query.delete()
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
             session.rollback()
@@ -774,6 +857,7 @@ class DatabaseStorage:
             new_entry = EmbyProbeHistory(
                 server_id=data.get("server_id", ""),
                 item_id=data.get("item_id", ""),
+                scope=self._normalize_probe_scope(data.get("scope")),
                 media_source_id=data.get("media_source_id"),
                 name=data.get("name", "Sconosciuto"),
                 library_name=data.get("library_name"),
@@ -789,13 +873,19 @@ class DatabaseStorage:
         finally:
             session.close()
 
-    def get_probe_history(self, server_id: Optional[str] = None, limit: int = 100) -> list[Dict[str, Any]]:
+    def get_probe_history(
+        self,
+        server_id: Optional[str] = None,
+        limit: int = 100,
+        scope: Optional[str] = None
+    ) -> list[Dict[str, Any]]:
         session = self._get_session()
         try:
             query = session.query(EmbyProbeHistory)
 
             if server_id:
                 query = query.filter(EmbyProbeHistory.server_id == server_id)  # type: ignore[attr-defined]
+            query = self._apply_scope_filter(query, EmbyProbeHistory, scope)
 
             query = query.order_by(EmbyProbeHistory.processed_at.desc())  # type: ignore[attr-defined]
             query = query.limit(limit)
@@ -807,6 +897,7 @@ class DatabaseStorage:
                     "id": entry.id,
                     "server_id": entry.server_id,
                     "item_id": entry.item_id,
+                    "scope": entry.scope,
                     "media_source_id": entry.media_source_id,
                     "name": entry.name,
                     "library_name": entry.library_name,
@@ -820,13 +911,20 @@ class DatabaseStorage:
         finally:
             session.close()
 
-    def remove_from_probe_history(self, server_id: str, item_id: str, media_source_id: str | None = None) -> None:
+    def remove_from_probe_history(
+        self,
+        server_id: str,
+        item_id: str,
+        media_source_id: str | None = None,
+        scope: Optional[str] = None
+    ) -> None:
         session = self._get_session()
         try:
             query = session.query(EmbyProbeHistory).filter(
                 EmbyProbeHistory.server_id == server_id,  # type: ignore[attr-defined]
                 EmbyProbeHistory.item_id == item_id  # type: ignore[attr-defined]
             )
+            query = self._apply_scope_filter(query, EmbyProbeHistory, scope)
             if media_source_id is not None:
                 query = query.filter(EmbyProbeHistory.media_source_id == media_source_id)  # type: ignore[attr-defined]
             else:
@@ -839,12 +937,14 @@ class DatabaseStorage:
         finally:
             session.close()
 
-    def clear_probe_history(self, server_id: str) -> None:
+    def clear_probe_history(self, server_id: str, scope: Optional[str] = None) -> None:
         session = self._get_session()
         try:
-            session.query(EmbyProbeHistory).filter(
+            query = session.query(EmbyProbeHistory).filter(
                 EmbyProbeHistory.server_id == server_id  # type: ignore[attr-defined]
-            ).delete()
+            )
+            query = self._apply_scope_filter(query, EmbyProbeHistory, scope)
+            query.delete()
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
             session.rollback()
@@ -1169,6 +1269,73 @@ class DatabaseStorage:
             return True, None
         except Exception as exc:  # pragma: no cover - runtime guard
             return False, str(exc)
+
+    # --- Emby Probe Recent Scan Tracking ---
+
+    def get_recent_scan_timestamp(self, server_id: str, library_id: Optional[str] = None) -> Optional[datetime]:
+        """Get the oldest scanned timestamp from the last scan for a server/library."""
+        session = self._get_session()
+        try:
+            lib_id = library_id or "__all__"
+            entry = session.get(EmbyProbeRecentScan, (server_id, lib_id))
+            if entry and entry.oldest_scanned_timestamp:
+                # Ensure timezone aware datetime (PostgreSQL TIMESTAMP returns naive)
+                ts = entry.oldest_scanned_timestamp
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                return ts
+            return None
+        finally:
+            session.close()
+
+    def save_recent_scan_timestamp(self, server_id: str, oldest_timestamp: Optional[datetime], library_id: Optional[str] = None) -> None:
+        """Save the oldest scanned timestamp for a server/library."""
+        session = self._get_session()
+        try:
+            lib_id = library_id or "__all__"
+            entry = session.get(EmbyProbeRecentScan, (server_id, lib_id))
+            if entry:
+                entry.oldest_scanned_timestamp = oldest_timestamp  # type: ignore[assignment]
+            else:
+                new_entry = EmbyProbeRecentScan(
+                    server_id=server_id,
+                    library_id=lib_id,
+                    oldest_scanned_timestamp=oldest_timestamp
+                )
+                session.add(new_entry)
+            session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore salvataggio timestamp scan recent: {exc}") from exc
+        finally:
+            session.close()
+
+    def get_recent_scan_config(self, server_id: str) -> Dict[str, Any]:
+        """Get discovery configuration parameters for a server."""
+        session = self._get_session()
+        try:
+            # Check if we have a config entry (stored with library_id = '__config__')
+            entry = session.get(EmbyProbeRecentScan, (server_id, "__config__"))
+            if not entry or not entry.oldest_scanned_timestamp:
+                # Return defaults
+                return {
+                    "window_size": 500,
+                    "window_threshold": 0.90,
+                    "max_days": 60,
+                    "max_items": 2000,
+                    "safety_margin_days": 7
+                }
+            # Parse stored config from timestamp field (using it as a JSON storage hack)
+            # Actually, let's use a proper approach - we'll add this to app_settings instead
+            return {
+                "window_size": 500,
+                "window_threshold": 0.90,
+                "max_days": 60,
+                "max_items": 2000,
+                "safety_margin_days": 7
+            }
+        finally:
+            session.close()
 
 
 __all__ = ["DatabaseStorage", "StorageError", "is_sqlalchemy_available"]

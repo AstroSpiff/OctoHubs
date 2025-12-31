@@ -3198,6 +3198,333 @@ def create_dashboard_app():
             return jsonify({"success": True, "message": "Discovery arrestato"})
         return jsonify({"success": False, "message": "Discovery non in esecuzione"}), 400
 
+    # --- Probe Recent Discovery Routes ---
+
+    @app.route('/api/emby/probe/recent/start', methods=['POST'])
+    @login_required
+    def probe_recent_start():
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify({"success": False, "message": "Formato non valido"}), 400
+        server_id = payload.get("server_id")
+        if not server_id:
+            return jsonify({"success": False, "message": "server_id mancante"}), 400
+        limit = _coerce_request_int(payload.get("limit"), 200, 1, 1000)
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Config non valida"}), 400
+        emby_config = config.get("EMBY") or {}
+        servers = emby_config.get("SERVERS") or []
+        target_server = None
+        for server in servers:
+            if server.get("id") == server_id:
+                target_server = server
+                break
+        if target_server is None:
+            return jsonify({"success": False, "message": "Server non trovato"}), 404
+        if not target_server.get("enabled"):
+            return jsonify({"success": False, "message": "Server disabilitato"}), 400
+        started = get_probe_manager().start_recent_discovery(target_server, server_id, limit)
+        if started:
+            return jsonify({"success": True, "message": "Discovery ultimi aggiunti avviata"})
+        return jsonify({"success": False, "message": "Discovery ultimi aggiunti già in esecuzione"}), 400
+
+    @app.route('/api/emby/probe/recent/start-all', methods=['POST'])
+    @login_required
+    def probe_recent_start_all():
+        payload = request.get_json(silent=True) or {}
+        if payload and not isinstance(payload, dict):
+            return jsonify({"success": False, "message": "Formato non valido"}), 400
+        limit = _coerce_request_int((payload or {}).get("limit"), 200, 1, 1000)
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Config non valida"}), 400
+        emby_config = config.get("EMBY") or {}
+        servers = [server for server in (emby_config.get("SERVERS") or []) if server.get("enabled")]
+        if not servers:
+            return jsonify({"success": False, "message": "Nessun server Emby abilitato"}), 400
+        server_ids = [server.get("id") for server in servers if server.get("id")]
+        started = get_probe_manager().start_recent_discovery_sequence(servers, limit)
+        if not started:
+            # Already running, but return success with a different message
+            return jsonify({
+                "success": True,
+                "message": f"Discovery ultimi aggiunti già in esecuzione su {len(server_ids)} server",
+                "started": server_ids,
+                "already_running": True
+            })
+        return jsonify({
+            "success": True,
+            "message": f"Discovery ultimi aggiunti avviata in sequenza su {len(server_ids)} server",
+            "started": server_ids
+        })
+
+    @app.route('/api/emby/probe/recent/stop', methods=['POST'])
+    @login_required
+    def probe_recent_stop():
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify({"success": False, "message": "Formato non valido"}), 400
+        server_id = payload.get("server_id")
+        if not server_id:
+            return jsonify({"success": False, "message": "server_id mancante"}), 400
+        stopped = get_probe_manager().stop_recent_discovery(server_id)
+        if stopped:
+            return jsonify({"success": True, "message": "Discovery ultimi aggiunti arrestata"})
+        return jsonify({"success": False, "message": "Discovery ultimi aggiunti non in esecuzione"}), 400
+
+    @app.route('/api/emby/probe/recent/stop-all', methods=['POST'])
+    @login_required
+    def probe_recent_stop_all():
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Config non valida"}), 400
+        emby_config = config.get("EMBY") or {}
+        servers = emby_config.get("SERVERS") or []
+        get_probe_manager().stop_recent_discovery_sequence()
+        stopped_ids = []
+        for server in servers:
+            server_id = server.get("id")
+            if not server_id:
+                continue
+            if get_probe_manager().stop_recent_discovery(server_id):
+                stopped_ids.append(server_id)
+        return jsonify({
+            "success": True,
+            "message": f"Discovery ultimi aggiunti arrestata su {len(stopped_ids)} server",
+            "stopped": stopped_ids
+        })
+
+    # --- Probe Recent Processing Routes ---
+
+    @app.route('/api/emby/probe/recent/processing/start', methods=['POST'])
+    @login_required
+    def probe_recent_processing_start():
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify({"success": False, "message": "Formato non valido"}), 400
+        server_id = payload.get("server_id")
+        mode = payload.get("mode", "smart")
+        if not server_id:
+            return jsonify({"success": False, "message": "server_id mancante"}), 400
+        if mode not in ("smart", "forced"):
+            return jsonify({"success": False, "message": "mode deve essere 'smart' o 'forced'"}), 400
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Config non valida"}), 400
+        emby_config = config.get("EMBY") or {}
+        servers = emby_config.get("SERVERS") or []
+        target_server = None
+        for server in servers:
+            if server.get("id") == server_id:
+                target_server = server
+                break
+        if target_server is None:
+            return jsonify({"success": False, "message": "Server non trovato"}), 404
+        if not target_server.get("enabled"):
+            return jsonify({"success": False, "message": "Server disabilitato"}), 400
+        started = get_probe_manager().start_recent_processing(target_server, server_id, mode)
+        if started:
+            return jsonify({"success": True, "message": f"Processing recenti avviato in modalità {mode}"})
+        return jsonify({"success": False, "message": "Processing recenti già in esecuzione"}), 400
+
+    @app.route('/api/emby/probe/recent/processing/start-all', methods=['POST'])
+    @login_required
+    def probe_recent_processing_start_all():
+        payload = request.get_json(silent=True) or {}
+        if payload and not isinstance(payload, dict):
+            return jsonify({"success": False, "message": "Formato non valido"}), 400
+        mode = (payload or {}).get("mode", "smart")
+        if mode not in ("smart", "forced"):
+            return jsonify({"success": False, "message": "mode deve essere 'smart' o 'forced'"}), 400
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Config non valida"}), 400
+        emby_config = config.get("EMBY") or {}
+        servers = [server for server in (emby_config.get("SERVERS") or []) if server.get("enabled")]
+        if not servers:
+            return jsonify({"success": False, "message": "Nessun server Emby abilitato"}), 400
+        started = get_probe_manager().start_recent_processing_sequence(servers, mode)
+        if not started:
+            return jsonify({"success": False, "message": "Processing recenti già in esecuzione"}), 400
+        server_ids = [server.get("id") for server in servers if server.get("id")]
+        return jsonify({
+            "success": True,
+            "message": f"Processing recenti avviato in sequenza su {len(server_ids)} server",
+            "started": server_ids
+        })
+
+    @app.route('/api/emby/probe/recent/processing/stop', methods=['POST'])
+    @login_required
+    def probe_recent_processing_stop():
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify({"success": False, "message": "Formato non valido"}), 400
+        server_id = payload.get("server_id")
+        if not server_id:
+            return jsonify({"success": False, "message": "server_id mancante"}), 400
+        stopped = get_probe_manager().stop_recent_processing(server_id)
+        if stopped:
+            return jsonify({"success": True, "message": "Processing recenti arrestato"})
+        return jsonify({"success": False, "message": "Processing recenti non in esecuzione"}), 400
+
+    @app.route('/api/emby/probe/recent/processing/stop-all', methods=['POST'])
+    @login_required
+    def probe_recent_processing_stop_all():
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Config non valida"}), 400
+        emby_config = config.get("EMBY") or {}
+        servers = emby_config.get("SERVERS") or []
+        get_probe_manager().stop_recent_processing_sequence()
+        stopped_ids = []
+        for server in servers:
+            server_id = server.get("id")
+            if not server_id:
+                continue
+            if get_probe_manager().stop_recent_processing(server_id):
+                stopped_ids.append(server_id)
+        return jsonify({
+            "success": True,
+            "message": f"Processing recenti arrestato su {len(stopped_ids)} server",
+            "stopped": stopped_ids
+        })
+
+    # --- Probe Combo Workflow Routes (Recent Scope) ---
+
+    @app.route('/api/emby/probe/recent/combo/start', methods=['POST'])
+    @login_required
+    def probe_recent_combo_start():
+        """Start combo workflow (Discovery + Processing) for single server in recent scope."""
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify({"success": False, "message": "Formato non valido"}), 400
+        server_id = payload.get("server_id")
+        mode = payload.get("mode", "smart")
+        if not server_id:
+            return jsonify({"success": False, "message": "server_id mancante"}), 400
+        if mode not in ("smart", "forced"):
+            return jsonify({"success": False, "message": "mode deve essere 'smart' o 'forced'"}), 400
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Config non valida"}), 400
+        emby_config = config.get("EMBY") or {}
+        servers = emby_config.get("SERVERS") or []
+        target_server = None
+        for server in servers:
+            if server.get("id") == server_id:
+                target_server = server
+                break
+        if target_server is None:
+            return jsonify({"success": False, "message": "Server non trovato"}), 404
+        if not target_server.get("enabled"):
+            return jsonify({"success": False, "message": "Server disabilitato"}), 400
+        started = get_probe_manager().start_combo_workflow(target_server, server_id, mode, scope="recent")
+        if started:
+            return jsonify({"success": True, "message": f"Combo workflow avviato in modalità {mode}"})
+        return jsonify({"success": False, "message": "Combo workflow già in esecuzione"}), 400
+
+    @app.route('/api/emby/probe/recent/combo/start-all', methods=['POST'])
+    @login_required
+    def probe_recent_combo_start_all():
+        """Start combo workflow (Discovery + Processing) for all servers in recent scope."""
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify({"success": False, "message": "Formato non valido"}), 400
+        mode = payload.get("mode", "smart")
+        if mode not in ("smart", "forced"):
+            return jsonify({"success": False, "message": "mode deve essere 'smart' o 'forced'"}), 400
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Config non valida"}), 400
+        emby_config = config.get("EMBY") or {}
+        servers = [s for s in (emby_config.get("SERVERS") or []) if s and s.get("enabled")]
+        if not servers:
+            return jsonify({"success": False, "message": "Nessun server abilitato"}), 400
+        started = get_probe_manager().start_combo_workflow_all_servers(servers, mode, scope="recent")
+        if started:
+            server_ids = [server.get("id") for server in servers if server.get("id")]
+            return jsonify({
+                "success": True,
+                "message": f"Combo workflow avviato su {len(server_ids)} server in modalità {mode}",
+                "started": server_ids
+            })
+        return jsonify({"success": False, "message": "Combo workflow già in esecuzione"}), 400
+
+    @app.route('/api/emby/probe/recent/combo/stop', methods=['POST'])
+    @login_required
+    def probe_recent_combo_stop():
+        """Stop combo workflow for single server in recent scope."""
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify({"success": False, "message": "Formato non valido"}), 400
+        server_id = payload.get("server_id")
+        if not server_id:
+            return jsonify({"success": False, "message": "server_id mancante"}), 400
+        stopped = get_probe_manager().stop_combo_workflow(server_id, scope="recent")
+        if stopped:
+            return jsonify({"success": True, "message": "Combo workflow arrestato"})
+        return jsonify({"success": False, "message": "Combo workflow non in esecuzione"}), 400
+
+    @app.route('/api/emby/probe/recent/combo/stop-all', methods=['POST'])
+    @login_required
+    def probe_recent_combo_stop_all():
+        """Stop combo workflow for all servers in recent scope."""
+        stopped = get_probe_manager().stop_combo_workflow_all_servers(scope="recent")
+        if stopped:
+            return jsonify({"success": True, "message": "Combo workflow arrestato su tutti i server"})
+        return jsonify({"success": False, "message": "Combo workflow non in esecuzione"}), 400
+
+    # --- Probe Combo Workflow Routes (Libraries Scope) ---
+
+    @app.route('/api/emby/probe/libraries/combo/start', methods=['POST'])
+    @login_required
+    def probe_libraries_combo_start():
+        """Start combo workflow (Discovery + Processing) for single server in libraries scope."""
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify({"success": False, "message": "Formato non valido"}), 400
+        server_id = payload.get("server_id")
+        mode = payload.get("mode", "smart")
+        libraries = payload.get("libraries")  # Optional list of library IDs
+        if not server_id:
+            return jsonify({"success": False, "message": "server_id mancante"}), 400
+        if mode not in ("smart", "forced"):
+            return jsonify({"success": False, "message": "mode deve essere 'smart' o 'forced'"}), 400
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Config non valida"}), 400
+        emby_config = config.get("EMBY") or {}
+        servers = emby_config.get("SERVERS") or []
+        target_server = None
+        for server in servers:
+            if server.get("id") == server_id:
+                target_server = server
+                break
+        if target_server is None:
+            return jsonify({"success": False, "message": "Server non trovato"}), 404
+        if not target_server.get("enabled"):
+            return jsonify({"success": False, "message": "Server disabilitato"}), 400
+        started = get_probe_manager().start_combo_workflow(target_server, server_id, mode, scope="libraries", target_libraries=libraries)
+        if started:
+            return jsonify({"success": True, "message": f"Combo workflow avviato in modalità {mode}"})
+        return jsonify({"success": False, "message": "Combo workflow già in esecuzione"}), 400
+
+    @app.route('/api/emby/probe/libraries/combo/stop', methods=['POST'])
+    @login_required
+    def probe_libraries_combo_stop():
+        """Stop combo workflow for single server in libraries scope."""
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify({"success": False, "message": "Formato non valido"}), 400
+        server_id = payload.get("server_id")
+        if not server_id:
+            return jsonify({"success": False, "message": "server_id mancante"}), 400
+        stopped = get_probe_manager().stop_combo_workflow(server_id, scope="libraries")
+        if stopped:
+            return jsonify({"success": True, "message": "Combo workflow arrestato"})
+        return jsonify({"success": False, "message": "Combo workflow non in esecuzione"}), 400
+
     # --- Probe Processing Routes ---
 
     @app.route('/api/emby/probe/processing/start', methods=['POST'])
@@ -3253,13 +3580,14 @@ def create_dashboard_app():
     def probe_queue():
         if request.method == 'GET':
             server_id = request.args.get("server_id")
+            scope = request.args.get("scope") or "libraries"
             try:
                 backend = _ensure_db_backend()
-                queue = backend.get_probe_queue(server_id)
+                queue = backend.get_probe_queue(server_id, scope=scope)
                 for item in queue:
                     item["display_name"] = _format_display_name_from_queue(item)
                 library_totals = {}
-                if server_id:
+                if server_id and scope == "libraries":
                     probe_status = get_probe_manager().get_status(server_id)
                     library_totals = (probe_status.get("discovery") or {}).get("library_totals") or {}
             except StorageError as exc:
@@ -3271,6 +3599,7 @@ def create_dashboard_app():
         server_id = payload.get("server_id") or request.args.get("server_id")
         item_id = payload.get("item_id")
         media_source_id = payload.get("media_source_id")
+        scope = payload.get("scope") or request.args.get("scope") or "libraries"
 
         if not server_id:
             return jsonify({"success": False, "message": "server_id mancante"}), 400
@@ -3279,11 +3608,11 @@ def create_dashboard_app():
             backend = _ensure_db_backend()
             if item_id:
                 # Remove specific item
-                backend.remove_from_probe_queue(server_id, item_id, media_source_id)
+                backend.remove_from_probe_queue(server_id, item_id, media_source_id, scope=scope)
                 return jsonify({"success": True, "message": "Item rimosso dalla coda"})
             else:
                 # Clear entire queue for server
-                backend.clear_probe_queue(server_id)
+                backend.clear_probe_queue(server_id, scope=scope)
                 return jsonify({"success": True, "message": "Coda svuotata"})
         except StorageError as exc:
             return jsonify({"success": False, "message": f"Errore DB: {exc}"}), 500
@@ -3296,6 +3625,7 @@ def create_dashboard_app():
         if request.method == 'GET':
             server_id = request.args.get("server_id")
             limit = request.args.get("limit", "100")
+            scope = request.args.get("scope") or "libraries"
             try:
                 limit_int = int(limit)
             except ValueError:
@@ -3303,7 +3633,7 @@ def create_dashboard_app():
 
             try:
                 backend = _ensure_db_backend()
-                history = backend.get_probe_history(server_id, limit_int)
+                history = backend.get_probe_history(server_id, limit_int, scope=scope)
             except StorageError as exc:
                 return jsonify({"success": False, "message": f"Errore DB: {exc}"}), 500
             return jsonify({"success": True, "history": history})
@@ -3311,13 +3641,14 @@ def create_dashboard_app():
         # DELETE
         payload = request.get_json(silent=True) or {}
         server_id = payload.get("server_id") or request.args.get("server_id")
+        scope = payload.get("scope") or request.args.get("scope") or "libraries"
 
         if not server_id:
             return jsonify({"success": False, "message": "server_id mancante"}), 400
 
         try:
             backend = _ensure_db_backend()
-            backend.clear_probe_history(server_id)
+            backend.clear_probe_history(server_id, scope=scope)
             return jsonify({"success": True, "message": "Storico svuotato"})
         except StorageError as exc:
             return jsonify({"success": False, "message": f"Errore DB: {exc}"}), 500
@@ -3329,6 +3660,7 @@ def create_dashboard_app():
         server_id = payload.get("server_id")
         item_id = payload.get("item_id")
         media_source_id = payload.get("media_source_id")
+        scope = payload.get("scope") or "libraries"
 
         if not server_id or not item_id:
             return jsonify({"success": False, "message": "server_id o item_id mancante"}), 400
@@ -3346,7 +3678,7 @@ def create_dashboard_app():
             return jsonify({"success": False, "message": f"Server {server_id} non trovato"}), 404
 
         # Call retry_item on probe manager
-        success, message = get_probe_manager().retry_item(target_server, server_id, item_id, media_source_id)
+        success, message = get_probe_manager().retry_item(target_server, server_id, item_id, media_source_id, scope=scope)
 
         if success:
             return jsonify({"success": True, "message": message})
@@ -3362,6 +3694,7 @@ def create_dashboard_app():
             server_id = request.args.get("server_id")
             min_retry = request.args.get("min_retry", "3")
             error_type = request.args.get("type") or request.args.get("error_type")
+            scope = request.args.get("scope") or "libraries"
             try:
                 min_retry_int = int(min_retry)
             except ValueError:
@@ -3372,7 +3705,8 @@ def create_dashboard_app():
                 blacklist = backend.get_probe_blacklist(
                     server_id,
                     min_retry_count=min_retry_int,
-                    error_type=error_type
+                    error_type=error_type,
+                    scope=scope
                 )
             except StorageError as exc:
                 return jsonify({"success": False, "message": f"Errore DB: {exc}"}), 500
@@ -3384,6 +3718,7 @@ def create_dashboard_app():
         item_id = payload.get("item_id")
         media_source_id = payload.get("media_source_id")
         error_type = payload.get("type") or request.args.get("type")
+        scope = payload.get("scope") or request.args.get("scope") or "libraries"
 
         if not server_id:
             return jsonify({"success": False, "message": "server_id mancante"}), 400
@@ -3392,11 +3727,11 @@ def create_dashboard_app():
             backend = _ensure_db_backend()
             if item_id:
                 # Remove specific item from blacklist
-                backend.remove_from_probe_blacklist(server_id, item_id, media_source_id)
+                backend.remove_from_probe_blacklist(server_id, item_id, media_source_id, scope=scope)
                 return jsonify({"success": True, "message": "Item rimosso dalla blacklist"})
             else:
                 # Clear entire blacklist for server
-                backend.clear_probe_blacklist(server_id, error_type=error_type)
+                backend.clear_probe_blacklist(server_id, error_type=error_type, scope=scope)
                 return jsonify({"success": True, "message": "Blacklist svuotata"})
         except StorageError as exc:
             return jsonify({"success": False, "message": f"Errore DB: {exc}"}), 500
