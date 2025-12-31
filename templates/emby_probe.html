@@ -576,24 +576,23 @@
         <div class="card">
             <h2>Librerie - Pannello di Controllo</h2>
 
-            <!-- Combo Workflow Buttons (Librerie) -->
-            <div style="margin-bottom: 1.5rem; padding-bottom: 1.5rem; border-bottom: 2px solid #e5e7eb;">
-                <h3 style="margin-bottom: 1rem; font-size: 1.1rem; color: #374151;">Discovery + Processing Automatico</h3>
-                <div class="worker-controls" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem;">
-                    <button class="btn primary" data-libraries-combo-start-smart title="Esegue Discovery e poi Processing in modalità Smart (pausa durante streaming)">
-                        🚀 Discovery + Processing [smart]
-                    </button>
-                    <button class="btn secondary" data-libraries-combo-start-forced title="Esegue Discovery e poi Processing in modalità Forced (senza pause)">
-                        ⚡ Discovery + Processing [forced]
-                    </button>
-                    <button class="btn ghost" data-libraries-combo-stop disabled title="Ferma il combo workflow in corso">
-                        ⏹️ Stop
-                    </button>
-                </div>
-                <div class="worker-log" data-libraries-combo-log style="margin-top: 0.75rem; display: none;"></div>
-            </div>
-
             <div class="worker-grid">
+                <!-- Combo Workflow Worker -->
+                <div class="worker-card" style="grid-column: 1 / -1;">
+                    <h3>Discovery + Processing Automatico</h3>
+                    <div class="worker-log" data-libraries-combo-log>In attesa...</div>
+                    <div class="worker-controls" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem;">
+                        <button class="btn primary" data-libraries-combo-start-smart title="Esegue Discovery e poi Processing in modalità Smart (pausa durante streaming)">
+                            🚀 Discovery + Processing [smart]
+                        </button>
+                        <button class="btn secondary" data-libraries-combo-start-forced title="Esegue Discovery e poi Processing in modalità Forced (senza pause)">
+                            ⚡ Discovery + Processing [forced]
+                        </button>
+                        <button class="btn ghost" data-libraries-combo-stop disabled title="Ferma il combo workflow in corso">
+                            ⏹️ Stop
+                        </button>
+                    </div>
+                </div>
                 <!-- Discovery Worker -->
                 <div class="worker-card">
                     <h3>
@@ -809,24 +808,23 @@
         <div class="card">
             <h2>Ultimi aggiunti - Pannello di Controllo</h2>
 
-            <!-- Combo Workflow Buttons (Ultimi aggiunti) -->
-            <div style="margin-bottom: 1.5rem; padding-bottom: 1.5rem; border-bottom: 2px solid #e5e7eb;">
-                <h3 style="margin-bottom: 1rem; font-size: 1.1rem; color: #374151;">Discovery + Processing Automatico</h3>
-                <div class="worker-controls" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem;">
-                    <button class="btn primary" data-recent-combo-start-smart title="Esegue Discovery e poi Processing in modalità Smart (pausa durante streaming)">
-                        🚀 Discovery + Processing [smart]
-                    </button>
-                    <button class="btn secondary" data-recent-combo-start-forced title="Esegue Discovery e poi Processing in modalità Forced (senza pause)">
-                        ⚡ Discovery + Processing [forced]
-                    </button>
-                    <button class="btn ghost" data-recent-combo-stop disabled title="Ferma il combo workflow in corso">
-                        ⏹️ Stop
-                    </button>
-                </div>
-                <div class="worker-log" data-recent-combo-log style="margin-top: 0.75rem; display: none;"></div>
-            </div>
-
             <div class="worker-grid">
+                <!-- Combo Workflow Worker -->
+                <div class="worker-card" style="grid-column: 1 / -1;">
+                    <h3>Discovery + Processing Automatico</h3>
+                    <div class="worker-log" data-recent-combo-log>In attesa...</div>
+                    <div class="worker-controls" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem;">
+                        <button class="btn primary" data-recent-combo-start-smart title="Esegue Discovery e poi Processing in modalità Smart (pausa durante streaming)">
+                            🚀 Discovery + Processing [smart]
+                        </button>
+                        <button class="btn secondary" data-recent-combo-start-forced title="Esegue Discovery e poi Processing in modalità Forced (senza pause)">
+                            ⚡ Discovery + Processing [forced]
+                        </button>
+                        <button class="btn ghost" data-recent-combo-stop disabled title="Ferma il combo workflow in corso">
+                            ⏹️ Stop
+                        </button>
+                    </div>
+                </div>
                 <div class="worker-card">
                     <h3>
                         Discovery ultimi aggiunti
@@ -1866,14 +1864,9 @@
             if (comboStartForced) comboStartForced.disabled = isComboRunning;
             if (comboStop) comboStop.disabled = !isComboRunning;
 
-            // Show/hide log and update message
+            // Update log message
             if (comboLog) {
-                if (isComboRunning) {
-                    comboLog.style.display = 'block';
-                    comboLog.textContent = status.last_log || 'Combo workflow in corso...';
-                } else {
-                    comboLog.style.display = 'none';
-                }
+                comboLog.textContent = status.last_log || 'In attesa...';
             }
 
             // When combo is running, disable individual discovery/processing buttons

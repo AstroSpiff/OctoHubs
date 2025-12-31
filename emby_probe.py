@@ -747,6 +747,28 @@ class EmbyProbeManager:
         try:
             enabled_servers = [s for s in servers if s and s.get("enabled") and s.get("id")]
             total_servers = len(enabled_servers)
+            worker_key = f"combo_{scope}"
+
+            # Initialize combo status for all servers
+            for srv in enabled_servers:
+                srv_id = srv.get("id")
+                if srv_id:
+                    with self._lock:
+                        if srv_id not in self._workers:
+                            self._workers[srv_id] = {}
+                        if srv_id not in self._status:
+                            self._status[srv_id] = {}
+                        if srv_id not in self._stop_flags:
+                            self._stop_flags[srv_id] = {}
+
+                        self._status[srv_id][worker_key] = {
+                            "running": True,
+                            "phase": "discovery",
+                            "last_log": "Avvio combo workflow...",
+                            "mode": mode,
+                            "scope": scope,
+                            "started_at": datetime.now(timezone.utc).isoformat()
+                        }
 
             # Phase 1: Discovery on all servers (sequential)
             for index, server in enumerate(enabled_servers, 1):
@@ -833,6 +855,19 @@ class EmbyProbeManager:
         except Exception as exc:
             # Errors are logged by individual workers
             pass
+        finally:
+            # Mark combo workflow as completed for all servers
+            worker_key = f"combo_{scope}"
+            for srv in enabled_servers:
+                srv_id = srv.get("id")
+                if srv_id and srv_id in self._status:
+                    with self._lock:
+                        if worker_key in self._status[srv_id]:
+                            if stop_flag.is_set():
+                                self._status[srv_id][worker_key]["last_log"] = "Combo workflow interrotto dall'utente"
+                            else:
+                                self._status[srv_id][worker_key]["last_log"] = "Combo workflow completato"
+                            self._status[srv_id][worker_key]["running"] = False
 
     def _wait_for_worker(self, worker: Optional[threading.Thread], stop_flag: threading.Event) -> None:
         while worker and worker.is_alive():
