@@ -1,0 +1,1093 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <title>Configurazione</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='emby.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css" integrity="sha512-Evv84Mr4kqVGRNSgIGL/F/aIDqQb7xQ2vcrdIwxfjThSH8CSR7PBEakCr51Ck+w+/U6swU2Im1vVX0SVk9ABhg==" crossorigin="anonymous" referrerpolicy="no-referrer">
+    <link rel="stylesheet" href="{{ url_for('static', filename='icon-picker.css') }}">
+</head>
+<body data-tab-page="config">
+    <div class="wrapper">
+        <h1>Configurazione</h1>
+        <nav class="primary-nav">
+            <a href="{{ url_for('dashboard') }}"
+               class="nav-link {% if active_page == 'jellyseerr' %}active{% endif %}"
+               title="Apri la dashboard di ricerca">
+                Ricerca
+            </a>
+            <a href="{{ url_for('emby_dashboard') }}"
+               class="nav-link {% if active_page == 'emby' %}active{% endif %}"
+               title="Apri Emby Toolkit">
+                Emby Toolkit
+            </a>
+            <a href="{{ url_for('emby_probe') }}"
+               class="nav-link {% if active_page == 'emby_probe' %}active{% endif %}"
+               title="Apri STRM Probe">
+                STRM Probe
+                {% if total_blacklist_count > 0 %}
+                    <span class="notification-badge" title="Errori / Incompleti">{{ total_blacklist_count }}</span>
+                {% endif %}
+                {% if total_incomplete_count > 0 %}
+                    <span class="notification-badge warning" title="Errori / Incompleti">{{ total_incomplete_count }}</span>
+                {% endif %}
+            </a>
+            <a href="{{ url_for('configuration') }}"
+               class="nav-link {% if active_page == 'config' %}active{% endif %}"
+               title="Apri Configurazione">
+                Configurazione
+            </a>
+            <a href="{{ url_for('auth_logout') }}"
+               class="nav-link"
+               title="Esci dall'app"
+               style="margin-left: auto;">
+                Logout
+            </a>
+        </nav>
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for msg in messages %}
+                    <div class="alert success" data-toast="success">{{ msg }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <div class="tab-shell">
+            <div class="tabs" data-tab-page="config">
+                <button class="tab-btn active" data-tab="emby-servers" title="Gestisci i server Emby">Server Emby</button>
+                <button class="tab-btn" data-tab="telegram" title="Configura i canali Telegram">Telegram</button>
+                <button class="tab-btn" data-tab="services" title="Servizi esterni e automazioni">Servizi &amp; Automazioni</button>
+                <button class="tab-btn" data-tab="rss-import" title="Configura feed RSS e importazioni">RSS &amp; Import</button>
+            </div>
+
+            <div class="tab-panel active" data-tab-panel="emby-servers">
+                <div class="card">
+                    <h2>Configurazione server Emby</h2>
+                    <p class="tagline">Imposta solo i dati essenziali. Le opzioni avanzate sono disponibili nei dettagli.</p>
+                    {% if emby_servers %}
+                        <div class="server-grid">
+                            {% for server in emby_servers %}
+                                <article class="server-card compact">
+                                    <form class="server-form" action="{{ url_for('emby_save_server') }}" method="post">
+                                        <input type="hidden" name="server_id" value="{{ server.id }}">
+                                        <input type="hidden" name="next" value="{{ url_for('configuration') }}">
+                                        <div class="field-grid">
+                                            <div style="display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: start;">
+                                                <label>
+                                                    Icona
+                                                    <div class="icon-picker-wrapper">
+                                                        <input type="hidden" name="server_icon" value="{{ server.icon or 'fa-server' }}">
+                                                        <input type="hidden" name="server_icon_color" value="{{ server.icon_color or '#3b82f6' }}">
+                                                        <input type="hidden" name="server_icon_style" value="{{ server.icon_style or 'solid' }}">
+                                                    </div>
+                                                </label>
+                                                <label>
+                                                    Alias
+                                                    {% set server_alias_value = server.alias or server.original_name or server.name %}
+                                                    {% set server_original_name = server.original_name or server.name %}
+                                                    <input type="text" name="server_alias" value="{{ server_alias_value }}">
+                                                    {% if server_original_name %}
+                                                        <span class="tagline small">{{ server_original_name }}</span>
+                                                    {% endif %}
+                                                </label>
+                                            </div>
+                                            <label>
+                                                URL Emby
+                                                <input type="url" name="server_url" value="{{ server.url }}" required>
+                                            </label>
+                                            <label>
+                                                API Key
+                                                <input type="password" name="server_api_key" value="{{ server.api_key }}">
+                                            </label>
+                                            <label>
+                                                Abilitato
+                                                <select name="server_enabled">
+                                                    <option value="1" {% if server.enabled %}selected{% endif %}>Sì</option>
+                                                    <option value="0" {% if not server.enabled %}selected{% endif %}>No</option>
+                                                </select>
+                                            </label>
+                                        </div>
+                                        <details class="advanced-block">
+                                            <summary>Opzioni avanzate</summary>
+                                            <div class="field-grid">
+                                                <label>
+                                                    Note
+                                                    <input type="text" name="server_notes" value="{{ server.notes }}">
+                                                </label>
+                                                <label>
+                                                    STRM Task ID
+                                                    <input type="text" name="server_strm_task_id" value="{{ server.strm_task_id }}"
+                                                           list="strm-tasks-{{ server.id }}">
+                                                    {% if server.scheduled_tasks %}
+                                                        <datalist id="strm-tasks-{{ server.id }}">
+                                                            {% for task in server.scheduled_tasks %}
+                                                                <option value="{{ task.id }}">{{ task.name or task.id }}</option>
+                                                            {% endfor %}
+                                                        </datalist>
+                                                    {% endif %}
+                                                </label>
+                                            </div>
+                                        </details>
+                                        <div class="server-actions">
+                                            <button class="btn primary" type="submit" title="Salva o aggiorna questo server">Salva server</button>
+                                        </div>
+                                    </form>
+                                </article>
+                            {% endfor %}
+                        </div>
+                    {% else %}
+                        <p class="tagline">Nessun server Emby configurato. Aggiungine uno qui sotto.</p>
+                    {% endif %}
+                </div>
+                <div class="card">
+                    <h2>Aggiungi nuovo server</h2>
+                    <form class="server-form" action="{{ url_for('emby_save_server') }}" method="post">
+                        <input type="hidden" name="next" value="{{ url_for('configuration') }}">
+                        <div class="field-grid">
+                            <div style="display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: start;">
+                                <label>
+                                    Icona
+                                    <div class="icon-picker-wrapper">
+                                        <input type="hidden" name="server_icon" value="fa-server">
+                                        <input type="hidden" name="server_icon_color" value="#3b82f6">
+                                        <input type="hidden" name="server_icon_style" value="solid">
+                                    </div>
+                                </label>
+                                <label>
+                                    Alias
+                                    <input type="text" name="server_alias">
+                                    <span class="tagline small">Opzionale</span>
+                                </label>
+                            </div>
+                            <label>
+                                URL Emby
+                                <input type="url" name="server_url" required>
+                            </label>
+                            <label>
+                                API Key
+                                <input type="password" name="server_api_key">
+                            </label>
+                            <label>
+                                Abilitato
+                                <select name="server_enabled">
+                                    <option value="1" selected>Sì</option>
+                                    <option value="0">No</option>
+                                </select>
+                            </label>
+                        </div>
+                        <details class="advanced-block">
+                            <summary>Opzioni avanzate</summary>
+                            <div class="field-grid">
+                                <label>
+                                    STRM Task ID
+                                    <input type="text" name="server_strm_task_id">
+                                </label>
+                                <label>
+                                    Note
+                                    <input type="text" name="server_notes">
+                                </label>
+                            </div>
+                        </details>
+                        <div class="server-actions">
+                            <button class="btn primary" type="submit" title="Aggiungi un nuovo server Emby">Salva server</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <div class="tab-panel" data-tab-panel="telegram">
+                <div class="card">
+                    <h2>Telegram</h2>
+                    <p class="tagline">Configura bot, destinazioni e preset per le notifiche Telegram.</p>
+                    {% if not telegram_ready %}
+                        <div class="alert warning">Per usare Telegram serve il database attivo (vedi Configurazione servizi).</div>
+                    {% endif %}
+                </div>
+
+                <!-- SEZIONE 1: PRECONFIGURAZIONI -->
+                <div class="card telegram-section">
+                    <div class="telegram-section-header">
+                        <div>
+                            <h3>Preconfigurazioni</h3>
+                            <p class="tagline">Crea combinazioni di bot e destinazioni pronte all'uso. La verifica dei bot avviene qui.</p>
+                        </div>
+                    </div>
+
+                    <form action="{{ url_for('telegram_add_preset') }}" method="post" data-telegram-preset-form>
+                        <input type="hidden" name="next" value="{{ url_for('configuration') }}">
+                        <input type="hidden" name="telegram_preset_id" value="" data-telegram-preset-id>
+                        <fieldset {% if not telegram_ready %}disabled{% endif %}>
+                            <div class="form-grid">
+                                <div>
+                                    <label for="telegram_preset_name">Nome preconfigurazione</label>
+                                    <input type="text" id="telegram_preset_name" name="telegram_preset_name" placeholder="es. Notifiche Emby Server 1" required>
+                                </div>
+                            </div>
+                            <div class="checklist-grid">
+                                <div>
+                                    <label>Bot (seleziona uno)</label>
+                                    {% if telegram_bots %}
+                                        <div class="checklist">
+                                            {% for bot in telegram_bots %}
+                                                <label class="check-item">
+                                                    <input type="radio" name="telegram_preset_bot" value="{{ bot.id }}" required>
+                                                    {{ bot.alias or bot.original_name or bot.username or ('Bot ' ~ bot.id[:6]) }}
+                                                </label>
+                                            {% endfor %}
+                                        </div>
+                                    {% else %}
+                                        <p class="tagline">Salva almeno un bot prima di creare preset.</p>
+                                    {% endif %}
+                                </div>
+                                <div>
+                                    <label>Canali</label>
+                                    {% if telegram_channels %}
+                                        <div class="checklist">
+                                            {% for entry in telegram_channels %}
+                                                <label class="check-item">
+                                                    <input type="checkbox" name="telegram_preset_channels" value="{{ entry.id }}">
+                                                    {{ entry.alias or entry.original_name or entry.chat_id }}
+                                                </label>
+                                            {% endfor %}
+                                        </div>
+                                    {% else %}
+                                        <p class="tagline">Nessun canale disponibile.</p>
+                                    {% endif %}
+                                </div>
+                                <div>
+                                    <label>Gruppi</label>
+                                    {% if telegram_groups %}
+                                        <div class="checklist">
+                                            {% for entry in telegram_groups %}
+                                                <label class="check-item">
+                                                    <input type="checkbox" name="telegram_preset_groups" value="{{ entry.id }}">
+                                                    {{ entry.alias or entry.original_name or entry.chat_id }}
+                                                </label>
+                                            {% endfor %}
+                                        </div>
+                                    {% else %}
+                                        <p class="tagline">Nessun gruppo disponibile.</p>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            <div class="form-field-end">
+                                <button class="btn primary" type="submit" data-telegram-preset-submit>Crea preconfigurazione</button>
+                            </div>
+                        </fieldset>
+                    </form>
+
+                    {% if telegram_presets %}
+                        <div class="telegram-presets">
+                            <h4>Preset salvati</h4>
+                            <div class="telegram-preset-list">
+                                {% for preset in telegram_presets %}
+                                    <article class="telegram-preset-card">
+                                        <div class="telegram-preset-grid">
+                                            <div>
+                                                <div class="telegram-preset-name">{{ preset.name }}</div>
+                                                <div class="telegram-meta-label">Preset</div>
+                                            </div>
+                                            <div>
+                                                <div class="telegram-meta-label">Bot</div>
+                                                {% if preset.bot_ids %}
+                                                    {% set bot_id = preset.bot_ids[0] %}
+                                                    {% set bot = telegram_bots | selectattr('id', 'equalto', bot_id) | first %}
+                                                    {% if bot %}
+                                                        <div class="telegram-meta-value">{{ bot.alias or bot.original_name or bot.username }}</div>
+                                                    {% endif %}
+                                                {% else %}
+                                                    <div class="telegram-meta-empty">-</div>
+                                                {% endif %}
+                                            </div>
+                                            <div>
+                                                <div class="telegram-meta-label">Canali</div>
+                                                {% if preset.channel_ids %}
+                                                    <div class="telegram-meta-stack">
+                                                        {% for channel_id in preset.channel_ids %}
+                                                            {% set channel = telegram_channels | selectattr('id', 'equalto', channel_id) | first %}
+                                                            {% if channel %}
+                                                                <div class="telegram-meta-line">
+                                                                    <span>{{ channel.alias or channel.original_name or channel.chat_id }}</span>
+                                                                    {% if preset.alerts and preset.alerts.get('channels', {}).get(channel_id) %}
+                                                                        {% set check = preset.alerts.get('channels', {}).get(channel_id, [])[0] %}
+                                                                        {% if check and check.status == 'admin' %}
+                                                                            <span class="telegram-status ok" title="Bot admin presente">✓</span>
+                                                                        {% else %}
+                                                                            <span class="telegram-status fail" title="Bot non è admin nel canale">✗</span>
+                                                                        {% endif %}
+                                                                    {% endif %}
+                                                                </div>
+                                                            {% endif %}
+                                                        {% endfor %}
+                                                    </div>
+                                                {% else %}
+                                                    <div class="telegram-meta-empty">-</div>
+                                                {% endif %}
+                                            </div>
+                                            <div>
+                                                <div class="telegram-meta-label">Gruppi</div>
+                                                {% if preset.group_ids %}
+                                                    <div class="telegram-meta-stack">
+                                                        {% for group_id in preset.group_ids %}
+                                                            {% set group = telegram_groups | selectattr('id', 'equalto', group_id) | first %}
+                                                            {% if group %}
+                                                                <div class="telegram-meta-line">
+                                                                    <span>{{ group.alias or group.original_name or group.chat_id }}</span>
+                                                                    {% if preset.alerts and preset.alerts.get('groups', {}).get(group_id) %}
+                                                                        {% set check = preset.alerts.get('groups', {}).get(group_id, [])[0] %}
+                                                                        {% if check and check.status == 'admin' %}
+                                                                            <span class="telegram-status ok" title="Bot admin presente">✓</span>
+                                                                        {% else %}
+                                                                            <span class="telegram-status fail" title="Bot non è admin nel gruppo">✗</span>
+                                                                        {% endif %}
+                                                                    {% endif %}
+                                                                </div>
+                                                            {% endif %}
+                                                        {% endfor %}
+                                                    </div>
+                                                {% else %}
+                                                    <div class="telegram-meta-empty">-</div>
+                                                {% endif %}
+                                            </div>
+                                            <div class="telegram-preset-actions">
+                                                <button class="btn ghost small telegram-icon-btn"
+                                                        type="button"
+                                                        title="Modifica preset"
+                                                        data-telegram-preset-edit
+                                                        data-preset-id="{{ preset.id }}"
+                                                        data-preset-name="{{ preset.name | e }}"
+                                                        data-preset-bot="{{ preset.bot_ids[0] if preset.bot_ids else '' }}"
+                                                        data-preset-groups='{{ preset.group_ids | tojson | safe }}'
+                                                        data-preset-channels='{{ preset.channel_ids | tojson | safe }}'>✎</button>
+                                                <form action="{{ url_for('telegram_remove_preset') }}" method="post" class="telegram-inline-form">
+                                                    <input type="hidden" name="telegram_preset_id" value="{{ preset.id }}">
+                                                    <input type="hidden" name="next" value="{{ url_for('configuration') }}">
+                                                    <button class="btn ghost small telegram-icon-btn danger" type="submit" title="Elimina preset">×</button>
+                                                </form>
+                                            </div>
+                                        </div>
+                                    </article>
+                                {% endfor %}
+                            </div>
+                        </div>
+                    {% else %}
+                        <p class="tagline telegram-empty">Nessun preset configurato. Crea il primo per iniziare.</p>
+                    {% endif %}
+                </div>
+
+                <!-- SEZIONE 2: GESTIONE RISORSE -->
+                <div class="card">
+                    <h3>Gestione Risorse</h3>
+                    <p class="tagline">Configura bot, gruppi e canali. Assegnali poi ai preset sopra.</p>
+
+                    <div class="config-grid">
+                        <!-- BOT -->
+                        <section class="config-box">
+                            <h4>Bot</h4>
+                            <form action="{{ url_for('telegram_add_bot') }}" method="post" class="telegram-resource-form" data-telegram-bot-form>
+                                <input type="hidden" name="next" value="{{ url_for('configuration') }}">
+                                <input type="hidden" name="telegram_bot_id" value="" data-telegram-bot-id>
+                                <fieldset {% if not telegram_ready %}disabled{% endif %}>
+                                    <div class="form-grid">
+                                        <div>
+                                            <label for="telegram_bot_token">Token bot</label>
+                                            <input type="password" id="telegram_bot_token" name="telegram_bot_token" placeholder="123456:ABC-DEF..." required>
+                                        </div>
+                                        <div>
+                                            <label for="telegram_bot_alias">Alias (opzionale)</label>
+                                            <input type="text" id="telegram_bot_alias" name="telegram_bot_alias" placeholder="Bot Notifiche">
+                                        </div>
+                                        <div class="form-field-end telegram-form-end">
+                                            <button class="btn primary" type="submit" data-telegram-bot-submit>Aggiungi</button>
+                                        </div>
+                                    </div>
+                                </fieldset>
+                            </form>
+                            {% if telegram_bots %}
+                                {% for bot in telegram_bots %}
+                                    {% set bot_alias = bot.alias or '' %}
+                                    {% set bot_real_name = bot.original_name or bot.username or ('Bot ' ~ bot.id[:6]) %}
+                                    {% set bot_display = bot_alias or bot_real_name %}
+                                    <div class="telegram-resource-row">
+                                        <div class="telegram-resource-info">
+                                            <div class="telegram-resource-title">
+                                                {{ bot_display }}
+                                                <span class="telegram-verify {% if bot.verified %}ok{% else %}pending{% endif %}" title="{% if bot.verified %}Bot verificato{% else %}Bot non verificato{% endif %}">
+                                                    {% if bot.verified %}✓{% else %}•{% endif %}
+                                                </span>
+                                            </div>
+                                            <div class="telegram-resource-sub">{{ bot_real_name }}</div>
+                                        </div>
+                                        <div class="telegram-resource-actions">
+                                            <form action="{{ url_for('telegram_verify_bot') }}" method="post" class="telegram-inline-form">
+                                                <input type="hidden" name="telegram_bot_id" value="{{ bot.id }}">
+                                                <input type="hidden" name="next" value="{{ url_for('configuration') }}">
+                                                <button class="btn ghost small telegram-icon-btn" type="submit" title="Verifica connessione bot">↻</button>
+                                            </form>
+                                            <button class="btn ghost small telegram-icon-btn"
+                                                    type="button"
+                                                    title="Modifica bot"
+                                                    data-telegram-resource-edit
+                                                    data-kind="bot"
+                                                    data-telegram-id="{{ bot.id }}"
+                                                    data-telegram-token="{{ bot.token | e }}"
+                                                    data-telegram-alias="{{ bot_alias | e }}">✎</button>
+                                            <form action="{{ url_for('telegram_remove_bot') }}" method="post" class="telegram-inline-form">
+                                                <input type="hidden" name="telegram_bot_id" value="{{ bot.id }}">
+                                                <input type="hidden" name="next" value="{{ url_for('configuration') }}">
+                                                <button class="btn ghost small telegram-icon-btn danger" type="submit" title="Elimina bot">×</button>
+                                            </form>
+                                        </div>
+                                    </div>
+                                {% endfor %}
+                            {% else %}
+                                <p class="tagline">Nessun bot configurato.</p>
+                            {% endif %}
+                        </section>
+
+                        <!-- CANALI -->
+                        <section class="config-box">
+                            <h4>Canali</h4>
+                            <form action="{{ url_for('telegram_add_chat') }}" method="post" class="telegram-resource-form" data-telegram-channel-form>
+                                <input type="hidden" name="telegram_kind" value="channel">
+                                <input type="hidden" name="next" value="{{ url_for('configuration') }}">
+                                <input type="hidden" name="telegram_id" value="" data-telegram-channel-id>
+                                <fieldset {% if not telegram_ready %}disabled{% endif %}>
+                                    <div class="form-grid">
+                                        <div>
+                                            <label for="telegram_channel_id">Chat ID / @username</label>
+                                            <input type="text" id="telegram_channel_id" name="telegram_chat_id" placeholder="@nomecanale" required>
+                                        </div>
+                                        <div>
+                                            <label for="telegram_channel_alias">Alias (opzionale)</label>
+                                            <input type="text" id="telegram_channel_alias" name="telegram_alias" placeholder="Canale Notifiche">
+                                        </div>
+                                        <div class="form-field-end telegram-form-end">
+                                            <button class="btn primary" type="submit" data-telegram-channel-submit>Aggiungi</button>
+                                        </div>
+                                    </div>
+                                </fieldset>
+                            </form>
+                            {% if telegram_channels %}
+                                {% for entry in telegram_channels %}
+                                    {% set channel_alias = entry.alias or '' %}
+                                    {% set channel_real_name = entry.original_name or entry.chat_id %}
+                                    {% set channel_display = channel_alias or channel_real_name %}
+                                    <div class="telegram-resource-row">
+                                        <div class="telegram-resource-info">
+                                            <div class="telegram-resource-title">
+                                                {{ channel_display }}
+                                                <span class="telegram-verify {% if entry.verified %}ok{% else %}pending{% endif %}" title="{% if entry.verified %}Canale verificato{% else %}Canale non verificato{% endif %}">
+                                                    {% if entry.verified %}✓{% else %}•{% endif %}
+                                                </span>
+                                            </div>
+                                            <div class="telegram-resource-sub">{{ channel_real_name }}</div>
+                                        </div>
+                                        <div class="telegram-resource-actions">
+                                            <form action="{{ url_for('telegram_verify_chat') }}" method="post" class="telegram-inline-form">
+                                                <input type="hidden" name="telegram_id" value="{{ entry.id }}">
+                                                <input type="hidden" name="telegram_kind" value="channel">
+                                                <input type="hidden" name="next" value="{{ url_for('configuration') }}">
+                                                <button class="btn ghost small telegram-icon-btn" type="submit" title="Verifica connessione canale">↻</button>
+                                            </form>
+                                            <button class="btn ghost small telegram-icon-btn"
+                                                    type="button"
+                                                    title="Modifica canale"
+                                                    data-telegram-resource-edit
+                                                    data-kind="channel"
+                                                    data-telegram-id="{{ entry.id }}"
+                                                    data-telegram-chat-id="{{ entry.chat_id | e }}"
+                                                    data-telegram-alias="{{ channel_alias | e }}">✎</button>
+                                            <form action="{{ url_for('telegram_remove_chat') }}" method="post" class="telegram-inline-form">
+                                                <input type="hidden" name="telegram_id" value="{{ entry.id }}">
+                                                <input type="hidden" name="telegram_kind" value="channel">
+                                                <input type="hidden" name="next" value="{{ url_for('configuration') }}">
+                                                <button class="btn ghost small telegram-icon-btn danger" type="submit" title="Elimina canale">×</button>
+                                            </form>
+                                        </div>
+                                    </div>
+                                {% endfor %}
+                            {% else %}
+                                <p class="tagline">Nessun canale configurato.</p>
+                            {% endif %}
+                        </section>
+
+                        <!-- GRUPPI -->
+                        <section class="config-box">
+                            <h4>Gruppi</h4>
+                            <form action="{{ url_for('telegram_add_chat') }}" method="post" class="telegram-resource-form" data-telegram-group-form>
+                                <input type="hidden" name="telegram_kind" value="group">
+                                <input type="hidden" name="next" value="{{ url_for('configuration') }}">
+                                <input type="hidden" name="telegram_id" value="" data-telegram-group-id>
+                                <fieldset {% if not telegram_ready %}disabled{% endif %}>
+                                    <div class="form-grid">
+                                        <div>
+                                            <label for="telegram_group_id">Chat ID</label>
+                                            <input type="text" id="telegram_group_id" name="telegram_chat_id" placeholder="-1001234567890" required>
+                                        </div>
+                                        <div>
+                                            <label for="telegram_group_alias">Alias (opzionale)</label>
+                                            <input type="text" id="telegram_group_alias" name="telegram_alias" placeholder="Gruppo Notifiche">
+                                        </div>
+                                        <div class="form-field-end telegram-form-end">
+                                            <button class="btn primary" type="submit" data-telegram-group-submit>Aggiungi</button>
+                                        </div>
+                                    </div>
+                                </fieldset>
+                            </form>
+                            {% if telegram_groups %}
+                                {% for entry in telegram_groups %}
+                                    {% set group_alias = entry.alias or '' %}
+                                    {% set group_real_name = entry.original_name or entry.chat_id %}
+                                    {% set group_display = group_alias or group_real_name %}
+                                    <div class="telegram-resource-row">
+                                        <div class="telegram-resource-info">
+                                            <div class="telegram-resource-title">
+                                                {{ group_display }}
+                                                <span class="telegram-verify {% if entry.verified %}ok{% else %}pending{% endif %}" title="{% if entry.verified %}Gruppo verificato{% else %}Gruppo non verificato{% endif %}">
+                                                    {% if entry.verified %}✓{% else %}•{% endif %}
+                                                </span>
+                                            </div>
+                                            <div class="telegram-resource-sub">{{ group_real_name }}</div>
+                                        </div>
+                                        <div class="telegram-resource-actions">
+                                            <form action="{{ url_for('telegram_verify_chat') }}" method="post" class="telegram-inline-form">
+                                                <input type="hidden" name="telegram_id" value="{{ entry.id }}">
+                                                <input type="hidden" name="telegram_kind" value="group">
+                                                <input type="hidden" name="next" value="{{ url_for('configuration') }}">
+                                                <button class="btn ghost small telegram-icon-btn" type="submit" title="Verifica connessione gruppo">↻</button>
+                                            </form>
+                                            <button class="btn ghost small telegram-icon-btn"
+                                                    type="button"
+                                                    title="Modifica gruppo"
+                                                    data-telegram-resource-edit
+                                                    data-kind="group"
+                                                    data-telegram-id="{{ entry.id }}"
+                                                    data-telegram-chat-id="{{ entry.chat_id | e }}"
+                                                    data-telegram-alias="{{ group_alias | e }}">✎</button>
+                                            <form action="{{ url_for('telegram_remove_chat') }}" method="post" class="telegram-inline-form">
+                                                <input type="hidden" name="telegram_id" value="{{ entry.id }}">
+                                                <input type="hidden" name="telegram_kind" value="group">
+                                                <input type="hidden" name="next" value="{{ url_for('configuration') }}">
+                                                <button class="btn ghost small telegram-icon-btn danger" type="submit" title="Elimina gruppo">×</button>
+                                            </form>
+                                        </div>
+                                    </div>
+                                {% endfor %}
+                            {% else %}
+                                <p class="tagline">Nessun gruppo configurato.</p>
+                            {% endif %}
+                        </section>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-panel" data-tab-panel="services">
+                <div class="card">
+                    <h2>Automazioni</h2>
+                    {% if not has_config %}
+                        <p class="tagline">Configura Jellyseerr, gli indexer e il database prima di abilitare le automazioni.</p>
+                    {% else %}
+                        {% set scan_auto = auto_tasks.scan if auto_tasks else {} %}
+                        {% set refresh_auto = auto_tasks.refresh if auto_tasks else {} %}
+                        <form id="auto-task-form" action="/update-scheduler" method="post">
+                            <input type="hidden" name="next" value="{{ url_for('configuration') }}">
+                            <div class="auto-grid">
+                                <section class="auto-section" data-task="scan">
+                                    <div class="auto-header">
+                                        <h3>Ricerca programmata</h3>
+                                        <label class="auto-inline" title="Attiva o disattiva completamente questa automazione">
+                                            <input type="checkbox" name="scan_enabled" class="auto-enable" {% if scan_auto.enabled %}checked{% endif %}>
+                                            Attiva
+                                        </label>
+                                    </div>
+                                    <div class="auto-mode">
+                                        <label class="auto-inline" title="Ripeti la ricerca a intervalli costanti">
+                                            <input type="radio" name="scan_mode" value="interval" {% if scan_auto.mode != 'fixed' %}checked{% endif %}>
+                                            Avvia ogni
+                                        </label>
+                                        <input type="number" name="scan_interval" min="5" value="{{ scan_auto.interval_minutes or 60 }}">
+                                        <span>minuti</span>
+                                    </div>
+                                    <div class="auto-mode">
+                                        <label class="auto-inline" title="Esegui la ricerca in orari precisi (usa 24h)">
+                                            <input type="radio" name="scan_mode" value="fixed" {% if scan_auto.mode == 'fixed' %}checked{% endif %}>
+                                            Orari fissi
+                                        </label>
+                                        <input type="text" name="scan_times" placeholder="08:00, 22:30" value="{{ scan_auto.times | join(', ') }}">
+                                    </div>
+                                    <p class="auto-note">Indica gli orari nel formato HH:MM separati da virgole (es. 08:00, 22:30).</p>
+                                </section>
+                                <section class="auto-section" data-task="refresh">
+                                    <div class="auto-header">
+                                        <h3>Aggiornamento richieste</h3>
+                                        <label class="auto-inline" title="Attiva o disattiva questa automazione">
+                                            <input type="checkbox" name="refresh_enabled" class="auto-enable" {% if refresh_auto.enabled %}checked{% endif %}>
+                                            Attiva
+                                        </label>
+                                    </div>
+                                    <div class="auto-mode">
+                                        <label class="auto-inline" title="Ripeti l'aggiornamento dei dati a intervalli costanti">
+                                            <input type="radio" name="refresh_mode" value="interval" {% if refresh_auto.mode != 'fixed' %}checked{% endif %}>
+                                            Avvia ogni
+                                        </label>
+                                        <input type="number" name="refresh_interval" min="5" value="{{ refresh_auto.interval_minutes or 120 }}">
+                                        <span>minuti</span>
+                                    </div>
+                                    <div class="auto-mode">
+                                        <label class="auto-inline" title="Esegui l'aggiornamento in orari precisi (usa 24h)">
+                                            <input type="radio" name="refresh_mode" value="fixed" {% if refresh_auto.mode == 'fixed' %}checked{% endif %}>
+                                            Orari fissi
+                                        </label>
+                                        <input type="text" name="refresh_times" placeholder="07:00, 19:00" value="{{ refresh_auto.times | join(', ') }}">
+                                    </div>
+                                    <p class="auto-note">L'aggiornamento ricarica elenco richieste e stati Trakt.</p>
+                                </section>
+                            </div>
+                            <p class="tagline" style="margin-top:0.75rem;">Le automazioni lavorano solo sulle richieste abilitate e non avviano una nuova ricerca se ne è già attiva un'altra.</p>
+                            <button class="btn" type="submit">Salva automazioni</button>
+                        </form>
+                    {% endif %}
+                </div>
+                <div class="card">
+                    <h2>Configurazione servizi</h2>
+                    <form action="/update-config" method="post">
+                        <input type="hidden" name="next" value="{{ url_for('configuration') }}">
+                        {% set db = config.DATABASE if config and config.DATABASE else None %}
+                        {% set trakt = config.TRAKT if config and config.TRAKT else None %}
+                        {% set justwatch = config.JUSTWATCH if config and config.JUSTWATCH else None %}
+                        <div class="config-grid">
+                            <section class="config-box">
+                                <h4>Jellyseerr</h4>
+                                <div class="form-grid">
+                                    <div>
+                                        <label for="jellyseerr_url">Indirizzo Jellyseerr</label>
+                                        <input type="text" id="jellyseerr_url" name="jellyseerr_url" value="{{ config.JELLYSEERR_URL if config else '' }}" required>
+                                    </div>
+                                    <div>
+                                        <label for="jellyseerr_api_key">API Key Jellyseerr</label>
+                                        <input type="text" id="jellyseerr_api_key" name="jellyseerr_api_key" value="{{ config.JELLYSEERR_API_KEY if config else '' }}" required>
+                                    </div>
+                                </div>
+                            </section>
+                            <section class="config-box">
+                                <h4>Prowlarr</h4>
+                                <div class="form-grid">
+                                    <div>
+                                        <label for="prowlarr_url">Indirizzo Prowlarr</label>
+                                        <input type="text" id="prowlarr_url" name="prowlarr_url" value="{{ config.PROWLARR_URL if config else '' }}" required>
+                                    </div>
+                                    <div>
+                                        <label for="prowlarr_api_key">API Key Prowlarr</label>
+                                        <input type="text" id="prowlarr_api_key" name="prowlarr_api_key" value="{{ config.PROWLARR_API_KEY if config else '' }}" required>
+                                    </div>
+                                </div>
+                            </section>
+                            <section class="config-box">
+                                <h4>Jackett</h4>
+                                <div class="form-grid">
+                                    <div>
+                                        <label for="jackett_url">Indirizzo Jackett</label>
+                                        <input type="text" id="jackett_url" name="jackett_url" value="{{ config.JACKETT_URL if config else '' }}" placeholder="http://host:9117">
+                                    </div>
+                                    <div>
+                                        <label for="jackett_api_key">Jackett API Key</label>
+                                        <input type="text" id="jackett_api_key" name="jackett_api_key" value="{{ config.JACKETT_API_KEY if config else '' }}">
+                                    </div>
+                                </div>
+                            </section>
+                            <section class="config-box">
+                                <h4>qBittorrent</h4>
+                                <div class="form-grid">
+                                    <div>
+                                        <label for="qbittorrent_url">Indirizzo qBittorrent</label>
+                                        <input type="text" id="qbittorrent_url" name="qbittorrent_url" value="{{ config.QBITTORRENT_URL if config else '' }}" placeholder="http://host:8080">
+                                        <div class="tagline">Lascia vuoto per disabilitare l'invio automatico.</div>
+                                    </div>
+                                    <div>
+                                        <label for="qbittorrent_username">qBittorrent Username</label>
+                                        <input type="text" id="qbittorrent_username" name="qbittorrent_username" value="{{ config.QBITTORRENT_USERNAME if config else '' }}">
+                                    </div>
+                                    <div>
+                                        <label for="qbittorrent_password">qBittorrent Password</label>
+                                        <input type="password" id="qbittorrent_password" name="qbittorrent_password" value="{{ config.QBITTORRENT_PASSWORD if config else '' }}">
+                                    </div>
+                                </div>
+                            </section>
+                            <section class="config-box">
+                                <h4>TMDB (The Movie Database)</h4>
+                                <div class="tagline" style="margin-bottom:0.75rem;">API usata per l'autocomplete nella Ricerca Indipendente.</div>
+                                <div class="form-grid">
+                                    <div>
+                                        <label for="tmdb_api_key">API Key TMDB</label>
+                                        <input type="text" id="tmdb_api_key" name="tmdb_api_key" value="{{ config.TMDB_API_KEY if config else '' }}" placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx">
+                                    </div>
+                                    <div>
+                                        <label for="tmdb_language">Lingua di ricerca</label>
+                                        <select id="tmdb_language" name="tmdb_language">
+                                            <option value="it-IT" {% if config and config.TMDB_LANGUAGE == 'it-IT' %}selected{% endif %}>Italiano (it-IT)</option>
+                                            <option value="en-US" {% if config and config.TMDB_LANGUAGE == 'en-US' %}selected{% endif %}>English (en-US)</option>
+                                            <option value="fr-FR" {% if config and config.TMDB_LANGUAGE == 'fr-FR' %}selected{% endif %}>Français (fr-FR)</option>
+                                            <option value="de-DE" {% if config and config.TMDB_LANGUAGE == 'de-DE' %}selected{% endif %}>Deutsch (de-DE)</option>
+                                            <option value="es-ES" {% if config and config.TMDB_LANGUAGE == 'es-ES' %}selected{% endif %}>Español (es-ES)</option>
+                                        </select>
+                                        <div class="tagline">La lingua influenza i risultati e i titoli tradotti.</div>
+                                    </div>
+                                </div>
+                                <div class="tagline">Ottieni la tua API key gratuita su <a href="https://www.themoviedb.org/settings/api" target="_blank" rel="noopener">themoviedb.org/settings/api</a></div>
+                            </section>
+                            <section class="config-box">
+                                <h4>MDBList</h4>
+                                <div class="tagline" style="margin-bottom:0.75rem;">Fonte primaria per rating (IMDb, Metacritic, Rotten Tomatoes, Letterboxd). Per serie TV, calcola media Metacritic su tutte le stagioni.</div>
+                                <div class="form-grid">
+                                    <div style="grid-column:1 / span 2;">
+                                        <label for="mdblist_api_keys">API Keys MDBList (una per riga o separate da virgole)</label>
+                                        <textarea id="mdblist_api_keys" name="mdblist_api_keys" rows="3" placeholder="apikey1&#10;apikey2&#10;apikey3">{% if config and config.MDBLIST_API_KEYS %}{{ config.MDBLIST_API_KEYS | join('
+') }}{% endif %}</textarea>
+                                        <div class="tagline">Supporta rotazione automatica in caso di rate limit. Lascia vuoto per usare solo OMDb.</div>
+                                    </div>
+                                </div>
+                                <div class="tagline">Ottieni una API key gratuita su <a href="https://mdblist.com/preferences/" target="_blank" rel="noopener">mdblist.com/preferences</a></div>
+                            </section>
+                            <section class="config-box">
+                                <h4>OMDb (Open Movie Database)</h4>
+                                <div class="tagline" style="margin-bottom:0.75rem;">Fallback per rating quando MDBList non disponibile. Fornisce IMDb, Metacritic e Rotten Tomatoes.</div>
+                                <div class="form-grid">
+                                    <div style="grid-column:1 / span 2;">
+                                        <label for="omdb_api_keys">API Keys OMDb (una per riga o separate da virgole)</label>
+                                        <textarea id="omdb_api_keys" name="omdb_api_keys" rows="3" placeholder="apikey1&#10;apikey2&#10;apikey3">{% if config and config.OMDB_API_KEYS %}{{ config.OMDB_API_KEYS | join('
+') }}{% elif config and config.OMDB_API_KEY %}{{ config.OMDB_API_KEY }}{% endif %}</textarea>
+                                        <div class="tagline">Supporta rotazione automatica in caso di rate limit. Compatibile con configurazione a chiave singola.</div>
+                                    </div>
+                                </div>
+                                <div class="tagline">Ottieni la tua API key gratuita su <a href="https://www.omdbapi.com/apikey.aspx" target="_blank" rel="noopener">omdbapi.com/apikey.aspx</a> (richiede verifica email)</div>
+                            </section>
+                            <section class="config-box trakt-config">
+                                <div class="trakt-header">
+                                    <h4>Trakt</h4>
+                                    <span class="status-pill status-skip" id="trakt-auth-status"
+                                          data-expires-at="{{ trakt.EXPIRES_AT if trakt else '' }}"
+                                          data-has-token="{{ 'true' if trakt and trakt.ACCESS_TOKEN else 'false' }}">
+                                        In attesa
+                                    </span>
+                                </div>
+                                <div class="tagline trakt-subtitle">Usa la libreria sincronizzata con Emby per capire rapidamente cosa è già disponibile.</div>
+                                <div class="tagline trakt-hint" id="trakt-auth-hint"></div>
+                                <div class="form-grid">
+                                    <div style="grid-column:1 / span 2;">
+                                        <label>
+                                            <input type="checkbox" name="trakt_enabled" {% if trakt and trakt.ENABLED %}checked{% endif %}>
+                                            Abilita integrazione Trakt
+                                        </label>
+                                    </div>
+                                    <div>
+                                        <label for="trakt_client_id">Client ID</label>
+                                        <input type="text" id="trakt_client_id" name="trakt_client_id" value="{{ trakt.CLIENT_ID if trakt else '' }}" placeholder="xxxxxxxxxxxxxxxxxxxx">
+                                    </div>
+                                    <div style="grid-column:1 / span 2;">
+                                        <label for="trakt_access_token">Access Token</label>
+                                        <input type="text"
+                                               id="trakt_access_token"
+                                               name="trakt_access_token"
+                                               class="read-only"
+                                               value="{{ trakt.ACCESS_TOKEN if trakt else '' }}"
+                                               placeholder="Token personale"
+                                               readonly
+                                               aria-readonly="true"
+                                               title="Questo campo è solo in lettura. Usa 'Collega Trakt' per aggiornarlo.">
+                                    </div>
+                                    <div style="grid-column:1 / span 2;" class="trakt-actions">
+                                        <div class="inline-actions">
+                                            <button type="button" class="btn light" id="trakt-connect-btn">Collega Trakt</button>
+                                            <button type="submit"
+                                                    class="btn ghost"
+                                                    id="trakt-disconnect-btn"
+                                                    formaction="/trakt/clear"
+                                                    formmethod="post">
+                                                Disconnetti
+                                            </button>
+                                            <span class="tagline" id="trakt-device-status"></span>
+                                        </div>
+                                        <div class="trakt-device" id="trakt-device-instructions" style="display:none;">
+                                            <a class="trakt-link" id="trakt-device-link" href="#" target="_blank" rel="noopener">Apri https://trakt.tv/activate</a>
+                                            <span class="trakt-code" id="trakt-device-code"></span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </section>
+                            <section class="config-box">
+                                <h4>JustWatch</h4>
+                                <div class="tagline" style="margin-bottom:0.75rem;">Verifica disponibilità episodi su JustWatch nel locale selezionato.</div>
+                                <div class="form-grid">
+                                    <div style="grid-column:1 / span 2;">
+                                        <label>
+                                            <input type="checkbox" name="justwatch_enabled" {% if justwatch and justwatch.ENABLED %}checked{% endif %}>
+                                            Abilita integrazione JustWatch
+                                        </label>
+                                    </div>
+                                    <div>
+                                        <label for="justwatch_locale">Locale</label>
+                                        <select id="justwatch_locale" name="justwatch_locale">
+                                            <option value="it_IT" {% if justwatch and justwatch.LOCALE == 'it_IT' %}selected{% endif %}>Italia (it_IT)</option>
+                                            <option value="en_US" {% if justwatch and justwatch.LOCALE == 'en_US' %}selected{% endif %}>USA (en_US)</option>
+                                            <option value="en_GB" {% if justwatch and justwatch.LOCALE == 'en_GB' %}selected{% endif %}>UK (en_GB)</option>
+                                            <option value="fr_FR" {% if justwatch and justwatch.LOCALE == 'fr_FR' %}selected{% endif %}>Francia (fr_FR)</option>
+                                            <option value="de_DE" {% if justwatch and justwatch.LOCALE == 'de_DE' %}selected{% endif %}>Germania (de_DE)</option>
+                                            <option value="es_ES" {% if justwatch and justwatch.LOCALE == 'es_ES' %}selected{% endif %}>Spagna (es_ES)</option>
+                                        </select>
+                                        <div class="tagline">Usa il catalogo JustWatch del paese selezionato.</div>
+                                    </div>
+                                </div>
+                            </section>
+                            <section class="config-box">
+                                <h4>Database Postgres</h4>
+                                <div class="tagline" style="margin-bottom:0.5rem;">Connessione obbligatoria: inserisci host, porta, user e nome DB.</div>
+                                <div class="help-popover">
+                                    <button class="help-trigger" type="button" aria-label="Istruzioni Database">i</button>
+                                    <div class="help-content">
+                                        <strong>Password via ENV/Secret.</strong>
+                                        <div class="tagline">Usa <code>OCTOHUB_DB_PASSWORD</code> o <code>OCTOHUB_DB_PASSWORD_FILE</code>.</div>
+                                        <div class="tagline">Portainer: Stack -> Environment variables -> aggiungi <code>OCTOHUB_DB_PASSWORD</code>.</div>
+                                        <div class="tagline">CLI: <code>export OCTOHUB_DB_PASSWORD="password"</code></div>
+                                        <div class="tagline">URL completa: <code class="breakable">export OCTOHUB_DB_URL="postgresql+psycopg2://utente:<wbr>password@host:<wbr>5432/db"</code></div>
+                                    </div>
+                                </div>
+                                <div class="form-grid">
+                                    <div>
+                                        <label for="db_host">Host</label>
+                                        <input type="text" id="db_host" name="db_host" value="{{ db.HOST if db and db.HOST else '' }}">
+                                    </div>
+                                    <div>
+                                        <label for="db_port">Porta</label>
+                                        <input type="number" id="db_port" name="db_port" value="{{ db.PORT if db and db.PORT not in (None, '') else '' }}">
+                                    </div>
+                                    <div>
+                                        <label for="db_name">Nome DB</label>
+                                        <input type="text" id="db_name" name="db_name" value="{{ db.NAME if db and db.NAME else '' }}">
+                                    </div>
+                                    <div>
+                                        <label for="db_user">Username</label>
+                                        <input type="text" id="db_user" name="db_user" value="{{ db.USER if db and db.USER else '' }}">
+                                    </div>
+                                    <div>
+                                        <label for="db_password">Password (ENV/Secret)</label>
+                                        <input type="password" id="db_password" name="db_password" value="" placeholder="Impostala via ENV/Secret">
+                                    </div>
+                                    <div>
+                                        <label for="db_driver">Driver SQLAlchemy</label>
+                                        <input type="text" id="db_driver" name="db_driver" value="{{ db.DRIVER if db else 'postgresql+psycopg2' }}">
+                                    </div>
+                                    <div>
+                                        <label for="db_url">Connection URL (opzionale)</label>
+                                        <input type="text" id="db_url" name="db_url" value="" placeholder="postgresql+psycopg2://user:pass@host:5432/dbname">
+                                    </div>
+                                    <div>
+                                        <label for="db_params">Parametri extra</label>
+                                        <input type="text" id="db_params" name="db_params" value="{{ db.PARAMS if db else '' }}" placeholder="sslmode=require">
+                                    </div>
+                                </div>
+                                <div class="tagline">Configura il container Postgres in Docker e inserisci qui le credenziali del servizio.</div>
+                            </section>
+                        </div>
+                        <button class="btn" type="submit">Salva Configurazione</button>
+                    </form>
+                    <div style="margin-top: 1rem;">
+                        <button class="btn secondary" type="button" id="test-connections-btn" {% if not has_config %}disabled{% endif %}>Verifica connessioni</button>
+                        <div class="connection-status" id="connection-status">
+                            <div class="connection-card">
+                                <div class="connection-row">
+                                    <strong>Jellyseerr</strong>
+                                </div>
+                                <span class="status-pill status-skip" data-service="jellyseerr-status">In attesa</span>
+                                <div class="tagline" data-service="jellyseerr-msg"></div>
+                            </div>
+                            <div class="connection-card">
+                                <div class="connection-row">
+                                    <strong>Prowlarr</strong>
+                                </div>
+                                <span class="status-pill status-skip" data-service="prowlarr-status">In attesa</span>
+                                <div class="tagline" data-service="prowlarr-msg"></div>
+                            </div>
+                            <div class="connection-card">
+                                <div class="connection-row">
+                                    <strong>Jackett</strong>
+                                </div>
+                                <span class="status-pill status-skip" data-service="jackett-status">In attesa</span>
+                                <div class="tagline" data-service="jackett-msg"></div>
+                            </div>
+                            <div class="connection-card">
+                                <div class="connection-row">
+                                    <strong>qBittorrent</strong>
+                                </div>
+                                <span class="status-pill status-skip" data-service="qbittorrent-status">In attesa</span>
+                                <div class="tagline" data-service="qbittorrent-msg"></div>
+                            </div>
+                            <div class="connection-card">
+                                <div class="connection-row">
+                                    <strong>MDBList</strong>
+                                </div>
+                                <span class="status-pill status-skip" data-service="mdblist-status">In attesa</span>
+                                <div class="tagline" data-service="mdblist-msg"></div>
+                            </div>
+                            <div class="connection-card">
+                                <div class="connection-row">
+                                    <strong>OMDb</strong>
+                                </div>
+                                <span class="status-pill status-skip" data-service="omdb-status">In attesa</span>
+                                <div class="tagline" data-service="omdb-msg"></div>
+                            </div>
+                            <div class="connection-card">
+                                <div class="connection-row">
+                                    <strong>Trakt</strong>
+                                </div>
+                                <span class="status-pill status-skip" data-service="trakt-status">In attesa</span>
+                                <div class="tagline" data-service="trakt-msg"></div>
+                            </div>
+                            <div class="connection-card">
+                                <div class="connection-row">
+                                    <strong>JustWatch</strong>
+                                </div>
+                                <span class="status-pill status-skip" data-service="justwatch-status">In attesa</span>
+                                <div class="tagline" data-service="justwatch-msg"></div>
+                            </div>
+                            <div class="connection-card">
+                                <div class="connection-row">
+                                    <strong>Database</strong>
+                                </div>
+                                <span class="status-pill status-skip" data-service="database-status">In attesa</span>
+                                <div class="tagline" data-service="database-msg"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-panel" data-tab-panel="rss-import">
+                <div class="card">
+                    <h2>RSS &amp; Import</h2>
+                    <p class="tagline">Configura le sorgenti RSS, analizza i formati e prepara l'import nel database.</p>
+                    <form action="/update-rss-import" method="post">
+                        <input type="hidden" name="next" value="{{ url_for('configuration') }}">
+                        {% set rss_import = config.RSS_IMPORT if config and config.RSS_IMPORT else {} %}
+                        <div class="form-grid">
+                            <div>
+                                <label>
+                                    <input type="checkbox" name="rss_enabled" {% if rss_import.ENABLED %}checked{% endif %}>
+                                    Attiva ingestione RSS
+                                </label>
+                                <div class="tagline">Attiva il polling automatico (da collegare ai task).</div>
+                            </div>
+                            <div>
+                                <label for="rss_poll_interval">Intervallo polling (minuti)</label>
+                                <input type="number" id="rss_poll_interval" name="rss_poll_interval" min="5" value="{{ rss_import.POLL_INTERVAL_MINUTES or 30 }}">
+                            </div>
+                            <div>
+                                <label for="rss_dedup_keep">Duplicati per link</label>
+                                <select id="rss_dedup_keep" name="rss_dedup_keep">
+                                    <option value="oldest" {% if rss_import.DEDUP_KEEP == 'oldest' %}selected{% endif %}>Mantieni il meno recente</option>
+                                    <option value="newest" {% if rss_import.DEDUP_KEEP == 'newest' %}selected{% endif %}>Mantieni il più recente</option>
+                                </select>
+                                <div class="tagline">Regola di deduplica basata sul link dell'articolo.</div>
+                            </div>
+                            <div style="grid-column:1 / span 3;">
+                                <label for="rss_sources">Sorgenti RSS (una per riga)</label>
+                                <textarea id="rss_sources" name="rss_sources" rows="6" placeholder="Nome feed | https://example.com/rss | tag1, tag2">{% if rss_import.SOURCES %}{% for source in rss_import.SOURCES %}{{ (source.name ~ ' | ' if source.name) ~ source.url }}{% if source.tags %} | {{ source.tags | join(', ') }}{% endif %}{% if not loop.last %}&#10;{% endif %}{% endfor %}{% endif %}</textarea>
+                                <div class="tagline">Formato: Nome | URL | tag opzionali. Se inserisci solo URL, il nome sarà auto-deducibile.</div>
+                            </div>
+                        </div>
+                        <button class="btn" type="submit">Salva configurazione RSS</button>
+                    </form>
+                </div>
+                <div class="card">
+                    <h3>Importa nel database</h3>
+                    <p class="tagline">Avvia un import manuale dei feed configurati o di un export JSON.</p>
+                    <div class="form-grid">
+                        <div>
+                            <label>Importa dai feed RSS</label>
+                            <div class="tagline">Legge tutte le sorgenti attive nella configurazione.</div>
+                        </div>
+                        <div class="inline-actions" style="align-items:flex-end;">
+                            <button type="button" class="btn light" id="rss-import-btn">Importa RSS</button>
+                            <button type="button" class="btn" id="rss-view-btn">Apri archivio RSS</button>
+                        </div>
+                    </div>
+                    <div class="form-grid">
+                        <div>
+                            <label for="rss_import_json_file">Importa JSON export</label>
+                            <input type="file" id="rss_import_json_file" name="rss_import_json_file" accept="application/json" multiple>
+                        </div>
+                        <div class="inline-actions" style="align-items:flex-end;">
+                            <button type="button" class="btn light" id="rss-import-json-btn">Importa JSON</button>
+                        </div>
+                    </div>
+                    <div id="rss-import-result" class="rss-inspect-result"></div>
+                </div>
+                <div class="card">
+                    <h3>Pulisci duplicati</h3>
+                    <p class="tagline">Rimuove i duplicati con link identico e mantiene quello {{ 'piu recente' if rss_import.DEDUP_KEEP == 'newest' else 'meno recente' }}.</p>
+                    <div class="inline-actions" style="justify-content:flex-start;">
+                        <button type="button" class="btn light" id="rss-dedup-btn">Pulisci duplicati</button>
+                    </div>
+                    <div id="rss-dedup-result" class="rss-inspect-result"></div>
+                </div>
+                <div class="card">
+                    <h3>Analizza RSS</h3>
+                    <p class="tagline">Usa questa analisi per capire quali campi restituisce il feed.</p>
+                    <div class="form-grid">
+                        <div>
+                            <label for="rss_test_url">URL feed</label>
+                            <input type="text" id="rss_test_url" name="rss_test_url" placeholder="https://example.com/feed.xml">
+                        </div>
+                        <div class="inline-actions" style="align-items:flex-end;">
+                            <button type="button" class="btn light" id="rss-inspect-btn">Analizza feed</button>
+                        </div>
+                    </div>
+                    <div id="rss-inspect-result" class="rss-inspect-result"></div>
+                </div>
+                <div class="card">
+                    <h3>Analizza JSON esportati</h3>
+                    <p class="tagline">Carica un JSON per vedere la struttura dei campi disponibili.</p>
+                    <div class="form-grid">
+                        <div>
+                            <label for="rss_json_file">File JSON</label>
+                            <input type="file" id="rss_json_file" name="json_file" accept="application/json">
+                        </div>
+                        <div class="inline-actions" style="align-items:flex-end;">
+                            <button type="button" class="btn light" id="rss-json-inspect-btn">Analizza JSON</button>
+                        </div>
+                    </div>
+                    <div id="rss-json-result" class="rss-inspect-result"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="modal-backdrop is-hidden" id="rss-items-modal" aria-hidden="true">
+        <div class="modal rss-items-modal" role="dialog" aria-modal="true" aria-labelledby="rss-modal-title">
+            <div class="modal-header">
+                <h3 id="rss-modal-title">Archivio RSS</h3>
+                <button type="button" class="modal-close" data-modal-close aria-label="Chiudi">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="rss-view-controls">
+                    <div class="rss-view-tabs">
+                        <button type="button" class="btn light is-active" data-rss-view="table">Tabella</button>
+                        <button type="button" class="btn light" data-rss-view="html">HTML</button>
+                    </div>
+                    <div class="rss-view-actions">
+                        <span class="rss-view-range" id="rss-view-range">—</span>
+                        <button type="button" class="btn light" id="rss-prev-btn">Precedenti</button>
+                        <button type="button" class="btn light" id="rss-next-btn">Successivi</button>
+                    </div>
+                </div>
+                <div class="rss-view-content" id="rss-view-content"></div>
+            </div>
+        </div>
+    </div>
+    <div id="toast-container"></div>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+    <script src="{{ url_for('static', filename='icon-picker.js') }}"></script>
+</body>
+</html>

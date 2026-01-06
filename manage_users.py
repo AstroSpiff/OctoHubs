@@ -22,7 +22,7 @@ from auth import (
 def _bootstrap_app() -> Flask:
     app = Flask(__name__)
     app.secret_key = os.environ.get("FLASK_SECRET_KEY") or "octohub"
-    init_auth(app)
+    init_auth(app, create_default_admin=False)
     return app
 
 

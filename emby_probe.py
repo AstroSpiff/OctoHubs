@@ -315,9 +315,40 @@ class EmbyProbeManager:
                 "running": True,
                 "found": 0,
                 "total_scanned": 0,
+                "current_library_id": None,
+                "current_library_name": None,
+                "library_totals": {},
+                "library_scanned": {},
+                "completed_library_ids": [],
+                "error_library_ids": [],
+                "target_library_ids": [str(lib_id) for lib_id in (target_libraries or []) if lib_id],
                 "last_log": "Avvio discovery...",
                 "started_at": datetime.now(timezone.utc).isoformat()
             }
+
+            combo_key = f"combo_{PROBE_SCOPE_LIBRARIES}"
+            combo_status = self._status[server_id].get(combo_key, {})
+            if not combo_status.get("running"):
+                previous_last_run = combo_status.get("last_run")
+                combo_queue = self._build_combo_queue(
+                    [server],
+                    PROBE_SCOPE_LIBRARIES,
+                    library_ids=target_libraries,
+                    task_types=["discovery"]
+                )
+                self._status[server_id][combo_key] = {
+                    "running": False,
+                    "phase": "discovery",
+                    "last_log": "Avvio discovery...",
+                    "mode": "discovery",
+                    "scope": PROBE_SCOPE_LIBRARIES,
+                    "queue": combo_queue,
+                    "board_reset": False,
+                    "board_mode": "discovery",
+                    "board_library_ids": [str(lib_id) for lib_id in (target_libraries or []) if lib_id],
+                    "last_run": previous_last_run,
+                    "started_at": datetime.now(timezone.utc).isoformat()
+                }
 
             worker = threading.Thread(
                 target=self._discovery_worker,
@@ -435,10 +466,39 @@ class EmbyProbeManager:
                 "incomplete_retry": 0,
                 "total": 0,
                 "current_item": None,
+                "current_library_id": None,
+                "current_library_name": None,
+                "library_queue_totals": {},
+                "library_queue_results": {},
+                "target_library_ids": [str(lib_id) for lib_id in (target_libraries or []) if lib_id],
                 "last_log": f"Avvio processing in modalità {mode}...",
                 "mode": mode,
                 "started_at": datetime.now(timezone.utc).isoformat()
             }
+
+            combo_key = f"combo_{PROBE_SCOPE_LIBRARIES}"
+            combo_status = self._status[server_id].get(combo_key, {})
+            if not combo_status.get("running"):
+                previous_last_run = combo_status.get("last_run")
+                combo_queue = self._build_combo_queue(
+                    [server],
+                    PROBE_SCOPE_LIBRARIES,
+                    library_ids=target_libraries,
+                    task_types=["processing"]
+                )
+                self._status[server_id][combo_key] = {
+                    "running": False,
+                    "phase": "processing",
+                    "last_log": f"Avvio processing in modalità {mode}...",
+                    "mode": mode,
+                    "scope": PROBE_SCOPE_LIBRARIES,
+                    "queue": combo_queue,
+                    "board_reset": False,
+                    "board_mode": "processing",
+                    "board_library_ids": [str(lib_id) for lib_id in (target_libraries or []) if lib_id],
+                    "last_run": previous_last_run,
+                    "started_at": datetime.now(timezone.utc).isoformat()
+                }
 
             worker = threading.Thread(
                 target=self._processing_worker,
@@ -593,12 +653,23 @@ class EmbyProbeManager:
             stop_flag = threading.Event()
             self._stop_flags[server_id][worker_key] = stop_flag
 
+            combo_queue = self._build_combo_queue(
+                [server],
+                scope,
+                library_ids=target_libraries if scope == PROBE_SCOPE_LIBRARIES else None
+            )
+            previous_last_run = self._status.get(server_id, {}).get(worker_key, {}).get("last_run")
             self._status[server_id][worker_key] = {
                 "running": True,
                 "phase": "discovery",
                 "last_log": "Fase 1/2: Avvio Discovery...",
                 "mode": mode,
                 "scope": scope,
+                "queue": combo_queue,
+                "board_reset": False,
+                "board_mode": "combo",
+                "board_library_ids": [str(lib_id) for lib_id in (target_libraries or [])],
+                "last_run": previous_last_run,
                 "started_at": datetime.now(timezone.utc).isoformat()
             }
 
@@ -619,13 +690,24 @@ class EmbyProbeManager:
         scope: str = PROBE_SCOPE_RECENT
     ) -> bool:
         """
-        Start combo workflow for all servers: Discovery (sequential) → Processing (sequential).
+        Start combo workflow for all servers.
 
         Args:
             servers: List of server configuration dicts
             mode: "smart" or "forced"
             scope: PROBE_SCOPE_RECENT (libraries scope not supported for all servers)
         """
+        enabled_servers = [s for s in servers if s and s.get("enabled") and s.get("id")]
+        if scope == PROBE_SCOPE_RECENT:
+            any_started = False
+            for server in enabled_servers:
+                server_id = server.get("id")
+                if not server_id:
+                    continue
+                if self.start_combo_workflow(server, server_id, mode, scope=scope):
+                    any_started = True
+            return any_started
+
         with self._lock:
             worker_key = f"combo_all_{scope}"
             worker = self._global_workers.get(worker_key)
@@ -658,11 +740,199 @@ class EmbyProbeManager:
         """Stop combo workflow for all servers."""
         with self._lock:
             worker_key = f"combo_all_{scope}"
+            stopped_any = False
             stop_flag = self._global_stop_flags.get(worker_key)
-            if not stop_flag:
-                return False
-            stop_flag.set()
-        return True
+            if stop_flag:
+                stop_flag.set()
+                stopped_any = True
+            for server_flags in self._stop_flags.values():
+                combo_flag = server_flags.get(f"combo_{scope}")
+                if combo_flag:
+                    combo_flag.set()
+                    stopped_any = True
+        return stopped_any
+
+    def _build_combo_queue(
+        self,
+        servers: list[Dict[str, Any]],
+        scope: str,
+        library_ids: Optional[list[str]] = None,
+        task_types: Optional[list[str]] = None
+    ) -> list[Dict[str, Any]]:
+        queue: list[Dict[str, Any]] = []
+        normalized_library_ids = [str(lib_id) for lib_id in (library_ids or []) if lib_id]
+        normalized_task_types = task_types or ["discovery", "processing"]
+        if scope == PROBE_SCOPE_LIBRARIES and normalized_library_ids:
+            for task_type in normalized_task_types:
+                for server in servers:
+                    if not isinstance(server, dict):
+                        continue
+                    server_id = server.get("id")
+                    if not server_id:
+                        continue
+                    server_name = (
+                        server.get("name")
+                        or server.get("alias")
+                        or server.get("original_name")
+                        or server.get("url")
+                        or server_id
+                    )
+                    for library_id in normalized_library_ids:
+                        queue.append({
+                            "id": f"{scope}:{task_type}:{server_id}:{library_id}",
+                            "type": task_type,
+                            "server_id": server_id,
+                            "server_name": str(server_name),
+                            "library_id": library_id
+                        })
+            return queue
+        for server in servers:
+            if not isinstance(server, dict):
+                continue
+            server_id = server.get("id")
+            if not server_id:
+                continue
+            server_name = (
+                server.get("name")
+                or server.get("alias")
+                or server.get("original_name")
+                or server.get("url")
+                or server_id
+            )
+            queue.append({
+                "id": f"{scope}:discovery:{server_id}",
+                "type": "discovery",
+                "server_id": server_id,
+                "server_name": str(server_name)
+            })
+        for server in servers:
+            if not isinstance(server, dict):
+                continue
+            server_id = server.get("id")
+            if not server_id:
+                continue
+            server_name = (
+                server.get("name")
+                or server.get("alias")
+                or server.get("original_name")
+                or server.get("url")
+                or server_id
+            )
+            queue.append({
+                "id": f"{scope}:processing:{server_id}",
+                "type": "processing",
+                "server_id": server_id,
+                "server_name": str(server_name)
+            })
+        return queue
+
+    def _evaluate_combo_task_result(
+        self,
+        server_id: str,
+        scope: str,
+        task_type: str,
+        library_id: Optional[str] = None
+    ) -> tuple[str, str]:
+        status_key = task_type
+        if scope == PROBE_SCOPE_RECENT:
+            status_key = "recent_discovery" if task_type == "discovery" else "recent_processing"
+        else:
+            status_key = "discovery" if task_type == "discovery" else "processing"
+        status = self._status.get(server_id, {}).get(status_key, {}) if server_id else {}
+        last_log = str(status.get("last_log") or "")
+        lower_log = last_log.lower()
+
+        if library_id is None:
+            if "interrotto" in lower_log:
+                return "warning", last_log or "Interrotto dall'utente"
+
+            if "errore" in lower_log:
+                return "error", last_log or "Errore"
+
+        if task_type == "processing":
+            if library_id:
+                totals = status.get("library_queue_totals") if isinstance(status.get("library_queue_totals"), dict) else {}
+                results = status.get("library_queue_results") if isinstance(status.get("library_queue_results"), dict) else {}
+                key = str(library_id)
+                total = int(totals.get(key) or 0)
+                library_result = results.get(str(library_id)) if isinstance(results.get(str(library_id)), dict) else {}
+                errors = int(library_result.get("errors") or 0)
+                incomplete = int(library_result.get("incomplete") or 0)
+                processed = int(library_result.get("processed") or 0)
+                done = processed + incomplete + errors
+                if key in totals and total == 0:
+                    return "skipped", "Processing non necessario"
+                if errors > 0:
+                    return "error", f"Errori: {errors}"
+                if incomplete > 0:
+                    return "warning", f"Incompleti: {incomplete}"
+                if done >= total:
+                    return "success", "Completato"
+                return "warning", "Interrotto"
+
+            errors = int(status.get("errors") or 0) + int(status.get("errors_retry") or 0)
+            incomplete = int(status.get("incomplete") or 0) + int(status.get("incomplete_retry") or 0)
+            processed = int(status.get("processed") or 0) + int(status.get("processed_retry") or 0)
+
+            if "coda vuota" in lower_log or "nessun file da processare" in lower_log:
+                return "skipped", "Processing non necessario"
+            if "nessun file processabile" in lower_log:
+                return "error", last_log or "Nessun file processabile"
+            if errors > 0:
+                return "error", f"Errori: {errors}"
+            if incomplete > 0:
+                return "warning", f"Incompleti: {incomplete}"
+            if processed > 0 or "completato" in lower_log:
+                return "success", last_log or "Completato"
+            return "success", last_log or "Completato"
+
+        if library_id:
+            completed = status.get("completed_library_ids") if isinstance(status.get("completed_library_ids"), list) else []
+            errors = status.get("error_library_ids") if isinstance(status.get("error_library_ids"), list) else []
+            if str(library_id) in errors:
+                return "error", "Errore in libreria"
+            if str(library_id) in completed:
+                return "success", "Completato"
+            if "interrotto" in lower_log:
+                return "warning", last_log or "Interrotto"
+            return "warning", "Interrotto"
+
+        if "fermato" in lower_log:
+            return "warning", last_log or "Fermato in anticipo"
+        if "completata" in lower_log or "completato" in lower_log or "scansionati" in lower_log:
+            return "success", last_log or "Completato"
+        return "success", last_log or "Completato"
+
+    def _build_combo_last_run(
+        self,
+        servers: list[Dict[str, Any]],
+        scope: str,
+        interrupted: bool,
+        library_ids: Optional[list[str]] = None,
+        task_types: Optional[list[str]] = None
+    ) -> Dict[str, Any]:
+        tasks = []
+        queue = self._build_combo_queue(servers, scope, library_ids=library_ids, task_types=task_types)
+        for entry in queue:
+            server_id = entry.get("server_id")
+            task_type = entry.get("type")
+            if not server_id or task_type not in ("discovery", "processing"):
+                continue
+            result, note = self._evaluate_combo_task_result(
+                server_id,
+                scope,
+                task_type,
+                library_id=entry.get("library_id")
+            )
+            task_entry = dict(entry)
+            task_entry["result"] = result
+            task_entry["note"] = note
+            tasks.append(task_entry)
+        return {
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "status": "interrupted" if interrupted else "completed",
+            "tasks": tasks
+        }
 
     def get_status(self, server_id: str) -> Dict[str, Any]:
         """Get the status of both discovery and processing workers for a server."""
@@ -677,7 +947,7 @@ class EmbyProbeManager:
         scope: str,
         target_libraries: Optional[list[str]],
         stop_flag: threading.Event
-    ) -> None:
+        ) -> None:
         """Orchestrate Discovery → Processing for a single server."""
         try:
             worker_key = f"combo_{scope}"
@@ -735,6 +1005,19 @@ class EmbyProbeManager:
                 if server_id in self._status and worker_key in self._status[server_id]:
                     self._status[server_id][worker_key]["last_log"] = f"Errore critico: {exc}"
                     self._status[server_id][worker_key]["running"] = False
+        finally:
+            worker_key = f"combo_{scope}"
+            interrupted = stop_flag.is_set()
+            with self._lock:
+                if server_id in self._status and worker_key in self._status[server_id]:
+                    library_ids = target_libraries if scope == PROBE_SCOPE_LIBRARIES else None
+                    self._status[server_id][worker_key]["last_run"] = self._build_combo_last_run(
+                        [server],
+                        scope,
+                        interrupted,
+                        library_ids=library_ids
+                    )
+                    self._status[server_id][worker_key]["board_reset"] = True
 
     def _combo_workflow_all_servers_worker(
         self,
@@ -748,6 +1031,7 @@ class EmbyProbeManager:
             enabled_servers = [s for s in servers if s and s.get("enabled") and s.get("id")]
             total_servers = len(enabled_servers)
             worker_key = f"combo_{scope}"
+            combo_queue = self._build_combo_queue(enabled_servers, scope)
 
             # Initialize combo status for all servers
             for srv in enabled_servers:
@@ -761,12 +1045,16 @@ class EmbyProbeManager:
                         if srv_id not in self._stop_flags:
                             self._stop_flags[srv_id] = {}
 
+                        previous_last_run = self._status.get(srv_id, {}).get(worker_key, {}).get("last_run")
                         self._status[srv_id][worker_key] = {
                             "running": True,
                             "phase": "discovery",
                             "last_log": "Avvio combo workflow...",
                             "mode": mode,
                             "scope": scope,
+                            "queue": [dict(entry) for entry in combo_queue],
+                            "board_reset": False,
+                            "last_run": previous_last_run,
                             "started_at": datetime.now(timezone.utc).isoformat()
                         }
 
@@ -775,6 +1063,8 @@ class EmbyProbeManager:
                 if stop_flag.is_set():
                     break
                 server_id = server.get("id")
+                if not server_id:
+                    continue
                 server_name = server.get("name") or server.get("url") or server_id
 
                 # Update all server combo statuses
@@ -827,6 +1117,8 @@ class EmbyProbeManager:
                     if stop_flag.is_set():
                         break
                     server_id = server.get("id")
+                    if not server_id:
+                        continue
                     server_name = server.get("name") or server.get("url") or server_id
 
                     # Update all server combo statuses
@@ -858,6 +1150,7 @@ class EmbyProbeManager:
         finally:
             # Mark combo workflow as completed for all servers
             worker_key = f"combo_{scope}"
+            last_run = self._build_combo_last_run(enabled_servers, scope, stop_flag.is_set())
             for srv in enabled_servers:
                 srv_id = srv.get("id")
                 if srv_id and srv_id in self._status:
@@ -868,6 +1161,8 @@ class EmbyProbeManager:
                             else:
                                 self._status[srv_id][worker_key]["last_log"] = "Combo workflow completato"
                             self._status[srv_id][worker_key]["running"] = False
+                            self._status[srv_id][worker_key]["last_run"] = last_run
+                            self._status[srv_id][worker_key]["board_reset"] = True
 
     def _wait_for_worker(self, worker: Optional[threading.Thread], stop_flag: threading.Event) -> None:
         while worker and worker.is_alive():
@@ -888,6 +1183,8 @@ class EmbyProbeManager:
             if stop_flag.is_set():
                 break
             server_id = server.get("id")
+            if not server_id:
+                continue
             server_name = server.get("name") or server.get("url") or server_id
 
             # Update all server statuses with current progress
@@ -925,6 +1222,8 @@ class EmbyProbeManager:
                 if stop_flag.is_set():
                     break
                 server_id = server.get("id")
+                if not server_id:
+                    continue
                 server_name = server.get("name") or server.get("url") or server_id
 
                 # Update all server statuses with current progress
@@ -1012,6 +1311,9 @@ class EmbyProbeManager:
         # Use servers_with_work instead of all enabled_servers
         enabled_servers = servers_with_work
 
+        if not enabled_servers:
+            return
+
         server_index = 0
         consecutive_skips = 0
         max_consecutive_skips = len(enabled_servers) * 2  # Allow 2 full rounds of all servers being busy
@@ -1021,6 +1323,8 @@ class EmbyProbeManager:
             total_remaining = 0
             for server in enabled_servers:
                 server_id = server.get("id")
+                if not server_id:
+                    continue
                 queue_items = db.get_probe_queue(server_id, scope=scope)
                 # Filter out blacklisted items (3+ errors)
                 blacklist = db.load_probe_blacklist(server_id, scope=scope)
@@ -1037,6 +1341,9 @@ class EmbyProbeManager:
             # Get current server
             server = enabled_servers[server_index]
             server_id = server.get("id")
+            if not server_id:
+                server_index = (server_index + 1) % len(enabled_servers)
+                continue
 
             # Check if server has items to process
             queue_items = db.get_probe_queue(server_id, scope=scope)
@@ -1067,11 +1374,13 @@ class EmbyProbeManager:
                 if consecutive_skips >= max_consecutive_skips:
                     # All servers busy for too long, wait a bit
                     for srv in enabled_servers:
-                        self._update_status(
-                            srv.get("id"),
-                            status_key,
-                            last_log="Tutti i server occupati, attesa..."
-                        )
+                        srv_id = srv.get("id")
+                        if srv_id:
+                            self._update_status(
+                                srv_id,
+                                status_key,
+                                last_log="Tutti i server occupati, attesa..."
+                            )
                     if stop_flag.wait(10):
                         break
                     consecutive_skips = 0
@@ -1184,11 +1493,13 @@ class EmbyProbeManager:
                             self._status[server_id][status_key]["errors_retry"] += 1
                         else:
                             self._status[server_id][status_key]["errors"] += 1
-                    self._status[server_id][status_key]["total"] = (
-                        self._status[server_id][status_key]["processed"] +
-                        self._status[server_id][status_key]["incomplete"] +
-                        self._status[server_id][status_key]["errors"]
-                    )
+                    current_total = self._status[server_id][status_key].get("total") or 0
+                    if current_total == 0:
+                        self._status[server_id][status_key]["total"] = (
+                            self._status[server_id][status_key]["processed"] +
+                            self._status[server_id][status_key]["incomplete"] +
+                            self._status[server_id][status_key]["errors"]
+                        )
 
             # Rate limiting
             if stop_flag.wait(1):
@@ -1245,6 +1556,79 @@ class EmbyProbeManager:
             totals = discovery.get("library_totals") or {}
             totals[str(library_id)] = total_count
             discovery["library_totals"] = totals
+
+    def _increment_library_scanned(self, server_id: str, library_id: str, count: int) -> None:
+        with self._lock:
+            if server_id not in self._status:
+                self._status[server_id] = {}
+            discovery = self._status[server_id].setdefault("discovery", {})
+            scanned = discovery.get("library_scanned") or {}
+            key = str(library_id)
+            scanned[key] = int(scanned.get(key) or 0) + int(count or 0)
+            discovery["library_scanned"] = scanned
+
+    def _mark_library_completed(self, server_id: str, library_id: str) -> None:
+        with self._lock:
+            if server_id not in self._status:
+                self._status[server_id] = {}
+            discovery = self._status[server_id].setdefault("discovery", {})
+            completed = discovery.get("completed_library_ids") or []
+            key = str(library_id)
+            if key not in completed:
+                completed.append(key)
+            discovery["completed_library_ids"] = completed
+
+    def _mark_library_error(self, server_id: str, library_id: str) -> None:
+        with self._lock:
+            if server_id not in self._status:
+                self._status[server_id] = {}
+            discovery = self._status[server_id].setdefault("discovery", {})
+            errors = discovery.get("error_library_ids") or []
+            key = str(library_id)
+            if key not in errors:
+                errors.append(key)
+            discovery["error_library_ids"] = errors
+
+    def _merge_processing_library_totals(self, server_id: str, status_key: str, totals: Dict[str, int]) -> None:
+        with self._lock:
+            if server_id not in self._status:
+                self._status[server_id] = {}
+            status = self._status[server_id].setdefault(status_key, {})
+            existing = status.get("library_queue_totals") or {}
+            for lib_id, total in totals.items():
+                current = int(existing.get(lib_id) or 0)
+                incoming = int(total or 0)
+                existing[lib_id] = max(current, incoming)
+            status["library_queue_totals"] = existing
+
+            results = status.get("library_queue_results") or {}
+            for lib_id in totals.keys():
+                entry = results.get(lib_id)
+                if not isinstance(entry, dict):
+                    entry = {"processed": 0, "incomplete": 0, "errors": 0}
+                results[lib_id] = entry
+            status["library_queue_results"] = results
+
+    def _increment_processing_library_result(
+        self,
+        server_id: str,
+        status_key: str,
+        library_id: str,
+        field: str,
+        amount: int = 1
+    ) -> None:
+        with self._lock:
+            if server_id not in self._status:
+                self._status[server_id] = {}
+            status = self._status[server_id].setdefault(status_key, {})
+            results = status.get("library_queue_results") or {}
+            key = str(library_id)
+            entry = results.get(key)
+            if not isinstance(entry, dict):
+                entry = {"processed": 0, "incomplete": 0, "errors": 0}
+            entry[field] = int(entry.get(field) or 0) + int(amount or 0)
+            results[key] = entry
+            status["library_queue_results"] = results
 
     def _discovery_worker(
         self,
@@ -1310,7 +1694,17 @@ class EmbyProbeManager:
                     break
 
                 library_id = library.get("id")
+                if not library_id:
+                    continue
                 library_name = library.get("name", "Sconosciuto")
+                library_error = False
+
+                self._update_status(
+                    server_id,
+                    "discovery",
+                    current_library_id=str(library_id),
+                    current_library_name=library_name
+                )
 
                 self._update_status(
                     server_id,
@@ -1343,6 +1737,8 @@ class EmbyProbeManager:
                             "discovery",
                             last_log=f"Errore recupero item da {library_name}: {payload}"
                         )
+                        library_error = True
+                        self._mark_library_error(server_id, str(library_id))
                         break
 
                     items = payload.get("Items", [])
@@ -1453,10 +1849,16 @@ class EmbyProbeManager:
                         increment_total_scanned=len(items),
                         last_log=f"Scansionati {start_index + len(items)}/{total_count} item in {library_name}"
                     )
+                    self._increment_library_scanned(server_id, str(library_id), len(items))
 
                     start_index += page_size
                     if start_index >= total_count:
                         break
+
+                if stop_flag.is_set():
+                    break
+                if not library_error:
+                    self._mark_library_completed(server_id, str(library_id))
 
             # Save remaining batch
             if items_batch and not stop_flag.is_set():
@@ -1492,6 +1894,20 @@ class EmbyProbeManager:
             with self._lock:
                 if server_id in self._status and "discovery" in self._status[server_id]:
                     self._status[server_id]["discovery"]["running"] = False
+                    self._status[server_id]["discovery"]["current_library_id"] = None
+                    self._status[server_id]["discovery"]["current_library_name"] = None
+                combo_key = f"combo_{PROBE_SCOPE_LIBRARIES}"
+                combo_status = self._status.get(server_id, {}).get(combo_key, {})
+                if combo_status and not combo_status.get("running") and combo_status.get("board_mode") == "discovery":
+                    library_ids = self._status.get(server_id, {}).get("discovery", {}).get("target_library_ids") or []
+                    self._status[server_id][combo_key]["last_run"] = self._build_combo_last_run(
+                        [server],
+                        PROBE_SCOPE_LIBRARIES,
+                        stop_flag.is_set(),
+                        library_ids=library_ids,
+                        task_types=["discovery"]
+                    )
+                    self._status[server_id][combo_key]["board_reset"] = True
 
     def _recent_discovery_worker(
         self,
@@ -1613,7 +2029,17 @@ class EmbyProbeManager:
             items_batch = []
             batch_size = 20
 
+            # Get recently added items - scan last 500 items sorted by DateCreated
+            self._update_status(
+                server_id,
+                "recent_discovery",
+                last_log=f"{server_name}: Scansione ultimi 500 elementi aggiunti..."
+            )
+
+            max_items_to_scan = 500  # Scan last 500 items by DateCreated
+
             while not stop_flag.is_set():
+                # Simple approach: get items sorted by DateCreated, process up to 500
                 items_success, items_payload = _call_emby_api(
                     server,
                     "Items",
@@ -1625,7 +2051,7 @@ class EmbyProbeManager:
                         "SortOrder": "Descending",
                         "Limit": page_size,
                         "StartIndex": start_index,
-                        "Fields": "Path,MediaStreams,RunTimeTicks,MediaSources,ParentId,SeriesName,IndexNumber,ParentIndexNumber,ProductionYear,SeriesProductionYear,Type,DateCreated"
+                        "Fields": "Path,MediaStreams,RunTimeTicks,MediaSources,ParentId,SeriesName,IndexNumber,ParentIndexNumber,ProductionYear,SeriesProductionYear,Type,DateCreated,Container"
                     }
                 )
 
@@ -1663,64 +2089,38 @@ class EmbyProbeManager:
                     if item_date and (oldest_item_date is None or item_date < oldest_item_date):
                         oldest_item_date = item_date
 
-                    # Stop condition 1: reached cutoff date
-                    if item_date and item_date < cutoff_date:
-                        self._update_status(
-                            server_id,
-                            "recent_discovery",
-                            last_log=f"{server_name}: Fermato - raggiunto timestamp precedente scan"
-                        )
-                        stop_flag.set()
-                        break
-
-                    # Stop condition 2: max days
-                    now = datetime.now(timezone.utc)
-                    if item_date and (now - item_date).days > MAX_DAYS:
-                        self._update_status(
-                            server_id,
-                            "recent_discovery",
-                            last_log=f"{server_name}: Fermato - elementi oltre {MAX_DAYS} giorni"
-                        )
-                        stop_flag.set()
-                        break
-
-                    # Stop condition 3: max items checked
+                    # Scan only the last max_items_to_scan items by DateCreated
+                    # This ensures we check recently added content without processing the entire library
                     total_items_checked += 1
-                    if total_items_checked > MAX_ITEMS:
+                    if total_items_checked > max_items_to_scan:
                         self._update_status(
                             server_id,
                             "recent_discovery",
-                            last_log=f"{server_name}: Fermato - controllati oltre {MAX_ITEMS} elementi"
+                            last_log=f"{server_name}: Scansionati {max_items_to_scan} elementi - discovery completata"
                         )
                         stop_flag.set()
                         break
 
                     item_path = item.get("Path", "")
-                    is_strm = item_path.lower().endswith(".strm")
 
-                    # Only process .strm files
-                    if not is_strm:
-                        self._update_status(
-                            server_id,
-                            "recent_discovery",
-                            increment_total_scanned=1
-                        )
+                    # Filter: only .strm files (same logic as library discovery)
+                    if not item_path.lower().endswith(".strm"):
                         continue
 
+                    # Extract metadata
                     item_type = item.get("Type", "")
                     item_name = item.get("Name", "Sconosciuto")
                     series_name = item.get("SeriesName")
                     season_number = item.get("ParentIndexNumber")
                     episode_number = item.get("IndexNumber")
                     year = item.get("SeriesProductionYear") or item.get("ProductionYear")
-                    parent_id = item.get("ParentId")
 
                     media_sources = item.get("MediaSources")
                     if not isinstance(media_sources, list) or not media_sources:
                         media_sources = [None]
 
-                    library_id, library_name = resolve_library(item_path, parent_id)
-                    has_complete_mediainfo = False
+                    # Track if at least one source was queued for this item
+                    item_has_queued_source = False
 
                     for source in media_sources:
                         if source is None:
@@ -1736,10 +2136,12 @@ class EmbyProbeManager:
                         else:
                             continue
 
+                        parent_id = item.get("ParentId")
+                        library_id, library_name = resolve_library(item_path, parent_id)
+
                         # Check if this source has mediainfo
                         if source_runtime and source_streams:
-                            has_complete_mediainfo = True
-                            continue
+                            continue  # Skip this source, it already has metadata
 
                         # Skip if blacklisted
                         if is_blacklisted(item_id, source_media_id):
@@ -1773,8 +2175,11 @@ class EmbyProbeManager:
                             "path": item_path
                         })
 
-                    # Update sliding window (only for .strm files)
-                    sliding_window.append(1 if has_complete_mediainfo else 0)
+                        # Mark that we queued at least one source for this item
+                        item_has_queued_source = True
+
+                    # Update sliding window: 1 if no source was queued (all have metadata), 0 if at least one was queued
+                    sliding_window.append(0 if item_has_queued_source else 1)
                     if len(sliding_window) > WINDOW_SIZE:
                         sliding_window.pop(0)
 
@@ -1812,8 +2217,8 @@ class EmbyProbeManager:
 
                 start_index += page_size
 
-            # Flush remaining items
-            if items_batch and not stop_flag.is_set():
+            # Flush remaining items (always flush, even if stopped by sliding window)
+            if items_batch:
                 db.add_to_probe_queue(items_batch)
                 self._update_status(
                     server_id,
@@ -1833,10 +2238,11 @@ class EmbyProbeManager:
                 )
             else:
                 found_count = self._status.get(server_id, {}).get("recent_discovery", {}).get("found", 0)
+                scanned_count = self._status.get(server_id, {}).get("recent_discovery", {}).get("total_scanned", 0)
                 self._update_status(
                     server_id,
                     "recent_discovery",
-                    last_log=f"{server_name}: Discovery completata - Trovati {found_count} file da analizzare"
+                    last_log=f"{server_name}: Discovery completata - Trovati {found_count} file da analizzare su {scanned_count} elementi scansionati"
                 )
 
         except Exception as exc:
@@ -1871,6 +2277,22 @@ class EmbyProbeManager:
             db = self._db_getter()
 
             while not stop_flag.is_set():
+                if scope == PROBE_SCOPE_RECENT:
+                    while not stop_flag.is_set():
+                        with self._lock:
+                            discovery_worker = self._workers.get(server_id, {}).get("recent_discovery")
+                        if not discovery_worker or not discovery_worker.is_alive():
+                            break
+                        self._update_status(
+                            server_id,
+                            status_key,
+                            last_log="In attesa: discovery in corso..."
+                        )
+                        if stop_flag.wait(1):
+                            break
+                    if stop_flag.is_set():
+                        break
+
                 # Load queue
                 self._update_status(
                     server_id,
@@ -1879,6 +2301,19 @@ class EmbyProbeManager:
                 )
 
                 queue_items = db.get_probe_queue(server_id, library_ids=target_libraries, scope=scope)
+
+                library_totals: Dict[str, int] = {}
+                if scope == PROBE_SCOPE_LIBRARIES:
+                    for lib_id in target_libraries or []:
+                        if lib_id:
+                            library_totals[str(lib_id)] = 0
+                    for item in queue_items:
+                        lib_id = item.get("library_id")
+                        if lib_id:
+                            key = str(lib_id)
+                            library_totals[key] = library_totals.get(key, 0) + 1
+                    if library_totals:
+                        self._merge_processing_library_totals(server_id, status_key, library_totals)
 
                 self._update_status(
                     server_id,
@@ -1930,10 +2365,9 @@ class EmbyProbeManager:
                         last_log=f"Processing: {first_attempt_count} primi tentativi + {retry_count} retry"
                     )
 
-                # Process each item
-                for queue_item in processable:
+                def handle_queue_item(queue_item: Dict[str, Any]) -> bool:
                     if stop_flag.is_set():
-                        break
+                        return False
 
                     # Smart mode: check if server is busy and wait if needed
                     if mode == "smart":
@@ -1954,7 +2388,7 @@ class EmbyProbeManager:
 
                         # If stopped while waiting, exit processing loop
                         if stop_flag.is_set():
-                            break
+                            return False
 
                     item_id = queue_item["item_id"]
                     item_display_name = _format_display_name_from_queue(queue_item)
@@ -1971,6 +2405,8 @@ class EmbyProbeManager:
                         server_id,
                         status_key,
                         current_item=item_display_name,
+                        current_library_id=library_id,
+                        current_library_name=library_name,
                         last_log=f"Analisi: {item_display_name}"
                     )
 
@@ -1981,7 +2417,7 @@ class EmbyProbeManager:
 
                     # Check stop flag
                     if stop_flag.is_set():
-                        break
+                        return False
 
                     # Remove from queue
                     db.remove_from_probe_queue(server_id, item_id, media_source_id, scope=scope)
@@ -2044,6 +2480,8 @@ class EmbyProbeManager:
                         if retry_count >= 3:
                             should_requeue = False
 
+                    final_for_library = not should_requeue
+
                     # Add to history
                     db.add_probe_history({
                         "server_id": server_id,
@@ -2072,6 +2510,8 @@ class EmbyProbeManager:
                                 last_log=f"Completato: {item_display_name}",
                                 increment_processed=1
                             )
+                        if final_for_library and scope == PROBE_SCOPE_LIBRARIES and library_id:
+                            self._increment_processing_library_result(server_id, status_key, str(library_id), "processed")
                     elif status == "INCOMPLETE":
                         if is_retry:
                             self._update_status(
@@ -2087,6 +2527,8 @@ class EmbyProbeManager:
                                 last_log=f"Incompleto: {item_display_name}",
                                 increment_incomplete=1
                             )
+                        if final_for_library and scope == PROBE_SCOPE_LIBRARIES and library_id:
+                            self._increment_processing_library_result(server_id, status_key, str(library_id), "incomplete")
                     else:
                         if is_retry:
                             self._update_status(
@@ -2102,13 +2544,63 @@ class EmbyProbeManager:
                                 last_log=f"Errore: {item_display_name}",
                                 increment_errors=1
                             )
+                        if final_for_library and scope == PROBE_SCOPE_LIBRARIES and library_id:
+                            self._increment_processing_library_result(server_id, status_key, str(library_id), "errors")
 
                     if should_requeue and not stop_flag.is_set():
                         db.add_to_probe_queue([queue_item])
 
                     # Rate limiting
                     if stop_flag.wait(1):
-                        break
+                        return False
+
+                    return True
+
+                if scope == PROBE_SCOPE_LIBRARIES:
+                    library_order = [str(lib_id) for lib_id in (target_libraries or []) if lib_id]
+                    if not library_order:
+                        library_names: Dict[str, str] = {}
+                        for item in processable:
+                            lib_id = item.get("library_id")
+                            if not lib_id:
+                                continue
+                            key = str(lib_id)
+                            if key not in library_names:
+                                library_names[key] = str(item.get("library_name") or key)
+                        library_order = sorted(library_names.keys(), key=lambda lib_id: library_names[lib_id].lower())
+
+                    for library_id in library_order:
+                        if stop_flag.is_set():
+                            break
+                        while not stop_flag.is_set():
+                            library_queue = db.get_probe_queue(server_id, library_ids=[library_id], scope=scope)
+                            if not library_queue:
+                                break
+                            blacklist = db.load_probe_blacklist(server_id, scope=scope)
+                            library_processable = [
+                                item for item in library_queue
+                                if retry_count_for(item.get("item_id"), item.get("media_source_id")) < 3
+                            ]
+                            if not library_processable:
+                                break
+                            library_name = library_processable[0].get("library_name") or library_queue[0].get("library_name")
+                            self._update_status(
+                                server_id,
+                                status_key,
+                                current_library_id=str(library_id),
+                                current_library_name=library_name
+                            )
+                            for queue_item in library_processable:
+                                if not handle_queue_item(queue_item):
+                                    break
+                            if stop_flag.is_set():
+                                break
+                        if stop_flag.is_set():
+                            break
+                else:
+                    for queue_item in processable:
+                        if not handle_queue_item(queue_item):
+                            break
 
                 if stop_flag.is_set():
                     break
@@ -2153,6 +2645,21 @@ class EmbyProbeManager:
             with self._lock:
                 if server_id in self._status and status_key in self._status[server_id]:
                     self._status[server_id][status_key]["running"] = False
+                    self._status[server_id][status_key]["current_library_id"] = None
+                    self._status[server_id][status_key]["current_library_name"] = None
+                if scope == PROBE_SCOPE_LIBRARIES and status_key == "processing":
+                    combo_key = f"combo_{PROBE_SCOPE_LIBRARIES}"
+                    combo_status = self._status.get(server_id, {}).get(combo_key, {})
+                    if combo_status and not combo_status.get("running") and combo_status.get("board_mode") == "processing":
+                        library_ids = self._status.get(server_id, {}).get(status_key, {}).get("target_library_ids") or []
+                        self._status[server_id][combo_key]["last_run"] = self._build_combo_last_run(
+                            [server],
+                            PROBE_SCOPE_LIBRARIES,
+                            stop_flag.is_set(),
+                            library_ids=library_ids,
+                            task_types=["processing"]
+                        )
+                        self._status[server_id][combo_key]["board_reset"] = True
 
     def retry_item(
         self,

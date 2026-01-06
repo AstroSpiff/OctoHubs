@@ -2,6 +2,7 @@
 import argparse
 import copy
 import json
+import html
 import os
 import sys
 import threading
@@ -9,7 +10,7 @@ import time
 import re
 import uuid
 import xml.etree.ElementTree as ET
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from datetime import datetime, date, timezone, time as dt_time, timedelta
 from email.utils import parsedate_to_datetime
 from functools import wraps
@@ -17,6 +18,9 @@ from functools import wraps
 import requests
 from typing import Dict, Any, cast
 
+from jinja2 import Undefined, TemplateSyntaxError
+from jinja2.sandbox import SandboxedEnvironment
+from markupsafe import Markup
 from storage import DatabaseStorage, StorageError
 from config import (
     CONFIG_FILE,
@@ -32,7 +36,6 @@ from config import (
     TV_SORT_KEYS,
     MOVIE_SORT_KEYS,
     read_raw_config,
-    write_config_file as config_write_file,
     _default_search_rules,
     _default_auto_tasks,
     _default_emby_settings,
@@ -98,7 +101,7 @@ from scanner import (
 from tasks import ScanManager, AutoScheduler
 from emby_probe import get_probe_manager, _format_display_name_from_queue
 from emby_streams import get_streams_manager
-from auth import init_auth, get_user_by_username, log_audit_event
+from auth import init_auth, get_user_by_username, get_all_users, create_user, log_audit_event
 
 try:
     from flask import Flask, request, render_template, redirect, url_for, jsonify, flash, Response, stream_with_context, session, abort
@@ -250,7 +253,10 @@ CONNECTION_FIELDS = [
     "QBITTORRENT_USERNAME",
     "QBITTORRENT_PASSWORD",
     "TMDB_API_KEY",
-    "TMDB_LANGUAGE"
+    "TMDB_LANGUAGE",
+    "OMDB_API_KEY",
+    "OMDB_API_KEYS",
+    "MDBLIST_API_KEYS"
 ]
 
 _ACTIVE_CONFIG = copy.deepcopy(DEFAULT_CONFIG)
@@ -266,14 +272,60 @@ _REQUESTS_CACHE = {
     "items": [],
     "generated_at": None
 }
+_LATEST_CACHE = {
+    "payload": None,
+    "timestamp": None,
+    "params": None,
+    "is_refreshing": False,
+    "last_refresh_start": None,
+    "progress": {
+        "state": "idle",
+        "total": 0,
+        "completed": 0,
+        "message": "",
+        "started_at": None,
+        "updated_at": None
+    }
+}
+_LATEST_CACHE_LOCK = threading.Lock()
 _AUTO_SCHEDULER = None
 _EMBY_STRM_GUARD = None
+
+def _update_latest_progress(state=None, total=None, completed=None, message=None):
+    with _LATEST_CACHE_LOCK:
+        progress = _LATEST_CACHE.get("progress")
+        if not isinstance(progress, dict):
+            progress = {}
+        if state is not None:
+            progress["state"] = state
+            if state in ("collecting", "enriching"):
+                progress["started_at"] = datetime.now(timezone.utc).isoformat()
+        if total is not None:
+            progress["total"] = total
+        if completed is not None:
+            progress["completed"] = completed
+        if message is not None:
+            progress["message"] = message
+        progress["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _LATEST_CACHE["progress"] = progress
+
+def _get_latest_progress_snapshot():
+    with _LATEST_CACHE_LOCK:
+        progress = _LATEST_CACHE.get("progress")
+        is_refreshing = _LATEST_CACHE.get("is_refreshing", False)
+    if not isinstance(progress, dict):
+        progress = {}
+    return {
+        "progress": dict(progress),
+        "refreshing": bool(is_refreshing)
+    }
 
 EMBY_STRM_GUARD_KEY = "EMBY_STRM_GUARD"
 EMBY_STRM_GUARD_COOLDOWN_SECONDS = 10
 EMBY_STRM_GUARD_POLL_SECONDS = 5
 TMDB_API_BASE = "https://api.themoviedb.org/3"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w342"
+TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p"
 TMDB_SEARCH_LIMIT = 15
 
 # --- UTILS CONFIG ---
@@ -287,35 +339,84 @@ def _merge_config_section(raw_config, new_data, section_key, merger_func):
     section_data = new_data.get(section_key) or raw_config.get(section_key)
     return merger_func(section_data)
 
+
+def _read_env_secret(key: str) -> str:
+    file_key = f"{key}_FILE"
+    file_path = os.environ.get(file_key)
+    if file_path:
+        try:
+            with open(file_path, "r") as handle:
+                value = handle.read().strip()
+            if value:
+                return value
+        except OSError:
+            pass
+    value = os.environ.get(key)
+    if isinstance(value, str):
+        value = value.strip()
+    return value or ""
+
+
+def _apply_db_env_overrides(db_settings: Dict[str, Any]) -> Dict[str, Any]:
+    overrides: Dict[str, Any] = {}
+    env_url = os.environ.get("OCTOHUB_DB_URL") or os.environ.get("DATABASE_URL")
+    if env_url:
+        overrides["URL"] = env_url
+    env_driver = os.environ.get("OCTOHUB_DB_DRIVER")
+    if env_driver:
+        overrides["DRIVER"] = env_driver.strip()
+    env_host = os.environ.get("OCTOHUB_DB_HOST")
+    if env_host:
+        overrides["HOST"] = env_host.strip()
+    env_port = os.environ.get("OCTOHUB_DB_PORT")
+    if env_port:
+        overrides["PORT"] = env_port.strip()
+    env_name = os.environ.get("OCTOHUB_DB_NAME")
+    if env_name:
+        overrides["NAME"] = env_name.strip()
+    env_user = os.environ.get("OCTOHUB_DB_USER")
+    if env_user:
+        overrides["USER"] = env_user.strip()
+    env_password = _read_env_secret("OCTOHUB_DB_PASSWORD")
+    if env_password:
+        overrides["PASSWORD"] = env_password
+    env_params = os.environ.get("OCTOHUB_DB_PARAMS")
+    if env_params:
+        overrides["PARAMS"] = env_params.strip()
+
+    if overrides:
+        overrides["ENABLED"] = True
+
+    merged = dict(db_settings or {})
+    merged.update(overrides)
+    return _merge_database_settings(merged)
+
+
+def _get_effective_db_settings(raw_config: Dict[str, Any] | None) -> Dict[str, Any]:
+    base = _merge_database_settings((raw_config or {}).get("DATABASE"))
+    base["PASSWORD"] = ""
+    base["URL"] = ""
+    return _apply_db_env_overrides(base)
+
 # --- GESTIONE CONFIGURAZIONE ---
 
 def load_config():
     """Carica la configurazione dal file JSON."""
     global _ACTIVE_CONFIG
-    if not os.path.exists(CONFIG_FILE):
-        return None, False # Config non esiste
-    try:
-        with open(CONFIG_FILE, 'r') as f:
-            file_config = json.load(f)
-    except (json.JSONDecodeError, IOError):
-        return None, False
-    database_settings = _merge_database_settings((file_config or {}).get("DATABASE"))
+    file_config: Dict[str, Any] = {}
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                file_config = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return None, False
+    database_settings = _get_effective_db_settings(file_config)
     merged = copy.deepcopy(DEFAULT_CONFIG)
-    for key in CONNECTION_FIELDS:
-        merged[key] = file_config.get(key, merged.get(key))
     merged["DATABASE"] = database_settings
-    merged["TRAKT"] = _merge_trakt_settings(file_config.get("TRAKT"))
-    merged["JUSTWATCH"] = _merge_justwatch_settings(file_config.get("JUSTWATCH"))
-    merged["EMBY"] = _merge_emby_settings((file_config or {}).get("EMBY"))
 
     # Setta _ACTIVE_CONFIG subito in modo che _ensure_db_backend possa accedervi
     _ACTIVE_CONFIG = merged
 
-    # Validazione: richiede Jellyseerr + almeno uno tra Prowlarr o Jackett
-    jellyseerr_ok = bool(merged.get("JELLYSEERR_URL") and merged.get("JELLYSEERR_API_KEY"))
-    prowlarr_ok = _prowlarr_configured(merged)
-    jackett_ok = _jackett_configured(merged)
-    connection_valid = jellyseerr_ok and (prowlarr_ok or jackett_ok)
     if not _db_enabled(database_settings):
         print("   -> Il database risulta disattivato nelle impostazioni: abilitalo per proseguire.")
         return merged, False
@@ -336,8 +437,28 @@ def load_config():
     legacy_request_rules = (file_config or {}).get("REQUEST_RULES")
 
     app_settings = backend.load_app_settings() or {}
+    if not isinstance(app_settings, dict):
+        app_settings = {}
     search_rules = _default_search_rules()
     need_save = False
+
+    # Migrazione verso DB delle configurazioni non-DB
+    legacy_trakt = file_config.get("TRAKT")
+    legacy_justwatch = file_config.get("JUSTWATCH")
+    legacy_emby = (file_config or {}).get("EMBY")
+    for key in CONNECTION_FIELDS:
+        if key not in app_settings and key in file_config:
+            app_settings[key] = file_config.get(key)
+            need_save = True
+    if "TRAKT" not in app_settings and isinstance(legacy_trakt, dict):
+        app_settings["TRAKT"] = legacy_trakt
+        need_save = True
+    if "JUSTWATCH" not in app_settings and isinstance(legacy_justwatch, dict):
+        app_settings["JUSTWATCH"] = legacy_justwatch
+        need_save = True
+    if "EMBY" not in app_settings and isinstance(legacy_emby, dict):
+        app_settings["EMBY"] = legacy_emby
+        need_save = True
 
     if legacy_rules and not app_settings.get("SEARCH_RULES"):
         app_settings["SEARCH_RULES"] = legacy_rules
@@ -348,6 +469,18 @@ def load_config():
     if legacy_exclude and not app_settings.get("EXCLUDE_TAGS"):
         app_settings["EXCLUDE_TAGS"] = legacy_exclude
         need_save = True
+
+    for key in CONNECTION_FIELDS:
+        if key in app_settings:
+            value = app_settings.get(key)
+            # Preserve lists (like OMDB_API_KEYS, MDBLIST_API_KEYS), don't convert to ""
+            if isinstance(value, list):
+                merged[key] = value
+            else:
+                merged[key] = value or ""
+    merged["TRAKT"] = _merge_trakt_settings(app_settings.get("TRAKT"))
+    merged["JUSTWATCH"] = _merge_justwatch_settings(app_settings.get("JUSTWATCH"))
+    merged["EMBY"] = _merge_emby_settings(app_settings.get("EMBY"))
 
     target_langs = app_settings.get("TARGET_LANGUAGES") or merged["TARGET_LANGUAGES"]
     exclude_tags = app_settings.get("EXCLUDE_TAGS") or merged["EXCLUDE_TAGS"]
@@ -362,8 +495,20 @@ def load_config():
             "TARGET_LANGUAGES": target_langs,
             "EXCLUDE_TAGS": exclude_tags,
             "SEARCH_RULES": search_rules,
-            "AUTO_TASKS": auto_settings
+            "AUTO_TASKS": auto_settings,
+            "RSS_IMPORT": rss_import_settings,
+            "TRAKT": merged["TRAKT"],
+            "JUSTWATCH": merged["JUSTWATCH"],
+            "EMBY": merged["EMBY"]
         })
+        for key in CONNECTION_FIELDS:
+            value = merged.get(key)
+            # Preserve lists, use appropriate default
+            if value is None:
+                # Use default from DEFAULT_CONFIG if available
+                persisted[key] = DEFAULT_CONFIG.get(key, "")
+            else:
+                persisted[key] = value
         backend.save_app_settings(persisted)
         app_settings = persisted
 
@@ -379,11 +524,91 @@ def load_config():
     merged["AUTO_TASKS"] = auto_settings
     merged["RSS_IMPORT"] = rss_import_settings
 
+    # Validazione: richiede Jellyseerr + almeno uno tra Prowlarr o Jackett
+    jellyseerr_ok = bool(merged.get("JELLYSEERR_URL") and merged.get("JELLYSEERR_API_KEY"))
+    prowlarr_ok = _prowlarr_configured(merged)
+    jackett_ok = _jackett_configured(merged)
+    connection_valid = jellyseerr_ok and (prowlarr_ok or jackett_ok)
+
     _ACTIVE_CONFIG = merged
     _sync_auto_scheduler(connection_valid)
     return merged, connection_valid
 
-# Nota: read_raw_config e write_config_file sono ora importate da config.py (come config_write_file)
+# --- SCRITTURA CONFIG DB ---
+
+def _write_database_config(db_settings: Dict[str, Any]) -> None:
+    """Persist only database settings to config.json."""
+    sanitized = _merge_database_settings(db_settings)
+    sanitized["PASSWORD"] = ""
+    sanitized["URL"] = ""
+    payload = {"DATABASE": sanitized}
+    config_dir = os.path.dirname(CONFIG_FILE)
+    if config_dir:
+        os.makedirs(config_dir, exist_ok=True)
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(payload, f, indent=4)
+
+
+def _seed_db_from_legacy_config(legacy_config: Dict[str, Any], backend: DatabaseStorage) -> None:
+    """Migrate legacy config.json values into DB without overwriting existing settings."""
+    if not isinstance(legacy_config, dict):
+        return
+    app_settings = backend.load_app_settings() or {}
+    if not isinstance(app_settings, dict):
+        app_settings = {}
+
+    updated = dict(app_settings)
+    changed = False
+
+    def _set_if_missing(key: str, value: Any) -> None:
+        nonlocal changed
+        if key not in updated and value is not None:
+            updated[key] = value
+            changed = True
+
+    for key in CONNECTION_FIELDS:
+        if key in legacy_config:
+            _set_if_missing(key, legacy_config.get(key) or "")
+
+    legacy_trakt = legacy_config.get("TRAKT")
+    if isinstance(legacy_trakt, dict):
+        _set_if_missing("TRAKT", legacy_trakt)
+
+    legacy_justwatch = legacy_config.get("JUSTWATCH")
+    if isinstance(legacy_justwatch, dict):
+        _set_if_missing("JUSTWATCH", legacy_justwatch)
+
+    legacy_emby = legacy_config.get("EMBY")
+    if isinstance(legacy_emby, dict):
+        _set_if_missing("EMBY", legacy_emby)
+
+    if legacy_config.get("TARGET_LANGUAGES") is not None:
+        _set_if_missing("TARGET_LANGUAGES", legacy_config.get("TARGET_LANGUAGES"))
+    if legacy_config.get("EXCLUDE_TAGS") is not None:
+        _set_if_missing("EXCLUDE_TAGS", legacy_config.get("EXCLUDE_TAGS"))
+
+    legacy_rules = legacy_config.get("SEARCH_RULES")
+    if isinstance(legacy_rules, dict):
+        _set_if_missing("SEARCH_RULES", legacy_rules)
+
+    legacy_auto = legacy_config.get("AUTO_TASKS")
+    if isinstance(legacy_auto, dict):
+        _set_if_missing("AUTO_TASKS", _normalize_auto_settings(legacy_auto))
+
+    legacy_rss = legacy_config.get("RSS_IMPORT")
+    if isinstance(legacy_rss, dict):
+        _set_if_missing("RSS_IMPORT", _merge_rss_import_settings(legacy_rss))
+
+    if changed:
+        backend.save_app_settings(updated)
+
+    legacy_request_rules = legacy_config.get("REQUEST_RULES")
+    if isinstance(legacy_request_rules, dict):
+        existing_rules = backend.load_request_rules()
+        if not existing_rules:
+            backend.save_request_rules(legacy_request_rules)
+
+# Nota: read_raw_config è ora importata da config.py
 # Nota: _split_csv_field, _coerce_request_bool, _coerce_request_int, _normalize_alt_language sono ora importate da config.py
 # Nota: _sanitize_terms_list è ora importata da utils.py
 
@@ -538,6 +763,8 @@ def _summarize_requests_for_dashboard(config):
     requests_data = enriched_requests
     for req in requests_data:
         req_id = req.get("id")
+        if not req_id:
+            continue
         type_hint = _normalize_media_type(req.get("type") or req.get("media", {}).get("mediaType"))
         force_details = bool(type_hint == "tv")
         base_req, title, year, media_type = _resolve_request_metadata_for_summary(
@@ -664,7 +891,10 @@ def _ensure_db_backend():
         db_config.get("HOST"),
         db_config.get("PORT"),
         db_config.get("NAME"),
-        db_config.get("USER")
+        db_config.get("USER"),
+        db_config.get("PASSWORD"),
+        db_config.get("DRIVER"),
+        db_config.get("PARAMS")
     )
 
     # Se la configurazione è cambiata, ricrea il backend
@@ -1191,17 +1421,22 @@ def _build_emby_server_from_form(form, existing):
     if not server.get("id"):
         server["id"] = str(uuid.uuid4())
 
-    name = form.get("server_name") or form.get("emby_name")
+    alias = form.get("server_alias")
+    if alias is None:
+        alias = form.get("server_name") or form.get("emby_name")
     url = form.get("server_url") or form.get("emby_url")
     api_key = form.get("server_api_key") or form.get("emby_api_key")
     enabled = form.get("server_enabled") or form.get("emby_enabled")
     notes = form.get("server_notes")
     strm_task_id = form.get("server_strm_task_id")
     icon = form.get("server_icon")
+    icon_color = form.get("server_icon_color")
+    icon_style = form.get("server_icon_style")
 
+    print(f"[SERVER SAVE] Received icon: {icon}, color: {icon_color}, style: {icon_style}")
 
-    if name is not None:
-        server["name"] = name
+    if alias is not None:
+        server["alias"] = str(alias).strip()
     if url is not None:
         server["url"] = url
     if api_key is not None:
@@ -1213,13 +1448,36 @@ def _build_emby_server_from_form(form, existing):
     if strm_task_id is not None:
         server["strm_task_id"] = strm_task_id
     if icon is not None:
-        server["icon"] = icon if icon.strip() else "📺"
+        server["icon"] = icon if icon.strip() else "fa-server"
     else:
         # Set default icon if not provided
         if "icon" not in server:
-            server["icon"] = "📺"
+            server["icon"] = "fa-server"
+    if icon_color is not None:
+        server["icon_color"] = icon_color if icon_color.strip() else "#3b82f6"
+    else:
+        # Set default icon color if not provided
+        if "icon_color" not in server:
+            server["icon_color"] = "#3b82f6"
+    if icon_style is not None:
+        server["icon_style"] = icon_style if icon_style.strip() else "solid"
+    else:
+        # Set default icon style if not provided
+        if "icon_style" not in server:
+            server["icon_style"] = "solid"
+
+    print(f"[SERVER SAVE] Saved icon: {server.get('icon')}, color: {server.get('icon_color')}, style: {server.get('icon_style')}")
+
+    if not server.get("name"):
+        server["name"] = server.get("original_name") or server.get("alias") or f"Server Emby {server['id'][:6]}"
 
     return server
+
+
+def _emby_display_name(server: Dict[str, Any]) -> str:
+    if not isinstance(server, dict):
+        return "Server Emby"
+    return server.get("alias") or server.get("original_name") or server.get("name") or server.get("url") or "Server Emby"
 
 def save_results(summary):
     try:
@@ -1333,6 +1591,504 @@ def _save_emby_strm_guard_state(state):
     settings = _load_app_settings_snapshot()
     settings[EMBY_STRM_GUARD_KEY] = state
     _save_app_settings_snapshot(settings)
+
+
+def _load_emby_settings_from_db() -> Dict[str, Any]:
+    settings = _load_app_settings_snapshot()
+    return _merge_emby_settings(settings.get("EMBY"))
+
+
+def _save_emby_settings_to_db(emby_settings: Dict[str, Any]) -> None:
+    settings = _load_app_settings_snapshot()
+    settings["EMBY"] = emby_settings
+    _save_app_settings_snapshot(settings)
+
+
+def _default_telegram_settings() -> Dict[str, Any]:
+    return {"BOTS": [], "GROUPS": [], "CHANNELS": [], "PRESETS": []}
+
+
+EMBY_LATEST_KEY = "EMBY_LATEST"
+
+
+def _default_latest_message_template() -> str:
+    return "\n".join([
+        "🎬 {title} ({year})",
+        "🆕 {update_label} · {type}",
+        "🟢 {server}",
+        "⭐ {rating} · {official_rating}",
+        "⏱ {runtime}",
+        "🎞 {quality} {video_codec} {audio_codec}",
+        "📅 {added_at}",
+        "{genres}",
+        "{overview}",
+        "{poster_url}"
+    ])
+
+
+def _default_latest_message_preset() -> Dict[str, Any]:
+    now_stamp = datetime.now(timezone.utc).astimezone().isoformat()
+    return {
+        "id": str(uuid.uuid4()),
+        "name": "Preset Base",
+        "template": _default_latest_message_template(),
+        "created_at": now_stamp,
+        "updated_at": now_stamp
+    }
+
+
+def _default_latest_settings() -> Dict[str, Any]:
+    """
+    Settings predefiniti per sistema "Pubblicati" (Latest).
+
+    SOLUZIONE PROBLEMA 1 (Gap temporale):
+    - batch_gap_minutes aumentato a 180 (3 ore) per catturare più sessioni di caricamento
+    - Configurabile dall'utente via interfaccia
+
+    SOLUZIONE PROBLEMA 4 (Batch limit):
+    - max_movies/max_series ridotti per limitare la crescita del DB
+    - Retention days aumentato per mantenere storico più lungo
+    - max_versions aumentato a 6 per supportare più qualità (720p, 1080p, 4K, HDR, Atmos, etc)
+    """
+    return {
+        "SETTINGS": {
+            "batch_gap_minutes": 180,      # 3 ore (era 60 minuti)
+            "max_movies": 50,
+            "max_series": 25,
+            "retention_days": 90,           # 3 mesi (era 60 giorni)
+            "max_versions": 6,              # Aumentato da 4
+            "batch_fetch_limit": 1000,      # NUOVO: limite fetch per server (era hardcoded 500)
+            "latest_cache_seconds": 60      # NUOVO: cache API /api/emby/latest (per ricarichi pagina)
+        },
+        "PRESETS": [],
+        "ACTIVE_PRESET_ID": "",
+        "TELEGRAM_PRESET_IDS": [],
+        "PREVIEW_CACHE": {
+            "movie": None,
+            "series": None
+        },
+        "STATE": {},
+        "CACHE": {}
+    }
+
+
+def _normalize_latest_presets(entries: Any) -> list[Dict[str, Any]]:
+    if not isinstance(entries, list):
+        return []
+    normalized = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        template = str(entry.get("template") or "").strip()
+        if not name or not template:
+            continue
+        normalized.append({
+            "id": str(entry.get("id") or uuid.uuid4()),
+            "name": name,
+            "template": template,
+            "created_at": entry.get("created_at") or "",
+            "updated_at": entry.get("updated_at") or ""
+        })
+    return normalized
+
+
+def _load_latest_settings() -> Dict[str, Any]:
+    settings = _load_app_settings_snapshot()
+    latest = settings.get(EMBY_LATEST_KEY) if isinstance(settings, dict) else {}
+    if not isinstance(latest, dict):
+        latest = {}
+    merged = _default_latest_settings()
+    assert merged is not None and isinstance(merged, dict), "Default settings must be a dict"
+    merged_settings = latest.get("SETTINGS") if isinstance(latest.get("SETTINGS"), dict) else {}
+    assert isinstance(merged_settings, dict), "merged_settings must be a dict"
+    default_cfg = merged["SETTINGS"]
+    assert isinstance(default_cfg, dict), "SETTINGS must be a dict"
+    batch_gap_minutes = int(merged_settings.get("batch_gap_minutes") or default_cfg["batch_gap_minutes"])
+    max_movies = int(merged_settings.get("max_movies") or default_cfg["max_movies"])
+    max_series = int(merged_settings.get("max_series") or default_cfg["max_series"])
+    retention_days = int(merged_settings.get("retention_days") or default_cfg["retention_days"])
+    max_versions = int(merged_settings.get("max_versions") or default_cfg["max_versions"])
+    batch_fetch_limit = int(merged_settings.get("batch_fetch_limit") or default_cfg.get("batch_fetch_limit", 1000))
+    latest_cache_seconds = int(merged_settings.get("latest_cache_seconds") or default_cfg.get("latest_cache_seconds", 0))
+    if max_movies <= 0:
+        max_movies = default_cfg["max_movies"]
+    if max_series <= 0:
+        max_series = default_cfg["max_series"]
+    if max_movies > default_cfg["max_movies"]:
+        max_movies = default_cfg["max_movies"]
+    if max_series > default_cfg["max_series"]:
+        max_series = default_cfg["max_series"]
+    if latest_cache_seconds < 0:
+        latest_cache_seconds = default_cfg.get("latest_cache_seconds", 0)
+    merged["SETTINGS"].update({
+        "batch_gap_minutes": batch_gap_minutes,
+        "max_movies": max_movies,
+        "max_series": max_series,
+        "retention_days": retention_days,
+        "max_versions": max_versions,
+        "batch_fetch_limit": batch_fetch_limit,
+        "latest_cache_seconds": latest_cache_seconds
+    })
+    merged["PRESETS"] = _normalize_latest_presets(latest.get("PRESETS"))
+    if not merged["PRESETS"]:
+        merged["PRESETS"] = [_default_latest_message_preset()]
+    active_id = str(latest.get("ACTIVE_PRESET_ID") or "").strip()
+    if not active_id:
+        active_id = merged["PRESETS"][0]["id"]
+    merged["ACTIVE_PRESET_ID"] = active_id
+    telegram_ids = latest.get("TELEGRAM_PRESET_IDS")
+    if isinstance(telegram_ids, list):
+        merged["TELEGRAM_PRESET_IDS"] = [str(value) for value in telegram_ids if str(value)]
+    elif isinstance(telegram_ids, str) and telegram_ids:
+        merged["TELEGRAM_PRESET_IDS"] = [telegram_ids]
+    merged_state = latest.get("STATE")
+    merged["STATE"] = merged_state if isinstance(merged_state, dict) else {}
+    merged_cache = latest.get("CACHE")
+    merged["CACHE"] = merged_cache if isinstance(merged_cache, dict) else {}
+    return merged
+
+
+def _save_latest_settings(latest_settings: Dict[str, Any]) -> None:
+    settings = _load_app_settings_snapshot()
+    existing = settings.get(EMBY_LATEST_KEY) if isinstance(settings, dict) else {}
+    if not isinstance(existing, dict):
+        existing = {}
+    incoming = dict(latest_settings or {})
+    if "SETTINGS" not in incoming:
+        incoming["SETTINGS"] = existing.get("SETTINGS")
+    if "PRESETS" not in incoming:
+        incoming["PRESETS"] = existing.get("PRESETS")
+    if "ACTIVE_PRESET_ID" not in incoming:
+        incoming["ACTIVE_PRESET_ID"] = existing.get("ACTIVE_PRESET_ID")
+    if "TELEGRAM_PRESET_IDS" not in incoming:
+        incoming["TELEGRAM_PRESET_IDS"] = existing.get("TELEGRAM_PRESET_IDS")
+    normalized = _default_latest_settings()
+    normalized["SETTINGS"].update(incoming.get("SETTINGS") or {})
+    normalized["PRESETS"] = _normalize_latest_presets(incoming.get("PRESETS"))
+    active_id = str(incoming.get("ACTIVE_PRESET_ID") or "").strip()
+    if not active_id and normalized["PRESETS"]:
+        active_id = normalized["PRESETS"][0]["id"]
+    normalized["ACTIVE_PRESET_ID"] = active_id
+    telegram_ids = incoming.get("TELEGRAM_PRESET_IDS")
+    if isinstance(telegram_ids, list):
+        normalized["TELEGRAM_PRESET_IDS"] = [str(value) for value in telegram_ids if str(value)]
+    elif isinstance(telegram_ids, str) and telegram_ids:
+        normalized["TELEGRAM_PRESET_IDS"] = [telegram_ids]
+    if isinstance(incoming.get("STATE"), dict):
+        normalized["STATE"] = incoming.get("STATE")
+    if isinstance(incoming.get("CACHE"), dict):
+        normalized["CACHE"] = incoming.get("CACHE")
+    settings[EMBY_LATEST_KEY] = normalized
+    _save_app_settings_snapshot(settings)
+
+
+def _normalize_telegram_entries(entries: Any) -> list[Dict[str, Any]]:
+    if not isinstance(entries, list):
+        return []
+    normalized = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        chat_id = str(entry.get("chat_id") or "").strip()
+        if not chat_id:
+            continue
+        alias = str(entry.get("alias") or entry.get("name") or "").strip()
+        original_name = str(entry.get("original_name") or entry.get("chat_name") or "").strip()
+        normalized.append({
+            "id": str(entry.get("id") or uuid.uuid4()),
+            "alias": alias,
+            "original_name": original_name,
+            "chat_id": chat_id,
+            "verified": bool(entry.get("verified")),
+            "verified_at": entry.get("verified_at") or "",
+            "last_check": entry.get("last_check") or "",
+            "last_error": entry.get("last_error") or "",
+            "last_bot_id": str(entry.get("last_bot_id") or "").strip()
+        })
+    return normalized
+
+
+def _normalize_telegram_bots(entries: Any) -> list[Dict[str, Any]]:
+    if not isinstance(entries, list):
+        return []
+    normalized = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        token = str(entry.get("token") or entry.get("BOT_TOKEN") or "").strip()
+        if not token:
+            continue
+        alias = str(entry.get("alias") or entry.get("name") or "").strip()
+        original_name = str(entry.get("original_name") or entry.get("username") or "").strip()
+        normalized.append({
+            "id": str(entry.get("id") or uuid.uuid4()),
+            "alias": alias,
+            "original_name": original_name,
+            "token": token,
+            "username": str(entry.get("username") or "").strip(),
+            "user_id": entry.get("user_id") or "",
+            "verified": bool(entry.get("verified")),
+            "verified_at": entry.get("verified_at") or "",
+            "last_check": entry.get("last_check") or "",
+            "last_error": entry.get("last_error") or ""
+        })
+    return normalized
+
+
+def _normalize_telegram_preset_alerts(alerts: Any) -> Dict[str, Dict[str, list[Dict[str, Any]]]]:
+    output = {"groups": {}, "channels": {}}
+    if not isinstance(alerts, dict):
+        return output
+    for key in ("groups", "channels"):
+        raw_items = alerts.get(key)
+        if not isinstance(raw_items, dict):
+            continue
+        for chat_id, items in raw_items.items():
+            if not isinstance(items, list):
+                continue
+            cleaned: list[Dict[str, Any]] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                bot_id = str(item.get("bot_id") or "").strip()
+                status = str(item.get("status") or "").strip()
+                message = str(item.get("message") or "").strip()
+                checked_at = item.get("checked_at") or ""
+                if not bot_id and not message:
+                    continue
+                cleaned.append({
+                    "bot_id": bot_id,
+                    "status": status,
+                    "message": message,
+                    "checked_at": checked_at
+                })
+            if cleaned:
+                output[key][str(chat_id)] = cleaned
+    return output
+
+
+def _normalize_telegram_presets(entries: Any) -> list[Dict[str, Any]]:
+    if not isinstance(entries, list):
+        return []
+    normalized = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            continue
+        def _normalize_ids(raw: Any) -> list[str]:
+            if isinstance(raw, list):
+                return [str(value) for value in raw if str(value)]
+            if isinstance(raw, str) and raw:
+                return [raw]
+            return []
+
+        normalized.append({
+            "id": str(entry.get("id") or uuid.uuid4()),
+            "name": name,
+            "bot_ids": _normalize_ids(entry.get("bot_ids") or entry.get("bots")),
+            "group_ids": _normalize_ids(entry.get("group_ids") or entry.get("groups")),
+            "channel_ids": _normalize_ids(entry.get("channel_ids") or entry.get("channels")),
+            "alerts": _normalize_telegram_preset_alerts(entry.get("alerts")),
+            "created_at": entry.get("created_at") or "",
+            "last_check": entry.get("last_check") or "",
+            "last_error": entry.get("last_error") or ""
+        })
+    return normalized
+
+
+def _load_telegram_settings() -> Dict[str, Any]:
+    settings = _load_app_settings_snapshot()
+    telegram = settings.get("TELEGRAM") if isinstance(settings, dict) else {}
+    if not isinstance(telegram, dict):
+        telegram = {}
+    merged = _default_telegram_settings()
+    bots = _normalize_telegram_bots(telegram.get("BOTS"))
+    if not bots:
+        legacy_token = str(telegram.get("BOT_TOKEN") or "").strip()
+        if legacy_token:
+            bots = [{
+                "id": str(uuid.uuid4()),
+                "alias": "Bot principale",
+                "original_name": "",
+                "token": legacy_token,
+                "username": "",
+                "user_id": "",
+                "verified": False,
+                "verified_at": "",
+                "last_check": "",
+                "last_error": ""
+            }]
+    merged["BOTS"] = bots
+    merged["GROUPS"] = _normalize_telegram_entries(telegram.get("GROUPS"))
+    merged["CHANNELS"] = _normalize_telegram_entries(telegram.get("CHANNELS"))
+    merged["PRESETS"] = _normalize_telegram_presets(telegram.get("PRESETS"))
+    return merged
+
+
+def _save_telegram_settings(telegram_settings: Dict[str, Any]) -> None:
+    settings = _load_app_settings_snapshot()
+    normalized = _default_telegram_settings()
+    normalized["BOTS"] = _normalize_telegram_bots(telegram_settings.get("BOTS"))
+    normalized["GROUPS"] = _normalize_telegram_entries(telegram_settings.get("GROUPS"))
+    normalized["CHANNELS"] = _normalize_telegram_entries(telegram_settings.get("CHANNELS"))
+    normalized["PRESETS"] = _normalize_telegram_presets(telegram_settings.get("PRESETS"))
+    settings["TELEGRAM"] = normalized
+    _save_app_settings_snapshot(settings)
+
+
+def _telegram_api_request(bot_token: str, method: str, params: Dict[str, Any]) -> tuple[bool, str, Dict[str, Any]]:
+    if not bot_token:
+        return False, "Bot token mancante.", {}
+    url = f"https://api.telegram.org/bot{bot_token}/{method}"
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        return False, f"Errore richiesta Telegram: {exc}", {}
+    if not payload.get("ok"):
+        return False, payload.get("description") or "Errore Telegram.", {}
+    return True, "OK", payload.get("result") or {}
+
+
+def _check_telegram_chat(bot_token: str, chat_id: str) -> tuple[bool, str, Dict[str, Any]]:
+    ok, message, result = _telegram_api_request(bot_token, "getChat", {"chat_id": chat_id})
+    if not ok:
+        return False, message, {}
+    return True, "Collegamento riuscito.", result
+
+
+def _telegram_check_bot_identity(bot: Dict[str, Any]) -> tuple[bool, str]:
+    ok, message, result = _telegram_api_request(bot.get("token", ""), "getMe", {})
+    now_stamp = datetime.now(timezone.utc).astimezone().isoformat()
+    bot["last_check"] = now_stamp
+    if not ok:
+        bot["verified"] = False
+        bot["last_error"] = message
+        return False, message
+    bot["verified"] = True
+    bot["verified_at"] = now_stamp
+    bot["last_error"] = ""
+    bot["user_id"] = result.get("id") or bot.get("user_id") or ""
+    bot["username"] = str(result.get("username") or bot.get("username") or "").strip()
+    original_name = str(result.get("username") or result.get("first_name") or "").strip()
+    if original_name:
+        bot["original_name"] = f"@{original_name}" if not original_name.startswith("@") else original_name
+    return True, "Bot verificato."
+
+
+def _telegram_extract_chat_name(result: Dict[str, Any]) -> str:
+    if not isinstance(result, dict):
+        return ""
+    title = str(result.get("title") or "").strip()
+    if title:
+        return title
+    username = str(result.get("username") or "").strip()
+    if username:
+        return f"@{username}" if not username.startswith("@") else username
+    return ""
+
+
+def _telegram_lookup_chat(chat_id: str, bots: list[Dict[str, Any]]) -> tuple[str, str]:
+    for bot in bots:
+        ok, _, result = _check_telegram_chat(bot.get("token", ""), chat_id)
+        if ok:
+            name = _telegram_extract_chat_name(result)
+            if name:
+                return name, bot.get("id", "")
+    return "", ""
+
+
+def _telegram_lookup_chat_with_type(chat_id: str, bots: list[Dict[str, Any]]) -> tuple[str, str, str]:
+    """
+    Lookup chat and return (name, bot_id, chat_type)
+    chat_type can be: 'channel', 'group', 'supergroup', 'private', or ''
+    """
+    for bot in bots:
+        ok, _, result = _check_telegram_chat(bot.get("token", ""), chat_id)
+        if ok:
+            name = _telegram_extract_chat_name(result)
+            chat_type = str(result.get("type") or "").lower()
+            if name:
+                return name, bot.get("id", ""), chat_type
+    return "", "", ""
+
+
+def _telegram_check_bot_membership(bot: Dict[str, Any], chat_id: str) -> tuple[str, str]:
+    bot_id = bot.get("user_id")
+    if not bot_id:
+        ok, message = _telegram_check_bot_identity(bot)
+        if not ok:
+            return "error", message
+        bot_id = bot.get("user_id")
+    ok, message, result = _telegram_api_request(
+        bot.get("token", ""),
+        "getChatMember",
+        {"chat_id": chat_id, "user_id": bot_id}
+    )
+    if not ok:
+        lowered = message.lower()
+        if "not a member" in lowered or "chat not found" in lowered:
+            return "missing", "Bot non presente"
+        return "error", message
+    status = str(result.get("status") or "").lower()
+    if status in ("administrator", "creator"):
+        return "admin", "Bot admin"
+    if status in ("member", "restricted"):
+        return "member", "Bot presente (non admin)"
+    if status in ("left", "kicked"):
+        return "missing", "Bot non presente"
+    if status:
+        return "unknown", f"Stato: {status}"
+    return "unknown", "Stato non disponibile"
+
+
+def _telegram_alert_class(status: str) -> str:
+    if status in ("admin", "ok"):
+        return "ok"
+    if status in ("member", "restricted", "unknown"):
+        return "warn"
+    if status in ("missing", "error", "left", "kicked"):
+        return "fail"
+    return "warn"
+
+
+def _build_telegram_alerts(telegram_settings: Dict[str, Any]) -> Dict[str, Dict[str, list[Dict[str, Any]]]]:
+    alerts: Dict[str, Dict[str, list[Dict[str, Any]]]] = {"groups": {}, "channels": {}}
+    if not telegram_settings:
+        return alerts
+    bots = telegram_settings.get("BOTS") or []
+    bot_map = {bot.get("id"): bot for bot in bots if bot.get("id")}
+    for preset in telegram_settings.get("PRESETS") or []:
+        preset_name = preset.get("name") or "Preset"
+        preset_alerts = preset.get("alerts") if isinstance(preset.get("alerts"), dict) else {}
+        for kind in ("groups", "channels"):
+            items = preset_alerts.get(kind)
+            if not isinstance(items, dict):
+                continue
+            for chat_id, checks in items.items():
+                if not isinstance(checks, list):
+                    continue
+                for check in checks:
+                    if not isinstance(check, dict):
+                        continue
+                    bot_id = str(check.get("bot_id") or "").strip()
+                    bot = bot_map.get(bot_id)
+                    bot_name = "Bot mancante"
+                    if bot:
+                        bot_name = bot.get("alias") or bot.get("original_name") or bot.get("username") or f"Bot {bot_id[:6]}"
+                    status = str(check.get("status") or "").strip()
+                    message = str(check.get("message") or "").strip()
+                    alerts[kind].setdefault(str(chat_id), []).append({
+                        "preset_name": preset_name,
+                        "bot_name": bot_name,
+                        "status": _telegram_alert_class(status),
+                        "message": message or "Verifica necessaria"
+                    })
+    return alerts
 
 
 def _get_emby_servers_from_config():
@@ -1679,6 +2435,21 @@ def _sanitize_audit_payload(req: Any) -> str:
         return ""
 
 
+def _resolve_next_url(next_url: str | None, fallback_endpoint: str) -> str:
+    """Return a safe local redirect path."""
+    if next_url and next_url.startswith("/"):
+        return next_url
+    if request.referrer:
+        parsed = urlparse(request.referrer)
+        if parsed.netloc == request.host:
+            path = parsed.path or ""
+            if parsed.query:
+                path = f"{path}?{parsed.query}"
+            if path.startswith("/"):
+                return path
+    return url_for(fallback_endpoint)
+
+
 def role_required(*roles):
     """Require one of the specified roles."""
     def decorator(func):
@@ -1694,53 +2465,100 @@ def role_required(*roles):
     return decorator
 
 
+def _register_setup_routes(app: Flask, include_root: bool = False) -> None:
+    def _has_users() -> bool:
+        return bool(get_all_users())
+
+    @app.route('/setup')
+    def setup_index():
+        if not _has_users():
+            return redirect(url_for('setup_user'))
+        return redirect(url_for('setup_db'))
+
+    if include_root:
+        @app.route('/')
+        def setup_root():
+            return redirect(url_for('setup_index'))
+
+    @app.route('/setup/user', methods=['GET', 'POST'])
+    def setup_user():
+        if _has_users():
+            return redirect(url_for('setup_db'))
+        if request.method == 'POST':
+            username = (_normalize_form_input(request.form, 'username') or "").strip()
+            password = request.form.get('password') or ""
+            confirm = request.form.get('password_confirm') or ""
+            email = (_normalize_form_input(request.form, 'email') or "").strip() or None
+            if not username or not password:
+                flash("Inserisci username e password.")
+                return redirect(url_for('setup_user'))
+            if password != confirm:
+                flash("Le password non coincidono.")
+                return redirect(url_for('setup_user'))
+            if get_user_by_username(username):
+                flash("Username già esistente.")
+                return redirect(url_for('setup_user'))
+            user = create_user(username, password, email=email, is_admin=True, role="admin")
+            if not user:
+                flash("Impossibile creare l'utente.")
+                return redirect(url_for('setup_user'))
+            flash("Utente admin creato.")
+            return redirect(url_for('setup_db'))
+        return render_template('setup.html', step="user")
+
+    @app.route('/setup/db', methods=['GET', 'POST'])
+    def setup_db():
+        if not _has_users():
+            return redirect(url_for('setup_user'))
+        legacy_config = read_raw_config() or {}
+        db_defaults = _merge_database_settings(legacy_config.get("DATABASE"))
+        if request.method == 'POST':
+            host = _normalize_form_input(request.form, 'db_host') or ""
+            port_raw = _normalize_form_input(request.form, 'db_port') or ""
+            name = _normalize_form_input(request.form, 'db_name') or ""
+            user = _normalize_form_input(request.form, 'db_user') or ""
+            password = _normalize_form_input(request.form, 'db_password') or ""
+            driver = _normalize_form_input(request.form, 'db_driver') or "postgresql+psycopg2"
+            url = _normalize_form_input(request.form, 'db_url') or ""
+            params = _normalize_form_input(request.form, 'db_params') or ""
+
+            port = _coerce_request_int(port_raw, 5432) if port_raw else ""
+            db_payload = {
+                "ENABLED": True,
+                "HOST": host,
+                "PORT": port,
+                "NAME": name,
+                "USER": user,
+                "PASSWORD": password,
+                "DRIVER": driver,
+                "URL": url,
+                "PARAMS": params
+            }
+            db_settings_base = _merge_database_settings(db_payload)
+            db_settings_effective = _apply_db_env_overrides(db_settings_base)
+            if not db_settings_effective.get("URL") and (not db_settings_effective.get("HOST") or not db_settings_effective.get("NAME") or not db_settings_effective.get("USER")):
+                flash("Compila host, database e username.")
+                return render_template('setup.html', step="db", db=db_defaults)
+            try:
+                backend = DatabaseStorage(db_settings_effective)
+                backend.ensure_ready()
+            except StorageError as exc:
+                flash(f"Connessione DB fallita: {exc}")
+                return render_template('setup.html', step="db", db=db_defaults)
+
+            _seed_db_from_legacy_config(legacy_config, backend)
+            _write_database_config(db_settings_base)
+            return render_template('setup.html', step="done")
+
+        return render_template('setup.html', step="db", db=db_defaults)
+
+
 def run_config_server():
     """Avvia un server Flask per la configurazione iniziale."""
     app = Flask(__name__)
     _configure_security(app)
-
-    @app.route('/')
-    def index():
-        return render_template('config_page.html')
-
-    @app.route('/save', methods=['POST'])
-    def save_config_route():
-        config_data = {
-            "JELLYSEERR_URL": request.form.get('jellyseerr_url'),
-            "JELLYSEERR_API_KEY": request.form.get('jellyseerr_api_key'),
-            "PROWLARR_URL": request.form.get('prowlarr_url'),
-            "PROWLARR_API_KEY": request.form.get('prowlarr_api_key'),
-            "JACKETT_URL": request.form.get('jackett_url'),
-            "JACKETT_API_KEY": request.form.get('jackett_api_key'),
-            "QBITTORRENT_URL": request.form.get('qbittorrent_url'),
-            "QBITTORRENT_USERNAME": request.form.get('qbittorrent_username'),
-            "QBITTORRENT_PASSWORD": request.form.get('qbittorrent_password'),
-        }
-        db_settings = {
-            "ENABLED": True,
-            "HOST": request.form.get('db_host') or "localhost",
-            "PORT": int(request.form.get('db_port') or 5432),
-            "NAME": request.form.get('db_name') or "jellychecker",
-            "USER": request.form.get('db_user') or "",
-            "PASSWORD": request.form.get('db_password') or "",
-            "DRIVER": request.form.get('db_driver') or "postgresql+psycopg2",
-            "URL": request.form.get('db_url') or "",
-            "PARAMS": request.form.get('db_params') or ""
-        }
-        config_data["DATABASE"] = cast(Any, _merge_database_settings(db_settings))
-        trakt_settings = {
-            "ENABLED": bool(request.form.get('trakt_enabled')),
-            "CLIENT_ID": request.form.get('trakt_client_id') or "",
-            "ACCESS_TOKEN": request.form.get('trakt_access_token') or ""
-        }
-        config_data["TRAKT"] = cast(Any, _merge_trakt_settings(trakt_settings))
-        with open(CONFIG_FILE, 'w') as f:
-            json.dump(config_data, f, indent=4)
-        
-        # Questa funzione non è affidabile su tutti i server, la rimuoviamo
-        # per un approccio di riavvio più robusto.
-        # shutdown_hook = request.environ.get('werkzeug.server.shutdown')
-        return "<h1>Configurazione salvata!</h1><p>Puoi chiudere questa finestra. Lo script si riavvierà nel terminale.</p>"
+    init_auth(app, create_default_admin=True)
+    _register_setup_routes(app, include_root=True)
 
     print(f"File di configurazione '{CONFIG_FILE}' non trovato o non valido.")
     print("Avvio del server di configurazione su http://127.0.0.1:5000")
@@ -1753,7 +2571,31 @@ def create_dashboard_app():
     _configure_security(app)
 
     # Initialize authentication system
-    init_auth(app)
+    init_auth(app, create_default_admin=True)
+    _register_setup_routes(app)
+
+    def _resolve_setup_step():
+        if not get_all_users():
+            return "user"
+        raw_config = read_raw_config() or {}
+        db_settings = _get_effective_db_settings(raw_config)
+        if not _db_enabled(db_settings):
+            return "db"
+        if not db_settings.get("URL") and (not db_settings.get("HOST") or not db_settings.get("NAME") or not db_settings.get("USER")):
+            return "db"
+        return None
+
+    @app.before_request
+    def _enforce_initial_setup():
+        if request.path.startswith("/static/"):
+            return
+        if request.path.startswith("/setup"):
+            return
+        step = _resolve_setup_step()
+        if not step:
+            return
+        target = url_for("setup_user") if step == "user" else url_for("setup_db")
+        return redirect(target)
 
     @app.errorhandler(CSRFError)
     def _handle_csrf_error(error):
@@ -1820,16 +2662,17 @@ def create_dashboard_app():
         if request.path in admin_write_paths and role != "admin":
             return abort(403)
 
-    def _get_total_blacklist_count():
-        """Calculate total number of items in probe blacklist (3+ errors) across all servers."""
+    def _get_total_blacklist_counts() -> tuple[int, int]:
+        """Calculate total blacklist counts (errors, incomplete) across all servers."""
         try:
             config, is_valid = load_config()
             if not is_valid or not config:
-                return 0
+                return 0, 0
 
             emby_config = config.get("EMBY") or {}
             servers = emby_config.get("SERVERS") or []
-            total_count = 0
+            total_errors = 0
+            total_incomplete = 0
 
             db = _ensure_db_backend()
             for server in servers:
@@ -1838,13 +2681,22 @@ def create_dashboard_app():
                 server_id = server.get("id")
                 if not server_id:
                     continue
-                # Only count items with 3+ errors
+                # Count items with 3+ errors, split by type
                 blacklist = db.get_probe_blacklist(server_id, min_retry_count=3)
-                total_count += len(blacklist)
+                for entry in blacklist:
+                    error_type = str(entry.get("error_type") or "").upper()
+                    if error_type == "INCOMPLETE":
+                        total_incomplete += 1
+                    else:
+                        total_errors += 1
 
-            return total_count
+            return total_errors, total_incomplete
         except (StorageError, Exception):
-            return 0
+            return 0, 0
+
+    def _get_total_blacklist_count() -> int:
+        """Backward-compatible helper for total error count only."""
+        return _get_total_blacklist_counts()[0]
 
     # --- AUTHENTICATION ROUTES ---
 
@@ -1919,7 +2771,7 @@ def create_dashboard_app():
         movie_requests = [req for req in requests_overview if (req.get("media_type") or "").lower() in ("movie", "movies", "film", "")]
         variant_estimate = _estimate_variant_summary((config or {}).get('SEARCH_RULES'))
         auto_tasks = (config.get("AUTO_TASKS") if config and config.get("AUTO_TASKS") else _default_auto_tasks())
-        total_blacklist_count = _get_total_blacklist_count()
+        total_blacklist_count, total_incomplete_count = _get_total_blacklist_counts()
         return render_template(
             'dashboard.html',
             has_config=is_valid,
@@ -1938,7 +2790,43 @@ def create_dashboard_app():
             requests_updated_at=overview_stamp,
             auto_tasks=auto_tasks,
             active_page="jellyseerr",
-            total_blacklist_count=total_blacklist_count
+            total_blacklist_count=total_blacklist_count,
+            total_incomplete_count=total_incomplete_count
+        )
+
+    @app.route('/configuration')
+    @login_required
+    def configuration():
+        config, is_valid = load_config()
+        emby_config = (config or {}).get("EMBY") if config else _default_emby_settings()
+        raw_servers = (emby_config.get("SERVERS") if emby_config else []) or []
+        emby_servers = _prepare_emby_servers_for_view(raw_servers, lazy=True)
+        auto_tasks = (config.get("AUTO_TASKS") if config and config.get("AUTO_TASKS") else _default_auto_tasks())
+        total_blacklist_count, total_incomplete_count = _get_total_blacklist_counts()
+        telegram_settings = _default_telegram_settings()
+        telegram_ready = False
+        telegram_alerts = {"groups": {}, "channels": {}}
+        if config and _db_enabled(config.get("DATABASE", {})):
+            telegram_ready = True
+            telegram_settings = _load_telegram_settings()
+            telegram_alerts = _build_telegram_alerts(telegram_settings)
+        return render_template(
+            'configuration.html',
+            has_config=is_valid,
+            config=config,
+            emby_config=emby_config,
+            emby_servers=emby_servers,
+            auto_tasks=auto_tasks,
+            telegram_settings=telegram_settings,
+            telegram_bots=telegram_settings.get("BOTS", []),
+            telegram_groups=telegram_settings.get("GROUPS", []),
+            telegram_channels=telegram_settings.get("CHANNELS", []),
+            telegram_presets=telegram_settings.get("PRESETS", []),
+            telegram_alerts=telegram_alerts,
+            telegram_ready=telegram_ready,
+            active_page="config",
+            total_blacklist_count=total_blacklist_count,
+            total_incomplete_count=total_incomplete_count
         )
 
     @app.route('/emby')
@@ -1948,7 +2836,12 @@ def create_dashboard_app():
         emby_config = (config or {}).get("EMBY") if config else _default_emby_settings()
         raw_servers = (emby_config.get("SERVERS") if emby_config else []) or []
         emby_servers = _prepare_emby_servers_for_view(raw_servers, lazy=True)
-        total_blacklist_count = _get_total_blacklist_count()
+        total_blacklist_count, total_incomplete_count = _get_total_blacklist_counts()
+        latest_settings = _default_latest_settings()
+        telegram_presets = []
+        if config and _db_enabled(config.get("DATABASE", {})):
+            latest_settings = _load_latest_settings()
+            telegram_presets = _load_telegram_settings().get("PRESETS", [])
         return render_template(
             'emby_dashboard.html',
             has_config=is_valid,
@@ -1957,7 +2850,12 @@ def create_dashboard_app():
             emby_servers=emby_servers,
             emby_categories=EMBY_CATEGORY_OPTIONS,
             message=None,
-            total_blacklist_count=total_blacklist_count
+            total_blacklist_count=total_blacklist_count,
+            total_incomplete_count=total_incomplete_count,
+            latest_message_presets=latest_settings.get("PRESETS", []),
+            latest_active_preset_id=latest_settings.get("ACTIVE_PRESET_ID", ""),
+            latest_selected_telegram_presets=latest_settings.get("TELEGRAM_PRESET_IDS", []),
+            telegram_presets=telegram_presets
         )
 
     @app.route('/emby/probe')
@@ -1970,14 +2868,15 @@ def create_dashboard_app():
         emby_config = config.get("EMBY") or _default_emby_settings()
         raw_servers = (emby_config.get("SERVERS") if emby_config else []) or []
         emby_servers = _prepare_emby_servers_for_view(raw_servers, lazy=True)
-        total_blacklist_count = _get_total_blacklist_count()
+        total_blacklist_count, total_incomplete_count = _get_total_blacklist_counts()
         return render_template(
             'emby_probe.html',
             has_config=is_valid,
             active_page="emby_probe",
             emby_servers=emby_servers,
             message=None,
-            total_blacklist_count=total_blacklist_count
+            total_blacklist_count=total_blacklist_count,
+            total_incomplete_count=total_incomplete_count
         )
 
     @app.route('/emby/streams', methods=['GET'])
@@ -2259,8 +3158,17 @@ def create_dashboard_app():
     @app.route('/emby/save-server', methods=['POST'])
     @login_required
     def emby_save_server():
-        raw_config = read_raw_config() or {}
-        emby_section = raw_config.get("EMBY") or {}
+        next_url = _resolve_next_url(request.form.get('next'), 'emby_dashboard')
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            flash("Config non valida.")
+            return redirect(next_url)
+        try:
+            _ensure_db_backend()
+        except StorageError as exc:
+            flash(f"Errore DB: {exc}")
+            return redirect(next_url)
+        emby_section = _load_emby_settings_from_db()
         servers = copy.deepcopy(emby_section.get("SERVERS") or [])
         server_id = request.form.get('server_id')
         existing_index = None
@@ -2271,21 +3179,30 @@ def create_dashboard_app():
                 existing_server = server
                 break
         updated_server = _build_emby_server_from_form(request.form, existing_server)
+        status = _fetch_emby_status(updated_server)
+        if status.get("ok") and status.get("name"):
+            updated_server["original_name"] = status.get("name")
+            updated_server["name"] = status.get("name")
+            if status.get("server_id"):
+                updated_server["emby_server_id"] = status.get("server_id")
         if existing_index is not None:
             servers[existing_index] = updated_server
         else:
             servers.append(updated_server)
-        raw_config["EMBY"] = {"SERVERS": servers}
-        config_write_file(raw_config)
+        _save_emby_settings_to_db({"SERVERS": servers})
         load_config()
-        flash(f"Server {updated_server.get('name')} salvato.")
-        return redirect(url_for('emby_dashboard'))
+        flash(f"Server {_emby_display_name(updated_server)} salvato.")
+        return redirect(next_url)
 
     @app.route('/emby/action', methods=['POST'])
     @login_required
     def emby_action():
-        raw_config = read_raw_config() or {}
-        emby_section = raw_config.get("EMBY") or {}
+        try:
+            _ensure_db_backend()
+        except StorageError as exc:
+            flash(f"Errore DB: {exc}")
+            return redirect(url_for('emby_dashboard'))
+        emby_section = _load_emby_settings_from_db()
         servers = copy.deepcopy(emby_section.get("SERVERS") or [])
         server_id = request.form.get('server_id')
         action = request.form.get('action')
@@ -2315,20 +3232,23 @@ def create_dashboard_app():
             "result": "OK" if success else str(response)
         }
         servers[server_index_int] = _normalize_emby_server(server_entry)
-        raw_config["EMBY"] = {"SERVERS": servers}
-        config_write_file(raw_config)
+        _save_emby_settings_to_db({"SERVERS": servers})
         load_config()
         if success:
-            flash(f"{action_label} inviata a {server_entry.get('name')}.")
+            flash(f"{action_label} inviata a {_emby_display_name(server_entry)}.")
         else:
-            flash(f"{action_label} non riuscita su {server_entry.get('name')}: {response}")
+            flash(f"{action_label} non riuscita su {_emby_display_name(server_entry)}: {response}")
         return redirect(url_for('emby_dashboard'))
 
     @app.route('/emby/action-all', methods=['POST'])
     @login_required
     def emby_action_all():
-        raw_config = read_raw_config() or {}
-        emby_section = raw_config.get("EMBY") or {}
+        try:
+            _ensure_db_backend()
+        except StorageError as exc:
+            flash(f"Errore DB: {exc}")
+            return redirect(url_for('emby_dashboard'))
+        emby_section = _load_emby_settings_from_db()
         servers = copy.deepcopy(emby_section.get("SERVERS") or [])
         action = request.form.get('action')
         if not action:
@@ -2352,8 +3272,7 @@ def create_dashboard_app():
                 success_count += 1
             else:
                 failure_count += 1
-        raw_config["EMBY"] = {"SERVERS": servers}
-        config_write_file(raw_config)
+        _save_emby_settings_to_db({"SERVERS": servers})
         load_config()
         if failure_count == 0 and success_count > 0:
             flash(f"{action_label} inviata a {success_count} server.")
@@ -2403,8 +3322,11 @@ def create_dashboard_app():
         payload = request.get_json(silent=True)
         if not isinstance(payload, list):
             return jsonify({"success": False, "message": "Formato non valido"}), 400
-        raw_config = read_raw_config() or {}
-        emby_section = raw_config.get("EMBY") or {}
+        try:
+            _ensure_db_backend()
+        except StorageError as exc:
+            return jsonify({"success": False, "message": f"Errore DB: {exc}"}), 500
+        emby_section = _load_emby_settings_from_db()
         servers = copy.deepcopy(emby_section.get("SERVERS") or [])
         server_map = {server.get("id"): server for server in servers if server.get("id")}
         ordered = []
@@ -2416,8 +3338,7 @@ def create_dashboard_app():
                 ordered.append(server)
         remaining = [server for server in servers if server.get("id") not in payload]
         ordered.extend(remaining)
-        raw_config["EMBY"] = {"SERVERS": ordered}
-        config_write_file(raw_config)
+        _save_emby_settings_to_db({"SERVERS": ordered})
         load_config()
         return jsonify({"success": True})
 
@@ -2549,14 +3470,242 @@ def create_dashboard_app():
             return "720p"
         return f"{height_value}p"
 
+    def _detect_hdr_type(streams):
+        """
+        Rileva il tipo di HDR/Dolby Vision dai dati stream video.
+        Ritorna una stringa descrittiva tipo "Dolby Vision", "HDR10+", "HDR10", "HDR", o ""
+        """
+        if not isinstance(streams, list):
+            return ""
+
+        for stream in streams:
+            stream_type = (stream.get("type") or "").lower() if isinstance(stream, dict) else ""
+            if not isinstance(stream, dict) or stream_type != "video":
+                continue
+
+            # Controlla HDR Type specifico da Emby
+            hdr_type = str(stream.get("hdr_type") or "").upper()
+            video_range = str(stream.get("video_range") or "").upper()
+            color_transfer = str(stream.get("color_transfer") or "").upper()
+
+            # Dolby Vision detection
+            if "DOLBY" in hdr_type or "DOVI" in hdr_type or "DV" in hdr_type:
+                return "Dolby Vision"
+            if "DOLBY" in video_range or "DOVI" in video_range:
+                return "Dolby Vision"
+
+            # HDR10+ detection
+            if "HDR10+" in hdr_type or "HDR10PLUS" in hdr_type:
+                return "HDR10+"
+            if "SMPTE2094" in color_transfer:
+                return "HDR10+"
+
+            # HDR10 detection
+            if "HDR10" in hdr_type:
+                return "HDR10"
+            if "HDR" in video_range or "SMPTE2084" in color_transfer:
+                return "HDR10"
+
+            # Generic HDR
+            if "HDR" in hdr_type:
+                return "HDR"
+
+        return ""
+
+    def _detect_audio_format(codec, channels, title=""):
+        """
+        Rileva formato audio avanzato (Atmos, DTS:X, ecc) da codec, channels e title.
+        Ritorna stringa tipo "Dolby Atmos", "DTS:X", "Dolby TrueHD 7.1", ecc.
+        """
+        codec_upper = (codec or "").upper()
+        title_upper = (title or "").upper()
+
+        # Dolby Atmos detection
+        if "ATMOS" in codec_upper or "ATMOS" in title_upper:
+            return "Dolby Atmos"
+
+        # DTS:X detection
+        if "DTS:X" in codec_upper or "DTS:X" in title_upper or "DTSX" in codec_upper:
+            return "DTS:X"
+
+        # DTS-HD Master Audio
+        if "DTS-HD MA" in codec_upper or "DTS-HD MASTER" in title_upper:
+            if channels and channels >= 6:
+                return f"DTS-HD MA {channels-1}.1"
+            return "DTS-HD MA"
+
+        # Dolby TrueHD
+        if "TRUEHD" in codec_upper or "TRUE-HD" in codec_upper:
+            if channels and channels >= 6:
+                return f"Dolby TrueHD {channels-1}.1"
+            return "Dolby TrueHD"
+
+        # Dolby Digital Plus
+        if "EAC3" in codec_upper or "E-AC-3" in codec_upper or "DD+" in codec_upper:
+            if channels and channels >= 6:
+                return f"Dolby Digital+ {channels-1}.1"
+            return "Dolby Digital+"
+
+        # Dolby Digital (AC3)
+        if "AC3" in codec_upper or "AC-3" in codec_upper or "DOLBY DIGITAL" in title_upper:
+            if channels and channels >= 6:
+                return f"Dolby Digital {channels-1}.1"
+            return "Dolby Digital"
+
+        # DTS
+        if "DTS" in codec_upper:
+            if channels and channels >= 6:
+                return f"DTS {channels-1}.1"
+            return "DTS"
+
+        # AAC
+        if "AAC" in codec_upper:
+            if channels and channels >= 6:
+                return f"AAC {channels-1}.1"
+            return "AAC"
+
+        # Fallback: codec + channels
+        if codec and channels and channels >= 6:
+            return f"{codec} {channels-1}.1"
+        elif codec:
+            return codec
+
+        return ""
+
+    def _format_video_details(streams):
+        """
+        Formatta dettagli video completi per le notifiche.
+        Esempio output: "HEVC · HDR10 · Dolby Vision"
+        """
+        if not isinstance(streams, list):
+            return ""
+
+        parts = []
+
+        # Trova stream video
+        video_stream = None
+        for stream in streams:
+            stream_type = (stream.get("type") or "").lower() if isinstance(stream, dict) else ""
+            if isinstance(stream, dict) and stream_type == "video":
+                video_stream = stream
+                break
+
+        if not video_stream:
+            return ""
+
+        # Codec video
+        codec = video_stream.get("codec", "")
+        if codec:
+            codec_upper = codec.upper()
+            # Normalizza nomi codec comuni
+            if codec_upper in ["H264", "AVC"]:
+                parts.append("H.264")
+            elif codec_upper in ["H265", "HEVC"]:
+                parts.append("HEVC")
+            elif codec_upper == "AV1":
+                parts.append("AV1")
+            elif codec_upper == "VP9":
+                parts.append("VP9")
+            else:
+                parts.append(codec)
+
+        # HDR/Dolby Vision
+        hdr = _detect_hdr_type(streams)
+        if hdr:
+            parts.append(hdr)
+
+        return " · ".join(parts) if parts else ""
+
+    def _format_audio_details(streams, language_filter=None):
+        """
+        Formatta dettagli audio per le notifiche.
+
+        Args:
+            streams: lista degli stream multimediali
+            language_filter: se specificato, filtra solo questa lingua (es. "ita", "eng")
+
+        Returns:
+            Stringa formattata tipo "Italiano Dolby Atmos · Inglese DTS-HD MA 7.1"
+        """
+        if not isinstance(streams, list):
+            return ""
+
+        audio_parts = []
+
+        for stream in streams:
+            stream_type = (stream.get("type") or "").lower() if isinstance(stream, dict) else ""
+            if not isinstance(stream, dict) or stream_type != "audio":
+                continue
+
+            language = (stream.get("language") or "").lower()
+
+            # Filtra per lingua se richiesto
+            if language_filter:
+                lang_filter_lower = language_filter.lower()
+                # Controlla sia codice ISO che nome completo
+                if lang_filter_lower not in language:
+                    # Mappa comuni
+                    lang_map = {
+                        "ita": ["ita", "italian", "italiano"],
+                        "eng": ["eng", "english", "inglese"],
+                        "spa": ["spa", "spanish", "spagnolo", "español"],
+                        "fre": ["fre", "fra", "french", "francese", "français"],
+                        "ger": ["ger", "deu", "german", "tedesco", "deutsch"],
+                        "jpn": ["jpn", "japanese", "giapponese"]
+                    }
+                    matched = False
+                    for key, variants in lang_map.items():
+                        if lang_filter_lower in variants:
+                            if any(v in language for v in variants):
+                                matched = True
+                                break
+                    if not matched:
+                        continue
+
+            # Nome lingua capitalizzato
+            lang_display = ""
+            if "ita" in language or "italian" in language:
+                lang_display = "Italiano"
+            elif "eng" in language or "english" in language:
+                lang_display = "Inglese"
+            elif "spa" in language or "spanish" in language:
+                lang_display = "Spagnolo"
+            elif "fre" in language or "fra" in language or "french" in language:
+                lang_display = "Francese"
+            elif "ger" in language or "deu" in language or "german" in language:
+                lang_display = "Tedesco"
+            elif "jpn" in language or "japanese" in language:
+                lang_display = "Giapponese"
+            elif language:
+                lang_display = language.capitalize()
+
+            # Formato audio
+            codec = stream.get("codec", "")
+            channels = stream.get("channels")
+            title = stream.get("title", "")
+            audio_format = _detect_audio_format(codec, channels, title)
+
+            # Componi stringa
+            track_parts = []
+            if lang_display:
+                track_parts.append(lang_display)
+            if audio_format:
+                track_parts.append(audio_format)
+
+            if track_parts:
+                audio_parts.append(" ".join(track_parts))
+
+        return " · ".join(audio_parts) if audio_parts else ""
+
     def _extract_emby_media_sources(item):
         sources = []
         if not isinstance(item, dict):
             return sources
         media_sources = item.get("MediaSources")
+        item_streams = item.get("MediaStreams") if isinstance(item.get("MediaStreams"), list) else []
         if not isinstance(media_sources, list) or not media_sources:
             media_sources = [{
-                "MediaStreams": item.get("MediaStreams") or [],
+                "MediaStreams": item_streams,
                 "Path": item.get("Path"),
                 "Bitrate": item.get("Bitrate")
             }]
@@ -2567,19 +3716,21 @@ def create_dashboard_app():
             media_streams = source.get("MediaStreams") or []
             if not isinstance(media_streams, list):
                 media_streams = []
+            if not media_streams and item_streams:
+                media_streams = item_streams
             video_stream = None
             audio_streams = []
             stream_entries = []
             for idx, stream in enumerate(media_streams):
                 if not isinstance(stream, dict):
                     continue
-                stream_type = stream.get("Type")
-                if stream_type == "Video" and video_stream is None:
+                stream_type = (stream.get("Type") or "").lower()
+                if stream_type == "video" and video_stream is None:
                     video_stream = stream
-                elif stream_type == "Audio":
+                elif stream_type == "audio":
                     audio_streams.append(stream)
                 stream_entries.append({
-                    "type": (stream.get("Type") or "").lower(),
+                    "type": stream_type,
                     "index": idx,
                     "codec": stream.get("Codec"),
                     "profile": stream.get("Profile"),
@@ -2609,9 +3760,21 @@ def create_dashboard_app():
             resolution_label = _resolution_label_from_dims(width, height) or resolution
             video_codec = video_stream.get("Codec") if isinstance(video_stream, dict) else ""
             audio_codec = audio_streams[0].get("Codec") if audio_streams else ""
+            audio_channels = ""
+            if audio_streams:
+                layout = audio_streams[0].get("ChannelLayout")
+                channels = audio_streams[0].get("Channels")
+                if layout:
+                    audio_channels = str(layout)
+                elif channels:
+                    audio_channels = str(channels)
             bitrate = source.get("Bitrate") or (video_stream.get("BitRate") if isinstance(video_stream, dict) else None)
             bitrate_mbps = round(int(bitrate) / 1_000_000, 2) if bitrate else None
             path = source.get("Path") or item.get("Path") or ""
+            source_id = source.get("Id") or source.get("MediaSourceId") or ""
+            source_size = source.get("Size")
+            container = source.get("Container") or item.get("Container") or ""
+            source_name = source.get("Name") or source.get("DisplayName") or source.get("Path") or ""
 
             audio_tracks = []
             for stream in audio_streams:
@@ -2624,15 +3787,20 @@ def create_dashboard_app():
                 audio_tracks.append(label)
 
             sources.append({
+                "id": str(source_id) if source_id else "",
                 "resolution": resolution,
                 "resolution_label": resolution_label,
                 "width": width,
                 "height": height,
                 "video_codec": video_codec,
                 "audio_codec": audio_codec,
+                "audio_channels": audio_channels,
                 "bitrate": bitrate,
                 "bitrate_mbps": bitrate_mbps,
                 "path": path,
+                "size": source_size,
+                "container": str(container or ""),
+                "source_name": source_name,
                 "audio_tracks": audio_tracks,
                 "streams": stream_entries
             })
@@ -2642,11 +3810,69 @@ def create_dashboard_app():
     def _build_emby_item_details(item, server):
         sources = _extract_emby_media_sources(item)
         primary = sources[0] if sources else {}
+        streams = primary.get("streams", [])
+
+        # Calcola dettagli video/audio avanzati
+        video_details = _format_video_details(streams)
+        audio_details = _format_audio_details(streams)
+        audio_ita = _format_audio_details(streams, language_filter="ita")
+        audio_eng = _format_audio_details(streams, language_filter="eng")
+        audio_fra = _format_audio_details(streams, language_filter="fra")
+        audio_spa = _format_audio_details(streams, language_filter="spa")
+        audio_ger = _format_audio_details(streams, language_filter="ger")
+        audio_jpn = _format_audio_details(streams, language_filter="jpn")
+
+        # Estrai sigle ISO 639-2 delle lingue audio e sottotitoli
+        audio_languages = []
+        subtitle_languages = []
+        for stream in streams:
+            if not isinstance(stream, dict):
+                continue
+            lang = (stream.get("language") or "").strip()
+            if not lang:
+                continue
+
+            # Normalizza a sigla ISO 639-2 (3 lettere)
+            lang_lower = lang.lower()
+            iso_code = None
+            if "ita" in lang_lower or "italian" in lang_lower:
+                iso_code = "ita"
+            elif "eng" in lang_lower or "english" in lang_lower:
+                iso_code = "eng"
+            elif "spa" in lang_lower or "spanish" in lang_lower or "esp" in lang_lower:
+                iso_code = "spa"
+            elif "fra" in lang_lower or "fre" in lang_lower or "french" in lang_lower:
+                iso_code = "fra"
+            elif "ger" in lang_lower or "deu" in lang_lower or "german" in lang_lower:
+                iso_code = "ger"
+            elif "jpn" in lang_lower or "japanese" in lang_lower:
+                iso_code = "jpn"
+            elif "por" in lang_lower or "portuguese" in lang_lower:
+                iso_code = "por"
+            elif "chi" in lang_lower or "zho" in lang_lower or "chinese" in lang_lower:
+                iso_code = "chi"
+            elif "rus" in lang_lower or "russian" in lang_lower:
+                iso_code = "rus"
+            elif "ara" in lang_lower or "arabic" in lang_lower:
+                iso_code = "ara"
+
+            if iso_code:
+                stream_type = (stream.get("type") or "").lower()
+                if stream_type == "audio" and iso_code not in audio_languages:
+                    audio_languages.append(iso_code)
+                elif stream_type == "subtitle" and iso_code not in subtitle_languages:
+                    subtitle_languages.append(iso_code)
+
+        audio_langs = ", ".join(audio_languages) if audio_languages else ""
+        subtitle_langs = ", ".join(subtitle_languages) if subtitle_languages else ""
+
         return {
             "title": item.get("Name") if isinstance(item, dict) else None,
             "year": item.get("ProductionYear") if isinstance(item, dict) else None,
             "server": server.get("name") if server else None,
             "server_icon": server.get("icon") if server else None,
+            "server_icon_color": server.get("icon_color") if server else None,
+            "server_icon_style": server.get("icon_style") if server else None,
             "resolution": primary.get("resolution", ""),
             "video_codec": primary.get("video_codec", ""),
             "audio_codec": primary.get("audio_codec", ""),
@@ -2655,6 +3881,16 @@ def create_dashboard_app():
             "path": primary.get("path", ""),
             "audio_tracks": primary.get("audio_tracks", []),
             "sources": sources,
+            "video_details": video_details,
+            "audio_details": audio_details,
+            "audio_ita": audio_ita,
+            "audio_eng": audio_eng,
+            "audio_fra": audio_fra,
+            "audio_spa": audio_spa,
+            "audio_ger": audio_ger,
+            "audio_jpn": audio_jpn,
+            "audio_langs": audio_langs,
+            "subtitle_langs": subtitle_langs,
             "series_name": item.get("SeriesName") if isinstance(item, dict) else None,
             "season_name": item.get("SeasonName") if isinstance(item, dict) else None,
             "season_number": item.get("ParentIndexNumber") if isinstance(item, dict) else None,
@@ -2675,12 +3911,151 @@ def create_dashboard_app():
             return None
         return max(1, int(round(ticks / 600_000_000)))
 
+    def _extract_provider_id(provider_ids, *keys):
+        if not isinstance(provider_ids, dict):
+            return ""
+        for key in keys:
+            if key in provider_ids and provider_ids[key]:
+                return str(provider_ids[key])
+        lowered = {str(k).lower(): v for k, v in provider_ids.items()}
+        for key in keys:
+            value = lowered.get(str(key).lower())
+            if value:
+                return str(value)
+        return ""
+
+    _EMBY_LIBRARY_CACHE: dict[str, list[dict]] = {}
+    _EMBY_LIBRARY_ITEM_CACHE: dict[tuple[str, str], tuple[str, str]] = {}
+
+    def _load_emby_library_folders(server):
+        if not isinstance(server, dict):
+            return []
+        server_id = str(server.get("id") or "")
+        if server_id in _EMBY_LIBRARY_CACHE:
+            return _EMBY_LIBRARY_CACHE[server_id]
+        success, payload = _call_emby_api(server, "Library/VirtualFolders", method="GET")
+        folders = payload if success and isinstance(payload, list) else []
+        _EMBY_LIBRARY_CACHE[server_id] = folders
+        return folders
+
+    def _resolve_emby_library_for_item(server, item):
+        if not isinstance(server, dict) or not isinstance(item, dict):
+            return "", "Libreria"
+        server_id = str(server.get("id") or "")
+        item_id = item.get("Id") or item.get("ItemId")
+        cache_key = None
+        if server_id and item_id:
+            cache_key = (server_id, str(item_id))
+            cached = _EMBY_LIBRARY_ITEM_CACHE.get(cache_key)
+            if cached:
+                return cached
+
+        library_id = ""
+        library_name = ""
+
+        item_path = item.get("Path") or ""
+        if not library_id and item_path:
+            folders = _load_emby_library_folders(server)
+            item_norm = str(item_path).replace("\\", "/").rstrip("/").lower()
+            best_folder = None
+            best_len = 0
+            for folder in folders:
+                if not isinstance(folder, dict):
+                    continue
+                locations = folder.get("Locations")
+                if not isinstance(locations, list):
+                    continue
+                for location in locations:
+                    if not location:
+                        continue
+                    loc_norm = str(location).replace("\\", "/").rstrip("/").lower()
+                    if not loc_norm:
+                        continue
+                    loc_prefix = loc_norm + "/"
+                    if item_norm.startswith(loc_prefix) and len(loc_prefix) > best_len:
+                        best_len = len(loc_prefix)
+                        best_folder = folder
+            if isinstance(best_folder, dict):
+                library_id = str(best_folder.get("Id") or best_folder.get("ItemId") or "")
+                library_name = str(best_folder.get("Name") or "")
+
+        if not library_id and item_id:
+            success, payload = _call_emby_api(server, f"Items/{item_id}/Ancestors", method="GET")
+            if success and isinstance(payload, list):
+                for ancestor in payload:
+                    if not isinstance(ancestor, dict):
+                        continue
+                    if ancestor.get("Type") == "CollectionFolder":
+                        library_id = str(ancestor.get("Id") or ancestor.get("ItemId") or "")
+                        library_name = str(ancestor.get("Name") or "")
+                        break
+
+        parent_id = item.get("ParentId")
+        if not library_id and parent_id:
+            success, payload = _call_emby_api(server, f"Items/{parent_id}", method="GET")
+            if success and isinstance(payload, dict):
+                library_id = str(payload.get("Id") or "")
+                library_name = str(payload.get("Name") or "")
+
+        if not library_name:
+            library_name = "Libreria"
+
+        result = (library_id, library_name)
+        if cache_key:
+            _EMBY_LIBRARY_ITEM_CACHE[cache_key] = result
+        return result
+
     def _build_emby_latest_item(item, server):
         if not isinstance(item, dict):
             return None
         image_tags = item.get("ImageTags") if isinstance(item.get("ImageTags"), dict) else {}
+        assert isinstance(image_tags, dict), "image_tags must be a dict"
         item_id = item.get("Id")
         image_url = None
+        poster_url = ""
+        backdrop_url = ""
+        banner_url = ""
+        thumb_url = ""
+        logo_url = ""
+        emby_url = ""
+        original_title = item.get("OriginalTitle") or item.get("OriginalName") or ""
+        taglines = item.get("Taglines") if isinstance(item.get("Taglines"), list) else []
+        tagline = taglines[0] if taglines else ""
+        studios_raw = item.get("Studios") if isinstance(item.get("Studios"), list) else []
+        assert isinstance(studios_raw, list), "studios_raw must be a list"
+        studios = []
+        for studio in studios_raw:
+            if isinstance(studio, dict) and studio.get("Name"):
+                studios.append(studio.get("Name"))
+            elif isinstance(studio, str):
+                studios.append(studio)
+        people_raw = item.get("People")
+        people: list[dict[str, Any]] = cast(list[dict[str, Any]], people_raw) if isinstance(people_raw, list) else []
+        cast_members = []
+        directors = []
+        creators = []
+        for person in people:
+            if not isinstance(person, dict):
+                continue
+            name = person.get("Name") or ""
+            if not name:
+                continue
+            role_type = str(person.get("Type") or "")
+            if role_type in ("Actor", "GuestStar"):
+                cast_members.append(str(name))
+            elif role_type == "Director":
+                directors.append(str(name))
+            elif role_type == "Creator":
+                creators.append(str(name))
+        provider_ids = item.get("ProviderIds") if isinstance(item.get("ProviderIds"), dict) else {}
+        tmdb_id = _extract_provider_id(provider_ids, "Tmdb", "TMDB")
+        imdb_id = _extract_provider_id(provider_ids, "Imdb", "IMDB")
+        tvdb_id = _extract_provider_id(provider_ids, "Tvdb", "TVDB")
+        trakt_id = _extract_provider_id(provider_ids, "Trakt", "TRAKT")
+        library_id = ""
+        library_name = "Libreria"
+        if server:
+            library_id, library_name = _resolve_emby_library_for_item(server, item)
         if server and item_id:
             query = {
                 "server_id": server.get("id"),
@@ -2691,13 +4066,39 @@ def create_dashboard_app():
             if image_tags.get("Primary"):
                 query["tag"] = image_tags.get("Primary")
             image_url = f"/api/emby/image?{urlencode(query)}"
+            base_url = (server.get("url") or "").strip().rstrip("/")
+            token = (server.get("api_key") or "").strip()
+            if base_url:
+                if token:
+                    poster_url = f"{base_url}/Items/{item_id}/Images/Primary?maxWidth=720&quality=90&api_key={token}"
+                    backdrop_url = f"{base_url}/Items/{item_id}/Images/Backdrop?maxWidth=1280&quality=90&api_key={token}"
+                    banner_url = f"{base_url}/Items/{item_id}/Images/Banner?maxWidth=1280&quality=90&api_key={token}"
+                    thumb_url = f"{base_url}/Items/{item_id}/Images/Thumb?maxWidth=1280&quality=90&api_key={token}"
+                    logo_url = f"{base_url}/Items/{item_id}/Images/Logo?maxWidth=720&quality=90&api_key={token}"
+                else:
+                    poster_url = f"{base_url}/Items/{item_id}/Images/Primary?maxWidth=720&quality=90"
+                    backdrop_url = f"{base_url}/Items/{item_id}/Images/Backdrop?maxWidth=1280&quality=90"
+                    banner_url = f"{base_url}/Items/{item_id}/Images/Banner?maxWidth=1280&quality=90"
+                    thumb_url = f"{base_url}/Items/{item_id}/Images/Thumb?maxWidth=1280&quality=90"
+                    logo_url = f"{base_url}/Items/{item_id}/Images/Logo?maxWidth=720&quality=90"
+                emby_url = f"{base_url}/web/index.html#!/itemdetails.html?id={item_id}"
+        output_directors = directors
+        if str(item.get("Type") or "").lower() in ("series", "episode"):
+            output_directors = creators
         return {
             "item_id": item_id,
             "title": item.get("Name"),
+            "original_title": original_title,
+            "series_name": item.get("SeriesName") or (item.get("Name") if item.get("Type") == "Series" else ""),
+            "season_name": item.get("SeasonName"),
+            "season_number": item.get("ParentIndexNumber"),
+            "episode_number": item.get("IndexNumber"),
+            "episode_title": item.get("Name") if item.get("Type") == "Episode" else "",
             "year": item.get("ProductionYear"),
             "overview": item.get("Overview"),
             "genres": item.get("Genres") if isinstance(item.get("Genres"), list) else [],
             "community_rating": item.get("CommunityRating"),
+            "critic_rating": item.get("CriticRating"),
             "official_rating": item.get("OfficialRating"),
             "runtime_minutes": _runtime_minutes_from_ticks(item.get("RunTimeTicks")),
             "added_at": item.get("DateCreated"),
@@ -2705,20 +4106,50 @@ def create_dashboard_app():
             "child_count": item.get("ChildCount"),
             "image_tag": image_tags.get("Primary"),
             "image_url": image_url,
+            "poster_url": poster_url,
+            "backdrop_url": backdrop_url,
+            "banner_url": banner_url,
+            "thumb_url": thumb_url,
+            "logo_url": logo_url,
+            "emby_url": emby_url,
+            "tagline": tagline,
+            "studios": studios,
+            "cast": cast_members,
+            "directors": output_directors,
+            "creators": creators,
+            "tmdb_id": tmdb_id,
+            "imdb_id": imdb_id,
+            "tvdb_id": tvdb_id,
+            "trakt_id": trakt_id,
+            "library_id": library_id,
+            "library_name": library_name,
             "server_id": server.get("id") if server else None,
             "server_name": server.get("name") if server else None,
             "server_icon": server.get("icon") if server else None,
+            "server_icon_color": server.get("icon_color") if server else None,
+            "server_icon_style": server.get("icon_style") if server else None,
             "item_type": item.get("Type")
         }
 
-    def _fetch_emby_latest_items(server, item_type, limit):
+    def _fetch_emby_latest_items(server, item_type, limit, fields=None):
+        """
+        Fetcha items recenti da Emby API.
+
+        SOLUZIONE PROBLEMA 3 (DateCreated vs DateAdded):
+        - Ordina prima per DateCreated (quando file aggiunto)
+        - Se fallisce, fallback su PremiereDate
+        - Include entrambi i campi nella risposta per flessibilità
+        """
+        # Prova prima con DateCreated (più affidabile per contenuti aggiunti di recente)
+        # NOTA: DateLastMediaAdded NON va usato in SortBy (causa SQLiteException)
+        # ma va incluso nei Fields per ricevere il dato e determinare nuove versioni
         params = {
             "IncludeItemTypes": item_type,
             "Recursive": "true",
             "SortBy": "DateCreated",
             "SortOrder": "Descending",
             "Limit": limit,
-            "Fields": "DateCreated,Overview,Genres,ProductionYear,RunTimeTicks,CommunityRating,OfficialRating,PremiereDate,ChildCount"
+            "Fields": fields or "DateCreated,DateLastMediaAdded,Overview,Genres,ProductionYear,RunTimeTicks,CommunityRating,OfficialRating,PremiereDate,ChildCount,Path,ParentId,People"
         }
         success, payload = _call_emby_api(server, "Items", params=params)
         if not success or not isinstance(payload, dict):
@@ -2726,7 +4157,1839 @@ def create_dashboard_app():
         items = payload.get("Items")
         if not isinstance(items, list):
             return [], "Risposta Items inattesa"
+
+        # Arricchisci ogni item con il timestamp migliore disponibile
+        for item in items:
+            if isinstance(item, dict):
+                # Usa DateCreated se disponibile, altrimenti DateLastMediaAdded
+                if not item.get("DateCreated") and item.get("DateLastMediaAdded"):
+                    item["DateCreated"] = item["DateLastMediaAdded"]
+
         return items, None
+
+    def _fetch_emby_items_by_signature(server, signature, fields=None, limit=50):
+        if not server or not signature or ":" not in signature:
+            return []
+        prefix, value = signature.split(":", 1)
+        prefix = prefix.strip().lower()
+        value = value.strip()
+        provider_map = {"tmdb": "Tmdb", "imdb": "Imdb", "tvdb": "Tvdb"}
+        provider_key = provider_map.get(prefix)
+        if not provider_key or not value:
+            return []
+        params = {
+            "AnyProviderIdEquals": f"{provider_key}.{value}",
+            "IncludeItemTypes": "Movie",
+            "Recursive": "true",
+            "Limit": limit,
+            "Fields": fields or "DateCreated,MediaSources,MediaStreams,Path,ProviderIds,Name,ProductionYear"
+        }
+        success, payload = _call_emby_api(server, "Items", params=params)
+        if not success or not isinstance(payload, dict):
+            return []
+        items = payload.get("Items")
+        return items if isinstance(items, list) else []
+
+    def _fetch_emby_oldest_episode_date(server, series_id, season_number=None):
+        if not server or not series_id:
+            return None
+        params = {
+            "IncludeItemTypes": "Episode",
+            "Recursive": "true",
+            "ParentId": series_id,
+            "SortBy": "DateCreated",
+            "SortOrder": "Ascending",
+            "Limit": 1,
+            "Fields": "DateCreated,ParentIndexNumber,IndexNumber"
+        }
+        if season_number is not None:
+            params["ParentIndexNumber"] = season_number
+        success, payload = _call_emby_api(server, "Items", params=params)
+        if not success or not isinstance(payload, dict):
+            return None
+        items = payload.get("Items")
+        if isinstance(items, list) and items:
+            return _parse_date_value(items[0].get("DateCreated"))
+        return None
+
+    def _normalize_media_source_id(value):
+        if not value:
+            return ""
+        return str(value).strip()
+
+    def _parse_resolution_height(value):
+        if not value:
+            return 0
+        if isinstance(value, (int, float)):
+            return int(value)
+        text = str(value).strip().lower()
+        if "x" in text:
+            parts = text.split("x")
+            try:
+                return int(float(parts[-1]))
+            except (TypeError, ValueError):
+                return 0
+        if text.endswith("p"):
+            digits = "".join(ch for ch in text if ch.isdigit())
+            try:
+                return int(digits)
+            except (TypeError, ValueError):
+                return 0
+        return 0
+
+    def _parse_bitrate_mbps(value):
+        if value is None:
+            return 0.0
+        if isinstance(value, (int, float)):
+            bitrate = float(value)
+        else:
+            text = str(value)
+            digits = []
+            dot_seen = False
+            for ch in text:
+                if ch.isdigit():
+                    digits.append(ch)
+                elif ch == "." and not dot_seen:
+                    digits.append(ch)
+                    dot_seen = True
+            try:
+                bitrate = float("".join(digits)) if digits else 0.0
+            except ValueError:
+                bitrate = 0.0
+        if bitrate >= 1_000_000:
+            return bitrate / 1_000_000
+        if bitrate >= 1_000:
+            return bitrate / 1_000
+        return bitrate
+
+    def _version_quality_key(version):
+        if not isinstance(version, dict):
+            return (0, 0.0)
+        height = _parse_resolution_height(version.get("resolution") or version.get("quality") or "")
+        bitrate = _parse_bitrate_mbps(version.get("bitrate"))
+        return (height, bitrate)
+
+    def _sort_versions_by_quality(versions):
+        valid_versions = [entry for entry in versions if isinstance(entry, dict)]
+        return sorted(valid_versions, key=_version_quality_key, reverse=True)
+
+    def _build_latest_movie_signature(item):
+        if not isinstance(item, dict):
+            return ""
+        provider_ids = item.get("ProviderIds") if isinstance(item.get("ProviderIds"), dict) else {}
+        tmdb_id = _extract_provider_id(provider_ids, "Tmdb", "TMDB")
+        imdb_id = _extract_provider_id(provider_ids, "Imdb", "IMDB")
+        tvdb_id = _extract_provider_id(provider_ids, "Tvdb", "TVDB")
+        if tmdb_id:
+            return f"tmdb:{tmdb_id}"
+        if imdb_id:
+            return f"imdb:{imdb_id}"
+        if tvdb_id:
+            return f"tvdb:{tvdb_id}"
+        name = (item.get("Name") or item.get("OriginalTitle") or item.get("OriginalName") or "").strip().lower()
+        year = item.get("ProductionYear") or item.get("SeriesProductionYear")
+        if name and year:
+            return f"title:{name}:{year}"
+        if name:
+            return f"title:{name}"
+        return str(item.get("Id") or "")
+
+    def _build_latest_movie_title_signature(item):
+        if not isinstance(item, dict):
+            return ""
+        name = (item.get("Name") or item.get("OriginalTitle") or item.get("OriginalName") or "").strip().lower()
+        year = item.get("ProductionYear") or item.get("SeriesProductionYear")
+        if name and year:
+            return f"title:{name}:{year}"
+        if name:
+            return f"title:{name}"
+        return ""
+
+    def _build_latest_episode_signature(series_id, season_number, episode_number, episode_id=None, episode_name=""):
+        series_key = str(series_id or "").strip()
+        if not series_key:
+            return str(episode_id or "").strip()
+        if season_number is None or episode_number is None:
+            suffix = str(episode_id or episode_name or "").strip()
+            return f"{series_key}:{suffix}" if suffix else series_key
+        return f"{series_key}:S{season_number}:E{episode_number}"
+
+    def _apply_version_added_at(versions, added_at):
+        if not versions or not added_at:
+            return versions
+        for version in versions:
+            if not isinstance(version, dict):
+                continue
+            if not version.get("added_at"):
+                version["added_at"] = added_at
+        return versions
+
+    def _merge_latest_versions(versions):
+        merged = []
+        seen = set()
+        for version in versions:
+            if not isinstance(version, dict):
+                continue
+            key = version.get("key") or version.get("id") or version.get("path") or ""
+            if not key:
+                key = f"anon:{len(seen)}"
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(version)
+        return merged
+
+    def _extract_latest_versions(item):
+        """
+        Estrae tutte le versioni (MediaSources) di un item Emby.
+
+        SOLUZIONE PROBLEMA 2 (MediaSource key instabile):
+        - Usa hash robusto basato su path normalizzato per garantire stabilità
+        - Fallback su ID solo se path non disponibile
+        """
+        import hashlib
+
+        versions = []
+        seen_keys = set()  # Previene duplicati
+
+        for source in _extract_emby_media_sources(item):
+            source_id = _normalize_media_source_id(source.get("id"))
+            source_path = (source.get("path") or "").strip()
+
+            # CHIAVE ROBUSTA: Usa hash del path normalizzato (case-insensitive, senza slash finali)
+            if source_path:
+                normalized_path = source_path.lower().rstrip('/').rstrip('\\')
+                source_key = hashlib.md5(normalized_path.encode('utf-8')).hexdigest()[:16]
+            elif source_id:
+                source_key = source_id
+            else:
+                continue  # Skip se non ha né path né ID
+
+            # Previeni duplicati
+            if source_key in seen_keys:
+                continue
+            seen_keys.add(source_key)
+
+            # Calcola dettagli video/audio avanzati dagli streams
+            streams = source.get("streams", [])
+            video_details = _format_video_details(streams)
+            audio_details = _format_audio_details(streams)
+            audio_ita = _format_audio_details(streams, language_filter="ita")
+            audio_eng = _format_audio_details(streams, language_filter="eng")
+            audio_fra = _format_audio_details(streams, language_filter="fra")
+            audio_spa = _format_audio_details(streams, language_filter="spa")
+            audio_ger = _format_audio_details(streams, language_filter="ger")
+            audio_jpn = _format_audio_details(streams, language_filter="jpn")
+
+            # Estrai sigle ISO delle lingue
+            audio_languages = []
+            subtitle_languages = []
+            for stream in streams:
+                if not isinstance(stream, dict):
+                    continue
+                lang = (stream.get("language") or "").strip().lower()
+                if not lang:
+                    continue
+
+                # Converti a ISO 639-2
+                iso_code = None
+                if "ita" in lang or "italian" in lang:
+                    iso_code = "ita"
+                elif "eng" in lang or "english" in lang:
+                    iso_code = "eng"
+                elif "spa" in lang or "spanish" in lang or "esp" in lang:
+                    iso_code = "spa"
+                elif "fra" in lang or "fre" in lang or "french" in lang:
+                    iso_code = "fra"
+                elif "ger" in lang or "deu" in lang or "german" in lang:
+                    iso_code = "ger"
+                elif "jpn" in lang or "japanese" in lang:
+                    iso_code = "jpn"
+                elif "por" in lang or "portuguese" in lang:
+                    iso_code = "por"
+                elif "chi" in lang or "zho" in lang or "chinese" in lang:
+                    iso_code = "chi"
+                elif "rus" in lang or "russian" in lang:
+                    iso_code = "rus"
+                elif "ara" in lang or "arabic" in lang:
+                    iso_code = "ara"
+
+                if iso_code:
+                    stream_type = (stream.get("type") or "").lower()
+                    if stream_type == "audio" and iso_code not in audio_languages:
+                        audio_languages.append(iso_code)
+                    elif stream_type == "subtitle" and iso_code not in subtitle_languages:
+                        subtitle_languages.append(iso_code)
+
+            audio_langs = ", ".join(audio_languages) if audio_languages else ""
+            subtitle_langs = ", ".join(subtitle_languages) if subtitle_languages else ""
+
+            versions.append({
+                "id": source_id,
+                "key": source_key,
+                "path_original": source_path,  # Mantieni path originale per riferimento
+                "quality": source.get("resolution_label") or source.get("resolution") or "",
+                "resolution": source.get("resolution") or "",
+                "video_codec": source.get("video_codec") or "",
+                "audio_codec": source.get("audio_codec") or "",
+                "audio_channels": source.get("audio_channels") or "",
+                "path": source_path,
+                "size": source.get("size"),
+                "container": source.get("container") or "",
+                "bitrate": source.get("bitrate_mbps") or source.get("bitrate") or "",
+                "source_name": source.get("source_name") or "",
+                "video_details": video_details,
+                "audio_details": audio_details,
+                "audio_ita": audio_ita,
+                "audio_eng": audio_eng,
+                "audio_fra": audio_fra,
+                "audio_spa": audio_spa,
+                "audio_ger": audio_ger,
+                "audio_jpn": audio_jpn,
+                "audio_langs": audio_langs,
+                "subtitle_langs": subtitle_langs
+            })
+
+        # Fallback: se non ci sono MediaSources, usa il Path dell'item
+        if not versions and isinstance(item, dict):
+            path = (item.get("Path") or "").strip()
+            if path:
+                normalized_path = path.lower().rstrip('/').rstrip('\\')
+                source_key = hashlib.md5(normalized_path.encode('utf-8')).hexdigest()[:16]
+                versions.append({
+                    "id": "",
+                    "key": source_key,
+                    "path_original": path,
+                    "quality": "",
+                    "resolution": "",
+                    "video_codec": "",
+                    "audio_codec": "",
+                    "audio_channels": "",
+                    "path": path,
+                    "size": None,
+                    "container": "",
+                    "bitrate": "",
+                    "source_name": "",
+                    "video_details": "",
+                    "audio_details": "",
+                    "audio_ita": "",
+                    "audio_eng": "",
+                    "audio_fra": "",
+                    "audio_spa": "",
+                    "audio_ger": "",
+                    "audio_jpn": "",
+                    "audio_langs": "",
+                    "subtitle_langs": ""
+                })
+
+        return versions
+
+    def _collect_version_times(versions):
+        times = []
+        if not versions:
+            return times
+        for version in versions:
+            if not isinstance(version, dict):
+                continue
+            path = (version.get("path") or version.get("path_original") or "").strip()
+            if not path:
+                date_fallback = _parse_date_value(version.get("added_at"))
+                if date_fallback:
+                    times.append((version, date_fallback))
+                continue
+            try:
+                if not os.path.exists(path):
+                    date_fallback = _parse_date_value(version.get("added_at"))
+                    if date_fallback:
+                        times.append((version, date_fallback))
+                    continue
+                stat = os.stat(path)
+                mtime = stat.st_mtime
+                ctime = stat.st_ctime
+                timestamp = max(mtime, ctime)
+                file_dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+                times.append((version, file_dt))
+            except OSError:
+                date_fallback = _parse_date_value(version.get("added_at"))
+                if date_fallback:
+                    times.append((version, date_fallback))
+                continue
+        return times
+
+    def _has_version_time_gap(version_times, gap_minutes):
+        if len(version_times) < 2:
+            return False
+        min_dt = min(entry[1] for entry in version_times)
+        max_dt = max(entry[1] for entry in version_times)
+        return (max_dt - min_dt) > timedelta(minutes=gap_minutes)
+
+    def _group_version_times(version_times, gap_minutes):
+        if not version_times:
+            return []
+        ordered = sorted(version_times, key=lambda entry: entry[1], reverse=True)
+        groups = [[ordered[0]]]
+        last_dt = ordered[0][1]
+        gap = timedelta(minutes=gap_minutes)
+        for version, dt_value in ordered[1:]:
+            if last_dt - dt_value > gap:
+                groups.append([(version, dt_value)])
+            else:
+                groups[-1].append((version, dt_value))
+            last_dt = dt_value
+        return groups
+
+    def _select_recent_versions_by_time(version_times, gap_minutes):
+        if not version_times:
+            return []
+        latest_dt = max(entry[1] for entry in version_times)
+        threshold = latest_dt - timedelta(minutes=gap_minutes)
+        return [version for version, dt_value in version_times if dt_value >= threshold]
+
+    def _group_items_by_date(items, gap_minutes, date_key="DateCreated"):
+        if not items:
+            return []
+        parsed = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            dt_value = _parse_date_value(item.get(date_key))
+            if not dt_value:
+                continue
+            parsed.append((item, dt_value))
+        if not parsed:
+            return [[(item, datetime.min.replace(tzinfo=timezone.utc))] for item in items if isinstance(item, dict)]
+        parsed.sort(key=lambda entry: entry[1], reverse=True)
+        groups = [[parsed[0]]]
+        last_dt = parsed[0][1]
+        gap = timedelta(minutes=gap_minutes)
+        for item, dt_value in parsed[1:]:
+            if last_dt - dt_value > gap:
+                groups.append([(item, dt_value)])
+            else:
+                groups[-1].append((item, dt_value))
+            last_dt = dt_value
+        return groups
+
+    def _latest_debug_enabled(settings_cfg=None):
+        env_flag = os.getenv("OCTOHUB_LATEST_DEBUG", "").strip().lower()
+        if env_flag in ("1", "true", "yes", "on"):
+            return True
+        if settings_cfg and isinstance(settings_cfg, dict):
+            cfg_flag = str(settings_cfg.get("debug_latest") or "").strip().lower()
+            return cfg_flag in ("1", "true", "yes", "on")
+        return False
+
+    def _latest_debug(enabled, message):
+        if not enabled:
+            return
+        print(f"[LATEST_DEBUG] {message}")
+
+    def _compute_latest_batch(items, gap_minutes):
+        if not items:
+            return []
+        parsed = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            dt_value = _parse_date_value(item.get("DateCreated"))
+            if not dt_value:
+                continue
+            parsed.append((item, dt_value))
+        if not parsed:
+            return [item for item in items if isinstance(item, dict)]
+        parsed.sort(key=lambda entry: entry[1], reverse=True)
+        boundary_index = len(parsed)
+        gap = timedelta(minutes=gap_minutes)
+        for idx in range(1, len(parsed)):
+            prev_dt = parsed[idx - 1][1]
+            current_dt = parsed[idx][1]
+            if prev_dt - current_dt > gap:
+                boundary_index = idx
+                break
+        return [entry[0] for entry in parsed[:boundary_index]]
+
+    def _ensure_latest_batch(items, gap_minutes, min_count):
+        batch = _compute_latest_batch(items, gap_minutes)
+        try:
+            target_count = int(min_count)
+        except (TypeError, ValueError):
+            return batch
+        if target_count <= 0 or len(batch) >= target_count:
+            return batch
+        parsed = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            dt_value = _parse_date_value(item.get("DateCreated")) or datetime.min.replace(tzinfo=timezone.utc)
+            parsed.append((item, dt_value))
+        parsed.sort(key=lambda entry: entry[1], reverse=True)
+        return [entry[0] for entry in parsed[:target_count]]
+
+    def _build_latest_batch_id(server_id, item_type, items):
+        if not server_id or not items:
+            return ""
+        parsed_dates = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            dt_value = _parse_date_value(item.get("DateCreated"))
+            if dt_value:
+                parsed_dates.append(dt_value)
+        if not parsed_dates:
+            return ""
+        latest_dt = max(parsed_dates).astimezone()
+        stamp = latest_dt.strftime("%Y%m%d%H%M")
+        return f"{server_id}:{item_type}:{stamp}"
+
+    _TMDB_IMAGE_CACHE: dict[str, dict[str, str]] = {}
+    _OMDB_RATINGS_CACHE: dict[str, dict[str, str]] = {}
+    _MDBLIST_RATINGS_CACHE: dict[str, dict[str, str]] = {}
+    _TRAKT_RATING_CACHE: dict[str, dict[str, str]] = {}
+    _TRAKT_ID_CACHE: dict[str, str] = {}
+
+    # API Key rotation state
+    _API_KEY_ROTATION_STATE = {
+        "mdblist": {"current_index": 0, "failed_keys": set()},
+        "omdb": {"current_index": 0, "failed_keys": set()}
+    }
+
+    def _fetch_tmdb_images(tmdb_id, media_type, api_key, language):
+        if not tmdb_id or not api_key:
+            return {}
+        key = f"{media_type}:{tmdb_id}:{language}"
+        if key in _TMDB_IMAGE_CACHE:
+            return _TMDB_IMAGE_CACHE[key]
+        try:
+            params = {
+                "api_key": api_key,
+                "language": language or "it-IT",
+                "append_to_response": "images,external_ids"
+            }
+            url = f"{TMDB_API_BASE}/{media_type}/{tmdb_id}"
+            response = requests.get(url, params=params, timeout=10)
+            if response.status_code != 200:
+                return {}
+            payload = response.json()
+        except requests.RequestException:
+            return {}
+
+        poster_path = payload.get("poster_path") or ""
+        backdrop_path = payload.get("backdrop_path") or ""
+        images = payload.get("images") if isinstance(payload.get("images"), dict) else {}
+        logos = images.get("logos") if isinstance(images.get("logos"), list) else []
+        logo_path = ""
+        if logos:
+            logo_path = logos[0].get("file_path") or ""
+        vote_average = payload.get("vote_average")
+        vote_count = payload.get("vote_count")
+        rating_text = ""
+        try:
+            if vote_average is not None:
+                rating_text = f"{float(vote_average):.1f}"
+        except (TypeError, ValueError):
+            rating_text = str(vote_average or "")
+        output = {
+            "tmdb_poster_url": f"{TMDB_IMAGE_BASE_URL}/w780{poster_path}" if poster_path else "",
+            "tmdb_backdrop_url": f"{TMDB_IMAGE_BASE_URL}/w1280{backdrop_path}" if backdrop_path else "",
+            "tmdb_logo_url": f"{TMDB_IMAGE_BASE_URL}/w500{logo_path}" if logo_path else "",
+            "tmdb_rating": rating_text,
+            "tmdb_votes": str(vote_count or "")
+        }
+        output["tmdb_banner_url"] = output["tmdb_backdrop_url"]
+        output["tmdb_thumb_url"] = output["tmdb_backdrop_url"]
+        external_ids = payload.get("external_ids") if isinstance(payload.get("external_ids"), dict) else {}
+        imdb_id = external_ids.get("imdb_id") or ""
+        tvdb_id = external_ids.get("tvdb_id") or ""
+        if imdb_id:
+            output["imdb_id"] = str(imdb_id)
+        if tvdb_id:
+            output["tvdb_id"] = str(tvdb_id)
+        _TMDB_IMAGE_CACHE[key] = output
+        return output
+
+    def _parse_omdb_payload(payload):
+        if not isinstance(payload, dict) or payload.get("Response") != "True":
+            return {}
+        imdb_rating = str(payload.get("imdbRating") or "")
+        meta_score = str(payload.get("Metascore") or "")
+        if imdb_rating.upper() == "N/A":
+            imdb_rating = ""
+        if meta_score.upper() == "N/A":
+            meta_score = ""
+        tomato_score = ""
+        ratings = payload.get("Ratings")
+        if isinstance(ratings, list):
+            for entry in ratings:
+                if not isinstance(entry, dict):
+                    continue
+                source = entry.get("Source") or ""
+                value = entry.get("Value") or ""
+                if source.lower().strip() == "rotten tomatoes":
+                    tomato_score = str(value)
+        return {
+            "imdb_rating": imdb_rating,
+            "metacritic_rating": meta_score,
+            "rt_tomatometer": tomato_score,
+            "rt_audience": "",
+            "letterboxd_rating": "",
+            "imdb_votes": str(payload.get("imdbVotes") or "")
+        }
+
+    def _get_next_api_key(service_name, api_keys):
+        """Get next API key with rotation support."""
+        if not api_keys:
+            return None
+        if len(api_keys) == 1:
+            return api_keys[0]
+
+        state = _API_KEY_ROTATION_STATE.get(service_name, {"current_index": 0, "failed_keys": set()})
+
+        # Filter out failed keys
+        available_keys = [k for k in api_keys if k not in state["failed_keys"]]
+        if not available_keys:
+            # All keys failed, reset and try again
+            state["failed_keys"] = set()
+            available_keys = api_keys
+
+        # Get current key
+        current_index = state["current_index"] % len(available_keys)
+        key = available_keys[current_index]
+
+        # Rotate to next key for next call
+        state["current_index"] = (current_index + 1) % len(available_keys)
+        _API_KEY_ROTATION_STATE[service_name] = state
+
+        return key
+
+    def _mark_api_key_failed(service_name, api_key):
+        """Mark an API key as failed for rotation."""
+        if not api_key:
+            return
+        state = _API_KEY_ROTATION_STATE.get(service_name, {"current_index": 0, "failed_keys": set()})
+        state["failed_keys"].add(api_key)
+        _API_KEY_ROTATION_STATE[service_name] = state
+
+    def _parse_mdblist_payload(payload, media_type="movie"):
+        """Parse MDBList API response and extract ratings."""
+        if not isinstance(payload, dict):
+            return {}
+
+        # Extract ratings from MDBList response
+        # Handle ratings as dict or list
+        ratings = payload.get("ratings", {})
+
+        # Convert ratings list to dict by source
+        ratings_dict = {}
+        if isinstance(ratings, list):
+            for rating in ratings:
+                if isinstance(rating, dict) and "source" in rating:
+                    source = rating["source"]
+                    ratings_dict[source] = rating.get("value")
+        elif isinstance(ratings, dict):
+            ratings_dict = ratings
+
+        # Extract values from either top-level payload or ratings dict
+        imdb_rating = str(payload.get("imdbrating") or ratings_dict.get("imdb") or "")
+        metacritic = str(payload.get("metacritic") or ratings_dict.get("metacritic") or "")
+        rt_tomatometer = str(payload.get("tomatometer") or ratings_dict.get("tomatoes") or "")
+        rt_audience = str(payload.get("tomato_audience") or ratings_dict.get("tomatoesaudience") or "")
+        letterboxd = str(payload.get("letterboxd") or ratings_dict.get("letterboxd") or "")
+
+        # Get IMDb votes from ratings array or top-level
+        imdb_votes = str(payload.get("imdbvotes") or "")
+        if not imdb_votes and isinstance(ratings, list):
+            for rating in ratings:
+                if isinstance(rating, dict) and rating.get("source") == "imdb":
+                    imdb_votes = str(rating.get("votes") or "")
+                    break
+
+        # Clean up values
+        if imdb_rating and imdb_rating.upper() == "N/A":
+            imdb_rating = ""
+        if metacritic and metacritic.upper() == "N/A":
+            metacritic = ""
+
+        return {
+            "imdb_rating": imdb_rating,
+            "metacritic_rating": metacritic,
+            "rt_tomatometer": rt_tomatometer,
+            "rt_audience": rt_audience,
+            "letterboxd_rating": letterboxd,
+            "imdb_votes": imdb_votes
+        }
+
+    def _fetch_mdblist_ratings_by_imdb(imdb_id, api_keys, expected_type=None):
+        """Fetch ratings from MDBList API by IMDb ID with key rotation."""
+        if not imdb_id or not api_keys:
+            print(f"[MDBLIST DEBUG] Empty imdb_id or api_keys - imdb_id={imdb_id}, keys={len(api_keys) if api_keys else 0}")
+            return {}
+
+        cache_key = f"{imdb_id}:{expected_type or ''}"
+        if cache_key in _MDBLIST_RATINGS_CACHE:
+            print(f"[MDBLIST DEBUG] Cache hit for {cache_key}")
+            return _MDBLIST_RATINGS_CACHE[cache_key]
+
+        max_attempts = min(len(api_keys), 3)  # Try up to 3 different keys
+        print(f"[MDBLIST DEBUG] Starting fetch for {imdb_id}, type={expected_type}, max_attempts={max_attempts}")
+
+        for attempt in range(max_attempts):
+            api_key = _get_next_api_key("mdblist", api_keys)
+            if not api_key:
+                print(f"[MDBLIST DEBUG] No API key available at attempt {attempt}")
+                break
+
+            try:
+                url = f"https://mdblist.com/api/"
+                params = {"apikey": api_key, "i": imdb_id}
+                print(f"[MDBLIST DEBUG] Attempt {attempt + 1}: GET {url} with params {{'apikey': '***', 'i': '{imdb_id}'}}")
+
+                response = requests.get(url, params=params, timeout=10)
+                print(f"[MDBLIST DEBUG] Response status: {response.status_code}")
+                print(f"[MDBLIST DEBUG] Response headers: {dict(response.headers)}")
+
+                response.raise_for_status()
+
+                raw_text = response.text
+                print(f"[MDBLIST DEBUG] Raw response (first 500 chars): {raw_text[:500]}")
+
+                payload = response.json()
+                print(f"[MDBLIST DEBUG] Parsed JSON payload: {payload}")
+
+                # Check if the response is valid
+                if isinstance(payload, dict) and not payload.get("error"):
+                    print(f"[MDBLIST DEBUG] Valid payload received, no error field")
+
+                    # Verify media type if expected
+                    if expected_type:
+                        actual_type = str(payload.get("type") or "").lower()
+                        expected = "show" if expected_type in ("tv", "series") else "movie"
+                        print(f"[MDBLIST DEBUG] Type check: actual={actual_type}, expected={expected}")
+                        if actual_type and actual_type != expected:
+                            print(f"[MDBLIST DEBUG] Type mismatch - returning empty")
+                            return {}
+
+                    output = _parse_mdblist_payload(payload, expected_type or "movie")
+                    print(f"[MDBLIST DEBUG] Parsed output: {output}")
+                    _MDBLIST_RATINGS_CACHE[cache_key] = output
+                    return output
+
+                # Check for rate limit errors
+                if payload.get("error"):
+                    print(f"[MDBLIST DEBUG] Error in payload: {payload.get('error')}")
+                    if "limit" in str(payload.get("error")).lower():
+                        print(f"[MDBLIST DEBUG] Rate limit detected, marking key as failed")
+                        _mark_api_key_failed("mdblist", api_key)
+                        continue
+
+                print(f"[MDBLIST DEBUG] Payload has error or is invalid, returning empty")
+                return {}
+            except requests.RequestException as e:
+                print(f"[MDBLIST DEBUG] Request exception at attempt {attempt + 1}: {type(e).__name__}: {str(e)}")
+                continue
+
+        return {}
+
+    def _fetch_mdblist_tv_series_with_seasons(imdb_id, api_keys):
+        """
+        Fetch TV series ratings from MDBList including season-level Metacritic scores.
+        Returns ratings with averaged Metacritic score across all seasons.
+        """
+        if not imdb_id or not api_keys:
+            print(f"[MDBLIST TV DEBUG] Empty imdb_id or api_keys")
+            return {}
+
+        print(f"[MDBLIST TV DEBUG] Fetching TV series {imdb_id}")
+
+        # First get the main series data
+        series_ratings = _fetch_mdblist_ratings_by_imdb(imdb_id, api_keys, expected_type="tv")
+        print(f"[MDBLIST TV DEBUG] Initial series ratings: {series_ratings}")
+
+        # Try to fetch season data to calculate average Metacritic
+        api_key = _get_next_api_key("mdblist", api_keys)
+        if not api_key:
+            print(f"[MDBLIST TV DEBUG] No API key available for season fetch")
+            return series_ratings
+
+        try:
+            # MDBList provides season data in the main response
+            print(f"[MDBLIST TV DEBUG] Fetching season data for {imdb_id}")
+            response = requests.get(
+                f"https://mdblist.com/api/",
+                params={"apikey": api_key, "i": imdb_id},
+                timeout=10
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+            print(f"[MDBLIST TV DEBUG] Season payload type: {type(payload)}, has error: {payload.get('error') if isinstance(payload, dict) else 'N/A'}")
+
+            if not isinstance(payload, dict) or payload.get("error"):
+                print(f"[MDBLIST TV DEBUG] Invalid payload or error, returning series_ratings")
+                return series_ratings
+
+            # Check for season ratings
+            seasons = payload.get("seasons") or []
+            print(f"[MDBLIST TV DEBUG] Found {len(seasons) if isinstance(seasons, list) else 0} seasons")
+
+            if isinstance(seasons, list) and seasons:
+                metacritic_scores = []
+                for idx, season in enumerate(seasons):
+                    if not isinstance(season, dict):
+                        continue
+
+                    # Check both direct metacritic field and ratings array
+                    season_meta = season.get("metacritic")
+                    if not season_meta and "ratings" in season:
+                        ratings = season.get("ratings")
+                        if isinstance(ratings, list):
+                            for rating in ratings:
+                                if isinstance(rating, dict) and rating.get("source") == "metacritic":
+                                    season_meta = rating.get("value")
+                                    break
+                        elif isinstance(ratings, dict):
+                            season_meta = ratings.get("metacritic")
+
+                    print(f"[MDBLIST TV DEBUG] Season {idx + 1} metacritic: {season_meta}")
+
+                    if season_meta:
+                        try:
+                            score = float(season_meta)
+                            if score > 0:
+                                metacritic_scores.append(score)
+                        except (TypeError, ValueError):
+                            continue
+
+                # Calculate average if we have season scores
+                if metacritic_scores:
+                    avg_metacritic = sum(metacritic_scores) / len(metacritic_scores)
+                    series_ratings["metacritic_rating"] = str(int(round(avg_metacritic)))
+                    print(f"[MDBLIST TV DEBUG] Calculated average Metacritic: {series_ratings['metacritic_rating']} from {len(metacritic_scores)} seasons")
+                else:
+                    print(f"[MDBLIST TV DEBUG] No valid Metacritic scores found in seasons")
+        except requests.RequestException as e:
+            print(f"[MDBLIST TV DEBUG] Request exception: {type(e).__name__}: {str(e)}")
+            pass
+
+        print(f"[MDBLIST TV DEBUG] Final TV series ratings: {series_ratings}")
+        return series_ratings
+
+    def _get_omdb_cache_hours(config):
+        default_hours = 12
+        if not isinstance(config, dict):
+            return default_hours
+        try:
+            hours = int(config.get("OMDB_CACHE_HOURS") or 0)
+        except (TypeError, ValueError):
+            return default_hours
+        if hours <= 0:
+            return default_hours
+        return hours
+
+    def _omdb_recently_fetched(entry, cache_hours):
+        if not isinstance(entry, dict):
+            return False
+        fetched_at = _parse_date_value(entry.get("omdb_fetched_at"))
+        if not fetched_at:
+            return False
+        return (datetime.now(timezone.utc) - fetched_at) < timedelta(hours=cache_hours)
+
+    def _fetch_omdb_series_by_title(title, year, api_keys):
+        """Fetch OMDB series by title with API key rotation support."""
+        if not title:
+            return {}
+
+        # Support both single key (string) and multiple keys (list) for backward compatibility
+        if isinstance(api_keys, str):
+            api_keys = [api_keys] if api_keys else []
+        if not api_keys:
+            return {}
+
+        key = f"series:{title}:{year or ''}"
+        if key in _OMDB_RATINGS_CACHE:
+            return _OMDB_RATINGS_CACHE[key]
+
+        max_attempts = min(len(api_keys), 3)
+        for attempt in range(max_attempts):
+            api_key = _get_next_api_key("omdb", api_keys)
+            if not api_key:
+                break
+
+            try:
+                params = {"t": title, "type": "series", "apikey": api_key}
+                if year:
+                    params["y"] = year
+                response = requests.get("https://www.omdbapi.com/", params=params, timeout=10)
+                response.raise_for_status()
+                payload = response.json()
+
+                if not isinstance(payload, dict):
+                    continue
+
+                if payload.get("Response") != "True":
+                    # Check for rate limit
+                    error = str(payload.get("Error") or "").lower()
+                    if "limit" in error:
+                        _mark_api_key_failed("omdb", api_key)
+                        continue
+                    return {}
+
+                if str(payload.get("Type") or "").lower() != "series":
+                    return {}
+
+                output = _parse_omdb_payload(payload)
+                imdb_id = str(payload.get("imdbID") or "")
+                if imdb_id:
+                    output["imdb_id"] = imdb_id
+                _OMDB_RATINGS_CACHE[key] = output
+                return output
+            except (requests.RequestException, ValueError):
+                continue
+
+        return {}
+
+    def _fetch_omdb_ratings(imdb_id, api_keys, expected_type=None):
+        """
+        Recupera rating da OMDB API with key rotation support.
+
+        NOTA LIMITAZIONI OMDB PER SERIE TV:
+        - Metacritic: Spesso assente per serie TV (dipende da OMDB database)
+        - RT Tomatometer: Raramente disponibile per serie TV
+        - IMDb rating/votes: Generalmente disponibili
+
+        Per film, tutti i rating sono generalmente disponibili.
+        """
+        # Support both single key (string) and multiple keys (list) for backward compatibility
+        if isinstance(api_keys, str):
+            api_keys = [api_keys] if api_keys else []
+        if not imdb_id or not api_keys:
+            return {}
+
+        cache_key = f"{imdb_id}:{expected_type or ''}"
+        if cache_key in _OMDB_RATINGS_CACHE:
+            return _OMDB_RATINGS_CACHE[cache_key]
+
+        max_attempts = min(len(api_keys), 3)
+        for attempt in range(max_attempts):
+            api_key = _get_next_api_key("omdb", api_keys)
+            if not api_key:
+                break
+
+            def _request_omdb(identifier):
+                try:
+                    response = requests.get(
+                        "https://www.omdbapi.com/",
+                        params={"i": identifier, "apikey": api_key},
+                        timeout=10
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                except (requests.RequestException, ValueError):
+                    return None
+                if not isinstance(payload, dict):
+                    return None
+                if payload.get("Response") != "True":
+                    # Check for rate limit
+                    error = str(payload.get("Error") or "").lower()
+                    if "limit" in error:
+                        _mark_api_key_failed("omdb", api_key)
+                    return None
+                return payload
+
+            payload = _request_omdb(imdb_id)
+            if payload is None:
+                continue
+
+            resolved_imdb_id = str(imdb_id)
+            if expected_type:
+                expected = "series" if expected_type in ("tv", "series") else "movie"
+                actual = str(payload.get("Type") or "").lower()
+                if expected == "series" and actual == "episode":
+                    series_id = payload.get("seriesID") or payload.get("seriesId") or payload.get("series_id") or ""
+                    if series_id:
+                        series_payload = _request_omdb(series_id)
+                        if series_payload:
+                            payload = series_payload
+                            resolved_imdb_id = str(series_id)
+                            actual = str(payload.get("Type") or "").lower()
+                    if actual != "series":
+                        return {}
+                elif actual and actual != expected:
+                    return {}
+
+            output = _parse_omdb_payload(payload)
+            if expected_type in ("tv", "series") and resolved_imdb_id:
+                output["imdb_id"] = resolved_imdb_id
+            _OMDB_RATINGS_CACHE[cache_key] = output
+            return output
+
+        return {}
+
+    def _resolve_trakt_identifier(trakt_id, media_type, client_id, access_token=None, tmdb_id=None, imdb_id=None):
+        if trakt_id:
+            return str(trakt_id).strip()
+        if not client_id:
+            return ""
+        cache_key = f"{media_type}:{tmdb_id or ''}:{imdb_id or ''}"
+        cached = _TRAKT_ID_CACHE.get(cache_key)
+        if cached:
+            return cached
+        search_type = "show" if media_type == "tv" else "movie"
+        headers = {
+            "trakt-api-version": "2",
+            "trakt-api-key": client_id,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "OctoHub/1.0 (+https://github.com/roy/octohub)"
+        }
+        if access_token:
+            headers["Authorization"] = f"Bearer {access_token}"
+        url = ""
+        params = {"type": search_type}
+        if imdb_id:
+            url = f"https://api.trakt.tv/search/imdb/{imdb_id}"
+        elif tmdb_id:
+            url = f"https://api.trakt.tv/search/tmdb/{tmdb_id}"
+        if not url:
+            return ""
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            response.raise_for_status()
+            payload = response.json()
+        except (requests.RequestException, ValueError):
+            return ""
+        identifier = ""
+        if isinstance(payload, list):
+            for entry in payload:
+                media = entry.get(search_type) if isinstance(entry, dict) else None
+                ids = media.get("ids") if isinstance(media, dict) else None
+                if not ids:
+                    continue
+                identifier = ids.get("slug") or ids.get("trakt") or ids.get("imdb") or ids.get("tmdb") or ""
+                if identifier:
+                    break
+        if identifier:
+            _TRAKT_ID_CACHE[cache_key] = str(identifier)
+        return str(identifier or "")
+
+    def _fetch_trakt_rating(trakt_id, media_type, client_id, access_token=None, tmdb_id=None, imdb_id=None):
+        if not client_id:
+            return {}
+        trakt_id = _resolve_trakt_identifier(
+            trakt_id,
+            media_type,
+            client_id,
+            access_token=access_token,
+            tmdb_id=tmdb_id,
+            imdb_id=imdb_id
+        )
+        if not trakt_id:
+            return {}
+        key = f"{media_type}:{trakt_id}"
+        if key in _TRAKT_RATING_CACHE:
+            return _TRAKT_RATING_CACHE[key]
+        trakt_type = "shows" if media_type == "tv" else "movies"
+        url = f"https://api.trakt.tv/{trakt_type}/{trakt_id}"
+        headers = {
+            "trakt-api-version": "2",
+            "trakt-api-key": client_id,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "OctoHub/1.0 (+https://github.com/roy/octohub)"
+        }
+        if access_token:
+            headers["Authorization"] = f"Bearer {access_token}"
+        try:
+            response = requests.get(url, headers=headers, params={"extended": "full"}, timeout=10)
+            response.raise_for_status()
+            payload = response.json()
+        except (requests.RequestException, ValueError):
+            return {}
+        rating = payload.get("rating")
+        rating_text = ""
+        try:
+            if rating is not None:
+                rating_text = f"{float(rating):.1f}"
+        except (TypeError, ValueError):
+            rating_text = str(rating or "")
+        output = {
+            "trakt_rating": rating_text,
+            "trakt_votes": str(payload.get("votes") or "")
+        }
+        if trakt_id:
+            output["trakt_id"] = str(trakt_id)
+        _TRAKT_RATING_CACHE[key] = output
+        return output
+
+    def _is_blank_latest_value(value):
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return not value.strip()
+        if isinstance(value, (list, tuple, set, dict)):
+            return not value
+        return False
+
+    def _calculate_enrichment_diff(original, enriched):
+        """Calcola differenza tra item originale e arricchito."""
+        if not isinstance(original, dict) or not isinstance(enriched, dict):
+            return {"added": [], "updated": [], "unchanged": []}
+
+        # Campi monitorati per enrichment
+        base_enrichment_fields = [
+            "tmdb_poster_url", "tmdb_backdrop_url", "tmdb_logo_url",
+            "tmdb_banner_url", "tmdb_thumb_url", "tmdb_rating", "tmdb_votes",
+            "imdb_rating", "imdb_votes", "rt_tomatometer",
+            "trakt_rating", "trakt_votes", "trakt_id"
+        ]
+
+        enrichment_fields = base_enrichment_fields.copy()
+        enrichment_fields.append("metacritic_rating")
+
+        added = []
+        updated = []
+        unchanged = []
+
+        for field in enrichment_fields:
+            original_value = original.get(field)
+            enriched_value = enriched.get(field)
+
+            original_blank = _is_blank_latest_value(original_value)
+            enriched_blank = _is_blank_latest_value(enriched_value)
+
+            if original_blank and not enriched_blank:
+                # Campo aggiunto
+                added.append({"field": field, "value": enriched_value})
+            elif not original_blank and not enriched_blank and original_value != enriched_value:
+                # Campo aggiornato
+                updated.append({"field": field, "old": original_value, "new": enriched_value})
+            elif not enriched_blank:
+                # Campo invariato
+                unchanged.append({"field": field, "value": enriched_value})
+
+        return {
+            "added": added,
+            "updated": updated,
+            "unchanged": unchanged,
+            "added_count": len(added),
+            "updated_count": len(updated),
+            "unchanged_count": len(unchanged)
+        }
+
+    def _build_latest_cache_maps(cache_payload):
+        movie_by_signature = {}
+        movie_by_item_id = {}
+        series_by_item_id = {}
+        if not isinstance(cache_payload, dict):
+            return {
+                "movie_by_signature": movie_by_signature,
+                "movie_by_item_id": movie_by_item_id,
+                "series_by_item_id": series_by_item_id
+            }
+        for entry in cache_payload.get("movies") or []:
+            if not isinstance(entry, dict):
+                continue
+            server_id = str(entry.get("server_id") or "")
+            signature = str(entry.get("signature") or entry.get("item_id") or "")
+            item_id = str(entry.get("item_id") or "")
+            if server_id and signature:
+                movie_by_signature[f"{server_id}:{signature}"] = entry
+            if server_id and item_id:
+                movie_by_item_id[f"{server_id}:{item_id}"] = entry
+        for entry in cache_payload.get("series") or []:
+            if not isinstance(entry, dict):
+                continue
+            server_id = str(entry.get("server_id") or "")
+            item_id = str(entry.get("item_id") or "")
+            if server_id and item_id:
+                series_by_item_id[f"{server_id}:{item_id}"] = entry
+        return {
+            "movie_by_signature": movie_by_signature,
+            "movie_by_item_id": movie_by_item_id,
+            "series_by_item_id": series_by_item_id
+        }
+
+    def _merge_latest_cached_entry(entry, cached):
+        if not isinstance(entry, dict) or not isinstance(cached, dict):
+            return entry
+        copy_fields = (
+            "original_title",
+            "year",
+            "overview",
+            "genres",
+            "rating",
+            "official_rating",
+            "runtime",
+            "premiere_date",
+            "tagline",
+            "studios",
+            "cast",
+            "directors",
+            "creators",
+            "tmdb_id",
+            "imdb_id",
+            "tvdb_id",
+            "trakt_id",
+            "tmdb_rating",
+            "tmdb_votes",
+            "imdb_rating",
+            "imdb_votes",
+            "metacritic_rating",
+            "rt_tomatometer",
+            "rt_audience",
+            "letterboxd_rating",
+            "trakt_rating",
+            "trakt_votes",
+            "tmdb_poster_url",
+            "tmdb_backdrop_url",
+            "tmdb_logo_url",
+            "tmdb_banner_url",
+            "tmdb_thumb_url",
+            "omdb_fetched_at"
+        )
+        for field in copy_fields:
+            if _is_blank_latest_value(entry.get(field)) and not _is_blank_latest_value(cached.get(field)):
+                entry[field] = cached.get(field)
+        return entry
+
+    def _enrich_latest_entry_with_tmdb(entry, config, force_omdb=False, omdb_cache_hours=None):
+        if not isinstance(entry, dict):
+            return entry
+        tmdb_id = entry.get("tmdb_id")
+        media_type = "movie" if entry.get("item_type") == "Movie" else "tv"
+        api_key = config.get("TMDB_API_KEY") if isinstance(config, dict) else ""
+        tmdb_fields = (
+            "tmdb_poster_url",
+            "tmdb_backdrop_url",
+            "tmdb_logo_url",
+            "tmdb_banner_url",
+            "tmdb_thumb_url",
+            "tmdb_rating",
+            "tmdb_votes",
+            "imdb_id",
+            "tvdb_id"
+        )
+        tmdb_imdb_id = ""
+        should_fetch_tmdb = tmdb_id and api_key and any(
+            _is_blank_latest_value(entry.get(field)) for field in tmdb_fields
+        )
+        if should_fetch_tmdb:
+            language = config.get("TMDB_LANGUAGE") or "it-IT"
+            images = _fetch_tmdb_images(tmdb_id, media_type, api_key, language)
+            tmdb_imdb_id = str(images.get("imdb_id") or "")
+            entry.update(images)
+        # Get API keys for ratings (MDBList primary, OMDb fallback)
+        mdblist_keys = config.get("MDBLIST_API_KEYS") if isinstance(config, dict) else []
+        if not mdblist_keys:
+            mdblist_keys = []
+
+        # Get OMDb keys (support both array and single key for backward compatibility)
+        omdb_keys = config.get("OMDB_API_KEYS") if isinstance(config, dict) else []
+        if not omdb_keys:
+            omdb_key = config.get("OMDB_API_KEY") if isinstance(config, dict) else ""
+            if not omdb_key:
+                omdb_key = os.getenv("OMDB_API_KEY", "")
+            if omdb_key:
+                omdb_keys = [omdb_key]
+
+        # Fields to fetch from rating services
+        rating_fields = ("imdb_rating", "imdb_votes", "metacritic_rating", "rt_tomatometer", "rt_audience", "letterboxd_rating")
+        if omdb_cache_hours is None:
+            omdb_cache_hours = _get_omdb_cache_hours(config)
+        ratings_recent = _omdb_recently_fetched(entry, omdb_cache_hours)
+        should_fetch_ratings = (mdblist_keys or omdb_keys) and (force_omdb or not ratings_recent)
+
+        imdb_id = entry.get("imdb_id") or ""
+        imdb_id_for_trakt = imdb_id
+
+        if media_type == "tv":
+            safe_imdb_id = tmdb_imdb_id
+            ratings_payload = {}
+
+            if should_fetch_ratings and any(_is_blank_latest_value(entry.get(field)) for field in rating_fields):
+                # Try MDBList first (with Metacritic averaging for TV series)
+                if mdblist_keys and safe_imdb_id:
+                    ratings_payload = _fetch_mdblist_tv_series_with_seasons(safe_imdb_id, mdblist_keys)
+
+                # Fallback to OMDb if MDBList didn't return data or keys not available
+                if not ratings_payload and omdb_keys:
+                    if safe_imdb_id:
+                        ratings_payload = _fetch_omdb_ratings(safe_imdb_id, omdb_keys, expected_type="series")
+                    if not ratings_payload:
+                        title = entry.get("title") or entry.get("series_name") or ""
+                        year = entry.get("year")
+                        ratings_payload = _fetch_omdb_series_by_title(title, year, omdb_keys)
+
+                if ratings_payload:
+                    entry.update(ratings_payload)
+                    safe_imdb_id = str(ratings_payload.get("imdb_id") or safe_imdb_id)
+                entry["omdb_fetched_at"] = datetime.now(timezone.utc).isoformat()
+
+            if safe_imdb_id:
+                entry["imdb_id"] = safe_imdb_id
+                imdb_id_for_trakt = safe_imdb_id
+        else:
+            if should_fetch_ratings and imdb_id and any(_is_blank_latest_value(entry.get(field)) for field in rating_fields):
+                ratings_payload = {}
+
+                # Try MDBList first
+                if mdblist_keys:
+                    print(f"[MDBLIST] Trying MDBList for IMDb {imdb_id}, keys available: {len(mdblist_keys)}")
+                    ratings_payload = _fetch_mdblist_ratings_by_imdb(imdb_id, mdblist_keys, expected_type=media_type)
+                    print(f"[MDBLIST] Result: {ratings_payload}")
+
+                # Fallback to OMDb if MDBList didn't return data
+                if not ratings_payload and omdb_keys:
+                    print(f"[MDBLIST] Falling back to OMDb for IMDb {imdb_id}")
+                    ratings_payload = _fetch_omdb_ratings(imdb_id, omdb_keys, expected_type=media_type)
+
+                if ratings_payload:
+                    entry.update(ratings_payload)
+                entry["omdb_fetched_at"] = datetime.now(timezone.utc).isoformat()
+        trakt_config = config.get("TRAKT") if isinstance(config, dict) else {}
+        trakt_client_id = trakt_config.get("CLIENT_ID") if isinstance(trakt_config, dict) else ""
+        trakt_access_token = trakt_config.get("ACCESS_TOKEN") if isinstance(trakt_config, dict) else ""
+        trakt_fields = ("trakt_rating", "trakt_votes")
+        if trakt_client_id and any(_is_blank_latest_value(entry.get(field)) for field in trakt_fields):
+            entry.update(_fetch_trakt_rating(
+                entry.get("trakt_id"),
+                media_type,
+                trakt_client_id,
+                access_token=trakt_access_token,
+                tmdb_id=entry.get("tmdb_id") if media_type != "tv" else None,
+                imdb_id=imdb_id_for_trakt
+            ))
+        return entry
+
+    def _format_latest_date(value):
+        parsed = _parse_date_value(value)
+        if not parsed:
+            return ""
+        local = parsed.astimezone()
+        return f"{local.day:02d}.{local.month:02d}.'{local.year % 100:02d}"
+
+    def _format_latest_runtime(minutes):
+        if minutes is None:
+            return ""
+        try:
+            total = int(minutes)
+        except (TypeError, ValueError):
+            return ""
+        if total <= 0:
+            return ""
+        hours = total // 60
+        mins = total % 60
+        if hours and mins:
+            return f"{hours}h {mins}m"
+        if hours:
+            return f"{hours}h"
+        return f"{mins}m"
+
+    def _format_latest_size(value):
+        try:
+            size = int(value)
+        except (TypeError, ValueError):
+            return ""
+        if size <= 0:
+            return ""
+        gb = size / (1024 * 1024 * 1024)
+        if gb >= 1:
+            return f"{gb:.2f} GB"
+        mb = size / (1024 * 1024)
+        return f"{mb:.0f} MB"
+
+    def _apply_latest_template(template, context):
+        text = template or ""
+        for key, value in context.items():
+            legacy_token = f"{{{key}}}"
+            text = text.replace(legacy_token, value)
+            text = re.sub(r"{{\s*" + re.escape(str(key)) + r"[^}]*}}", value, text)
+        return text
+
+    LATEST_IMAGE_TOKENS = (
+        "tmdb_poster_url",
+        "poster_url",
+        "tmdb_backdrop_url",
+        "backdrop_url",
+        "tmdb_logo_url",
+        "logo_url",
+        "tmdb_banner_url",
+        "banner_url",
+        "tmdb_thumb_url",
+        "thumb_url"
+    )
+
+    _LATEST_JINJA_ENV = None
+    _LATEST_LEGACY_TOKEN_REGEX = re.compile(r"(?<!{){\s*([a-zA-Z0-9_][^}]*)\s*}(?!})")
+    _LATEST_JINJA_TOKEN_REGEX = re.compile(r"{{\s*([a-zA-Z0-9_]+)[^}]*}}")
+
+    def _get_latest_template_env():
+        nonlocal _LATEST_JINJA_ENV
+        if _LATEST_JINJA_ENV is None:
+            env = SandboxedEnvironment(
+                autoescape=True,
+                undefined=Undefined,
+                trim_blocks=True,
+                lstrip_blocks=True,
+                keep_trailing_newline=True
+            )
+            def _latest_filter_safe(value):
+                if value is None:
+                    return Markup("")
+                return Markup(str(value))
+
+            def _latest_filter_format(value, *args, **kwargs):
+                fmt = "" if value is None else str(value)
+                try:
+                    if args or kwargs:
+                        try:
+                            return fmt % (args[0] if len(args) == 1 and not kwargs else args or kwargs)
+                        except Exception:
+                            return fmt.format(*args, **kwargs)
+                    return fmt
+                except Exception:
+                    return fmt
+
+            env.filters["safe"] = _latest_filter_safe
+            env.filters["format"] = _latest_filter_format
+            env.globals["nl"] = "\n"
+            env.globals["br"] = Markup("<br>")
+            _LATEST_JINJA_ENV = env
+        return _LATEST_JINJA_ENV
+
+    def _normalize_latest_template(template):
+        text = template or ""
+        return _LATEST_LEGACY_TOKEN_REGEX.sub(lambda match: f"{{{{ {match.group(1).strip()} }}}}", text)
+
+    def _latest_template_has_image_token(template):
+        normalized = _normalize_latest_template(template)
+        for match in _LATEST_JINJA_TOKEN_REGEX.finditer(normalized):
+            token = match.group(1)
+            if token in LATEST_IMAGE_TOKENS:
+                return True
+        return False
+
+    def _strip_latest_image_tokens(template):
+        if not template:
+            return ""
+        normalized = _normalize_latest_template(template)
+        output = normalized
+        for token in LATEST_IMAGE_TOKENS:
+            output = re.sub(r"{{\s*" + re.escape(token) + r"[^}]*}}", "", output)
+        return output
+
+    def _extract_latest_image_url(template, context):
+        if not template or not context:
+            return ""
+        normalized = _normalize_latest_template(template)
+        seen = set()
+        for match in _LATEST_JINJA_TOKEN_REGEX.finditer(normalized):
+            token = match.group(1)
+            if token in seen or token not in LATEST_IMAGE_TOKENS:
+                continue
+            seen.add(token)
+            value = context.get(token)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    def _render_latest_template(template, context, strict=False):
+        if not template:
+            return ""
+        normalized = _normalize_latest_template(template)
+        env = _get_latest_template_env()
+        try:
+            return env.from_string(normalized).render(context or {})
+        except (TemplateSyntaxError, ValueError) as exc:
+            if strict:
+                raise exc
+            return ""
+        except Exception as exc:
+            if strict:
+                raise exc
+            return ""
+
+    def _resolve_latest_message_preset(latest_settings):
+        presets = latest_settings.get("PRESETS") or []
+        active_id = latest_settings.get("ACTIVE_PRESET_ID") or ""
+        if isinstance(active_id, str):
+            active_id = active_id.strip()
+        for preset in presets:
+            if preset.get("id") == active_id:
+                return preset
+        return presets[0] if presets else {"template": _default_latest_message_template()}
+
+    def _build_latest_message(item, template, return_error=False, allow_fallback=True):
+        changes = item.get("changes") if isinstance(item.get("changes"), list) else []
+        change = changes[0] if changes else {}
+        change_entries = [entry for entry in changes if isinstance(entry, dict)]
+        versions_sorted = _sort_versions_by_quality(change_entries)
+        best_version = versions_sorted[0] if versions_sorted else {}
+        season_numbers = {entry.get("season_number") for entry in changes if entry.get("season_number") is not None}
+        episode_numbers = [entry.get("episode_number") for entry in changes if entry.get("episode_number") is not None]
+        season_count = len(season_numbers) if season_numbers else ""
+        episode_count = len(episode_numbers) if episode_numbers else ""
+        raw_type = item.get("item_type") or ""
+        type_token = str(raw_type).lower()
+        if type_token == "movie":
+            type_token = "movie"
+        elif type_token == "series":
+            type_token = "series"
+        elif type_token == "episode":
+            type_token = "episode"
+        series_name = item.get("series_name") or ""
+        if not series_name and str(raw_type).lower() == "series":
+            series_name = item.get("title") or ""
+        season_number = change.get("season_number") or item.get("season_number") or ""
+        season_name = item.get("season_name") or ""
+        episode_number = change.get("episode_number") or item.get("episode_number") or ""
+        episode_title = change.get("episode_title") or item.get("episode_title") or ""
+        studios = item.get("studios") or []
+        if isinstance(studios, list):
+            studios_text = " · ".join([str(entry) for entry in studios if entry])
+        else:
+            studios_text = str(studios or "")
+        cast_raw = item.get("cast") if isinstance(item.get("cast"), list) else []
+        director_raw = item.get("directors") if isinstance(item.get("directors"), list) else []
+        creator_raw = item.get("creators") if isinstance(item.get("creators"), list) else []
+        if type_token in ("series", "episode"):
+            director_raw = creator_raw
+        cast_list = []
+        for entry in cast_raw:
+            if entry and str(entry) not in cast_list:
+                cast_list.append(str(entry))
+        director_list = []
+        for entry in director_raw:
+            if entry and str(entry) not in director_list:
+                director_list.append(str(entry))
+        cast_default_limit = 5
+        cast_text = " · ".join(cast_list[:cast_default_limit])
+        cast_full_text = " · ".join(cast_list)
+        director_text = director_list[0] if director_list else ""
+        directors_text = " · ".join(director_list)
+        episode_codes = []
+        episode_titles = []
+        seen_episodes = set()
+        for entry in changes:
+            season_number_entry = entry.get("season_number")
+            episode_number_entry = entry.get("episode_number")
+            if season_number_entry is None and episode_number_entry is None:
+                continue
+            try:
+                season_int = int(season_number_entry) if season_number_entry is not None else None
+            except (TypeError, ValueError):
+                season_int = None
+            try:
+                episode_int = int(episode_number_entry) if episode_number_entry is not None else None
+            except (TypeError, ValueError):
+                episode_int = None
+            code = ""
+            if season_int is not None:
+                code += f"S{season_int:02d}"
+            if episode_int is not None:
+                code += f"E{episode_int:02d}"
+            if not code:
+                continue
+            key = (season_int, episode_int)
+            if key in seen_episodes:
+                continue
+            seen_episodes.add(key)
+            episode_codes.append(code)
+            title_entry = entry.get("episode_title") or ""
+            if title_entry:
+                episode_titles.append(f"{code} - {title_entry}")
+            else:
+                episode_titles.append(code)
+        tmdb_id = str(item.get("tmdb_id") or "")
+        imdb_id = str(item.get("imdb_id") or "")
+        tvdb_id = str(item.get("tvdb_id") or "")
+        trakt_id = str(item.get("trakt_id") or "")
+        tmdb_url = f"https://www.themoviedb.org/{'tv' if type_token == 'series' else 'movie'}/{tmdb_id}" if tmdb_id else ""
+        imdb_url = f"https://www.imdb.com/title/{imdb_id}" if imdb_id else ""
+        tvdb_url = f"https://thetvdb.com/?id={tvdb_id}" if tvdb_id else ""
+        trakt_url = ""
+        if trakt_id:
+            trakt_url = f"https://trakt.tv/{'shows' if type_token == 'series' else 'movies'}/{trakt_id}"
+        elif imdb_id:
+            trakt_url = f"https://trakt.tv/search/imdb/{imdb_id}"
+        elif tmdb_id:
+            trakt_url = f"https://trakt.tv/search/tmdb/{tmdb_id}"
+        context_raw = {
+            "title": str(item.get("title") or ""),
+            "original_title": str(item.get("original_title") or ""),
+            "year": str(item.get("year") or ""),
+            "type": type_token,
+            "server": str(item.get("server_name") or ""),
+            "update_label": str(item.get("update_label") or ""),
+            "update_type": str(item.get("update_type") or ""),
+            "added_at": _format_latest_date(change.get("added_at") or item.get("added_at")),
+            "genres": " · ".join(item.get("genres") or []) if isinstance(item.get("genres"), list) else "",
+            "overview": str(item.get("overview") or ""),
+            "rating": str(item.get("community_rating") or ""),
+            "critic_rating": str(item.get("critic_rating") or ""),
+            "official_rating": str(item.get("official_rating") or ""),
+            "runtime": _format_latest_runtime(item.get("runtime_minutes")),
+            "quality": str(change.get("quality") or ""),
+            "resolution": str(change.get("resolution") or ""),
+            "video_codec": str(change.get("video_codec") or ""),
+            "audio_codec": str(change.get("audio_codec") or ""),
+            "audio_channels": str(change.get("audio_channels") or ""),
+            "container": str(change.get("container") or ""),
+            "bitrate": str(change.get("bitrate") or ""),
+            "versions": versions_sorted,
+            "version_count": str(len(versions_sorted)),
+            "best_version": best_version,
+            "best_quality": str(best_version.get("quality") or ""),
+            "best_resolution": str(best_version.get("resolution") or ""),
+            "best_video_codec": str(best_version.get("video_codec") or ""),
+            "best_audio_codec": str(best_version.get("audio_codec") or ""),
+            "best_audio_channels": str(best_version.get("audio_channels") or ""),
+            "best_container": str(best_version.get("container") or ""),
+            "best_bitrate": str(best_version.get("bitrate") or ""),
+            "best_source_name": str(best_version.get("source_name") or ""),
+            "best_path": str(best_version.get("path") or ""),
+            "best_size": str(best_version.get("size") or ""),
+            "best_video_details": str(best_version.get("video_details") or ""),
+            "best_audio_details": str(best_version.get("audio_details") or ""),
+            "best_audio_langs": str(best_version.get("audio_langs") or ""),
+            "best_subtitle_langs": str(best_version.get("subtitle_langs") or ""),
+            "best_season_number": str(best_version.get("season_number") or ""),
+            "best_episode_number": str(best_version.get("episode_number") or ""),
+            "best_episode_title": str(best_version.get("episode_title") or ""),
+            "series_name": str(series_name),
+            "season_number": str(season_number),
+            "season_name": str(season_name),
+            "episode_number": str(episode_number),
+            "episode_title": str(episode_title),
+            "season": str(season_number),
+            "episode": str(episode_number),
+            "season_count": str(season_count),
+            "episode_count": str(episode_count or item.get("child_count") or ""),
+            "size": _format_latest_size(change.get("size")),
+            "path": str(change.get("path") or ""),
+            "source_name": str(change.get("source_name") or ""),
+            "batch_id": str(item.get("batch_id") or ""),
+            "tagline": str(item.get("tagline") or ""),
+            "studios": studios_text,
+            "production": studios_text,
+            "production_companies": studios_text,
+            "cast": cast_text,
+            "cast_all": cast_full_text,
+            "director": director_text,
+            "directors": directors_text,
+            "episodes": ", ".join(episode_codes),
+            "episodes_with_titles": " · ".join(episode_titles),
+            "library": str(item.get("library_name") or ""),
+            "library_name": str(item.get("library_name") or ""),
+            "poster_url": str(item.get("poster_url") or ""),
+            "backdrop_url": str(item.get("backdrop_url") or ""),
+            "banner_url": str(item.get("banner_url") or ""),
+            "thumb_url": str(item.get("thumb_url") or ""),
+            "logo_url": str(item.get("logo_url") or ""),
+            "tmdb_poster_url": str(item.get("tmdb_poster_url") or ""),
+            "tmdb_backdrop_url": str(item.get("tmdb_backdrop_url") or ""),
+            "tmdb_logo_url": str(item.get("tmdb_logo_url") or ""),
+            "tmdb_banner_url": str(item.get("tmdb_banner_url") or ""),
+            "tmdb_thumb_url": str(item.get("tmdb_thumb_url") or ""),
+            "emby_url": str(item.get("emby_url") or ""),
+            "tmdb_id": tmdb_id,
+            "imdb_id": imdb_id,
+            "tvdb_id": tvdb_id,
+            "trakt_id": trakt_id,
+            "tmdb_url": tmdb_url,
+            "imdb_url": imdb_url,
+            "tvdb_url": tvdb_url,
+            "trakt_url": trakt_url,
+            "premiere_date": _format_latest_date(item.get("premiere_date")),
+            "tmdb_rating": str(item.get("tmdb_rating") or ""),
+            "imdb_rating": str(item.get("imdb_rating") or ""),
+            "trakt_rating": str(item.get("trakt_rating") or ""),
+            "rt_tomatometer": str(item.get("rt_tomatometer") or ""),
+            "rt_audience": str(item.get("rt_audience") or ""),
+            "metacritic_rating": str(item.get("metacritic_rating") or ""),
+            "letterboxd_rating": str(item.get("letterboxd_rating") or ""),
+            "video_details": str(change.get("video_details") or item.get("video_details") or ""),
+            "audio_details": str(change.get("audio_details") or item.get("audio_details") or ""),
+            "audio_ita": str(change.get("audio_ita") or item.get("audio_ita") or ""),
+            "audio_eng": str(change.get("audio_eng") or item.get("audio_eng") or ""),
+            "audio_fra": str(change.get("audio_fra") or item.get("audio_fra") or ""),
+            "audio_spa": str(change.get("audio_spa") or item.get("audio_spa") or ""),
+            "audio_ger": str(change.get("audio_ger") or item.get("audio_ger") or ""),
+            "audio_jpn": str(change.get("audio_jpn") or item.get("audio_jpn") or ""),
+            "audio_langs": str(change.get("audio_langs") or item.get("audio_langs") or ""),
+            "subtitle_langs": str(change.get("subtitle_langs") or item.get("subtitle_langs") or "")
+        }
+        for limit in range(1, 21):
+            context_raw[f"cast_{limit}"] = " · ".join(cast_list[:limit])
+        image_url = _extract_latest_image_url(template, context_raw)
+        context = {}
+        context_escaped = {}
+        for key, value in context_raw.items():
+            raw_value = "" if value is None else value
+            context[key] = raw_value
+            context_escaped[key] = html.escape(str(raw_value), quote=True)
+        sanitized_template = _strip_latest_image_tokens(template)
+        template_error = None
+        try:
+            message = _render_latest_template(sanitized_template, context, strict=True)
+        except Exception as exc:
+            template_error = str(exc)
+            if allow_fallback:
+                message = _apply_latest_template(sanitized_template, context_escaped)
+            else:
+                message = ""
+        lines = [line.rstrip() for line in message.splitlines()]
+        rendered = "\n".join(lines).strip()
+        if return_error:
+            return rendered, image_url, template_error
+        return rendered, image_url
+
+    def _limit_latest_by_server(items, per_server_limit):
+        if not per_server_limit:
+            return items
+        try:
+            limit = int(per_server_limit)
+        except (TypeError, ValueError):
+            return items
+        if limit <= 0:
+            return items
+        limited = []
+        counts = {}
+        for entry in items:
+            if not isinstance(entry, dict):
+                continue
+            server_id = entry.get("server_id") or ""
+            current = counts.get(server_id, 0)
+            if current >= limit:
+                continue
+            counts[server_id] = current + 1
+            limited.append(entry)
+        return limited
+
+    def _prune_latest_items(items: Dict[str, Dict[str, Any]], max_count: int, retention_days: int) -> Dict[str, Dict[str, Any]]:
+        if not items:
+            return {}
+        now = datetime.now(timezone.utc)
+        filtered = []
+        for item_id, entry in items.items():
+            last_seen = _parse_date_value(entry.get("last_seen_at"))
+            if last_seen and (now - last_seen).days > retention_days:
+                continue
+            filtered.append((item_id, entry, last_seen))
+        filtered.sort(key=lambda entry: entry[2] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        trimmed = filtered[:max_count]
+        return {item_id: entry for item_id, entry, _ in trimmed}
+
+    def _fetch_emby_latest_series_from_episodes(server, limit, episodes=None):
+        if episodes is None:
+            episode_limit = max(limit * 5, limit)
+            fields = (
+                "DateCreated,SeriesId,SeriesName,SeriesProductionYear,Overview,Genres,"
+                "RunTimeTicks,CommunityRating,CriticRating,OfficialRating,ImageTags,OriginalTitle,Taglines,Studios,ProviderIds,"
+                "Path,ParentId,People"
+            )
+            episodes, error = _fetch_emby_latest_items(server, "Episode", episode_limit, fields=fields)
+            if error:
+                return [], error
+        series_candidates = []
+        seen_series = set()
+        episode_payloads = {}
+        for episode in episodes:
+            if not isinstance(episode, dict):
+                continue
+            series_id = episode.get("SeriesId")
+            series_name = episode.get("SeriesName")
+            if not series_id or series_id in seen_series:
+                continue
+            seen_series.add(series_id)
+            episode_payloads[series_id] = episode
+            series_candidates.append({
+                "series_id": series_id,
+                "series_name": series_name,
+                "series_year": episode.get("SeriesProductionYear"),
+                "added_at": episode.get("DateCreated")
+            })
+            if len(series_candidates) >= limit:
+                break
+
+        entries = []
+        for candidate in series_candidates:
+            series_id = candidate["series_id"]
+            params = {
+                "Fields": "DateCreated,Overview,Genres,ProductionYear,RunTimeTicks,CommunityRating,CriticRating,OfficialRating,PremiereDate,ChildCount,ImageTags,OriginalTitle,Taglines,Studios,ProviderIds,People"
+            }
+            success, payload = _call_emby_api(server, f"Items/{series_id}", params=params)
+            item_payload = payload if success and isinstance(payload, dict) else None
+            if item_payload is None:
+                fallback_params = {"Ids": series_id, "Fields": params["Fields"]}
+                fallback_success, fallback_payload = _call_emby_api(server, "Items", params=fallback_params)
+                if fallback_success and isinstance(fallback_payload, dict):
+                    items = fallback_payload.get("Items")
+                    if isinstance(items, list) and items:
+                        item_payload = items[0]
+            if not isinstance(item_payload, dict):
+                item_payload = {
+                    "Id": series_id,
+                    "Name": candidate.get("series_name"),
+                    "ProductionYear": candidate.get("series_year"),
+                    "DateCreated": candidate.get("added_at")
+                }
+            episode_payload = episode_payloads.get(series_id)
+            if isinstance(item_payload, dict) and isinstance(episode_payload, dict):
+                if not item_payload.get("Overview") and episode_payload.get("Overview"):
+                    item_payload["Overview"] = episode_payload.get("Overview")
+                if not item_payload.get("Genres") and episode_payload.get("Genres"):
+                    item_payload["Genres"] = episode_payload.get("Genres")
+                if not item_payload.get("CommunityRating") and episode_payload.get("CommunityRating"):
+                    item_payload["CommunityRating"] = episode_payload.get("CommunityRating")
+                if not item_payload.get("OfficialRating") and episode_payload.get("OfficialRating"):
+                    item_payload["OfficialRating"] = episode_payload.get("OfficialRating")
+                if not item_payload.get("RunTimeTicks") and episode_payload.get("RunTimeTicks"):
+                    item_payload["RunTimeTicks"] = episode_payload.get("RunTimeTicks")
+                if not item_payload.get("ImageTags") and episode_payload.get("ImageTags"):
+                    item_payload["ImageTags"] = episode_payload.get("ImageTags")
+                if not item_payload.get("ProductionYear") and episode_payload.get("SeriesProductionYear"):
+                    item_payload["ProductionYear"] = episode_payload.get("SeriesProductionYear")
+                item_people_raw = item_payload.get("People")
+                item_people: list[dict[str, Any]] = []
+                if isinstance(item_people_raw, list):
+                    item_people = cast(list[dict[str, Any]], item_people_raw)
+                episode_people_raw = episode_payload.get("People")
+                episode_people: list[dict[str, Any]] = []
+                if isinstance(episode_people_raw, list):
+                    episode_people = cast(list[dict[str, Any]], episode_people_raw)
+                if not item_people and episode_people:
+                    item_payload["People"] = episode_people
+                elif episode_people:
+                    has_director = any(
+                        isinstance(person, dict) and str(person.get("Type") or "") in ("Director", "Creator")
+                        for person in item_people
+                    )
+                    if not has_director:
+                        merged = list(item_people)
+                        seen = {
+                            (str(person.get("Name") or ""), str(person.get("Type") or ""))
+                            for person in item_people
+                            if isinstance(person, dict)
+                        }
+                        for person in episode_people:
+                            if not isinstance(person, dict):
+                                continue
+                            role_type = str(person.get("Type") or "")
+                            if role_type not in ("Director", "Creator"):
+                                continue
+                            key = (str(person.get("Name") or ""), role_type)
+                            if key in seen:
+                                continue
+                            merged.append(person)
+                            seen.add(key)
+                        if merged:
+                            item_payload["People"] = merged
+            entry = _build_emby_latest_item(item_payload, server)
+            if entry:
+                entry["added_at"] = candidate.get("added_at") or entry.get("added_at")
+                entry["item_type"] = "Series"
+                entries.append(entry)
+        return entries, None
 
     @app.route('/api/emby/availability', methods=['POST'])
     @login_required
@@ -2848,39 +6111,848 @@ def create_dashboard_app():
         details = _build_emby_item_details(item_payload, server)
         return jsonify({"success": True, "details": details})
 
-    @app.route('/api/emby/latest', methods=['GET'])
-    @login_required
-    def emby_latest():
-        limit = _coerce_request_int(request.args.get("limit"), 12, 1, 50)
-        per_server_limit = _coerce_request_int(request.args.get("per_server_limit"), limit, 1, 50)
+    def _determine_latest_status(item, item_id, state_items, gap_minutes, state_enabled, version_gap=False):
+        """
+        Determina se un item è "Nuovo" o "Nuova Versione" basandosi su:
+        1. Se in DB e flag notified
+        2. Se NON in DB, usa differenza temporale tra media sources (mtime) per rilevare nuove versioni
+
+        Returns:
+            tuple: (update_type, update_label, kind)
+                - update_type: "new" | "update"
+                - update_label: "Nuovo film" | "Nuova versione" | etc
+                - kind: "new_movie" | "new_version" | etc
+        """
+        # Caso 1: Item in DB - il flag notified decide tutto
+        if state_enabled and item_id in state_items:
+            existing = state_items[item_id]
+            if existing.get("notified") == True:
+                # Già notificato → Nuova Versione (scheda separata)
+                return "update", "Nuova versione", "new_version"
+            else:
+                # Non ancora notificato → Nuovo (unifica)
+                return "new", "Nuovo film", "new_movie"
+
+        # Caso 2: Item NON in DB → usa differenza temporale tra versioni (mtime)
+        if version_gap:
+            return "update", "Nuova versione", "new_version"
+        return "new", "Nuovo film", "new_movie"
+
+    def _collect_emby_latest_entries(
+        limit,
+        per_server_limit,
+        skip_existing_complete=False,
+        existing_db_payload=None,
+        fast_mode=False,
+        enrich=True,
+        force_omdb=False
+    ):
+        """
+        Raccoglie ultime pubblicazioni da Emby.
+
+        Args:
+            limit: Numero massimo risultati
+            per_server_limit: Limite per server
+            skip_existing_complete: Se True, skippa items già completi in existing_db_payload
+            existing_db_payload: Payload DB esistente per confronto
+            fast_mode: Riduce la quantità di items fetchati per velocizzare il primo load
+            enrich: Se False, salta arricchimento TMDB/OMDb/Trakt
+            force_omdb: Ignora la cache OMDb e forza il refresh dei rating
+        """
         config, is_valid = load_config()
         if not is_valid or not config:
-            return jsonify({"success": False, "message": "Config non valida"}), 400
+            _update_latest_progress(state="error", message="Config non valida")
+            return None, "Config non valida"
         emby_config = config.get("EMBY") or {}
         servers = [server for server in (emby_config.get("SERVERS") or []) if server.get("enabled")]
         if not servers:
-            return jsonify({"success": True, "movies": [], "series": [], "errors": []})
+            _update_latest_progress(state="done", total=0, completed=0, message="Nessun server Emby attivo")
+            return {"movies": [], "series": [], "errors": []}, None
 
+        _update_latest_progress(state="collecting", total=0, completed=0, message="Raccolta dati Emby")
+
+        # Crea set di items già completi da skippare
+        skip_movie_signatures = set()
+        skip_series_ids = set()
+        omdb_enabled = bool(config.get("OMDB_API_KEY") if isinstance(config, dict) else os.getenv("OMDB_API_KEY", ""))
+        omdb_cache_hours = _get_omdb_cache_hours(config)
+        if skip_existing_complete and isinstance(existing_db_payload, dict):
+            for movie in existing_db_payload.get("movies", []):
+                if isinstance(movie, dict) and not _has_missing_data(
+                    movie,
+                    omdb_enabled=omdb_enabled,
+                    omdb_cache_hours=omdb_cache_hours
+                ):
+                    sig = movie.get("signature") or movie.get("item_id")
+                    if sig:
+                        skip_movie_signatures.add(sig)
+            for series in existing_db_payload.get("series", []):
+                if isinstance(series, dict) and not _has_missing_data(
+                    series,
+                    omdb_enabled=omdb_enabled,
+                    omdb_cache_hours=omdb_cache_hours
+                ):
+                    item_id = series.get("item_id")
+                    if item_id:
+                        skip_series_ids.add(item_id)
+
+            if skip_movie_signatures or skip_series_ids:
+                print(f"[SKIP_EXISTING] Skipperò {len(skip_movie_signatures)} movies e {len(skip_series_ids)} series già completi")
+
+        # Inizializza arrays di output
         movies = []
         series = []
         errors = []
+        state_changed = False
+
+        latest_settings = _default_latest_settings()
+        state_enabled = _db_enabled(config.get("DATABASE", {}))
+
+        # SOLUZIONE PROBLEMA 6: Warning se state persistence disabilitato
+        if not state_enabled:
+            errors.append({
+                "server_id": "system",
+                "message": "⚠️ State persistence disabilitato - tutti gli items verranno visti come nuovi ad ogni fetch. Abilita DATABASE in config per tracking persistente."
+            })
+
+        cache_payload = {}
+        cache_maps = {
+            "movie_by_signature": {},
+            "movie_by_item_id": {},
+            "series_by_item_id": {}
+        }
+        if state_enabled:
+            latest_settings = _load_latest_settings()
+            cache_data = latest_settings.get("CACHE")
+            if not isinstance(cache_data, dict):
+                cache_data = {}
+            cache_payload = cache_data.get("payload")
+            if not isinstance(cache_payload, dict):
+                cache_payload = {}
+            cache_maps = _build_latest_cache_maps(cache_payload)
+        latest_state = latest_settings.get("STATE")
+        if not isinstance(latest_state, dict):
+            latest_state = {}
+        assert isinstance(latest_state, dict), "latest_state must be a dict"
+        settings_cfg = latest_settings.get("SETTINGS") or {}
+        debug_latest = _latest_debug_enabled(settings_cfg)
+        gap_minutes = int(settings_cfg.get("batch_gap_minutes") or 180)  # Default aumentato a 3 ore
+        max_movies = int(settings_cfg.get("max_movies") or 200)
+        max_series = int(settings_cfg.get("max_series") or 150)
+        retention_days = int(settings_cfg.get("retention_days") or 90)
+        max_versions = int(settings_cfg.get("max_versions") or 6)
+        batch_fetch_limit = int(settings_cfg.get("batch_fetch_limit") or 1000)  # NUOVO: configurabile
+
+        batch_fields = (
+            "DateCreated,Overview,Genres,ProductionYear,RunTimeTicks,CommunityRating,CriticRating,OfficialRating,"
+            "PremiereDate,ChildCount,MediaSources,MediaStreams,Path,Bitrate,SeriesId,SeriesName,"
+            "SeriesProductionYear,IndexNumber,ParentIndexNumber,ParentId,Type,ImageTags,Container,Name,People,"
+            "OriginalTitle,Taglines,Studios,ProviderIds,SeasonName"
+        )
 
         for server in servers:
-            movie_items, movie_error = _fetch_emby_latest_items(server, "Movie", per_server_limit)
+            server_id = server.get("id")
+            if not server_id:
+                continue
+            series_oldest_cache = {}
+            season_oldest_cache = {}
+
+            # SOLUZIONE PROBLEMA 4: Usa limite configurabile invece di hardcoded 500
+            if fast_mode:
+                batch_limit = max(per_server_limit * 4, 120)
+            else:
+                batch_limit = max(per_server_limit * 8, 200)
+            batch_limit = min(batch_limit, batch_fetch_limit)
+
+            movie_items, movie_error = _fetch_emby_latest_items(server, "Movie", batch_limit, fields=batch_fields)
             if movie_error:
-                errors.append({"server_id": server.get("id"), "message": str(movie_error)})
+                fallback_items, fallback_error = _fetch_emby_latest_items(server, "Movie", batch_limit)
+                if not fallback_error:
+                    movie_items = fallback_items
+                    movie_error = None
+                else:
+                    errors.append({"server_id": server_id, "message": str(movie_error)})
+            min_movie_count = max_movies if state_enabled else per_server_limit
+            movie_batch = _ensure_latest_batch(movie_items, gap_minutes, min_movie_count)
+            movie_batch_id = _build_latest_batch_id(server_id, "movie", movie_batch)
+            movie_signature_cache = {}
+            movie_all_by_signature = {}
+            movie_title_by_id = {}
+            movie_provider_signature_by_title = {}
             for item in movie_items:
+                item_id = item.get("Id") if isinstance(item, dict) else None
+                if not item_id:
+                    continue
+                signature = _build_latest_movie_signature(item) or str(item_id)
+                title_signature = _build_latest_movie_title_signature(item)
+                if title_signature:
+                    movie_title_by_id[str(item_id)] = title_signature
+                    if signature.startswith(("tmdb:", "imdb:", "tvdb:")):
+                        movie_provider_signature_by_title.setdefault(title_signature, signature)
+
+            for item in movie_items:
+                item_id = item.get("Id") if isinstance(item, dict) else None
+                if not item_id:
+                    continue
+                signature = _build_latest_movie_signature(item) or str(item_id)
+                title_signature = movie_title_by_id.get(str(item_id)) or _build_latest_movie_title_signature(item)
+                if signature.startswith("title:") and title_signature:
+                    signature = movie_provider_signature_by_title.get(title_signature, signature)
+                movie_all_by_signature.setdefault(signature, []).append(item)
+
+            episode_items, episode_error = _fetch_emby_latest_items(server, "Episode", batch_limit, fields=batch_fields)
+            if episode_error:
+                fallback_items, fallback_error = _fetch_emby_latest_items(server, "Episode", batch_limit)
+                if not fallback_error:
+                    episode_items = fallback_items
+                    episode_error = None
+                else:
+                    errors.append({"server_id": server_id, "message": str(episode_error)})
+            min_episode_count = per_server_limit
+            if state_enabled:
+                min_episode_count = max(per_server_limit, max_series * 4)
+            episode_batch = _ensure_latest_batch(episode_items, gap_minutes, min_episode_count)
+            episode_batch_id = _build_latest_batch_id(server_id, "series", episode_batch)
+
+            server_state = latest_state.setdefault(server_id, {}) if state_enabled else {}
+            movies_state = server_state.setdefault("movies", {}) if state_enabled else {}
+            series_state = server_state.setdefault("series", {}) if state_enabled else {}
+            movie_items_state = movies_state.setdefault("items", {}) if state_enabled else {}
+            series_items_state = series_state.setdefault("items", {}) if state_enabled else {}
+
+            movie_groups = {}
+            movie_rep_items = {}
+            for item in movie_batch:
+                item_id = item.get("Id")
+                if not item_id:
+                    continue
+                signature = _build_latest_movie_signature(item) or str(item_id)
+                title_signature = movie_title_by_id.get(str(item_id)) or _build_latest_movie_title_signature(item)
+                if signature.startswith("title:") and title_signature:
+                    signature = movie_provider_signature_by_title.get(title_signature, signature)
+                movie_groups.setdefault(signature, []).append(item)
+                item_dt = _parse_date_value(item.get("DateCreated")) or datetime.min.replace(tzinfo=timezone.utc)
+                current = movie_rep_items.get(signature)
+                if current is None or item_dt > current[0]:
+                    movie_rep_items[signature] = (item_dt, item)
+
+            movie_changes = {}
+            skipped_count = 0
+            for signature, group_items in movie_groups.items():
+                # Skip se già completo in DB
+                if skip_existing_complete and signature in skip_movie_signatures:
+                    skipped_count += 1
+                    continue
+
+                rep_entry = movie_rep_items.get(signature)
+                if not rep_entry:
+                    continue
+                _, item = rep_entry
+                item_id = item.get("Id")
+                item_date = item.get("DateCreated")
+                merged_versions = []
+                latest_seen_dt = None
+                items_for_signature = group_items
+                all_items = movie_all_by_signature.get(signature)
+                if all_items and len(all_items) > len(group_items):
+                    items_for_signature = []
+                    seen_ids = set()
+                    for candidate in all_items:
+                        candidate_id = candidate.get("Id") if isinstance(candidate, dict) else None
+                        if not candidate_id or candidate_id in seen_ids:
+                            continue
+                        seen_ids.add(candidate_id)
+                        items_for_signature.append(candidate)
+                if len(items_for_signature) == 1 and signature.startswith(("tmdb:", "imdb:", "tvdb:")):
+                    extra_items = movie_signature_cache.get(signature)
+                    if extra_items is None:
+                        extra_items = _fetch_emby_items_by_signature(server, signature, fields=batch_fields)
+                        movie_signature_cache[signature] = extra_items
+                    if isinstance(extra_items, list) and extra_items:
+                        seen_ids = {entry.get("Id") for entry in items_for_signature if isinstance(entry, dict)}
+                        for candidate in extra_items:
+                            candidate_id = candidate.get("Id") if isinstance(candidate, dict) else None
+                            if not candidate_id or candidate_id in seen_ids:
+                                continue
+                            items_for_signature.append(candidate)
+                            seen_ids.add(candidate_id)
+                for grouped_item in items_for_signature:
+                    grouped_date = grouped_item.get("DateCreated")
+                    grouped_dt = _parse_date_value(grouped_date)
+                    if grouped_dt and (latest_seen_dt is None or grouped_dt > latest_seen_dt):
+                        latest_seen_dt = grouped_dt
+                    item_versions = _extract_latest_versions(grouped_item)
+                    _apply_version_added_at(item_versions, grouped_date)
+                    merged_versions.extend(item_versions)
+                versions = _merge_latest_versions(merged_versions)
+                version_times = _collect_version_times(versions)
+                version_gap = _has_version_time_gap(version_times, gap_minutes)
+                state_key = signature or str(item_id or "")
+                legacy_key = item_id if item_id and item_id != state_key else None
+                existing = movie_items_state.get(state_key) if state_enabled else None
+                if existing is None and legacy_key:
+                    existing = movie_items_state.get(legacy_key)
+                existing_keys = set()
+                if existing and isinstance(existing.get("media_source_keys"), list):
+                    existing_keys = set(existing.get("media_source_keys") or [])
+                new_versions = [version for version in versions if version.get("key") and version.get("key") not in existing_keys]
+                version_time_map = {version.get("key"): dt_value for version, dt_value in version_times if version.get("key")}
+                if debug_latest:
+                    time_list = [dt_value.isoformat() for _, dt_value in version_times]
+                    _latest_debug(
+                        debug_latest,
+                        f"Movie '{item.get('Name')}' ({item_id}) sig={signature} versions={len(versions)} times={time_list} gap={version_gap} new_versions={len(new_versions)}"
+                    )
+
+                version_groups = _group_version_times(version_times, gap_minutes)
+                if debug_latest and version_groups:
+                    group_summaries = []
+                    for group in version_groups:
+                        dt_values = [dt_value for _, dt_value in group]
+                        group_summaries.append(f"{len(group)}@{min(dt_values).isoformat()}..{max(dt_values).isoformat()}")
+                    _latest_debug(debug_latest, f"Movie groups: {', '.join(group_summaries)}")
+                existing_notified = bool(existing.get("notified")) if existing else False
+                if len(version_groups) > 1 and (existing is None or not existing_notified):
+                    grouped_changes = []
+                    for idx, group in enumerate(version_groups):
+                        group_versions = _sort_versions_by_quality([version for version, _ in group])
+                        group_dt = max(dt_value for _, dt_value in group)
+                        is_oldest = idx == len(version_groups) - 1
+                        update_type = "new" if is_oldest else "update"
+                        update_label = "Nuovo film" if is_oldest else "Nuova versione"
+                        kind = "new_movie" if is_oldest else "new_version"
+                        changes = []
+                        for version in group_versions:
+                            version_dt = version_time_map.get(version.get("key")) or group_dt
+                            changes.append({
+                                "kind": kind,
+                                "label": update_label,
+                                "quality": version.get("quality"),
+                                "resolution": version.get("resolution"),
+                                "video_codec": version.get("video_codec"),
+                                "audio_codec": version.get("audio_codec"),
+                                "audio_channels": version.get("audio_channels"),
+                                "container": version.get("container"),
+                                "bitrate": version.get("bitrate"),
+                                "source_name": version.get("source_name"),
+                                "path": version.get("path"),
+                                "size": version.get("size"),
+                                "media_source_id": version.get("id") or "",
+                                "added_at": version_dt.isoformat(),
+                                "video_details": version.get("video_details") or "",
+                                "audio_details": version.get("audio_details") or "",
+                                "audio_ita": version.get("audio_ita") or "",
+                                "audio_eng": version.get("audio_eng") or "",
+                                "audio_fra": version.get("audio_fra") or "",
+                                "audio_spa": version.get("audio_spa") or "",
+                                "audio_ger": version.get("audio_ger") or "",
+                                "audio_jpn": version.get("audio_jpn") or "",
+                                "audio_langs": version.get("audio_langs") or "",
+                                "subtitle_langs": version.get("subtitle_langs") or ""
+                            })
+                        stamp = group_dt.astimezone().strftime("%Y%m%d%H%M")
+                        safe_signature = signature.replace(":", "-").replace("/", "-")
+                        grouped_changes.append({
+                            "update_type": update_type,
+                            "update_label": update_label,
+                            "changes": changes,
+                            "batch_id": f"{server_id}:movie:{safe_signature}:{stamp}",
+                            "added_at": group_dt.isoformat()
+                        })
+                    movie_changes[state_key] = grouped_changes
+                else:
+                    # LOGICA FINALE: Determina status basato su notified flag e DateCreated
+                    update_type, update_label, kind = _determine_latest_status(
+                        item, state_key, movie_items_state, gap_minutes, state_enabled, version_gap=version_gap
+                    )
+
+                    changes = []
+                    target_versions = _sort_versions_by_quality(new_versions or versions)
+                    if existing is None and version_gap:
+                        recent_versions = _select_recent_versions_by_time(version_times, gap_minutes)
+                        if recent_versions:
+                            target_versions = _sort_versions_by_quality(recent_versions)
+                    for version in target_versions:
+                        version_dt = version_time_map.get(version.get("key")) or _parse_date_value(version.get("added_at"))
+                        changes.append({
+                            "kind": kind,
+                            "label": update_label,
+                            "quality": version.get("quality"),
+                            "resolution": version.get("resolution"),
+                            "video_codec": version.get("video_codec"),
+                            "audio_codec": version.get("audio_codec"),
+                            "audio_channels": version.get("audio_channels"),
+                            "container": version.get("container"),
+                            "bitrate": version.get("bitrate"),
+                            "source_name": version.get("source_name"),
+                            "path": version.get("path"),
+                            "size": version.get("size"),
+                            "media_source_id": version.get("id") or "",
+                            "added_at": version_dt.isoformat() if version_dt else item_date,
+                            "video_details": version.get("video_details") or "",
+                            "audio_details": version.get("audio_details") or "",
+                            "audio_ita": version.get("audio_ita") or "",
+                            "audio_eng": version.get("audio_eng") or "",
+                            "audio_fra": version.get("audio_fra") or "",
+                            "audio_spa": version.get("audio_spa") or "",
+                            "audio_ger": version.get("audio_ger") or "",
+                            "audio_jpn": version.get("audio_jpn") or "",
+                            "audio_langs": version.get("audio_langs") or "",
+                            "subtitle_langs": version.get("subtitle_langs") or ""
+                        })
+                    movie_changes[state_key] = {
+                        "update_type": update_type,
+                        "update_label": update_label,
+                        "changes": changes
+                    }
+
+                if state_enabled:
+                    merged_keys = [version.get("key") for version in new_versions if version.get("key")]
+                    merged_keys += [key for key in existing_keys if key not in merged_keys]
+                    if not merged_keys and versions:
+                        merged_keys = [version.get("key") for version in versions if version.get("key")]
+                    if max_versions > 0:
+                        merged_keys = merged_keys[:max_versions]
+                    movie_title = item.get("Name") or (existing.get("title") if existing else "")
+                    movie_year = item.get("ProductionYear") or (existing.get("year") if existing else None)
+                    movie_items_state[state_key] = {
+                        "title": movie_title,
+                        "year": movie_year,
+                        "last_seen_at": latest_seen_dt.isoformat() if latest_seen_dt else item_date,
+                        "media_source_keys": merged_keys,
+                        "notified": bool(existing.get("notified")) if existing else False,
+                        "notified_at": existing.get("notified_at") if existing else ""
+                    }
+                    if legacy_key and legacy_key in movie_items_state and legacy_key != state_key:
+                        movie_items_state.pop(legacy_key, None)
+                    state_changed = True
+
+            # Logging movies skippati
+            if skip_existing_complete and skipped_count > 0:
+                print(f"[SKIP_EXISTING] Skippati {skipped_count} movies già completi in DB")
+
+            series_changes = {}
+            episodes_by_series = {}
+            # SOLUZIONE PROBLEMA 5: Fallback su SeriesName se SeriesId mancante
+            for item in episode_batch:
+                series_id = item.get("SeriesId")
+
+                # Fallback: genera ID fittizio basato su SeriesName se SeriesId mancante
+                if not series_id:
+                    series_name = item.get("SeriesName")
+                    if series_name:
+                        import hashlib
+                        # Genera ID stabile basato sul nome della serie
+                        series_id = f"fallback_{hashlib.md5(series_name.encode('utf-8')).hexdigest()[:12]}"
+                        item["SeriesId"] = series_id  # Assegna temporaneamente per processing
+                    else:
+                        continue  # Skip se non ha né ID né nome
+
+                episodes_by_series.setdefault(series_id, []).append(item)
+
+            series_skipped_count = 0
+            for series_id, episodes in episodes_by_series.items():
+                # Skip se già completo in DB
+                if skip_existing_complete and series_id in skip_series_ids:
+                    series_skipped_count += 1
+                    continue
+
+                existing_series = series_items_state.get(series_id) if state_enabled else None
+                seasons_seen = set(existing_series.get("seasons") or []) if existing_series else set()
+                episode_state = existing_series.get("episodes") if existing_series else {}
+                if not isinstance(episode_state, dict):
+                    episode_state = {}
+                series_is_new = False
+                season_recent_map = {}
+                season_latest_dt_map = {}
+                episode_seen = set()
+
+                series_latest_dt = None
+                for episode in episodes:
+                    episode_dt = _parse_date_value(episode.get("DateCreated"))
+                    if episode_dt:
+                        if not series_latest_dt or episode_dt > series_latest_dt:
+                            series_latest_dt = episode_dt
+                    season_number = episode.get("ParentIndexNumber")
+                    if season_number is None or not episode_dt:
+                        continue
+                    current_latest = season_latest_dt_map.get(season_number)
+                    if not current_latest or episode_dt > current_latest:
+                        season_latest_dt_map[season_number] = episode_dt
+
+                if existing_series is None:
+                    series_oldest_dt = series_oldest_cache.get(series_id)
+                    if series_oldest_dt is None:
+                        series_oldest_dt = _fetch_emby_oldest_episode_date(server, series_id)
+                        series_oldest_cache[series_id] = series_oldest_dt
+                    if series_oldest_dt and series_latest_dt:
+                        series_is_new = (series_latest_dt - series_oldest_dt) <= timedelta(minutes=gap_minutes)
+                    for season_number, latest_dt in season_latest_dt_map.items():
+                        cache_key = f"{series_id}:{season_number}"
+                        season_oldest_dt = season_oldest_cache.get(cache_key)
+                        if season_oldest_dt is None:
+                            season_oldest_dt = _fetch_emby_oldest_episode_date(server, series_id, season_number=season_number)
+                            season_oldest_cache[cache_key] = season_oldest_dt
+                        if season_oldest_dt and latest_dt:
+                            season_recent_map[season_number] = (latest_dt - season_oldest_dt) <= timedelta(minutes=gap_minutes)
+                        else:
+                            season_recent_map[season_number] = False
+                if debug_latest:
+                    _latest_debug(
+                        debug_latest,
+                        f"Series {series_id} existing={existing_series is not None} series_is_new={series_is_new} season_recent={season_recent_map}"
+                    )
+
+                episode_entries = []
+                if episode_state:
+                    episode_seen.update(episode_state.keys())
+                    for episode in episodes:
+                        episode_id = episode.get("Id")
+                        if not episode_id or episode_id not in episode_state:
+                            continue
+                        episode_key = _build_latest_episode_signature(
+                            series_id,
+                            episode.get("ParentIndexNumber"),
+                            episode.get("IndexNumber"),
+                            episode_id=episode_id,
+                            episode_name=episode.get("Name") or ""
+                        )
+                        if episode_key:
+                            episode_seen.add(episode_key)
+                for episode in episodes:
+                    episode_id = episode.get("Id")
+                    if not episode_id:
+                        continue
+                    episode_key = _build_latest_episode_signature(
+                        series_id,
+                        episode.get("ParentIndexNumber"),
+                        episode.get("IndexNumber"),
+                        episode_id=episode_id,
+                        episode_name=episode.get("Name") or ""
+                    )
+                    existing_episode = episode_state.get(episode_key) if state_enabled else None
+                    if existing_episode is None and state_enabled and episode_id:
+                        existing_episode = episode_state.get(episode_id)
+                    versions = _extract_latest_versions(episode)
+                    _apply_version_added_at(versions, episode.get("DateCreated"))
+                    version_times = _collect_version_times(versions)
+                    version_groups = _group_version_times(version_times, gap_minutes)
+                    version_time_map = {version.get("key"): dt_value for version, dt_value in version_times if version.get("key")}
+                    can_split_versions = existing_episode is None and len(version_groups) > 1
+                    if can_split_versions:
+                        for idx, group in enumerate(version_groups):
+                            group_versions = [version for version, _ in group]
+                            group_dt = max(dt_value for _, dt_value in group)
+                            entry = dict(episode)
+                            entry["_version_group_dt"] = group_dt.isoformat()
+                            entry["_version_group_versions"] = group_versions
+                            entry["_version_group_is_latest"] = idx == 0
+                            entry["_version_group_has_split"] = True
+                            entry["_version_time_map"] = version_time_map
+                            episode_entries.append(entry)
+                    else:
+                        entry = dict(episode)
+                        entry["_version_group_dt"] = episode.get("DateCreated") or ""
+                        entry["_version_group_versions"] = versions
+                        entry["_version_group_is_latest"] = True
+                        entry["_version_group_has_split"] = False
+                        entry["_version_time_map"] = version_time_map
+                        episode_entries.append(entry)
+                    if debug_latest:
+                        time_list = [dt_value.isoformat() for _, dt_value in version_times]
+                        _latest_debug(
+                            debug_latest,
+                            f"Episode {episode_id} S{episode.get('ParentIndexNumber')}E{episode.get('IndexNumber')} split={can_split_versions} times={time_list}"
+                        )
+
+                episode_groups = _group_items_by_date(episode_entries, gap_minutes, date_key="_version_group_dt")
+                groups_sorted = sorted(
+                    episode_groups,
+                    key=lambda group: min(dt_value for _, dt_value in group)
+                )
+                local_seasons_seen = set(seasons_seen)
+                grouped_changes = []
+
+                for group_index, group in enumerate(groups_sorted):
+                    changes = []
+                    new_season = False
+                    new_episode = False
+                    new_version = False
+                    seasons_in_group = set()
+                    group_episode_keys = set()
+                    group_latest_dt = max(dt_value for _, dt_value in group)
+                    if debug_latest:
+                        _latest_debug(
+                            debug_latest,
+                            f"Series {series_id} group {group_index + 1}/{len(groups_sorted)} latest={group_latest_dt.isoformat()} count={len(group)}"
+                        )
+
+                    for episode, _ in group:
+                        episode_id = episode.get("Id")
+                        if not episode_id:
+                            continue
+                        season_number = episode.get("ParentIndexNumber")
+                        episode_number = episode.get("IndexNumber")
+                        episode_name = episode.get("Name") or ""
+                        item_date = episode.get("DateCreated")
+                        episode_key = _build_latest_episode_signature(
+                            series_id,
+                            season_number,
+                            episode_number,
+                            episode_id=episode_id,
+                            episode_name=episode_name
+                        )
+                        versions = episode.get("_version_group_versions") or _extract_latest_versions(episode)
+                        version_time_map = episode.get("_version_time_map") or {}
+                        version_gap = bool(episode.get("_version_group_has_split"))
+                        is_latest_version_group = bool(episode.get("_version_group_is_latest"))
+                        existing_episode = episode_state.get(episode_key) if state_enabled else None
+                        existing_key = episode_key
+                        if existing_episode is None and state_enabled and episode_id:
+                            legacy_episode = episode_state.get(episode_id)
+                            if legacy_episode is not None:
+                                existing_episode = legacy_episode
+                                existing_key = episode_id
+                        existing_keys = set()
+                        if existing_episode and isinstance(existing_episode.get("media_source_keys"), list):
+                            existing_keys = set(existing_episode.get("media_source_keys") or [])
+                        new_versions = [version for version in versions if version.get("key") and version.get("key") not in existing_keys]
+
+                        if existing_episode is None:
+                            already_seen = episode_key in episode_seen if episode_key else False
+                            if already_seen:
+                                kind = "new_version"
+                                new_version = True
+                            elif version_gap and is_latest_version_group:
+                                kind = "new_version"
+                                new_version = True
+                            else:
+                                season_recent = season_recent_map.get(season_number, False)
+                                if existing_series is None and series_is_new and group_index == 0:
+                                    kind = "new_season"
+                                    new_season = True
+                                elif season_number is not None and season_number not in local_seasons_seen and season_recent:
+                                    kind = "new_season"
+                                    new_season = True
+                                else:
+                                    kind = "new_episode"
+                                    new_episode = True
+                        elif new_versions:
+                            kind = "new_version"
+                            new_version = True
+                        else:
+                            continue
+
+                        target_versions = _sort_versions_by_quality(new_versions or versions)
+                        for version in target_versions:
+                            version_dt = version_time_map.get(version.get("key")) or _parse_date_value(version.get("added_at"))
+                            changes.append({
+                                "kind": kind,
+                                "season_number": season_number,
+                                "episode_number": episode_number,
+                                "episode_title": episode_name,
+                                "quality": version.get("quality"),
+                                "resolution": version.get("resolution"),
+                                "video_codec": version.get("video_codec"),
+                                "audio_codec": version.get("audio_codec"),
+                                "audio_channels": version.get("audio_channels"),
+                                "container": version.get("container"),
+                                "bitrate": version.get("bitrate"),
+                                "source_name": version.get("source_name"),
+                                "path": version.get("path"),
+                                "size": version.get("size"),
+                                "media_source_id": version.get("id") or "",
+                                "added_at": version_dt.isoformat() if version_dt else item_date,
+                                "video_details": version.get("video_details") or "",
+                                "audio_details": version.get("audio_details") or "",
+                                "audio_ita": version.get("audio_ita") or "",
+                                "audio_eng": version.get("audio_eng") or "",
+                                "audio_fra": version.get("audio_fra") or "",
+                                "audio_spa": version.get("audio_spa") or "",
+                                "audio_ger": version.get("audio_ger") or "",
+                                "audio_jpn": version.get("audio_jpn") or "",
+                                "audio_langs": version.get("audio_langs") or "",
+                                "subtitle_langs": version.get("subtitle_langs") or ""
+                            })
+
+                        if state_enabled:
+                            merged_keys = [version.get("key") for version in new_versions if version.get("key")]
+                            merged_keys += [key for key in existing_keys if key not in merged_keys]
+                            if not merged_keys and versions:
+                                merged_keys = [version.get("key") for version in versions if version.get("key")]
+                            if max_versions > 0:
+                                merged_keys = merged_keys[:max_versions]
+                            if episode_key:
+                                episode_state[episode_key] = {
+                                    "season": season_number,
+                                    "episode": episode_number,
+                                    "title": episode_name,
+                                    "last_seen_at": item_date,
+                                    "media_source_keys": merged_keys,
+                                    "key": episode_key
+                                }
+                                if existing_key and existing_key != episode_key:
+                                    episode_state.pop(existing_key, None)
+                            else:
+                                episode_state[episode_id] = {
+                                    "season": season_number,
+                                    "episode": episode_number,
+                                    "title": episode_name,
+                                    "last_seen_at": item_date,
+                                    "media_source_keys": merged_keys
+                                }
+                            state_changed = True
+
+                        if season_number is not None:
+                            seasons_in_group.add(season_number)
+                        if episode_key:
+                            group_episode_keys.add(episode_key)
+
+                    if not changes:
+                        continue
+
+                    if existing_series is None and series_is_new and group_index == 0:
+                        update_type = "new"
+                        update_label = "Nuova serie"
+                    elif new_season:
+                        update_type = "update"
+                        update_label = "Nuova stagione"
+                    elif new_episode:
+                        update_type = "update"
+                        update_label = "Nuovi episodi"
+                    elif new_version:
+                        update_type = "update"
+                        update_label = "Nuova versione"
+                    else:
+                        update_type = "update"
+                        update_label = "Aggiornamento"
+
+                    stamp = group_latest_dt.astimezone().strftime("%Y%m%d%H%M")
+                    grouped_changes.append({
+                        "update_type": update_type,
+                        "update_label": update_label,
+                        "changes": changes,
+                        "batch_id": f"{server_id}:series:{series_id}:{stamp}",
+                        "added_at": group_latest_dt.isoformat()
+                    })
+                    local_seasons_seen.update(seasons_in_group)
+                    episode_seen.update(group_episode_keys)
+
+                if grouped_changes:
+                    series_changes[series_id] = grouped_changes
+
+                if state_enabled:
+                    series_last_changes = []
+                    if grouped_changes:
+                        series_last_changes = grouped_changes
+                    elif existing_series:
+                        cached_changes = existing_series.get("last_changes")
+                        if isinstance(cached_changes, list):
+                            series_last_changes = cached_changes
+                        elif isinstance(cached_changes, dict):
+                            series_last_changes = [cached_changes]
+                    fallback_title = episodes[0].get("SeriesName") if episodes else ""
+                    fallback_year = episodes[0].get("SeriesProductionYear") if episodes else None
+                    series_items_state[series_id] = {
+                        "title": existing_series.get("title") if existing_series else (fallback_title or ""),
+                        "year": existing_series.get("year") if existing_series else fallback_year,
+                        "last_seen_at": max((item.get("DateCreated") for item in episodes if item.get("DateCreated")), default=""),
+                        "episodes": episode_state,
+                        "seasons": sorted(list(local_seasons_seen)),
+                        "last_changes": series_last_changes,
+                        "notified": bool(existing_series.get("notified")) if existing_series else False,
+                        "notified_at": existing_series.get("notified_at") if existing_series else ""
+                    }
+                    state_changed = True
+
+            # Logging series skippate
+            if skip_existing_complete and series_skipped_count > 0:
+                print(f"[SKIP_EXISTING] Skippate {series_skipped_count} series già complete in DB")
+
+            for signature, rep_entry in movie_rep_items.items():
+                _, item = rep_entry
                 entry = _build_emby_latest_item(item, server)
-                if entry:
+                if not entry:
+                    continue
+                if state_enabled:
+                    cached_entry = cache_maps["movie_by_signature"].get(f"{server_id}:{signature}")
+                    if cached_entry is None and entry.get("item_id"):
+                        cached_entry = cache_maps["movie_by_item_id"].get(f"{server_id}:{entry.get('item_id')}")
+                    entry = _merge_latest_cached_entry(entry, cached_entry)
+                entry["signature"] = signature
+                entry["batch_id"] = movie_batch_id
+                change = movie_changes.get(signature) or movie_changes.get(entry.get("item_id"))
+                if isinstance(change, list):
+                    for group in change:
+                        grouped_entry = dict(entry)
+                        grouped_entry.update(group)
+                        if group.get("added_at"):
+                            grouped_entry["added_at"] = group.get("added_at")
+                        if group.get("batch_id"):
+                            grouped_entry["batch_id"] = group.get("batch_id")
+                        movies.append(grouped_entry)
+                else:
+                    if change:
+                        entry.update(change)
+                    else:
+                        entry.update({
+                            "update_type": "existing",
+                            "update_label": "",
+                            "changes": []
+                        })
                     movies.append(entry)
 
-            series_items, series_error = _fetch_emby_latest_items(server, "Series", per_server_limit)
+            series_entries, series_error = _fetch_emby_latest_series_from_episodes(server, per_server_limit, episodes=episode_batch)
             if series_error:
-                errors.append({"server_id": server.get("id"), "message": str(series_error)})
-            for item in series_items:
-                entry = _build_emby_latest_item(item, server)
-                if entry:
+                errors.append({"server_id": server_id, "message": str(series_error)})
+            for entry in series_entries:
+                if not entry:
+                    continue
+                if state_enabled:
+                    cached_entry = cache_maps["series_by_item_id"].get(f"{server_id}:{entry.get('item_id')}")
+                    entry = _merge_latest_cached_entry(entry, cached_entry)
+                entry["batch_id"] = episode_batch_id
+                change = series_changes.get(entry.get("item_id"))
+                if not change and state_enabled:
+                    cached_series = series_items_state.get(entry.get("item_id"))
+                    cached_changes = cached_series.get("last_changes") if isinstance(cached_series, dict) else None
+                    if cached_changes:
+                        change = cached_changes
+                if isinstance(change, list):
+                    for group in change:
+                        grouped_entry = dict(entry)
+                        grouped_entry.update(group)
+                        if group.get("added_at"):
+                            grouped_entry["added_at"] = group.get("added_at")
+                        if group.get("batch_id"):
+                            grouped_entry["batch_id"] = group.get("batch_id")
+                        series.append(grouped_entry)
+                else:
+                    if change:
+                        entry.update(change)
+                    else:
+                        entry.update({
+                            "update_type": "existing",
+                            "update_label": "",
+                            "changes": []
+                        })
                     series.append(entry)
+
+            if state_enabled:
+                movies_state["items"] = _prune_latest_items(movie_items_state, max_movies, retention_days)
+                series_state["items"] = _prune_latest_items(series_items_state, max_series, retention_days)
+                for series_id, entry in list(series_state["items"].items()):
+                    episodes_state = entry.get("episodes")
+                    if not isinstance(episodes_state, dict):
+                        continue
+                    filtered = {}
+                    for episode_id, ep_entry in episodes_state.items():
+                        last_seen = _parse_date_value(ep_entry.get("last_seen_at"))
+                        if last_seen and (datetime.now(timezone.utc) - last_seen).days > retention_days:
+                            continue
+                        filtered[episode_id] = ep_entry
+                    entry["episodes"] = filtered
+                latest_state[server_id] = server_state
 
         def _sort_key(entry):
             if not isinstance(entry, dict):
@@ -2888,13 +6960,843 @@ def create_dashboard_app():
             dt_value = _parse_date_value(entry.get("added_at")) or _parse_date_value(entry.get("premiere_date"))
             return dt_value or datetime.min.replace(tzinfo=timezone.utc)
 
+        # Deduplica mantenendo gruppi distinti (batch_id) per lo stesso item
+        def _deduplicate_items(items):
+            seen = set()
+            unique = []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                signature = item.get("signature") or item.get("item_id")
+                batch_id = item.get("batch_id") or ""
+                key = (signature, batch_id)
+                if not signature or key in seen:
+                    continue
+                seen.add(key)
+                unique.append(item)
+            return unique
+
         movies.sort(key=_sort_key, reverse=True)
         series.sort(key=_sort_key, reverse=True)
 
+        # Deduplica PRIMA del limit per evitare duplicati identici
+        movies = _deduplicate_items(movies)
+        series = _deduplicate_items(series)
+
+        movies = _limit_latest_by_server(movies, per_server_limit)
+        series = _limit_latest_by_server(series, per_server_limit)
+
+        final_movies = movies[:limit] if limit else movies
+        final_series = series[:limit] if limit else series
+
+        progress_total = 0
+        progress_completed = 0
+        if enrich:
+            progress_total = (len(final_movies) if isinstance(final_movies, list) else 0) + (len(final_series) if isinstance(final_series, list) else 0)
+            _update_latest_progress(
+                state="enriching",
+                total=progress_total,
+                completed=0,
+                message="Arricchimento rating esterni"
+            )
+
+        def _enrich_latest_entries(entries):
+            if not isinstance(entries, list) or not entries:
+                return entries
+            nonlocal progress_completed
+            for idx, entry in enumerate(entries):
+                if not isinstance(entry, dict):
+                    continue
+                entries[idx] = _enrich_latest_entry_with_tmdb(
+                    entry,
+                    config,
+                    force_omdb=force_omdb,
+                    omdb_cache_hours=omdb_cache_hours
+                )
+                if enrich and progress_total:
+                    progress_completed += 1
+                    _update_latest_progress(completed=progress_completed)
+            return entries
+
+        if enrich:
+            final_movies = _enrich_latest_entries(final_movies)
+            final_series = _enrich_latest_entries(final_series)
+        if not enrich or not progress_total:
+            _update_latest_progress(state="done", total=0, completed=0, message="Completato")
+        else:
+            _update_latest_progress(state="done", total=progress_total, completed=progress_total, message="Completato")
+        cache_updated = False
+        if state_enabled:
+            latest_settings["STATE"] = latest_state
+            latest_settings["CACHE"] = {
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "params": {
+                    "limit": int(limit or 0),
+                    "per_server_limit": int(per_server_limit or 0)
+                },
+                "payload": {
+                    "movies": final_movies,
+                    "series": final_series,
+                    "errors": errors
+                }
+            }
+            cache_updated = True
+        if state_enabled and (state_changed or cache_updated):
+            _save_latest_settings(latest_settings)
+
+        return {
+            "movies": final_movies,
+            "series": final_series,
+            "errors": errors
+        }, None
+
+    def _has_missing_data(item, omdb_enabled=False, omdb_cache_hours=12):
+        """Verifica se un item ha dati mancanti che necessitano arricchimento."""
+        if not isinstance(item, dict):
+            return True
+        critical_fields = ["title", "item_id", "server_id"]
+        for field in critical_fields:
+            if not item.get(field):
+                return True
+        item_type = item.get("type") or item.get("item_type") or ""
+        if item_type in ("Movie", "Series"):
+            optional_fields = ["overview", "poster_url"]
+            missing_count = sum(1 for field in optional_fields if not item.get(field))
+            if missing_count > 0:
+                return True
+        if omdb_enabled:
+            rating_fields = ["imdb_rating", "metacritic_rating"]
+            if any(_is_blank_latest_value(item.get(field)) for field in rating_fields):
+                if not _omdb_recently_fetched(item, omdb_cache_hours):
+                    return True
+        return False
+
+    def _get_latest_date_from_state(latest_state, server_id, item_type):
+        """Recupera la data più recente in DB STATE per un tipo di contenuto."""
+        if not isinstance(latest_state, dict):
+            return None
+        server_state = latest_state.get(server_id)
+        if not isinstance(server_state, dict):
+            return None
+        if item_type == "Movie":
+            movies_state = server_state.get("movies")
+            if isinstance(movies_state, dict):
+                items = movies_state.get("items", {})
+                if isinstance(items, dict):
+                    dates = []
+                    for item_data in items.values():
+                        if isinstance(item_data, dict):
+                            last_seen = item_data.get("last_seen_at")
+                            if last_seen:
+                                parsed = _parse_date_value(last_seen)
+                                if parsed:
+                                    dates.append(parsed)
+                    return max(dates) if dates else None
+        elif item_type == "Episode":
+            series_state = server_state.get("series")
+            if isinstance(series_state, dict):
+                items = series_state.get("items", {})
+                if isinstance(items, dict):
+                    dates = []
+                    for series_data in items.values():
+                        if isinstance(series_data, dict):
+                            last_seen = series_data.get("last_seen_at")
+                            if last_seen:
+                                parsed = _parse_date_value(last_seen)
+                                if parsed:
+                                    dates.append(parsed)
+                    return max(dates) if dates else None
+        return None
+
+    def _merge_latest_with_db(new_payload, db_payload):
+        """
+        Unisce i nuovi items con quelli esistenti nel DB.
+        - Aggiunge i nuovi
+        - Aggiorna quelli esistenti SE e SOLO SE i nuovi hanno PIÙ campi arricchiti
+        - Mantiene quelli vecchi che non sono nei nuovi
+        - IMPORTANTE: usa batch_id come chiave univoca per permettere duplicati della stessa serie in giorni diversi
+        """
+        if not isinstance(db_payload, dict):
+            return new_payload
+
+        merged_movies = list(db_payload.get("movies", []))
+        merged_series = list(db_payload.get("series", []))
+
+        # Helper per contare campi arricchiti
+        def _count_enriched_fields(item):
+            enrichment_fields = [
+                'tmdb_poster_url', 'tmdb_backdrop_url', 'tmdb_logo_url',
+                'tmdb_banner_url', 'tmdb_thumb_url', 'tmdb_rating', 'tmdb_votes',
+                'imdb_rating', 'imdb_votes', 'metacritic_rating', 'rt_tomatometer',
+                'trakt_rating', 'trakt_votes', 'trakt_id'
+            ]
+            count = 0
+            for field in enrichment_fields:
+                value = item.get(field)
+                if value is not None and value != '' and value != 0:
+                    count += 1
+            return count
+
+        # Crea map per lookup veloce - USA BATCH_ID come chiave univoca
+        # Questo permette duplicati della stessa serie/film pubblicati in momenti diversi
+        movie_map = {}
+        for idx, m in enumerate(merged_movies):
+            if not m:
+                continue
+            # Usa batch_id se disponibile, altrimenti fallback su signature
+            unique_key = m.get("batch_id")
+            if not unique_key:
+                unique_key = (m.get("server_id"), m.get("signature") or m.get("item_id"))
+            movie_map[unique_key] = idx
+
+        series_map = {}
+        for idx, s in enumerate(merged_series):
+            if not s:
+                continue
+            unique_key = s.get("batch_id")
+            if not unique_key:
+                unique_key = (s.get("server_id"), s.get("signature") or s.get("item_id"))
+            series_map[unique_key] = idx
+
+        # Aggiungi/aggiorna movies
+        for new_movie in new_payload.get("movies", []):
+            if not isinstance(new_movie, dict):
+                continue
+
+            unique_key = new_movie.get("batch_id")
+            if not unique_key:
+                unique_key = (new_movie.get("server_id"), new_movie.get("signature") or new_movie.get("item_id"))
+
+            if unique_key in movie_map:
+                # Confronta arricchimento: aggiorna SOLO se il nuovo ha PIÙ dati
+                existing_movie = merged_movies[movie_map[unique_key]]
+                new_enriched_count = _count_enriched_fields(new_movie)
+                existing_enriched_count = _count_enriched_fields(existing_movie)
+
+                if new_enriched_count >= existing_enriched_count:
+                    # Il nuovo ha almeno lo stesso numero di campi arricchiti, aggiorna
+                    merged_movies[movie_map[unique_key]] = new_movie
+                # Altrimenti mantieni l'esistente che ha più dati
+            else:
+                # Aggiungi nuovo
+                merged_movies.append(new_movie)
+
+        # Aggiungi/aggiorna series
+        for new_series in new_payload.get("series", []):
+            if not isinstance(new_series, dict):
+                continue
+
+            unique_key = new_series.get("batch_id")
+            if not unique_key:
+                unique_key = (new_series.get("server_id"), new_series.get("signature") or new_series.get("item_id"))
+
+            if unique_key in series_map:
+                # Confronta arricchimento: aggiorna SOLO se il nuovo ha PIÙ dati
+                existing_series = merged_series[series_map[unique_key]]
+                new_enriched_count = _count_enriched_fields(new_series)
+                existing_enriched_count = _count_enriched_fields(existing_series)
+
+                if new_enriched_count >= existing_enriched_count:
+                    merged_series[series_map[unique_key]] = new_series
+            else:
+                merged_series.append(new_series)
+
+        # Ordina per data (più recenti primi)
+        def _sort_key(item):
+            added = item.get("added_at") if isinstance(item, dict) else None
+            parsed = _parse_date_value(added) if added else None
+            return parsed if parsed is not None else datetime.min.replace(tzinfo=timezone.utc)
+
+        merged_movies.sort(key=_sort_key, reverse=True)
+        merged_series.sort(key=_sort_key, reverse=True)
+
+        return {
+            "movies": merged_movies,
+            "series": merged_series,
+            "errors": new_payload.get("errors", [])
+        }
+
+    def _refresh_latest_cache_full_background(limit, per_server_limit):
+        try:
+            payload, error = _collect_emby_latest_entries(limit, per_server_limit)
+            if error:
+                with _LATEST_CACHE_LOCK:
+                    _LATEST_CACHE["is_refreshing"] = False
+                _update_latest_progress(state="error", message=str(error))
+                print(f"[LATEST_CACHE] Errore: {error}")
+                return
+            now = datetime.now(timezone.utc)
+            with _LATEST_CACHE_LOCK:
+                _LATEST_CACHE["payload"] = payload
+                _LATEST_CACHE["timestamp"] = now
+                _LATEST_CACHE["params"] = (limit, per_server_limit)
+                _LATEST_CACHE["is_refreshing"] = False
+
+            print(f"[LATEST_CACHE] Full refresh completato")
+        except Exception as e:
+            with _LATEST_CACHE_LOCK:
+                _LATEST_CACHE["is_refreshing"] = False
+            _update_latest_progress(state="error", message=str(e))
+            print(f"[LATEST_CACHE] Errore full refresh: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _refresh_latest_cache_background(limit, per_server_limit):
+        """
+        Background task per refresh cache Latest con fetch SOLO incrementale.
+        1. Carica stato/cache dal DB
+        2. Trova data più recente per ogni server
+        3. Fetch SOLO contenuti più nuovi di quella data
+        4. Processa SOLO i nuovi items (non tutto)
+        5. Merge con DB esistente
+        6. Salva aggiornamento
+        """
+        try:
+            latest_settings = _load_latest_settings()
+            latest_state = latest_settings.get("STATE")
+            if not isinstance(latest_state, dict):
+                latest_state = {}
+
+            # Carica anche la cache corrente per merge
+            cache_data = latest_settings.get("CACHE")
+            if not isinstance(cache_data, dict):
+                cache_data = {}
+            db_payload = cache_data.get("payload")
+            if not isinstance(db_payload, dict):
+                db_payload = {"movies": [], "series": [], "errors": []}
+
+            config, is_valid = load_config()
+            if not is_valid or not config:
+                with _LATEST_CACHE_LOCK:
+                    _LATEST_CACHE["is_refreshing"] = False
+                return
+
+            emby_config = config.get("EMBY") or {}
+            servers = [server for server in (emby_config.get("SERVERS") or []) if server.get("enabled")]
+            if not servers:
+                with _LATEST_CACHE_LOCK:
+                    _LATEST_CACHE["is_refreshing"] = False
+                return
+
+            settings_cfg = _default_latest_settings().get("SETTINGS", {})
+            gap_minutes = int(settings_cfg.get("batch_gap_minutes") or 180)
+            batch_fetch_limit = int(settings_cfg.get("batch_fetch_limit") or 1000)
+
+            has_new_content = False
+            new_items_to_process = []
+
+            # Per ogni server, fetch SOLO i nuovi items
+            for server in servers:
+                server_id = server.get("id")
+                if not server_id:
+                    continue
+
+                latest_movie_date = _get_latest_date_from_state(latest_state, server_id, "Movie")
+                latest_episode_date = _get_latest_date_from_state(latest_state, server_id, "Episode")
+
+                print(f"[INCREMENTAL] Server {server_id}: last_movie={latest_movie_date.isoformat() if latest_movie_date else 'None'}")
+
+                # Fetch nuovi movies
+                movie_params = {
+                    "IncludeItemTypes": "Movie",
+                    "Recursive": "true",
+                    "SortBy": "DateCreated",
+                    "SortOrder": "Descending",
+                    "Limit": min(100, batch_fetch_limit),
+                    "Fields": "DateCreated,MediaSources,Path,ProductionYear,Overview,Genres,ImageTags,Studios"
+                }
+
+                if latest_movie_date:
+                    threshold = latest_movie_date - timedelta(minutes=gap_minutes)
+                    movie_params["MinDateCreated"] = threshold.isoformat()
+
+                success, payload = _call_emby_api(server, "Items", params=movie_params)
+                if success and isinstance(payload, dict):
+                    items = payload.get("Items", [])
+                    if items:
+                        has_new_content = True
+                        print(f"[INCREMENTAL] Trovati {len(items)} nuovi Movie su server {server_id}")
+                        for item in items:
+                            new_items_to_process.append({"server": server, "item": item, "type": "Movie"})
+
+                # Fetch nuovi episodes
+                episode_params = {
+                    "IncludeItemTypes": "Episode",
+                    "Recursive": "true",
+                    "SortBy": "DateCreated",
+                    "SortOrder": "Descending",
+                    "Limit": min(200, batch_fetch_limit),
+                    "Fields": "DateCreated,MediaSources,Path,SeriesId,SeriesName,ParentIndexNumber,IndexNumber"
+                }
+
+                if latest_episode_date:
+                    threshold = latest_episode_date - timedelta(minutes=gap_minutes)
+                    episode_params["MinDateCreated"] = threshold.isoformat()
+
+                success, payload = _call_emby_api(server, "Items", params=episode_params)
+                if success and isinstance(payload, dict):
+                    items = payload.get("Items", [])
+                    if items:
+                        has_new_content = True
+                        print(f"[INCREMENTAL] Trovati {len(items)} nuovi Episode su server {server_id}")
+                        for item in items:
+                            new_items_to_process.append({"server": server, "item": item, "type": "Episode"})
+
+            # Se non ci sono nuovi contenuti, mantieni cache attuale
+            if not has_new_content:
+                print(f"[LATEST_CACHE] Nessun nuovo contenuto trovato")
+                with _LATEST_CACHE_LOCK:
+                    _LATEST_CACHE["is_refreshing"] = False
+                return
+
+            # Processa SOLO i nuovi items (non fare full scan)
+            print(f"[LATEST_CACHE] Processamento {len(new_items_to_process)} nuovi items...")
+
+            # Fetch completo ma la funzione merge proteggerà i dati già arricchiti
+            new_payload, error = _collect_emby_latest_entries(
+                limit,
+                per_server_limit
+            )
+
+            if error:
+                with _LATEST_CACHE_LOCK:
+                    _LATEST_CACHE["is_refreshing"] = False
+                _update_latest_progress(state="error", message=str(error))
+                print(f"[LATEST_CACHE] Errore: {error}")
+                return
+
+            # Merge con DB esistente
+            merged_payload = _merge_latest_with_db(new_payload, db_payload)
+
+            # Limita risultati finali
+            merged_payload["movies"] = merged_payload["movies"][:limit] if limit else merged_payload["movies"]
+            merged_payload["series"] = merged_payload["series"][:limit] if limit else merged_payload["series"]
+
+            with _LATEST_CACHE_LOCK:
+                _LATEST_CACHE["payload"] = merged_payload
+                _LATEST_CACHE["timestamp"] = datetime.now(timezone.utc)
+                _LATEST_CACHE["params"] = (limit, per_server_limit)
+                _LATEST_CACHE["is_refreshing"] = False
+
+            print(f"[LATEST_CACHE] Refresh completato: {len(merged_payload.get('movies', []))} movies, {len(merged_payload.get('series', []))} series")
+
+        except Exception as e:
+            with _LATEST_CACHE_LOCK:
+                _LATEST_CACHE["is_refreshing"] = False
+            _update_latest_progress(state="error", message=str(e))
+            print(f"[LATEST_CACHE] Errore: {e}")
+            import traceback
+            traceback.print_exc()
+
+    @app.route('/api/emby/latest', methods=['GET'])
+    @login_required
+    def emby_latest():
+        """
+        Endpoint per recuperare ultime pubblicazioni.
+        Strategia:
+        1. Mostra sempre dal DB (veloce, anche se un po' vecchio)
+        2. Avvia background refresh se necessario
+        3. Il background aggiorna solo i nuovi items non in DB
+        """
+        limit = _coerce_request_int(request.args.get("limit"), 12, 1, 50)
+        per_server_limit = _coerce_request_int(request.args.get("per_server_limit"), limit, 1, 50)
+        force = _coerce_request_bool(request.args.get("force"), False)
+
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Config non valida"}), 400
+
+        state_enabled = _db_enabled(config.get("DATABASE", {}))
+        if not state_enabled:
+            return jsonify({"success": False, "message": "Database non abilitato"}), 400
+
+        latest_settings = _load_latest_settings()
+        cache_seconds = int(latest_settings.get("SETTINGS", {}).get("latest_cache_seconds") or 60)
+        if cache_seconds < 0:
+            cache_seconds = 60
+
+        now = datetime.now(timezone.utc)
+
+        # STEP 1: Carica sempre dal DB (veloce)
+        cache_candidate = latest_settings.get("CACHE")
+        cache_data = cache_candidate if isinstance(cache_candidate, dict) else {}
+        payload_candidate = cache_data.get("payload")
+        db_payload = payload_candidate if isinstance(payload_candidate, dict) else None
+        db_cached_ts = _parse_date_value(cache_data.get("updated_at"))
+
+        with _LATEST_CACHE_LOCK:
+            is_refreshing = _LATEST_CACHE.get("is_refreshing", False)
+        progress_snapshot = _get_latest_progress_snapshot()
+        progress_data = progress_snapshot.get("progress")
+
+        # STEP 2: Determina se serve refresh background
+        should_refresh_bg = False
+        should_full_refresh_bg = False
+        fast_first_load = False
+        if db_cached_ts:
+            age_seconds = (now - db_cached_ts).total_seconds()
+            # Se più vecchio di cache_seconds E non sta già refreshando, avvia background
+            if age_seconds > cache_seconds and not is_refreshing and not force:
+                should_refresh_bg = True
+        else:
+            if db_payload:
+                if not is_refreshing and not force:
+                    should_refresh_bg = True
+            else:
+                fast_first_load = True
+                should_full_refresh_bg = True
+
+        # Se force=true, refresh sincrono
+        if force:
+            print(f"[LATEST] Force refresh richiesto")
+            payload, error = _collect_emby_latest_entries(
+                limit,
+                per_server_limit,
+                force_omdb=True
+            )
+            if error:
+                return jsonify({"success": False, "message": error}), 400
+            return jsonify({
+                "success": True,
+                "movies": payload.get("movies", []),
+                "series": payload.get("series", []),
+                "errors": payload.get("errors", []),
+                "cached": False,
+                "cached_at": now.isoformat(),
+                "refreshing": False,
+                "progress": progress_data
+            })
+
+        # STEP 3: Avvia refresh background se necessario
+        if should_refresh_bg:
+            with _LATEST_CACHE_LOCK:
+                # Double-check che non sia già partito
+                if not _LATEST_CACHE.get("is_refreshing"):
+                    _LATEST_CACHE["is_refreshing"] = True
+                    _LATEST_CACHE["last_refresh_start"] = now
+                    thread = threading.Thread(
+                        target=_refresh_latest_cache_background,
+                        args=(limit, per_server_limit),
+                        daemon=True
+                    )
+                    thread.start()
+                    print(f"[LATEST] Avviato background refresh")
+
+        # STEP 4: Restituisci sempre dal DB (anche se in refresh)
+        if db_payload:
+            return jsonify({
+                "success": True,
+                "movies": db_payload.get("movies", []),
+                "series": db_payload.get("series", []),
+                "errors": db_payload.get("errors", []),
+                "cached": True,
+                "cached_at": db_cached_ts.isoformat() if db_cached_ts else None,
+                "refreshing": is_refreshing,
+                "progress": progress_data
+            })
+
+        # STEP 5: Se proprio non c'è nulla in DB, fetch sincrono (solo prima volta)
+        print(f"[LATEST] Nessun dato in DB, fetch sincrono iniziale")
+        if fast_first_load:
+            payload, error = _collect_emby_latest_entries(
+                limit,
+                per_server_limit,
+                fast_mode=True
+            )
+        else:
+            payload, error = _collect_emby_latest_entries(limit, per_server_limit)
+        if error:
+            return jsonify({"success": False, "message": error}), 400
+
+        if should_full_refresh_bg:
+            with _LATEST_CACHE_LOCK:
+                if not _LATEST_CACHE.get("is_refreshing"):
+                    _LATEST_CACHE["is_refreshing"] = True
+                    _LATEST_CACHE["last_refresh_start"] = now
+                    thread = threading.Thread(
+                        target=_refresh_latest_cache_full_background,
+                        args=(limit, per_server_limit),
+                        daemon=True
+                    )
+                    thread.start()
+                    is_refreshing = True
+                    print(f"[LATEST] Avviato background full refresh")
+
         return jsonify({
             "success": True,
-            "movies": movies[:limit],
-            "series": series[:limit],
+            "movies": payload.get("movies", []),
+            "series": payload.get("series", []),
+            "errors": payload.get("errors", []),
+            "cached": False,
+            "cached_at": now.isoformat(),
+            "refreshing": is_refreshing,
+            "progress": progress_data
+        })
+
+    @app.route('/api/emby/latest/progress', methods=['GET'])
+    @login_required
+    def emby_latest_progress():
+        snapshot = _get_latest_progress_snapshot()
+        progress = snapshot.get("progress")
+        return jsonify({
+            "success": True,
+            "progress": progress if isinstance(progress, dict) else {},
+            "refreshing": snapshot.get("refreshing", False)
+        })
+
+    @app.route('/api/emby/latest/preview', methods=['POST'])
+    @login_required
+    def emby_latest_preview():
+        payload = request.get_json(silent=True) or {}
+        template = payload.get("template")
+        if not isinstance(template, str):
+            template = ""
+        items_value = payload.get("items")
+        items = items_value if isinstance(items_value, dict) else {}
+        previews = {}
+        image_enabled = _latest_template_has_image_token(template)
+        for key in ("movie", "series"):
+            item = items.get(key)
+            if not isinstance(item, dict):
+                continue
+            message, image_url, template_error = _build_latest_message(
+                item,
+                template,
+                return_error=True,
+                allow_fallback=False
+            )
+            previews[key] = {
+                "message": message,
+                "image_url": image_url,
+                "image_enabled": image_enabled,
+                "error": template_error
+            }
+
+        # Salva items nella cache preview se richiesto
+        save_cache = payload.get("save_cache", False)
+        if save_cache and items:
+            latest_settings = _load_latest_settings()
+            preview_cache_raw = latest_settings.get("PREVIEW_CACHE")
+            preview_cache: Dict[str, Any] = preview_cache_raw if isinstance(preview_cache_raw, dict) else {}
+            if "movie" not in preview_cache:
+                preview_cache["movie"] = None
+            if "series" not in preview_cache:
+                preview_cache["series"] = None
+            for key in ("movie", "series"):
+                item = items.get(key)
+                if isinstance(item, dict):
+                    preview_cache[key] = item
+            latest_settings["PREVIEW_CACHE"] = preview_cache
+            _save_latest_settings(latest_settings)
+
+        return jsonify({"success": True, "previews": previews})
+
+    @app.route('/api/emby/latest/preview/cache', methods=['GET'])
+    @login_required
+    def emby_latest_preview_cache_get():
+        """Recupera items cache preview."""
+        latest_settings = _load_latest_settings()
+        preview_cache_raw = latest_settings.get("PREVIEW_CACHE")
+        preview_cache: Dict[str, Any] = preview_cache_raw if isinstance(preview_cache_raw, dict) else {}
+        if "movie" not in preview_cache:
+            preview_cache["movie"] = None
+        if "series" not in preview_cache:
+            preview_cache["series"] = None
+        return jsonify({"success": True, "cache": preview_cache})
+
+    @app.route('/api/emby/latest/enrich', methods=['POST'])
+    @login_required
+    def emby_latest_enrich():
+        """Enrichment on-demand per item specifico con TMDB/OMDB/Trakt."""
+        payload = request.get_json(silent=True) or {}
+        item = payload.get("item")
+        if not isinstance(item, dict):
+            return jsonify({"success": False, "message": "Item non valido"}), 400
+
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Config non valida"}), 400
+
+        # Force enrichment (bypass cache)
+        enriched = _enrich_latest_entry_with_tmdb(item, config, force_omdb=True, omdb_cache_hours=0)
+
+        # Aggiorna timestamp enrichment
+        enriched["omdb_fetched_at"] = datetime.now(timezone.utc).isoformat()
+
+        # Calcola diff dei campi popolati
+        diff = _calculate_enrichment_diff(item, enriched)
+
+        return jsonify({
+            "success": True,
+            "item": enriched,
+            "diff": diff
+        })
+
+    @app.route('/api/emby/latest/notify', methods=['POST'])
+    @login_required
+    def emby_latest_notify():
+        payload = request.get_json(silent=True) or {}
+        server_filter = (payload.get("server_id") or "").strip()
+        limit = _coerce_request_int(payload.get("limit"), 12, 1, 50)
+        per_server_limit = _coerce_request_int(payload.get("per_server_limit"), limit, 1, 50)
+
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Config non valida"}), 400
+        if not _db_enabled(config.get("DATABASE", {})):
+            return jsonify({"success": False, "message": "Database non attivo, impossibile inviare notifiche."}), 400
+
+        latest_payload, error = _collect_emby_latest_entries(limit, per_server_limit)
+        if error:
+            return jsonify({"success": False, "message": error}), 400
+
+        movies = latest_payload.get("movies") or []
+        series = latest_payload.get("series") or []
+        items = movies + series
+        if server_filter and server_filter != "all":
+            items = [item for item in items if item.get("server_id") == server_filter]
+        if not items:
+            return jsonify({"success": False, "message": "Nessuna pubblicazione da notificare."}), 200
+
+        latest_settings = _load_latest_settings()
+        preset = _resolve_latest_message_preset(latest_settings)
+        template = preset.get("template") if isinstance(preset, dict) else _default_latest_message_template()
+        telegram_settings = _load_telegram_settings()
+        presets = telegram_settings.get("PRESETS") or []
+        bots = telegram_settings.get("BOTS") or []
+        groups = telegram_settings.get("GROUPS") or []
+        channels = telegram_settings.get("CHANNELS") or []
+
+        selected_preset_ids = latest_settings.get("TELEGRAM_PRESET_IDS") or []
+        selected_presets = [preset_entry for preset_entry in presets if preset_entry.get("id") in selected_preset_ids]
+        if not selected_presets:
+            return jsonify({"success": False, "message": "Seleziona almeno una preconfigurazione Telegram."}), 400
+
+        bots_by_id = {str(bot.get("id")): bot for bot in bots if bot.get("id")}
+        groups_by_id = {str(entry.get("id")): entry for entry in groups if entry.get("id")}
+        channels_by_id = {str(entry.get("id")): entry for entry in channels if entry.get("id")}
+
+        recipient_pairs = []
+        errors = []
+        for preset_entry in selected_presets:
+            bot_ids = preset_entry.get("bot_ids") or []
+            group_ids = preset_entry.get("group_ids") or []
+            channel_ids = preset_entry.get("channel_ids") or []
+            if not bot_ids:
+                errors.append(f"Preset '{preset_entry.get('name')}' senza bot.")
+                continue
+            chat_ids = []
+            for group_id in group_ids:
+                entry = groups_by_id.get(str(group_id))
+                if entry and entry.get("chat_id"):
+                    chat_ids.append(str(entry.get("chat_id")))
+            for channel_id in channel_ids:
+                entry = channels_by_id.get(str(channel_id))
+                if entry and entry.get("chat_id"):
+                    chat_ids.append(str(entry.get("chat_id")))
+            if not chat_ids:
+                errors.append(f"Preset '{preset_entry.get('name')}' senza gruppi o canali.")
+                continue
+            for bot_id in bot_ids:
+                bot = bots_by_id.get(str(bot_id))
+                if not bot or not bot.get("token"):
+                    errors.append(f"Bot non trovato per preset '{preset_entry.get('name')}'.")
+                    continue
+                token = bot.get("token")
+                for chat_id in chat_ids:
+                    recipient_pairs.append((token, chat_id))
+
+        if not recipient_pairs:
+            return jsonify({"success": False, "message": "Nessun destinatario valido per le notifiche."}), 400
+
+        sent = 0
+        failed = 0
+        notified_items = []  # Track successfully notified items
+
+        for item in items:
+            message, image_url = _build_latest_message(item, template)
+            if not message and not image_url:
+                continue
+            item_success = False
+            for token, chat_id in recipient_pairs:
+                if image_url:
+                    caption = message.strip()
+                    payload = {"chat_id": chat_id, "photo": image_url}
+                    if caption:
+                        payload["caption"] = caption[:1024]
+                        payload["parse_mode"] = "HTML"
+                    ok, err, _ = _telegram_api_request(token, "sendPhoto", payload)
+                else:
+                    preview_enabled = "http://" in message or "https://" in message
+                    ok, err, _ = _telegram_api_request(token, "sendMessage", {
+                        "chat_id": chat_id,
+                        "text": message,
+                        "parse_mode": "HTML",
+                        "disable_web_page_preview": False if preview_enabled else True
+                    })
+                if ok:
+                    sent += 1
+                    item_success = True
+                else:
+                    failed += 1
+                    if err:
+                        errors.append(err)
+
+            # Se almeno una notifica è andata a buon fine per questo item, traccialo
+            if item_success:
+                notified_items.append(item)
+
+        # Aggiorna il flag notified=True per tutti gli item notificati con successo
+        if notified_items:
+            latest_settings = _load_latest_settings()
+            latest_state = latest_settings.get("STATE") if isinstance(latest_settings.get("STATE"), dict) else {}
+            if not isinstance(latest_state, dict):
+                latest_state = {}
+
+            notified_at = datetime.now(timezone.utc).isoformat()
+
+            for item in notified_items:
+                server_id = item.get("server_id")
+                item_id = item.get("item_id")
+                item_type = item.get("type")  # "Movie" o "Series"
+
+                if not server_id or not item_id:
+                    continue
+
+                server_state = latest_state.get(server_id)
+                if not isinstance(server_state, dict):
+                    continue
+
+                if item_type == "Movie":
+                    movies_state = server_state.get("movies")
+                    if isinstance(movies_state, dict):
+                        movie_items = movies_state.get("items")
+                        if isinstance(movie_items, dict) and item_id in movie_items:
+                            movie_items[item_id]["notified"] = True
+                            movie_items[item_id]["notified_at"] = notified_at
+                elif item_type == "Series":
+                    series_state = server_state.get("series")
+                    if isinstance(series_state, dict):
+                        series_items = series_state.get("items")
+                        if isinstance(series_items, dict) and item_id in series_items:
+                            series_items[item_id]["notified"] = True
+                            series_items[item_id]["notified_at"] = notified_at
+
+            # Salva lo STATE aggiornato
+            latest_settings["STATE"] = latest_state
+            try:
+                _save_latest_settings(latest_settings)
+            except Exception as exc:
+                errors.append(f"Errore salvataggio STATE: {exc}")
+
+        summary = f"Notifiche inviate: {sent}." if sent else "Nessuna notifica inviata."
+        if failed:
+            summary = f"{summary} Errori: {failed}."
+        return jsonify({
+            "success": True if sent else False,
+            "message": summary,
+            "sent": sent,
+            "failed": failed,
             "errors": errors
         })
 
@@ -3363,6 +8265,7 @@ def create_dashboard_app():
         server_id = payload.get("server_id")
         if not server_id:
             return jsonify({"success": False, "message": "server_id mancante"}), 400
+        get_probe_manager().stop_combo_workflow(server_id, scope="recent")
         stopped = get_probe_manager().stop_recent_processing(server_id)
         if stopped:
             return jsonify({"success": True, "message": "Processing recenti arrestato"})
@@ -3376,12 +8279,14 @@ def create_dashboard_app():
             return jsonify({"success": False, "message": "Config non valida"}), 400
         emby_config = config.get("EMBY") or {}
         servers = emby_config.get("SERVERS") or []
+        get_probe_manager().stop_combo_workflow_all_servers(scope="recent")
         get_probe_manager().stop_recent_processing_sequence()
         stopped_ids = []
         for server in servers:
             server_id = server.get("id")
             if not server_id:
                 continue
+            get_probe_manager().stop_combo_workflow(server_id, scope="recent")
             if get_probe_manager().stop_recent_processing(server_id):
                 stopped_ids.append(server_id)
         return jsonify({
@@ -3461,19 +8366,43 @@ def create_dashboard_app():
         server_id = payload.get("server_id")
         if not server_id:
             return jsonify({"success": False, "message": "server_id mancante"}), 400
-        stopped = get_probe_manager().stop_combo_workflow(server_id, scope="recent")
-        if stopped:
-            return jsonify({"success": True, "message": "Combo workflow arrestato"})
-        return jsonify({"success": False, "message": "Combo workflow non in esecuzione"}), 400
+        stopped_combo = get_probe_manager().stop_combo_workflow(server_id, scope="recent")
+        stopped_discovery = get_probe_manager().stop_recent_discovery(server_id)
+        stopped_processing = get_probe_manager().stop_recent_processing(server_id)
+        if stopped_combo or stopped_discovery or stopped_processing:
+            return jsonify({"success": True, "message": "Workflow ultimi aggiunti arrestato"})
+        return jsonify({"success": False, "message": "Workflow non in esecuzione"}), 400
 
     @app.route('/api/emby/probe/recent/combo/stop-all', methods=['POST'])
     @login_required
     def probe_recent_combo_stop_all():
         """Stop combo workflow for all servers in recent scope."""
-        stopped = get_probe_manager().stop_combo_workflow_all_servers(scope="recent")
-        if stopped:
-            return jsonify({"success": True, "message": "Combo workflow arrestato su tutti i server"})
-        return jsonify({"success": False, "message": "Combo workflow non in esecuzione"}), 400
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return jsonify({"success": False, "message": "Config non valida"}), 400
+        emby_config = config.get("EMBY") or {}
+        servers = emby_config.get("SERVERS") or []
+        stopped_combo = get_probe_manager().stop_combo_workflow_all_servers(scope="recent")
+        stopped_discovery_all = get_probe_manager().stop_recent_discovery_sequence()
+        stopped_processing_all = get_probe_manager().stop_recent_processing_sequence()
+        stopped_discovery = []
+        stopped_processing = []
+        for server in servers:
+            server_id = server.get("id")
+            if not server_id:
+                continue
+            if get_probe_manager().stop_recent_discovery(server_id):
+                stopped_discovery.append(server_id)
+            if get_probe_manager().stop_recent_processing(server_id):
+                stopped_processing.append(server_id)
+        if stopped_combo or stopped_discovery_all or stopped_processing_all or stopped_discovery or stopped_processing:
+            return jsonify({
+                "success": True,
+                "message": "Workflow ultimi aggiunti arrestato su tutti i server",
+                "stopped_discovery": stopped_discovery,
+                "stopped_processing": stopped_processing
+            })
+        return jsonify({"success": False, "message": "Workflow non in esecuzione"}), 400
 
     # --- Probe Combo Workflow Routes (Libraries Scope) ---
 
@@ -3520,8 +8449,10 @@ def create_dashboard_app():
         server_id = payload.get("server_id")
         if not server_id:
             return jsonify({"success": False, "message": "server_id mancante"}), 400
-        stopped = get_probe_manager().stop_combo_workflow(server_id, scope="libraries")
-        if stopped:
+        stopped_combo = get_probe_manager().stop_combo_workflow(server_id, scope="libraries")
+        stopped_discovery = get_probe_manager().stop_discovery(server_id)
+        stopped_processing = get_probe_manager().stop_processing(server_id)
+        if stopped_combo or stopped_discovery or stopped_processing:
             return jsonify({"success": True, "message": "Combo workflow arrestato"})
         return jsonify({"success": False, "message": "Combo workflow non in esecuzione"}), 400
 
@@ -3735,6 +8666,106 @@ def create_dashboard_app():
                 return jsonify({"success": True, "message": "Blacklist svuotata"})
         except StorageError as exc:
             return jsonify({"success": False, "message": f"Errore DB: {exc}"}), 500
+
+    @app.route('/api/emby/probe/debug-recent-items', methods=['GET'])
+    @login_required
+    def debug_recent_items():
+        """Debug endpoint to see what Emby API returns for recent items"""
+        server_id = request.args.get("server_id")
+        limit = int(request.args.get("limit", "50"))
+
+        if not server_id:
+            return jsonify({"success": False, "message": "server_id richiesto"}), 400
+
+        try:
+            config, is_valid = load_config()
+            if not is_valid or not config:
+                return jsonify({"success": False, "message": "Config non valida"}), 400
+
+            emby_config = config.get("EMBY") or {}
+            servers = emby_config.get("SERVERS") or []
+            server = None
+            for s in servers:
+                if s.get("id") == server_id:
+                    server = s
+                    break
+
+            if not server:
+                return jsonify({"success": False, "message": f"Server non trovato. ID ricevuto: {server_id}"}), 404
+
+            from api_clients import _call_emby_api
+
+            # Call Items API with recent sort
+            success, payload = _call_emby_api(
+                server,
+                "Items",
+                method="GET",
+                params={
+                    "IncludeItemTypes": "Movie,Episode",
+                    "Recursive": "true",
+                    "SortBy": "DateCreated",
+                    "SortOrder": "Descending",
+                    "Limit": str(limit),
+                    "Fields": "Path,MediaStreams,RunTimeTicks,MediaSources,ParentId,SeriesName,IndexNumber,ParentIndexNumber,ProductionYear,Type,DateCreated,Container,Name"
+                }
+            )
+
+            if not success:
+                return jsonify({"success": False, "message": f"Errore API Emby: {payload}"}), 500
+
+            items = payload.get("Items", []) if isinstance(payload, dict) else []
+
+            # Analyze items
+            debug_info = []
+            for item in items:
+                item_path = item.get("Path", "")
+                container = item.get("Container", "")
+                is_strm = item_path.lower().endswith(".strm") or container.lower() == "strm"
+
+                media_sources = item.get("MediaSources", [])
+                has_metadata = False
+                if media_sources:
+                    for source in media_sources:
+                        if isinstance(source, dict):
+                            if source.get("RunTimeTicks") and source.get("MediaStreams"):
+                                has_metadata = True
+                                break
+
+                # Include full MediaSources for debugging
+                media_sources_debug = []
+                for source in media_sources:
+                    if isinstance(source, dict):
+                        media_sources_debug.append({
+                            "Path": source.get("Path"),
+                            "Container": source.get("Container"),
+                            "RunTimeTicks": source.get("RunTimeTicks"),
+                            "MediaStreams_count": len(source.get("MediaStreams", []))
+                        })
+
+                debug_info.append({
+                    "name": item.get("Name", "Unknown"),
+                    "series": item.get("SeriesName"),
+                    "season": item.get("ParentIndexNumber"),
+                    "episode": item.get("IndexNumber"),
+                    "date_created": item.get("DateCreated"),
+                    "path": item_path,
+                    "container": container,
+                    "is_strm": is_strm,
+                    "has_metadata": has_metadata,
+                    "media_sources_count": len(media_sources),
+                    "media_sources": media_sources_debug
+                })
+
+            return jsonify({
+                "success": True,
+                "server_id": server_id,
+                "server_name": server.get("name"),
+                "total_items": len(items),
+                "items": debug_info
+            })
+
+        except Exception as exc:
+            return jsonify({"success": False, "message": f"Errore: {exc}"}), 500
 
     @app.route('/api/emby/group-order', methods=['GET', 'POST'])
     @login_required
@@ -4329,7 +9360,8 @@ def create_dashboard_app():
     @app.route('/update-config', methods=['POST'])
     @login_required
     def update_config_route():
-        raw_config = read_raw_config() or {}
+        legacy_config = read_raw_config() or {}
+        next_url = _resolve_next_url(request.form.get('next'), 'dashboard')
         
         # Connection fields mapping
         connection_mappings = [
@@ -4346,53 +9378,103 @@ def create_dashboard_app():
             ('tmdb_language', 'TMDB_LANGUAGE'),
         ]
 
-        for form_key, config_key in connection_mappings:
-            raw_config[config_key] = request.form.get(form_key)
-        
         # Database config
-        db_defaults = raw_config.get('DATABASE', {})
+        db_defaults = legacy_config.get('DATABASE', {})
         db_payload = {
             "ENABLED": True,
-            "HOST": _normalize_form_input(request.form, 'db_host') or db_defaults.get('HOST') or "localhost",
-            "PORT": _coerce_request_int(_normalize_form_input(request.form, 'db_port') or db_defaults.get('PORT'), 5432),
-            "NAME": _normalize_form_input(request.form, 'db_name') or db_defaults.get('NAME') or "jellychecker",
+            "HOST": _normalize_form_input(request.form, 'db_host') or db_defaults.get('HOST') or "",
+            "PORT": _coerce_request_int(_normalize_form_input(request.form, 'db_port') or db_defaults.get('PORT'), 5432) if (_normalize_form_input(request.form, 'db_port') or db_defaults.get('PORT')) else "",
+            "NAME": _normalize_form_input(request.form, 'db_name') or db_defaults.get('NAME') or "",
             "USER": _normalize_form_input(request.form, 'db_user') or db_defaults.get('USER') or "",
             "PASSWORD": _normalize_form_input(request.form, 'db_password') or db_defaults.get('PASSWORD') or "",
             "DRIVER": _normalize_form_input(request.form, 'db_driver') or db_defaults.get('DRIVER') or "postgresql+psycopg2",
             "URL": _normalize_form_input(request.form, 'db_url') or db_defaults.get('URL') or "",
             "PARAMS": _normalize_form_input(request.form, 'db_params') or db_defaults.get('PARAMS') or ""
         }
-        raw_config["DATABASE"] = _merge_database_settings(db_payload)
-        
-        # Trakt config
-        trakt_defaults = raw_config.get('TRAKT', {})
+        db_settings_base = _merge_database_settings(db_payload)
+        db_settings_effective = _apply_db_env_overrides(db_settings_base)
+        if not db_settings_effective.get("URL") and (not db_settings_effective.get("HOST") or not db_settings_effective.get("NAME") or not db_settings_effective.get("USER")):
+            flash("Compila host, database e username.")
+            return redirect(next_url)
+        try:
+            backend = DatabaseStorage(db_settings_effective)
+            backend.ensure_ready()
+        except StorageError as exc:
+            flash(f"Errore DB: {exc}")
+            return redirect(next_url)
+
+        _seed_db_from_legacy_config(legacy_config, backend)
+        _write_database_config(db_settings_base)
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            flash("Config non valida. Controlla le impostazioni del database.")
+            return redirect(next_url)
+        try:
+            _ensure_db_backend()
+        except StorageError as exc:
+            flash(f"Errore DB: {exc}")
+            return redirect(next_url)
+
+        app_settings = _load_app_settings_snapshot()
+        for form_key, config_key in connection_mappings:
+            value = _normalize_form_input(request.form, form_key) or ""
+            app_settings[config_key] = value
+
+        # Handle MDBList API keys (textarea with newlines or commas)
+        mdblist_keys_raw = _normalize_form_input(request.form, 'mdblist_api_keys') or ""
+        mdblist_keys = []
+        if mdblist_keys_raw:
+            # Split by newlines first, then by commas
+            for line in mdblist_keys_raw.split('\n'):
+                for key in line.split(','):
+                    key = key.strip()
+                    if key:
+                        mdblist_keys.append(key)
+        app_settings["MDBLIST_API_KEYS"] = mdblist_keys
+
+        # Handle OMDb API keys (textarea with newlines or commas)
+        omdb_keys_raw = _normalize_form_input(request.form, 'omdb_api_keys') or ""
+        omdb_keys = []
+        if omdb_keys_raw:
+            # Split by newlines first, then by commas
+            for line in omdb_keys_raw.split('\n'):
+                for key in line.split(','):
+                    key = key.strip()
+                    if key:
+                        omdb_keys.append(key)
+        app_settings["OMDB_API_KEYS"] = omdb_keys
+        # Keep backward compatibility with single OMDB_API_KEY
+        if omdb_keys:
+            app_settings["OMDB_API_KEY"] = omdb_keys[0]
+        else:
+            app_settings["OMDB_API_KEY"] = ""
+
         trakt_payload = {
             "ENABLED": bool(request.form.get('trakt_enabled')),
-            "CLIENT_ID": _normalize_form_input(request.form, 'trakt_client_id') or trakt_defaults.get('CLIENT_ID') or "",
-            "ACCESS_TOKEN": _normalize_form_input(request.form, 'trakt_access_token') or trakt_defaults.get('ACCESS_TOKEN') or ""
+            "CLIENT_ID": _normalize_form_input(request.form, 'trakt_client_id') or "",
+            "ACCESS_TOKEN": _normalize_form_input(request.form, 'trakt_access_token') or ""
         }
-        raw_config["TRAKT"] = _merge_trakt_settings(trakt_payload)
+        app_settings["TRAKT"] = _merge_trakt_settings(trakt_payload)
 
-        # JustWatch config
-        justwatch_defaults = raw_config.get('JUSTWATCH', {})
         justwatch_payload = {
             "ENABLED": bool(request.form.get('justwatch_enabled')),
-            "LOCALE": _normalize_form_input(request.form, 'justwatch_locale') or justwatch_defaults.get('LOCALE') or "it_IT"
+            "LOCALE": _normalize_form_input(request.form, 'justwatch_locale') or "it_IT"
         }
-        raw_config["JUSTWATCH"] = _merge_justwatch_settings(justwatch_payload)
+        app_settings["JUSTWATCH"] = _merge_justwatch_settings(justwatch_payload)
 
-        config_write_file(raw_config)
+        _save_app_settings_snapshot(app_settings)
         load_config()
         flash("Configurazione aggiornata")
-        return redirect(url_for('dashboard'))
+        return redirect(next_url)
 
     @app.route('/update-rss-import', methods=['POST'])
     @login_required
     def update_rss_import_route():
         config, is_valid = load_config()
+        next_url = _resolve_next_url(request.form.get('next'), 'dashboard')
         if not is_valid or not config:
             flash("Config non valida. Completa la configurazione.")
-            return redirect(url_for('dashboard'))
+            return redirect(next_url)
 
         enabled = bool(request.form.get('rss_enabled'))
         poll_interval = _coerce_request_int(request.form.get('rss_poll_interval') or 30, 30)
@@ -4436,9 +9518,676 @@ def create_dashboard_app():
             _update_app_settings_overrides({"RSS_IMPORT": payload})
         except StorageError as exc:
             flash(f"Errore salvataggio RSS: {exc}")
-            return redirect(url_for('dashboard'))
+            return redirect(next_url)
         flash("Configurazione RSS aggiornata")
-        return redirect(url_for('dashboard'))
+        return redirect(next_url)
+
+    @app.route('/telegram/config', methods=['POST'])
+    @login_required
+    def telegram_save_config():
+        next_url = _resolve_next_url(request.form.get('next'), 'configuration')
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            flash("Config non valida.")
+            return redirect(next_url)
+        try:
+            _ensure_db_backend()
+        except StorageError as exc:
+            flash(f"Errore DB: {exc}")
+            return redirect(next_url)
+        telegram_settings = _load_telegram_settings()
+        bot_alias = _normalize_form_input(request.form, 'telegram_bot_alias') or ""
+        bot_token = _normalize_form_input(request.form, 'telegram_bot_token') or ""
+        bot_id = (request.form.get('telegram_bot_id') or '').strip()
+        if not bot_token:
+            flash("Token bot mancante.")
+            return redirect(next_url)
+        bots = telegram_settings.get("BOTS") or []
+        if bot_id:
+            existing = next((bot for bot in bots if bot.get("id") == bot_id), None)
+            if not existing:
+                flash("Bot Telegram non trovato.")
+                return redirect(next_url)
+            duplicate = next((bot for bot in bots if bot.get("token") == bot_token and bot.get("id") != bot_id), None)
+            if duplicate:
+                flash("Token bot già associato a un altro bot.")
+                return redirect(next_url)
+            existing["alias"] = bot_alias
+            existing["token"] = bot_token
+            ok, message = _telegram_check_bot_identity(existing)
+            flash("Bot Telegram aggiornato.")
+        else:
+            existing = next((bot for bot in bots if bot.get("token") == bot_token), None)
+            if existing:
+                existing["alias"] = bot_alias
+                ok, message = _telegram_check_bot_identity(existing)
+                flash("Bot Telegram aggiornato.")
+            else:
+                bot_entry = {
+                    "id": str(uuid.uuid4()),
+                    "alias": bot_alias,
+                    "original_name": "",
+                    "token": bot_token,
+                    "username": "",
+                    "user_id": "",
+                    "verified": False,
+                    "verified_at": "",
+                    "last_check": "",
+                    "last_error": ""
+                }
+                ok, message = _telegram_check_bot_identity(bot_entry)
+                bots.append(bot_entry)
+                flash("Bot Telegram salvato.")
+        telegram_settings["BOTS"] = bots
+        _save_telegram_settings(telegram_settings)
+        if "message" in locals() and message and not message.startswith("Bot verificato"):
+            flash(message)
+        return redirect(next_url)
+
+    @app.route('/telegram/bot/add', methods=['POST'])
+    @login_required
+    def telegram_add_bot():
+        return telegram_save_config()
+
+    @app.route('/telegram/bot/verify', methods=['POST'])
+    @login_required
+    def telegram_verify_bot():
+        next_url = _resolve_next_url(request.form.get('next'), 'configuration')
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            flash("Config non valida.")
+            return redirect(next_url)
+        try:
+            _ensure_db_backend()
+        except StorageError as exc:
+            flash(f"Errore DB: {exc}")
+            return redirect(next_url)
+        bot_id = (request.form.get('telegram_bot_id') or '').strip()
+        if not bot_id:
+            flash("Bot Telegram non valido.")
+            return redirect(next_url)
+        telegram_settings = _load_telegram_settings()
+        bots = telegram_settings.get("BOTS") or []
+        bot = next((item for item in bots if item.get("id") == bot_id), None)
+        if not bot:
+            flash("Bot Telegram non trovato.")
+            return redirect(next_url)
+        ok, message = _telegram_check_bot_identity(bot)
+        telegram_settings["BOTS"] = bots
+        _save_telegram_settings(telegram_settings)
+        flash(message if ok else f"Errore bot: {message}")
+        return redirect(next_url)
+
+    @app.route('/telegram/bot/remove', methods=['POST'])
+    @login_required
+    def telegram_remove_bot():
+        next_url = _resolve_next_url(request.form.get('next'), 'configuration')
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            flash("Config non valida.")
+            return redirect(next_url)
+        try:
+            _ensure_db_backend()
+        except StorageError as exc:
+            flash(f"Errore DB: {exc}")
+            return redirect(next_url)
+        bot_id = (request.form.get('telegram_bot_id') or '').strip()
+        if not bot_id:
+            flash("Bot Telegram non valido.")
+            return redirect(next_url)
+        telegram_settings = _load_telegram_settings()
+        bots = telegram_settings.get("BOTS") or []
+        updated = [bot for bot in bots if bot.get("id") != bot_id]
+        if len(updated) == len(bots):
+            flash("Bot Telegram non trovato.")
+            return redirect(next_url)
+        presets = telegram_settings.get("PRESETS") or []
+        for preset in presets:
+            preset["bot_ids"] = [value for value in preset.get("bot_ids", []) if value != bot_id]
+            alerts = preset.get("alerts")
+            if isinstance(alerts, dict):
+                for key in ("groups", "channels"):
+                    items = alerts.get(key)
+                    if not isinstance(items, dict):
+                        continue
+                    for chat_id, checks in list(items.items()):
+                        if not isinstance(checks, list):
+                            continue
+                        remaining = [check for check in checks if check.get("bot_id") != bot_id]
+                        if remaining:
+                            items[chat_id] = remaining
+                        else:
+                            items.pop(chat_id, None)
+        telegram_settings["BOTS"] = updated
+        telegram_settings["PRESETS"] = presets
+        _save_telegram_settings(telegram_settings)
+        flash("Bot Telegram rimosso.")
+        return redirect(next_url)
+
+    @app.route('/telegram/bot/alias', methods=['POST'])
+    @login_required
+    def telegram_update_bot_alias():
+        next_url = _resolve_next_url(request.form.get('next'), 'configuration')
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            flash("Config non valida.")
+            return redirect(next_url)
+        try:
+            _ensure_db_backend()
+        except StorageError as exc:
+            flash(f"Errore DB: {exc}")
+            return redirect(next_url)
+        bot_id = (request.form.get('telegram_bot_id') or '').strip()
+        if not bot_id:
+            flash("Bot Telegram non valido.")
+            return redirect(next_url)
+        alias = _normalize_form_input(request.form, 'telegram_bot_alias') or ""
+        telegram_settings = _load_telegram_settings()
+        bots = telegram_settings.get("BOTS") or []
+        bot = next((item for item in bots if item.get("id") == bot_id), None)
+        if not bot:
+            flash("Bot Telegram non trovato.")
+            return redirect(next_url)
+        bot["alias"] = alias
+        if not bot.get("original_name"):
+            _telegram_check_bot_identity(bot)
+        telegram_settings["BOTS"] = bots
+        _save_telegram_settings(telegram_settings)
+        flash("Alias bot aggiornato.")
+        return redirect(next_url)
+
+    @app.route('/telegram/chat/add', methods=['POST'])
+    @login_required
+    def telegram_add_chat():
+        next_url = _resolve_next_url(request.form.get('next'), 'configuration')
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            flash("Config non valida.")
+            return redirect(next_url)
+        try:
+            _ensure_db_backend()
+        except StorageError as exc:
+            flash(f"Errore DB: {exc}")
+            return redirect(next_url)
+        kind = (request.form.get('telegram_kind') or '').strip().lower()
+        if kind not in ("group", "channel"):
+            flash("Tipo Telegram non valido.")
+            return redirect(next_url)
+        alias = _normalize_form_input(request.form, 'telegram_alias') or ""
+        chat_id = _normalize_form_input(request.form, 'telegram_chat_id') or ""
+        entry_id = (request.form.get('telegram_id') or '').strip()
+        if not chat_id:
+            flash("Chat ID Telegram mancante.")
+            return redirect(next_url)
+        telegram_settings = _load_telegram_settings()
+        list_key = "GROUPS" if kind == "group" else "CHANNELS"
+        entries = telegram_settings.get(list_key) or []
+        existing = None
+        if entry_id:
+            existing = next((entry for entry in entries if entry.get("id") == entry_id), None)
+            if not existing:
+                flash("Chat Telegram non trovata.")
+                return redirect(next_url)
+            duplicate = next((entry for entry in entries if entry.get("chat_id") == chat_id and entry.get("id") != entry_id), None)
+            if duplicate:
+                flash("Chat ID già associato a un'altra voce.")
+                return redirect(next_url)
+            if existing.get("chat_id") != chat_id:
+                existing["chat_id"] = chat_id
+                existing["original_name"] = ""
+                existing["verified"] = False
+                existing["verified_at"] = ""
+                existing["last_check"] = ""
+                existing["last_error"] = ""
+            existing["alias"] = alias
+            flash("Chat Telegram aggiornata.")
+        else:
+            existing = next((entry for entry in entries if entry.get("chat_id") == chat_id), None)
+            if existing:
+                existing["alias"] = alias
+                flash("Chat Telegram aggiornata.")
+            else:
+                existing = {
+                    "id": str(uuid.uuid4()),
+                    "alias": alias,
+                    "original_name": "",
+                    "chat_id": chat_id,
+                    "verified": False,
+                    "verified_at": "",
+                    "last_check": "",
+                    "last_error": ""
+                }
+                entries.append(existing)
+                flash("Chat Telegram salvata.")
+        bots = telegram_settings.get("BOTS") or []
+        if bots:
+            original_name, bot_id, chat_type = _telegram_lookup_chat_with_type(chat_id, bots)
+            if original_name:
+                # Validate chat type
+                if kind == "channel" and chat_type not in ("channel", ""):
+                    flash(f"Errore: {chat_id} non è un canale ma un {chat_type}.")
+                    return redirect(next_url)
+                if kind == "group" and chat_type not in ("group", "supergroup", ""):
+                    flash(f"Errore: {chat_id} non è un gruppo ma un {chat_type}.")
+                    return redirect(next_url)
+
+                now_stamp = datetime.now(timezone.utc).astimezone().isoformat()
+                existing["original_name"] = original_name
+                existing["last_bot_id"] = bot_id
+                existing["verified"] = True
+                existing["verified_at"] = now_stamp
+                existing["last_check"] = now_stamp
+                existing["last_error"] = ""
+        telegram_settings[list_key] = entries
+        _save_telegram_settings(telegram_settings)
+        return redirect(next_url)
+
+    @app.route('/telegram/chat/verify', methods=['POST'])
+    @login_required
+    def telegram_verify_chat():
+        next_url = _resolve_next_url(request.form.get('next'), 'configuration')
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            flash("Config non valida.")
+            return redirect(next_url)
+        try:
+            _ensure_db_backend()
+        except StorageError as exc:
+            flash(f"Errore DB: {exc}")
+            return redirect(next_url)
+        kind = (request.form.get('telegram_kind') or '').strip().lower()
+        entry_id = (request.form.get('telegram_id') or '').strip()
+        if kind not in ("group", "channel") or not entry_id:
+            flash("Dati Telegram non validi.")
+            return redirect(next_url)
+        telegram_settings = _load_telegram_settings()
+        list_key = "GROUPS" if kind == "group" else "CHANNELS"
+        entries = telegram_settings.get(list_key) or []
+        entry = next((item for item in entries if item.get("id") == entry_id), None)
+        if not entry:
+            flash("Chat Telegram non trovata.")
+            return redirect(next_url)
+        bot_id = (request.form.get("telegram_bot_id") or "").strip()
+        bots = telegram_settings.get("BOTS") or []
+        bot = None
+        if bot_id:
+            bot = next((item for item in bots if item.get("id") == bot_id), None)
+        if not bot and bots:
+            bot = bots[0]
+        if not bot:
+            flash("Nessun bot disponibile.")
+            return redirect(next_url)
+        ok, message, result = _check_telegram_chat(bot.get("token", ""), entry.get("chat_id", ""))
+        now_stamp = datetime.now(timezone.utc).astimezone().isoformat()
+        entry["last_check"] = now_stamp
+        entry["last_bot_id"] = bot.get("id") if bot else ""
+        if ok:
+            entry["verified"] = True
+            entry["verified_at"] = now_stamp
+            entry["last_error"] = ""
+            original_name = _telegram_extract_chat_name(result)
+            if original_name:
+                entry["original_name"] = original_name
+        else:
+            entry["verified"] = False
+            entry["last_error"] = message
+        telegram_settings[list_key] = entries
+        _save_telegram_settings(telegram_settings)
+        flash(message)
+        return redirect(next_url)
+
+    @app.route('/telegram/chat/remove', methods=['POST'])
+    @login_required
+    def telegram_remove_chat():
+        next_url = _resolve_next_url(request.form.get('next'), 'configuration')
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            flash("Config non valida.")
+            return redirect(next_url)
+        try:
+            _ensure_db_backend()
+        except StorageError as exc:
+            flash(f"Errore DB: {exc}")
+            return redirect(next_url)
+        kind = (request.form.get('telegram_kind') or '').strip().lower()
+        entry_id = (request.form.get('telegram_id') or '').strip()
+        if kind not in ("group", "channel") or not entry_id:
+            flash("Dati Telegram non validi.")
+            return redirect(next_url)
+        telegram_settings = _load_telegram_settings()
+        list_key = "GROUPS" if kind == "group" else "CHANNELS"
+        entries = telegram_settings.get(list_key) or []
+        updated = [entry for entry in entries if entry.get("id") != entry_id]
+        if len(updated) == len(entries):
+            flash("Chat Telegram non trovata.")
+            return redirect(next_url)
+        telegram_settings[list_key] = updated
+        presets = telegram_settings.get("PRESETS") or []
+        for preset in presets:
+            if kind == "group":
+                preset["group_ids"] = [value for value in preset.get("group_ids", []) if value != entry_id]
+            else:
+                preset["channel_ids"] = [value for value in preset.get("channel_ids", []) if value != entry_id]
+            alerts = preset.get("alerts")
+            if isinstance(alerts, dict):
+                key = "groups" if kind == "group" else "channels"
+                items = alerts.get(key)
+                if isinstance(items, dict):
+                    items.pop(entry_id, None)
+        telegram_settings["PRESETS"] = presets
+        _save_telegram_settings(telegram_settings)
+        flash("Chat Telegram rimossa.")
+        return redirect(next_url)
+
+    @app.route('/telegram/chat/alias', methods=['POST'])
+    @login_required
+    def telegram_update_chat_alias():
+        next_url = _resolve_next_url(request.form.get('next'), 'configuration')
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            flash("Config non valida.")
+            return redirect(next_url)
+        try:
+            _ensure_db_backend()
+        except StorageError as exc:
+            flash(f"Errore DB: {exc}")
+            return redirect(next_url)
+        kind = (request.form.get('telegram_kind') or '').strip().lower()
+        entry_id = (request.form.get('telegram_id') or '').strip()
+        if kind not in ("group", "channel") or not entry_id:
+            flash("Dati Telegram non validi.")
+            return redirect(next_url)
+        alias = _normalize_form_input(request.form, 'telegram_alias') or ""
+        telegram_settings = _load_telegram_settings()
+        list_key = "GROUPS" if kind == "group" else "CHANNELS"
+        entries = telegram_settings.get(list_key) or []
+        entry = next((item for item in entries if item.get("id") == entry_id), None)
+        if not entry:
+            flash("Chat Telegram non trovata.")
+            return redirect(next_url)
+        entry["alias"] = alias
+        if not entry.get("original_name"):
+            bots = telegram_settings.get("BOTS") or []
+            original_name, bot_id = _telegram_lookup_chat(entry.get("chat_id", ""), bots)
+            if original_name:
+                now_stamp = datetime.now(timezone.utc).astimezone().isoformat()
+                entry["original_name"] = original_name
+                entry["last_bot_id"] = bot_id
+                entry["verified"] = True
+                entry["verified_at"] = now_stamp
+                entry["last_check"] = now_stamp
+                entry["last_error"] = ""
+        telegram_settings[list_key] = entries
+        _save_telegram_settings(telegram_settings)
+        flash("Alias chat aggiornato.")
+        return redirect(next_url)
+
+    @app.route('/telegram/preset/add', methods=['POST'])
+    @login_required
+    def telegram_add_preset():
+        next_url = _resolve_next_url(request.form.get('next'), 'configuration')
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            flash("Config non valida.")
+            return redirect(next_url)
+        try:
+            _ensure_db_backend()
+        except StorageError as exc:
+            flash(f"Errore DB: {exc}")
+            return redirect(next_url)
+        preset_name = _normalize_form_input(request.form, 'telegram_preset_name') or ""
+        if not preset_name:
+            flash("Nome preconfigurazione mancante.")
+            return redirect(next_url)
+        bot_id = _normalize_form_input(request.form, 'telegram_preset_bot') or ""
+        group_ids = [value for value in request.form.getlist('telegram_preset_groups') if value]
+        channel_ids = [value for value in request.form.getlist('telegram_preset_channels') if value]
+        if not bot_id:
+            flash("Seleziona un bot.")
+            return redirect(next_url)
+        if not group_ids and not channel_ids:
+            flash("Seleziona almeno un gruppo o canale.")
+            return redirect(next_url)
+        bot_ids = [bot_id]  # Convert single bot to list for backward compatibility
+        telegram_settings = _load_telegram_settings()
+        bots = telegram_settings.get("BOTS") or []
+        groups = telegram_settings.get("GROUPS") or []
+        channels = telegram_settings.get("CHANNELS") or []
+        selected_bots = [bot for bot in bots if bot.get("id") in bot_ids]
+        selected_groups = [entry for entry in groups if entry.get("id") in group_ids]
+        selected_channels = [entry for entry in channels if entry.get("id") in channel_ids]
+        if not selected_bots:
+            flash("Bot selezionati non validi.")
+            return redirect(next_url)
+        now_stamp = datetime.now(timezone.utc).astimezone().isoformat()
+        alerts = {"groups": {}, "channels": {}}
+        for bot in selected_bots:
+            ok, message = _telegram_check_bot_identity(bot)
+            if not ok:
+                for group in selected_groups:
+                    alerts["groups"].setdefault(group["id"], []).append({
+                        "bot_id": bot.get("id", ""),
+                        "status": "error",
+                        "message": message,
+                        "checked_at": now_stamp
+                    })
+                for channel in selected_channels:
+                    alerts["channels"].setdefault(channel["id"], []).append({
+                        "bot_id": bot.get("id", ""),
+                        "status": "error",
+                        "message": message,
+                        "checked_at": now_stamp
+                    })
+                continue
+            for group in selected_groups:
+                status, status_message = _telegram_check_bot_membership(bot, group.get("chat_id", ""))
+                alerts["groups"].setdefault(group["id"], []).append({
+                    "bot_id": bot.get("id", ""),
+                    "status": status,
+                    "message": status_message,
+                    "checked_at": now_stamp
+                })
+            for channel in selected_channels:
+                status, status_message = _telegram_check_bot_membership(bot, channel.get("chat_id", ""))
+                alerts["channels"].setdefault(channel["id"], []).append({
+                    "bot_id": bot.get("id", ""),
+                    "status": status,
+                    "message": status_message,
+                    "checked_at": now_stamp
+                })
+        presets = telegram_settings.get("PRESETS") or []
+        preset_id = (request.form.get('telegram_preset_id') or '').strip()
+        existing = next((preset for preset in presets if preset.get("id") == preset_id), None)
+        if existing:
+            existing["name"] = preset_name
+            existing["bot_ids"] = bot_ids
+            existing["group_ids"] = group_ids
+            existing["channel_ids"] = channel_ids
+            existing["alerts"] = alerts
+            existing["updated_at"] = now_stamp
+            existing["last_check"] = now_stamp
+            existing["last_error"] = ""
+            flash("Preconfigurazione aggiornata.")
+        else:
+            presets.append({
+                "id": str(uuid.uuid4()),
+                "name": preset_name,
+                "bot_ids": bot_ids,
+                "group_ids": group_ids,
+                "channel_ids": channel_ids,
+                "alerts": alerts,
+                "created_at": now_stamp,
+                "last_check": now_stamp,
+                "last_error": ""
+            })
+            flash("Preconfigurazione salvata.")
+        telegram_settings["BOTS"] = bots
+        telegram_settings["PRESETS"] = presets
+        _save_telegram_settings(telegram_settings)
+        return redirect(next_url)
+
+    @app.route('/telegram/preset/remove', methods=['POST'])
+    @login_required
+    def telegram_remove_preset():
+        next_url = _resolve_next_url(request.form.get('next'), 'configuration')
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            flash("Config non valida.")
+            return redirect(next_url)
+        try:
+            _ensure_db_backend()
+        except StorageError as exc:
+            flash(f"Errore DB: {exc}")
+            return redirect(next_url)
+        preset_id = (request.form.get('telegram_preset_id') or '').strip()
+        if not preset_id:
+            flash("Preconfigurazione non valida.")
+            return redirect(next_url)
+        telegram_settings = _load_telegram_settings()
+        presets = telegram_settings.get("PRESETS") or []
+        updated = [preset for preset in presets if preset.get("id") != preset_id]
+        if len(updated) == len(presets):
+            flash("Preconfigurazione non trovata.")
+            return redirect(next_url)
+        telegram_settings["PRESETS"] = updated
+        _save_telegram_settings(telegram_settings)
+        flash("Preconfigurazione rimossa.")
+        return redirect(next_url)
+
+    @app.route('/emby/latest/preset/add', methods=['POST'])
+    @login_required
+    def emby_latest_add_preset():
+        next_url = _resolve_next_url(request.form.get('next'), 'emby_dashboard')
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            flash("Config non valida.")
+            return redirect(next_url)
+        try:
+            _ensure_db_backend()
+        except StorageError as exc:
+            flash(f"Errore DB: {exc}")
+            return redirect(next_url)
+        preset_name = _normalize_form_input(request.form, 'latest_preset_name') or ""
+        preset_template = _normalize_form_input(request.form, 'latest_preset_template') or ""
+        if not preset_name or not preset_template:
+            flash("Nome e template preconfigurazione sono obbligatori.")
+            return redirect(next_url)
+        latest_settings = _load_latest_settings()
+        presets = latest_settings.get("PRESETS") or []
+        now_stamp = datetime.now(timezone.utc).astimezone().isoformat()
+        preset_id = (request.form.get('latest_preset_id') or '').strip()
+        existing = next((preset for preset in presets if preset.get("id") == preset_id), None)
+        if existing:
+            existing["name"] = preset_name
+            existing["template"] = preset_template
+            existing["updated_at"] = now_stamp
+            latest_settings["ACTIVE_PRESET_ID"] = preset_id
+            flash("Preset notifica aggiornato.")
+        else:
+            preset_id = str(uuid.uuid4())
+            presets.append({
+                "id": preset_id,
+                "name": preset_name,
+                "template": preset_template,
+                "created_at": now_stamp,
+                "updated_at": now_stamp
+            })
+            latest_settings["ACTIVE_PRESET_ID"] = preset_id
+            flash("Preset notifica salvato.")
+        latest_settings["PRESETS"] = presets
+        _save_latest_settings(latest_settings)
+        return redirect(next_url)
+
+    @app.route('/emby/latest/preset/remove', methods=['POST'])
+    @login_required
+    def emby_latest_remove_preset():
+        next_url = _resolve_next_url(request.form.get('next'), 'emby_dashboard')
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            flash("Config non valida.")
+            return redirect(next_url)
+        try:
+            _ensure_db_backend()
+        except StorageError as exc:
+            flash(f"Errore DB: {exc}")
+            return redirect(next_url)
+        preset_id = (request.form.get('latest_preset_id') or '').strip()
+        if not preset_id:
+            flash("Preset non valido.")
+            return redirect(next_url)
+        latest_settings = _load_latest_settings()
+        presets = latest_settings.get("PRESETS") or []
+        updated = [preset for preset in presets if preset.get("id") != preset_id]
+        if len(updated) == len(presets):
+            flash("Preset non trovato.")
+            return redirect(next_url)
+        latest_settings["PRESETS"] = updated
+        if latest_settings.get("ACTIVE_PRESET_ID") == preset_id and updated:
+            latest_settings["ACTIVE_PRESET_ID"] = updated[0]["id"]
+        _save_latest_settings(latest_settings)
+        flash("Preset notifica rimosso.")
+        return redirect(next_url)
+
+    @app.route('/emby/latest/notification-settings', methods=['POST'])
+    @login_required
+    def emby_latest_save_notification_settings():
+        next_url = _resolve_next_url(request.form.get('next'), 'emby_dashboard')
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            flash("Config non valida.")
+            return redirect(next_url)
+        try:
+            _ensure_db_backend()
+        except StorageError as exc:
+            flash(f"Errore DB: {exc}")
+            return redirect(next_url)
+        latest_settings = _load_latest_settings()
+        preset_id = (request.form.get('latest_active_preset_id') or '').strip()
+        if preset_id:
+            latest_settings["ACTIVE_PRESET_ID"] = preset_id
+        if "latest_telegram_presets" in request.form:
+            telegram_presets = [value for value in request.form.getlist('latest_telegram_presets') if value]
+            latest_settings["TELEGRAM_PRESET_IDS"] = telegram_presets
+        _save_latest_settings(latest_settings)
+        flash("Impostazioni notifiche salvate.")
+        return redirect(next_url)
+
+    @app.route('/emby/latest/state/clear', methods=['POST'])
+    @login_required
+    def emby_latest_clear_state_route():
+        """
+        Azzera lo STATE del sistema "Pubblicati" (Latest).
+        Rimuove tutti i dati su film/serie già notificati, ripristinando il tracking.
+        Mantiene SETTINGS, PRESETS e altre configurazioni.
+        """
+        next_url = request.form.get('next') or '/emby/dashboard'
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            flash("Config non valida.")
+            return redirect(next_url)
+
+        if not _db_enabled(config.get("DATABASE", {})):
+            flash("Database non abilitato - STATE persistence non attivo.")
+            return redirect(next_url)
+
+        try:
+            latest_settings = _load_latest_settings()
+            # Azzera solo lo STATE, mantieni tutto il resto
+            latest_settings["STATE"] = {
+                "movies": {},
+                "series": {}
+            }
+            latest_settings["CACHE"] = {}
+            _save_latest_settings(latest_settings)
+            with _LATEST_CACHE_LOCK:
+                _LATEST_CACHE["payload"] = None
+                _LATEST_CACHE["timestamp"] = None
+                _LATEST_CACHE["params"] = None
+            flash("✅ STATE delle Ultime Pubblicazioni azzerato con successo. Tutti gli item verranno rilevati come nuovi al prossimo fetch.")
+            return redirect(next_url)
+        except StorageError as exc:
+            flash(f"Errore durante azzeramento STATE: {exc}")
+            return redirect(next_url)
 
     @app.route('/rss/inspect', methods=['POST'])
     @login_required
@@ -4854,9 +10603,10 @@ def create_dashboard_app():
     @login_required
     def update_scheduler_route():
         config, is_valid = load_config()
+        next_url = _resolve_next_url(request.form.get('next'), 'dashboard')
         if not is_valid or not config:
             flash("Config non valida.")
-            return redirect(url_for('dashboard'))
+            return redirect(next_url)
         current = config.get("AUTO_TASKS") or _default_auto_tasks()
         updated = copy.deepcopy(current)
         updated["scan"] = _parse_auto_task_payload(request.form, "scan", current.get("scan", _default_auto_tasks()["scan"]))
@@ -4865,7 +10615,7 @@ def create_dashboard_app():
             _update_app_settings_overrides({"AUTO_TASKS": updated})
         except StorageError as exc:
             flash(f"Errore salvataggio automazioni: {exc}")
-            return redirect(url_for('dashboard'))
+            return redirect(next_url)
         global _ACTIVE_CONFIG
         if _ACTIVE_CONFIG is None:
             _ACTIVE_CONFIG = copy.deepcopy(DEFAULT_CONFIG)
@@ -4873,7 +10623,7 @@ def create_dashboard_app():
         config["AUTO_TASKS"] = updated
         _sync_auto_scheduler(is_valid)
         flash("Automazioni aggiornate")
-        return redirect(url_for('dashboard'))
+        return redirect(next_url)
 
     @app.route('/run-scan', methods=['POST'])
     @login_required
@@ -4950,6 +10700,8 @@ def create_dashboard_app():
         trakt_ok, trakt_msg, trakt_configured = _ping_trakt(config)
         jack_ok, jack_msg, jack_configured = _ping_jackett(config)
         justwatch_ok, justwatch_msg, justwatch_configured = _ping_justwatch(config)
+        mdblist_ok, mdblist_msg, mdblist_configured = _ping_mdblist(config)
+        omdb_ok, omdb_msg, omdb_configured = _ping_omdb(config)
 
         return jsonify({
             "success": True,
@@ -4958,6 +10710,8 @@ def create_dashboard_app():
                 "prowlarr": {"ok": prowlarr_ok, "message": prowlarr_msg},
                 "qbittorrent": {"ok": qb_ok, "message": qb_msg, "configured": qb_configured},
                 "jackett": {"ok": jack_ok, "message": jack_msg, "configured": jack_configured},
+                "mdblist": {"ok": mdblist_ok, "message": mdblist_msg, "configured": mdblist_configured},
+                "omdb": {"ok": omdb_ok, "message": omdb_msg, "configured": omdb_configured},
                 "trakt": {"ok": trakt_ok, "message": trakt_msg, "configured": trakt_configured},
                 "justwatch": {"ok": justwatch_ok, "message": justwatch_msg, "configured": justwatch_configured},
                 "database": {"ok": db_ok, "message": db_msg}
@@ -5069,14 +10823,16 @@ def create_dashboard_app():
             expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
 
             try:
-                raw_config = read_raw_config() or {}
-                trakt_config = raw_config.get('TRAKT', {})
+                app_settings = _load_app_settings_snapshot()
+                trakt_config = app_settings.get('TRAKT', {})
+                if not isinstance(trakt_config, dict):
+                    trakt_config = {}
                 trakt_config['CLIENT_ID'] = client_id
                 trakt_config['ACCESS_TOKEN'] = access_token
                 trakt_config['ENABLED'] = True
                 trakt_config['EXPIRES_AT'] = expires_at.isoformat()
-                raw_config['TRAKT'] = trakt_config
-                config_write_file(raw_config)
+                app_settings['TRAKT'] = trakt_config
+                _save_app_settings_snapshot(app_settings)
                 load_config()
             except Exception as exc:
                 print(f"   -> Errore salvataggio token Trakt: {exc}")
@@ -5096,15 +10852,17 @@ def create_dashboard_app():
     def trakt_clear():
         """Clear Trakt access token from configuration."""
         try:
-            raw_config = read_raw_config() or {}
-            trakt_config = raw_config.get('TRAKT', {})
+            app_settings = _load_app_settings_snapshot()
+            trakt_config = app_settings.get('TRAKT', {})
+            if not isinstance(trakt_config, dict):
+                trakt_config = {}
 
             # Clear access token
             trakt_config['ACCESS_TOKEN'] = ''
             trakt_config['ENABLED'] = False
 
-            raw_config['TRAKT'] = trakt_config
-            config_write_file(raw_config)
+            app_settings['TRAKT'] = trakt_config
+            _save_app_settings_snapshot(app_settings)
 
             return jsonify({
                 "success": True,
@@ -5216,6 +10974,115 @@ def _ping_justwatch(config):
         return False, "JustWatch non disponibile", True
     locale = settings.get("LOCALE") or "it_IT"
     return True, f"Locale {locale}", True
+
+def _ping_mdblist(config):
+    """Test connessione MDBList API."""
+    api_keys = (config or {}).get("MDBLIST_API_KEYS", [])
+    if not api_keys:
+        return False, "API Keys non configurate", False
+
+    # Test con un IMDb ID noto (The Shawshank Redemption)
+    test_imdb_id = "tt0111161"
+    working_keys = 0
+    failed_keys = 0
+    last_error = ""
+
+    for api_key in api_keys:
+        try:
+            response = requests.get(
+                "https://mdblist.com/api/",
+                params={"apikey": api_key, "i": test_imdb_id},
+                timeout=10
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                failed_keys += 1
+                last_error = "Risposta API non valida"
+                continue
+            if payload.get("error"):
+                failed_keys += 1
+                last_error = f"Errore: {payload.get('error')}"
+                continue
+            # Verifica che abbia restituito dati validi
+            title = payload.get("title")
+            if not title:
+                failed_keys += 1
+                last_error = "Risposta API incompleta"
+                continue
+            working_keys += 1
+        except requests.RequestException as exc:
+            failed_keys += 1
+            last_error = f"Errore connessione: {exc}"
+        except Exception as exc:
+            failed_keys += 1
+            last_error = f"Errore: {exc}"
+
+    if working_keys == 0:
+        return False, f"Tutte le chiavi fallite. Ultimo errore: {last_error}", True
+    elif failed_keys == 0:
+        return True, f"Tutte le {working_keys} chiavi funzionanti", True
+    else:
+        return True, f"{working_keys} chiavi OK, {failed_keys} fallite", True
+
+def _ping_omdb(config):
+    """Test connessione OMDB API."""
+    api_keys = (config or {}).get("OMDB_API_KEYS", [])
+    if not api_keys:
+        # Backward compatibility with single key
+        api_key = (config or {}).get("OMDB_API_KEY")
+        if not api_key:
+            api_key = os.getenv("OMDB_API_KEY", "")
+        if api_key:
+            api_keys = [api_key]
+
+    if not api_keys:
+        return False, "API Keys non configurate", False
+
+    # Test con un IMDb ID noto (The Shawshank Redemption)
+    test_imdb_id = "tt0111161"
+    working_keys = 0
+    failed_keys = 0
+    last_error = ""
+
+    for api_key in api_keys:
+        try:
+            response = requests.get(
+                "https://www.omdbapi.com/",
+                params={"i": test_imdb_id, "apikey": api_key},
+                timeout=10
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                failed_keys += 1
+                last_error = "Risposta API non valida"
+                continue
+            if payload.get("Response") == "False":
+                error = payload.get("Error", "Errore sconosciuto")
+                failed_keys += 1
+                last_error = f"Errore OMDB: {error}"
+                continue
+            # Verifica che abbia restituito dati validi
+            title = payload.get("Title")
+            if not title:
+                failed_keys += 1
+                last_error = "Risposta API incompleta"
+                continue
+            working_keys += 1
+        except requests.RequestException as exc:
+            failed_keys += 1
+            last_error = f"Errore connessione: {exc}"
+        except Exception as exc:
+            failed_keys += 1
+            last_error = f"Errore: {exc}"
+
+    if working_keys == 0:
+        return False, f"Tutte le chiavi fallite. Ultimo errore: {last_error}", True
+    elif failed_keys == 0:
+        return True, f"Tutte le {working_keys} chiavi funzionanti", True
+    else:
+        return True, f"{working_keys} chiavi OK, {failed_keys} fallite", True
 
 def _check_service_connection(ping_func, config, service_name, error_message_template, show_success=False):
     """

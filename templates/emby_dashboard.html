@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>Emby Toolkit</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link rel="stylesheet" href="{{ url_for('static', filename='emby.css') }}">
 </head>
 <body>
@@ -26,8 +27,16 @@
                title="Apri STRM Probe">
                 STRM Probe
                 {% if total_blacklist_count > 0 %}
-                    <span class="notification-badge">{{ total_blacklist_count }}</span>
+                    <span class="notification-badge" title="Errori / Incompleti">{{ total_blacklist_count }}</span>
                 {% endif %}
+                {% if total_incomplete_count > 0 %}
+                    <span class="notification-badge warning" title="Errori / Incompleti">{{ total_incomplete_count }}</span>
+                {% endif %}
+            </a>
+            <a href="{{ url_for('configuration') }}"
+               class="nav-link {% if active_page == 'config' %}active{% endif %}"
+               title="Apri Configurazione">
+                Configurazione
             </a>
             <a href="{{ url_for('auth_logout') }}"
                class="nav-link"
@@ -49,7 +58,6 @@
                 <button class="tab-btn active" data-tab="actions" title="Operazioni rapide e stato server">Operazioni</button>
                 <button class="tab-btn" data-tab="libraries" title="Gestione librerie Emby">Librerie</button>
                 <button class="tab-btn" data-tab="latest" title="Ultime pubblicazioni dai server Emby">Pubblicazioni</button>
-                <button class="tab-btn" data-tab="config" title="Configurazione server Emby">Configurazione</button>
             </div>
 
             <div class="tab-panel active" data-tab-panel="actions">
@@ -70,7 +78,7 @@
                                 <article class="server-card" data-server-id="{{ server.id }}">
                                     <div class="server-card-header">
                                         <div>
-                                            <h3>{{ server.name or "Server Emby" }}</h3>
+                                            <h3>{{ server.alias or server.original_name or server.name or "Server Emby" }}</h3>
                                             <p class="meta">{{ server.url }}</p>
                                         </div>
                                         {% if server.status and server.status.ok %}
@@ -158,7 +166,7 @@
                             {% endfor %}
                         </div>
                     {% else %}
-                        <p class="tagline">Nessun server Emby configurato. Aggiungine uno nella scheda Configurazione.</p>
+                        <p class="tagline">Nessun server Emby configurato. Aggiungine uno nella pagina Configurazione.</p>
                     {% endif %}
                 </div>
             </div>
@@ -197,7 +205,7 @@
                                 <article class="server-card compact" data-server-id="{{ server.id }}">
                                     <div class="server-card-header">
                                         <div>
-                                            <h3>{{ server.name or "Server Emby" }}</h3>
+                                            <h3>{{ server.alias or server.original_name or server.name or "Server Emby" }}</h3>
                                             <p class="meta">{{ server.url }}</p>
                                         </div>
                                     </div>
@@ -210,7 +218,7 @@
                             {% endfor %}
                         </div>
                     {% else %}
-                        <p class="tagline">Nessun server Emby configurato. Aggiungine uno nella scheda Configurazione.</p>
+                        <p class="tagline">Nessun server Emby configurato. Aggiungine uno nella pagina Configurazione.</p>
                     {% endif %}
                 </div>
                 <div class="card" id="association-card">
@@ -253,17 +261,31 @@
                         <div>
                             <h2>Ultime pubblicazioni</h2>
                             <p class="tagline">Film e serie TV aggiunti di recente nei server Emby connessi.</p>
+                            <p class="tagline" data-cache-status style="display:none; font-size: 0.8rem; color: #6b7280; margin-top: 0.25rem;"></p>
+                            <div class="latest-progress" data-latest-progress style="display: none;">
+                                <div class="progress-row">
+                                    <div class="progress-track">
+                                        <div class="progress-bar" data-latest-progress-bar></div>
+                                    </div>
+                                    <span class="tagline" data-latest-progress-text>0%</span>
+                                </div>
+                                <p class="tagline" data-latest-progress-meta></p>
+                            </div>
                         </div>
-                        <button class="btn secondary" type="button" data-latest-refresh title="Aggiorna l'elenco delle ultime pubblicazioni">Aggiorna</button>
+                        <div class="latest-actions">
+                            <button class="btn secondary" type="button" data-latest-refresh title="Aggiorna l'elenco delle ultime pubblicazioni">Aggiorna</button>
+                            <button class="btn secondary" type="button" data-latest-verify-data title="Verifica quali dati sono disponibili per TMDB, OMDB e Trakt">Verifica Dati</button>
+                            <button class="btn primary" type="button" data-latest-notify title="Invia le notifiche Telegram per le ultime pubblicazioni">Invia notifiche</button>
+                        </div>
                     </div>
                     {% if emby_servers %}
                         <div class="server-tabs latest-server-tabs" data-latest-server-tabs>
-                            <button class="server-tab active" type="button" data-latest-server="all">Tutti</button>
                             {% for server in emby_servers %}
                                 <button class="server-tab" type="button" data-latest-server="{{ server.id }}">
-                                    {{ server.name or server.url }}
+                                    {{ server.alias or server.original_name or server.name or server.url }}
                                 </button>
                             {% endfor %}
+                            <button class="server-tab active" type="button" data-latest-server="all">Tutti</button>
                         </div>
                     {% endif %}
                     <div class="latest-grid">
@@ -286,128 +308,241 @@
                             </div>
                         </section>
                     </div>
-                </div>
-            </div>
 
-            <div class="tab-panel" data-tab-panel="config">
-                <div class="card">
-                    <h2>Configurazione server Emby</h2>
-                    <p class="tagline">Imposta solo i dati essenziali. Le opzioni avanzate sono disponibili nei dettagli.</p>
-                    {% if emby_servers %}
-                        <div class="server-grid">
-                            {% for server in emby_servers %}
-                                <article class="server-card compact">
-                                    <form class="server-form" action="{{ url_for('emby_save_server') }}" method="post">
-                                        <input type="hidden" name="server_id" value="{{ server.id }}">
-                                        <div class="field-grid">
-                                            <label>
-                                                Nome
-                                                <input type="text" name="server_name" value="{{ server.name }}" required>
-                                            </label>
-                                            <label>
-                                                Icona
-                                                <input type="text" name="server_icon" value="{{ server.icon or '📺' }}" placeholder="📺" maxlength="10">
-                                                <span class="tagline">Emoji o testo per identificare il server (es. 🏠, 🌐, SRV1)</span>
-                                            </label>
-                                            <label>
-                                                URL Emby
-                                                <input type="url" name="server_url" value="{{ server.url }}" required>
-                                            </label>
-                                            <label>
-                                                API Key
-                                                <input type="password" name="server_api_key" value="{{ server.api_key }}">
-                                            </label>
-                                            <label>
-                                                Abilitato
-                                                <select name="server_enabled">
-                                                    <option value="1" {% if server.enabled %}selected{% endif %}>Sì</option>
-                                                    <option value="0" {% if not server.enabled %}selected{% endif %}>No</option>
-                                                </select>
-                                            </label>
+                    <div class="latest-config">
+                        <div class="latest-config-header">
+                            <h3>Notifiche Telegram</h3>
+                            <p class="tagline">Configura preset messaggi e destinazioni per le notifiche future.</p>
+                        </div>
+                        <div class="latest-config-grid latest-config-grid-three">
+                            <div class="latest-config-col">
+                                <div class="latest-config-card latest-preset-card">
+                                    <h4>Gestione preset</h4>
+                                    <form action="{{ url_for('emby_latest_add_preset') }}" method="post" class="latest-config-form" data-latest-preset-form>
+                                        <input type="hidden" name="latest_preset_id" id="latest_preset_id" value="">
+                                        <label for="latest_preset_name">Nome preset</label>
+                                        <input type="text" id="latest_preset_name" name="latest_preset_name" placeholder="Notifiche Emby" data-latest-preset-name>
+                                        <div class="latest-label-row">
+                                            <label for="latest_preset_template">Template messaggio</label>
+                                            <button class="btn ghost small" type="button" data-latest-token-help>Guida pattern</button>
                                         </div>
-                                        <details class="advanced-block">
-                                            <summary>Opzioni avanzate</summary>
-                                            <div class="field-grid">
-                                                <label>
-                                                    Note
-                                                    <input type="text" name="server_notes" value="{{ server.notes }}">
-                                                </label>
-                                                <label>
-                                                    STRM Task ID
-                                                    <input type="text" name="server_strm_task_id" value="{{ server.strm_task_id }}"
-                                                           list="strm-tasks-{{ server.id }}">
-                                                    {% if server.scheduled_tasks %}
-                                                        <datalist id="strm-tasks-{{ server.id }}">
-                                                            {% for task in server.scheduled_tasks %}
-                                                                <option value="{{ task.id }}">{{ task.name or task.id }}</option>
-                                                            {% endfor %}
-                                                        </datalist>
-                                                    {% endif %}
-                                                </label>
-                                            </div>
-                                        </details>
-                                        <div class="server-actions">
-                                            <button class="btn primary" type="submit" title="Salva o aggiorna questo server">Salva server</button>
+                                        <textarea id="latest_preset_template" name="latest_preset_template" rows="12" placeholder="Usa i pattern disponibili per comporre il messaggio." data-latest-template-input></textarea>
+                                        <div class="latest-token-hint">
+                                            Apri la guida pattern per vedere descrizioni, esempi e inserimento rapido.
+                                            <br>
+                                            Sintassi Jinja2: usa <code>{{ '{{ title }}' }}</code> e filtri come <code>{{ '{{ title | upper }}' }}</code> o <code>{{ "{{ rating | default('N/D') }}" }}</code>. I vecchi <code>{title}</code> restano compatibili.
+                                            <br>
+                                            Formattazione Telegram: usa <code>&lt;b&gt;testo&lt;/b&gt;</code>, <code>&lt;i&gt;testo&lt;/i&gt;</code>, <code>&lt;u&gt;testo&lt;/u&gt;</code>, <code>&lt;s&gt;testo&lt;/s&gt;</code>, <code>&lt;code&gt;codice&lt;/code&gt;</code>.
+                                            <br>
+                                            Link rapido: <code>&lt;a href="{{ '{{ imdb_url }}' }}"&gt;IMDb&lt;/a&gt;</code> (idem per Trakt/TMDB).
+                                            <br>
+                                            Cast con limite: usa <code>{{ '{{ cast_3 }}' }}</code> (sostituisci il numero).
+                                        </div>
+                                        <div class="latest-preset-actions">
+                                            <button class="btn primary" type="submit" data-latest-preset-submit>Salva preset</button>
+                                            <button class="btn ghost" type="button" data-latest-preset-cancel hidden>Annulla</button>
                                         </div>
                                     </form>
-                                </article>
-                            {% endfor %}
-                        </div>
-                    {% else %}
-                        <p class="tagline">Nessun server Emby configurato. Aggiungine uno qui sotto.</p>
-                    {% endif %}
-                </div>
-                <div class="card">
-                    <h2>Aggiungi nuovo server</h2>
-                    <form class="server-form" action="{{ url_for('emby_save_server') }}" method="post">
-                        <div class="field-grid">
-                            <label>
-                                Nome
-                                <input type="text" name="server_name" required>
-                            </label>
-                            <label>
-                                Icona
-                                <input type="text" name="server_icon" placeholder="📺" maxlength="10" value="📺">
-                                <span class="tagline">Emoji o testo per identificare il server (es. 🏠, 🌐, SRV1)</span>
-                            </label>
-                            <label>
-                                URL Emby
-                                <input type="url" name="server_url" required>
-                            </label>
-                            <label>
-                                API Key
-                                <input type="password" name="server_api_key">
-                            </label>
-                            <label>
-                                Abilitato
-                                <select name="server_enabled">
-                                    <option value="1" selected>Sì</option>
-                                    <option value="0">No</option>
-                                </select>
-                            </label>
-                        </div>
-                        <details class="advanced-block">
-                            <summary>Opzioni avanzate</summary>
-                            <div class="field-grid">
-                                <label>
-                                    STRM Task ID
-                                    <input type="text" name="server_strm_task_id">
-                                </label>
-                                <label>
-                                    Note
-                                    <input type="text" name="server_notes">
-                                </label>
+                                    {% if latest_message_presets %}
+                                        <div class="latest-config-list" data-latest-preset-list>
+                                            {% for preset in latest_message_presets %}
+                                                <div class="latest-config-row" data-latest-preset-row data-preset-id="{{ preset.id }}" data-preset-name='{{ preset.name | tojson | safe }}' data-preset-template='{{ preset.template | tojson | safe }}'>
+                                                    <div>
+                                                        <div class="latest-config-title">{{ preset.name }}</div>
+                                                        <div class="latest-config-sub">{{ preset.template | truncate(80) }}</div>
+                                                    </div>
+                                                    <div class="latest-config-actions">
+                                                        <button class="btn ghost small" type="button" data-latest-preset-edit>Modifica</button>
+                                                        <form action="{{ url_for('emby_latest_remove_preset') }}" method="post">
+                                                            <input type="hidden" name="latest_preset_id" value="{{ preset.id }}">
+                                                            <button class="btn ghost small" type="submit">Rimuovi</button>
+                                                        </form>
+                                                    </div>
+                                                </div>
+                                            {% endfor %}
+                                        </div>
+                                    {% endif %}
+                                </div>
                             </div>
-                        </details>
-                        <div class="server-actions">
-                            <button class="btn primary" type="submit" title="Aggiungi un nuovo server Emby">Salva server</button>
+
+                            <div class="latest-config-col">
+                                <div class="latest-config-card latest-preview-card">
+                                    <h4>Anteprima notifiche</h4>
+                                    <div class="latest-preview-controls latest-config-form">
+                                        <div class="latest-preview-selects">
+                                            <div class="latest-preview-select">
+                                                <label for="latest_preview_movie">Film anteprima</label>
+                                                <select id="latest_preview_movie" data-preview-movie-select>
+                                                    <option value="">Caricamento...</option>
+                                                </select>
+                                            </div>
+                                            <div class="latest-preview-select">
+                                                <label for="latest_preview_series">Serie anteprima</label>
+                                                <select id="latest_preview_series" data-preview-series-select>
+                                                    <option value="">Caricamento...</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                        <div class="latest-preview-help">Suggerimento: scegli un item con l'aggiornamento che vuoi simulare. L'anteprima usa dati reali.</div>
+                                    </div>
+                                    <div class="latest-preview-filters" data-latest-preview-filters>
+                                        <button class="filter active" type="button" data-preview-filter="movie">Film</button>
+                                        <button class="filter" type="button" data-preview-filter="series">Serie TV</button>
+                                    </div>
+                                    <div class="latest-preview-scroll" data-latest-preview-scroll>
+                                        <div class="latest-preview-item" data-preview-type="movie">
+                                            <div class="latest-preview-card-inner">
+                                                <div class="latest-preview-image" data-preview-image></div>
+                                                <div class="latest-preview-bubble">
+                                                    <div class="latest-preview-text" data-preview-text>Anteprima in arrivo.</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="latest-preview-item" data-preview-type="series">
+                                            <div class="latest-preview-card-inner">
+                                                <div class="latest-preview-image" data-preview-image></div>
+                                                <div class="latest-preview-bubble">
+                                                    <div class="latest-preview-text" data-preview-text>Anteprima in arrivo.</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="latest-config-col">
+                                <div class="latest-config-card">
+                                    <h4>Preset attivo</h4>
+                                    <form action="{{ url_for('emby_latest_save_notification_settings') }}" method="post" class="latest-config-form">
+                                        <label for="latest_active_preset_id">Preset attivo</label>
+                                        <select id="latest_active_preset_id" name="latest_active_preset_id" data-latest-active-preset>
+                                            {% for preset in latest_message_presets %}
+                                                <option value="{{ preset.id }}" data-template='{{ preset.template | tojson | safe }}' {% if preset.id == latest_active_preset_id %}selected{% endif %}>
+                                                    {{ preset.name }}
+                                                </option>
+                                            {% endfor %}
+                                        </select>
+                                        <button class="btn secondary" type="submit">Salva preset attivo</button>
+                                    </form>
+                                </div>
+                                <div class="latest-config-card">
+                                    <h4>Destinatari</h4>
+                                    <form action="{{ url_for('emby_latest_save_notification_settings') }}" method="post" class="latest-config-form">
+                                        <label for="latest_telegram_presets">Preconfigurazioni Telegram</label>
+                                        {% if telegram_presets %}
+                                            <select id="latest_telegram_presets" name="latest_telegram_presets" multiple>
+                                                {% for preset in telegram_presets %}
+                                                    <option value="{{ preset.id }}" {% if preset.id in latest_selected_telegram_presets %}selected{% endif %}>
+                                                        {{ preset.name }}
+                                                    </option>
+                                                {% endfor %}
+                                            </select>
+                                        {% else %}
+                                            <div class="empty-state">Nessuna preconfigurazione Telegram salvata.</div>
+                                        {% endif %}
+                                        <button class="btn primary" type="submit">Salva destinatari</button>
+                                    </form>
+                                </div>
+                                <div class="latest-config-card">
+                                    <h4>Manutenzione</h4>
+                                    <form action="{{ url_for('emby_latest_clear_state_route') }}" method="post" class="latest-config-form" onsubmit="return confirm('⚠️ Questa operazione azzererà lo stato di tracking delle ultime pubblicazioni. Tutti i contenuti verranno rilevati come nuovi al prossimo fetch.\n\nContinuare?');">
+                                        <input type="hidden" name="next" value="{{ url_for('emby_dashboard') }}">
+                                        <p class="form-help">Azzera lo stato di tracking (notified flag) mantenendo tutte le altre configurazioni.</p>
+                                        <button class="btn danger" type="submit">Azzera STATE Pubblicazioni</button>
+                                    </form>
+                                </div>
+                            </div>
                         </div>
-                    </form>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
     <div id="toast-container"></div>
+    <div class="latest-token-overlay" data-latest-token-overlay>
+        <div class="latest-token-modal">
+            <div class="latest-token-header">
+                <div>
+                    <h4>Pattern notifiche</h4>
+                    <p class="tagline">Doppio click su un pattern per inserirlo nel template.</p>
+                </div>
+                <button class="btn ghost small" type="button" data-latest-token-close>Chiudi</button>
+            </div>
+            <div class="latest-token-search">
+                <input type="text" placeholder="Cerca pattern..." data-latest-token-search>
+            </div>
+            <div class="tagline">Sintassi Jinja2: <code>{{ '{{ title }}' }}</code> con filtri <code>|</code> (es. <code>{{ '{{ title | upper }}' }}</code>). I vecchi <code>{title}</code> restano compatibili.</div>
+            <div class="tagline">Versioni multiple: usa <code>versions</code> in Jinja2 per ciclare tutti i file, oppure i token <code>best_*</code> per la versione migliore.</div>
+            <div class="tagline">Le immagini TMDB richiedono una TMDB API key configurata. Le immagini Emby richiedono un URL pubblico.</div>
+            <div class="latest-token-list" data-latest-token-list></div>
+        </div>
+    </div>
+
+    <div class="latest-verify-overlay" data-latest-verify-overlay style="display: none;">
+        <div class="latest-verify-modal">
+            <div class="latest-verify-header">
+                <div>
+                    <h4>Verifica Dati Disponibili</h4>
+                    <p class="tagline">Controlla quali dati sono recuperati da TMDB, OMDB e Trakt per le tue pubblicazioni.</p>
+                </div>
+                <button class="btn ghost small" type="button" data-latest-verify-close>Chiudi</button>
+            </div>
+
+            <div class="latest-verify-filters">
+                <div class="latest-verify-filter-group">
+                    <label for="verify-server-select">Server</label>
+                    <select id="verify-server-select" data-latest-verify-server>
+                        <option value="">Seleziona un server...</option>
+                    </select>
+                </div>
+                <div class="latest-verify-filter-group">
+                    <label for="verify-type-select">Tipo</label>
+                    <select id="verify-type-select" data-latest-verify-type disabled>
+                        <option value="">Seleziona tipo...</option>
+                        <option value="movie">Film</option>
+                        <option value="series">Serie TV</option>
+                    </select>
+                </div>
+                <div class="latest-verify-filter-group">
+                    <label for="verify-item-select">Contenuto</label>
+                    <select id="verify-item-select" data-latest-verify-item disabled>
+                        <option value="">Seleziona contenuto...</option>
+                    </select>
+                </div>
+                <button class="btn primary" type="button" data-latest-verify-check disabled>Verifica</button>
+                <button class="btn secondary" type="button" data-latest-verify-enrich disabled title="Forza aggiornamento dati da TMDB/OMDB/Trakt">Aggiorna Dati</button>
+            </div>
+
+            <div class="latest-verify-loading" data-latest-verify-loading style="display: none;">
+                <div class="spinner"></div>
+                <p>Caricamento in corso...</p>
+            </div>
+
+            <div class="latest-verify-results" data-latest-verify-results style="display: none;">
+                <div class="latest-verify-section">
+                    <h5>Informazioni comuni</h5>
+                    <div class="latest-verify-subsection">
+                        <h6>Disponibili <span class="badge" data-verify-common-count-available>0</span></h6>
+                        <div class="latest-verify-fields" data-verify-common-available></div>
+                    </div>
+                    <div class="latest-verify-subsection" data-verify-common-added-wrap>
+                        <h6>Dati appena aggiunti <span class="badge success" data-verify-common-count-added>0</span></h6>
+                        <div class="latest-verify-fields" data-verify-common-added></div>
+                    </div>
+                    <div class="latest-verify-subsection">
+                        <h6>Mancanti <span class="badge" data-verify-common-count-missing>0</span></h6>
+                        <div class="latest-verify-fields" data-verify-common-missing></div>
+                        <p class="tagline">Alcuni dati potrebbero non essere disponibili dalle API esterne (es. Metacritic per serie TV se non presente nelle fonti).</p>
+                    </div>
+                </div>
+                <div class="latest-verify-section">
+                    <h5>File / Versioni</h5>
+                    <div data-verify-files></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="{{ url_for('static', filename='emby.js') }}"></script>
 </body>
 </html>

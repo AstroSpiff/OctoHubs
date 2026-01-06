@@ -43,7 +43,32 @@
                 }
             });
         };
+        const ensureNextInForms = () => {
+            const nextValue = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+            document.querySelectorAll('form[method="post"]').forEach(form => {
+                let input = form.querySelector('input[name="next"]');
+                if (!input) {
+                    input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = 'next';
+                    form.appendChild(input);
+                }
+                input.value = nextValue;
+            });
+        };
         ensureCsrfInForms();
+        ensureNextInForms();
+
+        document.addEventListener('submit', (event) => {
+            const form = event.target;
+            if (!(form instanceof HTMLFormElement)) {
+                return;
+            }
+            if ((form.getAttribute('method') || '').toLowerCase() !== 'post') {
+                return;
+            }
+            ensureNextInForms();
+        }, true);
 
         const toastContainer = document.getElementById('toast-container');
         const showToast = (message, type = 'success') => {
@@ -82,6 +107,9 @@
 
         // Main tabs (Ricerche, Regole, Config)
         const mainTabsContainer = document.querySelector('.tab-shell > .tabs');
+        const tabPage = mainTabsContainer
+            ? (mainTabsContainer.dataset.tabPage || document.body.dataset.tabPage || 'dashboard')
+            : 'dashboard';
         let mainTabButtons = mainTabsContainer ? mainTabsContainer.querySelectorAll('.tab-btn') : [];
         let mainTabPanels = document.querySelectorAll('.tab-shell > .tab-panel');
 
@@ -109,7 +137,7 @@
         };
         const fetchMainTabOrder = async () => {
             try {
-                const response = await csrfFetch('/api/ui/tab-order?page=dashboard');
+                const response = await csrfFetch(`/api/ui/tab-order?page=${encodeURIComponent(tabPage)}`);
                 if (!response.ok) {
                     return null;
                 }
@@ -137,7 +165,7 @@
                 await csrfFetch('/api/ui/tab-order', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ page: 'dashboard', order })
+                    body: JSON.stringify({ page: tabPage, order })
                 });
             } catch (err) {
                 // ignore
@@ -311,8 +339,10 @@
             }
         }
 
-        refreshStatus();
-        setInterval(refreshStatus, 4000);
+        if (statusText && progressBar && progressLabel) {
+            refreshStatus();
+            setInterval(refreshStatus, 4000);
+        }
 
         document.addEventListener('click', async (event) => {
             const qbBtn = event.target.closest('.qb-button');
@@ -336,7 +366,7 @@
 
         const connectionBtn = document.getElementById('test-connections-btn');
         if (connectionBtn) {
-            const services = ['jellyseerr', 'prowlarr', 'jackett', 'qbittorrent', 'trakt', 'justwatch', 'database'];
+            const services = ['jellyseerr', 'prowlarr', 'jackett', 'qbittorrent', 'omdb', 'trakt', 'justwatch', 'database'];
             const setConnectionStatus = (service, state, message, label) => {
                 const pill = document.querySelector(`[data-service="${service}-status"]`);
                 const msg = document.querySelector(`[data-service="${service}-msg"]`);
@@ -2245,6 +2275,54 @@
                 tmdbSelectedAvailability.classList.remove('is-hidden');
             };
 
+            const sanitizeText = (value) => {
+                const text = String(value ?? '');
+                return text.replace(/[&<>"']/g, (match) => ({
+                    '&': '&amp;',
+                    '<': '&lt;',
+                    '>': '&gt;',
+                    '"': '&quot;',
+                    "'": '&#39;'
+                }[match]));
+            };
+
+            const normalizeFaIcon = (icon, fallback = '') => {
+                const value = typeof icon === 'string' ? icon.trim() : '';
+                if (value && value.startsWith('fa-')) {
+                    return value;
+                }
+                return fallback;
+            };
+
+            const normalizeFaStyle = (style) => {
+                return style === 'regular' ? 'fa-regular' : 'fa-solid';
+            };
+
+            const normalizeFaColor = (color) => {
+                const value = typeof color === 'string' ? color.trim() : '';
+                if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value)) {
+                    return value;
+                }
+                return '#3b82f6';
+            };
+
+            const buildServerIconHtml = (icon, style, color, fallbackIcon = '') => {
+                const faIcon = normalizeFaIcon(icon, fallbackIcon);
+                if (faIcon && faIcon.startsWith('fa-')) {
+                    const faStyle = normalizeFaStyle(style);
+                    const faColor = normalizeFaColor(color);
+                    return `<i class="${faStyle} ${faIcon}" style="color: ${faColor}"></i>`;
+                }
+                const fallbackText = fallbackIcon || icon || '';
+                return fallbackText ? sanitizeText(fallbackText) : '';
+            };
+
+            const buildServerLabelHtml = (name, icon, style, color) => {
+                const iconHtml = buildServerIconHtml(icon, style, color, '');
+                const nameHtml = sanitizeText(name || '');
+                return [iconHtml, nameHtml].filter(Boolean).join(' ');
+            };
+
             const renderEmbyAvailability = (servers) => {
                 if (!tmdbSelectedAvailability || !tmdbSelectedAvailabilityLabel || !tmdbSelectedAvailabilityIcons) {
                     return;
@@ -2263,12 +2341,20 @@
                     const button = document.createElement('button');
                     button.type = 'button';
                     button.className = 'emby-server-btn';
-                    button.textContent = entry.server_icon || '📺';
+                    const iconHtml = buildServerIconHtml(
+                        entry.server_icon,
+                        entry.server_icon_style,
+                        entry.server_icon_color,
+                        'fa-server'
+                    );
+                    button.innerHTML = iconHtml || sanitizeText(entry.server_icon || '');
                     button.title = entry.server_name ? `Disponibile su ${entry.server_name}` : 'Disponibile su Emby';
                     button.dataset.serverId = entry.server_id;
                     button.dataset.itemId = entry.item_id;
                     button.dataset.serverName = entry.server_name || '';
-                    button.dataset.serverIcon = entry.server_icon || '📺';
+                    button.dataset.serverIcon = entry.server_icon || '';
+                    button.dataset.serverIconStyle = entry.server_icon_style || '';
+                    button.dataset.serverIconColor = entry.server_icon_color || '';
                     tmdbSelectedAvailabilityIcons.appendChild(button);
                 });
                 tmdbSelectedAvailability.classList.remove('is-hidden');
@@ -3241,8 +3327,13 @@
                 activeEmbySourceIndex = null;
                 lastEmbyDetails = null;
                 if (tmdbEmbyBrowserTitle) {
-                    const titleParts = [context.serverIcon, context.serverName].filter(Boolean).join(' ');
-                    tmdbEmbyBrowserTitle.textContent = titleParts || 'Dettagli Emby';
+                    const titleHtml = buildServerLabelHtml(
+                        context.serverName,
+                        context.serverIcon,
+                        context.serverIconStyle,
+                        context.serverIconColor
+                    );
+                    tmdbEmbyBrowserTitle.innerHTML = titleHtml || 'Dettagli Emby';
                 }
                 setEmbyBrowserVisible(true);
                 if (selectedTmdbData && selectedTmdbData.media_type === 'tv') {
@@ -3424,7 +3515,9 @@
                         serverId,
                         itemId,
                         serverName: button.dataset.serverName || '',
-                        serverIcon: button.dataset.serverIcon || ''
+                        serverIcon: button.dataset.serverIcon || '',
+                        serverIconStyle: button.dataset.serverIconStyle || '',
+                        serverIconColor: button.dataset.serverIconColor || ''
                     });
                 });
             }
@@ -3617,9 +3710,15 @@
                             const icons = item.available_on
                                 .map(entry => {
                                     const label = entry.label || entry.server_name || 'Jellyseerr';
-                                    const icon = entry.icon || entry.server_icon || 'JS';
                                     const statusLabel = entry.status_label ? `: ${entry.status_label}` : '';
-                                    return `<span class="emby-icon" title="${label}${statusLabel}">${icon}</span>`;
+                                    const iconHtml = buildServerIconHtml(
+                                        entry.icon || entry.server_icon,
+                                        entry.icon_style || entry.server_icon_style,
+                                        entry.icon_color || entry.server_icon_color,
+                                        ''
+                                    );
+                                    const fallbackText = entry.icon || entry.server_icon || 'JS';
+                                    return `<span class="emby-icon" title="${sanitizeText(label + statusLabel)}">${iconHtml || sanitizeText(fallbackText)}</span>`;
                                 })
                                 .join(' ');
                             serverIconsHtml = `<span class="emby-availability">${icons}</span>`;
@@ -4039,19 +4138,29 @@
                 }
                 return 'other';
             };
-            const renderResultActions = (item) => {
-                const actions = [];
-                const badgeIcon = item.server_icon || item.emby_icon || '📺';
-                const titleValue = String(item.title || '');
-                const yearValue = item.year ? String(item.year) : '';
-                const libraryBadge = item.in_library
-                    ? `<button type="button"
+                const renderResultActions = (item) => {
+                    const actions = [];
+                    const badgeIcon = item.server_icon || item.emby_icon || '';
+                    const badgeIconStyle = item.server_icon_style || item.emby_icon_style || '';
+                    const badgeIconColor = item.server_icon_color || item.emby_icon_color || '';
+                    const badgeIconHtml = buildServerIconHtml(
+                        badgeIcon,
+                        badgeIconStyle,
+                        badgeIconColor,
+                        'fa-server'
+                    );
+                    const titleValue = String(item.title || '');
+                    const yearValue = item.year ? String(item.year) : '';
+                    const libraryBadge = item.in_library
+                        ? `<button type="button"
                               class="badge success action emby-lookup-btn"
                               data-title="${escapeHtml(titleValue)}"
                               data-year="${escapeHtml(yearValue)}"
                               data-emby-icon="${escapeHtml(badgeIcon)}"
-                              title="Dettagli Emby">${escapeHtml(badgeIcon)}</button>`
-                    : '';
+                              data-emby-icon-style="${escapeHtml(badgeIconStyle)}"
+                              data-emby-icon-color="${escapeHtml(badgeIconColor)}"
+                              title="Dettagli Emby">${badgeIconHtml || escapeHtml(badgeIcon || 'fa-server')}</button>`
+                        : '';
                 if (libraryBadge) {
                     actions.push(libraryBadge);
                 }
@@ -4411,6 +4520,17 @@
                 element.textContent = value ? String(value) : fallback;
             };
 
+            const setModalHtml = (element, value, fallback = '—') => {
+                if (!element) {
+                    return;
+                }
+                if (value) {
+                    element.innerHTML = value;
+                } else {
+                    element.textContent = fallback;
+                }
+            };
+
             const resetEmbyModal = () => {
                 setModalText(embyModalTitle, '');
                 setModalText(embyModalYear, '');
@@ -4680,10 +4800,13 @@
                         const details = data.details || {};
                         setModalText(embyModalTitle, details.title || title);
                         setModalText(embyModalYear, details.year);
-                        const serverLabel = details.server_icon
-                            ? `${details.server_icon} ${details.server || ''}`.trim()
-                            : details.server;
-                        setModalText(embyModalServer, serverLabel);
+                        const serverLabel = buildServerLabelHtml(
+                            details.server,
+                            details.server_icon,
+                            details.server_icon_style,
+                            details.server_icon_color
+                        );
+                        setModalHtml(embyModalServer, serverLabel);
                         setModalText(embyModalResolution, details.resolution);
                         setModalText(embyModalVideo, details.video_codec);
                         setModalText(embyModalAudio, details.audio_codec);
@@ -4707,8 +4830,16 @@
                             embyModalMessage.textContent = '';
                         }
                         if (details.server_icon) {
-                            embyBtn.textContent = details.server_icon;
+                            const iconHtml = buildServerIconHtml(
+                                details.server_icon,
+                                details.server_icon_style,
+                                details.server_icon_color,
+                                'fa-server'
+                            );
+                            embyBtn.innerHTML = iconHtml || sanitizeText(details.server_icon);
                             embyBtn.dataset.embyIcon = details.server_icon;
+                            embyBtn.dataset.embyIconStyle = details.server_icon_style || '';
+                            embyBtn.dataset.embyIconColor = details.server_icon_color || '';
                         }
                         if (details.server) {
                             embyBtn.title = `Disponibile su ${details.server}`;
@@ -4871,3 +5002,124 @@
 
         initIndependentSearchCustomize();
         initManualSearch();
+
+        const initTelegramEditors = () => {
+            if (!document.body || document.body.dataset.tabPage !== 'config') {
+                return;
+            }
+            const presetForm = document.querySelector('[data-telegram-preset-form]');
+            const presetIdInput = document.querySelector('[data-telegram-preset-id]');
+            const presetNameInput = document.getElementById('telegram_preset_name');
+            const presetSubmit = document.querySelector('[data-telegram-preset-submit]');
+            const presetButtons = document.querySelectorAll('[data-telegram-preset-edit]');
+
+            const parseJsonList = (value) => {
+                if (!value) {
+                    return [];
+                }
+                try {
+                    const parsed = JSON.parse(value);
+                    return Array.isArray(parsed) ? parsed : [];
+                } catch (err) {
+                    return [];
+                }
+            };
+
+            const setPresetEditing = (preset) => {
+                if (!presetForm || !presetNameInput || !presetSubmit || !presetIdInput) {
+                    return;
+                }
+                presetIdInput.value = preset.id || '';
+                presetNameInput.value = preset.name || '';
+                const botRadios = presetForm.querySelectorAll('input[name="telegram_preset_bot"]');
+                botRadios.forEach(radio => {
+                    radio.checked = preset.botId && radio.value === preset.botId;
+                });
+                const groupSet = new Set(preset.groupIds || []);
+                presetForm.querySelectorAll('input[name="telegram_preset_groups"]').forEach(box => {
+                    box.checked = groupSet.has(box.value);
+                });
+                const channelSet = new Set(preset.channelIds || []);
+                presetForm.querySelectorAll('input[name="telegram_preset_channels"]').forEach(box => {
+                    box.checked = channelSet.has(box.value);
+                });
+                presetSubmit.textContent = 'Aggiorna configurazione';
+                presetNameInput.focus();
+            };
+
+            if (presetButtons.length) {
+                presetButtons.forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        const preset = {
+                            id: btn.dataset.presetId || '',
+                            name: btn.dataset.presetName || '',
+                            botId: btn.dataset.presetBot || '',
+                            groupIds: parseJsonList(btn.dataset.presetGroups),
+                            channelIds: parseJsonList(btn.dataset.presetChannels)
+                        };
+                        setPresetEditing(preset);
+                    });
+                });
+            }
+
+            const botForm = document.querySelector('[data-telegram-bot-form]');
+            const botIdInput = document.querySelector('[data-telegram-bot-id]');
+            const botTokenInput = document.getElementById('telegram_bot_token');
+            const botAliasInput = document.getElementById('telegram_bot_alias');
+            const botSubmit = document.querySelector('[data-telegram-bot-submit]');
+
+            const groupForm = document.querySelector('[data-telegram-group-form]');
+            const groupIdInput = document.querySelector('[data-telegram-group-id]');
+            const groupChatInput = document.getElementById('telegram_group_id');
+            const groupAliasInput = document.getElementById('telegram_group_alias');
+            const groupSubmit = document.querySelector('[data-telegram-group-submit]');
+
+            const channelForm = document.querySelector('[data-telegram-channel-form]');
+            const channelIdInput = document.querySelector('[data-telegram-channel-id]');
+            const channelChatInput = document.getElementById('telegram_channel_id');
+            const channelAliasInput = document.getElementById('telegram_channel_alias');
+            const channelSubmit = document.querySelector('[data-telegram-channel-submit]');
+
+            const applyResourceEdit = (payload) => {
+                if (!payload || !payload.kind) {
+                    return;
+                }
+                if (payload.kind === 'bot' && botForm && botIdInput && botTokenInput && botAliasInput && botSubmit) {
+                    botIdInput.value = payload.id || '';
+                    botTokenInput.value = payload.token || '';
+                    botAliasInput.value = payload.alias || '';
+                    botSubmit.textContent = 'Aggiorna';
+                    botTokenInput.focus();
+                    return;
+                }
+                if (payload.kind === 'group' && groupForm && groupIdInput && groupChatInput && groupAliasInput && groupSubmit) {
+                    groupIdInput.value = payload.id || '';
+                    groupChatInput.value = payload.chatId || '';
+                    groupAliasInput.value = payload.alias || '';
+                    groupSubmit.textContent = 'Aggiorna';
+                    groupChatInput.focus();
+                    return;
+                }
+                if (payload.kind === 'channel' && channelForm && channelIdInput && channelChatInput && channelAliasInput && channelSubmit) {
+                    channelIdInput.value = payload.id || '';
+                    channelChatInput.value = payload.chatId || '';
+                    channelAliasInput.value = payload.alias || '';
+                    channelSubmit.textContent = 'Aggiorna';
+                    channelChatInput.focus();
+                }
+            };
+
+            document.querySelectorAll('[data-telegram-resource-edit]').forEach(button => {
+                button.addEventListener('click', () => {
+                    applyResourceEdit({
+                        kind: button.dataset.kind,
+                        id: button.dataset.telegramId || '',
+                        token: button.dataset.telegramToken || '',
+                        chatId: button.dataset.telegramChatId || '',
+                        alias: button.dataset.telegramAlias || ''
+                    });
+                });
+            });
+        };
+
+        initTelegramEditors();

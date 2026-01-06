@@ -202,6 +202,21 @@ def _parse_date_value(value):
     if not text:
         return None
     normalized = text.replace("Z", "+00:00")
+    if "." in normalized:
+        match = re.match(
+            r"^(?P<base>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(?P<fraction>\d+))?(?P<tz>[+-]\d{2}:\d{2})?$",
+            normalized
+        )
+        if match:
+            base = match.group("base")
+            fraction = match.group("fraction")
+            tz_part = match.group("tz") or ""
+            if fraction and len(fraction) > 6:
+                fraction = fraction[:6]
+            if fraction:
+                normalized = f"{base}.{fraction}{tz_part}"
+            else:
+                normalized = f"{base}{tz_part}"
     try:
         dt = datetime.fromisoformat(normalized)
         if dt.tzinfo is None:

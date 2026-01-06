@@ -101,7 +101,7 @@ def _normalize_role(role: Optional[str], is_admin: bool = False) -> str:
     return role
 
 
-def init_auth(app: Flask):
+def init_auth(app: Flask, create_default_admin: bool = False):
     """
     Initialize authentication system with Flask-Login and database.
     Creates default admin user if database is empty.
@@ -138,7 +138,8 @@ def init_auth(app: Flask):
     _ensure_schema(engine)
 
     # Create default admin user if none exists
-    _create_default_admin()
+    if create_default_admin:
+        _create_default_admin()
 
     # Register teardown handler
     @app.teardown_appcontext
@@ -154,14 +155,32 @@ def _create_default_admin():
     try:
         user_count = db_session.query(User).count()
         if user_count == 0:
-            # Get credentials from environment or use defaults
-            admin_username = os.environ.get('ADMIN_USERNAME', 'admin')
-            admin_password = os.environ.get('ADMIN_PASSWORD', 'admin')
-            admin_email = os.environ.get('ADMIN_EMAIL', 'admin@localhost')
+            def _read_env_secret(key: str) -> Optional[str]:
+                file_key = f"{key}_FILE"
+                file_path = os.environ.get(file_key)
+                if file_path:
+                    try:
+                        with open(file_path, "r") as handle:
+                            value = handle.read().strip()
+                        if value:
+                            return value
+                    except OSError:
+                        pass
+                value = os.environ.get(key)
+                if isinstance(value, str):
+                    value = value.strip()
+                return value or None
+
+            admin_username = (os.environ.get('ADMIN_USERNAME') or "").strip()
+            admin_password = _read_env_secret('ADMIN_PASSWORD')
+            admin_email = (os.environ.get('ADMIN_EMAIL') or "").strip() or None
+
+            if not admin_username or not admin_password:
+                return
 
             admin = User(
                 username=admin_username,
-                email=admin_email,
+                email=admin_email or "admin@localhost",
                 is_active=True,
                 is_admin=True,
                 role="admin"

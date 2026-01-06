@@ -1,0 +1,296 @@
+/* Icon Picker Modal - Notion Style */
+.icon-picker-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 38px;
+    height: 38px;
+    background-color: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s;
+    flex-shrink: 0;
+    box-sizing: border-box;
+}
+
+.icon-picker-trigger:hover {
+    background-color: #f9fafb;
+    border-color: #3b82f6;
+}
+
+.icon-picker-preview {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.icon-picker-preview i {
+    font-size: 18px;
+}
+
+.icon-picker-trigger-label {
+    display: none;
+}
+
+.icon-picker-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+    backdrop-filter: blur(4px);
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.icon-picker-modal-overlay.show {
+    display: flex;
+    opacity: 1;
+}
+
+.icon-picker-modal {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    width: 90%;
+    max-width: 600px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    transform: scale(0.95);
+    transition: transform 0.2s;
+}
+
+.icon-picker-modal-overlay.show .icon-picker-modal {
+    transform: scale(1);
+}
+
+.icon-picker-header {
+    padding: 20px 24px;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.icon-picker-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: #111827;
+    margin: 0 0 16px 0;
+}
+
+.icon-picker-search {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.2s;
+}
+
+.icon-picker-search:focus {
+    border-color: #3b82f6;
+}
+
+.icon-picker-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 0 24px;
+    margin-top: 12px;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.icon-picker-tab {
+    padding: 8px 16px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: #6b7280;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.icon-picker-tab:hover {
+    color: #111827;
+}
+
+.icon-picker-tab.active {
+    color: #3b82f6;
+    border-bottom-color: #3b82f6;
+}
+
+.icon-picker-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 24px;
+}
+
+.icon-picker-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(48px, 1fr));
+    gap: 8px;
+}
+
+.icon-picker-icon {
+    width: 48px;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid transparent;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.15s;
+    background: #f9fafb;
+}
+
+.icon-picker-icon:hover {
+    background: #f3f4f6;
+    border-color: #e5e7eb;
+}
+
+.icon-picker-icon.selected {
+    background: #eff6ff;
+    border-color: #3b82f6;
+}
+
+.icon-picker-icon i {
+    font-size: 20px;
+}
+
+.icon-picker-footer {
+    padding: 16px 24px;
+    border-top: 1px solid #e5e7eb;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.icon-picker-color-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+}
+
+.icon-picker-color-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+}
+
+.icon-picker-color-input {
+    width: 48px;
+    height: 48px;
+    border: 2px solid #e5e7eb;
+    border-radius: 8px;
+    cursor: pointer;
+    background: none;
+    padding: 2px;
+}
+
+.icon-picker-color-input::-webkit-color-swatch-wrapper {
+    padding: 0;
+}
+
+.icon-picker-color-input::-webkit-color-swatch {
+    border: none;
+    border-radius: 6px;
+}
+
+.icon-picker-color-input::-moz-color-swatch {
+    border: none;
+    border-radius: 6px;
+}
+
+.icon-picker-color-presets {
+    display: flex;
+    gap: 8px;
+    flex: 1;
+    flex-wrap: wrap;
+}
+
+.icon-picker-color-preset {
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    border: 2px solid transparent;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.icon-picker-color-preset:hover {
+    transform: scale(1.1);
+    border-color: rgba(0, 0, 0, 0.1);
+}
+
+.icon-picker-color-preset.active {
+    border-color: #111827;
+}
+
+.icon-picker-actions {
+    display: flex;
+    gap: 8px;
+    width: 100%;
+    justify-content: flex-end;
+}
+
+.icon-picker-btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.icon-picker-btn.secondary {
+    background: #f3f4f6;
+    color: #374151;
+}
+
+.icon-picker-btn.secondary:hover {
+    background: #e5e7eb;
+}
+
+.icon-picker-btn.primary {
+    background: #3b82f6;
+    color: white;
+}
+
+.icon-picker-btn.primary:hover {
+    background: #2563eb;
+}
+
+.icon-picker-empty {
+    text-align: center;
+    padding: 48px 24px;
+    color: #9ca3af;
+}
+
+.icon-picker-empty i {
+    font-size: 48px;
+    margin-bottom: 16px;
+    opacity: 0.5;
+}
+
+.icon-picker-empty p {
+    margin: 0;
+    font-size: 14px;
+}
+
+/* Hide original fields */
+.icon-picker-wrapper input[type="text"],
+.icon-picker-wrapper select,
+.icon-picker-wrapper input[type="color"] {
+    display: none;
+}

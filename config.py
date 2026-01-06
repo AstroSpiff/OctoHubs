@@ -64,6 +64,9 @@ DEFAULT_CONFIG = {
     "QBITTORRENT_PASSWORD": "",
     "TMDB_API_KEY": "",
     "TMDB_LANGUAGE": "it-IT",
+    "OMDB_API_KEY": "",
+    "OMDB_API_KEYS": [],
+    "MDBLIST_API_KEYS": [],
     "TARGET_LANGUAGES": ["ita", "italian"],
     "EXCLUDE_TAGS": ["md", "cam", "ts", "tc", "vmd", "sub", "subs", "forced", "screener"],
     "SEARCH_RULES": {
@@ -104,10 +107,10 @@ DEFAULT_CONFIG = {
     "REQUEST_RULES": {},
     "DATABASE": {
         "ENABLED": False,
-        "HOST": "localhost",
-        "PORT": 5432,
-        "NAME": "jellychecker",
-        "USER": "jellychecker",
+        "HOST": "",
+        "PORT": "",
+        "NAME": "",
+        "USER": "",
         "PASSWORD": "",
         "DRIVER": "postgresql+psycopg2",
         "URL": "",
@@ -158,7 +161,10 @@ CONNECTION_FIELDS = [
     "QBITTORRENT_USERNAME",
     "QBITTORRENT_PASSWORD",
     "TMDB_API_KEY",
-    "TMDB_LANGUAGE"
+    "TMDB_LANGUAGE",
+    "OMDB_API_KEY",
+    "OMDB_API_KEYS",
+    "MDBLIST_API_KEYS"
 ]
 
 # Funzioni di "default"
@@ -298,12 +304,17 @@ def _normalize_emby_server(entry: Optional[Dict]) -> Dict[str, Any]:
     if not isinstance(entry, dict):
         entry = {}
     server_id = str(entry.get("id") or uuid.uuid4())
-    name = (entry.get("name") or "").strip()
+    alias = (entry.get("alias") or "").strip()
+    original_name = (entry.get("original_name") or "").strip()
+    name = (entry.get("name") or original_name or alias).strip()
     if not name:
         name = f"Server Emby {server_id[:6]}"
     normalized = {
         "id": server_id,
         "name": name,
+        "alias": alias,
+        "original_name": original_name,
+        "emby_server_id": (entry.get("emby_server_id") or "").strip(),
         "url": (entry.get("url") or "").strip(),
         "api_key": entry.get("api_key") or "",
         "enabled": _coerce_request_bool(entry.get("enabled"), True),
@@ -316,8 +327,17 @@ def _normalize_emby_server(entry: Optional[Dict]) -> Dict[str, Any]:
         "strm_task_id": (entry.get("strm_task_id") or "").strip()
     }
     icon = (entry.get("icon") or "").strip()
-    if icon:
-        normalized["icon"] = icon
+    icon_color = (entry.get("icon_color") or "").strip()
+    icon_style = (entry.get("icon_style") or "").strip().lower()
+    if not icon or not icon.startswith("fa-"):
+        icon = "fa-server"
+    if not icon_color:
+        icon_color = "#3b82f6"
+    if icon_style not in ("solid", "regular"):
+        icon_style = "solid"
+    normalized["icon"] = icon
+    normalized["icon_color"] = icon_color
+    normalized["icon_style"] = icon_style
     return normalized
 
 def _merge_emby_settings(settings: Optional[Dict]) -> Dict[str, Any]:
@@ -425,6 +445,19 @@ def read_raw_config() -> Optional[Dict]:
     except (json.JSONDecodeError, IOError):
         return None
 
+def _normalize_api_keys(value: Any) -> list[str]:
+    """Normalizza un valore in una lista di API keys."""
+    if not value:
+        return []
+    if isinstance(value, str):
+        # Split by comma and clean each key
+        keys = [k.strip() for k in value.split(',') if k.strip()]
+        return keys
+    if isinstance(value, list):
+        # Filter out empty strings and ensure all are strings
+        return [str(k).strip() for k in value if k and str(k).strip()]
+    return []
+
 def write_config_file(data: Dict):
     """Scrive un dizionario nel file config.json."""
     data = data or {}
@@ -433,10 +466,22 @@ def write_config_file(data: Dict):
     for key in CONNECTION_FIELDS:
         # Use data value if explicitly provided (even if empty string), otherwise use persisted
         value = data.get(key) if key in data else persisted.get(key)
-        # Save all connection fields, even if empty (to allow clearing values)
-        payload[key] = value if value is not None else ""
+
+        # Special handling for API key arrays
+        if key == "OMDB_API_KEYS":
+            payload[key] = _normalize_api_keys(value)
+            # Backward compatibility: if OMDB_API_KEY is set and OMDB_API_KEYS is empty, use it
+            if not payload[key] and data.get("OMDB_API_KEY"):
+                payload[key] = _normalize_api_keys(data.get("OMDB_API_KEY"))
+        elif key == "MDBLIST_API_KEYS":
+            payload[key] = _normalize_api_keys(value)
+        else:
+            # Save all connection fields, even if empty (to allow clearing values)
+            payload[key] = value if value is not None else ""
     database_settings = _merge_database_settings(data.get("DATABASE") or persisted.get("DATABASE"))
     database_settings["ENABLED"] = True  # Forza l'abilitazione durante la scrittura
+    database_settings["PASSWORD"] = ""
+    database_settings["URL"] = ""
     payload["DATABASE"] = database_settings
     trakt_settings = data.get("TRAKT") or persisted.get("TRAKT")
     payload["TRAKT"] = _merge_trakt_settings(trakt_settings)

@@ -12,7 +12,7 @@ from typing import Any, Tuple, Dict, cast, Optional
 from utils import _normalize_media_type
 
 # --- COSTANTI ---
-EMBY_REQUEST_TIMEOUT = 6
+EMBY_REQUEST_TIMEOUT = 30
 
 EMBY_ACTIONS = {
     "refresh_libraries": {
@@ -474,11 +474,12 @@ def _prepare_emby_servers_for_view(servers, lazy=False):
     prepared = []
     for server in servers or []:
         decorated = copy.deepcopy(server)
+        print(f"[PREPARE VIEW] Server {server.get('id', 'unknown')[:6]}: icon={server.get('icon')}, icon_color={server.get('icon_color')}")
         if lazy:
             decorated["status"] = {
                 "ok": None,
                 "version": None,
-                "name": decorated.get("name") or "Server Emby",
+                "name": decorated.get("alias") or decorated.get("original_name") or decorated.get("name") or "Server Emby",
                 "last_check": None,
                 "server_id": decorated.get("server_id")
             }
@@ -992,7 +993,9 @@ def check_emby_availability(emby_servers: list, tmdb_id: int, media_type: Option
         List of server info dicts where content is found, with keys:
         - server_id: Server ID
         - server_name: Server name
-        - server_icon: Server icon (emoji or text)
+        - server_icon: Server icon (Font Awesome class)
+        - server_icon_color: Server icon color
+        - server_icon_style: Server icon style (solid/regular)
         - item_id: Emby item ID
         - item_name: Item name
     """
@@ -1014,7 +1017,9 @@ def check_emby_availability(emby_servers: list, tmdb_id: int, media_type: Option
             api_key = server.get("api_key", "")
             server_name = server.get("name", "Emby Server")
             server_id = server.get("id", "")
-            server_icon = server.get("icon") or "📺"  # Default icon
+            server_icon = server.get("icon") or "fa-server"
+            server_icon_color = server.get("icon_color") or "#3b82f6"
+            server_icon_style = server.get("icon_style") or "solid"
 
             if not url or not api_key:
                 continue
@@ -1045,6 +1050,8 @@ def check_emby_availability(emby_servers: list, tmdb_id: int, media_type: Option
                     "server_id": server_id,
                     "server_name": server_name,
                     "server_icon": server_icon,
+                    "server_icon_color": server_icon_color,
+                    "server_icon_style": server_icon_style,
                     "item_id": item.get("Id"),
                     "item_name": item.get("Name", "")
                 })

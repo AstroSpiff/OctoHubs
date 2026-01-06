@@ -21,13 +21,11 @@ services:
       # Authentication Database (SQLite by default, PostgreSQL optional)
       - AUTH_DATABASE_URL=${AUTH_DATABASE_URL:-sqlite:////storage/auth.db}
 
-      # Admin iniziale (imposta qui le credenziali per il primo accesso)
-      # - ADMIN_USERNAME=tuo_admin
-      # - ADMIN_PASSWORD=PasswordForte
-      # - ADMIN_EMAIL=admin@tuodominio.it
-      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
-      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@localhost}
+      # Admin iniziale (solo primo avvio, poi resta nel DB utenti)
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-}
+      # - ADMIN_PASSWORD_FILE=/run/secrets/octohub_admin_password
 
       # Webhook Security (optional)
       - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
@@ -38,9 +36,17 @@ services:
       - CSRF_TIME_LIMIT_SECONDS=${CSRF_TIME_LIMIT_SECONDS:-3600}
       # - SESSION_COOKIE_SECURE=true
 
-      # Application Database (PostgreSQL - optional)
-      # Uncomment if using PostgreSQL for main app data
-      # - DATABASE_URL=postgresql://octohub:octohub_password@postgres:5432/octohub
+      # Application Database (PostgreSQL - required)
+      # Usare ENV/Secrets: non vengono salvate nel config.json
+      - OCTOHUB_DB_HOST=${OCTOHUB_DB_HOST:-}
+      - OCTOHUB_DB_PORT=${OCTOHUB_DB_PORT:-}
+      - OCTOHUB_DB_NAME=${OCTOHUB_DB_NAME:-}
+      - OCTOHUB_DB_USER=${OCTOHUB_DB_USER:-}
+      - OCTOHUB_DB_PASSWORD=${OCTOHUB_DB_PASSWORD:-}
+      # - OCTOHUB_DB_PASSWORD_FILE=/run/secrets/octohub_db_password
+      - OCTOHUB_DB_DRIVER=${OCTOHUB_DB_DRIVER:-}
+      - OCTOHUB_DB_URL=${OCTOHUB_DB_URL:-}
+      - OCTOHUB_DB_PARAMS=${OCTOHUB_DB_PARAMS:-}
     volumes:
       # Modifica i path host (/mnt/shared/...) in base al tuo storage
       - /mnt/shared/config/octohub:/config
