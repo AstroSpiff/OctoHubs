@@ -38,6 +38,10 @@
                title="Apri Configurazione">
                 Configurazione
             </a>
+            <button class="nav-link" id="workflow-navbar-indicator" type="button" style="display: none; color: #f59e0b;" title="Aggiornamento in corso">
+                <i class="fa-solid fa-circle-notch fa-spin"></i>
+                Aggiornamento in corso...
+            </button>
             <a href="{{ url_for('auth_logout') }}"
                class="nav-link"
                title="Esci dall'app"
@@ -193,7 +197,14 @@
                     </div>
                 </div>
                 <div class="card">
-                    <h2>Librerie – Tutte</h2>
+                    <div class="latest-label-row">
+                        <h2>Librerie – Tutte</h2>
+                        <label class="feature-toggle" title="Modalità Workflow Completo">
+                            <input type="checkbox" id="workflow-mode-toggle" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <div class="form-help">Modalità Workflow Completo 🚀</div>
                     <p class="tagline">Avvia operazioni di aggiornamento sulle librerie di tutti i server o selezionane uno.</p>
                     <form class="action-grid" action="{{ url_for('emby_action_all') }}" method="post">
                         <button class="btn primary" type="submit" name="action" value="refresh_libraries" title="Avvia la scansione delle librerie su tutti i server">Scansione dei File</button>
@@ -273,6 +284,9 @@
                             </div>
                         </div>
                         <div class="latest-actions">
+                            <button class="btn primary" type="button" onclick="workflowUI.startFull()" title="Avvia l'aggiornamento completo (scan, probe, cache, notify)">
+                                <i class="fa-solid fa-rocket"></i> Aggiorna Tutto
+                            </button>
                             <button class="btn secondary" type="button" data-latest-refresh title="Aggiorna l'elenco delle ultime pubblicazioni">Aggiorna</button>
                             <button class="btn secondary" type="button" data-latest-verify-data title="Verifica quali dati sono disponibili per TMDB, OMDB e Trakt">Verifica Dati</button>
                             <button class="btn primary" type="button" data-latest-notify title="Invia le notifiche Telegram per le ultime pubblicazioni">Invia notifiche</button>
@@ -312,7 +326,7 @@
                     <div class="latest-config">
                         <div class="latest-config-header">
                             <h3>Notifiche Telegram</h3>
-                            <p class="tagline">Configura preset messaggi e destinazioni per le notifiche future.</p>
+                            <p class="tagline">Configura preset messaggi e regole di notifica per le pubblicazioni recenti.</p>
                         </div>
                         <div class="latest-config-grid latest-config-grid-three">
                             <div class="latest-config-col">
@@ -412,36 +426,60 @@
 
                             <div class="latest-config-col">
                                 <div class="latest-config-card">
-                                    <h4>Preset attivo</h4>
-                                    <form action="{{ url_for('emby_latest_save_notification_settings') }}" method="post" class="latest-config-form">
-                                        <label for="latest_active_preset_id">Preset attivo</label>
-                                        <select id="latest_active_preset_id" name="latest_active_preset_id" data-latest-active-preset>
-                                            {% for preset in latest_message_presets %}
-                                                <option value="{{ preset.id }}" data-template='{{ preset.template | tojson | safe }}' {% if preset.id == latest_active_preset_id %}selected{% endif %}>
-                                                    {{ preset.name }}
-                                                </option>
+                                    <div class="latest-label-row">
+                                        <h4>Regole di notifica</h4>
+                                        <button class="btn primary small" type="button" data-latest-rule-new>+ Nuova regola</button>
+                                    </div>
+                                    <p class="form-help">Definisci da quali server prendere i contenuti, quale preset usare e a quale configurazione Telegram inviare.</p>
+                                    {% if latest_notification_rules %}
+                                        <div class="latest-config-list" data-latest-rule-list>
+                                            {% for rule in latest_notification_rules %}
+                                                <div class="latest-config-row latest-rule-row" data-latest-rule-row data-rule-id="{{ rule.id }}" data-rule-name='{{ rule.name | tojson | safe }}' data-rule-servers='{{ rule.server_ids | tojson | safe }}' data-rule-preset-id="{{ rule.preset_id }}" data-rule-telegram-id="{{ rule.telegram_config_id }}" data-rule-enabled="{{ 1 if rule.enabled else 0 }}">
+                                                    <div class="latest-rule-header">
+                                                        <div class="latest-rule-info">
+                                                        <div class="latest-config-title">{{ rule.name }}</div>
+                                                        <div class="latest-config-sub">
+                                                            <i class="fa-solid fa-server"></i>
+                                                            {{ rule.server_names | join(', ') if rule.server_names else 'Server mancanti' }}
+                                                            ->
+                                                            <i class="fa-solid fa-paintbrush"></i>
+                                                            {{ rule.preset_name or 'Preset mancante' }}
+                                                            ->
+                                                            <i class="fa-brands fa-telegram"></i>
+                                                            {{ rule.telegram_name or 'Telegram mancante' }}
+                                                        </div>
+                                                        {% if rule.has_missing %}
+                                                            <div class="latest-config-sub">Attenzione: risorse mancanti ({{ rule.missing_label }}).</div>
+                                                        {% endif %}
+                                                        </div>
+                                                        <form action="{{ url_for('emby_latest_toggle_rule') }}" method="post" data-latest-rule-toggle-form>
+                                                            <input type="hidden" name="next" value="{{ url_for('emby_dashboard') }}">
+                                                            <input type="hidden" name="latest_rule_id" value="{{ rule.id }}">
+                                                            <input type="hidden" name="latest_rule_enabled" value="{{ 1 if rule.enabled else 0 }}" data-latest-rule-enabled>
+                                                            <label class="feature-toggle" title="Attiva/Disattiva">
+                                                                <input type="checkbox" {% if rule.enabled %}checked{% endif %} data-latest-rule-toggle>
+                                                                <span class="toggle-slider"></span>
+                                                            </label>
+                                                        </form>
+                                                    </div>
+                                                    <div class="latest-rule-actions">
+                                                        <button class="btn ghost small" type="button" data-latest-rule-edit title="Modifica" aria-label="Modifica">
+                                                            <i class="fa-solid fa-pencil"></i>
+                                                        </button>
+                                                        <form action="{{ url_for('emby_latest_remove_rule') }}" method="post">
+                                                            <input type="hidden" name="next" value="{{ url_for('emby_dashboard') }}">
+                                                            <input type="hidden" name="latest_rule_id" value="{{ rule.id }}">
+                                                            <button class="btn ghost small" type="submit" title="Elimina" aria-label="Elimina">
+                                                                <i class="fa-solid fa-xmark"></i>
+                                                            </button>
+                                                        </form>
+                                                    </div>
+                                                </div>
                                             {% endfor %}
-                                        </select>
-                                        <button class="btn secondary" type="submit">Salva preset attivo</button>
-                                    </form>
-                                </div>
-                                <div class="latest-config-card">
-                                    <h4>Destinatari</h4>
-                                    <form action="{{ url_for('emby_latest_save_notification_settings') }}" method="post" class="latest-config-form">
-                                        <label for="latest_telegram_presets">Preconfigurazioni Telegram</label>
-                                        {% if telegram_presets %}
-                                            <select id="latest_telegram_presets" name="latest_telegram_presets" multiple>
-                                                {% for preset in telegram_presets %}
-                                                    <option value="{{ preset.id }}" {% if preset.id in latest_selected_telegram_presets %}selected{% endif %}>
-                                                        {{ preset.name }}
-                                                    </option>
-                                                {% endfor %}
-                                            </select>
-                                        {% else %}
-                                            <div class="empty-state">Nessuna preconfigurazione Telegram salvata.</div>
-                                        {% endif %}
-                                        <button class="btn primary" type="submit">Salva destinatari</button>
-                                    </form>
+                                        </div>
+                                    {% else %}
+                                        <div class="empty-state">Nessuna regola salvata. Clicca su "Nuova regola" per iniziare.</div>
+                                    {% endif %}
                                 </div>
                                 <div class="latest-config-card">
                                     <h4>Manutenzione</h4>
@@ -475,6 +513,72 @@
             <div class="tagline">Versioni multiple: usa <code>versions</code> in Jinja2 per ciclare tutti i file, oppure i token <code>best_*</code> per la versione migliore.</div>
             <div class="tagline">Le immagini TMDB richiedono una TMDB API key configurata. Le immagini Emby richiedono un URL pubblico.</div>
             <div class="latest-token-list" data-latest-token-list></div>
+        </div>
+    </div>
+
+    <div class="latest-verify-overlay latest-rule-overlay" data-latest-rule-overlay style="display: none;">
+        <div class="latest-verify-modal">
+            <div class="latest-verify-header">
+                <div>
+                    <h4>Regola di notifica</h4>
+                    <p class="tagline">Collega server, preset e destinazioni Telegram.</p>
+                </div>
+                <button class="btn ghost small" type="button" data-latest-rule-close>Chiudi</button>
+            </div>
+            <div class="latest-verify-results">
+                <form action="{{ url_for('emby_latest_save_rule') }}" method="post" class="latest-config-form" data-latest-rule-form>
+                    <input type="hidden" name="next" value="{{ url_for('emby_dashboard') }}">
+                    <input type="hidden" name="latest_rule_id" value="" data-latest-rule-id>
+                    <label for="latest_rule_name">Nome regola</label>
+                    <input type="text" id="latest_rule_name" name="latest_rule_name" placeholder="Film canale pubblico" data-latest-rule-name>
+
+                    <label>Sorgenti</label>
+                    {% if emby_servers %}
+                        <div class="latest-config-list" data-latest-rule-server-list>
+                            {% for server in emby_servers %}
+                                <label class="latest-config-row">
+                                    <span>{{ server.alias or server.name }}</span>
+                                    <input type="checkbox" name="latest_rule_servers" value="{{ server.id }}" data-latest-rule-server>
+                                </label>
+                            {% endfor %}
+                        </div>
+                    {% else %}
+                        <div class="empty-state">Nessun server Emby configurato.</div>
+                    {% endif %}
+
+                    <label for="latest_rule_preset">Preset</label>
+                    {% if latest_message_presets %}
+                        <select id="latest_rule_preset" name="latest_rule_preset" data-latest-rule-preset>
+                            <option value="">Seleziona preset...</option>
+                            {% for preset in latest_message_presets %}
+                                <option value="{{ preset.id }}">{{ preset.name }}</option>
+                            {% endfor %}
+                        </select>
+                    {% else %}
+                        <div class="empty-state">Nessun preset disponibile.</div>
+                    {% endif %}
+
+                    <div class="latest-label-row">
+                        <label for="latest_rule_telegram">Destinazione Telegram</label>
+                        <a class="btn ghost small" href="{{ url_for('configuration') }}#telegram" target="_blank" rel="noopener">+ Nuova</a>
+                    </div>
+                    {% if telegram_presets %}
+                        <select id="latest_rule_telegram" name="latest_rule_telegram" data-latest-rule-telegram>
+                            <option value="">Seleziona destinazione...</option>
+                            {% for preset in telegram_presets %}
+                                <option value="{{ preset.id }}">{{ preset.name }}</option>
+                            {% endfor %}
+                        </select>
+                    {% else %}
+                        <div class="empty-state">Nessuna preconfigurazione Telegram salvata.</div>
+                    {% endif %}
+
+                    <div class="latest-preset-actions">
+                        <button class="btn primary" type="submit" data-latest-rule-submit>Crea regola</button>
+                        <button class="btn ghost" type="button" data-latest-rule-cancel>Annulla</button>
+                    </div>
+                </form>
+            </div>
         </div>
     </div>
 
@@ -542,6 +646,564 @@
             </div>
         </div>
     </div>
+
+    <div id="workflowOffcanvas" class="workflow-offcanvas" aria-hidden="true">
+        <div class="workflow-panel" role="dialog" aria-modal="true" aria-labelledby="workflow-title">
+            <div class="workflow-header">
+                <div>
+                    <h3 id="workflow-title">Stato Aggiornamento</h3>
+                    <div class="workflow-meta" data-workflow-meta>In attesa</div>
+                </div>
+                <div class="workflow-header-actions">
+                    <button class="btn danger small" type="button" data-workflow-stop style="display: none;">Stop</button>
+                    <button class="btn ghost small" type="button" data-workflow-close title="Chiudi">Chiudi</button>
+                </div>
+            </div>
+            <div class="workflow-body">
+                <ul class="workflow-timeline" data-workflow-steps></ul>
+            </div>
+        </div>
+    </div>
+
+    <style>
+        .workflow-offcanvas {
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.45);
+            display: none;
+            z-index: 12000;
+        }
+        .workflow-offcanvas.show {
+            display: block;
+        }
+        .workflow-panel {
+            position: absolute;
+            top: 0;
+            right: 0;
+            height: 100%;
+            width: 380px;
+            max-width: 96vw;
+            background: #f8fafc;
+            color: #0f172a;
+            border-left: 1px solid #e2e8f0;
+            box-shadow: -12px 0 28px rgba(15, 23, 42, 0.18);
+            display: flex;
+            flex-direction: column;
+        }
+        .workflow-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 1rem;
+            padding: 1rem 1.2rem;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        .workflow-header h3 {
+            margin: 0;
+            font-size: 1.1rem;
+        }
+        .workflow-meta {
+            font-size: 0.8rem;
+            color: #64748b;
+            margin-top: 0.15rem;
+        }
+        .workflow-header-actions {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+        .workflow-body {
+            padding: 1rem 1.2rem 1.4rem;
+            overflow-y: auto;
+            flex: 1;
+        }
+        .workflow-timeline {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            position: relative;
+        }
+        .workflow-timeline::before {
+            content: "";
+            position: absolute;
+            left: 14px;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: #e2e8f0;
+        }
+        .workflow-step {
+            display: flex;
+            gap: 0.75rem;
+            padding: 0.6rem 0;
+            position: relative;
+        }
+        .workflow-icon {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #e2e8f0;
+            color: #475569;
+            flex-shrink: 0;
+            z-index: 1;
+        }
+        .workflow-step.status-running .workflow-icon {
+            background: #dbeafe;
+            color: #1d4ed8;
+        }
+        .workflow-step.status-done .workflow-icon {
+            background: #dcfce7;
+            color: #15803d;
+        }
+        .workflow-step.status-failed .workflow-icon {
+            background: #fee2e2;
+            color: #b91c1c;
+        }
+        .workflow-step.status-skipped .workflow-icon {
+            background: #fef3c7;
+            color: #b45309;
+        }
+        .workflow-content {
+            flex: 1;
+        }
+        .workflow-title-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.6rem;
+        }
+        .workflow-title {
+            font-weight: 600;
+            color: #0f172a;
+        }
+        .workflow-duration {
+            font-size: 0.75rem;
+            color: #64748b;
+            background: #e2e8f0;
+            padding: 0.15rem 0.45rem;
+            border-radius: 999px;
+        }
+        .workflow-details {
+            font-size: 0.8rem;
+            color: #64748b;
+            margin-top: 0.2rem;
+        }
+        .workflow-progress {
+            height: 6px;
+            background: #e2e8f0;
+            border-radius: 999px;
+            overflow: hidden;
+            margin-top: 0.45rem;
+        }
+        .workflow-progress-bar {
+            height: 100%;
+            background: #0f62fe;
+            transition: width 0.3s ease;
+        }
+        @media (prefers-color-scheme: dark) {
+            .workflow-panel {
+                background: #0b0f1a;
+                color: #e2e8f0;
+                border-left-color: #1f2937;
+            }
+            .workflow-header {
+                border-bottom-color: #1f2937;
+            }
+            .workflow-meta,
+            .workflow-details {
+                color: #94a3b8;
+            }
+            .workflow-title {
+                color: #f1f5f9;
+            }
+            .workflow-duration {
+                background: #1f2937;
+                color: #cbd5f5;
+            }
+            .workflow-timeline::before {
+                background: #1f2937;
+            }
+            .workflow-icon {
+                background: #1f2937;
+                color: #cbd5f5;
+            }
+            .workflow-progress {
+                background: #1f2937;
+            }
+        }
+    </style>
+
+    <script>
+        (() => {
+            const offcanvas = document.getElementById('workflowOffcanvas');
+            if (!offcanvas) {
+                return;
+            }
+            const stepsContainer = offcanvas.querySelector('[data-workflow-steps]');
+            const stopButton = offcanvas.querySelector('[data-workflow-stop]');
+            const closeButton = offcanvas.querySelector('[data-workflow-close]');
+            const metaText = offcanvas.querySelector('[data-workflow-meta]');
+            const navbarIndicator = document.getElementById('workflow-navbar-indicator');
+            let eventSource = null;
+            let lastStatus = null;
+            const workflowToggle = document.getElementById('workflow-mode-toggle');
+            const scanButtonSelector = 'button[value="refresh_libraries"], button[data-action="scan-single-content"], button[data-action="scan-group-content"]';
+            let workflowButtonUpdateInProgress = false;
+
+            const getCsrfToken = () => {
+                const el = document.querySelector('meta[name="csrf-token"]');
+                return el ? el.getAttribute('content') : '';
+            };
+            const csrfFetch = (url, options = {}) => {
+                const opts = options || {};
+                const headers = new Headers(opts.headers || {});
+                const token = getCsrfToken();
+                if (token && !headers.has('X-CSRFToken')) {
+                    headers.set('X-CSRFToken', token);
+                }
+                if (!headers.has('X-Requested-With')) {
+                    headers.set('X-Requested-With', 'XMLHttpRequest');
+                }
+                return fetch(url, { ...opts, headers });
+            };
+
+            const openPanel = () => {
+                offcanvas.classList.add('show');
+                offcanvas.setAttribute('aria-hidden', 'false');
+            };
+            const closePanel = () => {
+                offcanvas.classList.remove('show');
+                offcanvas.setAttribute('aria-hidden', 'true');
+            };
+
+            const formatDuration = (seconds) => {
+                const value = Number(seconds || 0);
+                if (!value || Number.isNaN(value)) {
+                    return '';
+                }
+                if (value < 60) {
+                    return `${Math.round(value)}s`;
+                }
+                const mins = Math.floor(value / 60);
+                const secs = Math.round(value % 60);
+                return `${mins}m ${secs}s`;
+            };
+
+            const formatElapsed = (startTime) => {
+                if (!startTime) {
+                    return '';
+                }
+                const started = new Date(startTime);
+                if (Number.isNaN(started.getTime())) {
+                    return '';
+                }
+                const diff = Math.max(0, Math.floor((Date.now() - started.getTime()) / 1000));
+                const hours = Math.floor(diff / 3600);
+                const minutes = Math.floor((diff % 3600) / 60);
+                const seconds = diff % 60;
+                const pad = (value) => String(value).padStart(2, '0');
+                if (hours > 0) {
+                    return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+                }
+                return `${pad(minutes)}:${pad(seconds)}`;
+            };
+
+            const showToast = (message, type = 'info') => {
+                if (typeof window.showToast === 'function') {
+                    window.showToast(message, type);
+                    return;
+                }
+                const toastContainer = document.getElementById('toast-container');
+                if (!toastContainer) {
+                    return;
+                }
+                const normalized = type === 'danger' ? 'error' : type;
+                const toast = document.createElement('div');
+                toast.className = `toast toast--${normalized} alert ${normalized}`;
+                toast.textContent = message;
+                toastContainer.appendChild(toast);
+                setTimeout(() => {
+                    toast.remove();
+                }, 5000);
+            };
+
+            const statusIcon = (status) => {
+                switch (status) {
+                    case 'running':
+                        return '<i class="fa-solid fa-spinner fa-spin"></i>';
+                    case 'done':
+                        return '<i class="fa-solid fa-check"></i>';
+                    case 'failed':
+                        return '<i class="fa-solid fa-xmark"></i>';
+                    case 'skipped':
+                        return '<i class="fa-solid fa-forward-step"></i>';
+                    default:
+                        return '<i class="fa-regular fa-circle"></i>';
+                }
+            };
+
+            const renderSteps = (workflow) => {
+                if (!stepsContainer) {
+                    return;
+                }
+                const steps = Array.isArray(workflow.steps) ? workflow.steps : [];
+                stepsContainer.innerHTML = steps.map((step) => {
+                    const stepStatus = step.status || 'pending';
+                    const details = step.details || 'In attesa...';
+                    const duration = formatDuration(step.duration_seconds);
+                    const progress = stepStatus === 'running'
+                        ? `<div class="workflow-progress"><div class="workflow-progress-bar" style="width: ${Math.min(Math.max(step.progress || 0, 0), 100)}%"></div></div>`
+                        : '';
+                    return `
+                        <li class="workflow-step status-${stepStatus}">
+                            <div class="workflow-icon">${statusIcon(stepStatus)}</div>
+                            <div class="workflow-content">
+                                <div class="workflow-title-row">
+                                    <div class="workflow-title">${step.label || step.id}</div>
+                                    ${duration ? `<span class="workflow-duration">${duration}</span>` : ''}
+                                </div>
+                                <div class="workflow-details">${details}</div>
+                                ${progress}
+                            </div>
+                        </li>
+                    `;
+                }).join('');
+            };
+
+            const renderStatus = (workflow) => {
+                const newStatus = workflow.status || 'idle';
+                if (lastStatus === 'running' && newStatus === 'completed') {
+                    showToast('Workflow completato con successo!', 'success');
+                } else if (lastStatus === 'running' && newStatus === 'failed') {
+                    const message = workflow.error ? `Workflow fallito: ${workflow.error}` : 'Workflow fallito: Errore sconosciuto';
+                    showToast(message, 'error');
+                }
+                if (metaText) {
+                    const type = workflow.workflow_type ? ` - ${workflow.workflow_type}` : '';
+                    metaText.textContent = `${newStatus}${type}`;
+                }
+                renderSteps(workflow);
+                if (stopButton) {
+                    stopButton.style.display = newStatus === 'running' ? 'inline-flex' : 'none';
+                }
+                if (newStatus && newStatus !== 'idle') {
+                    openPanel();
+                }
+                if (navbarIndicator) {
+                    const showIndicator = newStatus === 'running' || newStatus === 'stopping';
+                    navbarIndicator.style.display = showIndicator ? 'inline-flex' : 'none';
+                    if (showIndicator) {
+                        const elapsed = formatElapsed(workflow.start_time);
+                        const timer = elapsed ? ` (${elapsed})` : '';
+                        if (newStatus === 'stopping') {
+                            navbarIndicator.innerHTML = `<i class="fa-solid fa-hourglass-half"></i> Arresto in corso${timer}`;
+                        } else {
+                            navbarIndicator.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i> Aggiornamento in corso${timer}`;
+                        }
+                    }
+                }
+                if (newStatus === 'completed' || newStatus === 'failed' || newStatus === 'idle') {
+                    if (eventSource) {
+                        eventSource.close();
+                        eventSource = null;
+                    }
+                }
+                lastStatus = newStatus;
+            };
+
+            const connectSSE = (force = false) => {
+                if (eventSource) {
+                    if (!force) {
+                        return;
+                    }
+                    eventSource.close();
+                    eventSource = null;
+                }
+                eventSource = new EventSource('/api/workflow/events');
+                eventSource.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data || '{}');
+                        renderStatus(data);
+                    } catch (err) {
+                        // ignore malformed payloads
+                    }
+                };
+                eventSource.onerror = () => {
+                    if (eventSource) {
+                        eventSource.close();
+                        eventSource = null;
+                    }
+                };
+            };
+
+            const startWorkflow = async (payload) => {
+                openPanel();
+                try {
+                    const response = await csrfFetch('/api/workflow/start', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    let data = {};
+                    try {
+                        data = await response.json();
+                    } catch (err) {
+                        data = {};
+                    }
+                    if (!response.ok || data.success === false) {
+                        const message = data.message || 'Impossibile avviare il workflow';
+                        showToast(message, 'error');
+                        return;
+                    }
+                    connectSSE(true);
+                } catch (err) {
+                    showToast('Errore di comunicazione con il server', 'error');
+                }
+            };
+
+            const updateScanButtons = (enabled) => {
+                const scanButtons = Array.from(document.querySelectorAll(scanButtonSelector));
+                workflowButtonUpdateInProgress = true;
+                scanButtons.forEach((btn) => {
+                    if (enabled) {
+                        if (btn.dataset.workflowApplied === '1') {
+                            return;
+                        }
+                        if (!btn.dataset.workflowOriginalLabel) {
+                            btn.dataset.workflowOriginalLabel = btn.innerHTML;
+                        }
+                        btn.innerHTML = '<i class="fa-solid fa-rocket"></i> Workflow';
+                        btn.dataset.workflowApplied = '1';
+                    } else if (btn.dataset.workflowApplied === '1') {
+                        if (btn.dataset.workflowOriginalLabel) {
+                            btn.innerHTML = btn.dataset.workflowOriginalLabel;
+                        }
+                        btn.dataset.workflowApplied = '0';
+                    }
+                });
+                workflowButtonUpdateInProgress = false;
+            };
+
+            const workflowUI = {
+                startFull: async () => {
+                    await startWorkflow({ type: 'full' });
+                },
+                startSmart: async (context = {}) => {
+                    await startWorkflow({ type: 'smart', context });
+                },
+                stop: async () => {
+                    try {
+                        await csrfFetch('/api/workflow/stop', { method: 'POST' });
+                    } catch (err) {
+                        // ignore
+                    }
+                },
+                open: () => {
+                    openPanel();
+                }
+            };
+
+            if (stopButton) {
+                stopButton.addEventListener('click', () => workflowUI.stop());
+            }
+            if (closeButton) {
+                closeButton.addEventListener('click', closePanel);
+            }
+            if (navbarIndicator) {
+                navbarIndicator.addEventListener('click', () => workflowUI.open());
+            }
+            if (workflowToggle) {
+                workflowToggle.addEventListener('change', () => {
+                    updateScanButtons(workflowToggle.checked);
+                });
+                updateScanButtons(workflowToggle.checked);
+            }
+            document.addEventListener('click', (event) => {
+                const trigger = event.target.closest('button[value="refresh_libraries"]');
+                if (!trigger || !workflowToggle || !workflowToggle.checked) {
+                    return;
+                }
+                event.preventDefault();
+                const form = trigger.form || trigger.closest('form');
+                const serverInput = form ? form.querySelector('input[name="server_id"]') : null;
+                const libraryInput = form ? form.querySelector('input[name="library_id"]') : null;
+                const serverId = serverInput ? serverInput.value : '';
+                const context = {};
+                if (serverId) {
+                    context.server_id = serverId;
+                }
+                if (libraryInput && libraryInput.value) {
+                    context.library_id = libraryInput.value;
+                }
+                workflowUI.startSmart(context);
+            });
+
+            document.addEventListener('click', (event) => {
+                const trigger = event.target.closest('button[data-action="scan-single-content"]');
+                if (!trigger || !workflowToggle || !workflowToggle.checked) {
+                    return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                if (event.stopImmediatePropagation) {
+                    event.stopImmediatePropagation();
+                }
+                const serverId = trigger.dataset.serverId || '';
+                const libraryId = trigger.dataset.libraryId || '';
+                const context = {};
+                if (serverId) {
+                    context.server_id = serverId;
+                }
+                if (libraryId) {
+                    context.library_id = libraryId;
+                }
+                workflowUI.startSmart(context);
+            }, true);
+
+            document.addEventListener('click', (event) => {
+                const trigger = event.target.closest('button[data-action="scan-group-content"]');
+                if (!trigger || !workflowToggle || !workflowToggle.checked) {
+                    return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                if (event.stopImmediatePropagation) {
+                    event.stopImmediatePropagation();
+                }
+                workflowUI.startSmart({});
+            }, true);
+            offcanvas.addEventListener('click', (event) => {
+                if (event.target === offcanvas) {
+                    closePanel();
+                }
+            });
+            document.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape' && offcanvas.classList.contains('show')) {
+                    closePanel();
+                }
+            });
+
+            window.workflowUI = workflowUI;
+            connectSSE();
+
+            const workflowObserver = new MutationObserver((mutations) => {
+                if (!workflowToggle || !workflowToggle.checked || workflowButtonUpdateInProgress) {
+                    return;
+                }
+                const hasNewNodes = mutations.some((mutation) => mutation.addedNodes && mutation.addedNodes.length > 0);
+                if (hasNewNodes) {
+                    updateScanButtons(true);
+                }
+            });
+            const groupedLibrariesContainer = document.getElementById('grouped-libraries-container');
+            if (groupedLibrariesContainer) {
+                workflowObserver.observe(groupedLibrariesContainer, { childList: true, subtree: true });
+            }
+        })();
+    </script>
 
     <script src="{{ url_for('static', filename='emby.js') }}"></script>
 </body>

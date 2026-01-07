@@ -98,7 +98,7 @@ from scanner import (
     _has_audio_language,
     _contains_isolated_tag
 )
-from tasks import ScanManager, AutoScheduler
+from tasks import ScanManager, AutoScheduler, workflow_manager
 from emby_probe import get_probe_manager, _format_display_name_from_queue
 from emby_streams import get_streams_manager
 from auth import init_auth, get_user_by_username, get_all_users, create_user, log_audit_event
@@ -1663,6 +1663,7 @@ def _default_latest_settings() -> Dict[str, Any]:
         "PRESETS": [],
         "ACTIVE_PRESET_ID": "",
         "TELEGRAM_PRESET_IDS": [],
+        "NOTIFICATION_RULES": [],
         "PREVIEW_CACHE": {
             "movie": None,
             "series": None
@@ -1691,6 +1692,79 @@ def _normalize_latest_presets(entries: Any) -> list[Dict[str, Any]]:
             "updated_at": entry.get("updated_at") or ""
         })
     return normalized
+
+
+def _normalize_latest_notification_rules(entries: Any) -> list[Dict[str, Any]]:
+    if not isinstance(entries, list):
+        return []
+    normalized = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            continue
+        raw_server_ids = entry.get("server_ids") or entry.get("servers") or []
+        if isinstance(raw_server_ids, str):
+            raw_server_ids = [raw_server_ids]
+        server_ids = [str(value) for value in raw_server_ids if str(value)]
+        preset_id = str(entry.get("preset_id") or "").strip()
+        telegram_config_id = str(entry.get("telegram_config_id") or entry.get("telegram_preset_id") or "").strip()
+        enabled = entry.get("enabled")
+        normalized.append({
+            "id": str(entry.get("id") or uuid.uuid4()),
+            "name": name,
+            "enabled": True if enabled is None else bool(enabled),
+            "server_ids": server_ids,
+            "preset_id": preset_id,
+            "telegram_config_id": telegram_config_id,
+            "created_at": entry.get("created_at") or "",
+            "updated_at": entry.get("updated_at") or ""
+        })
+    return normalized
+
+
+def _prepare_latest_notification_rules(
+    rules: list[Dict[str, Any]],
+    servers: list[Dict[str, Any]],
+    presets: list[Dict[str, Any]],
+    telegram_presets: list[Dict[str, Any]]
+) -> list[Dict[str, Any]]:
+    server_map = {str(server.get("id")): server for server in servers if server.get("id")}
+    preset_map = {str(preset.get("id")): preset for preset in presets if preset.get("id")}
+    telegram_map = {str(preset.get("id")): preset for preset in telegram_presets if preset.get("id")}
+    output = []
+    for rule in rules or []:
+        if not isinstance(rule, dict):
+            continue
+        server_ids = [str(value) for value in (rule.get("server_ids") or []) if str(value)]
+        server_names = []
+        missing_servers = []
+        for server_id in server_ids:
+            server = server_map.get(server_id)
+            if server:
+                server_names.append(_emby_display_name(server))
+            else:
+                missing_servers.append(server_id)
+        preset = preset_map.get(str(rule.get("preset_id") or ""))
+        telegram_preset = telegram_map.get(str(rule.get("telegram_config_id") or ""))
+        missing_parts = []
+        if missing_servers:
+            missing_parts.append("Server")
+        if not preset:
+            missing_parts.append("Preset")
+        if not telegram_preset:
+            missing_parts.append("Telegram")
+        view = dict(rule)
+        view["server_ids"] = server_ids
+        view["server_names"] = server_names
+        view["preset_name"] = preset.get("name") if preset else ""
+        view["telegram_name"] = telegram_preset.get("name") if telegram_preset else ""
+        view["missing_servers"] = missing_servers
+        view["missing_label"] = ", ".join(missing_parts)
+        view["has_missing"] = bool(missing_parts)
+        output.append(view)
+    return output
 
 
 def _load_latest_settings() -> Dict[str, Any]:
@@ -1737,6 +1811,9 @@ def _load_latest_settings() -> Dict[str, Any]:
     if not active_id:
         active_id = merged["PRESETS"][0]["id"]
     merged["ACTIVE_PRESET_ID"] = active_id
+    merged["NOTIFICATION_RULES"] = _normalize_latest_notification_rules(
+        latest.get("NOTIFICATION_RULES") or latest.get("notification_rules")
+    )
     telegram_ids = latest.get("TELEGRAM_PRESET_IDS")
     if isinstance(telegram_ids, list):
         merged["TELEGRAM_PRESET_IDS"] = [str(value) for value in telegram_ids if str(value)]
@@ -1763,9 +1840,12 @@ def _save_latest_settings(latest_settings: Dict[str, Any]) -> None:
         incoming["ACTIVE_PRESET_ID"] = existing.get("ACTIVE_PRESET_ID")
     if "TELEGRAM_PRESET_IDS" not in incoming:
         incoming["TELEGRAM_PRESET_IDS"] = existing.get("TELEGRAM_PRESET_IDS")
+    if "NOTIFICATION_RULES" not in incoming:
+        incoming["NOTIFICATION_RULES"] = existing.get("NOTIFICATION_RULES")
     normalized = _default_latest_settings()
     normalized["SETTINGS"].update(incoming.get("SETTINGS") or {})
     normalized["PRESETS"] = _normalize_latest_presets(incoming.get("PRESETS"))
+    normalized["NOTIFICATION_RULES"] = _normalize_latest_notification_rules(incoming.get("NOTIFICATION_RULES"))
     active_id = str(incoming.get("ACTIVE_PRESET_ID") or "").strip()
     if not active_id and normalized["PRESETS"]:
         active_id = normalized["PRESETS"][0]["id"]
@@ -2608,6 +2688,16 @@ def create_dashboard_app():
     # Configure Emby Probe Manager
     get_probe_manager().configure(_ensure_db_backend)
 
+    # Configure WorkflowManager callbacks
+    workflow_manager.set_callbacks(
+        trigger_scan_func=_wf_trigger_scan,
+        check_scan_func=_wf_check_scan,
+        trigger_probe_func=_wf_trigger_probe,
+        check_probe_func=_wf_check_probe,
+        refresh_cache_func=_wf_refresh_cache,
+        notify_func=_wf_notify
+    )
+
     @app.before_request
     def _ensure_cookie_security():
         if not app.config.get("SESSION_COOKIE_SECURE_AUTO"):
@@ -2839,9 +2929,16 @@ def create_dashboard_app():
         total_blacklist_count, total_incomplete_count = _get_total_blacklist_counts()
         latest_settings = _default_latest_settings()
         telegram_presets = []
+        latest_notification_rules = []
         if config and _db_enabled(config.get("DATABASE", {})):
             latest_settings = _load_latest_settings()
             telegram_presets = _load_telegram_settings().get("PRESETS", [])
+            latest_notification_rules = _prepare_latest_notification_rules(
+                latest_settings.get("NOTIFICATION_RULES") or [],
+                emby_servers,
+                latest_settings.get("PRESETS", []),
+                telegram_presets
+            )
         return render_template(
             'emby_dashboard.html',
             has_config=is_valid,
@@ -2855,7 +2952,8 @@ def create_dashboard_app():
             latest_message_presets=latest_settings.get("PRESETS", []),
             latest_active_preset_id=latest_settings.get("ACTIVE_PRESET_ID", ""),
             latest_selected_telegram_presets=latest_settings.get("TELEGRAM_PRESET_IDS", []),
-            telegram_presets=telegram_presets
+            telegram_presets=telegram_presets,
+            latest_notification_rules=latest_notification_rules
         )
 
     @app.route('/emby/probe')
@@ -7632,23 +7730,22 @@ def create_dashboard_app():
             "diff": diff
         })
 
-    @app.route('/api/emby/latest/notify', methods=['POST'])
-    @login_required
-    def emby_latest_notify():
-        payload = request.get_json(silent=True) or {}
-        server_filter = (payload.get("server_id") or "").strip()
-        limit = _coerce_request_int(payload.get("limit"), 12, 1, 50)
-        per_server_limit = _coerce_request_int(payload.get("per_server_limit"), limit, 1, 50)
+    def _internal_send_notifications(limit, per_server_limit, server_filter=None):
+        """
+        Logica interna per inviare notifiche. Usata sia dalla route API che dal workflow.
 
+        Returns:
+            dict: {"sent": int, "failed": int, "errors": list, "success": bool, "message": str}
+        """
         config, is_valid = load_config()
         if not is_valid or not config:
-            return jsonify({"success": False, "message": "Config non valida"}), 400
+            return {"success": False, "message": "Config non valida", "sent": 0, "failed": 0, "errors": []}
         if not _db_enabled(config.get("DATABASE", {})):
-            return jsonify({"success": False, "message": "Database non attivo, impossibile inviare notifiche."}), 400
+            return {"success": False, "message": "Database non attivo", "sent": 0, "failed": 0, "errors": []}
 
         latest_payload, error = _collect_emby_latest_entries(limit, per_server_limit)
         if error:
-            return jsonify({"success": False, "message": error}), 400
+            return {"success": False, "message": error, "sent": 0, "failed": 0, "errors": [error]}
 
         movies = latest_payload.get("movies") or []
         series = latest_payload.get("series") or []
@@ -7656,95 +7753,195 @@ def create_dashboard_app():
         if server_filter and server_filter != "all":
             items = [item for item in items if item.get("server_id") == server_filter]
         if not items:
-            return jsonify({"success": False, "message": "Nessuna pubblicazione da notificare."}), 200
+            return {"success": False, "message": "Nessuna pubblicazione da notificare.", "sent": 0, "failed": 0, "errors": []}
 
         latest_settings = _load_latest_settings()
-        preset = _resolve_latest_message_preset(latest_settings)
-        template = preset.get("template") if isinstance(preset, dict) else _default_latest_message_template()
         telegram_settings = _load_telegram_settings()
-        presets = telegram_settings.get("PRESETS") or []
+        telegram_presets = telegram_settings.get("PRESETS") or []
         bots = telegram_settings.get("BOTS") or []
         groups = telegram_settings.get("GROUPS") or []
         channels = telegram_settings.get("CHANNELS") or []
-
-        selected_preset_ids = latest_settings.get("TELEGRAM_PRESET_IDS") or []
-        selected_presets = [preset_entry for preset_entry in presets if preset_entry.get("id") in selected_preset_ids]
-        if not selected_presets:
-            return jsonify({"success": False, "message": "Seleziona almeno una preconfigurazione Telegram."}), 400
+        latest_presets = latest_settings.get("PRESETS") or []
+        rules = latest_settings.get("NOTIFICATION_RULES") or []
 
         bots_by_id = {str(bot.get("id")): bot for bot in bots if bot.get("id")}
         groups_by_id = {str(entry.get("id")): entry for entry in groups if entry.get("id")}
         channels_by_id = {str(entry.get("id")): entry for entry in channels if entry.get("id")}
+        telegram_presets_by_id = {str(entry.get("id")): entry for entry in telegram_presets if entry.get("id")}
+        latest_presets_by_id = {str(entry.get("id")): entry for entry in latest_presets if entry.get("id")}
+        server_ids_configured = {
+            str(entry.get("id"))
+            for entry in ((config.get("EMBY") or {}).get("SERVERS") or [])
+            if entry.get("id")
+        }
 
-        recipient_pairs = []
         errors = []
-        for preset_entry in selected_presets:
-            bot_ids = preset_entry.get("bot_ids") or []
-            group_ids = preset_entry.get("group_ids") or []
-            channel_ids = preset_entry.get("channel_ids") or []
-            if not bot_ids:
-                errors.append(f"Preset '{preset_entry.get('name')}' senza bot.")
-                continue
-            chat_ids = []
-            for group_id in group_ids:
-                entry = groups_by_id.get(str(group_id))
-                if entry and entry.get("chat_id"):
-                    chat_ids.append(str(entry.get("chat_id")))
-            for channel_id in channel_ids:
-                entry = channels_by_id.get(str(channel_id))
-                if entry and entry.get("chat_id"):
-                    chat_ids.append(str(entry.get("chat_id")))
-            if not chat_ids:
-                errors.append(f"Preset '{preset_entry.get('name')}' senza gruppi o canali.")
-                continue
-            for bot_id in bot_ids:
-                bot = bots_by_id.get(str(bot_id))
-                if not bot or not bot.get("token"):
-                    errors.append(f"Bot non trovato per preset '{preset_entry.get('name')}'.")
-                    continue
-                token = bot.get("token")
-                for chat_id in chat_ids:
-                    recipient_pairs.append((token, chat_id))
+        rule_runs: list[Dict[str, Any]] = []
 
-        if not recipient_pairs:
-            return jsonify({"success": False, "message": "Nessun destinatario valido per le notifiche."}), 400
+        if rules:
+            for rule in rules:
+                if not isinstance(rule, dict) or not rule.get("enabled"):
+                    continue
+                rule_name = rule.get("name") or "Regola"
+                rule_server_ids = [str(value) for value in (rule.get("server_ids") or []) if str(value)]
+                missing_servers = [srv_id for srv_id in rule_server_ids if srv_id not in server_ids_configured]
+                preset_entry = latest_presets_by_id.get(str(rule.get("preset_id") or ""))
+                telegram_entry = telegram_presets_by_id.get(str(rule.get("telegram_config_id") or ""))
+                missing_parts = []
+                if missing_servers:
+                    missing_parts.append("server")
+                if not preset_entry:
+                    missing_parts.append("preset")
+                if not telegram_entry:
+                    missing_parts.append("telegram")
+                if missing_parts:
+                    errors.append(f"Regola '{rule_name}' non valida ({', '.join(missing_parts)}).")
+                    continue
+                if not telegram_entry:
+                    continue
+
+                bot_ids = telegram_entry.get("bot_ids") or []
+                group_ids = telegram_entry.get("group_ids") or []
+                channel_ids = telegram_entry.get("channel_ids") or []
+                if not bot_ids:
+                    errors.append(f"Regola '{rule_name}' senza bot.")
+                    continue
+
+                chat_ids = []
+                for group_id in group_ids:
+                    entry = groups_by_id.get(str(group_id))
+                    if entry and entry.get("chat_id"):
+                        chat_ids.append(str(entry.get("chat_id")))
+                for channel_id in channel_ids:
+                    entry = channels_by_id.get(str(channel_id))
+                    if entry and entry.get("chat_id"):
+                        chat_ids.append(str(entry.get("chat_id")))
+                if not chat_ids:
+                    errors.append(f"Regola '{rule_name}' senza gruppi o canali.")
+                    continue
+
+                recipient_pairs = []
+                for bot_id in bot_ids:
+                    bot = bots_by_id.get(str(bot_id))
+                    if not bot or not bot.get("token"):
+                        errors.append(f"Bot non trovato per regola '{rule_name}'.")
+                        continue
+                    token = bot.get("token")
+                    for chat_id in chat_ids:
+                        recipient_pairs.append((token, chat_id))
+
+                if not recipient_pairs:
+                    errors.append(f"Regola '{rule_name}' senza destinatari validi.")
+                    continue
+
+                rule_items = items
+                if rule_server_ids:
+                    rule_items = [item for item in items if item.get("server_id") in rule_server_ids]
+                if not rule_items:
+                    continue
+
+                template = preset_entry.get("template") if isinstance(preset_entry, dict) else _default_latest_message_template()
+                rule_runs.append({
+                    "name": rule_name,
+                    "template": template,
+                    "items": rule_items,
+                    "recipients": recipient_pairs
+                })
+        else:
+            preset = _resolve_latest_message_preset(latest_settings)
+            template = preset.get("template") if isinstance(preset, dict) else _default_latest_message_template()
+            selected_preset_ids = latest_settings.get("TELEGRAM_PRESET_IDS") or []
+            selected_presets = [
+                preset_entry for preset_entry in telegram_presets
+                if preset_entry.get("id") in selected_preset_ids
+            ]
+            if not selected_presets:
+                return {"success": False, "message": "Seleziona almeno una preconfigurazione Telegram.", "sent": 0, "failed": 0, "errors": []}
+
+            recipient_pairs = []
+            for preset_entry in selected_presets:
+                bot_ids = preset_entry.get("bot_ids") or []
+                group_ids = preset_entry.get("group_ids") or []
+                channel_ids = preset_entry.get("channel_ids") or []
+                if not bot_ids:
+                    errors.append(f"Preset '{preset_entry.get('name')}' senza bot.")
+                    continue
+                chat_ids = []
+                for group_id in group_ids:
+                    entry = groups_by_id.get(str(group_id))
+                    if entry and entry.get("chat_id"):
+                        chat_ids.append(str(entry.get("chat_id")))
+                for channel_id in channel_ids:
+                    entry = channels_by_id.get(str(channel_id))
+                    if entry and entry.get("chat_id"):
+                        chat_ids.append(str(entry.get("chat_id")))
+                if not chat_ids:
+                    errors.append(f"Preset '{preset_entry.get('name')}' senza gruppi o canali.")
+                    continue
+                for bot_id in bot_ids:
+                    bot = bots_by_id.get(str(bot_id))
+                    if not bot or not bot.get("token"):
+                        errors.append(f"Bot non trovato per preset '{preset_entry.get('name')}'.")
+                        continue
+                    token = bot.get("token")
+                    for chat_id in chat_ids:
+                        recipient_pairs.append((token, chat_id))
+
+            if not recipient_pairs:
+                return {"success": False, "message": "Nessun destinatario valido per le notifiche.", "sent": 0, "failed": 0, "errors": []}
+
+            rule_runs.append({
+                "name": "Preset globale",
+                "template": template,
+                "items": items,
+                "recipients": recipient_pairs
+            })
+
+        if not rule_runs:
+            message = "Nessuna regola attiva per le notifiche."
+            if errors:
+                message = f"{message} {', '.join(errors)}"
+            return {"success": False, "message": message, "sent": 0, "failed": 0, "errors": errors}
 
         sent = 0
         failed = 0
-        notified_items = []  # Track successfully notified items
+        notified_items = []
 
-        for item in items:
-            message, image_url = _build_latest_message(item, template)
-            if not message and not image_url:
-                continue
-            item_success = False
-            for token, chat_id in recipient_pairs:
-                if image_url:
-                    caption = message.strip()
-                    payload = {"chat_id": chat_id, "photo": image_url}
-                    if caption:
-                        payload["caption"] = caption[:1024]
-                        payload["parse_mode"] = "HTML"
-                    ok, err, _ = _telegram_api_request(token, "sendPhoto", payload)
-                else:
-                    preview_enabled = "http://" in message or "https://" in message
-                    ok, err, _ = _telegram_api_request(token, "sendMessage", {
-                        "chat_id": chat_id,
-                        "text": message,
-                        "parse_mode": "HTML",
-                        "disable_web_page_preview": False if preview_enabled else True
-                    })
-                if ok:
-                    sent += 1
-                    item_success = True
-                else:
-                    failed += 1
-                    if err:
-                        errors.append(err)
+        for rule_run in rule_runs:
+            template = rule_run.get("template") or _default_latest_message_template()
+            rule_items = rule_run.get("items") or []
+            recipients = rule_run.get("recipients") or []
+            for item in rule_items:
+                message, image_url = _build_latest_message(item, template)
+                if not message and not image_url:
+                    continue
+                item_success = False
+                for token, chat_id in recipients:
+                    if image_url:
+                        caption = message.strip()
+                        payload = {"chat_id": chat_id, "photo": image_url}
+                        if caption:
+                            payload["caption"] = caption[:1024]
+                            payload["parse_mode"] = "HTML"
+                        ok, err, _ = _telegram_api_request(token, "sendPhoto", payload)
+                    else:
+                        preview_enabled = "http://" in message or "https://" in message
+                        ok, err, _ = _telegram_api_request(token, "sendMessage", {
+                            "chat_id": chat_id,
+                            "text": message,
+                            "parse_mode": "HTML",
+                            "disable_web_page_preview": False if preview_enabled else True
+                        })
+                    if ok:
+                        sent += 1
+                        item_success = True
+                    else:
+                        failed += 1
+                        if err:
+                            errors.append(err)
 
-            # Se almeno una notifica è andata a buon fine per questo item, traccialo
-            if item_success:
-                notified_items.append(item)
+                if item_success:
+                    notified_items.append(item)
 
         # Aggiorna il flag notified=True per tutti gli item notificati con successo
         if notified_items:
@@ -7758,7 +7955,7 @@ def create_dashboard_app():
             for item in notified_items:
                 server_id = item.get("server_id")
                 item_id = item.get("item_id")
-                item_type = item.get("type")  # "Movie" o "Series"
+                item_type = item.get("type")
 
                 if not server_id or not item_id:
                     continue
@@ -7792,13 +7989,31 @@ def create_dashboard_app():
         summary = f"Notifiche inviate: {sent}." if sent else "Nessuna notifica inviata."
         if failed:
             summary = f"{summary} Errori: {failed}."
-        return jsonify({
+        if errors:
+            summary = f"{summary} Avvisi: {len(errors)}."
+
+        return {
             "success": True if sent else False,
             "message": summary,
             "sent": sent,
             "failed": failed,
             "errors": errors
-        })
+        }
+
+    globals()["_refresh_latest_cache_full_background"] = _refresh_latest_cache_full_background
+    globals()["_internal_send_notifications"] = _internal_send_notifications
+
+    @app.route('/api/emby/latest/notify', methods=['POST'])
+    @login_required
+    def emby_latest_notify():
+        payload = request.get_json(silent=True) or {}
+        server_filter = (payload.get("server_id") or "").strip()
+        limit = _coerce_request_int(payload.get("limit"), 12, 1, 50)
+        per_server_limit = _coerce_request_int(payload.get("per_server_limit"), limit, 1, 50)
+
+        result = _internal_send_notifications(limit, per_server_limit, server_filter)
+        status_code = 200 if result["success"] or result["sent"] == 0 else 400
+        return jsonify(result), status_code
 
     @app.route('/api/emby/image', methods=['GET'])
     @login_required
@@ -10128,6 +10343,147 @@ def create_dashboard_app():
         flash("Preset notifica rimosso.")
         return redirect(next_url)
 
+    @app.route('/emby/latest/rule/save', methods=['POST'])
+    @login_required
+    def emby_latest_save_rule():
+        next_url = _resolve_next_url(request.form.get('next'), 'emby_dashboard')
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            flash("Config non valida.")
+            return redirect(next_url)
+        try:
+            _ensure_db_backend()
+        except StorageError as exc:
+            flash(f"Errore DB: {exc}")
+            return redirect(next_url)
+
+        rule_name = _normalize_form_input(request.form, 'latest_rule_name') or ""
+        server_ids = [value for value in request.form.getlist('latest_rule_servers') if value]
+        preset_id = _normalize_form_input(request.form, 'latest_rule_preset') or ""
+        telegram_id = _normalize_form_input(request.form, 'latest_rule_telegram') or ""
+        if not rule_name:
+            flash("Nome regola mancante.")
+            return redirect(next_url)
+        if not server_ids:
+            flash("Seleziona almeno un server.")
+            return redirect(next_url)
+        if not preset_id:
+            flash("Seleziona un preset.")
+            return redirect(next_url)
+        if not telegram_id:
+            flash("Seleziona una destinazione Telegram.")
+            return redirect(next_url)
+
+        raw_servers = (config.get("EMBY") or {}).get("SERVERS") or []
+        valid_server_ids = {str(server.get("id")) for server in raw_servers if server.get("id")}
+        server_ids = [server_id for server_id in server_ids if server_id in valid_server_ids]
+        if not server_ids:
+            flash("Nessun server valido selezionato.")
+            return redirect(next_url)
+
+        latest_settings = _load_latest_settings()
+        presets = latest_settings.get("PRESETS") or []
+        if preset_id not in {str(preset.get("id")) for preset in presets if preset.get("id")}:
+            flash("Preset non valido.")
+            return redirect(next_url)
+        telegram_presets = _load_telegram_settings().get("PRESETS", [])
+        if telegram_id not in {str(preset.get("id")) for preset in telegram_presets if preset.get("id")}:
+            flash("Destinazione Telegram non valida.")
+            return redirect(next_url)
+
+        rules = latest_settings.get("NOTIFICATION_RULES") or []
+        rule_id = (request.form.get('latest_rule_id') or '').strip()
+        now_stamp = datetime.now(timezone.utc).astimezone().isoformat()
+        existing = next((rule for rule in rules if rule.get("id") == rule_id), None)
+        if existing:
+            existing["name"] = rule_name
+            existing["server_ids"] = server_ids
+            existing["preset_id"] = preset_id
+            existing["telegram_config_id"] = telegram_id
+            existing["updated_at"] = now_stamp
+            flash("Regola aggiornata.")
+        else:
+            rules.append({
+                "id": str(uuid.uuid4()),
+                "name": rule_name,
+                "enabled": True,
+                "server_ids": server_ids,
+                "preset_id": preset_id,
+                "telegram_config_id": telegram_id,
+                "created_at": now_stamp,
+                "updated_at": now_stamp
+            })
+            flash("Regola salvata.")
+        latest_settings["NOTIFICATION_RULES"] = rules
+        _save_latest_settings(latest_settings)
+        return redirect(next_url)
+
+    @app.route('/emby/latest/rule/toggle', methods=['POST'])
+    @login_required
+    def emby_latest_toggle_rule():
+        next_url = _resolve_next_url(request.form.get('next'), 'emby_dashboard')
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            flash("Config non valida.")
+            return redirect(next_url)
+        try:
+            _ensure_db_backend()
+        except StorageError as exc:
+            flash(f"Errore DB: {exc}")
+            return redirect(next_url)
+
+        rule_id = (request.form.get('latest_rule_id') or '').strip()
+        enabled = str(request.form.get('latest_rule_enabled') or "").strip() == "1"
+        if not rule_id:
+            flash("Regola non valida.")
+            return redirect(next_url)
+
+        latest_settings = _load_latest_settings()
+        rules = latest_settings.get("NOTIFICATION_RULES") or []
+        now_stamp = datetime.now(timezone.utc).astimezone().isoformat()
+        updated = False
+        for rule in rules:
+            if rule.get("id") == rule_id:
+                rule["enabled"] = enabled
+                rule["updated_at"] = now_stamp
+                updated = True
+                break
+        if not updated:
+            flash("Regola non trovata.")
+            return redirect(next_url)
+        latest_settings["NOTIFICATION_RULES"] = rules
+        _save_latest_settings(latest_settings)
+        return redirect(next_url)
+
+    @app.route('/emby/latest/rule/remove', methods=['POST'])
+    @login_required
+    def emby_latest_remove_rule():
+        next_url = _resolve_next_url(request.form.get('next'), 'emby_dashboard')
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            flash("Config non valida.")
+            return redirect(next_url)
+        try:
+            _ensure_db_backend()
+        except StorageError as exc:
+            flash(f"Errore DB: {exc}")
+            return redirect(next_url)
+
+        rule_id = (request.form.get('latest_rule_id') or '').strip()
+        if not rule_id:
+            flash("Regola non valida.")
+            return redirect(next_url)
+        latest_settings = _load_latest_settings()
+        rules = latest_settings.get("NOTIFICATION_RULES") or []
+        updated = [rule for rule in rules if rule.get("id") != rule_id]
+        if len(updated) == len(rules):
+            flash("Regola non trovata.")
+            return redirect(next_url)
+        latest_settings["NOTIFICATION_RULES"] = updated
+        _save_latest_settings(latest_settings)
+        flash("Regola rimossa.")
+        return redirect(next_url)
+
     @app.route('/emby/latest/notification-settings', methods=['POST'])
     @login_required
     def emby_latest_save_notification_settings():
@@ -10611,6 +10967,7 @@ def create_dashboard_app():
         updated = copy.deepcopy(current)
         updated["scan"] = _parse_auto_task_payload(request.form, "scan", current.get("scan", _default_auto_tasks()["scan"]))
         updated["refresh"] = _parse_auto_task_payload(request.form, "refresh", current.get("refresh", _default_auto_tasks()["refresh"]))
+        updated["workflow"] = _parse_auto_task_payload(request.form, "workflow", current.get("workflow", _default_auto_tasks()["workflow"]))
         try:
             _update_app_settings_overrides({"AUTO_TASKS": updated})
         except StorageError as exc:
@@ -10872,6 +11229,80 @@ def create_dashboard_app():
         except Exception as exc:
             print(f"   -> Errore rimozione token Trakt: {exc}")
             return jsonify({"success": False, "message": str(exc)}), 500
+
+    # --- WORKFLOW API ROUTES ---
+
+    @app.route('/api/workflow/start', methods=['POST'])
+    @login_required
+    def workflow_start():
+        """Avvia un nuovo workflow di aggiornamento."""
+        payload = request.get_json(silent=True) or {}
+        workflow_type = payload.get("type", "full")  # "full", "smart", "library"
+        context = payload.get("context") or {}
+
+        # Valida workflow_type
+        if workflow_type not in ["full", "smart", "library"]:
+            return jsonify({"success": False, "message": "Tipo workflow non valido"}), 400
+
+        # Controlla se c'è già un workflow in esecuzione
+        if workflow_manager.is_running():
+            return jsonify({"success": False, "message": "Un workflow è già in esecuzione"}), 409
+
+        # Avvia il workflow
+        started = workflow_manager.start(workflow_type=workflow_type, context=context)
+
+        if started:
+            return jsonify({"success": True, "message": "Workflow avviato"})
+        else:
+            return jsonify({"success": False, "message": "Impossibile avviare il workflow"}), 500
+
+    @app.route('/api/workflow/stop', methods=['POST'])
+    @login_required
+    def workflow_stop():
+        """Interrompe il workflow corrente."""
+        if not workflow_manager.is_running():
+            return jsonify({"success": False, "message": "Nessun workflow in esecuzione"}), 400
+
+        workflow_manager.stop()
+        return jsonify({"success": True, "message": "Richiesta di interruzione inviata"})
+
+    @app.route('/api/workflow/events', methods=['GET'])
+    @login_required
+    def workflow_events():
+        """Server-Sent Events stream per lo stato del workflow."""
+        def generate():
+            """Genera eventi SSE con lo stato del workflow."""
+            import time
+
+            # Invia un evento iniziale
+            status = workflow_manager.get_status()
+            yield f"data: {json.dumps(status)}\n\n"
+
+            # Continua a inviare aggiornamenti ogni 2 secondi
+            last_status = status
+            while True:
+                time.sleep(2)
+                status = workflow_manager.get_status()
+
+                # Invia solo se lo stato è cambiato
+                if status != last_status:
+                    yield f"data: {json.dumps(status)}\n\n"
+                    last_status = status
+
+                # Se il workflow è completato o fallito, invia un ultimo evento e chiudi
+                if status.get("status") in ["completed", "failed", "idle"]:
+                    # Aspetta un momento per dare al client il tempo di ricevere
+                    time.sleep(1)
+                    break
+
+        return Response(
+            stream_with_context(generate()),
+            mimetype='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache',
+                'X-Accel-Buffering': 'no'
+            }
+        )
 
     return app
 
@@ -12363,6 +12794,251 @@ class TraktClient:
         with self._lock:
             self._show_id_cache[tmdb_id] = identifier
         return identifier
+
+
+# --- WORKFLOW CALLBACKS ---
+# Funzioni wrapper per il WorkflowManager
+
+def _wf_trigger_scan(context):
+    """
+    Avvia una scansione Emby. Usato dal workflow.
+
+    Args:
+        context: dict con 'server_id' e/o 'library_id'
+
+    Returns:
+        bool: True se avviato con successo
+    """
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        print("[WORKFLOW] Config non valida, impossibile avviare scan")
+        return False
+
+    server_id = context.get("server_id")
+    library_id = context.get("library_id")
+
+    emby_servers = (config.get("EMBY") or {}).get("SERVERS") or []
+    enabled_servers = [
+        server for server in emby_servers
+        if isinstance(server, dict) and server.get("enabled")
+    ]
+
+    if not enabled_servers:
+        print("[WORKFLOW] Nessun server Emby abilitato")
+        return False
+
+    # Se c'è un server_id e library_id specifico, lancia scan su quella libreria
+    if server_id and library_id:
+        target_server = next((s for s in enabled_servers if s.get("id") == server_id), None)
+        if not target_server:
+            print(f"[WORKFLOW] Server {server_id} non trovato o non abilitato")
+            return False
+
+        def _run_library_scan():
+            try:
+                success, response = _trigger_library_scan(target_server, library_id)
+                if success:
+                    print(f"[WORKFLOW] Scan avviato su server {server_id}, libreria {library_id}")
+                else:
+                    print(f"[WORKFLOW] Errore avvio scan libreria {library_id}: {response}")
+            except Exception as exc:
+                print(f"[WORKFLOW] Errore avvio scan libreria {library_id}: {exc}")
+
+        threading.Thread(target=_run_library_scan, daemon=True).start()
+        return True
+
+    # Altrimenti, avvia refresh su tutti i server abilitati
+    # Triggera le scheduled tasks di tipo RefreshLibrary
+    try:
+        for server in enabled_servers:
+            tasks = _fetch_emby_scheduled_tasks(server) or []
+            for task in tasks:
+                if isinstance(task, dict):
+                    task_name = (task.get("Name") or "").lower()
+                    if "refresh" in task_name or "scan" in task_name:
+                        task_id = task.get("Id")
+                        if task_id:
+                            _call_emby_api(server, f"ScheduledTasks/Running/{task_id}", method="POST")
+                            print(f"[WORKFLOW] Avviato task '{task.get('Name')}' su server {server.get('id')}")
+                            break
+        return True
+    except Exception as exc:
+        print(f"[WORKFLOW] Errore avvio scan globale: {exc}")
+        return False
+
+
+def _wf_check_scan():
+    """
+    Verifica se ci sono scan Emby in corso.
+
+    Returns:
+        bool: True se NESSUN scan è in corso (completato), False se ancora in esecuzione
+    """
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        return True  # Assume completato se config non disponibile
+
+    emby_servers = (config.get("EMBY") or {}).get("SERVERS") or []
+    enabled_servers = [
+        server for server in emby_servers
+        if isinstance(server, dict) and server.get("enabled")
+    ]
+
+    if not enabled_servers:
+        return True
+
+    try:
+        for server in enabled_servers:
+            tasks = _fetch_emby_scheduled_tasks(server) or []
+            for task in tasks:
+                if isinstance(task, dict):
+                    task_name = (task.get("Name") or "").lower()
+                    if "refresh" in task_name or "scan" in task_name:
+                        state = (task.get("State") or "").lower()
+                        if state == "running":
+                            # print(f"[WORKFLOW] Scan ancora in corso su server {server.get('id')}")
+                            return False
+        # print("[WORKFLOW] Tutti gli scan sono completati")
+        return True
+    except Exception as exc:
+        print(f"[WORKFLOW] Errore check scan: {exc}")
+        return True  # Assume completato in caso di errore
+
+
+def _wf_trigger_probe(context):
+    """
+    Avvia il probe Emby (recent discovery).
+
+    Args:
+        context: dict con 'server_id' (opzionale)
+
+    Returns:
+        bool: True se avviato con successo
+    """
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        print("[WORKFLOW] Config non valida, impossibile avviare probe")
+        return False
+
+    emby_servers = (config.get("EMBY") or {}).get("SERVERS") or []
+    enabled_servers = [
+        server for server in emby_servers
+        if isinstance(server, dict) and server.get("enabled")
+    ]
+
+    if not enabled_servers:
+        print("[WORKFLOW] Nessun server Emby abilitato per probe")
+        return False
+
+    server_id = context.get("server_id")
+
+    # Filtra per server_id se specificato
+    if server_id:
+        enabled_servers = [s for s in enabled_servers if s.get("id") == server_id]
+
+    servers_payload = [
+        {"id": s.get("id"), "url": s.get("url"), "api_key": s.get("api_key")}
+        for s in enabled_servers
+    ]
+
+    try:
+        # Avvia recent discovery sequence su tutti i server (o solo quello filtrato)
+        limit = 50  # Default limit per recent items
+        started = get_probe_manager().start_recent_discovery_sequence(servers_payload, limit)
+        if started:
+            print(f"[WORKFLOW] Probe avviato su {len(servers_payload)} server(s)")
+        return started
+    except Exception as exc:
+        print(f"[WORKFLOW] Errore avvio probe: {exc}")
+        return False
+
+
+def _wf_check_probe():
+    """
+    Verifica se il probe è completato.
+
+    Returns:
+        bool: True se NON in esecuzione (completato), False se in esecuzione
+    """
+    try:
+        manager = get_probe_manager()
+        global_workers = getattr(manager, "_global_workers", {})
+        global_worker = global_workers.get("recent_discovery_all")
+        if global_worker and getattr(global_worker, "is_alive", None) and global_worker.is_alive():
+            return False
+
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return True
+        emby_servers = (config.get("EMBY") or {}).get("SERVERS") or []
+        enabled_servers = [
+            server for server in emby_servers
+            if isinstance(server, dict) and server.get("enabled")
+        ]
+        for server in enabled_servers:
+            server_id = server.get("id")
+            if not server_id:
+                continue
+            status = manager.get_status(server_id) or {}
+            recent_state = status.get("recent_discovery") or {}
+            if isinstance(recent_state, dict) and recent_state.get("running"):
+                return False
+        return True
+    except Exception as exc:
+        print(f"[WORKFLOW] Errore check probe: {exc}")
+        return True  # Assume completato in caso di errore
+
+
+def _wf_refresh_cache(context):
+    """
+    Aggiorna la cache "Latest" in background.
+
+    Args:
+        context: dict (non usato al momento)
+    """
+    try:
+        limit = 50
+        per_server_limit = 50
+        # Avvia il refresh in background
+        # Nota: _refresh_latest_cache_full_background è già un task in background thread
+        # quindi chiamiamolo direttamente, ma dobbiamo aspettare che finisca
+        # Per ora chiamiamo direttamente senza aspettare
+        refresh_func = globals().get("_refresh_latest_cache_full_background")
+        if not callable(refresh_func):
+            raise RuntimeError("Refresh cache function not available")
+        refresh_func(limit, per_server_limit)
+        print("[WORKFLOW] Cache refresh avviato")
+    except Exception as exc:
+        print(f"[WORKFLOW] Errore refresh cache: {exc}")
+        raise
+
+
+def _wf_notify(context):
+    """
+    Invia notifiche Telegram per i contenuti recenti.
+
+    Args:
+        context: dict con 'server_id' opzionale come filtro
+    """
+    try:
+        limit = 12
+        per_server_limit = 12
+        server_filter = context.get("server_id")
+
+        notify_func = globals().get("_internal_send_notifications")
+        if not callable(notify_func):
+            raise RuntimeError("Notification function not available")
+        result = notify_func(limit, per_server_limit, server_filter)
+
+        if result.get("success"):
+            print(f"[WORKFLOW] Notifiche inviate: {result.get('sent')}")
+        else:
+            print(f"[WORKFLOW] Notifiche fallite: {result.get('message')}")
+
+        # Non solleva eccezioni, anche se fallisce
+    except Exception as exc:
+        print(f"[WORKFLOW] Errore invio notifiche: {exc}")
+        raise
 
 
 # --- MAIN ---

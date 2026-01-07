@@ -140,6 +140,19 @@ def _fetch_emby_scheduled_tasks(server):
     return tasks, None
 
 
+def _fetch_emby_virtual_folders(server):
+    success, payload = _call_emby_api(server, "Library/VirtualFolders/Query")
+    if not success:
+        return [], payload
+    if isinstance(payload, dict):
+        items = payload.get("Items") or payload.get("items") or []
+    else:
+        items = payload if isinstance(payload, list) else []
+    if not isinstance(items, list):
+        return [], "Risposta VirtualFolders inattesa"
+    return items, None
+
+
 def _fetch_emby_status(server):
     if not _emby_has_credentials(server):
         return {"ok": False, "error": "API key o URL non corretti"}

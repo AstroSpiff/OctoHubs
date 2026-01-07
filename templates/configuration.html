@@ -593,6 +593,7 @@
                     {% else %}
                         {% set scan_auto = auto_tasks.scan if auto_tasks else {} %}
                         {% set refresh_auto = auto_tasks.refresh if auto_tasks else {} %}
+                        {% set workflow_auto = auto_tasks.workflow if auto_tasks else {} %}
                         <form id="auto-task-form" action="/update-scheduler" method="post">
                             <input type="hidden" name="next" value="{{ url_for('configuration') }}">
                             <div class="auto-grid">
@@ -645,6 +646,31 @@
                                         <input type="text" name="refresh_times" placeholder="07:00, 19:00" value="{{ refresh_auto.times | join(', ') }}">
                                     </div>
                                     <p class="auto-note">L'aggiornamento ricarica elenco richieste e stati Trakt.</p>
+                                </section>
+                                <section class="auto-section" data-task="workflow">
+                                    <div class="auto-header">
+                                        <h3>Workflow automatico</h3>
+                                        <label class="auto-inline" title="Attiva o disattiva questa automazione">
+                                            <input type="checkbox" name="workflow_enabled" class="auto-enable" {% if workflow_auto.enabled %}checked{% endif %}>
+                                            Attiva
+                                        </label>
+                                    </div>
+                                    <div class="auto-mode">
+                                        <label class="auto-inline" title="Ripeti il workflow a intervalli costanti">
+                                            <input type="radio" name="workflow_mode" value="interval" {% if workflow_auto.mode != 'fixed' %}checked{% endif %}>
+                                            Avvia ogni
+                                        </label>
+                                        <input type="number" name="workflow_interval" min="5" value="{{ workflow_auto.interval_minutes or 360 }}">
+                                        <span>minuti</span>
+                                    </div>
+                                    <div class="auto-mode">
+                                        <label class="auto-inline" title="Esegui il workflow in orari precisi (usa 24h)">
+                                            <input type="radio" name="workflow_mode" value="fixed" {% if workflow_auto.mode == 'fixed' %}checked{% endif %}>
+                                            Orari fissi
+                                        </label>
+                                        <input type="text" name="workflow_times" placeholder="02:00, 04:00" value="{{ workflow_auto.times | join(', ') }}">
+                                    </div>
+                                    <p class="auto-note">Esegue sequenzialmente: Scansione Emby, Analisi nuovi file, Aggiornamento Cache e Notifiche Telegram.</p>
                                 </section>
                             </div>
                             <p class="tagline" style="margin-top:0.75rem;">Le automazioni lavorano solo sulle richieste abilitate e non avviano una nuova ricerca se ne è già attiva un'altra.</p>

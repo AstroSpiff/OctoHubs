@@ -143,6 +143,12 @@ DEFAULT_CONFIG = {
             "mode": "interval",
             "interval_minutes": 120,
             "times": []
+        },
+        "workflow": {
+            "enabled": False,
+            "mode": "interval",
+            "interval_minutes": 360,
+            "times": []
         }
     },
     "EMBY": {

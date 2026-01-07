@@ -924,6 +924,19 @@
     const latestPresetCancel = document.querySelector('[data-latest-preset-cancel]');
     const latestPresetRows = document.querySelectorAll('[data-latest-preset-row]');
     const latestPresetActiveSelect = document.querySelector('[data-latest-active-preset]');
+    const latestRuleOverlay = document.querySelector('[data-latest-rule-overlay]');
+    const latestRuleForm = document.querySelector('[data-latest-rule-form]');
+    const latestRuleIdInput = document.querySelector('[data-latest-rule-id]');
+    const latestRuleNameInput = document.querySelector('[data-latest-rule-name]');
+    const latestRuleServerInputs = document.querySelectorAll('[data-latest-rule-server]');
+    const latestRulePresetSelect = document.querySelector('[data-latest-rule-preset]');
+    const latestRuleTelegramSelect = document.querySelector('[data-latest-rule-telegram]');
+    const latestRuleSubmit = document.querySelector('[data-latest-rule-submit]');
+    const latestRuleCancel = document.querySelector('[data-latest-rule-cancel]');
+    const latestRuleNewBtn = document.querySelector('[data-latest-rule-new]');
+    const latestRuleClose = document.querySelector('[data-latest-rule-close]');
+    const latestRuleRows = document.querySelectorAll('[data-latest-rule-row]');
+    const latestRuleToggleForms = document.querySelectorAll('[data-latest-rule-toggle-form]');
     const latestTokenHelpBtn = document.querySelector('[data-latest-token-help]');
     const latestTokenOverlay = document.querySelector('[data-latest-token-overlay]');
     const latestTokenList = document.querySelector('[data-latest-token-list]');
@@ -2431,8 +2444,142 @@
             if (latestPresetSubmit) {
                 latestPresetSubmit.textContent = 'Salva preset';
             }
-            latestPresetCancel.hidden = true;
-            updatePreview();
+        latestPresetCancel.hidden = true;
+        updatePreview();
+    });
+    }
+
+    const openRuleModal = () => {
+        if (!latestRuleOverlay) {
+            return;
+        }
+        latestRuleOverlay.style.display = 'flex';
+    };
+
+    const closeRuleModal = () => {
+        if (!latestRuleOverlay) {
+            return;
+        }
+        latestRuleOverlay.style.display = 'none';
+    };
+
+    const resetRuleForm = () => {
+        if (latestRuleIdInput) {
+            latestRuleIdInput.value = '';
+        }
+        if (latestRuleNameInput) {
+            latestRuleNameInput.value = '';
+        }
+        if (latestRulePresetSelect) {
+            latestRulePresetSelect.value = '';
+        }
+        if (latestRuleTelegramSelect) {
+            latestRuleTelegramSelect.value = '';
+        }
+        latestRuleServerInputs.forEach(input => {
+            input.checked = false;
+        });
+        if (latestRuleSubmit) {
+            latestRuleSubmit.textContent = 'Crea regola';
+        }
+    };
+
+    const applyRuleToForm = (row) => {
+        if (!row) {
+            return;
+        }
+        const ruleId = row.dataset.ruleId || '';
+        let ruleName = row.dataset.ruleName || '';
+        let ruleServers = row.dataset.ruleServers || '[]';
+        const presetId = row.dataset.rulePresetId || '';
+        const telegramId = row.dataset.ruleTelegramId || '';
+        try {
+            ruleName = JSON.parse(ruleName);
+        } catch {}
+        let serverIds = [];
+        try {
+            serverIds = JSON.parse(ruleServers);
+        } catch {}
+
+        if (latestRuleIdInput) {
+            latestRuleIdInput.value = ruleId;
+        }
+        if (latestRuleNameInput) {
+            latestRuleNameInput.value = ruleName;
+            latestRuleNameInput.focus();
+        }
+        if (latestRulePresetSelect) {
+            latestRulePresetSelect.value = presetId;
+        }
+        if (latestRuleTelegramSelect) {
+            latestRuleTelegramSelect.value = telegramId;
+        }
+        latestRuleServerInputs.forEach(input => {
+            input.checked = serverIds.includes(input.value);
+        });
+        if (latestRuleSubmit) {
+            latestRuleSubmit.textContent = 'Aggiorna regola';
+        }
+    };
+
+    if (latestRuleNewBtn) {
+        latestRuleNewBtn.addEventListener('click', () => {
+            resetRuleForm();
+            openRuleModal();
+        });
+    }
+
+    if (latestRuleRows.length) {
+        latestRuleRows.forEach(row => {
+            const editBtn = row.querySelector('[data-latest-rule-edit]');
+            if (!editBtn) {
+                return;
+            }
+            editBtn.addEventListener('click', () => {
+                resetRuleForm();
+                applyRuleToForm(row);
+                openRuleModal();
+            });
+        });
+    }
+
+    if (latestRuleCancel) {
+        latestRuleCancel.addEventListener('click', () => {
+            closeRuleModal();
+        });
+    }
+
+    if (latestRuleClose) {
+        latestRuleClose.addEventListener('click', () => {
+            closeRuleModal();
+        });
+    }
+
+    if (latestRuleOverlay) {
+        latestRuleOverlay.addEventListener('click', (event) => {
+            if (event.target === latestRuleOverlay) {
+                closeRuleModal();
+            }
+        });
+    }
+
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && latestRuleOverlay && latestRuleOverlay.style.display === 'flex') {
+            closeRuleModal();
+        }
+    });
+
+    if (latestRuleToggleForms.length) {
+        latestRuleToggleForms.forEach((form) => {
+            const toggle = form.querySelector('[data-latest-rule-toggle]');
+            const enabledInput = form.querySelector('[data-latest-rule-enabled]');
+            if (!toggle || !enabledInput) {
+                return;
+            }
+            toggle.addEventListener('change', () => {
+                enabledInput.value = toggle.checked ? '1' : '0';
+                form.submit();
+            });
         });
     }
 
