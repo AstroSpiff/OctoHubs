@@ -1279,6 +1279,17 @@
             if (confirmed) {
                 // Re-submit the form programmatically
                 ensureNextInForms();
+                
+                // Add the action field that is lost when submitting programmatically
+                let actionInput = form.querySelector('input[name="action"]');
+                if (!actionInput) {
+                    actionInput = document.createElement('input');
+                    actionInput.type = 'hidden';
+                    actionInput.name = 'action';
+                    form.appendChild(actionInput);
+                }
+                actionInput.value = 'restart_server';
+
                 form.submit();
             }
             return;
