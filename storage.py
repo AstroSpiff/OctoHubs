@@ -808,7 +808,7 @@ class DatabaseStorage:
                     "year": entry.year,
                     "media_type": entry.media_type,
                     "path": entry.path,
-                    "added_at": entry.added_at
+                    "added_at": entry.added_at.isoformat() if entry.added_at else None
                 }
                 for entry in entries
             ]
@@ -908,7 +908,7 @@ class DatabaseStorage:
                     "media_source_id": entry.media_source_id,
                     "name": entry.name,
                     "library_name": entry.library_name,
-                    "processed_at": entry.processed_at,
+                    "processed_at": entry.processed_at.isoformat() if entry.processed_at else None,
                     "status": entry.status,
                     "error_details": entry.error_details,
                     "duration_ms": entry.duration_ms
