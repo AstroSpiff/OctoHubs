@@ -551,8 +551,9 @@ class DatabaseStorage:
                 entry.error_type = error_type or entry.error_type  # type: ignore[assignment]
                 if increment_retry:
                     entry.retry_count += 1  # type: ignore[assignment]
-                retry_count = entry.retry_count
+                retry_count = int(entry.retry_count)  # type: ignore[arg-type]
             else:
+                retry_count_value = 1 if increment_retry else 0
                 new_entry = EmbyProbeBlacklist(
                     server_id=server_id,
                     item_id=item_id,
@@ -562,11 +563,11 @@ class DatabaseStorage:
                     library_name=library_name,
                     item_name=name,
                     reason=reason,
-                    retry_count=1 if increment_retry else 0,
+                    retry_count=retry_count_value,
                     error_type=error_type
                 )
                 session.add(new_entry)
-                retry_count = new_entry.retry_count
+                retry_count = retry_count_value
 
             session.commit()
             return retry_count
@@ -618,9 +619,12 @@ class DatabaseStorage:
             entries = query.order_by(EmbyProbeBlacklist.failed_at.desc()).all()  # type: ignore[attr-defined]
 
             def _normalize_error_type(entry: EmbyProbeBlacklist) -> str:
-                if entry.error_type:
-                    return entry.error_type
-                reason = (entry.reason or "").lower()
+                # Convert Column to str to avoid conditional issues
+                error_type_str = str(entry.error_type) if entry.error_type is not None else ""
+                if error_type_str:
+                    return error_type_str
+                reason_str = str(entry.reason) if entry.reason is not None else ""
+                reason = reason_str.lower()
                 if "mediainfo" in reason or "metadati" in reason or "metadata" in reason:
                     return "INCOMPLETE"
                 return "ERROR"
@@ -670,9 +674,12 @@ class DatabaseStorage:
             entries = query.all()
 
             def _normalize_error_type(entry: EmbyProbeBlacklist) -> str:
-                if entry.error_type:
-                    return entry.error_type
-                reason = (entry.reason or "").lower()
+                # Convert Column to str to avoid conditional issues
+                error_type_str = str(entry.error_type) if entry.error_type is not None else ""
+                if error_type_str:
+                    return error_type_str
+                reason_str = str(entry.reason) if entry.reason is not None else ""
+                reason = reason_str.lower()
                 if "mediainfo" in reason or "metadati" in reason or "metadata" in reason:
                     return "INCOMPLETE"
                 return "ERROR"

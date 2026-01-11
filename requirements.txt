@@ -1,9 +1,9 @@
-Flask
-Flask-Login
-Flask-Bcrypt
-Flask-WTF
 requests
 SQLAlchemy
 psycopg2-binary
-waitress
+bcrypt
 JustWatch
+websocket-client
+fastapi
+uvicorn[standard]
+python-multipart

@@ -6,6 +6,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Tuple, Dict, cast, Optional
 
+print("[API_CLIENTS] Module loaded - VERSION 2026-01-08-21:40 with metadata fix")
+
 # Nota: Le funzioni che dipendono da variabili globali o da TraktClient
 # rimangono in checker.py per evitare dipendenze circolari
 
@@ -173,12 +175,13 @@ def _fetch_emby_status(server):
 
 
 def _fetch_emby_libraries(server):
-    success, payload = _call_emby_api(server, "Library/VirtualFolders")
+    success, payload = _call_emby_api(server, "Library/VirtualFolders/Query")
     if not success:
         return [], payload
     items = payload if isinstance(payload, list) else (payload.get("Items") if isinstance(payload, dict) else [])
     if not isinstance(items, list):
         return [], "Risposta VirtualFolders inattesa"
+
     libraries = []
     for entry in items:
         if not isinstance(entry, dict):
@@ -192,10 +195,14 @@ def _fetch_emby_libraries(server):
             collection_type = "folder"
         if collection_type not in ("movies", "tvshows", "folder"):
             continue
+
+        # Include RefreshStatus and RefreshProgress as per Gemini's implementation
         libraries.append({
             "id": entry.get("Id") or entry.get("ItemId"),
             "name": entry.get("Name"),
-            "collection_type": collection_type
+            "collection_type": collection_type,
+            "refresh_status": entry.get("RefreshStatus"),      # Will be None if not present
+            "refresh_progress": entry.get("RefreshProgress")   # Will be None if not present
         })
     return libraries, None
 
@@ -364,10 +371,71 @@ def _fetch_emby_active_sessions(server):
     return sessions, None
 
 
-def _trigger_library_scan(server: Dict[str, Any], library_id: str):
+def _trigger_library_scan(server: Dict[str, Any], library_id: str, scan_type: str = "content"):
+    """
+    Trigger a library operation on a single library.
+
+    scan_type:
+    - "content": Scans filesystem for new/changed files
+    - "metadata": Refreshes metadata for existing items without scanning filesystem
+
+    Both use POST /Items/{Id}/Refresh but with different parameters:
+    - File scan: Recursive=true only
+    - Metadata refresh: Recursive=true + MetadataRefreshMode + other metadata params
+    """
     if not library_id:
         return False, "ID libreria mancante"
-    return _call_emby_api(server, f"Items/{library_id}/Refresh", method="POST")
+
+    if scan_type == "metadata":
+        # Metadata refresh only - refreshes metadata without scanning filesystem
+        # Uses EXACT same parameters as Emby Web UI for metadata refresh
+        # Verified from actual Emby Web UI network capture
+        params = {
+            "Recursive": "true",
+            "ImageRefreshMode": "FullRefresh",
+            "MetadataRefreshMode": "FullRefresh",
+            "ReplaceAllImages": "true",
+            "ReplaceThumbnailImages": "true",
+            "ReplaceAllMetadata": "true"
+        }
+    else:
+        # Content scan - scans filesystem for new/changed files
+        # Uses Items endpoint with Recursive parameter only
+        params = {"Recursive": "true"}
+
+    # Debug log to file
+    endpoint = f"Items/{library_id}/Refresh"
+    import os
+    log_file = os.path.join(os.path.dirname(__file__), "debug_scan.log")
+
+    # Construct full URL for logging
+    base_url = _emby_base_url(server)
+    test_params = dict(params or {})
+    test_params["api_key"] = "***"
+    from urllib.parse import urlencode
+    full_url = f"{base_url}/{endpoint}?{urlencode(test_params)}"
+
+    try:
+        with open(log_file, "a") as f:
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            f.write(f"[{timestamp}] TRIGGER_SCAN: scan_type={scan_type}, library_id={library_id}\n")
+            f.write(f"[{timestamp}] URL: {full_url}\n")
+            f.write(f"[{timestamp}] PARAMS: {params}\n")
+            f.flush()
+    except:
+        pass
+
+    result = _call_emby_api(server, endpoint, method="POST", params=params)
+
+    try:
+        with open(log_file, "a") as f:
+            f.write(f"[{timestamp}] RESULT: success={result[0]}\n")
+            f.flush()
+    except:
+        pass
+
+    return result
 
 
 def _stop_emby_task(server: Dict[str, Any], task_id: str):
@@ -866,20 +934,21 @@ def search_jackett(query, media_type, config):
         return []
 
 
-def search_tmdb(api_key: str, query: str, language: str = "it-IT") -> list:
+def search_tmdb(api_key: str, query: str, language: str = "it-IT", page: int = 1) -> tuple:
     """
-    Search TMDB for movies and TV shows.
+    Search TMDB for movies and TV shows with pagination support.
 
     Args:
         api_key: TMDB API key
         query: Search query
         language: Language code (e.g., 'it-IT', 'en-US')
+        page: Page number (1-indexed)
 
     Returns:
-        List of results with title, media_type, tmdb_id, year, overview
+        Tuple of (results_list, total_pages)
     """
     if not api_key or not query:
-        return []
+        return [], 0
 
     try:
         # TMDB multi search endpoint
@@ -888,17 +957,19 @@ def search_tmdb(api_key: str, query: str, language: str = "it-IT") -> list:
             "api_key": api_key,
             "query": query,
             "language": language,
-            "include_adult": "false"
+            "include_adult": "false",
+            "page": page
         }
 
         response = requests.get(url, params=params, timeout=10)
 
         if response.status_code != 200:
             print(f"   -> TMDB API error: {response.status_code}")
-            return []
+            return [], 0
 
         data = response.json()
         results = data.get("results", [])
+        total_pages = data.get("total_pages", 0)
 
         normalized = []
         for item in results:
@@ -930,11 +1001,11 @@ def search_tmdb(api_key: str, query: str, language: str = "it-IT") -> list:
                 "original_title": item.get("original_title") if media_type == "movie" else item.get("original_name")
             })
 
-        return normalized
+        return normalized, total_pages
 
     except requests.exceptions.RequestException as exc:
         print(f"   -> Impossibile contattare TMDB: {exc}")
-        return []
+        return [], 0
 
 
 def get_tmdb_tv_details(api_key: str, tv_id: int, language: str = "it-IT") -> dict:

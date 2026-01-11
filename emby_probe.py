@@ -854,13 +854,14 @@ class EmbyProbeManager:
                 totals = status.get("library_queue_totals") if isinstance(status.get("library_queue_totals"), dict) else {}
                 results = status.get("library_queue_results") if isinstance(status.get("library_queue_results"), dict) else {}
                 key = str(library_id)
-                total = int(totals.get(key) or 0)
-                library_result = results.get(str(library_id)) if isinstance(results.get(str(library_id)), dict) else {}
-                errors = int(library_result.get("errors") or 0)
-                incomplete = int(library_result.get("incomplete") or 0)
-                processed = int(library_result.get("processed") or 0)
+                total = int(totals.get(key, 0) if totals else 0)
+                library_result_value = results.get(str(library_id)) if results else None
+                library_result = library_result_value if isinstance(library_result_value, dict) else {}
+                errors = int(library_result.get("errors", 0) if library_result else 0)
+                incomplete = int(library_result.get("incomplete", 0) if library_result else 0)
+                processed = int(library_result.get("processed", 0) if library_result else 0)
                 done = processed + incomplete + errors
-                if key in totals and total == 0:
+                if totals and key in totals and total == 0:
                     return "skipped", "Processing non necessario"
                 if errors > 0:
                     return "error", f"Errori: {errors}"
@@ -887,11 +888,13 @@ class EmbyProbeManager:
             return "success", last_log or "Completato"
 
         if library_id:
-            completed = status.get("completed_library_ids") if isinstance(status.get("completed_library_ids"), list) else []
-            errors = status.get("error_library_ids") if isinstance(status.get("error_library_ids"), list) else []
-            if str(library_id) in errors:
+            completed_value = status.get("completed_library_ids")
+            completed = completed_value if isinstance(completed_value, list) else []
+            errors_value = status.get("error_library_ids")
+            errors = errors_value if isinstance(errors_value, list) else []
+            if errors and str(library_id) in errors:
                 return "error", "Errore in libreria"
-            if str(library_id) in completed:
+            if completed and str(library_id) in completed:
                 return "success", "Completato"
             if "interrotto" in lower_log:
                 return "warning", last_log or "Interrotto"

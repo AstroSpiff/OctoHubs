@@ -1,3 +1,4 @@
+/* TEST VERSION 2026-01-08-22:10 */
 
         body {
             margin: 0;
@@ -1313,6 +1314,121 @@
         .library-row .btn.secondary {
             padding: 0.3rem 0.75rem;
             font-size: 0.75rem;
+        }
+        /* Progress Bar (Gemini Implementation) */
+        .library-scan-progress {
+            margin-top: 8px;
+            background: rgba(0, 0, 0, 0.08);
+            border-radius: 6px;
+            padding: 6px;
+            font-size: 0.85em;
+            display: none; /* Nascosto di default */
+        }
+        .library-scan-progress .progress-group-label {
+            font-size: 0.75em;
+            color: #6b7280;
+            margin-bottom: 6px;
+            text-align: left;
+        }
+        .library-scan-progress .progress-row {
+            position: relative;
+            height: 26px;
+            border-radius: 5px;
+            overflow: hidden;
+            margin-bottom: 6px;
+        }
+        .library-scan-progress .progress-row:last-child {
+            margin-bottom: 0;
+        }
+        .library-scan-progress .progress-track {
+            position: absolute;
+            inset: 0;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.35);
+            border-radius: 5px;
+            overflow: hidden;
+        }
+        .library-scan-progress .progress-bar {
+            height: 100%;
+            width: 0%;
+            transition: width 0.3s ease, background-color 0.3s ease;
+        }
+        .library-scan-progress [data-progress-text] {
+            position: relative;
+            z-index: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            width: 100%;
+            font-size: 0.8em;
+            font-weight: 600;
+            color: #111827;
+            text-shadow: 0 1px 1px rgba(255, 255, 255, 0.5);
+        }
+        .library-scan-progress .progress-bar.success {
+            background-color: #22c55e; /* Verde */
+        }
+        .library-scan-progress .progress-bar.error {
+            background-color: #ef4444; /* Rosso */
+        }
+        .history-item {
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 0.75rem;
+        }
+        .history-item-header {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 0.5rem;
+        }
+        .history-item-info {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 0.2rem;
+        }
+        .history-item-info strong {
+            font-size: 0.95rem;
+            color: #111827;
+        }
+        .history-item-actions {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        .status-badge {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 0.9rem;
+        }
+        .status-badge.success {
+            background: #22c55e;
+            color: white;
+        }
+        .status-badge.error {
+            background: #ef4444;
+            color: white;
+        }
+        .history-item-progress {
+            margin-top: 0.5rem;
+        }
+        .history-item-progress .progress-track {
+            height: 4px;
+            background: #e5e7eb;
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .history-item-progress .progress-bar {
+            height: 100%;
+            border-radius: 2px;
         }
         .spinner {
             width: 16px;

@@ -25,12 +25,12 @@
                title="Apri la dashboard di ricerca">
                 Ricerca
             </a>
-            <a href="{{ url_for('emby_dashboard') }}"
+            <a href="/emby"
                class="nav-link {% if active_page == 'emby' %}active{% endif %}"
                title="Apri Emby Toolkit">
                 Emby Toolkit
             </a>
-            <a href="{{ url_for('emby_probe') }}"
+            <a href="/emby/probe"
                class="nav-link {% if active_page == 'emby_probe' %}active{% endif %}"
                title="Apri STRM Probe">
                 STRM Probe

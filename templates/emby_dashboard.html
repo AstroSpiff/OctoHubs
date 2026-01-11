@@ -3,10 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="csrf-token" content="{{ csrf_token() }}">
+    <meta name="csrf-token" content="{{ csrf_token }}">
     <title>Emby Toolkit</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <link rel="stylesheet" href="{{ url_for('static', filename='emby.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='emby.css') }}?v=20260108-2200">
 </head>
 <body>
     <div class="wrapper">
@@ -231,6 +231,18 @@
                     {% else %}
                         <p class="tagline">Nessun server Emby configurato. Aggiungine uno nella pagina Configurazione.</p>
                     {% endif %}
+                </div>
+                <div class="card" id="scan-history-card">
+                    <div class="latest-label-row">
+                        <h2>Cronologia Scansioni</h2>
+                        <button class="btn ghost" id="refresh-history-btn" type="button" title="Aggiorna cronologia">
+                            <i class="fa-solid fa-rotate-right"></i>
+                        </button>
+                    </div>
+                    <p class="tagline">Visualizza le scansioni completate recentemente.</p>
+                    <div id="scan-history-container">
+                        <p class="tagline">Caricamento cronologia...</p>
+                    </div>
                 </div>
                 <div class="card" id="association-card">
                     <h2 id="association-card-title">
@@ -1205,6 +1217,6 @@
         })();
     </script>
 
-    <script src="{{ url_for('static', filename='emby.js') }}"></script>
+    <script src="{{ url_for('static', filename='emby.js') }}?v=20260110-verify-fix"></script>
 </body>
 </html>

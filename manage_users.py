@@ -4,8 +4,6 @@ import argparse
 import os
 from typing import Optional
 
-from flask import Flask
-
 from auth import (
     init_auth,
     get_user_by_username,
@@ -19,11 +17,9 @@ from auth import (
 )
 
 
-def _bootstrap_app() -> Flask:
-    app = Flask(__name__)
-    app.secret_key = os.environ.get("FLASK_SECRET_KEY") or "octohub"
-    init_auth(app, create_default_admin=False)
-    return app
+def _bootstrap_app() -> None:
+    """Initialize authentication system without Flask."""
+    init_auth(create_default_admin=False)
 
 
 def _set_admin(username: str, is_admin: bool) -> bool:
@@ -40,7 +36,7 @@ def _set_active(username: str, active: bool) -> bool:
     if not user:
         print(f"[AUTH] Utente non trovato: {username}")
         return False
-    if user.is_active == active:
+    if bool(user.is_active) == active:
         status = "attivo" if active else "disabilitato"
         print(f"[AUTH] Utente {username} gia {status}")
         return True
@@ -58,8 +54,8 @@ def _print_users():
         print(
             "{:<20} {:<6} {:<9} {:<10} {:<25}".format(
                 user.username,
-                "yes" if user.is_admin else "no",
-                "yes" if user.is_active else "no",
+                "yes" if bool(user.is_admin) else "no",
+                "yes" if bool(user.is_active) else "no",
                 user.get_role() if hasattr(user, "get_role") else "-",
                 user.email or "-",
             )
@@ -107,53 +103,53 @@ def main():
 
     args = parser.parse_args()
 
-    app = _bootstrap_app()
-    with app.app_context():
-        if args.command == "list":
-            _print_users()
-        elif args.command == "create":
-            create_user(args.username, args.password, args.email, args.admin, args.role)
-        elif args.command == "delete":
-            user = get_user_by_username(args.username)
-            if not user:
-                print(f"[AUTH] Utente non trovato: {args.username}")
-            else:
-                delete_user(user)
-        elif args.command == "set-password":
-            user = get_user_by_username(args.username)
-            if not user:
-                print(f"[AUTH] Utente non trovato: {args.username}")
-            else:
-                update_user_password(user, args.password)
-        elif args.command == "disable":
-            _set_active(args.username, False)
-        elif args.command == "enable":
-            _set_active(args.username, True)
-        elif args.command == "make-admin":
-            _set_admin(args.username, True)
-        elif args.command == "remove-admin":
-            _set_admin(args.username, False)
-        elif args.command == "set-role":
-            user = get_user_by_username(args.username)
-            if not user:
-                print(f"[AUTH] Utente non trovato: {args.username}")
-            else:
-                set_user_role(user, args.role)
-        elif args.command == "audit":
-            logs = get_audit_logs(args.limit)
-            if not logs:
-                print("[AUTH] Nessun audit log trovato")
-            else:
-                print("{:<20} {:<12} {:<20} {:<30}".format("Timestamp", "Utente", "Azione", "IP"))
-                print("-" * 88)
-                for entry in logs:
-                    timestamp = entry.created_at.strftime("%Y-%m-%d %H:%M:%S")
-                    print("{:<20} {:<12} {:<20} {:<30}".format(
-                        timestamp,
-                        entry.username or "-",
-                        entry.action,
-                        entry.ip_address or "-"
-                    ))
+    _bootstrap_app()
+
+    if args.command == "list":
+        _print_users()
+    elif args.command == "create":
+        create_user(args.username, args.password, args.email, args.admin, args.role)
+    elif args.command == "delete":
+        user = get_user_by_username(args.username)
+        if not user:
+            print(f"[AUTH] Utente non trovato: {args.username}")
+        else:
+            delete_user(user)
+    elif args.command == "set-password":
+        user = get_user_by_username(args.username)
+        if not user:
+            print(f"[AUTH] Utente non trovato: {args.username}")
+        else:
+            update_user_password(user, args.password)
+    elif args.command == "disable":
+        _set_active(args.username, False)
+    elif args.command == "enable":
+        _set_active(args.username, True)
+    elif args.command == "make-admin":
+        _set_admin(args.username, True)
+    elif args.command == "remove-admin":
+        _set_admin(args.username, False)
+    elif args.command == "set-role":
+        user = get_user_by_username(args.username)
+        if not user:
+            print(f"[AUTH] Utente non trovato: {args.username}")
+        else:
+            set_user_role(user, args.role)
+    elif args.command == "audit":
+        logs = get_audit_logs(args.limit)
+        if not logs:
+            print("[AUTH] Nessun audit log trovato")
+        else:
+            print("{:<20} {:<12} {:<20} {:<30}".format("Timestamp", "Utente", "Azione", "IP"))
+            print("-" * 88)
+            for entry in logs:
+                timestamp = entry.created_at.strftime("%Y-%m-%d %H:%M:%S")
+                print("{:<20} {:<12} {:<20} {:<30}".format(
+                    timestamp,
+                    entry.username or "-",
+                    entry.action,
+                    entry.ip_address or "-"
+                ))
 
 
 if __name__ == "__main__":

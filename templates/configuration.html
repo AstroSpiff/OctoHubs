@@ -19,12 +19,12 @@
                title="Apri la dashboard di ricerca">
                 Ricerca
             </a>
-            <a href="{{ url_for('emby_dashboard') }}"
+            <a href="/emby"
                class="nav-link {% if active_page == 'emby' %}active{% endif %}"
                title="Apri Emby Toolkit">
                 Emby Toolkit
             </a>
-            <a href="{{ url_for('emby_probe') }}"
+            <a href="/emby/probe"
                class="nav-link {% if active_page == 'emby_probe' %}active{% endif %}"
                title="Apri STRM Probe">
                 STRM Probe
@@ -71,7 +71,7 @@
                         <div class="server-grid">
                             {% for server in emby_servers %}
                                 <article class="server-card compact">
-                                    <form class="server-form" action="{{ url_for('emby_save_server') }}" method="post">
+                                    <form class="server-form" action="/emby/save-server" method="post">
                                         <input type="hidden" name="server_id" value="{{ server.id }}">
                                         <input type="hidden" name="next" value="{{ url_for('configuration') }}">
                                         <div class="field-grid">
@@ -144,7 +144,7 @@
                 </div>
                 <div class="card">
                     <h2>Aggiungi nuovo server</h2>
-                    <form class="server-form" action="{{ url_for('emby_save_server') }}" method="post">
+                    <form class="server-form" action="/emby/save-server" method="post">
                         <input type="hidden" name="next" value="{{ url_for('configuration') }}">
                         <div class="field-grid">
                             <div style="display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: start;">
@@ -216,7 +216,7 @@
                         </div>
                     </div>
 
-                    <form action="{{ url_for('telegram_add_preset') }}" method="post" data-telegram-preset-form>
+                    <form action="/telegram/preset/add" method="post" data-telegram-preset-form>
                         <input type="hidden" name="next" value="{{ url_for('configuration') }}">
                         <input type="hidden" name="telegram_preset_id" value="" data-telegram-preset-id>
                         <fieldset {% if not telegram_ready %}disabled{% endif %}>
@@ -362,7 +362,7 @@
                                                         data-preset-bot="{{ preset.bot_ids[0] if preset.bot_ids else '' }}"
                                                         data-preset-groups='{{ preset.group_ids | tojson | safe }}'
                                                         data-preset-channels='{{ preset.channel_ids | tojson | safe }}'>✎</button>
-                                                <form action="{{ url_for('telegram_remove_preset') }}" method="post" class="telegram-inline-form">
+                                                <form action="/telegram/preset/remove" method="post" class="telegram-inline-form">
                                                     <input type="hidden" name="telegram_preset_id" value="{{ preset.id }}">
                                                     <input type="hidden" name="next" value="{{ url_for('configuration') }}">
                                                     <button class="btn ghost small telegram-icon-btn danger" type="submit" title="Elimina preset">×</button>
@@ -387,7 +387,7 @@
                         <!-- BOT -->
                         <section class="config-box">
                             <h4>Bot</h4>
-                            <form action="{{ url_for('telegram_add_bot') }}" method="post" class="telegram-resource-form" data-telegram-bot-form>
+                            <form action="/telegram/bot/add" method="post" class="telegram-resource-form" data-telegram-bot-form>
                                 <input type="hidden" name="next" value="{{ url_for('configuration') }}">
                                 <input type="hidden" name="telegram_bot_id" value="" data-telegram-bot-id>
                                 <fieldset {% if not telegram_ready %}disabled{% endif %}>
@@ -422,7 +422,7 @@
                                             <div class="telegram-resource-sub">{{ bot_real_name }}</div>
                                         </div>
                                         <div class="telegram-resource-actions">
-                                            <form action="{{ url_for('telegram_verify_bot') }}" method="post" class="telegram-inline-form">
+                                            <form action="/telegram/bot/verify" method="post" class="telegram-inline-form">
                                                 <input type="hidden" name="telegram_bot_id" value="{{ bot.id }}">
                                                 <input type="hidden" name="next" value="{{ url_for('configuration') }}">
                                                 <button class="btn ghost small telegram-icon-btn" type="submit" title="Verifica connessione bot">↻</button>
@@ -435,7 +435,7 @@
                                                     data-telegram-id="{{ bot.id }}"
                                                     data-telegram-token="{{ bot.token | e }}"
                                                     data-telegram-alias="{{ bot_alias | e }}">✎</button>
-                                            <form action="{{ url_for('telegram_remove_bot') }}" method="post" class="telegram-inline-form">
+                                            <form action="/telegram/bot/remove" method="post" class="telegram-inline-form">
                                                 <input type="hidden" name="telegram_bot_id" value="{{ bot.id }}">
                                                 <input type="hidden" name="next" value="{{ url_for('configuration') }}">
                                                 <button class="btn ghost small telegram-icon-btn danger" type="submit" title="Elimina bot">×</button>
@@ -451,7 +451,7 @@
                         <!-- CANALI -->
                         <section class="config-box">
                             <h4>Canali</h4>
-                            <form action="{{ url_for('telegram_add_chat') }}" method="post" class="telegram-resource-form" data-telegram-channel-form>
+                            <form action="/telegram/chat/add" method="post" class="telegram-resource-form" data-telegram-channel-form>
                                 <input type="hidden" name="telegram_kind" value="channel">
                                 <input type="hidden" name="next" value="{{ url_for('configuration') }}">
                                 <input type="hidden" name="telegram_id" value="" data-telegram-channel-id>
@@ -487,7 +487,7 @@
                                             <div class="telegram-resource-sub">{{ channel_real_name }}</div>
                                         </div>
                                         <div class="telegram-resource-actions">
-                                            <form action="{{ url_for('telegram_verify_chat') }}" method="post" class="telegram-inline-form">
+                                            <form action="/telegram/chat/verify" method="post" class="telegram-inline-form">
                                                 <input type="hidden" name="telegram_id" value="{{ entry.id }}">
                                                 <input type="hidden" name="telegram_kind" value="channel">
                                                 <input type="hidden" name="next" value="{{ url_for('configuration') }}">
@@ -501,7 +501,7 @@
                                                     data-telegram-id="{{ entry.id }}"
                                                     data-telegram-chat-id="{{ entry.chat_id | e }}"
                                                     data-telegram-alias="{{ channel_alias | e }}">✎</button>
-                                            <form action="{{ url_for('telegram_remove_chat') }}" method="post" class="telegram-inline-form">
+                                            <form action="/telegram/chat/remove" method="post" class="telegram-inline-form">
                                                 <input type="hidden" name="telegram_id" value="{{ entry.id }}">
                                                 <input type="hidden" name="telegram_kind" value="channel">
                                                 <input type="hidden" name="next" value="{{ url_for('configuration') }}">
@@ -518,7 +518,7 @@
                         <!-- GRUPPI -->
                         <section class="config-box">
                             <h4>Gruppi</h4>
-                            <form action="{{ url_for('telegram_add_chat') }}" method="post" class="telegram-resource-form" data-telegram-group-form>
+                            <form action="/telegram/chat/add" method="post" class="telegram-resource-form" data-telegram-group-form>
                                 <input type="hidden" name="telegram_kind" value="group">
                                 <input type="hidden" name="next" value="{{ url_for('configuration') }}">
                                 <input type="hidden" name="telegram_id" value="" data-telegram-group-id>
@@ -554,7 +554,7 @@
                                             <div class="telegram-resource-sub">{{ group_real_name }}</div>
                                         </div>
                                         <div class="telegram-resource-actions">
-                                            <form action="{{ url_for('telegram_verify_chat') }}" method="post" class="telegram-inline-form">
+                                            <form action="/telegram/chat/verify" method="post" class="telegram-inline-form">
                                                 <input type="hidden" name="telegram_id" value="{{ entry.id }}">
                                                 <input type="hidden" name="telegram_kind" value="group">
                                                 <input type="hidden" name="next" value="{{ url_for('configuration') }}">
@@ -568,7 +568,7 @@
                                                     data-telegram-id="{{ entry.id }}"
                                                     data-telegram-chat-id="{{ entry.chat_id | e }}"
                                                     data-telegram-alias="{{ group_alias | e }}">✎</button>
-                                            <form action="{{ url_for('telegram_remove_chat') }}" method="post" class="telegram-inline-form">
+                                            <form action="/telegram/chat/remove" method="post" class="telegram-inline-form">
                                                 <input type="hidden" name="telegram_id" value="{{ entry.id }}">
                                                 <input type="hidden" name="telegram_kind" value="group">
                                                 <input type="hidden" name="next" value="{{ url_for('configuration') }}">

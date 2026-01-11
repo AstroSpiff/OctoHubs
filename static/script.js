@@ -304,7 +304,7 @@
 
         async function refreshStatus() {
             try {
-                const response = await csrfFetch('/scan-status');
+                const response = await csrfFetch('/api/scan-status');
                 if (!response.ok) return;
                 const data = await response.json();
                 const prev = lastRunState;
@@ -350,7 +350,7 @@
             const link = qbBtn.dataset.link;
             qbBtn.disabled = true;
             try {
-                const resp = await csrfFetch('/send-torrent', {
+                const resp = await csrfFetch('/api/send-torrent', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({link})
@@ -390,7 +390,7 @@
                 connectionBtn.disabled = true;
                 services.forEach(service => setConnectionStatus(service, 'skip', 'Verifica in corso...', '...'));
                 try {
-                    const resp = await csrfFetch('/test-connections', {method: 'POST'});
+                    const resp = await csrfFetch('/api/test-connections', {method: 'POST'});
                     const data = await readJsonResponse(resp);
                     if (!resp.ok) {
                         throw new Error(data.message || 'Errore durante la verifica');
@@ -430,7 +430,7 @@
                 rssInspectBtn.textContent = 'Analisi...';
                 rssInspectResult.textContent = 'Analisi in corso...';
                 try {
-                    const resp = await csrfFetch('/rss/inspect', {
+                    const resp = await csrfFetch('/api/rss/inspect', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ url })
@@ -496,7 +496,7 @@
                 try {
                     const formData = new FormData();
                     formData.append('json_file', file);
-                    const resp = await csrfFetch('/rss/inspect-json', {
+                    const resp = await csrfFetch('/api/rss/inspect-json', {
                         method: 'POST',
                         body: formData
                     });
@@ -534,7 +534,7 @@
                 rssImportBtn.textContent = 'Import in corso...';
                 rssImportResult.textContent = 'Importazione RSS in corso...';
                 try {
-                    const resp = await csrfFetch('/rss/import', { method: 'POST' });
+                    const resp = await csrfFetch('/api/rss/import', { method: 'POST' });
                     const data = await readJsonResponse(resp);
                     if (!resp.ok || !data.success) {
                         throw new Error(data.message || 'Errore import RSS');
@@ -605,7 +605,7 @@
                     for (const file of files) {
                         const formData = new FormData();
                         formData.append('json_file', file);
-                        const resp = await csrfFetch('/rss/import-json', {
+                        const resp = await csrfFetch('/api/rss/import-json', {
                             method: 'POST',
                             body: formData
                         });
@@ -682,7 +682,7 @@
                 rssDedupBtn.textContent = 'Pulizia...';
                 rssDedupResult.textContent = 'Rimozione duplicati in corso...';
                 try {
-                    const resp = await csrfFetch('/rss/deduplicate', { method: 'POST' });
+                    const resp = await csrfFetch('/api/rss/deduplicate', { method: 'POST' });
                     const data = await resp.json();
                     if (!resp.ok || !data.success) {
                         throw new Error(data.message || 'Errore deduplica');
@@ -893,7 +893,7 @@
             }
             rssViewContent.innerHTML = '<span class="tagline">Caricamento...</span>';
             try {
-                const resp = await csrfFetch(`/rss/items?limit=${rssLimit}&offset=${rssOffset}`);
+                const resp = await csrfFetch(`/api/rss/items?limit=${rssLimit}&offset=${rssOffset}`);
                 const data = await readJsonResponse(resp);
                 if (!resp.ok || !data.success) {
                     throw new Error(data.message || 'Errore caricamento RSS');
@@ -1303,7 +1303,7 @@
                     const link = row.dataset.magnet || row.dataset.torrent;
                     if (!link) continue;
                     try {
-                        const resp = await csrfFetch('/send-torrent', {
+                        const resp = await csrfFetch('/api/send-torrent', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify({link})
@@ -1471,7 +1471,7 @@
             if (statusLabel) statusLabel.textContent = 'Avvio ricerca...';
             if (triggerBtn) triggerBtn.disabled = true;
             try {
-                const resp = await csrfFetch('/run-scan', {
+                const resp = await csrfFetch('/api/run-scan', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({targets})
@@ -1626,7 +1626,7 @@
                 clearTraktTimer();
                 traktDisconnectBtn.disabled = true;
                 try {
-                    const resp = await csrfFetch('/trakt/clear', {method: 'POST'});
+                    const resp = await csrfFetch('/api/trakt/clear', {method: 'POST'});
                     const data = await resp.json().catch(() => ({}));
                     if (!resp.ok || !data.success) {
                         throw new Error(data.message || 'Errore durante la disconnessione.');
@@ -1693,7 +1693,7 @@
                 traktConnectBtn.disabled = true;
                     setTraktStatus('Richiesta codice Trakt in corso...', false);
                 try {
-                    const resp = await csrfFetch('/trakt/device/start', {
+                    const resp = await csrfFetch('/api/trakt/device/start', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({client_id: clientId})
@@ -1715,7 +1715,7 @@
                         if (Date.now() > expiresAt) {
                             throw new Error('Codice Trakt scaduto. Riprova.');
                         }
-                        const pollResp = await csrfFetch('/trakt/device/poll', {
+                        const pollResp = await csrfFetch('/api/trakt/device/poll', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify({client_id: clientId, device_code: deviceCode})
@@ -1792,7 +1792,7 @@
                 statusLabel.textContent = 'Salvataggio...';
             }
             try {
-                const resp = await csrfFetch('/update-request-rules', {
+                const resp = await csrfFetch('/api/update-request-rules', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({rules: rulesPayload})
@@ -1898,7 +1898,7 @@
                     if (statusLabel) statusLabel.textContent = 'Aggiornamento lista...';
                     if (refreshStatus) refreshStatus.textContent = 'Aggiornamento in corso...';
                     btn.disabled = true;
-                    csrfFetch('/refresh-requests', {method: 'POST'})
+                    csrfFetch('/api/refresh-requests', {method: 'POST'})
                         .then(resp => resp.json())
                         .then(data => {
                             if (statusLabel) statusLabel.textContent = data.message || 'Lista aggiornata';
@@ -2187,6 +2187,10 @@
         let activeEmbySourceIndex = null;
         let lastEmbyDetails = null;
         let tmdbRequestToken = 0;
+        let tmdbCurrentPage = 1;
+        let tmdbTotalPages = 1;
+        let tmdbCurrentQuery = '';
+        let tmdbIsLoadingMore = false;
 
         if (independentQueryInput && tmdbSuggestions) {
             const setEmbyBrowserVisible = (isVisible) => {
@@ -3640,10 +3644,16 @@
                 }
             };
 
-            const showTmdbAutocomplete = async (query) => {
-                if (!query || query.length < 2) {
+            const showTmdbAutocomplete = async (query, page = 1, append = false) => {
+                if (!query || query.length < 3) {
                     clearTmdbAutocomplete();
                     return;
+                }
+
+                // Update state
+                if (!append) {
+                    tmdbCurrentPage = 1;
+                    tmdbCurrentQuery = query;
                 }
 
                 const requestToken = ++tmdbRequestToken;
@@ -3653,9 +3663,16 @@
                 tmdbAbortController = new AbortController();
 
                 try {
-                    const resp = await csrfFetch(`/api/tmdb/search?query=${encodeURIComponent(query)}`, {
+                    const fetchStart = performance.now();
+                    console.log(`[TMDB] Fetching page ${page} for: "${query}"`);
+
+                    const resp = await csrfFetch(`/api/tmdb/search?query=${encodeURIComponent(query)}&page=${page}`, {
                         signal: tmdbAbortController.signal
                     });
+
+                    const fetchTime = performance.now() - fetchStart;
+                    console.log(`[TMDB] Fetch completed in ${fetchTime.toFixed(0)}ms`);
+
                     if (requestToken !== tmdbRequestToken) {
                         return;
                     }
@@ -3663,71 +3680,46 @@
                     if (!resp.ok) {
                         const data = await resp.json().catch(() => ({}));
                         console.error('TMDB search error:', data.message || 'Unknown error');
-                        clearTmdbAutocomplete();
+                        if (!append) clearTmdbAutocomplete();
+                        tmdbIsLoadingMore = false;
                         return;
                     }
 
                     const data = await resp.json();
+                    console.log(`[TMDB] Received ${data.results?.length || 0} results (page ${data.page}/${data.total_pages})`);
+
+                    // Update pagination state
+                    tmdbCurrentPage = data.page || page;
+                    tmdbTotalPages = data.total_pages || 1;
+
                     if (requestToken !== tmdbRequestToken) {
                         return;
                     }
                     if (!data.success || !data.results || !data.results.length) {
-                        clearTmdbAutocomplete();
+                        if (!append) clearTmdbAutocomplete();
+                        tmdbIsLoadingMore = false;
                         return;
                     }
 
-                    tmdbSuggestions.innerHTML = '';
-
-                    // Check availability for all items in parallel
-                    const availabilityPromises = data.results.map(item =>
-                        csrfFetch('/api/tmdb/check-availability', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({tmdb_id: item.tmdb_id, media_type: item.media_type})
-                        })
-                        .then(resp => resp.ok ? resp.json() : {success: false, available_on: []})
-                        .then(avData => ({...item, available_on: avData.available_on || []}))
-                        .catch(() => ({...item, available_on: []}))
-                    );
-
-                    const itemsWithAvailability = await Promise.all(availabilityPromises);
-                    if (requestToken !== tmdbRequestToken) {
-                        return;
+                    const results = data.results;
+                    if (!append) {
+                        tmdbSuggestions.innerHTML = '';
                     }
-                    tmdbSuggestions.innerHTML = '';
 
-                    itemsWithAvailability.forEach(item => {
+                    // 1. RENDER IMMEDIATELY - show results without availability
+                    results.forEach(item => {
                         const li = document.createElement('li');
                         li.className = 'tmdb-suggestion-item';
                         li.setAttribute('role', 'option');
+                        li.dataset.tmdbId = item.tmdb_id;
 
                         const mediaTypeLabel = item.media_type === 'movie' ? 'Film' : 'Serie TV';
                         const yearText = item.year ? ` (${item.year})` : '';
 
-                        // Build availability icons HTML
-                        let serverIconsHtml = '';
-                        if (item.available_on && item.available_on.length > 0) {
-                            const icons = item.available_on
-                                .map(entry => {
-                                    const label = entry.label || entry.server_name || 'Jellyseerr';
-                                    const statusLabel = entry.status_label ? `: ${entry.status_label}` : '';
-                                    const iconHtml = buildServerIconHtml(
-                                        entry.icon || entry.server_icon,
-                                        entry.icon_style || entry.server_icon_style,
-                                        entry.icon_color || entry.server_icon_color,
-                                        ''
-                                    );
-                                    const fallbackText = entry.icon || entry.server_icon || 'JS';
-                                    return `<span class="emby-icon" title="${sanitizeText(label + statusLabel)}">${iconHtml || sanitizeText(fallbackText)}</span>`;
-                                })
-                                .join(' ');
-                            serverIconsHtml = `<span class="emby-availability">${icons}</span>`;
-                        }
-
                         li.innerHTML = `
                             <div class="suggestion-title">
                                 <span class="suggestion-title-text">${item.title}${yearText}</span>
-                                ${serverIconsHtml}
+                                <span class="emby-availability" data-availability-placeholder></span>
                             </div>
                             <div class="suggestion-meta">${mediaTypeLabel} • TMDB ID: ${item.tmdb_id}</div>
                         `;
@@ -3740,15 +3732,94 @@
                         tmdbSuggestions.appendChild(li);
                     });
 
+                    const renderTime = performance.now() - fetchStart;
+                    console.log(`[TMDB] List rendered in ${renderTime.toFixed(0)}ms total`);
+
                     tmdbSuggestions.classList.remove('is-hidden');
+
+                    // 2. LOAD AVAILABILITY SEQUENTIALLY - one after another
+                    const loadAvailabilitySequential = async (items) => {
+                        console.log(`[TMDB] Starting sequential availability check for ${items.length} items`);
+
+                        for (let i = 0; i < items.length; i++) {
+                            const item = items[i];
+
+                            try {
+                                const avResp = await csrfFetch('/api/tmdb/check-availability', {
+                                    method: 'POST',
+                                    headers: {'Content-Type': 'application/json'},
+                                    body: JSON.stringify({tmdb_id: item.tmdb_id, media_type: item.media_type})
+                                });
+
+                                if (!avResp.ok) continue;
+
+                                const avData = await avResp.json();
+                                const availableOn = avData.available_on || [];
+
+                                // Find the corresponding list item
+                                const listItem = tmdbSuggestions.querySelector(`[data-tmdb-id="${item.tmdb_id}"]`);
+                                if (!listItem) continue;
+
+                                const placeholder = listItem.querySelector('[data-availability-placeholder]');
+                                if (!placeholder) continue;
+
+                                // Build icons HTML
+                                if (availableOn.length > 0) {
+                                    const icons = availableOn
+                                        .map(entry => {
+                                            const label = entry.label || entry.server_name || 'Jellyseerr';
+                                            const statusLabel = entry.status_label ? `: ${entry.status_label}` : '';
+                                            const iconHtml = buildServerIconHtml(
+                                                entry.icon || entry.server_icon,
+                                                entry.icon_style || entry.server_icon_style,
+                                                entry.icon_color || entry.server_icon_color,
+                                                ''
+                                            );
+                                            const fallbackText = entry.icon || entry.server_icon || 'JS';
+                                            return `<span class="emby-icon" title="${sanitizeText(label + statusLabel)}">${iconHtml || sanitizeText(fallbackText)}</span>`;
+                                        })
+                                        .join(' ');
+                                    placeholder.innerHTML = icons;
+                                    console.log(`[TMDB] Availability loaded for item ${i + 1}/${items.length}: ${item.title}`);
+                                }
+                            } catch (err) {
+                                console.warn(`[TMDB] Availability check failed for ${item.title}:`, err);
+                            }
+                        }
+
+                        console.log(`[TMDB] All availability checks completed`);
+                    };
+
+                    // Start loading availability sequentially in background
+                    loadAvailabilitySequential(results);
+
+                    // Mark loading as complete
+                    tmdbIsLoadingMore = false;
 
                 } catch (err) {
                     if (err.name !== 'AbortError') {
                         console.error('TMDB autocomplete error:', err);
                     }
-                    clearTmdbAutocomplete();
+                    if (!append) clearTmdbAutocomplete();
+                    tmdbIsLoadingMore = false;
                 }
             };
+
+            // Infinite scroll handler for suggestions
+            tmdbSuggestions.addEventListener('scroll', () => {
+                // Check if scrolled near bottom
+                const scrollTop = tmdbSuggestions.scrollTop;
+                const scrollHeight = tmdbSuggestions.scrollHeight;
+                const clientHeight = tmdbSuggestions.clientHeight;
+                const scrollPercentage = (scrollTop + clientHeight) / scrollHeight;
+
+                // Load more when 80% scrolled and not already loading
+                if (scrollPercentage > 0.8 && !tmdbIsLoadingMore && tmdbCurrentPage < tmdbTotalPages) {
+                    console.log(`[TMDB] Loading next page (${tmdbCurrentPage + 1}/${tmdbTotalPages})`);
+                    tmdbIsLoadingMore = true;
+                    showTmdbAutocomplete(tmdbCurrentQuery, tmdbCurrentPage + 1, true);
+                }
+            });
 
             // Input event handler
             independentQueryInput.addEventListener('input', (e) => {
@@ -3761,7 +3832,7 @@
                     clearTimeout(tmdbDebounceTimer);
                 }
 
-                if (!query || query.length < 2) {
+                if (!query || query.length < 3) {
                     clearTmdbAutocomplete();
                     return;
                 }
@@ -4702,7 +4773,7 @@
                                 continue;
                             }
                             try {
-                                const resp = await csrfFetch('/send-torrent', {
+                                const resp = await csrfFetch('/api/send-torrent', {
                                     method: 'POST',
                                     headers: { 'Content-Type': 'application/json' },
                                     body: JSON.stringify({ link })
@@ -4737,7 +4808,7 @@
                     }
                     downloadBtn.disabled = true;
                     try {
-                        const response = await csrfFetch('/send-torrent', {
+                        const response = await csrfFetch('/api/send-torrent', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ link })

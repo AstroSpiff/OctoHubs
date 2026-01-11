@@ -489,9 +489,11 @@ class JustWatchManager:
         for provider in providers or []:
             if not isinstance(provider, dict):
                 continue
-            provider_id = provider.get("id") or provider.get("provider_id")
+            provider_id_raw = provider.get("id") or provider.get("provider_id")
+            if provider_id_raw is None:
+                continue
             try:
-                provider_id = int(provider_id)
+                provider_id = int(provider_id_raw)
             except (TypeError, ValueError):
                 continue
             label = (

@@ -1,4 +1,7 @@
 (() => {
+    // VERSION: 2026-01-09-23:50-GEMINI-SCAN-TRACKER
+    console.log('[EMBY.JS] Loaded version 2026-01-09-23:50 with Gemini ScanTracker');
+
     const getCsrfToken = () => {
         const el = document.querySelector('meta[name="csrf-token"]');
         return el ? el.getAttribute('content') : '';
@@ -45,6 +48,1123 @@
     };
     ensureCsrfInForms();
     ensureNextInForms();
+
+    // === Events Client (WebSocket first, SSE fallback) ===
+    const EmbyWebSocketClient = {
+        socket: null,
+        eventSource: null,
+        transport: null,
+        reconnectAttempts: 0,
+        maxReconnectAttempts: 10,
+        reconnectDelay: 1000,
+        isConnecting: false,
+        eventHandlers: new Map(),
+
+        connect() {
+            if (this.socket || this.eventSource) {
+                console.log('[EVENTS_CLIENT] Already connected or connecting');
+                return;
+            }
+            this.isConnecting = true;
+            if (window.WebSocket) {
+                this.connectWebSocket();
+            } else {
+                this.connectSse();
+            }
+        },
+
+        connectWebSocket() {
+            if (this.socket) {
+                return;
+            }
+            const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+            const wsUrl = `${scheme}://${window.location.host}/ws/events`;
+            console.log('[EVENTS_CLIENT] Connecting WebSocket to', wsUrl);
+            const socket = new WebSocket(wsUrl);
+            this.socket = socket;
+            let opened = false;
+
+            socket.onopen = () => {
+                opened = true;
+                this.transport = 'ws';
+                this.isConnecting = false;
+                this.reconnectAttempts = 0;
+                this.reconnectDelay = 1000;
+                console.log('[EVENTS_CLIENT] ✓ WebSocket connected');
+            };
+
+            socket.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    this.handleEvent(data);
+                } catch (e) {
+                    console.error('[EVENTS_CLIENT] WS parse error:', e);
+                }
+            };
+
+            socket.onerror = (error) => {
+                console.error('[EVENTS_CLIENT] WebSocket error:', error);
+            };
+
+            socket.onclose = () => {
+                const wasOpened = opened;
+                this.socket = null;
+                this.isConnecting = false;
+                if (!wasOpened) {
+                    console.warn('[EVENTS_CLIENT] WebSocket failed, falling back to SSE');
+                    this.connectSse();
+                    return;
+                }
+                this.attemptReconnect();
+            };
+        },
+
+        connectSse() {
+            if (this.eventSource) {
+                return;
+            }
+            const sseUrl = '/api/emby/events-stream';
+            console.log('[EVENTS_CLIENT] Connecting SSE to', sseUrl);
+            this.eventSource = new EventSource(sseUrl);
+            this.transport = 'sse';
+
+            this.eventSource.onopen = () => {
+                console.log('[EVENTS_CLIENT] ✓ SSE connected');
+                this.isConnecting = false;
+                this.reconnectAttempts = 0;
+                this.reconnectDelay = 1000;
+            };
+
+            this.eventSource.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    this.handleEvent(data);
+                } catch (e) {
+                    console.error('[EVENTS_CLIENT] SSE parse error:', e);
+                }
+            };
+
+            this.eventSource.onerror = (error) => {
+                console.error('[EVENTS_CLIENT] SSE error:', error);
+                this.isConnecting = false;
+
+                // EventSource automatically tries to reconnect, but we track it
+                if (this.eventSource.readyState === EventSource.CLOSED) {
+                    console.log('[EVENTS_CLIENT] SSE connection closed');
+                    this.eventSource = null;
+                    this.attemptReconnect();
+                }
+            };
+        },
+
+        attemptReconnect() {
+            if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+                console.error('[EVENTS_CLIENT] Max reconnect attempts reached');
+                return;
+            }
+
+            this.reconnectAttempts++;
+            const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1), 30000);
+
+            console.log(`[EVENTS_CLIENT] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+
+            setTimeout(() => {
+                if (this.transport === 'sse') {
+                    this.connectSse();
+                } else {
+                    this.connectWebSocket();
+                }
+            }, delay);
+        },
+
+        handleEvent(data) {
+            const serverId = data.server_id;
+            const messageType = data.MessageType;
+            const eventData = data.Data || {};
+
+            // Handle special connection event
+            if (messageType === 'Connected') {
+                console.log('[SSE_CLIENT] Connected at', eventData.timestamp);
+                return;
+            }
+
+            console.log(`[EVENTS_CLIENT] Event from server ${serverId}: ${messageType}`, eventData);
+
+            // Call registered handlers
+            const handlers = this.eventHandlers.get(messageType);
+            if (handlers) {
+                handlers.forEach(handler => {
+                    try {
+                        handler(serverId, eventData);
+                    } catch (e) {
+                        console.error(`[SSE_CLIENT] Error in handler for ${messageType}:`, e);
+                    }
+                });
+            }
+
+            // Call global handlers
+            const globalHandlers = this.eventHandlers.get('*');
+            if (globalHandlers) {
+                globalHandlers.forEach(handler => {
+                    try {
+                        handler(serverId, messageType, eventData);
+                    } catch (e) {
+                        console.error('[SSE_CLIENT] Error in global handler:', e);
+                    }
+                });
+            }
+        },
+
+        on(messageType, handler) {
+            if (!this.eventHandlers.has(messageType)) {
+                this.eventHandlers.set(messageType, []);
+            }
+            this.eventHandlers.get(messageType).push(handler);
+            console.log(`[SSE_CLIENT] Registered handler for ${messageType}`);
+        },
+
+        disconnect() {
+            if (this.eventSource) {
+                this.eventSource.close();
+                this.eventSource = null;
+            }
+        }
+    };
+
+    // Connect WebSocket on page load
+    EmbyWebSocketClient.connect();
+
+    // === ScanWebSocketClient: WebSocket per scan progress real-time ===
+    const ScanWebSocketClient = {
+        ws: null,
+        clientId: null,
+        reconnectAttempts: 0,
+        maxReconnectAttempts: 5,
+        handlers: new Map(), // job_id -> callback
+        isConnected: false,
+        reconnectTimer: null,
+
+        connect() {
+            if (this.ws) {
+                console.log('[SCAN_WS] Already connected or connecting');
+                return;
+            }
+
+            // Genera client ID univoco
+            this.clientId = this.clientId || `client_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+            const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+            const wsUrl = `${scheme}://${window.location.host}/ws/scan/${this.clientId}`;
+            console.log('[SCAN_WS] Connecting to', wsUrl);
+
+            this.ws = new WebSocket(wsUrl);
+
+            this.ws.onopen = () => {
+                console.log('[SCAN_WS] ✓ Connected');
+                this.isConnected = true;
+                this.reconnectAttempts = 0;
+            };
+
+            this.ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    this.handleMessage(data);
+                } catch (err) {
+                    console.error('[SCAN_WS] Parse error:', err);
+                }
+            };
+
+            this.ws.onerror = (error) => {
+                console.error('[SCAN_WS] Error:', error);
+            };
+
+            this.ws.onclose = () => {
+                console.log('[SCAN_WS] Disconnected');
+                this.isConnected = false;
+                this.ws = null;
+                this.attemptReconnect();
+            };
+        },
+
+        attemptReconnect() {
+            if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+                console.error('[SCAN_WS] Max reconnect attempts reached');
+                return;
+            }
+
+            this.reconnectAttempts++;
+            const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 10000);
+
+            console.log(`[SCAN_WS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+
+            if (this.reconnectTimer) {
+                clearTimeout(this.reconnectTimer);
+            }
+
+            this.reconnectTimer = setTimeout(() => {
+                this.connect();
+            }, delay);
+        },
+
+        subscribe(jobId, callback) {
+            console.log('[SCAN_WS] Subscribing to job:', jobId);
+
+            // Registra handler per job
+            this.handlers.set(jobId, callback);
+
+            // Invia subscribe al server se connesso
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.send(JSON.stringify({
+                    action: 'subscribe',
+                    job_id: jobId
+                }));
+            } else {
+                console.warn('[SCAN_WS] Not connected, will subscribe when connection opens');
+                // TODO: Queue subscribe requests per inviarli quando si connette
+            }
+        },
+
+        unsubscribe(jobId) {
+            console.log('[SCAN_WS] Unsubscribing from job:', jobId);
+            this.handlers.delete(jobId);
+
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.send(JSON.stringify({
+                    action: 'unsubscribe',
+                    job_id: jobId
+                }));
+            }
+        },
+
+        handleMessage(data) {
+            const type = data.type;
+            const jobId = data.job_id;
+
+            console.log('[SCAN_WS] Message:', type, 'for job:', jobId);
+
+            if (type === 'subscribed') {
+                console.log('[SCAN_WS] Successfully subscribed to job:', jobId);
+                return;
+            }
+
+            if (type === 'unsubscribed') {
+                console.log('[SCAN_WS] Successfully unsubscribed from job:', jobId);
+                return;
+            }
+
+            if (type === 'pong') {
+                return; // Keepalive response
+            }
+
+            const handler = this.handlers.get(jobId);
+            if (!handler) {
+                console.warn('[SCAN_WS] No handler for job:', jobId);
+                return;
+            }
+
+            // Chiama handler con evento
+            try {
+                handler({
+                    type: type,
+                    jobId: jobId,
+                    progress: data.progress,
+                    message: data.message,
+                    summary: data.summary,
+                    error: data.error
+                });
+            } catch (err) {
+                console.error('[SCAN_WS] Error in handler for job', jobId, ':', err);
+            }
+        },
+
+        cancelJob(jobId) {
+            console.log('[SCAN_WS] Requesting cancel for job:', jobId);
+
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.send(JSON.stringify({
+                    action: 'cancel',
+                    job_id: jobId
+                }));
+            }
+        },
+
+        ping() {
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.send(JSON.stringify({
+                    action: 'ping'
+                }));
+            }
+        },
+
+        disconnect() {
+            if (this.reconnectTimer) {
+                clearTimeout(this.reconnectTimer);
+                this.reconnectTimer = null;
+            }
+
+            if (this.ws) {
+                this.ws.close();
+                this.ws = null;
+            }
+
+            this.isConnected = false;
+            this.handlers.clear();
+        }
+    };
+
+    // Connect ScanWebSocketClient on page load
+    ScanWebSocketClient.connect();
+
+    // Keepalive ping every 30 seconds
+    setInterval(() => {
+        if (ScanWebSocketClient.isConnected) {
+            ScanWebSocketClient.ping();
+        }
+    }, 30000);
+
+    // Register event handlers for real-time progress updates
+    EmbyWebSocketClient.on('LibraryChanged', (serverId, data) => {
+        console.log('[EMBY_EVENT] LibraryChanged from server', serverId, data);
+        // Library scan completed - could refresh library list
+        // For now, let normal completion flow handle it
+    });
+
+    EmbyWebSocketClient.on('RefreshProgress', (serverId, data) => {
+        console.log('[EMBY_EVENT] RefreshProgress from server', serverId, 'progress:', data.Progress);
+
+        // Update progress bars directly from WebSocket event
+        const progress = data.Progress || 0;
+        const percentage = Math.round(progress);
+        const libraryId = data.ItemId || data.LibraryId;
+
+        if (libraryId) {
+            // Find progress bars for this library
+            const progressElements = document.querySelectorAll(`[data-scan-progress][data-library-id="${libraryId}"]`);
+            progressElements.forEach(el => {
+                const progressBar = el.querySelector('.progress-bar');
+                const progressText = el.querySelector('[data-progress-text]');
+
+                if (progressBar) {
+                    progressBar.style.width = `${percentage}%`;
+                    progressBar.style.backgroundColor = '#3b82f6'; // Blue for active
+                    el.style.display = 'block';
+                }
+
+                if (progressText) {
+                    progressText.textContent = `Aggiornamento ${percentage}%`;
+                }
+            });
+        }
+    });
+
+    EmbyWebSocketClient.on('ScheduledTasksInfoStart', (serverId, data) => {
+        console.log('[EMBY_EVENT] Task started on server', serverId, data);
+        showToast('Scansione avviata sul server', 'info');
+
+        // Trigger PassiveDetector to refresh and show new scan
+        // PassiveScanMonitor will be defined later in the code
+        setTimeout(() => {
+            if (typeof PassiveScanMonitor !== 'undefined') {
+                PassiveScanMonitor.onWebSocketScanEvent();
+            }
+        }, 100);
+    });
+
+    EmbyWebSocketClient.on('ScheduledTasksInfoStop', (serverId, data) => {
+        console.log('[EMBY_EVENT] Task stopped on server', serverId, data);
+        showToast('Scansione completata sul server', 'success');
+
+        // Mark all progress bars for this server as completed
+        const progressElements = document.querySelectorAll('[data-scan-progress]');
+        progressElements.forEach(el => {
+            const progressBar = el.querySelector('.progress-bar');
+            if (progressBar && el.style.display === 'block') {
+                progressBar.style.width = '100%';
+                progressBar.style.backgroundColor = '#22c55e'; // Green for completed
+
+                setTimeout(() => {
+                    el.style.display = 'none';
+                }, 3000);
+            }
+        });
+
+        // Trigger PassiveDetector to refresh and remove completed scan
+        setTimeout(() => {
+            if (typeof PassiveScanMonitor !== 'undefined') {
+                PassiveScanMonitor.onWebSocketScanEvent();
+            }
+        }, 100);
+    });
+
+    EmbyWebSocketClient.on('SessionsUpdate', (serverId, data) => {
+        console.log('[EMBY_EVENT] Sessions updated for server', serverId, data);
+
+        // Find the server card and update stream panel
+        const card = document.querySelector(`[data-server-id="${serverId}"]`);
+        if (card) {
+            updateStreamPanel(card, {
+                server_id: serverId,
+                streams: data.streams || [],
+                streams_error: null
+            });
+        }
+    });
+
+    // === ScanTracker: Gestione Job di Scansione (Fixed for Group Aggregation) ===
+    const groupTotals = new Map();
+    const groupPassiveState = new Map();
+    const GROUP_PASSIVE_STORAGE_KEY = 'octohub_group_scan_state_v1';
+
+    const loadGroupPassiveState = () => {
+        try {
+            const raw = window.localStorage ? window.localStorage.getItem(GROUP_PASSIVE_STORAGE_KEY) : null;
+            if (!raw) {
+                return;
+            }
+            const parsed = JSON.parse(raw);
+            if (!parsed || !parsed.groups) {
+                return;
+            }
+            const nowMs = Date.now();
+            Object.entries(parsed.groups).forEach(([groupName, entry]) => {
+                if (!entry || !entry.updatedAt) {
+                    return;
+                }
+                if (nowMs - entry.updatedAt > 6 * 60 * 60 * 1000) {
+                    return;
+                }
+                const total = Number(entry.total) || 0;
+                const active = new Set(entry.active || []);
+                const completed = new Set(entry.completed || []);
+                groupPassiveState.set(groupName, {
+                    total,
+                    active,
+                    completed,
+                    updatedAt: entry.updatedAt
+                });
+                if (total) {
+                    groupTotals.set(groupName, total);
+                }
+            });
+        } catch (err) {
+            console.warn('[PassiveScanMonitor] Failed to restore group state:', err);
+        }
+    };
+
+    const saveGroupPassiveState = () => {
+        try {
+            if (!window.localStorage) {
+                return;
+            }
+            const payload = { groups: {} };
+            groupPassiveState.forEach((entry, groupName) => {
+                payload.groups[groupName] = {
+                    total: entry.total,
+                    active: Array.from(entry.active || []),
+                    completed: Array.from(entry.completed || []),
+                    updatedAt: entry.updatedAt
+                };
+            });
+            window.localStorage.setItem(GROUP_PASSIVE_STORAGE_KEY, JSON.stringify(payload));
+        } catch (err) {
+            console.warn('[PassiveScanMonitor] Failed to persist group state:', err);
+        }
+    };
+
+    const getGroupTotalServers = (groupName) => {
+        if (!groupName) {
+            return 0;
+        }
+        const cached = groupTotals.get(groupName);
+        if (cached) {
+            return cached;
+        }
+        const group = groupedLibrariesCache.find(item => item.group_name === groupName);
+        if (!group || !Array.isArray(group.libraries)) {
+            return 0;
+        }
+        const serverIds = new Set(
+            group.libraries
+                .map(lib => lib && lib.server_id)
+                .filter(Boolean)
+        );
+        const total = serverIds.size;
+        if (total) {
+            groupTotals.set(groupName, total);
+        }
+        return total;
+    };
+
+    const formatLibraryCountLabel = (count) => {
+        const total = Number(count) || 0;
+        const label = total === 1 ? 'libreria' : 'librerie';
+        return `Aggiornamento ${total} ${label}`;
+    };
+
+    const normalizeRawPercent = (value) => {
+        const raw = Math.max(0, Math.min(100, Number(value) || 0));
+        return Math.round(raw * 10) / 10;
+    };
+
+    const getPhaseMetrics = (rawPercentValue) => {
+        const raw = normalizeRawPercent(rawPercentValue);
+        const inMeta = raw >= 90;
+        const fileScaled = inMeta ? 100 : Math.round((raw / 90) * 100);
+        const metaScaled = inMeta ? Math.round((raw - 90) * 10) : 0;
+        return {
+            raw,
+            inMeta,
+            filePercent: Math.max(0, Math.min(100, fileScaled)),
+            metaPercent: Math.max(0, Math.min(100, metaScaled))
+        };
+    };
+
+    const formatLibraryPhase = (rawPercentValue) => {
+        const metrics = getPhaseMetrics(rawPercentValue);
+        if (metrics.inMeta) {
+            return {
+                phase: 'metadata',
+                percent: metrics.metaPercent,
+                label: `Metadati ${metrics.metaPercent}% [2/2]`,
+                color: '#8b5cf6'
+            };
+        }
+        return {
+            phase: 'file',
+            percent: metrics.filePercent,
+            label: `File ${metrics.filePercent}% [1/2]`,
+            color: '#3b82f6'
+        };
+    };
+
+    const updateProgressRows = (progressEl, rows, groupLabel = '') => {
+        if (!progressEl) {
+            return;
+        }
+        const rowCount = rows.length;
+        const existingRows = progressEl.querySelectorAll('.progress-row');
+        if (existingRows.length !== rowCount) {
+            const labelHtml = groupLabel
+                ? `<div class="progress-group-label" data-group-label>${groupLabel}</div>`
+                : '';
+            const rowsHtml = rows.map((row) => `
+                <div class="progress-row" data-phase="${row.phase || ''}">
+                    <div class="progress-track">
+                        <div class="progress-bar" style="width: ${row.percent}%; background-color: ${row.color || '#3b82f6'};"></div>
+                    </div>
+                    <span class="progress-text" data-progress-text>${row.label || ''}</span>
+                </div>
+            `).join('');
+            progressEl.innerHTML = `${labelHtml}${rowsHtml}`;
+        } else {
+            if (groupLabel) {
+                let labelEl = progressEl.querySelector('[data-group-label]');
+                if (!labelEl) {
+                    labelEl = document.createElement('div');
+                    labelEl.className = 'progress-group-label';
+                    labelEl.dataset.groupLabel = '';
+                    progressEl.prepend(labelEl);
+                }
+                labelEl.textContent = groupLabel;
+            }
+            rows.forEach((row, index) => {
+                const rowEl = existingRows[index];
+                if (!rowEl) {
+                    return;
+                }
+                const bar = rowEl.querySelector('.progress-bar');
+                const text = rowEl.querySelector('[data-progress-text]');
+                if (bar) {
+                    bar.style.width = `${row.percent}%`;
+                    if (row.color) {
+                        bar.style.backgroundColor = row.color;
+                    }
+                }
+                if (text) {
+                    text.textContent = row.label || '';
+                }
+            });
+        }
+        progressEl.style.display = 'block';
+    };
+
+    const ScanTracker = {
+        activeJobs: new Map(), // jobId -> {pollInterval, containers, jobData, libraryIds, groupName, groupContainer, hasGroup}
+        containerJobs: new Map(), // container element -> Set of jobIds
+        trackedLibraries: new Set(),
+
+        getLibraryId(container) {
+            if (!container) {
+                return null;
+            }
+            const dataId = container.dataset ? container.dataset.libraryId : null;
+            if (dataId) {
+                return dataId;
+            }
+            const progressEl = container.querySelector('[data-scan-progress][data-library-id]');
+            return progressEl ? progressEl.dataset.libraryId : null;
+        },
+
+        isLibraryTracked(libraryId) {
+            return !!libraryId && this.trackedLibraries.has(libraryId);
+        },
+
+        hasActiveJobs(container) {
+            const set = this.containerJobs.get(container);
+            return !!(set && set.size > 0);
+        },
+
+        // Avvia il monitoraggio di un job (WebSocket-based, NO polling)
+        startTracking(jobId, container, groupName = null) {
+            const existing = this.activeJobs.get(jobId);
+            if (existing) {
+                this.attachContainer(jobId, container, groupName);
+                this.showProgressBar(container, groupName);
+                if (existing.jobData) {
+                    this.updateProgressBar(container, groupName);
+                }
+                return;
+            }
+
+            console.log('[ScanTracker] Starting WebSocket tracking for job:', jobId, 'container:', container, 'groupName:', groupName);
+
+            const tracker = {
+                containers: [],
+                jobData: null,
+                libraryIds: new Set(),
+                groupName: groupName || null,
+                groupContainer: groupName ? container : null,
+                hasGroup: !!groupName
+            };
+            this.activeJobs.set(jobId, tracker);
+            this.attachContainer(jobId, container, groupName);
+
+            // Mostra subito la barra (stato iniziale)
+            this.showProgressBar(container, groupName);
+
+            // Subscribe via WebSocket (NO polling!)
+            ScanWebSocketClient.subscribe(jobId, (event) => {
+                this.handleWebSocketEvent(jobId, event);
+            });
+
+            console.log('[ScanTracker] Active jobs:', this.activeJobs.size);
+        },
+
+        // Gestisce eventi WebSocket per un job
+        handleWebSocketEvent(jobId, event) {
+            const tracker = this.activeJobs.get(jobId);
+            if (!tracker) {
+                console.warn('[ScanTracker] Received event for unknown job:', jobId);
+                return;
+            }
+
+            console.log('[ScanTracker] WebSocket event for job', jobId, ':', event.type, event);
+
+            if (event.type === 'progress') {
+                // Aggiorna jobData con progresso
+                const progress = event.progress || 0;
+                const message = event.message || 'Scanning...';
+
+                if (!tracker.jobData) {
+                    tracker.jobData = {
+                        id: jobId,
+                        status: 'active',
+                        progress: progress,
+                        message: message
+                    };
+                } else {
+                    tracker.jobData.status = 'active';
+                    tracker.jobData.progress = progress;
+                    tracker.jobData.message = message;
+                }
+
+                // Aggiorna UI per tutti i container
+                (tracker.containers || []).forEach(({ container, groupName }) => {
+                    this.updateProgressBar(container, groupName);
+                });
+
+            } else if (event.type === 'completed') {
+                // Job completato
+                if (!tracker.jobData) {
+                    tracker.jobData = { id: jobId, status: 'completed', progress: 1.0 };
+                } else {
+                    tracker.jobData.status = 'completed';
+                    tracker.jobData.progress = 1.0;
+                }
+
+                const effectiveGroupName = tracker.hasGroup ? tracker.groupName : null;
+                this.handleCompletion(tracker.jobData, effectiveGroupName);
+
+                if (tracker.hasGroup && tracker.groupContainer) {
+                    // Group scan: pause tracking e finalizza se tutti completati
+                    this.pauseTracking(jobId);
+                    this.finalizeGroupIfComplete(tracker.groupContainer, tracker.groupName);
+                } else {
+                    // Single scan: rimuovi dopo delay
+                    const removalDelay = 4000;
+                    this.stopTracking(jobId, removalDelay);
+
+                    const containerJobSet = tracker.containers && tracker.containers[0]
+                        ? this.containerJobs.get(tracker.containers[0].container)
+                        : null;
+
+                    if (!containerJobSet || containerJobSet.size === 0) {
+                        const container = tracker.containers && tracker.containers[0]
+                            ? tracker.containers[0].container
+                            : null;
+                        if (container) {
+                            setTimeout(() => this.hideProgressBar(container, null), 3000);
+                        }
+                    }
+                }
+
+            } else if (event.type === 'error') {
+                // Job fallito
+                if (!tracker.jobData) {
+                    tracker.jobData = { id: jobId, status: 'error', error: event.error };
+                } else {
+                    tracker.jobData.status = 'error';
+                    tracker.jobData.error = event.error;
+                }
+
+                showToast(`Errore scansione: ${event.error || 'Errore sconosciuto'}`, 'error');
+                this.stopTracking(jobId);
+            }
+        },
+
+        attachContainer(jobId, container, groupName = null) {
+            const tracker = this.activeJobs.get(jobId);
+            if (!tracker || !container) {
+                return;
+            }
+            if (!tracker.containers) {
+                tracker.containers = [];
+            }
+            if (tracker.containers.some(entry => entry.container === container)) {
+                return;
+            }
+            tracker.containers.push({ container, groupName });
+            if (groupName) {
+                tracker.groupName = groupName;
+                tracker.groupContainer = container;
+                tracker.hasGroup = true;
+            }
+
+            const libraryId = this.getLibraryId(container);
+            if (libraryId) {
+                tracker.libraryIds.add(libraryId);
+                this.trackedLibraries.add(libraryId);
+            }
+
+            if (!this.containerJobs.has(container)) {
+                this.containerJobs.set(container, new Set());
+            }
+            this.containerJobs.get(container).add(jobId);
+        },
+
+        // Chiamata periodica al backend
+        async pollJobStatus(jobId) {
+            const tracker = this.activeJobs.get(jobId);
+            if (!tracker) {
+                return;
+            }
+            try {
+                console.log('[ScanTracker] Polling job:', jobId);
+                const response = await csrfFetch(`/api/emby/scan-job/${jobId}`);
+                if (!response.ok) {
+                    console.log('[ScanTracker] Response not ok:', response.status);
+                    this.stopTracking(jobId);
+                    return;
+                }
+
+                const data = await response.json();
+                console.log('[ScanTracker] Job data:', data);
+                if (!data.success || !data.job) {
+                    console.log('[ScanTracker] No job data, stopping');
+                    this.stopTracking(jobId);
+                    return;
+                }
+
+                const job = data.job;
+                console.log('[ScanTracker] Job status:', job.status, 'progress:', job.progress);
+
+                // Store job data for aggregation
+                if (tracker) {
+                    tracker.jobData = job;
+                }
+
+                // Update all containers attached to this job
+                (tracker.containers || []).forEach(({ container, groupName }) => {
+                    this.updateProgressBar(container, groupName);
+                });
+
+                // Gestione stati finali
+                if (job.status === 'completed' || job.status === 'error') {
+                    const effectiveGroupName = tracker && tracker.hasGroup ? tracker.groupName : null;
+                    this.handleCompletion(job, effectiveGroupName);
+
+                    if (tracker && tracker.hasGroup && tracker.groupContainer) {
+                        // For group scans keep completed jobs in the aggregate until all are done.
+                        this.pauseTracking(jobId);
+                        this.finalizeGroupIfComplete(tracker.groupContainer, tracker.groupName);
+                    } else {
+                        // Delay removal so aggregates keep seeing this job for a short grace period
+                        const removalDelay = 4000;
+                        this.stopTracking(jobId, removalDelay);
+
+                        const containerJobSet = tracker && tracker.containers && tracker.containers[0]
+                            ? this.containerJobs.get(tracker.containers[0].container)
+                            : null;
+                        console.log('[ScanTracker] Job completed. Remaining jobs for container (after scheduling removal):', containerJobSet?.size || 0);
+
+                        if (!containerJobSet || containerJobSet.size === 0) {
+                            console.log('[ScanTracker] No remaining jobs, hiding progress bar shortly');
+                            const container = tracker && tracker.containers && tracker.containers[0]
+                                ? tracker.containers[0].container
+                                : null;
+                            if (container) {
+                                setTimeout(() => this.hideProgressBar(container, null), 3000);
+                            }
+                        }
+                    }
+                }
+            } catch (err) {
+                console.error('Error polling scan job:', err);
+                this.stopTracking(jobId);
+            }
+        },
+
+        pauseTracking(jobId) {
+            // Non fa più nulla con polling, ma manteniamo per compatibilità
+            console.log('[ScanTracker] pauseTracking (no-op in WebSocket mode):', jobId);
+        },
+
+        // Ferma tracking e unsubscribe da WebSocket
+        stopTracking(jobId, delayMs = 0) {
+            const tracker = this.activeJobs.get(jobId);
+            if (!tracker) {
+                return;
+            }
+
+            console.log('[ScanTracker] Stopping tracking for job:', jobId, 'delay:', delayMs);
+
+            if (delayMs > 0) {
+                if (tracker.removalTimer) {
+                    clearTimeout(tracker.removalTimer);
+                }
+                tracker.removalTimer = setTimeout(() => this.finalizeTrackingRemoval(jobId), delayMs);
+                return;
+            }
+
+            if (tracker.removalTimer) {
+                clearTimeout(tracker.removalTimer);
+            }
+            this.finalizeTrackingRemoval(jobId);
+        },
+
+        finalizeTrackingRemoval(jobId) {
+            const tracker = this.activeJobs.get(jobId);
+            if (!tracker) {
+                return;
+            }
+
+            console.log('[ScanTracker] Finalizing removal for job:', jobId);
+
+            // Unsubscribe da WebSocket
+            ScanWebSocketClient.unsubscribe(jobId);
+
+            if (tracker.libraryIds) {
+                tracker.libraryIds.forEach((libraryId) => {
+                    this.trackedLibraries.delete(libraryId);
+                });
+            }
+
+            // Remove from container tracking
+            (tracker.containers || []).forEach(({ container }) => {
+                const containerJobSet = this.containerJobs.get(container);
+                if (containerJobSet) {
+                    containerJobSet.delete(jobId);
+                    if (containerJobSet.size === 0) {
+                        this.containerJobs.delete(container);
+                    }
+                }
+            });
+
+            this.activeJobs.delete(jobId);
+        },
+
+        finalizeGroupIfComplete(container, groupName) {
+            const containerJobSet = this.containerJobs.get(container);
+            if (!containerJobSet || containerJobSet.size === 0) {
+                return;
+            }
+            let allDone = true;
+            const jobIds = Array.from(containerJobSet);
+            for (const jobId of jobIds) {
+                const tracker = this.activeJobs.get(jobId);
+                const status = tracker && tracker.jobData ? tracker.jobData.status : null;
+                if (status !== 'completed' && status !== 'error') {
+                    allDone = false;
+                    break;
+                }
+            }
+            if (!allDone) {
+                return;
+            }
+            const containersToHide = new Set();
+            jobIds.forEach((jobId) => {
+                const tracker = this.activeJobs.get(jobId);
+                if (tracker && tracker.containers) {
+                    tracker.containers.forEach(({ container: entryContainer }) => {
+                        containersToHide.add(entryContainer);
+                    });
+                }
+            });
+            setTimeout(() => {
+                containersToHide.forEach((entryContainer) => this.hideProgressBar(entryContainer, null));
+            }, 3000);
+            jobIds.forEach((jobId) => this.finalizeTrackingRemoval(jobId));
+        },
+
+        // Aggiorna visualmente la barra con dati aggregati
+        updateProgressBar(container, groupName) {
+            const progressEl = container.querySelector('[data-scan-progress]');
+            if (!progressEl) return;
+
+            const progressBar = progressEl.querySelector('.progress-bar');
+            const progressText = progressEl.querySelector('[data-progress-text]');
+            if (!progressBar) return;
+
+            // Get all jobs for this container
+            const containerJobSet = this.containerJobs.get(container);
+            if (!containerJobSet || containerJobSet.size === 0) return;
+
+            const jobs = [];
+            for (const jobId of containerJobSet) {
+                const tracker = this.activeJobs.get(jobId);
+                if (tracker && tracker.jobData) {
+                    jobs.push(tracker.jobData);
+                }
+            }
+
+            if (jobs.length === 0) return;
+
+            // Calculate aggregate progress
+            let totalProgress = 0;
+            let activeCount = 0;
+            let completedCount = 0;
+            let errorCount = 0;
+            let scanType = jobs[0].scan_type;
+
+            for (const job of jobs) {
+                totalProgress += (job.progress || 0);
+                if (job.status === 'active') activeCount++;
+                else if (job.status === 'completed') completedCount++;
+                else if (job.status === 'error') errorCount++;
+            }
+
+            const avgProgress = totalProgress / jobs.length;
+            const percentage = normalizeRawPercent(avgProgress * 100);
+
+            // Determine overall status
+            if (activeCount > 0) {
+                if (groupName) {
+                    const inProgressJobs = jobs.filter(job => job.status !== 'completed' && job.status !== 'error');
+                    const totalServers = getGroupTotalServers(groupName) || jobs.length || inProgressJobs.length;
+                    const countLabel = formatLibraryCountLabel(totalServers);
+                    let fileTotal = 0;
+                    let metaTotal = 0;
+                    let metaActive = 0;
+                    jobs.forEach((job) => {
+                        const rawPercent = normalizeRawPercent((job.progress || 0) * 100);
+                        const metrics = getPhaseMetrics(rawPercent);
+                        fileTotal += metrics.filePercent;
+                        metaTotal += metrics.metaPercent;
+                        if (metrics.inMeta) {
+                            metaActive += 1;
+                        }
+                    });
+                    const divider = totalServers || jobs.length || 1;
+                    const fileSum = Math.round(fileTotal);
+                    const metaSum = Math.round(metaTotal);
+                    const fileWidth = Math.round(fileSum / divider);
+                    const metaWidth = Math.round(metaSum / divider);
+                    const rows = [
+                        { phase: 'file', percent: fileWidth, label: `File ${fileSum}%`, color: '#3b82f6' }
+                    ];
+                    if (metaActive > 0 || metaSum > 0) {
+                        rows.push({ phase: 'metadata', percent: metaWidth, label: `Metadati ${metaSum}%`, color: '#8b5cf6' });
+                    }
+                    updateProgressRows(progressEl, rows, countLabel);
+                } else {
+                    const phaseInfo = formatLibraryPhase(percentage);
+                    const rows = [
+                        { phase: phaseInfo.phase, percent: phaseInfo.percent, label: phaseInfo.label, color: phaseInfo.color }
+                    ];
+                    updateProgressRows(progressEl, rows, '');
+                }
+            } else if (errorCount > 0) {
+                // Errors occurred
+                const rows = [
+                    { phase: 'error', percent: 100, label: 'Errore', color: '#ef4444' }
+                ];
+                if (groupName) {
+                    const totalServers = getGroupTotalServers(groupName) || jobs.length;
+                    updateProgressRows(progressEl, rows, formatLibraryCountLabel(totalServers));
+                } else {
+                    updateProgressRows(progressEl, rows, '');
+                }
+            } else {
+                // All completed
+                const rows = [
+                    { phase: 'done', percent: 100, label: 'Completato', color: '#22c55e' }
+                ];
+                if (groupName) {
+                    const totalServers = getGroupTotalServers(groupName) || jobs.length;
+                    updateProgressRows(progressEl, rows, formatLibraryCountLabel(totalServers));
+                } else {
+                    updateProgressRows(progressEl, rows, '');
+                }
+            }
+
+            console.log('[ScanTracker] Updated progress bar:', {
+                jobs: jobs.length,
+                active: activeCount,
+                completed: completedCount,
+                avgProgress: percentage
+            });
+        },
+
+        // Mostra/Nascondi container
+        showProgressBar(container, groupName) {
+            console.log('[ScanTracker] showProgressBar, container:', container, 'groupName:', groupName);
+            const el = container.querySelector('[data-scan-progress]');
+            console.log('[ScanTracker] Found progress element:', el);
+            if (el) {
+                el.style.display = 'block';
+                console.log('[ScanTracker] Progress bar shown');
+            } else {
+                console.log('[ScanTracker] ERROR: No [data-scan-progress] element found in container!');
+            }
+        },
+        hideProgressBar(container, groupName) {
+            const el = container.querySelector('[data-scan-progress]');
+            if (el) el.style.display = 'none';
+        },
+
+        // Notifiche Toast (solo per singoli job completati, non per ogni libreria di un gruppo)
+        handleCompletion(job, groupName) {
+            // Don't show individual completion toasts for group scans
+            if (groupName) return;
+
+            const type = job.scan_type === 'metadata' ? 'Aggiornamento metadati' : 'Scansione';
+            if (job.status === 'completed') {
+                showToast(`${type} completata con successo!`, 'success');
+            } else {
+                showToast(`Errore durante ${type}: ${job.error}`, 'error');
+            }
+        }
+    };
 
     // Custom confirmation dialog without "don't show again" option
     const showConfirmDialog = (message) => {
@@ -739,8 +1859,8 @@
 
         if (data.cached && data.cached_at) {
             const cachedDate = new Date(data.cached_at);
-            const now = new Date();
-            const ageSeconds = Math.floor((now - cachedDate) / 1000);
+            const nowDate = new Date();
+            const ageSeconds = Math.floor((nowDate - cachedDate) / 1000);
             const ageText = ageSeconds < 60 ? `${ageSeconds}s fa` :
                           ageSeconds < 3600 ? `${Math.floor(ageSeconds / 60)}m fa` :
                           `${Math.floor(ageSeconds / 3600)}h fa`;
@@ -2097,8 +3217,8 @@
         }
         const force = options.force === true;
         if (!force) {
-            const now = Date.now();
-            const stale = typeof snapshot.takenAt === 'number' && now - snapshot.takenAt > 350;
+            const nowMs = Date.now();
+            const stale = typeof snapshot.takenAt === 'number' && nowMs - snapshot.takenAt > 350;
             const pageMoved = typeof snapshot.page === 'number'
                 && Math.abs(window.scrollY - snapshot.page) > 6;
             const previewMoved = latestPreviewScroll
@@ -2853,6 +3973,7 @@
             toast.remove();
         }, 4500);
     };
+    window.showToast = showToast;
     const formatDateTime = (value) => {
         if (!value) {
             return '';
@@ -3081,6 +4202,8 @@
     const groupsMoviesColumn = document.querySelector('#groups-movies-column');
     const groupsTvColumn = document.querySelector('#groups-tvshows-column');
     const groupsFolderColumn = document.querySelector('#groups-folder-column');
+    const scanHistoryContainer = document.querySelector('#scan-history-container');
+    const refreshHistoryBtn = document.querySelector('#refresh-history-btn');
     const associationContainer = document.querySelector('#association-manager-container');
     const assocMoviesColumn = document.querySelector('#assoc-movies-column');
     const assocTvColumn = document.querySelector('#assoc-tvshows-column');
@@ -3090,6 +4213,395 @@
     const associationCardTitle = document.querySelector('#association-card-title');
     const associationPanelBody = document.querySelector('#association-panel-body');
     let groupedLibrariesCache = [];
+    const libraryToGroupMap = new Map();
+
+    const buildLibraryGroupIndex = () => {
+        libraryToGroupMap.clear();
+        groupedLibrariesCache.forEach(group => {
+            const groupName = group.group_name;
+            if (!groupName || !Array.isArray(group.libraries)) {
+                return;
+            }
+            group.libraries.forEach(library => {
+                if (library && library.library_id) {
+                    libraryToGroupMap.set(library.library_id, {
+                        groupName,
+                        collectionType: group.collection_type,
+                        library
+                    });
+                }
+            });
+        });
+    };
+
+    const renderGroupLibraries = (group, body) => {
+        if (!group || !body) {
+            return;
+        }
+        if (body.dataset.loaded) {
+            return;
+        }
+        (group.libraries || []).forEach(library => {
+            const row = document.createElement('div');
+            row.className = 'library-row';
+            const libraryName = library.library_name || 'Libreria';
+            const serverName = library.server_name || library.server_id || '';
+            row.dataset.libraryId = library.library_id;
+            row.dataset.serverId = library.server_id;
+            row.innerHTML = `
+                <div class="library-row-info">
+                    <strong>${serverName}</strong>
+                    <span class="tagline">${libraryName}</span>
+                </div>
+                <div class="library-actions-container">
+                    <div class="action-grid compact">
+                        <button class="btn primary" data-action="scan-single-content" data-server-id="${library.server_id}" data-library-id="${library.library_id}" data-library-name="${libraryName}">
+                            Scansione dei File
+                        </button>
+                        <button class="btn secondary" data-action="scan-single-metadata" data-server-id="${library.server_id}" data-library-id="${library.library_id}" data-library-name="${libraryName}">
+                            Aggiorna Metadati
+                        </button>
+                    </div>
+                    <div class="library-scan-progress" style="display: none;" data-scan-progress data-library-id="${library.library_id}">
+                        <div class="progress-row">
+                            <div class="progress-track">
+                                <div class="progress-bar" style="width: 0%"></div>
+                            </div>
+                            <span class="progress-text" data-progress-text>In attesa...</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+            body.appendChild(row);
+        });
+        body.dataset.loaded = '1';
+    };
+
+    const escapeCssSelector = (value) => {
+        if (typeof CSS !== 'undefined' && CSS.escape) {
+            return CSS.escape(value);
+        }
+        return String(value).replace(/(["\\])/g, '\\$1');
+    };
+
+    const ensureLibraryRowRendered = (libraryId) => {
+        if (!libraryId) {
+            return null;
+        }
+        let row = document.querySelector(`[data-library-id="${libraryId}"]`);
+        if (row) {
+            return row;
+        }
+        const mapping = libraryToGroupMap.get(libraryId);
+        if (!mapping) {
+            return null;
+        }
+        const article = document.querySelector(`article.library-group[data-group-name="${mapping.groupName}"]`);
+        if (!article) {
+            return null;
+        }
+        const body = article.querySelector('.library-group-body');
+        if (!body) {
+            return null;
+        }
+        const group = groupedLibrariesCache.find(item => item.group_name === mapping.groupName);
+        renderGroupLibraries(group, body);
+        body.style.display = 'block';
+        row = body.querySelector(`[data-library-id="${libraryId}"]`);
+        return row;
+    };
+
+    const updateProgressElement = (progressEl, percent, label) => {
+        const rows = [
+            { phase: 'single', percent, label, color: percent >= 100 ? '#22c55e' : '#3b82f6' }
+        ];
+        updateProgressRows(progressEl, rows, '');
+    };
+
+    const libraryActiveTimestamps = new Map();
+
+    loadGroupPassiveState();
+
+    const PassiveScanMonitor = {
+        intervalId: null,
+        async fetchActiveScans() {
+            try {
+                const response = await csrfFetch('/api/emby/active-library-scans');
+                if (!response.ok) {
+                    return;
+                }
+                const data = await response.json();
+                if (!data || !Array.isArray(data.scans)) {
+                    return;
+                }
+                const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+                this.applyActiveScans(data.scans, sessions);
+            } catch (err) {
+                console.error('[PassiveScanMonitor] Error fetching active scans:', err);
+            }
+        },
+        applyActiveScans(scans, sessions = []) {
+            const groupStats = new Map();
+            const sessionStats = new Map();
+            const activeLibraries = new Set();
+            const sessionLibraries = new Set();
+            const activeServersByGroup = new Map();
+
+            sessions.forEach(session => {
+                if (!session || !session.group_name) {
+                    return;
+                }
+                const groupName = session.group_name;
+                const serverIds = Array.isArray(session.server_ids) ? session.server_ids : [];
+                if (!serverIds.length) {
+                    return;
+                }
+                const serversState = session.servers || {};
+                const libraryMap = session.library_ids || {};
+                const entry = {
+                    fileTotal: 0,
+                    metaTotal: 0,
+                    count: 0,
+                    metaActive: 0,
+                    total: serverIds.length,
+                    activeServers: new Set(),
+                    completedServers: new Set(),
+                    failedServers: new Set(),
+                    fromSession: true
+                };
+
+                serverIds.forEach(serverId => {
+                    const state = serversState[serverId] || {};
+                    const status = state.status;
+                    let progress = normalizeRawPercent((state.last_progress || 0) * 100);
+                    if (status === 'completed') {
+                        progress = 100;
+                    }
+                    const metrics = getPhaseMetrics(progress);
+                    entry.fileTotal += metrics.filePercent;
+                    entry.metaTotal += metrics.metaPercent;
+                    entry.count += 1;
+                    if (metrics.inMeta || status === 'completed') {
+                        entry.metaActive += 1;
+                    }
+                    if (status === 'completed') {
+                        entry.completedServers.add(serverId);
+                    }
+                    if (status === 'active' || status === 'starting') {
+                        entry.activeServers.add(serverId);
+                    }
+                    if (status === 'failed' || status === 'timeout') {
+                        entry.failedServers.add(serverId);
+                    }
+
+                    const libs = Array.isArray(libraryMap[serverId]) ? libraryMap[serverId] : [];
+                    libs.forEach((libId) => {
+                        const libraryId = String(libId);
+                        if (!libraryId) {
+                            return;
+                        }
+                        const isTracked = ScanTracker.isLibraryTracked(libraryId);
+                        const libraryRow = ensureLibraryRowRendered(libraryId);
+                        if (libraryRow && !isTracked) {
+                            const progressContainer = libraryRow.querySelector('[data-scan-progress]');
+                            const phaseInfo = formatLibraryPhase(progress);
+                            updateProgressRows(progressContainer, [
+                                { phase: phaseInfo.phase, percent: phaseInfo.percent, label: phaseInfo.label, color: phaseInfo.color }
+                            ], '');
+                        }
+                        sessionLibraries.add(libraryId);
+                        activeLibraries.add(libraryId);
+                    });
+                });
+
+                sessionStats.set(groupName, entry);
+                groupTotals.set(groupName, entry.total);
+            });
+
+            scans.forEach(scan => {
+                const libraryId = scan.library_id ? String(scan.library_id) : '';
+                if (!libraryId) {
+                    return;
+                }
+                if (sessionLibraries.has(libraryId)) {
+                    return;
+                }
+                const percentage = normalizeRawPercent((scan.progress || 0) * 100);
+                const isTracked = ScanTracker.isLibraryTracked(libraryId);
+                const libraryRow = ensureLibraryRowRendered(libraryId);
+                if (libraryRow && !isTracked) {
+                    const progressContainer = libraryRow.querySelector('[data-scan-progress]');
+                    const phaseInfo = formatLibraryPhase(percentage);
+                    updateProgressRows(progressContainer, [
+                        { phase: phaseInfo.phase, percent: phaseInfo.percent, label: phaseInfo.label, color: phaseInfo.color }
+                    ], '');
+                }
+                activeLibraries.add(libraryId);
+                const mapping = libraryToGroupMap.get(libraryId);
+                if (mapping && mapping.groupName) {
+                    const totalServers = getGroupTotalServers(mapping.groupName);
+                    if (totalServers) {
+                        groupTotals.set(mapping.groupName, totalServers);
+                    }
+                    const serverId = mapping.library ? mapping.library.server_id : null;
+                    if (serverId) {
+                        if (!activeServersByGroup.has(mapping.groupName)) {
+                            activeServersByGroup.set(mapping.groupName, new Set());
+                        }
+                        activeServersByGroup.get(mapping.groupName).add(serverId);
+                    }
+                    if (!groupStats.has(mapping.groupName)) {
+                        groupStats.set(mapping.groupName, {
+                            fileTotal: 0,
+                            metaTotal: 0,
+                            count: 0,
+                            metaActive: 0,
+                            total: totalServers || 0
+                        });
+                    }
+                    const entry = groupStats.get(mapping.groupName);
+                    const metrics = getPhaseMetrics(percentage);
+                    entry.fileTotal += metrics.filePercent;
+                    entry.metaTotal += metrics.metaPercent;
+                    entry.count += 1;
+                    if (metrics.inMeta) {
+                        entry.metaActive += 1;
+                    }
+                }
+            });
+
+            const groupNow = Date.now();
+            groupedLibrariesCache.forEach(group => {
+                const groupName = group.group_name;
+                if (!groupName) {
+                    return;
+                }
+                if (sessionStats.has(groupName)) {
+                    const sessionEntry = sessionStats.get(groupName);
+                    const state = {
+                        total: sessionEntry.total,
+                        active: new Set(sessionEntry.activeServers),
+                        completed: new Set(sessionEntry.completedServers),
+                        updatedAt: groupNow
+                    };
+                    groupPassiveState.set(groupName, state);
+                    return;
+                }
+                const totalServers = getGroupTotalServers(groupName);
+                const activeSet = activeServersByGroup.get(groupName) || new Set();
+                let state = groupPassiveState.get(groupName);
+                if (!state) {
+                    state = {
+                        total: totalServers,
+                        active: new Set(),
+                        completed: new Set(),
+                        updatedAt: groupNow
+                    };
+                    groupPassiveState.set(groupName, state);
+                }
+                state.total = totalServers || state.total;
+                state.active.forEach(serverId => {
+                    if (!activeSet.has(serverId)) {
+                        state.completed.add(serverId);
+                    }
+                });
+                activeSet.forEach(serverId => {
+                    state.completed.delete(serverId);
+                });
+                state.active = new Set(activeSet);
+                state.updatedAt = groupNow;
+                if (state.active.size === 0 && state.completed.size >= (state.total || 0)) {
+                    groupPassiveState.delete(groupName);
+                }
+            });
+            saveGroupPassiveState();
+
+            const mergedGroupStats = new Map(groupStats);
+            sessionStats.forEach((entry, groupName) => {
+                mergedGroupStats.set(groupName, entry);
+            });
+
+            mergedGroupStats.forEach((entry, groupName) => {
+                const article = document.querySelector(`article.library-group[data-group-name="${escapeCssSelector(groupName)}"]`);
+                if (article && ScanTracker.hasActiveJobs(article)) {
+                    return;
+                }
+                const progressEl = article?.querySelector('[data-scan-progress]');
+                const state = groupPassiveState.get(groupName);
+                const totalServers = state?.total || entry.total || getGroupTotalServers(groupName) || entry.count;
+                const completedCount = !entry.fromSession && state?.completed ? state.completed.size : 0;
+                const fileTotal = entry.fileTotal + (completedCount * 100);
+                const metaTotal = entry.metaTotal + (completedCount * 100);
+                const metaActive = entry.metaActive + (completedCount || 0);
+                const divider = totalServers || entry.count || 1;
+                const fileSum = Math.round(fileTotal);
+                const metaSum = Math.round(metaTotal);
+                const fileWidth = Math.round(fileSum / divider);
+                const metaWidth = Math.round(metaSum / divider);
+                const rows = [
+                    { phase: 'file', percent: fileWidth, label: `File ${fileSum}%`, color: '#3b82f6' }
+                ];
+                if (metaActive > 0 || metaSum > 0) {
+                    rows.push({ phase: 'metadata', percent: metaWidth, label: `Metadati ${metaSum}%`, color: '#8b5cf6' });
+                }
+                updateProgressRows(progressEl, rows, formatLibraryCountLabel(totalServers));
+            });
+
+            document.querySelectorAll('.library-group').forEach(article => {
+                if (ScanTracker.hasActiveJobs(article)) {
+                    return;
+                }
+                const groupName = article.dataset.groupName;
+                if (!groupName || mergedGroupStats.has(groupName)) {
+                    return;
+                }
+                const progressEl = article.querySelector('[data-scan-progress]');
+                if (progressEl) {
+                    progressEl.style.display = 'none';
+                }
+            });
+
+            const libraryNow = Date.now();
+            document.querySelectorAll('[data-scan-progress][data-library-id]').forEach(el => {
+                const libId = el.dataset.libraryId;
+                if (ScanTracker.isLibraryTracked(libId)) {
+                    libraryActiveTimestamps.set(libId, libraryNow);
+                    return;
+                }
+                if (activeLibraries.has(libId)) {
+                    libraryActiveTimestamps.set(libId, libraryNow);
+                    return;
+                }
+                const lastSeen = libraryActiveTimestamps.get(libId) || 0;
+                if (libraryNow - lastSeen > 4000) {
+                    el.style.display = 'none';
+                }
+            });
+        },
+        start() {
+            if (this.intervalId) {
+                return;
+            }
+            // Fetch once on start to detect already-running scans
+            this.fetchActiveScans();
+
+            // REMOVED: Continuous polling - now using WebSocket events
+            // this.intervalId = setInterval(() => this.fetchActiveScans(), 5000);
+
+            // Note: WebSocket events (ScheduledTasksInfoStart/Stop) will trigger updates
+            // Polling is no longer needed for real-time detection
+        },
+        stop() {
+            if (this.intervalId) {
+                clearInterval(this.intervalId);
+                this.intervalId = null;
+            }
+        },
+        // Trigger refresh when WebSocket detects scan event
+        onWebSocketScanEvent() {
+            this.fetchActiveScans();
+        }
+    };
     let groupedListenerAttached = false;
     let groupedDragAttached = false;
     let serverDragAttached = false;
@@ -3278,6 +4790,7 @@
             const groups = Array.isArray(data.groups) ? data.groups : [];
             const visibleGroups = groups.filter(group => group && group.group_name !== 'Nascondi');
             groupedLibrariesCache = visibleGroups;
+            buildLibraryGroupIndex();
             groupsMoviesColumn.innerHTML = '';
             groupsTvColumn.innerHTML = '';
             groupsFolderColumn.innerHTML = '';
@@ -3313,6 +4826,14 @@
                             </button>
                         </div>
                     </div>
+                    <div class="library-scan-progress" style="display: none;" data-scan-progress>
+                        <div class="progress-row">
+                            <div class="progress-track">
+                                <div class="progress-bar" data-progress="0"></div>
+                            </div>
+                            <span class="tagline" data-progress-text>Scansione in corso...</span>
+                        </div>
+                    </div>
                     <div class="library-group-body" style="display: none;"></div>
                 `;
                 if (collectionType === 'movies') {
@@ -3330,13 +4851,16 @@
                 });
             });
             setupGroupDragAndDrop();
+            PassiveScanMonitor.fetchActiveScans();
             if (!groupedListenerAttached) {
                 groupedContainer.addEventListener('click', async (event) => {
                     const target = event.target;
+                    console.log('[CLICK] Grouped container clicked, target:', target.tagName, target.className);
                     if (!(target instanceof HTMLElement)) {
                         return;
                     }
                     const button = target.closest('button[data-action]');
+                    console.log('[CLICK] Found button:', button ? button.dataset.action : 'none');
                     if (!button) {
                         const header = target.closest('.library-group-header');
                         if (!header) {
@@ -3357,28 +4881,7 @@
                             return;
                         }
                         if (!body.dataset.loaded) {
-                            group.libraries.forEach(library => {
-                                const row = document.createElement('div');
-                                row.className = 'library-row';
-                                const libraryName = library.library_name || 'Libreria';
-                                const serverName = library.server_name || library.server_id || '';
-                                row.innerHTML = `
-                                    <div class="library-row-info">
-                                        <strong>${serverName}</strong>
-                                        <span class="tagline">${libraryName}</span>
-                                    </div>
-                                    <div class="action-grid compact">
-                                        <button class="btn primary" data-action="scan-single-content" data-server-id="${library.server_id}" data-library-id="${library.library_id}" data-library-name="${libraryName}">
-                                            Scansione dei File
-                                        </button>
-                                        <button class="btn secondary" data-action="scan-single-metadata" data-server-id="${library.server_id}" data-library-id="${library.library_id}" data-library-name="${libraryName}">
-                                            Aggiorna Metadati
-                                        </button>
-                                    </div>
-                                `;
-                                body.appendChild(row);
-                            });
-                            body.dataset.loaded = '1';
+                            renderGroupLibraries(group, body);
                         }
                         body.style.display = body.style.display === 'none' ? 'block' : 'none';
                         const chevron = header.querySelector('.chevron');
@@ -3412,19 +4915,38 @@
                         button.classList.add('loading');
                         button.innerHTML = '<span class="spinner" aria-hidden="true"></span>';
                         try {
-                            const response = await csrfFetch('/api/emby/scan-library', {
+                            // Use tracked endpoint for progress monitoring
+                            console.log('[EMBY.JS] Calling scan-library-tracked:', { serverId, libraryId, scanType });
+                            const response = await csrfFetch('/api/emby/scan-library-tracked', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({
                                     server_id: serverId,
-                                    library_id: libraryId,
+                                    library_ids: [libraryId],
                                     scan_type: scanType
                                 })
                             });
+                            console.log('[EMBY.JS] Response:', response.status, response.ok);
                             if (!response.ok) {
                                 showToast('Errore durante la scansione della libreria.', 'error');
                             } else {
-                                showToast(`Scansione avviata per ${libraryName}.`, 'info');
+                                const data = await response.json();
+                                console.log('[EMBY.JS] Response data:', data);
+                                if (data.queued) {
+                                    const position = data.queue_position ? ` (#${data.queue_position})` : '';
+                                    showToast(`Scan accodata${position} per ${libraryName}.`, 'info');
+                                } else if (data.success && data.job_id) {
+                                    console.log('[EMBY.JS] Starting ScanTracker for job_id:', data.job_id);
+                                    const actionMsg = scanType === 'metadata' ? 'Aggiornamento metadati avviato' : 'Scansione file avviata';
+                                    showToast(`${actionMsg} per ${libraryName}.`, 'info');
+                                    // Start tracking progress with ScanTracker
+                                    const libraryRow = button.closest('.library-row');
+                                    if (libraryRow) {
+                                        ScanTracker.startTracking(data.job_id, libraryRow, null);
+                                    }
+                                } else {
+                                    showToast('Errore durante la scansione della libreria.', 'error');
+                                }
                             }
                         } catch (err) {
                             showToast('Errore durante la scansione della libreria.', 'error');
@@ -3453,17 +4975,61 @@
                     button.classList.add('loading');
                     button.textContent = 'Avvio...';
                     try {
-                        const requests = group.libraries.map(library => csrfFetch('/api/emby/scan-library', {
+                        const serverIds = new Set(group.libraries.map(library => library.server_id).filter(Boolean));
+                        if (serverIds.size) {
+                            groupTotals.set(groupName, serverIds.size);
+                        }
+
+                        // Expand group to show individual library rows
+                        const groupArticle = button.closest('.library-group');
+                        const groupBody = groupArticle?.querySelector('.library-group-body');
+                        if (groupArticle && groupBody && !groupBody.dataset.loaded) {
+                            // Trigger expansion by simulating header click
+                            const header = groupArticle.querySelector('.library-group-header');
+                            if (header) {
+                                header.click();
+                            }
+                        }
+
+                        // Wait a bit for rows to be created
+                        await new Promise(resolve => setTimeout(resolve, 100));
+
+                        const response = await csrfFetch('/api/emby/scan-group-tracked', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({
-                                server_id: library.server_id,
-                                library_id: library.library_id,
-                                scan_type: scanType
+                                group_name: groupName,
+                                scan_type: scanType,
+                                libraries: group.libraries.map(library => ({
+                                    server_id: library.server_id,
+                                    library_id: library.library_id
+                                }))
                             })
-                        }).catch(() => null));
-                        await Promise.all(requests);
-                        showToast(`Comandi di scansione inviati per ${group.libraries.length} librerie nel gruppo ${groupName}.`, 'success');
+                        });
+                        if (!response.ok) {
+                            let errorMessage = 'Errore durante la scansione del gruppo.';
+                            try {
+                                const errorData = await response.json();
+                                if (errorData && errorData.message) {
+                                    errorMessage = errorData.message;
+                                }
+                            } catch (err) {
+                                // Ignore parse error
+                            }
+                            showToast(errorMessage, 'error');
+                        } else {
+                            const data = await response.json();
+                            if (data.queued) {
+                                const position = data.queue_position ? ` (#${data.queue_position})` : '';
+                                showToast(`Scan accodata${position} per ${groupName}.`, 'info');
+                            } else if (data.success) {
+                                const actionMsg = scanType === 'metadata' ? 'Aggiornamento metadati avviato' : 'Scansione file avviata';
+                                showToast(`${actionMsg} per ${groupName}.`, 'success');
+                            } else {
+                                showToast('Errore durante la scansione del gruppo.', 'error');
+                            }
+                            PassiveScanMonitor.fetchActiveScans();
+                        }
                     } catch (err) {
                         showToast('Errore durante la preparazione delle scansioni.', 'error');
                     } finally {
@@ -3479,6 +5045,127 @@
             setGroupedMessage('Errore nel caricamento delle librerie.');
         }
     };
+
+    // === Scan History Functions ===
+    const loadScanHistory = async () => {
+        if (!scanHistoryContainer) return;
+
+        scanHistoryContainer.innerHTML = '<p class="tagline">Caricamento cronologia...</p>';
+
+        try {
+            const response = await csrfFetch('/api/emby/scan-jobs/history');
+            if (!response.ok) {
+                scanHistoryContainer.innerHTML = '<p class="tagline">Errore caricamento cronologia.</p>';
+                return;
+            }
+
+            const data = await response.json();
+            if (!data.success || !Array.isArray(data.jobs)) {
+                scanHistoryContainer.innerHTML = '<p class="tagline">Errore caricamento cronologia.</p>';
+                return;
+            }
+
+            const jobs = data.jobs;
+            if (jobs.length === 0) {
+                scanHistoryContainer.innerHTML = '<p class="tagline">Nessuna scansione completata recentemente.</p>';
+                return;
+            }
+
+            // Render history items
+            const historyHTML = jobs.slice(0, 20).map(job => {
+                const status = job.status || 'unknown';
+                const statusClass = status === 'completed' ? 'success' : 'error';
+                const statusIcon = status === 'completed' ? '✓' : '✗';
+                const groupName = job.group_name || 'N/D';
+                const libraryCount = job.total_libraries || 0;
+                const completedAt = job.completed_at || job.updated_at || '';
+                const duration = calculateDuration(job.started_at, completedAt);
+
+                return `
+                    <div class="history-item">
+                        <div class="history-item-header">
+                            <span class="status-badge ${statusClass}">${statusIcon}</span>
+                            <div class="history-item-info">
+                                <strong>${groupName}</strong>
+                                <span class="tagline">${libraryCount} ${libraryCount === 1 ? 'libreria' : 'librerie'} - ${duration}</span>
+                            </div>
+                            <div class="history-item-actions">
+                                <span class="tagline" data-datetime="${completedAt}">${formatDate(completedAt) || completedAt}</span>
+                                <button class="icon-button danger" data-action="delete-history" data-job-id="${job.id}" title="Elimina dalla cronologia">
+                                    <i class="fa-solid fa-trash"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="history-item-progress">
+                            <div class="progress-track">
+                                <div class="progress-bar" style="width: ${(job.progress || 0) * 100}%; background-color: ${status === 'completed' ? '#22c55e' : '#ef4444'};"></div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            scanHistoryContainer.innerHTML = historyHTML;
+            applyDateFormatting(scanHistoryContainer);
+        } catch (err) {
+            console.error('Error loading scan history:', err);
+            scanHistoryContainer.innerHTML = '<p class="tagline">Errore caricamento cronologia.</p>';
+        }
+    };
+
+    const calculateDuration = (startedAt, completedAt) => {
+        if (!startedAt || !completedAt) return 'N/D';
+        try {
+            const start = new Date(startedAt);
+            const end = new Date(completedAt);
+            const diffMs = end - start;
+            const diffSec = Math.floor(diffMs / 1000);
+            const diffMin = Math.floor(diffSec / 60);
+            const diffHour = Math.floor(diffMin / 60);
+
+            if (diffHour > 0) {
+                return `${diffHour}h ${diffMin % 60}m`;
+            } else if (diffMin > 0) {
+                return `${diffMin}m ${diffSec % 60}s`;
+            } else {
+                return `${diffSec}s`;
+            }
+        } catch {
+            return 'N/D';
+        }
+    };
+
+    // History refresh button handler
+    if (refreshHistoryBtn) {
+        refreshHistoryBtn.addEventListener('click', () => {
+            loadScanHistory();
+        });
+    }
+
+    // History delete handler
+    if (scanHistoryContainer) {
+        scanHistoryContainer.addEventListener('click', async (event) => {
+            const button = event.target.closest('[data-action="delete-history"]');
+            if (!button) return;
+
+            const jobId = button.dataset.jobId;
+            if (!jobId) return;
+
+            try {
+                const response = await csrfFetch(`/api/emby/scan-job/${jobId}`, {
+                    method: 'DELETE'
+                });
+                if (response.ok) {
+                    showToast('Job eliminato dalla cronologia', 'success');
+                    loadScanHistory(); // Reload history
+                } else {
+                    showToast('Errore eliminazione job', 'error');
+                }
+            } catch (err) {
+                showToast('Errore eliminazione job', 'error');
+            }
+        });
+    }
 
     const loadAssociationManager = async () => {
         if (!associationContainer || !assocMoviesColumn || !assocTvColumn || !assocFolderColumn) {
@@ -3735,7 +5422,7 @@
 
     const updateStreams = async () => {
         try {
-            const response = await csrfFetch('/emby/streams');
+            const response = await csrfFetch('/api/emby/streams');
             if (!response.ok) {
                 return;
             }
@@ -3835,7 +5522,7 @@
             sseSource.close();
         }
 
-        sseSource = new EventSource('/emby/status-stream');
+        sseSource = new EventSource('/api/emby/status-stream');
         let reconnectTimer = null;
         let watchdogTimer = null;
         let hasReceivedData = false;
@@ -3939,7 +5626,9 @@
     startStatusPolling();
     startStatusStream();
     loadGroupedLibraries();
+    PassiveScanMonitor.start();
     loadAssociationManager();
+    loadScanHistory();
     setupServerDragAndDrop();
     applyDateFormatting();
     applyProgressBars();
@@ -3973,7 +5662,7 @@
             }
             stopButton.disabled = true;
             try {
-                const response = await csrfFetch('/emby/stop-task', {
+                const response = await csrfFetch('/api/emby/stop-task', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ server_id: serverId, task_id: taskId })
@@ -4163,8 +5852,8 @@
     const selectItem = document.querySelector('[data-latest-verify-item]');
     const btnCheck = document.querySelector('[data-latest-verify-check]');
     const btnEnrich = document.querySelector('[data-latest-verify-enrich]');
-    const loadingDiv = document.querySelector('.latest-verify-loading');
-    const resultsDiv = document.querySelector('.latest-verify-results');
+    const loadingDiv = overlay.querySelector('[data-latest-verify-loading]');
+    const resultsDiv = overlay.querySelector('[data-latest-verify-results]');
 
     if (!btnVerify || !overlay) return;
 
@@ -4609,13 +6298,13 @@
         loadingDiv.style.display = 'none';
         resultsDiv.style.display = 'block';
 
-        const commonAvailableCount = document.querySelector('[data-verify-common-count-available]');
-        const commonMissingCount = document.querySelector('[data-verify-common-count-missing]');
-        const commonAddedCount = document.querySelector('[data-verify-common-count-added]');
-        const commonAddedWrap = document.querySelector('[data-verify-common-added-wrap]');
-        const commonAvailableFields = document.querySelector('[data-verify-common-available]');
-        const commonMissingFields = document.querySelector('[data-verify-common-missing]');
-        const commonAddedFields = document.querySelector('[data-verify-common-added]');
+        const commonAvailableCount = overlay.querySelector('[data-verify-common-count-available]');
+        const commonMissingCount = overlay.querySelector('[data-verify-common-count-missing]');
+        const commonAddedCount = overlay.querySelector('[data-verify-common-count-added]');
+        const commonAddedWrap = overlay.querySelector('[data-verify-common-added-wrap]');
+        const commonAvailableFields = overlay.querySelector('[data-verify-common-available]');
+        const commonMissingFields = overlay.querySelector('[data-verify-common-missing]');
+        const commonAddedFields = overlay.querySelector('[data-verify-common-added]');
 
         if (commonAvailableCount) {
             commonAvailableCount.textContent = diff.common ? diff.common.counts.available : 0;
@@ -4642,7 +6331,7 @@
             commonAddedWrap.style.display = addedList.length ? 'block' : 'none';
         }
 
-        const filesContainer = document.querySelector('[data-verify-files]');
+        const filesContainer = overlay.querySelector('[data-verify-files]');
         if (filesContainer) {
             filesContainer.innerHTML = '';
             const files = Array.isArray(diff.files) ? diff.files : [];
@@ -4856,4 +6545,119 @@
 
         return value;
     }
+
+    // === Resume Active Scans on Page Load ===
+    async function resumeActiveScans() {
+        try {
+            console.log('[SCAN_RESUME] Fetching active scans...');
+            const response = await csrfFetch('/api/emby/active-scan-jobs');
+
+            if (!response.ok) {
+                console.warn('[SCAN_RESUME] Failed to fetch active scans:', response.status);
+                return;
+            }
+
+            const data = await response.json();
+
+            if (!data.success || !data.jobs || data.jobs.length === 0) {
+                console.log('[SCAN_RESUME] No active scans to resume');
+                return;
+            }
+
+            console.log('[SCAN_RESUME] Found', data.jobs.length, 'active scans:', data.jobs);
+
+            for (const job of data.jobs) {
+                // Trova container UI per questo job
+                const container = findScanContainer(job.server_id, job.group_name);
+
+                if (!container) {
+                    console.warn('[SCAN_RESUME] Container not found for job:', job.job_id, 'server:', job.server_id, 'group:', job.group_name);
+                    continue;
+                }
+
+                console.log('[SCAN_RESUME] Resuming job:', job.job_id, 'in container:', container);
+
+                // Riaggancia tracking con WebSocket
+                ScanTracker.startTracking(job.job_id, container, job.group_name);
+
+                // Mostra progress bar con stato corrente
+                const progressElement = container.querySelector('[data-scan-progress]');
+                if (progressElement) {
+                    const progressBar = progressElement.querySelector('.progress-bar');
+                    const progressText = progressElement.querySelector('[data-progress-text]');
+
+                    if (progressBar) {
+                        const percentage = Math.round(job.progress * 100);
+                        progressBar.style.width = `${percentage}%`;
+                        progressBar.style.backgroundColor = '#3b82f6'; // Blue for active
+                    }
+
+                    if (progressText) {
+                        const percentage = Math.round(job.progress * 100);
+                        progressText.textContent = `Ripresa ${percentage}%`;
+                    }
+
+                    progressElement.style.display = 'block';
+                }
+            }
+
+            showToast(`Riprese ${data.jobs.length} scansioni attive`, 'info');
+
+        } catch (err) {
+            console.error('[SCAN_RESUME] Error resuming active scans:', err);
+        }
+    }
+
+    function findScanContainer(serverId, groupName) {
+        // Cerca container basato su server/group
+        if (groupName) {
+            // Cerca per group name
+            const groupContainer = document.querySelector(`[data-group-name="${groupName}"]`);
+            if (groupContainer) {
+                return groupContainer;
+            }
+
+            // Fallback: cerca container con attributo data-server-id che contenga group
+            const serverCard = document.querySelector(`[data-server-id="${serverId}"]`);
+            if (serverCard) {
+                const groupEl = serverCard.querySelector(`[data-group-name="${groupName}"]`);
+                if (groupEl) {
+                    return groupEl;
+                }
+            }
+        }
+
+        // Cerca per server ID (scan singola libreria)
+        const serverContainer = document.querySelector(`[data-server-id="${serverId}"]`);
+        return serverContainer;
+    }
+
+    // Esegui resume quando WebSocket è connesso
+    // Aspetta che ScanWebSocketClient sia pronto (max 5s)
+    function waitForWebSocketAndResume() {
+        if (ScanWebSocketClient.isConnected) {
+            resumeActiveScans();
+        } else {
+            const maxWait = 5000; // 5 secondi
+            const checkInterval = 100; // 100ms
+            let elapsed = 0;
+
+            const interval = setInterval(() => {
+                elapsed += checkInterval;
+
+                if (ScanWebSocketClient.isConnected) {
+                    clearInterval(interval);
+                    resumeActiveScans();
+                } else if (elapsed >= maxWait) {
+                    clearInterval(interval);
+                    console.warn('[SCAN_RESUME] WebSocket not connected after 5s, resuming anyway...');
+                    resumeActiveScans();
+                }
+            }, checkInterval);
+        }
+    }
+
+    // Avvia resume dopo breve delay per permettere al DOM di caricarsi
+    setTimeout(waitForWebSocketAndResume, 500);
+
 })();

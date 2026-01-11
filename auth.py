@@ -1,22 +1,19 @@
 """
-Authentication module with Flask-Login and SQLAlchemy.
+Authentication module with SQLAlchemy.
 Manages user accounts, password hashing, and session management.
+Migrated from Flask-Login to FastAPI native authentication.
 """
 import os
+import bcrypt
 from datetime import datetime
 from typing import Optional, Any
 
-from flask import Flask, jsonify, redirect, request, url_for
-from flask_login import LoginManager, UserMixin
-from flask_bcrypt import Bcrypt
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Text, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker, scoped_session
 from sqlalchemy.exc import SQLAlchemyError
 
 # SQLAlchemy setup
 Base = declarative_base()
-bcrypt = Bcrypt()
-login_manager = LoginManager()
 
 # Database session
 db_session = None
@@ -24,7 +21,7 @@ db_session = None
 ROLE_VALUES = ("admin", "user", "viewer")
 
 
-class User(Base, UserMixin):
+class User(Base):
     """User model for authentication."""
     __tablename__ = 'users'
 
@@ -40,11 +37,14 @@ class User(Base, UserMixin):
 
     def set_password(self, password: str):
         """Hash and set the user password."""
-        self.password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
+        # Use bcrypt native library instead of Flask-Bcrypt
+        hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+        self.password_hash = hashed.decode('utf-8')
 
     def check_password(self, password: str) -> bool:
         """Verify password against hash."""
-        return bcrypt.check_password_hash(self.password_hash, password)
+        # Use bcrypt native library instead of Flask-Bcrypt
+        return bcrypt.checkpw(password.encode('utf-8'), self.password_hash.encode('utf-8'))
 
     def update_last_login(self):
         """Update last login timestamp."""
@@ -57,10 +57,12 @@ class User(Base, UserMixin):
 
     def get_role(self) -> str:
         """Return normalized role for the user."""
-        if self.is_admin:
+        is_admin_value = bool(self.is_admin)  # Convert Column to bool
+        if is_admin_value:
             return "admin"
-        if self.role in ROLE_VALUES:
-            return self.role
+        role_value = str(self.role)  # Convert Column to str
+        if role_value in ROLE_VALUES:
+            return role_value
         return "user"
 
     def set_role(self, role: str) -> None:
@@ -101,26 +103,13 @@ def _normalize_role(role: Optional[str], is_admin: bool = False) -> str:
     return role
 
 
-def init_auth(app: Flask, create_default_admin: bool = False):
+def init_auth(create_default_admin: bool = False):
     """
-    Initialize authentication system with Flask-Login and database.
+    Initialize authentication system and database.
     Creates default admin user if database is empty.
+    Migrated from Flask-Login to FastAPI.
     """
     global db_session
-
-    # Initialize Flask extensions
-    bcrypt.init_app(app)
-    login_manager.init_app(app)
-    login_manager.login_view = 'auth_login'
-    login_manager.login_message = 'Devi effettuare il login per accedere a questa pagina.'
-    login_manager.login_message_category = 'warning'
-    login_manager.session_protection = 'strong'
-
-    @login_manager.unauthorized_handler
-    def _unauthorized():
-        if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
-            return jsonify({"success": False, "message": "Sessione scaduta. Ricarica la pagina."}), 401
-        return redirect(url_for('auth_login'))
 
     # Database configuration
     db_url = os.environ.get('AUTH_DATABASE_URL')
@@ -141,18 +130,13 @@ def init_auth(app: Flask, create_default_admin: bool = False):
     if create_default_admin:
         _create_default_admin()
 
-    # Register teardown handler
-    @app.teardown_appcontext
-    def shutdown_session(exception=None):
-        if db_session:
-            db_session.remove()
-
     print(f"[AUTH] Sistema di autenticazione inizializzato (database: {db_url})")
 
 
 def _create_default_admin():
     """Create default admin user if database is empty."""
     try:
+        assert db_session is not None, "Database session not initialized"
         user_count = db_session.query(User).count()
         if user_count == 0:
             def _read_env_secret(key: str) -> Optional[str]:
@@ -194,13 +178,18 @@ def _create_default_admin():
             print(f"[AUTH] ATTENZIONE: Cambia la password di default!")
     except SQLAlchemyError as e:
         print(f"[AUTH] Errore durante la creazione dell'admin: {e}")
+        assert db_session is not None
         db_session.rollback()
 
 
-@login_manager.user_loader
 def load_user(user_id: str) -> Optional[User]:
-    """Load user by ID for Flask-Login."""
+    """
+    Load user by ID.
+    DEPRECATED: Use get_user_by_id() instead.
+    Kept for backward compatibility.
+    """
     try:
+        assert db_session is not None
         return db_session.query(User).get(int(user_id))
     except (ValueError, SQLAlchemyError):
         return None
@@ -209,8 +198,18 @@ def load_user(user_id: str) -> Optional[User]:
 def get_user_by_username(username: str) -> Optional[User]:
     """Get user by username."""
     try:
+        assert db_session is not None
         return db_session.query(User).filter_by(username=username).first()
     except SQLAlchemyError:
+        return None
+
+
+def get_user_by_id(user_id: int) -> Optional[User]:
+    """Get user by ID."""
+    try:
+        assert db_session is not None
+        return db_session.query(User).get(user_id)
+    except (ValueError, SQLAlchemyError):
         return None
 
 
@@ -227,6 +226,7 @@ def create_user(username: str, password: str, email: Optional[str] = None,
             print(f"[AUTH] Utente '{username}' già esistente")
             return None
 
+        assert db_session is not None
         normalized_role = _normalize_role(role, is_admin)
         user = User(
             username=username,
@@ -244,6 +244,7 @@ def create_user(username: str, password: str, email: Optional[str] = None,
         return user
     except SQLAlchemyError as e:
         print(f"[AUTH] Errore durante la creazione dell'utente: {e}")
+        assert db_session is not None
         db_session.rollback()
         return None
 
@@ -251,12 +252,14 @@ def create_user(username: str, password: str, email: Optional[str] = None,
 def update_user_password(user: User, new_password: str) -> bool:
     """Update user password."""
     try:
+        assert db_session is not None
         user.set_password(new_password)
         db_session.commit()
         print(f"[AUTH] Password aggiornata per: {user.username}")
         return True
     except SQLAlchemyError as e:
         print(f"[AUTH] Errore durante l'aggiornamento della password: {e}")
+        assert db_session is not None
         db_session.rollback()
         return False
 
@@ -264,8 +267,10 @@ def update_user_password(user: User, new_password: str) -> bool:
 def delete_user(user: User) -> bool:
     """Delete a user (cannot delete last admin)."""
     try:
+        assert db_session is not None
         # Check if this is the last admin
-        if user.is_admin:
+        is_admin_value = bool(user.is_admin)
+        if is_admin_value:
             admin_count = db_session.query(User).filter_by(is_admin=True).count()
             if admin_count <= 1:
                 print("[AUTH] Impossibile eliminare l'ultimo amministratore")
@@ -277,6 +282,7 @@ def delete_user(user: User) -> bool:
         return True
     except SQLAlchemyError as e:
         print(f"[AUTH] Errore durante l'eliminazione dell'utente: {e}")
+        assert db_session is not None
         db_session.rollback()
         return False
 
@@ -284,6 +290,7 @@ def delete_user(user: User) -> bool:
 def get_all_users():
     """Get all users."""
     try:
+        assert db_session is not None
         return db_session.query(User).order_by(User.username).all()
     except SQLAlchemyError:
         return []
@@ -292,13 +299,15 @@ def get_all_users():
 def toggle_user_active(user: User) -> bool:
     """Toggle user active status."""
     try:
-        user.is_active = not user.is_active
+        assert db_session is not None
+        user.is_active = False if bool(user.is_active) else True  # type: ignore[assignment]
         db_session.commit()
-        status = "attivo" if user.is_active else "disabilitato"
+        status = "attivo" if bool(user.is_active) else "disabilitato"
         print(f"[AUTH] Utente {user.username} ora è {status}")
         return True
     except SQLAlchemyError as e:
         print(f"[AUTH] Errore durante il cambio di stato: {e}")
+        assert db_session is not None
         db_session.rollback()
         return False
 
@@ -306,12 +315,14 @@ def toggle_user_active(user: User) -> bool:
 def set_user_role(user: User, role: str) -> bool:
     """Set user role (admin/user/viewer)."""
     try:
+        assert db_session is not None
         user.set_role(role)
         db_session.commit()
         print(f"[AUTH] Ruolo aggiornato per {user.username}: {user.get_role()}")
         return True
     except SQLAlchemyError as e:
         print(f"[AUTH] Errore durante l'aggiornamento del ruolo: {e}")
+        assert db_session is not None
         db_session.rollback()
         return False
 
@@ -340,6 +351,7 @@ def log_audit_event(user: Optional[Any], action: str, detail: Optional[str] = No
         except Exception:
             pass
     try:
+        assert db_session is not None
         entry = AuditLog(
             user_id=user_id,
             username=username,
@@ -354,6 +366,7 @@ def log_audit_event(user: Optional[Any], action: str, detail: Optional[str] = No
         db_session.commit()
     except SQLAlchemyError as e:
         print(f"[AUTH] Errore durante audit log: {e}")
+        assert db_session is not None
         db_session.rollback()
 
 
@@ -362,6 +375,7 @@ def get_audit_logs(limit: int = 100):
     if not db_session:
         return []
     try:
+        assert db_session is not None
         return (db_session.query(AuditLog)
                 .order_by(AuditLog.created_at.desc())
                 .limit(limit)
