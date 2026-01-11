@@ -1,7 +1,6 @@
 """
 Authentication module with SQLAlchemy.
 Manages user accounts, password hashing, and session management.
-Migrated from Flask-Login to FastAPI native authentication.
 """
 import os
 import bcrypt
@@ -37,13 +36,13 @@ class User(Base):
 
     def set_password(self, password: str):
         """Hash and set the user password."""
-        # Use bcrypt native library instead of Flask-Bcrypt
+        
         hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
         self.password_hash = hashed.decode('utf-8')
 
     def check_password(self, password: str) -> bool:
         """Verify password against hash."""
-        # Use bcrypt native library instead of Flask-Bcrypt
+        
         return bcrypt.checkpw(password.encode('utf-8'), self.password_hash.encode('utf-8'))
 
     def update_last_login(self):
@@ -107,7 +106,6 @@ def init_auth(create_default_admin: bool = False):
     """
     Initialize authentication system and database.
     Creates default admin user if database is empty.
-    Migrated from Flask-Login to FastAPI.
     """
     global db_session
 

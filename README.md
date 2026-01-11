@@ -6,7 +6,7 @@ Docs: [Docker Deploy](docs/DOCKER_DEPLOY.md) | [Deployment](docs/DEPLOYMENT.md) 
 
 [![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 
-OctoHub is a Flask web app to orchestrate Emby servers and related services (Jellyseerr, Prowlarr, Jackett, qBittorrent, Trakt). It provides a dashboard, library scans, automation, realtime webhooks, and role-based user management.
+OctoHub is a FastAPI web app to orchestrate Emby servers and related services (Jellyseerr, Prowlarr, Jackett, qBittorrent, Trakt). It provides a dashboard, library scans, automation, realtime webhooks, and role-based user management.
 
 ## Key features
 - Dashboard with scan status, results, and main metrics.
@@ -51,10 +51,10 @@ If you do not use PostgreSQL, you can comment out the `postgres` service in `doc
    - `docker compose up -d --build`
 
 ## Main environment variables (optional)
-You can set them in Portainer or in the Docker environment. If not set, OctoHub generates `FLASK_SECRET_KEY` automatically.
+You can set them in Portainer or in the Docker environment. If not set, OctoHub generates `SECRET_KEY` automatically.
 Essential example:
 ```env
-FLASK_SECRET_KEY=a-long-random-key
+SECRET_KEY=a-long-random-key
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=StrongPassword
 ADMIN_EMAIL=admin@example.com

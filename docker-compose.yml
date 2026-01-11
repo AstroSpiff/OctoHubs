@@ -13,8 +13,8 @@ services:
     ports:
       - "5000:5000"
     environment:
-      # Flask Configuration
-      - FLASK_SECRET_KEY=${FLASK_SECRET_KEY:-change-this-secret-key}
+      
+      - SECRET_KEY=${SECRET_KEY:-change-this-secret-key}
       - OCTOHUB_CONFIG_FILE=${OCTOHUB_CONFIG_FILE:-/config/config.json}
       - OCTOHUB_RESULTS_FILE=${OCTOHUB_RESULTS_FILE:-/storage/last_results.json}
 

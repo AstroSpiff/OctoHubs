@@ -32,12 +32,12 @@ fastapi_app = FastAPI()
 _scan_locks: Dict[str, asyncio.Lock] = {}
 _scan_locks_lock = asyncio.Lock()
 
-# Initialize authentication system (independent from Flask)
+# Initialize authentication system
 from auth import init_auth
 init_auth(create_default_admin=True)
 
 def _initialize_runtime_services() -> None:
-    """Initialize background services previously started by the Flask app."""
+    """Initialize background services."""
     _ensure_strm_guard_manager()
     from emby_probe import get_probe_manager
     from app import _initialize_emby_websockets, _wf_trigger_scan, _wf_check_scan, _wf_trigger_probe, _wf_check_probe, _wf_refresh_cache, _wf_notify
@@ -63,7 +63,7 @@ fastapi_app.add_middleware(
     SessionMiddleware,
     secret_key=_secret_key,
     session_cookie=_session_cookie_name,
-    max_age=None,  # Match Flask's behavior (session expires on browser close by default)
+    max_age=None,  # Session expires on browser close by default
     same_site="lax",
     https_only=False
 )
@@ -85,7 +85,7 @@ def flash(request: Request, message: str, category: str = "message"):
     request.session["_flashes"].append((category, message))
 
 def url_for_fastapi(endpoint: str, **kwargs) -> str:
-    """Flask-compatible url_for for FastAPI routes."""
+    """A url_for compatibility function for FastAPI routes."""
     endpoint_map = {
         # Core navigation routes
         "dashboard": "/",
@@ -151,7 +151,7 @@ def url_for_fastapi(endpoint: str, **kwargs) -> str:
 # Add url_for to Jinja2 globals for FastAPI templates
 templates.env.globals["url_for"] = url_for_fastapi
 
-# Add get_flashed_messages to Jinja2 globals (Flask-compatible)
+# Add get_flashed_messages to Jinja2 globals
 @pass_context
 def get_flashed_messages_func(context=None, with_categories: bool = False, *args, **kwargs):
     request = context.get("request") if context else None
@@ -179,10 +179,7 @@ def get_csrf_token(request: Request) -> str:
 
 def validate_csrf(request: Request, form_token: Optional[str]) -> bool:
     """Validate CSRF token from form."""
-    # TEMPORARILY DISABLED: CSRF validation disabled during Flask → FastAPI migration
     # TODO: Re-enable after migration is complete using Starlette session only
-    # The issue is that Flask and Starlette sessions are incompatible even with same secret_key
-    # Once Flask is removed, we can use pure Starlette SessionMiddleware for CSRF
     return True  # Always pass validation for now (local development only!)
 
     # Original code (to be restored later):
@@ -313,7 +310,7 @@ async def websocket_scan_endpoint(websocket: WebSocket, client_id: str):
 
 @fastapi_app.get("/emby/events-stream")
 async def emby_events_stream(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
 
     async def event_stream():
         client_queue: Queue = Queue(maxsize=50)
@@ -402,26 +399,19 @@ def _require_auth(request: Request):
     return user_id
 
 
-def _require_flask_login(request: Request):
-    """
-    LEGACY: Compatibility wrapper for existing code that uses Flask-Login.
-    This now uses Starlette session instead of Flask session.
 
-    TODO: Replace all calls to this with _require_auth() dependency injection.
-    """
-    return _require_auth(request)
 
 
 @fastapi_app.get("/api/emby/active-library-scans")
 async def active_library_scans(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     payload = _build_active_library_scans_snapshot()
     return JSONResponse(payload)
 
 
 @fastapi_app.get("/api/emby/scan-job/{job_id}")
 async def scan_job_status(job_id: str, request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     job = _LIBRARY_SCAN_TRACKER.get_job(job_id)
     if not job:
         return JSONResponse({"success": False, "message": "Job non trovato"}, status_code=404)
@@ -430,14 +420,14 @@ async def scan_job_status(job_id: str, request: Request):
 
 @fastapi_app.get("/api/emby/scan-jobs")
 async def scan_jobs(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     jobs = _LIBRARY_SCAN_TRACKER.get_all_jobs()
     return JSONResponse({"success": True, "jobs": jobs})
 
 
 @fastapi_app.get("/api/emby/scan-jobs/history")
 async def scan_jobs_history(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     all_jobs = _LIBRARY_SCAN_TRACKER.get_all_jobs()
     completed_jobs = [
         job for job in all_jobs
@@ -476,7 +466,7 @@ async def active_scan_jobs(request: Request):
             ]
         }
     """
-    _require_flask_login(request)
+    _require_auth(request)
 
     all_jobs = _LIBRARY_SCAN_TRACKER.get_all_jobs()
 
@@ -506,7 +496,7 @@ async def active_scan_jobs(request: Request):
 
 @fastapi_app.post("/api/emby/scan-library")
 async def scan_library(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         payload = await request.json()
     except Exception:
@@ -546,7 +536,7 @@ async def _release_scan_lock(server_id: str):
 
 @fastapi_app.post("/api/emby/scan-library-tracked")
 async def scan_library_tracked(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         payload = await request.json()
     except Exception:
@@ -575,7 +565,7 @@ async def scan_library_tracked(request: Request):
 
 @fastapi_app.post("/api/emby/scan-group-tracked")
 async def scan_group_tracked(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         payload = await request.json()
     except Exception:
@@ -586,14 +576,14 @@ async def scan_group_tracked(request: Request):
 
 @fastapi_app.get("/api/emby/associations")
 async def emby_associations_get(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _build_associations_get_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.post("/api/emby/associations")
 async def emby_associations_post(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         payload = await request.json()
     except Exception:
@@ -604,7 +594,7 @@ async def emby_associations_post(request: Request):
 
 @fastapi_app.get("/api/media/details")
 async def media_details(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     tmdb_id = request.query_params.get("tmdb_id")
     media_type = request.query_params.get("media_type")
     payload, status_code = _build_media_details_snapshot(tmdb_id, media_type)
@@ -613,7 +603,7 @@ async def media_details(request: Request):
 
 @fastapi_app.post("/api/jellyseerr/request")
 async def jellyseerr_request(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         payload = await request.json()
     except Exception:
@@ -624,7 +614,7 @@ async def jellyseerr_request(request: Request):
 
 @fastapi_app.get("/api/tmdb/search")
 async def tmdb_search(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     query = request.query_params.get("query")
     page = int(request.query_params.get("page", 1))
     payload, status_code = _build_tmdb_search_snapshot(query, page=page)
@@ -633,14 +623,14 @@ async def tmdb_search(request: Request):
 
 @fastapi_app.get("/api/tmdb/tv/{tv_id}")
 async def tmdb_tv_details(tv_id: int, request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _build_tmdb_tv_details_snapshot(tv_id)
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.post("/api/tmdb/check-availability")
 async def tmdb_check_availability(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         payload = await request.json()
     except Exception:
@@ -651,7 +641,7 @@ async def tmdb_check_availability(request: Request):
 
 @fastapi_app.post("/api/search/manual")
 async def manual_search(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         payload = await request.json()
     except Exception:
@@ -741,7 +731,7 @@ async def manual_search(request: Request):
 
 @fastapi_app.post("/rss/inspect")
 async def rss_inspect(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         payload = await request.json()
     except Exception:
@@ -752,7 +742,7 @@ async def rss_inspect(request: Request):
 
 @fastapi_app.post("/api/rss/inspect")
 async def rss_inspect_api(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         payload = await request.json()
     except Exception:
@@ -763,7 +753,7 @@ async def rss_inspect_api(request: Request):
 
 @fastapi_app.post("/rss/inspect-json")
 async def rss_inspect_json(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         form = await request.form()
     except Exception:
@@ -775,7 +765,7 @@ async def rss_inspect_json(request: Request):
 
 @fastapi_app.post("/api/rss/inspect-json")
 async def rss_inspect_json_api(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         form = await request.form()
     except Exception:
@@ -787,21 +777,21 @@ async def rss_inspect_json_api(request: Request):
 
 @fastapi_app.post("/rss/import")
 async def rss_import(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     data, status_code = _build_rss_import_snapshot()
     return JSONResponse(data, status_code=status_code)
 
 
 @fastapi_app.post("/api/rss/import")
 async def rss_import_api(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     data, status_code = _build_rss_import_snapshot()
     return JSONResponse(data, status_code=status_code)
 
 
 @fastapi_app.post("/rss/import-json")
 async def rss_import_json(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         form = await request.form()
     except Exception:
@@ -813,7 +803,7 @@ async def rss_import_json(request: Request):
 
 @fastapi_app.post("/api/rss/import-json")
 async def rss_import_json_api(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         form = await request.form()
     except Exception:
@@ -825,21 +815,21 @@ async def rss_import_json_api(request: Request):
 
 @fastapi_app.post("/rss/deduplicate")
 async def rss_deduplicate(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     data, status_code = _build_rss_deduplicate_snapshot()
     return JSONResponse(data, status_code=status_code)
 
 
 @fastapi_app.post("/api/rss/deduplicate")
 async def rss_deduplicate_api(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     data, status_code = _build_rss_deduplicate_snapshot()
     return JSONResponse(data, status_code=status_code)
 
 
 @fastapi_app.get("/rss/items")
 async def rss_items(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     limit = request.query_params.get("limit")
     offset = request.query_params.get("offset")
     data, status_code = _build_rss_items_snapshot(limit, offset)
@@ -848,7 +838,7 @@ async def rss_items(request: Request):
 
 @fastapi_app.get("/api/rss/items")
 async def rss_items_api(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     limit = request.query_params.get("limit")
     offset = request.query_params.get("offset")
     data, status_code = _build_rss_items_snapshot(limit, offset)
@@ -857,7 +847,7 @@ async def rss_items_api(request: Request):
 
 @fastapi_app.post("/send-torrent")
 async def send_torrent(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         payload = await request.json()
     except Exception:
@@ -868,7 +858,7 @@ async def send_torrent(request: Request):
 
 @fastapi_app.post("/api/send-torrent")
 async def send_torrent_api(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         payload = await request.json()
     except Exception:
@@ -879,35 +869,35 @@ async def send_torrent_api(request: Request):
 
 @fastapi_app.get("/scan-status")
 async def scan_status(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _build_scan_status_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.get("/api/scan-status")
 async def scan_status_api(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _build_scan_status_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.post("/test-connections")
 async def test_connections(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _build_test_connections_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.post("/api/test-connections")
 async def test_connections_api(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _build_test_connections_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.post("/api/run-scan")
 async def run_scan(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         payload = await request.json()
     except Exception:
@@ -918,7 +908,7 @@ async def run_scan(request: Request):
 
 @fastapi_app.post("/run-scan")
 async def run_scan_form(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     from app import scan_manager, validate_connections, process_requests
 
     config, is_valid = load_config()
@@ -963,7 +953,7 @@ async def run_scan_form(request: Request):
 
 @fastapi_app.post("/stop-scan")
 async def stop_scan_form(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     from app import scan_manager
 
     scan_manager.stop_scan()
@@ -973,7 +963,7 @@ async def stop_scan_form(request: Request):
 
 @fastapi_app.post("/api/update-request-rules")
 async def update_request_rules(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         payload = await request.json()
     except Exception:
@@ -984,14 +974,14 @@ async def update_request_rules(request: Request):
 
 @fastapi_app.post("/api/refresh-requests")
 async def refresh_requests(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     data, status_code = _build_refresh_requests_snapshot()
     return JSONResponse(data, status_code=status_code)
 
 
 @fastapi_app.post("/trakt/device/start")
 async def trakt_device_start(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         payload = await request.json()
     except Exception:
@@ -1002,7 +992,7 @@ async def trakt_device_start(request: Request):
 
 @fastapi_app.post("/api/trakt/device/start")
 async def trakt_device_start_api(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         payload = await request.json()
     except Exception:
@@ -1013,7 +1003,7 @@ async def trakt_device_start_api(request: Request):
 
 @fastapi_app.post("/trakt/device/poll")
 async def trakt_device_poll(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         payload = await request.json()
     except Exception:
@@ -1024,7 +1014,7 @@ async def trakt_device_poll(request: Request):
 
 @fastapi_app.post("/api/trakt/device/poll")
 async def trakt_device_poll_api(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         payload = await request.json()
     except Exception:
@@ -1035,21 +1025,21 @@ async def trakt_device_poll_api(request: Request):
 
 @fastapi_app.post("/trakt/clear")
 async def trakt_clear(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     data, status_code = _build_trakt_clear_snapshot()
     return JSONResponse(data, status_code=status_code)
 
 
 @fastapi_app.post("/api/trakt/clear")
 async def trakt_clear_api(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     data, status_code = _build_trakt_clear_snapshot()
     return JSONResponse(data, status_code=status_code)
 
 
 @fastapi_app.post("/emby/stop-task")
 async def emby_stop_task(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         payload = await request.json()
     except Exception:
@@ -1060,7 +1050,7 @@ async def emby_stop_task(request: Request):
 
 @fastapi_app.post("/api/emby/stop-task")
 async def emby_stop_task_api(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         payload = await request.json()
     except Exception:
@@ -1071,63 +1061,63 @@ async def emby_stop_task_api(request: Request):
 
 @fastapi_app.get("/emby/streams")
 async def emby_streams(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _build_emby_streams_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.get("/api/emby/streams")
 async def emby_streams_api(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _build_emby_streams_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.get("/emby/api/all/health-status")
 async def emby_health_status(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _build_emby_health_status_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.get("/emby/api/{server_id}/activity")
 async def emby_activity(request: Request, server_id: str):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _build_emby_activity_snapshot(server_id)
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.get("/emby/api/{server_id}/tasks")
 async def emby_tasks(request: Request, server_id: str):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _build_emby_tasks_snapshot(server_id)
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.get("/emby/api/{server_id}/users")
 async def emby_users(request: Request, server_id: str):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _build_emby_users_snapshot(server_id)
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.get("/emby/api/{server_id}/plugins")
 async def emby_plugins(request: Request, server_id: str):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _build_emby_plugins_snapshot(server_id)
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.get("/emby/libraries")
 async def emby_libraries(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _build_emby_libraries_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.get("/emby/status-stream")
 async def emby_status_stream(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
 
     async def event_stream():
         while True:
@@ -1156,49 +1146,49 @@ async def emby_status_stream_api(request: Request):
 
 @fastapi_app.get("/emby/server-status/{server_id}")
 async def emby_server_status(server_id: str, request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _build_emby_server_status_snapshot(server_id)
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.delete("/api/emby/scan-job/{job_id}")
 async def delete_scan_job(job_id: str, request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     _LIBRARY_SCAN_TRACKER.delete_job(job_id)
     return JSONResponse({"success": True, "message": "Job eliminato"})
 
 
 @fastapi_app.get("/api/emby/active-scans")
 async def active_scans(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _build_active_scans_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.get("/api/emby/debug-vf-query")
 async def debug_vf_query(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _build_debug_vf_query_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.get("/api/emby/strm-guard/status")
 async def strm_guard_status(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _build_strm_guard_status_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.get("/api/emby/grouped-libraries")
 async def grouped_libraries(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _build_grouped_libraries_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.get("/api/emby/movie-versions")
 async def movie_versions(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     server_id = request.query_params.get("server_id") or ""
     tmdb_id = request.query_params.get("tmdb_id") or ""
     payload, status_code = _build_movie_versions_snapshot(server_id, tmdb_id)
@@ -1207,7 +1197,7 @@ async def movie_versions(request: Request):
 
 @fastapi_app.get("/api/emby/series-seasons")
 async def series_seasons(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     server_id = request.query_params.get("server_id") or ""
     series_id = request.query_params.get("series_id") or ""
     payload, status_code = _build_series_seasons_snapshot(server_id, series_id)
@@ -1216,7 +1206,7 @@ async def series_seasons(request: Request):
 
 @fastapi_app.get("/api/emby/season-episodes")
 async def season_episodes(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     server_id = request.query_params.get("server_id") or ""
     season_id = request.query_params.get("season_id") or ""
     payload, status_code = _build_season_episodes_snapshot(server_id, season_id)
@@ -1225,7 +1215,7 @@ async def season_episodes(request: Request):
 
 @fastapi_app.get("/api/emby/lookup")
 async def emby_lookup(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     title = request.query_params.get("title") or ""
     year = request.query_params.get("year") or ""
     payload, status_code = _build_lookup_snapshot(title, year)
@@ -1234,7 +1224,7 @@ async def emby_lookup(request: Request):
 
 @fastapi_app.get("/api/emby/item-details")
 async def emby_item_details(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     server_id = request.query_params.get("server_id") or ""
     item_id = request.query_params.get("item_id") or ""
     payload, status_code = _build_item_details_snapshot(server_id, item_id)
@@ -1243,7 +1233,7 @@ async def emby_item_details(request: Request):
 
 @fastapi_app.post("/api/emby/availability")
 async def emby_availability(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1254,7 +1244,7 @@ async def emby_availability(request: Request):
 
 @fastapi_app.get("/api/emby/latest")
 async def emby_latest(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     limit = _coerce_request_int(request.query_params.get("limit"), 12, 1, 50)
     per_server_limit = _coerce_request_int(request.query_params.get("per_server_limit"), limit, 1, 50)
     force = _coerce_request_bool(request.query_params.get("force"), False)
@@ -1264,7 +1254,7 @@ async def emby_latest(request: Request):
 
 @fastapi_app.get("/api/emby/image")
 async def emby_image(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     server_id = request.query_params.get("server_id")
     item_id = request.query_params.get("item_id")
     image_type = request.query_params.get("type", "Primary")
@@ -1287,7 +1277,7 @@ async def emby_image(request: Request):
 
 @fastapi_app.post("/api/emby/server-order")
 async def emby_server_order(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1298,14 +1288,14 @@ async def emby_server_order(request: Request):
 
 @fastapi_app.get("/api/emby/group-order")
 async def emby_group_order_get(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _build_group_order_get_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.post("/api/emby/group-order")
 async def emby_group_order_post(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1316,7 +1306,7 @@ async def emby_group_order_post(request: Request):
 
 @fastapi_app.get("/api/ui/tab-order")
 async def ui_tab_order_get(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     page = request.query_params.get("page") or ""
     payload, status_code = _build_tab_order_get_snapshot(page)
     return JSONResponse(payload, status_code=status_code)
@@ -1324,7 +1314,7 @@ async def ui_tab_order_get(request: Request):
 
 @fastapi_app.post("/api/ui/tab-order")
 async def ui_tab_order_post(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1335,14 +1325,14 @@ async def ui_tab_order_post(request: Request):
 
 @fastapi_app.get("/api/emby/latest/progress")
 async def emby_latest_progress(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _build_latest_progress_payload()
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.post("/api/emby/latest/preview")
 async def emby_latest_preview(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1353,14 +1343,14 @@ async def emby_latest_preview(request: Request):
 
 @fastapi_app.get("/api/emby/latest/preview/cache")
 async def emby_latest_preview_cache(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _build_latest_preview_cache_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.post("/api/emby/latest/enrich")
 async def emby_latest_enrich(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1371,7 +1361,7 @@ async def emby_latest_enrich(request: Request):
 
 @fastapi_app.post("/api/emby/latest/notify")
 async def emby_latest_notify(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1389,7 +1379,7 @@ async def emby_latest_notify(request: Request):
 
 @fastapi_app.post("/api/emby/probe/discovery/start")
 async def probe_discovery_start(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1400,7 +1390,7 @@ async def probe_discovery_start(request: Request):
 
 @fastapi_app.post("/api/emby/probe/discovery/stop")
 async def probe_discovery_stop(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1411,7 +1401,7 @@ async def probe_discovery_stop(request: Request):
 
 @fastapi_app.post("/api/emby/probe/recent/start")
 async def probe_recent_start(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1422,7 +1412,7 @@ async def probe_recent_start(request: Request):
 
 @fastapi_app.post("/api/emby/probe/recent/start-all")
 async def probe_recent_start_all(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1433,7 +1423,7 @@ async def probe_recent_start_all(request: Request):
 
 @fastapi_app.post("/api/emby/probe/recent/stop")
 async def probe_recent_stop(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1444,14 +1434,14 @@ async def probe_recent_stop(request: Request):
 
 @fastapi_app.post("/api/emby/probe/recent/stop-all")
 async def probe_recent_stop_all(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _probe_recent_stop_all_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.post("/api/emby/probe/recent/processing/start")
 async def probe_recent_processing_start(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1462,7 +1452,7 @@ async def probe_recent_processing_start(request: Request):
 
 @fastapi_app.post("/api/emby/probe/recent/processing/start-all")
 async def probe_recent_processing_start_all(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1473,7 +1463,7 @@ async def probe_recent_processing_start_all(request: Request):
 
 @fastapi_app.post("/api/emby/probe/recent/processing/stop")
 async def probe_recent_processing_stop(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1484,14 +1474,14 @@ async def probe_recent_processing_stop(request: Request):
 
 @fastapi_app.post("/api/emby/probe/recent/processing/stop-all")
 async def probe_recent_processing_stop_all(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _probe_recent_processing_stop_all_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.post("/api/emby/probe/recent/combo/start")
 async def probe_recent_combo_start(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1502,7 +1492,7 @@ async def probe_recent_combo_start(request: Request):
 
 @fastapi_app.post("/api/emby/probe/recent/combo/start-all")
 async def probe_recent_combo_start_all(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1513,7 +1503,7 @@ async def probe_recent_combo_start_all(request: Request):
 
 @fastapi_app.post("/api/emby/probe/recent/combo/stop")
 async def probe_recent_combo_stop(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1524,14 +1514,14 @@ async def probe_recent_combo_stop(request: Request):
 
 @fastapi_app.post("/api/emby/probe/recent/combo/stop-all")
 async def probe_recent_combo_stop_all(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     payload, status_code = _probe_recent_combo_stop_all_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
 @fastapi_app.post("/api/emby/probe/libraries/combo/start")
 async def probe_libraries_combo_start(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1542,7 +1532,7 @@ async def probe_libraries_combo_start(request: Request):
 
 @fastapi_app.post("/api/emby/probe/libraries/combo/stop")
 async def probe_libraries_combo_stop(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1553,7 +1543,7 @@ async def probe_libraries_combo_stop(request: Request):
 
 @fastapi_app.post("/api/emby/probe/processing/start")
 async def probe_processing_start(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1564,7 +1554,7 @@ async def probe_processing_start(request: Request):
 
 @fastapi_app.post("/api/emby/probe/processing/stop")
 async def probe_processing_stop(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1575,7 +1565,7 @@ async def probe_processing_stop(request: Request):
 
 @fastapi_app.get("/api/emby/probe/queue")
 async def probe_queue_get(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     server_id = request.query_params.get("server_id")
     scope = request.query_params.get("scope") or "libraries"
     payload, status_code = _probe_queue_get_snapshot(server_id, scope)
@@ -1584,7 +1574,7 @@ async def probe_queue_get(request: Request):
 
 @fastapi_app.delete("/api/emby/probe/queue")
 async def probe_queue_delete(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1599,7 +1589,7 @@ async def probe_queue_delete(request: Request):
 
 @fastapi_app.get("/api/emby/probe/history")
 async def probe_history_get(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     server_id = request.query_params.get("server_id")
     limit = request.query_params.get("limit", "100")
     scope = request.query_params.get("scope") or "libraries"
@@ -1609,7 +1599,7 @@ async def probe_history_get(request: Request):
 
 @fastapi_app.delete("/api/emby/probe/history")
 async def probe_history_delete(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1622,7 +1612,7 @@ async def probe_history_delete(request: Request):
 
 @fastapi_app.post("/api/emby/probe/retry")
 async def probe_retry(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1633,7 +1623,7 @@ async def probe_retry(request: Request):
 
 @fastapi_app.get("/api/emby/probe/blacklist")
 async def probe_blacklist_get(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     server_id = request.query_params.get("server_id")
     min_retry = request.query_params.get("min_retry", "3")
     error_type = request.query_params.get("type") or request.query_params.get("error_type")
@@ -1644,7 +1634,7 @@ async def probe_blacklist_get(request: Request):
 
 @fastapi_app.delete("/api/emby/probe/blacklist")
 async def probe_blacklist_delete(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1660,7 +1650,7 @@ async def probe_blacklist_delete(request: Request):
 
 @fastapi_app.get("/api/emby/probe/debug-recent-items")
 async def probe_debug_recent_items(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     server_id = request.query_params.get("server_id")
     limit = _coerce_request_int(request.query_params.get("limit", "50"), 50)
     payload, status_code = _probe_debug_recent_items_snapshot(server_id, limit)
@@ -1669,7 +1659,7 @@ async def probe_debug_recent_items(request: Request):
 
 @fastapi_app.post("/api/workflow/start")
 async def workflow_start(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     try:
         payload = await request.json()
     except Exception:
@@ -1688,7 +1678,7 @@ async def workflow_start(request: Request):
 
 @fastapi_app.post("/api/workflow/stop")
 async def workflow_stop(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
     if not workflow_manager.is_running():
         return JSONResponse({"success": False, "message": "Nessun workflow in esecuzione"}, status_code=400)
     workflow_manager.stop()
@@ -1697,7 +1687,7 @@ async def workflow_stop(request: Request):
 
 @fastapi_app.get("/api/workflow/events")
 async def workflow_events(request: Request):
-    _require_flask_login(request)
+    _require_auth(request)
 
     async def generate():
         status = workflow_manager.get_status()
@@ -1724,13 +1714,13 @@ async def workflow_events(request: Request):
 
 
 # ============================================================================
-# UI ROUTES WITH TEMPLATES (migrated from Flask)
+# UI ROUTES WITH TEMPLATES
 # ============================================================================
 
 @fastapi_app.get("/emby", response_class=HTMLResponse)
 async def emby_dashboard(request: Request):
     """Emby dashboard - main UI page."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     config, is_valid = load_config()
     emby_config = (config or {}).get("EMBY") if config else _default_emby_settings()
@@ -1790,7 +1780,7 @@ async def emby_dashboard(request: Request):
 @fastapi_app.get("/emby/probe", response_class=HTMLResponse)
 async def emby_probe_page(request: Request):
     """Emby probe page - UI for probe management."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     config, is_valid = load_config()
     emby_config = (config or {}).get("EMBY") if config else _default_emby_settings()
@@ -1836,7 +1826,7 @@ async def emby_save_server_post(
     next_param: Optional[str] = Form(None, alias="next")
 ):
     """Save Emby server configuration (POST form handler)."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     # Validate CSRF token
     if not validate_csrf(request, csrf_token):
@@ -1902,7 +1892,7 @@ async def emby_action_post(
     csrf_token: str = Form(None, alias="csrf_token")
 ):
     """Execute action on Emby server (POST form handler)."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     # Validate CSRF token
     if not validate_csrf(request, csrf_token):
@@ -1969,7 +1959,7 @@ async def emby_action_all_post(
     csrf_token: str = Form(None, alias="csrf_token")
 ):
     """Execute action on all enabled Emby servers (POST form handler)."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     # Validate CSRF token
     if not validate_csrf(request, csrf_token):
@@ -2029,7 +2019,7 @@ async def emby_strm_guard_start_post(
     csrf_token: str = Form(None, alias="csrf_token")
 ):
     """Start STRM Guard for a single server (POST form handler)."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     # Validate CSRF token
     if not validate_csrf(request, csrf_token):
@@ -2052,7 +2042,7 @@ async def emby_strm_guard_start_all_post(
     csrf_token: str = Form(None, alias="csrf_token")
 ):
     """Start STRM Guard for all enabled servers (POST form handler)."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     # Validate CSRF token
     if not validate_csrf(request, csrf_token):
@@ -2082,7 +2072,7 @@ async def emby_latest_preset_add_post(
     next_param: Optional[str] = Form(None, alias="next")
 ):
     """Add or update latest notification preset (POST form handler)."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     next_url = _resolve_next_url(next_param, 'emby_dashboard')
 
@@ -2146,7 +2136,7 @@ async def emby_latest_preset_remove_post(
     next_param: Optional[str] = Form(None, alias="next")
 ):
     """Remove latest notification preset (POST form handler)."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     next_url = _resolve_next_url(next_param, 'emby_dashboard')
 
@@ -2200,7 +2190,7 @@ async def emby_latest_rule_save_post(
     next_param: Optional[str] = Form(None, alias="next")
 ):
     """Save latest notification rule (POST form handler)."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     next_url = _resolve_next_url(next_param, 'emby_dashboard')
 
@@ -2296,7 +2286,7 @@ async def emby_latest_rule_toggle_post(
     next_param: Optional[str] = Form(None, alias="next")
 ):
     """Toggle latest notification rule enabled/disabled (POST form handler)."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     next_url = _resolve_next_url(next_param, 'emby_dashboard')
 
@@ -2352,7 +2342,7 @@ async def emby_latest_rule_remove_post(
     next_param: Optional[str] = Form(None, alias="next")
 ):
     """Remove latest notification rule (POST form handler)."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     next_url = _resolve_next_url(next_param, 'emby_dashboard')
 
@@ -2400,7 +2390,7 @@ async def emby_latest_notification_settings_post(
     next_param: Optional[str] = Form(None, alias="next")
 ):
     """Save latest notification settings (POST form handler)."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     next_url = _resolve_next_url(next_param, 'emby_dashboard')
 
@@ -2443,7 +2433,7 @@ async def emby_latest_state_clear_post(
     next_param: Optional[str] = Form(None, alias="next")
 ):
     """Clear latest notification state (POST form handler)."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     next_url = next_param or '/emby'
 
@@ -2582,7 +2572,7 @@ async def logout(request: Request):
 @fastapi_app.get("/", response_class=HTMLResponse)
 async def dashboard_root(request: Request):
     """Main dashboard page - redirect to login if not authenticated."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     # Import required functions from app.py
     from app import scan_manager, load_results_file, _load_cached_requests_overview, _estimate_variant_summary, _default_auto_tasks, DEFAULT_CONFIG, TV_SORT_OPTIONS, MOVIE_SORT_OPTIONS
@@ -2658,7 +2648,7 @@ async def dashboard_root(request: Request):
 @fastapi_app.get("/configuration", response_class=HTMLResponse)
 async def configuration_page(request: Request):
     """Configuration page."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     # Import required functions
     from app import _default_telegram_settings, _load_telegram_settings, _build_telegram_alerts, _default_auto_tasks
@@ -2729,7 +2719,7 @@ async def telegram_save_config_route(
     csrf_token: str = Form(None, alias="csrf_token")
 ):
     """Save/update Telegram bot configuration."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     # Validate CSRF
     if not validate_csrf(request, csrf_token):
@@ -2835,7 +2825,7 @@ async def telegram_verify_bot_route(
     csrf_token: str = Form(None, alias="csrf_token")
 ):
     """Verify Telegram bot identity."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     # Validate CSRF
     if not validate_csrf(request, csrf_token):
@@ -2891,7 +2881,7 @@ async def telegram_remove_bot_route(
     csrf_token: str = Form(None, alias="csrf_token")
 ):
     """Remove Telegram bot and clean up references in presets."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     # Validate CSRF
     if not validate_csrf(request, csrf_token):
@@ -2963,7 +2953,7 @@ async def telegram_update_bot_alias_route(
     csrf_token: str = Form(None, alias="csrf_token")
 ):
     """Update Telegram bot alias."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     # Validate CSRF
     if not validate_csrf(request, csrf_token):
@@ -3023,7 +3013,7 @@ async def telegram_add_chat_route(
     csrf_token: str = Form(None, alias="csrf_token")
 ):
     """Add or update Telegram chat (group or channel)."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     # Validate CSRF
     if not validate_csrf(request, csrf_token):
@@ -3145,7 +3135,7 @@ async def telegram_verify_chat_route(
     csrf_token: str = Form(None, alias="csrf_token")
 ):
     """Verify Telegram chat using a bot."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     # Validate CSRF
     if not validate_csrf(request, csrf_token):
@@ -3231,7 +3221,7 @@ async def telegram_remove_chat_route(
     csrf_token: str = Form(None, alias="csrf_token")
 ):
     """Remove Telegram chat and clean up references in presets."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     # Validate CSRF
     if not validate_csrf(request, csrf_token):
@@ -3303,7 +3293,7 @@ async def telegram_update_chat_alias_route(
     csrf_token: str = Form(None, alias="csrf_token")
 ):
     """Update Telegram chat alias."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     # Validate CSRF
     if not validate_csrf(request, csrf_token):
@@ -3379,7 +3369,7 @@ async def telegram_add_preset_route(
     csrf_token: str = Form(None, alias="csrf_token")
 ):
     """Add or update Telegram preset with bot and chat associations."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     # Validate CSRF
     if not validate_csrf(request, csrf_token):
@@ -3520,7 +3510,7 @@ async def telegram_remove_preset_route(
     csrf_token: str = Form(None, alias="csrf_token")
 ):
     """Remove Telegram preset."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     # Validate CSRF
     if not validate_csrf(request, csrf_token):
@@ -3570,7 +3560,7 @@ async def update_scheduler_route(
     csrf_token: str = Form(None, alias="csrf_token")
 ):
     """Update scheduler automation settings (scan, refresh, workflow)."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     # Validate CSRF
     if not validate_csrf(request, csrf_token):
@@ -3654,7 +3644,7 @@ async def update_config_route(
     justwatch_locale: str = Form("it_IT")
 ):
     """Update general configuration (database, API connections, Trakt, JustWatch)."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     if not validate_csrf(request, csrf_token):
         flash(request, "CSRF token non valido.", "error")
@@ -3790,7 +3780,7 @@ async def update_rss_import_route(
     csrf_token: str = Form(None, alias="csrf_token")
 ):
     """Update RSS import settings."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     # Validate CSRF
     if not validate_csrf(request, csrf_token):
@@ -3886,7 +3876,7 @@ async def update_rules_route(
     movie_sort_secondary: str = Form(None)
 ):
     """Update search rules configuration (JustWatch, language, sort, etc.)."""
-    _require_flask_login(request)
+    _require_auth(request)
 
     if not validate_csrf(request, csrf_token):
         flash(request, "CSRF token non valido.", "error")

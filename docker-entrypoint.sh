@@ -31,14 +31,14 @@ if [ ! -f "$RESULTS_FILE" ]; then
   fi
 fi
 
-if [ -z "$FLASK_SECRET_KEY" ] || [ "$FLASK_SECRET_KEY" = "change-this-secret-key" ]; then
-  FLASK_SECRET_KEY="$(python - <<'PY'
+if [ -z "$SECRET_KEY" ] || [ "$SECRET_KEY" = "change-this-secret-key" ]; then
+  SECRET_KEY="$(python - <<'PY'
 import secrets
 print(secrets.token_hex(32))
 PY
 )"
-  export FLASK_SECRET_KEY
-  echo "Generated FLASK_SECRET_KEY automatically."
+  export SECRET_KEY
+  echo "Generated SECRET_KEY automatically."
 fi
 
 exec "$@"

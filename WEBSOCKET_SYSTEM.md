@@ -40,7 +40,7 @@ Sistema di comunicazione real-time bidirezionale tra OctoHub e i server Emby, el
                                    │
                                    ▼
 ┌──────────────────────────────────────────────────────────────┐
-│ Flask SSE Endpoint: /emby/events-stream                      │
+│ SSE Endpoint: /emby/events-stream                      │
 │ - Server-Sent Events (SSE) for frontend communication        │
 │ - Broadcasts events to all connected clients via queues      │
 │ - Automatic keepalive ping every 20s                         │
@@ -154,7 +154,7 @@ is_active = poller.is_scan_active("abc123", "456")
 poller.stop_scan_polling("abc123", "456")
 ```
 
-### 3. Flask SSE Endpoint (Backend)
+### 3. SSE Endpoint (Backend)
 
 **File**: `app.py`
 
@@ -320,7 +320,7 @@ Aggiunte a `requirements.txt`:
 websocket-client
 ```
 
-**Note**: Flask-Sock is NOT required. We use SSE (Server-Sent Events) which is supported natively by Flask and WSGI servers like Waitress.
+
 
 ### Inizializzazione
 
@@ -468,7 +468,7 @@ wscat -c "ws://localhost:5050/ws/events"
 - Log errors con pattern `[WS.*Error]` o `[ProgressPoller.*Error]`
 
 ### Updates
-- Aggiornare `websocket-client` e `flask-sock` regolarmente
+- Aggiornare `websocket-client` regolarmente
 - Testare compatibilità con nuove versioni Emby
 - Verificare browser compatibility per WebSocket
 

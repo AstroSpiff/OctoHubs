@@ -7,7 +7,7 @@ Documenti: [README](../README_ita.md) | [Docker Deploy](DOCKER_DEPLOY_ita.md) | 
 Note avanzate per il deployment in produzione.
 
 ## Panoramica
-OctoHub e una web app Flask per orchestrare Emby e servizi collegati. Le integrazioni con Jellyseerr, Prowlarr, Jackett, qBittorrent e Trakt sono opzionali e si configurano via `config.json`.
+OctoHub e una web app FastAPI per orchestrare Emby e servizi collegati. Le integrazioni con Jellyseerr, Prowlarr, Jackett, qBittorrent e Trakt sono opzionali e si configurano via `config.json`.
 
 ## Requisiti e sizing
 - Docker 20.10+ e Docker Compose 2.x
@@ -39,7 +39,7 @@ Se necessario, modifica i path `/mnt/shared/...` nel `docker-compose.yml`.
 
 ## Configurazione environment
 Imposta le variabili in Portainer o nella shell:
-- `FLASK_SECRET_KEY` (obbligatoria in produzione)
+- `SECRET_KEY` (obbligatoria in produzione)
 - `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`
 - `AUTH_DATABASE_URL` (DB utenti, SQLite di default)
 - `WEBHOOK_SECRET` e `WEBHOOK_IP_WHITELIST`
@@ -56,7 +56,7 @@ Sezioni chiave:
 - integrazioni: Jellyseerr, Prowlarr, Jackett, qBittorrent, Trakt
 
 ## Checklist sicurezza
-- Imposta un `FLASK_SECRET_KEY` forte.
+- Imposta un `SECRET_KEY` forte.
 - Cambia le credenziali admin di default.
 - Usa `WEBHOOK_SECRET` per i webhook Emby.
 - Imposta `SESSION_COOKIE_SECURE=true` quando usi HTTPS.

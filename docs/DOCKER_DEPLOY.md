@@ -56,7 +56,7 @@ After the first run, edit `config.json` and restart the `app` container.
 Set them in Portainer or your shell:
 
 ```env
-FLASK_SECRET_KEY=long-random-key
+SECRET_KEY=long-random-key
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=StrongPassword
 ADMIN_EMAIL=admin@example.com

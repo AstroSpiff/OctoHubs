@@ -5622,7 +5622,7 @@
     };
 
     // SSE funziona con Waitress (WSGI server)
-    // Se usi Flask dev server (python app.py), commenta la riga sotto e usa startStatusPolling()
+    
     startStatusPolling();
     startStatusStream();
     loadGroupedLibraries();

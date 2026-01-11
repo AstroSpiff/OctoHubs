@@ -49,8 +49,7 @@ from config import (
     _coerce_request_int,
     _normalize_alt_language
 )
-# REMOVED: Flask-Sock not compatible with Waitress WSGI server
-# from flask_sock import Sock
+
 from emby_websocket_manager import get_websocket_manager
 # REMOVED: emby_progress_poller deprecated, replaced by WebSocket real-time events
 from api_clients import (

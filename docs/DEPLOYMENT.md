@@ -7,7 +7,7 @@ Docs: [README](../README.md) | [Docker Deploy](DOCKER_DEPLOY.md) | [Deployment](
 Advanced deployment notes for production.
 
 ## Overview
-OctoHub is a Flask web app to orchestrate Emby and related services. Integrations with Jellyseerr, Prowlarr, Jackett, qBittorrent, and Trakt are optional and configured via `config.json`.
+OctoHub is a FastAPI web app to orchestrate Emby and related services. Integrations with Jellyseerr, Prowlarr, Jackett, qBittorrent, and Trakt are optional and configured via `config.json`.
 
 ## Requirements and sizing
 - Docker 20.10+ and Docker Compose 2.x
@@ -39,7 +39,7 @@ Update the `/mnt/shared/...` paths in `docker-compose.yml` if needed.
 
 ## Environment configuration
 Set environment variables in Portainer or your shell:
-- `FLASK_SECRET_KEY` (required in production)
+- `SECRET_KEY` (required in production)
 - `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`
 - `AUTH_DATABASE_URL` (users DB, SQLite by default)
 - `WEBHOOK_SECRET` and `WEBHOOK_IP_WHITELIST`
@@ -56,7 +56,7 @@ Key sections:
 - integrations: Jellyseerr, Prowlarr, Jackett, qBittorrent, Trakt
 
 ## Security checklist
-- Set a strong `FLASK_SECRET_KEY`.
+- Set a strong `SECRET_KEY`.
 - Change default admin credentials.
 - Use `WEBHOOK_SECRET` for Emby webhooks.
 - Use `SESSION_COOKIE_SECURE=true` when serving HTTPS.

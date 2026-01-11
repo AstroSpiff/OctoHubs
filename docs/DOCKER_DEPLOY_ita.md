@@ -56,7 +56,7 @@ Dopo il primo avvio, modifica `config.json` e riavvia il container `app`.
 Puoi impostarle in Portainer o nella shell:
 
 ```env
-FLASK_SECRET_KEY=chiave-lunga-e-casuale
+SECRET_KEY=chiave-lunga-e-casuale
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=PasswordForte
 ADMIN_EMAIL=admin@example.com
