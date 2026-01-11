@@ -288,6 +288,27 @@ _AUTO_SCHEDULER = None
 _EMBY_STRM_GUARD = None
 
 
+# --- EMBY API CLIENT WRAPPER ---
+
+class EmbyApiClient:
+    """Simple wrapper for Emby API calls, used by EmbyLibraryPoller."""
+
+    def __init__(self, server_config: dict):
+        self.server_config = server_config
+
+    def get(self, endpoint: str, params: Optional[dict] = None):
+        """Execute GET request to Emby API."""
+        success, response = _call_emby_api(
+            self.server_config,
+            endpoint,
+            method="GET",
+            params=params or {}
+        )
+        if not success:
+            raise Exception(f"Emby API call failed: {response}")
+        return response
+
+
 # --- LIBRARY SCAN TRACKER ---
 
 class LibraryScanTracker:
@@ -352,6 +373,8 @@ class LibraryScanTracker:
         """Update status of a specific library within a job."""
         job_completed = False
         job_data_copy = None
+        should_broadcast_progress = False
+        overall_progress = 0.0
 
         with self._lock:
             if job_id not in self._jobs:
@@ -373,6 +396,7 @@ class LibraryScanTracker:
                 lib.get("progress", 0.0) for lib in job["library_status"].values()
             )
             job["progress"] = total_progress / job["total_libraries"] if job["total_libraries"] > 0 else 0.0
+            overall_progress = job["progress"]
 
             # Count completed libraries
             completed = sum(
@@ -390,7 +414,15 @@ class LibraryScanTracker:
             elif job["status"] == "queued":
                 job["status"] = "active"
 
+            # Se è in progress (non completato), broadcast progress
+            if status == "active" and progress is not None:
+                should_broadcast_progress = True
+
             job["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        # Broadcast progress durante esecuzione
+        if should_broadcast_progress:
+            _broadcast_scan_progress(job_id, library_id, overall_progress, message)
 
         # Broadcast completion fuori dal lock
         if job_completed and job_data_copy:
@@ -486,18 +518,64 @@ def _broadcast_scan_completion(job_id: str, job_data: dict):
         # Non è un stato finale, non broadcast
         return
 
-    # Broadcast async
+    # Broadcast async e ferma poller per le librerie completate
     try:
+        from emby_library_poller import get_library_poller
+
         manager = get_scan_connection_manager()
+        library_poller = get_library_poller()
         loop = asyncio.get_event_loop()
 
         if loop.is_running():
+            # Broadcast completamento
             asyncio.create_task(manager.broadcast_to_job(job_id, message))
+
+            # Ferma tracking poller per tutte le librerie del job
+            server_id = job_data.get("server_id")
+            library_ids = job_data.get("library_ids", [])
+            if server_id:  # Verifica che server_id non sia None
+                for library_id in library_ids:
+                    asyncio.create_task(
+                        library_poller.stop_tracking_library(str(server_id), str(library_id))
+                    )
         else:
             # Fallback sync (non dovrebbe succedere con FastAPI)
             print(f"[SCAN_BROADCAST] Warning: no event loop running for job {job_id}")
     except Exception as e:
         print(f"[SCAN_BROADCAST] Error broadcasting completion for job {job_id}: {e}")
+
+
+def _broadcast_scan_progress(job_id: str, library_id: str, progress: float, message: Optional[str] = None):
+    """
+    Broadcast evento di progress scan via WebSocket durante l'esecuzione.
+
+    Args:
+        job_id: ID del job
+        library_id: ID della libreria in progress
+        progress: Progress 0.0-1.0
+        message: Messaggio opzionale
+    """
+    import asyncio
+    from scan_websocket_manager import get_scan_connection_manager
+
+    try:
+        manager = get_scan_connection_manager()
+        loop = asyncio.get_event_loop()
+
+        if loop.is_running():
+            ws_message = {
+                "type": "progress",
+                "job_id": job_id,
+                "library_id": str(library_id),
+                "progress": progress,
+                "message": message or f"Scanning library {library_id}...",
+                "source": "virtualfolders.RefreshProgress"
+            }
+            asyncio.create_task(manager.broadcast_to_job(job_id, ws_message))
+        else:
+            print(f"[SCAN_PROGRESS] Warning: no event loop running for job {job_id}")
+    except Exception as e:
+        print(f"[SCAN_PROGRESS] Error broadcasting progress for job {job_id}: {e}")
 
 
 def _update_latest_progress(state=None, total=None, completed=None, message=None):
@@ -6110,14 +6188,38 @@ def _build_scan_library_tracked_snapshot(payload):
 
     job_id = _LIBRARY_SCAN_TRACKER.create_job(server_key, library_ids, group_name, scan_type)
 
-    # Progress now handled by WebSocket events from Emby, no polling needed
+    # Avvia poller per tracking RefreshProgress in /Library/VirtualFolders
+    from emby_library_poller import get_library_poller
+    import asyncio
+
+    library_poller = get_library_poller()
+    emby_client = EmbyApiClient(target_server)
+
+    # Progress now tracked by polling /Library/VirtualFolders (RefreshProgress field)
     for library_id in library_ids:
         print(f"[SCAN_TRACKED] Triggering {scan_type} scan for library {library_id}")
         success, response = _trigger_library_scan(target_server, str(library_id), scan_type)
         print(f"[SCAN_TRACKED] Trigger result: success={success}, response={response}")
 
         if success:
-            print(f"[SCAN_TRACKED] Scan triggered for library {library_id}, progress via WebSocket")
+            print(f"[SCAN_TRACKED] Scan triggered for library {library_id}, starting poller tracking")
+
+            # Avvia tracking asincrono per questa libreria
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(
+                        library_poller.start_tracking_library(
+                            server_key,
+                            str(library_id),
+                            job_id,
+                            emby_client
+                        )
+                    )
+                else:
+                    print(f"[SCAN_TRACKED] WARNING: No event loop running, polling not started")
+            except Exception as e:
+                print(f"[SCAN_TRACKED] Error starting poller: {e}")
 
         if not success:
             _LIBRARY_SCAN_TRACKER.update_library_status(
