@@ -20,7 +20,7 @@ from fastapi.templating import Jinja2Templates
 from jinja2 import pass_context
 from starlette.middleware.sessions import SessionMiddleware
 
-from app import _build_active_library_scans_snapshot, _build_scan_library_snapshot, _build_scan_library_tracked_snapshot, _build_scan_group_tracked_snapshot, _build_associations_get_snapshot, _build_associations_post_snapshot, _build_media_details_snapshot, _build_jellyseerr_request_snapshot, _build_tmdb_search_snapshot, _build_tmdb_tv_details_snapshot, _build_tmdb_check_availability_snapshot, _build_manual_search_snapshot, _build_rss_inspect_snapshot, _build_rss_inspect_json_snapshot, _build_rss_import_snapshot, _build_rss_import_json_snapshot, _build_rss_deduplicate_snapshot, _build_rss_items_snapshot, _build_send_torrent_snapshot, _build_scan_status_snapshot, _build_run_scan_snapshot, _build_update_request_rules_snapshot, _build_refresh_requests_snapshot, _build_test_connections_snapshot, _build_trakt_device_start_snapshot, _build_trakt_device_poll_snapshot, _build_trakt_clear_snapshot, _build_emby_stop_task_snapshot, _build_emby_server_status_snapshot, _build_emby_health_status_snapshot, _build_emby_activity_snapshot, _build_emby_tasks_snapshot, _build_emby_users_snapshot, _build_emby_plugins_snapshot, _build_emby_streams_snapshot, _build_emby_status_stream_payload, _build_emby_libraries_snapshot, _build_active_scans_snapshot, _build_debug_vf_query_snapshot, _build_strm_guard_status_snapshot, _build_grouped_libraries_snapshot, _build_movie_versions_snapshot, _build_series_seasons_snapshot, _build_season_episodes_snapshot, _build_lookup_snapshot, _build_item_details_snapshot, _build_availability_snapshot, _build_latest_snapshot, _build_latest_progress_payload, _build_latest_preview_snapshot, _build_latest_preview_cache_snapshot, _build_latest_enrich_snapshot, _build_latest_notify_snapshot, _build_emby_image_stream, _build_server_order_snapshot, _build_group_order_get_snapshot, _build_group_order_post_snapshot, _build_tab_order_get_snapshot, _build_tab_order_post_snapshot, _probe_discovery_start_snapshot, _probe_discovery_stop_snapshot, _probe_recent_start_snapshot, _probe_recent_start_all_snapshot, _probe_recent_stop_snapshot, _probe_recent_stop_all_snapshot, _probe_recent_processing_start_snapshot, _probe_recent_processing_start_all_snapshot, _probe_recent_processing_stop_snapshot, _probe_recent_processing_stop_all_snapshot, _probe_recent_combo_start_snapshot, _probe_recent_combo_start_all_snapshot, _probe_recent_combo_stop_snapshot, _probe_recent_combo_stop_all_snapshot, _probe_libraries_combo_start_snapshot, _probe_libraries_combo_stop_snapshot, _probe_processing_start_snapshot, _probe_processing_stop_snapshot, _probe_queue_get_snapshot, _probe_queue_delete_snapshot, _probe_history_get_snapshot, _probe_history_delete_snapshot, _probe_retry_snapshot, _probe_blacklist_get_snapshot, _probe_blacklist_delete_snapshot, _probe_debug_recent_items_snapshot, _coerce_request_bool, _coerce_request_int, _LIBRARY_SCAN_TRACKER, _ws_event_queues, _ws_queues_lock, _sse_event_queues, _sse_queues_lock, DateTimeEncoder, load_config, _default_emby_settings, _prepare_emby_servers_for_view, _get_total_blacklist_counts, _default_latest_settings, _load_latest_settings, _load_telegram_settings, _prepare_latest_notification_rules, EMBY_CATEGORY_OPTIONS, _resolve_next_url, _ensure_db_backend, _load_emby_settings_from_db, _build_emby_server_from_form, _fetch_emby_status, _save_emby_settings_to_db, _emby_display_name, _normalize_emby_server, _execute_emby_action, EMBY_ACTIONS, _db_enabled, _save_latest_settings, _get_emby_servers_from_config, _ensure_strm_guard_manager, _clear_latest_state, _update_app_settings_overrides
+from app import _build_active_library_scans_snapshot, _build_scan_library_snapshot, _build_scan_library_tracked_snapshot, _build_scan_group_tracked_snapshot, _build_associations_get_snapshot, _build_associations_post_snapshot, _build_media_details_snapshot, _build_jellyseerr_request_snapshot, _build_tmdb_search_snapshot, _build_tmdb_tv_details_snapshot, _build_tmdb_check_availability_snapshot, _build_manual_search_snapshot, _build_rss_inspect_snapshot, _build_rss_inspect_json_snapshot, _build_rss_import_snapshot, _build_rss_import_json_snapshot, _build_rss_deduplicate_snapshot, _build_rss_items_snapshot, _build_send_torrent_snapshot, _build_scan_status_snapshot, _build_run_scan_snapshot, _build_update_request_rules_snapshot, _build_refresh_requests_snapshot, _build_test_connections_snapshot, _build_trakt_device_start_snapshot, _build_trakt_device_poll_snapshot, _build_trakt_clear_snapshot, _build_emby_stop_task_snapshot, _build_emby_server_status_snapshot, _build_emby_health_status_snapshot, _build_emby_activity_snapshot, _build_emby_tasks_snapshot, _build_emby_users_snapshot, _build_emby_plugins_snapshot, _build_emby_streams_snapshot, _build_emby_status_stream_payload, _build_emby_libraries_snapshot, _build_active_scans_snapshot, _build_debug_vf_query_snapshot, _build_strm_guard_status_snapshot, _build_grouped_libraries_snapshot, _build_movie_versions_snapshot, _build_series_seasons_snapshot, _build_season_episodes_snapshot, _build_lookup_snapshot, _build_item_details_snapshot, _build_availability_snapshot, _build_latest_snapshot, _build_latest_progress_payload, _build_latest_preview_snapshot, _build_latest_preview_cache_snapshot, _build_latest_enrich_snapshot, _build_latest_notify_snapshot, _build_emby_image_stream, _build_server_order_snapshot, _build_group_order_get_snapshot, _build_group_order_post_snapshot, _build_tab_order_get_snapshot, _build_tab_order_post_snapshot, _probe_discovery_start_snapshot, _probe_discovery_stop_snapshot, _probe_recent_start_snapshot, get_emby_user_manager, _probe_recent_start_all_snapshot, _probe_recent_stop_snapshot, _probe_recent_stop_all_snapshot, _probe_recent_processing_start_snapshot, _probe_recent_processing_start_all_snapshot, _probe_recent_processing_stop_snapshot, _probe_recent_processing_stop_all_snapshot, _probe_recent_combo_start_snapshot, _probe_recent_combo_start_all_snapshot, _probe_recent_combo_stop_snapshot, _probe_recent_combo_stop_all_snapshot, _probe_libraries_combo_start_snapshot, _probe_libraries_combo_stop_snapshot, _probe_processing_start_snapshot, _probe_processing_stop_snapshot, _probe_queue_get_snapshot, _probe_queue_delete_snapshot, _probe_history_get_snapshot, _probe_history_delete_snapshot, _probe_retry_snapshot, _probe_blacklist_get_snapshot, _probe_blacklist_delete_snapshot, _probe_debug_recent_items_snapshot, _coerce_request_bool, _coerce_request_int, _LIBRARY_SCAN_TRACKER, _ws_event_queues, _ws_queues_lock, _sse_event_queues, _sse_queues_lock, DateTimeEncoder, load_config, _default_emby_settings, _prepare_emby_servers_for_view, _get_total_blacklist_counts, _default_latest_settings, _load_latest_settings, _load_telegram_settings, _prepare_latest_notification_rules, EMBY_CATEGORY_OPTIONS, _resolve_next_url, _ensure_db_backend, _load_emby_settings_from_db, _build_emby_server_from_form, _fetch_emby_status, _save_emby_settings_to_db, _emby_display_name, _normalize_emby_server, _execute_emby_action, EMBY_ACTIONS, _db_enabled, _save_latest_settings, _get_emby_servers_from_config, _ensure_strm_guard_manager, _clear_latest_state, _update_app_settings_overrides
 from storage import StorageError
 from tasks import workflow_manager
 from utils import _split_csv_field
@@ -95,6 +95,7 @@ def url_for_fastapi(endpoint: str, **kwargs) -> str:
 
         # Dashboard routes
         "emby_dashboard": "/emby",
+        "view_emby_users": "/emby/users",
         "emby_probe": "/emby/probe",
         "dashboard": "/",
         "configuration": "/configuration",
@@ -397,6 +398,19 @@ def _require_auth(request: Request):
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
     return user_id
+
+
+def get_current_user_optional(request: Request):
+    """Dependency: Get current user or None."""
+    return _get_current_user(request)
+
+
+def require_user(request: Request):
+    """Dependency: Require authenticated user."""
+    user = _get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return user
 
 
 
@@ -1261,13 +1275,15 @@ async def emby_image(request: Request):
     max_width = request.query_params.get("max_width")
     max_height = request.query_params.get("max_height")
     tag = request.query_params.get("tag")
+    scope = request.query_params.get("scope")
     stream, content_type, error_payload, status_code = _build_emby_image_stream(
         server_id,
         item_id,
         image_type=image_type,
         max_width=max_width,
         max_height=max_height,
-        tag=tag
+        tag=tag,
+        scope=scope
     )
     if error_payload:
         return JSONResponse(error_payload, status_code=status_code)
@@ -1718,63 +1734,171 @@ async def workflow_events(request: Request):
 # ============================================================================
 
 @fastapi_app.get("/emby", response_class=HTMLResponse)
-async def emby_dashboard(request: Request):
-    """Emby dashboard - main UI page."""
-    _require_auth(request)
-
-    config, is_valid = load_config()
+async def view_emby_dashboard(request: Request, user=Depends(get_current_user_optional)):
+    if not user:
+        return RedirectResponse(url="/login")
+    
+    config, _ = load_config()
     emby_config = (config or {}).get("EMBY") if config else _default_emby_settings()
     raw_servers = (emby_config.get("SERVERS") if emby_config else []) or []
     emby_servers = _prepare_emby_servers_for_view(raw_servers, lazy=True)
     total_blacklist_count, total_incomplete_count = _get_total_blacklist_counts()
-    latest_settings = _default_latest_settings()
-    telegram_presets = []
-    latest_notification_rules = []
+    
+    return templates.TemplateResponse("emby_dashboard.html", {
+        "request": request, 
+        "user": user, 
+        "page": "emby_dashboard",
+        "active_page": "emby",
+        "emby_servers": emby_servers,
+        "total_blacklist_count": total_blacklist_count,
+        "total_incomplete_count": total_incomplete_count,
+        "csrf_token": get_csrf_token(request)
+    })
 
-    if config and _db_enabled(config.get("DATABASE", {})):
-        latest_settings = _load_latest_settings()
-        telegram_presets = _load_telegram_settings().get("PRESETS", [])
-        latest_notification_rules = _prepare_latest_notification_rules(
-            latest_settings.get("NOTIFICATION_RULES") or [],
-            emby_servers,
-            latest_settings.get("PRESETS", []),
-            telegram_presets
-        )
 
-    # Get flash messages (store once to avoid double pop).
-    messages = get_flash_messages(request)
+@fastapi_app.get("/emby/users", response_class=HTMLResponse)
+async def view_emby_users(request: Request, user=Depends(get_current_user_optional)):
+    if not user:
+        return RedirectResponse(url="/login")
+    return templates.TemplateResponse("emby_users.html", {"request": request, "user": user, "page": "emby_users"})
 
-    def _get_flashed_messages_local(with_categories: bool = False):
-        if with_categories:
-            return messages
-        return [msg for _category, msg in messages]
 
-    def _csrf_token_value():
-        return get_csrf_token(request)
+@fastapi_app.get("/api/emby/users/list")
+async def api_emby_users_list(user=Depends(require_user)):
+    manager = get_emby_user_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
+    return manager.get_users_dashboard_data()
 
-    message = messages[0][1] if messages else None
 
-    return templates.TemplateResponse(
-        "emby_dashboard.html",
-        {
-            "request": request,
-            "has_config": is_valid,
-            "active_page": "emby",
-            "emby_config": emby_config,
-            "emby_servers": emby_servers,
-            "emby_categories": EMBY_CATEGORY_OPTIONS,
-            "message": message,
-            "get_flashed_messages": _get_flashed_messages_local,
-            "csrf_token": _csrf_token_value,
-            "total_blacklist_count": total_blacklist_count,
-            "total_incomplete_count": total_incomplete_count,
-            "latest_message_presets": latest_settings.get("PRESETS", []),
-            "latest_active_preset_id": latest_settings.get("ACTIVE_PRESET_ID", ""),
-            "latest_selected_telegram_presets": latest_settings.get("TELEGRAM_PRESET_IDS", []),
-            "telegram_presets": telegram_presets,
-            "latest_notification_rules": latest_notification_rules
-        }
-    )
+@fastapi_app.post("/api/emby/users/toggle")
+async def api_emby_users_toggle(
+    server_id: str = Form(...),
+    user_id: str = Form(...),
+    active: bool = Form(...),
+    user=Depends(require_user)
+):
+    manager = get_emby_user_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
+    success = manager.toggle_user_active(server_id, user_id, active)
+    return {"ok": success}
+
+
+@fastapi_app.post("/api/emby/users/toggle-playback")
+async def api_emby_users_toggle_playback(
+    server_id: str = Form(...),
+    user_id: str = Form(...),
+    enable: bool = Form(...),
+    user=Depends(require_user)
+):
+    manager = get_emby_user_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
+    success = manager.toggle_playback_permissions(server_id, user_id, enable)
+    return {"ok": success}
+
+
+@fastapi_app.post("/api/emby/users/toggle-download")
+async def api_emby_users_toggle_download(
+    server_id: str = Form(...),
+    user_id: str = Form(...),
+    enable: bool = Form(...),
+    user=Depends(require_user)
+):
+    manager = get_emby_user_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
+    success = manager.toggle_download_permissions(server_id, user_id, enable)
+    return {"ok": success}
+
+
+@fastapi_app.post("/api/emby/users/link")
+async def api_emby_users_link(
+    links_json: str = Form(...),
+    user=Depends(require_user)
+):
+    try:
+        links = json.loads(links_json)
+    except json.JSONDecodeError:
+         return JSONResponse(status_code=400, content={"ok": False, "error": "Invalid JSON"})
+    manager = get_emby_user_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
+    group_id = manager.link_users(links)
+    return {"ok": True, "group_id": group_id}
+
+
+@fastapi_app.post("/api/emby/users/unlink")
+async def api_emby_users_unlink(
+    server_id: str = Form(...),
+    user_id: str = Form(...),
+    user=Depends(require_user)
+):
+    manager = get_emby_user_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
+    manager.unlink_user(server_id, user_id)
+    return {"ok": True}
+
+
+@fastapi_app.post("/api/emby/users/sync")
+async def api_emby_users_sync(
+    source_server_id: str = Form(None),
+    source_user_id: str = Form(None),
+    targets_json: str = Form(...),
+    sync_config: bool = Form(False),
+    sync_playstate: bool = Form(False),
+    mode: str = Form("copy"),
+    user=Depends(require_user)
+):
+    try:
+        # Expected targets: [{"server_id": "...", "user_id": "..."}]
+        targets_raw = json.loads(targets_json)
+        targets = [(t["server_id"], t["user_id"]) for t in targets_raw]
+    except json.JSONDecodeError:
+         return JSONResponse(status_code=400, content={"ok": False, "error": "Invalid JSON"})
+         
+    manager = get_emby_user_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
+    results = {}
+    
+    if sync_config and source_server_id:
+        results["config"] = manager.sync_user_config(source_server_id, source_user_id, targets)
+        
+    if sync_playstate:
+        if mode == "merge":
+            # Bidirectional sync: Merge all targets (and source if provided)
+            # If source provided, add to targets list if not present
+            all_participants = list(targets)
+            if source_server_id and source_user_id:
+                if (source_server_id, source_user_id) not in all_participants:
+                    all_participants.append((source_server_id, source_user_id))
+            results["playstate"] = manager.sync_merge_playstate(all_participants)
+        elif source_server_id:
+            # Unidirectional copy
+            results["playstate"] = manager.sync_user_playstate(source_server_id, source_user_id, targets)
+        
+    return {"ok": True, "results": results}
+
+
+@fastapi_app.post("/api/emby/users/clone")
+async def api_emby_users_clone(
+    source_server_id: str = Form(...),
+    source_user_id: str = Form(...),
+    target_server_id: str = Form(...),
+    user=Depends(require_user)
+):
+    manager = get_emby_user_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
+    
+    result = manager.clone_user(source_server_id, source_user_id, target_server_id)
+    if "error" in result:
+        return JSONResponse(status_code=400, content={"ok": False, "error": result["error"]})
+    return {"ok": True, "result": result}
+
 
 
 @fastapi_app.get("/emby/probe", response_class=HTMLResponse)

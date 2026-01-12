@@ -1,5 +1,17 @@
 /* TEST VERSION 2026-01-08-22:10 */
 
+        :root {
+            --color-primary: #0f62fe;
+            --color-success: #22c55e;
+            --color-danger: #ef4444;
+            --color-warning: #f59e0b;
+            --text-main: #333;
+            --text-muted: #64748b;
+            --bg-main: #f4f7f9;
+            --bg-card: #ffffff;
+            --border-color: #e2e8f0;
+        }
+
         body {
             margin: 0;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;

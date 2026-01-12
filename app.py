@@ -51,6 +51,7 @@ from config import (
 )
 
 from emby_websocket_manager import get_websocket_manager
+from emby_user_manager import EmbyUserManager
 # REMOVED: emby_progress_poller deprecated, replaced by WebSocket real-time events
 from api_clients import (
     _prepare_emby_servers_for_view,
@@ -286,6 +287,20 @@ _LATEST_CACHE = {
 _LATEST_CACHE_LOCK = threading.Lock()
 _AUTO_SCHEDULER = None
 _EMBY_STRM_GUARD = None
+_EMBY_USER_MANAGER = None
+
+
+def get_emby_user_manager():
+    global _EMBY_USER_MANAGER
+    if _EMBY_USER_MANAGER is None:
+        try:
+            _ensure_db_backend()
+            if _DB_BACKEND:
+                _EMBY_USER_MANAGER = EmbyUserManager(_DB_BACKEND, _ACTIVE_CONFIG)  # type: ignore
+        except Exception as e:
+            logger.error(f"Failed to initialize EmbyUserManager: {e}")
+            return None
+    return _EMBY_USER_MANAGER
 
 
 # --- EMBY API CLIENT WRAPPER ---
@@ -8234,7 +8249,7 @@ def _build_latest_snapshot(limit: int, per_server_limit: int, force: bool):
     }, 200
 
 
-def _build_emby_image_stream(server_id, item_id, image_type="Primary", max_width=None, max_height=None, tag=None):
+def _build_emby_image_stream(server_id, item_id, image_type="Primary", max_width=None, max_height=None, tag=None, scope=None):
     if not server_id or not item_id:
         return None, None, {"success": False, "message": "Parametri mancanti"}, 400
 
@@ -8258,7 +8273,11 @@ def _build_emby_image_stream(server_id, item_id, image_type="Primary", max_width
     if tag:
         params["tag"] = tag
 
-    url = f"{base_url}/Items/{item_id}/Images/{image_type}"
+    if scope == "user":
+        url = f"{base_url}/Users/{item_id}/Images/{image_type}"
+    else:
+        url = f"{base_url}/Items/{item_id}/Images/{image_type}"
+
     try:
         response = requests.get(
             url,
@@ -10208,6 +10227,12 @@ def _handle_sessions_update(server_id: str, sessions_data):
 def _initialize_emby_websockets():
     """Initialize WebSocket connections to all configured Emby servers."""
     ws_manager = get_websocket_manager()
+    
+    # Configure Library Poller persistence
+    if _DB_BACKEND:
+        from emby_library_poller import get_library_poller
+        get_library_poller().configure(_DB_BACKEND)
+
     servers = _get_emby_servers_from_config()
 
     # Register global event handler

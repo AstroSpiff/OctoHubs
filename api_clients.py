@@ -1214,3 +1214,169 @@ def check_jellyseerr_availability(tmdb_id, media_type, config):
         "icon": icon,
         "media_type": resolved_type or _normalize_media_type(media_type)
     }
+
+
+# --- FUNZIONI GESTIONE UTENTI EMBY ---
+
+def _fetch_emby_users_list(server):
+    """
+    Recupera la lista di tutti gli utenti dal server Emby.
+    """
+    success, payload = _call_emby_api(server, "Users")
+    if not success:
+        return [], payload
+    # Emby restituisce una lista diretta di oggetti User
+    if isinstance(payload, list):
+        return payload, None
+    return [], "Formato risposta inatteso"
+
+
+def _fetch_emby_user_details(server, user_id):
+    """
+    Recupera i dettagli completi di un utente, incluse Policy e Configuration.
+    """
+    if not user_id:
+        return None, "User ID mancante"
+    success, payload = _call_emby_api(server, f"Users/{user_id}")
+    if success:
+        return payload, None
+    return None, payload
+
+
+def _update_emby_user_policy(server, user_id, policy):
+    """
+    Aggiorna la policy di un utente (es. permessi, accessi).
+    """
+    if not user_id or not isinstance(policy, dict):
+        return False, "Dati non validi"
+    
+    # Emby richiede una POST su /Users/{Id}/Policy
+    success, payload = _call_emby_api(
+        server, 
+        f"Users/{user_id}/Policy", 
+        method="POST", 
+        json_payload=policy
+    )
+    return success, payload
+
+
+def _update_emby_user_configuration(server, user_id, configuration):
+    """
+    Aggiorna la configurazione utente (es. preferenze UI, lingua).
+    """
+    if not user_id or not isinstance(configuration, dict):
+        return False, "Dati non validi"
+        
+    # Emby richiede una POST su /Users/{Id}/Configuration
+    success, payload = _call_emby_api(
+        server, 
+        f"Users/{user_id}/Configuration", 
+        method="POST", 
+        json_payload=configuration
+    )
+    return success, payload
+
+
+def _create_emby_user(server, name, copy_from_user_id=None):
+    """
+    Creates a new user on the Emby server.
+    """
+    params = {"Name": name}
+    if copy_from_user_id:
+        params["CopyFromUserId"] = copy_from_user_id
+    
+    success, payload = _call_emby_api(
+        server, 
+        "Users/New", 
+        method="POST", 
+        json_payload=params
+    )
+    return success, payload
+
+
+def _fetch_emby_user_items_for_sync(server, user_id):
+    """
+    Scarica tutti gli elementi (Film/Episodi) visti o in corso per l'utente,
+    con ProviderIds per il matching.
+    """
+    if not user_id:
+        return [], "User ID mancante"
+
+    # Filtriamo per Items ricorsivi, solo Video (Movie, Episode),
+    # richiediamo ProviderIds e UserData.
+    # Utile filtrare anche "IsPlayed=true" o "IsResumable=true" per ridurre il carico,
+    # ma se vogliamo sincronizzare tutto lo storico (anche play count > 0), meglio prendere tutto
+    # ciò che ha UserData != null. Emby non ha un filtro "HasUserData", ma possiamo usare
+    # "Recursive=true" e poi filtrare lato client, oppure filtrare per "IsPlayed=true,IsResumable=true"
+    # in due chiamate o OR se supportato. 
+    # Per semplicità di sync (copiare esattamente lo stato), prendiamo tutto ciò che è Played o ha resume.
+    
+    params = {
+        "Recursive": "true",
+        "Fields": "ProviderIds,UserData,SeriesName,ParentIndexNumber,IndexNumber,ProductionYear,Name,OriginalTitle",
+        "IncludeItemTypes": "Movie,Episode",
+        "IsPlayed": "true" 
+    }
+    
+    # 1. Recupera elementi visti
+    success, payload = _call_emby_api(server, f"Users/{user_id}/Items", params=params)
+    if not success:
+        return [], payload
+        
+    items = payload.get("Items", []) if isinstance(payload, dict) else []
+    
+    # 2. Recupera elementi parzialmente visti (Resumable) se non già inclusi
+    # Nota: IsPlayed=true include spesso anche quelli parziali se PlayCount > 0, 
+    # ma controlliamo esplicitamente i Resumable.
+    params_resume = {
+        "Recursive": "true",
+        "Fields": "ProviderIds,UserData,SeriesName,ParentIndexNumber,IndexNumber,ProductionYear,Name,OriginalTitle",
+        "IncludeItemTypes": "Movie,Episode",
+        "IsResumable": "true"
+    }
+    
+    success_res, payload_res = _call_emby_api(server, f"Users/{user_id}/Items", params=params_resume)
+    if success_res:
+        items_res = payload_res.get("Items", []) if isinstance(payload_res, dict) else []
+        # Merge by Id to avoid duplicates
+        seen_ids = set(i["Id"] for i in items)
+        for it in items_res:
+            if it["Id"] not in seen_ids:
+                items.append(it)
+                
+    return items, None
+
+
+def _mark_emby_item_played(server, user_id, item_id, date_played=None):
+    """
+    Segna un elemento come visto (Played).
+    """
+    if not user_id or not item_id:
+        return False, "ID mancanti"
+    
+    params = {}
+    if date_played:
+        params["DatePlayed"] = date_played
+        
+    success, payload = _call_emby_api(
+        server, 
+        f"Users/{user_id}/PlayedItems/{item_id}", 
+        method="POST",
+        json_payload=params
+    )
+    return success, payload
+
+
+def _mark_emby_item_unplayed(server, user_id, item_id):
+    """
+    Rimuove lo stato 'visto' da un elemento.
+    """
+    if not user_id or not item_id:
+        return False, "ID mancanti"
+        
+    success, payload = _call_emby_api(
+        server, 
+        f"Users/{user_id}/PlayedItems/{item_id}", 
+        method="DELETE"
+    )
+    return success, payload

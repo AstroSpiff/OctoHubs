@@ -38,6 +38,7 @@ class EmbyLibraryPoller:
         self._tracked_libraries: Dict[str, Set[str]] = {}  # server_id -> Set[library_id]
         self._library_states: Dict[str, Dict] = {}  # (server_id, library_id) -> state_data
         self._lock = asyncio.Lock()
+        self.storage = None  # Dependency injection
 
         # Configurazione polling
         self.active_poll_interval = 3.0  # secondi - quando ci sono scan attivi
@@ -49,6 +50,10 @@ class EmbyLibraryPoller:
         self.max_scan_duration = 3600.0  # secondi - timeout massimo scan (1 ora)
 
         self._running = False
+
+    def configure(self, storage):
+        """Configure storage backend."""
+        self.storage = storage
 
     async def start_tracking_library(
         self,
@@ -284,7 +289,7 @@ class EmbyLibraryPoller:
                     # Se transizione a running, registra started_at
                     if state_changed and new_state == "running" and old_state != "running":
                         self._library_states[state_key]["started_at"] = now
-                        logger.info(f"[LibPoller] Library {library_id} on server {server_id}: scan STARTED (progress: {progress_value:.1f}%)")
+                        logger.info(f"[LibPoller] Library {library_id} on server {server_id}: scan STARTED (progress: {current_progress_value:.1f}%)")
 
                     # Gestisci stati finali e in-progress
                     if new_state == "idle" and state_changed and old_state == "running":
@@ -300,7 +305,7 @@ class EmbyLibraryPoller:
 
                     elif new_state in ("running", "waiting"):
                         # Broadcast progress SEMPRE (anche se stato uguale, progress potrebbe essere cambiato)
-                        await self._update_tracker_status(state_key, "active", progress_value / 100.0)
+                        await self._update_tracker_status(state_key, "active", current_progress_value / 100.0)
 
         except Exception as e:
             logger.error(f"[LibPoller] Error fetching virtual folders for {server_id}: {e}", exc_info=True)
@@ -363,9 +368,10 @@ class EmbyLibraryPoller:
         Salva stato libreria su database per recovery.
         Questo permette di riprendere scan in corso dopo restart dell'app.
         """
-        try:
-            from storage import DatabaseStorage
+        if not self.storage:
+            return
 
+        try:
             state_data = self._library_states.get(state_key)
             if not state_data:
                 return
@@ -388,9 +394,8 @@ class EmbyLibraryPoller:
             }
 
             # Salva su DB (usa key-value store o tabella dedicata)
-            db = DatabaseStorage()
             await asyncio.to_thread(
-                db.set_key_value,
+                self.storage.set_key_value,
                 f"library_scan_state:{state_key}",
                 persist_data
             )
@@ -410,19 +415,18 @@ class EmbyLibraryPoller:
         Recupera stati scan in corso dal database dopo restart.
         Da chiamare all'avvio dell'applicazione per riprendere scan interrotti.
         """
+        if not self.storage:
+            return
+
         try:
-            from storage import DatabaseStorage
             from datetime import datetime as dt
 
-            db = DatabaseStorage()
-
             # Cerca tutte le chiavi di stato salvate
-            # Nota: questa è una funzione ipotetica - potrebbe richiedere implementazione in DatabaseStorage
-            all_keys = await asyncio.to_thread(db.get_keys_by_prefix, "library_scan_state:")
+            all_keys = await asyncio.to_thread(self.storage.get_keys_by_prefix, "library_scan_state:")
 
             for key in all_keys:
                 try:
-                    persist_data = await asyncio.to_thread(db.get_key_value, key)
+                    persist_data = await asyncio.to_thread(self.storage.get_key_value, key)
                     if not persist_data:
                         continue
 
@@ -460,16 +464,16 @@ class EmbyLibraryPoller:
 
     async def cleanup_completed_states(self):
         """Rimuovi stati completati/errore dal DB dopo un certo tempo."""
-        try:
-            from storage import DatabaseStorage
+        if not self.storage:
+            return
 
-            db = DatabaseStorage()
-            all_keys = await asyncio.to_thread(db.get_keys_by_prefix, "library_scan_state:")
+        try:
+            all_keys = await asyncio.to_thread(self.storage.get_keys_by_prefix, "library_scan_state:")
 
             now = datetime.now()
             for key in all_keys:
                 try:
-                    persist_data = await asyncio.to_thread(db.get_key_value, key)
+                    persist_data = await asyncio.to_thread(self.storage.get_key_value, key)
                     if not persist_data:
                         continue
 
@@ -477,7 +481,7 @@ class EmbyLibraryPoller:
                     if persist_data["state"] in ("idle", "error", "completed"):
                         last_seen = datetime.fromisoformat(persist_data["last_seen_at"])
                         if (now - last_seen).total_seconds() > 3600:
-                            await asyncio.to_thread(db.delete_key, key)
+                            await asyncio.to_thread(self.storage.delete_key, key)
                             logger.debug(f"[LibPoller] Cleaned up old state: {key}")
 
                 except Exception as e:

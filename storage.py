@@ -158,6 +158,31 @@ if SQLALCHEMY_AVAILABLE:
         oldest_scanned_timestamp = Column(DateTime, nullable=True, index=True)  # type: ignore[assignment]
         last_scan_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
 
+    class KeyValueEntry(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "key_value_store"
+        key = Column(String(255), primary_key=True)  # type: ignore[assignment]
+        value = Column(JSON, nullable=False)  # type: ignore[assignment]
+        updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
+
+    class EmbyUserLink(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "emby_user_links"
+        server_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
+        user_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
+        group_id = Column(String(36), nullable=False, index=True)  # type: ignore[assignment]
+        username = Column(String(255))  # type: ignore[assignment]
+        is_leader = Column(Boolean, default=False, nullable=False)  # type: ignore[assignment]
+        updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
+
+    class EmbyUserBackup(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "emby_user_backups"
+        id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
+        server_id = Column(String(36), nullable=False, index=True)  # type: ignore[assignment]
+        user_id = Column(String(36), nullable=False, index=True)  # type: ignore[assignment]
+        username = Column(String(255))  # type: ignore[assignment]
+        backup_type = Column(String(50))  # type: ignore[assignment]
+        data = Column(JSON, nullable=False)  # type: ignore[assignment]
+        created_at = Column(DateTime, default=_utcnow, nullable=False)  # type: ignore[assignment]
+
 
 def is_sqlalchemy_available() -> bool:
     return SQLALCHEMY_AVAILABLE
@@ -206,13 +231,14 @@ class DatabaseStorage:
                 self._Session = sessionmaker(bind=self._engine, expire_on_commit=False)
                 if Base is not None:
                     Base.metadata.create_all(self._engine)
-                    self._apply_probe_migrations()
+                    self._apply_migrations()
 
-    def _apply_probe_migrations(self) -> None:
+    def _apply_migrations(self) -> None:
         if self._engine is None:
             return
         try:
             with self._engine.begin() as conn:
+                # Probe migrations
                 conn.execute(text(
                     "ALTER TABLE emby_probe_queue ADD COLUMN IF NOT EXISTS media_source_id VARCHAR(36)"
                 ))
@@ -243,8 +269,12 @@ class DatabaseStorage:
                 conn.execute(text(
                     "ALTER TABLE justwatch_cache ADD COLUMN IF NOT EXISTS providers JSON"
                 ))
+                # User Link/Backup migrations
+                conn.execute(text(
+                    "ALTER TABLE emby_user_links ADD COLUMN IF NOT EXISTS is_leader BOOLEAN DEFAULT FALSE"
+                ))
         except SQLAlchemyError as exc:  # pragma: no cover
-            raise StorageError(f"Errore migrazione probe: {exc}") from exc
+            raise StorageError(f"Errore migrazioni DB: {exc}") from exc
 
     def _get_session(self) -> Any:
         if self._Session is None:
@@ -1317,6 +1347,150 @@ class DatabaseStorage:
         finally:
             session.close()
 
+    # --- Emby User Management ---
+
+    def get_user_links(
+        self,
+        group_id: Optional[str] = None,
+        server_id: Optional[str] = None,
+        user_id: Optional[str] = None
+    ) -> list[Dict[str, Any]]:
+        session = self._get_session()
+        try:
+            query = session.query(EmbyUserLink)
+            if group_id:
+                query = query.filter(EmbyUserLink.group_id == group_id)  # type: ignore[attr-defined]
+            if server_id:
+                query = query.filter(EmbyUserLink.server_id == server_id)  # type: ignore[attr-defined]
+            if user_id:
+                query = query.filter(EmbyUserLink.user_id == user_id)  # type: ignore[attr-defined]
+            
+            entries = query.all()
+            return [
+                {
+                    "server_id": entry.server_id,
+                    "user_id": entry.user_id,
+                    "group_id": entry.group_id,
+                    "username": entry.username,
+                    "is_leader": bool(entry.is_leader),
+                    "updated_at": entry.updated_at.isoformat() if entry.updated_at else None
+                }
+                for entry in entries
+            ]
+        finally:
+            session.close()
+
+    def set_user_link(
+        self,
+        server_id: str,
+        user_id: str,
+        group_id: str,
+        username: Optional[str] = None,
+        is_leader: bool = False
+    ) -> None:
+        session = self._get_session()
+        try:
+            entry = session.query(EmbyUserLink).filter(
+                EmbyUserLink.server_id == server_id,  # type: ignore[attr-defined]
+                EmbyUserLink.user_id == user_id  # type: ignore[attr-defined]
+            ).first()
+
+            if entry:
+                entry.group_id = group_id  # type: ignore[assignment]
+                entry.is_leader = is_leader  # type: ignore[assignment]
+                if username:
+                    entry.username = username  # type: ignore[assignment]
+                entry.updated_at = _utcnow()  # type: ignore[assignment]
+            else:
+                new_entry = EmbyUserLink(
+                    server_id=server_id,
+                    user_id=user_id,
+                    group_id=group_id,
+                    username=username,
+                    is_leader=is_leader
+                )
+                session.add(new_entry)
+            session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore salvataggio link utente: {exc}") from exc
+        finally:
+            session.close()
+
+    def remove_user_link(self, server_id: str, user_id: str) -> None:
+        session = self._get_session()
+        try:
+            session.query(EmbyUserLink).filter(
+                EmbyUserLink.server_id == server_id,  # type: ignore[attr-defined]
+                EmbyUserLink.user_id == user_id  # type: ignore[attr-defined]
+            ).delete()
+            session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore rimozione link utente: {exc}") from exc
+        finally:
+            session.close()
+
+    def create_user_backup(
+        self,
+        server_id: str,
+        user_id: str,
+        username: str,
+        backup_type: str,
+        data: Dict[str, Any]
+    ) -> int:
+        """Creates a backup and returns its ID."""
+        session = self._get_session()
+        try:
+            entry = EmbyUserBackup(
+                server_id=server_id,
+                user_id=user_id,
+                username=username,
+                backup_type=backup_type,
+                data=data
+            )
+            session.add(entry)
+            session.commit()
+            return int(entry.id)  # type: ignore
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore creazione backup utente: {exc}") from exc
+        finally:
+            session.close()
+
+    def get_user_backups(
+        self,
+        server_id: str,
+        user_id: str,
+        limit: int = 10
+    ) -> list[Dict[str, Any]]:
+        session = self._get_session()
+        try:
+            entries = (
+                session.query(EmbyUserBackup)
+                .filter(
+                    EmbyUserBackup.server_id == server_id,  # type: ignore[attr-defined]
+                    EmbyUserBackup.user_id == user_id  # type: ignore[attr-defined]
+                )
+                .order_by(EmbyUserBackup.created_at.desc())  # type: ignore[attr-defined]
+                .limit(limit)
+                .all()
+            )
+            return [
+                {
+                    "id": entry.id,
+                    "server_id": entry.server_id,
+                    "user_id": entry.user_id,
+                    "username": entry.username,
+                    "backup_type": entry.backup_type,
+                    "data": entry.data,
+                    "created_at": entry.created_at.isoformat() if entry.created_at else None
+                }
+                for entry in entries
+            ]
+        finally:
+            session.close()
+
     def get_recent_scan_config(self, server_id: str) -> Dict[str, Any]:
         """Get discovery configuration parameters for a server."""
         session = self._get_session()
@@ -1341,6 +1515,59 @@ class DatabaseStorage:
                 "max_items": 2000,
                 "safety_margin_days": 7
             }
+        finally:
+            session.close()
+
+    # --- Key-Value Store (Generic) ---
+
+    def set_key_value(self, key: str, value: Any) -> None:
+        """Set a generic key-value pair."""
+        session = self._get_session()
+        try:
+            entry = session.get(KeyValueEntry, key)
+            if entry:
+                entry.value = value  # type: ignore[assignment]
+            else:
+                entry = KeyValueEntry(key=key, value=value)
+                session.add(entry)
+            session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore salvataggio key-value: {exc}") from exc
+        finally:
+            session.close()
+
+    def get_key_value(self, key: str) -> Optional[Any]:
+        """Get a generic key-value pair."""
+        session = self._get_session()
+        try:
+            entry = session.get(KeyValueEntry, key)
+            return entry.value if entry else None
+        finally:
+            session.close()
+
+    def get_keys_by_prefix(self, prefix: str) -> list[str]:
+        """Get all keys starting with prefix."""
+        session = self._get_session()
+        try:
+            entries = session.query(KeyValueEntry.key).filter(
+                KeyValueEntry.key.like(f"{prefix}%")  # type: ignore[attr-defined]
+            ).all()
+            return [entry.key for entry in entries]
+        finally:
+            session.close()
+
+    def delete_key(self, key: str) -> None:
+        """Delete a key-value pair."""
+        session = self._get_session()
+        try:
+            entry = session.get(KeyValueEntry, key)
+            if entry:
+                session.delete(entry)
+                session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore eliminazione key: {exc}") from exc
         finally:
             session.close()
 

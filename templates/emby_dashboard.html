@@ -22,6 +22,11 @@
                title="Apri Emby Toolkit">
                 Emby Toolkit
             </a>
+            <a href="{{ url_for('view_emby_users') }}"
+               class="nav-link {% if active_page == 'emby_users' %}active{% endif %}"
+               title="Gestione Utenti">
+                Utenti
+            </a>
             <a href="{{ url_for('emby_probe') }}"
                class="nav-link {% if active_page == 'emby_probe' %}active{% endif %}"
                title="Apri STRM Probe">
@@ -62,6 +67,7 @@
                 <button class="tab-btn active" data-tab="actions" title="Operazioni rapide e stato server">Operazioni</button>
                 <button class="tab-btn" data-tab="libraries" title="Gestione librerie Emby">Librerie</button>
                 <button class="tab-btn" data-tab="latest" title="Ultime pubblicazioni dai server Emby">Pubblicazioni</button>
+                <button class="tab-btn" data-tab="users" title="Gestione Utenti e Sync">Utenti</button>
             </div>
 
             <div class="tab-panel active" data-tab-panel="actions">
@@ -172,6 +178,77 @@
                     {% else %}
                         <p class="tagline">Nessun server Emby configurato. Aggiungine uno nella pagina Configurazione.</p>
                     {% endif %}
+                </div>
+            </div>
+
+            <!-- TAB UTENTI -->
+            <div class="tab-panel" data-tab-panel="users">
+                <div class="card">
+                    <!-- Filters Toolbar -->
+                    <div class="users-toolbar" style="display: flex; gap: 1rem; margin-bottom: 1rem; padding: 0.5rem; background: var(--bg-card); border-bottom: 1px solid var(--border-color); flex-wrap: wrap;">
+                        <div class="filters" style="display: flex; gap: 0.5rem; flex: 1; min-width: 300px;">
+                            <select id="filter-server" class="form-input compact" onchange="filterUsers()">
+                                <option value="all">Tutti i Server</option>
+                            </select>
+                            <select id="filter-status" class="form-input compact" onchange="filterUsers()">
+                                <option value="all">Tutti gli stati</option>
+                                <option value="active">Attivi</option>
+                                <option value="disabled">Disabilitati</option>
+                            </select>
+                            <input type="text" id="filter-search" class="form-input compact" placeholder="Cerca utente..." oninput="filterUsers()">
+                        </div>
+                        <div class="actions">
+                            <button class="btn secondary compact" onclick="loadEmbyUsers()">
+                                <i class="fa-solid fa-rotate"></i> Aggiorna
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Master Users Section -->
+                    <div id="master-users-section" class="master-section" style="margin-bottom: 2rem; padding: 1rem; background: rgba(255, 215, 0, 0.05); border: 1px solid rgba(255, 215, 0, 0.2); border-radius: 8px;">
+                        <h3 style="color: #fbbf24; margin-top: 0; display: flex; align-items: center; gap: 0.5rem;">
+                            <i class="fa-solid fa-crown"></i> Utenti Master (Template Impostazioni)
+                        </h3>
+                        <p class="text-muted small">Questi utenti sono modelli per sincronizzare le impostazioni UI/Globali (non i visti) verso altri utenti.</p>
+                        <div id="master-users-container" class="users-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; margin-top: 1rem;">
+                            <!-- JS populated -->
+                        </div>
+                    </div>
+
+                    <!-- Groups Section -->
+                    <div class="groups-section">
+                        <h3 style="margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+                            <i class="fa-solid fa-users"></i> Gruppi Utenti (Sync Visti)
+                        </h3>
+                        <p class="text-muted small" style="margin-bottom: 1rem;">Gestisci la sincronizzazione dello stato "Visto" tra utenti associati. L'utente con la <i class="fa-solid fa-star" style="color:#f59e0b"></i> è il Principale (Leader).</p>
+                        <div id="user-groups-container" class="groups-list">
+                            <div class="loading-state">
+                                <i class="fa-solid fa-circle-notch fa-spin"></i> Caricamento utenti...
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sticky Actions Bar -->
+            <div id="user-selection-bar" class="sticky-actions-bar hidden" style="display: none; position: sticky; bottom: 1rem; background: var(--bg-card); padding: 1rem; border: 1px solid var(--border-color); border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); margin-top: 1rem; z-index: 100;">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+                    <div class="selection-info">
+                        <span id="selection-count" style="font-weight: bold; color: var(--color-primary);">0</span> utenti selezionati
+                    </div>
+                    <div class="selection-actions" style="display: flex; gap: 0.5rem; align-items: center;">
+                        <button class="btn ghost compact" onclick="clearUserSelection()">Annulla</button>
+                        <div style="width: 1px; height: 24px; background: var(--border-color); margin: 0 0.5rem;"></div>
+                        <button class="btn secondary compact" onclick="linkSelectedUsers()" title="Crea un nuovo gruppo con i selezionati">
+                            <i class="fa-solid fa-link"></i> Associa
+                        </button>
+                        <button class="btn primary compact" onclick="openSyncModal()" title="Sincronizza visti o impostazioni">
+                            <i class="fa-solid fa-sync"></i> Sincronizza
+                        </button>
+                        <button class="btn primary compact" onclick="openCloneModal()" title="Crea copia su altro server">
+                            <i class="fa-solid fa-copy"></i> Clona
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -1217,6 +1294,61 @@
         })();
     </script>
 
+    <!-- User Management Templates -->
+    <template id="tpl-user-card">
+        <div class="user-card" data-user-id="" data-server-id="" style="position: relative; border: 1px solid var(--border-color); border-radius: 6px; padding: 0.75rem; background: var(--bg-card); display: flex; align-items: center; gap: 0.75rem; transition: transform 0.2s, box-shadow 0.2s;">
+            <div class="user-select">
+                <input type="checkbox" class="user-select-chk" style="transform: scale(1.2); cursor: pointer;">
+            </div>
+            <div class="user-avatar" style="width: 40px; height: 40px; background: var(--bg-main); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; color: var(--text-muted); position: relative; overflow: hidden;">
+                <i class="fa-solid fa-user user-icon-placeholder"></i>
+                <img class="user-img" src="" alt="" style="width: 100%; height: 100%; object-fit: cover; display: none;">
+                <div class="status-indicator" style="width: 12px; height: 12px; border-radius: 50%; background: var(--color-danger); position: absolute; bottom: 0; right: 0; border: 2px solid var(--bg-card); z-index: 2;" title="Stato"></div>
+            </div>
+            <div class="user-info" style="flex: 1; min-width: 0;">
+                <div class="user-name-row" style="display: flex; align-items: center; gap: 0.5rem;">
+                    <span class="user-name" style="font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;" title="Clicca per selezionare"></span>
+                    <i class="fa-solid fa-star leader-icon" style="color: #f59e0b; display: none; cursor: help;" title="Utente Principale (Leader)"></i>
+                    <i class="fa-solid fa-shield-halved admin-icon" style="color: var(--color-primary); display: none;" title="Admin"></i>
+                </div>
+                <div class="server-name" style="font-size: 0.8rem; color: var(--text-muted);"></div>
+            </div>
+            
+            <div class="user-actions-mini" style="display: flex; gap: 0.5rem;">
+                <button class="icon-button toggle-playback-btn" title="Consenti riproduzione media" style="display: inline-block;"><i class="fa-solid fa-play"></i></button>
+                <button class="icon-button toggle-download-btn" title="Consenti scaricamento media" style="display: inline-block;"><i class="fa-solid fa-download"></i></button>
+                <button class="icon-button set-leader-btn" title="Imposta come Principale" style="display: none; color: var(--text-muted);"><i class="fa-regular fa-star"></i></button>
+                <button class="icon-button unlink-btn" title="Dissocia dal gruppo" style="display: none; color: var(--color-danger);"><i class="fa-solid fa-link-slash"></i></button>
+            </div>
+        </div>
+    </template>
+
+    <template id="tpl-group-container">
+        <div class="group-container" style="background: var(--bg-main); border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 1rem; padding: 1rem;">
+            <div class="group-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem;">
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <span class="group-name" style="font-weight: bold; font-size: 1.1rem;"></span>
+                    <span class="badge" style="background: var(--color-primary); color: white; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.7rem;">Linked</span>
+                </div>
+                <div class="group-meta text-muted small"></div>
+            </div>
+            <div class="group-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem;"></div>
+        </div>
+    </template>
+
+    <template id="tpl-master-placeholder">
+        <div class="user-card placeholder" style="border: 1px dashed var(--color-danger); border-radius: 6px; padding: 0.75rem; background: rgba(239, 68, 68, 0.05); display: flex; align-items: center; gap: 0.75rem; opacity: 0.8;">
+            <div class="user-avatar" style="width: 40px; height: 40px; background: transparent; border: 1px solid var(--color-danger); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: var(--color-danger);">
+                <i class="fa-solid fa-exclamation"></i>
+            </div>
+            <div class="user-info">
+                <div class="user-name" style="color: var(--color-danger); font-weight: 500;">Utente Master mancante</div>
+                <div class="server-name" style="font-size: 0.8rem; color: var(--text-muted);"></div>
+            </div>
+        </div>
+    </template>
+
+    <script src="{{ url_for('static', filename='emby_users.js') }}?v=20260108-2200"></script>
     <script src="{{ url_for('static', filename='emby.js') }}?v=20260110-verify-fix"></script>
 </body>
 </html>
