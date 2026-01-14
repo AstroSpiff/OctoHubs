@@ -39,9 +39,7 @@ async function loadEmbyUsers(force = false) {
 
 function populateUserFilters(data) {
     const serverSelect = document.getElementById('filter-server');
-    // Keep "All" option, clear others
-    serverSelect.innerHTML = '<option value="all">Tutti i Server</option>';
-    
+    serverSelect.innerHTML = '<option value="all" selected>Tutti i Server</option>';
     if (data.servers) {
         data.servers.forEach(s => {
             const opt = document.createElement('option');
@@ -50,6 +48,67 @@ function populateUserFilters(data) {
             serverSelect.appendChild(opt);
         });
     }
+    setupStandardMultiselect('filter-server');
+
+    const statusSelect = document.getElementById('filter-status');
+    setupStandardMultiselect('filter-status');
+
+    const profileSelect = document.getElementById('filter-icon-profile');
+    if (profileSelect && currentIconData && currentIconData.profiles) {
+        profileSelect.innerHTML = '<option value="all" selected>Tutti i Profili Icona</option>';
+        profileSelect.innerHTML += '<option value="none">Nessun Profilo</option>';
+        
+        currentIconData.profiles.forEach(p => {
+            const opt = document.createElement('option');
+            opt.value = p.id;
+            opt.textContent = p.label;
+            profileSelect.appendChild(opt);
+        });
+        setupStandardMultiselect('filter-icon-profile');
+    }
+}
+
+function setupStandardMultiselect(id) {
+    const select = document.getElementById(id);
+    if (!select) return;
+
+    // Initialize state
+    select.dataset.prevValues = JSON.stringify(['all']);
+
+    select.onchange = function(e) {
+        const currentValues = Array.from(select.selectedOptions).map(o => o.value);
+        let prevValues = [];
+        try {
+            prevValues = JSON.parse(select.dataset.prevValues || '[]');
+        } catch (e) { prevValues = []; }
+
+        const wasAll = prevValues.includes('all');
+        const isAll = currentValues.includes('all');
+        const hasOthers = currentValues.length > (isAll ? 1 : 0);
+
+        if (isAll && hasOthers) {
+            // Conflict: All + Others
+            if (wasAll) {
+                // Was All, user added others -> Remove All
+                Array.from(select.options).find(o => o.value === 'all').selected = false;
+            } else {
+                // Was Others, user added All -> Remove Others
+                Array.from(select.options).forEach(o => {
+                    if (o.value !== 'all') o.selected = false;
+                });
+            }
+        } else if (currentValues.length === 0) {
+            // Empty -> Select All
+            const allOpt = Array.from(select.options).find(o => o.value === 'all');
+            if (allOpt) allOpt.selected = true;
+        }
+
+        // Save new state
+        const newValues = Array.from(select.selectedOptions).map(o => o.value);
+        select.dataset.prevValues = JSON.stringify(newValues);
+        
+        filterUsers();
+    };
 }
 
 function filterUsers() {
@@ -64,9 +123,23 @@ function renderEmbyUsers(data) {
     containerGroups.innerHTML = '';
     containerMaster.innerHTML = '';
 
-    const serverFilter = document.getElementById('filter-server').value;
-    const statusFilter = document.getElementById('filter-status').value;
+    const getSelectedValues = (id) => {
+        const el = document.getElementById(id);
+        if (!el) return new Set(['all']);
+        const values = new Set();
+        Array.from(el.selectedOptions).forEach(o => values.add(o.value));
+        if (values.size === 0 || values.has('all')) return new Set(['all']);
+        return values;
+    };
+
+    const serverFilter = getSelectedValues('filter-server');
+    const statusFilter = getSelectedValues('filter-status');
+    const profileFilter = getSelectedValues('filter-icon-profile');
     const searchFilter = document.getElementById('filter-search').value.toLowerCase();
+
+    const isAllServers = serverFilter.has('all');
+    const isAllStatus = statusFilter.has('all');
+    const isAllProfiles = profileFilter.has('all');
 
     // Separate Masters from Regular Groups
     const masterGroup = { users: [] };
@@ -78,10 +151,35 @@ function renderEmbyUsers(data) {
     data.groups.forEach(group => {
         // Filter users within group based on criteria
         const visibleUsers = group.users.filter(u => {
-            if (serverFilter !== 'all' && u.server_id !== serverFilter) return false;
-            if (statusFilter === 'active' && u.is_disabled) return false;
-            if (statusFilter === 'disabled' && !u.is_disabled) return false;
+            // Server Filter
+            if (!isAllServers && !serverFilter.has(u.server_id)) return false;
+            
+            // Status Filter
+            if (!isAllStatus) {
+                const uStatus = u.is_disabled ? 'disabled' : 'active';
+                if (!statusFilter.has(uStatus)) return false;
+            }
+            
+            // Search Filter
             if (searchFilter && !u.name.toLowerCase().includes(searchFilter)) return false;
+            
+            // Profile Filter
+            if (!isAllProfiles) {
+                let userProfileId = null;
+                if (group.is_linked) {
+                     if (currentIconData && currentIconData.bindings) {
+                         userProfileId = currentIconData.bindings[`group:${group.id}`];
+                     }
+                } else {
+                     if (currentIconData && currentIconData.bindings) {
+                         userProfileId = currentIconData.bindings[`user:${u.server_id}:${u.user_id}`];
+                     }
+                }
+                
+                const match = (userProfileId && profileFilter.has(userProfileId)) || (!userProfileId && profileFilter.has('none'));
+                if (!match) return false;
+            }
+            
             return true;
         });
 
@@ -252,16 +350,19 @@ function createUserCard(user, options = {}) {
     }
 
     // Actions
-    // 1. Playback Toggle
-    const playBtn = tpl.querySelector('.toggle-playback-btn');
-    if (user.enable_playback) {
-        playBtn.style.color = 'var(--color-success)';
-        playBtn.title = 'Riproduzione consentita';
+    // 1. Remote Access Toggle (replaced Playback)
+    const remoteBtn = tpl.querySelector('.toggle-playback-btn'); // Use existing class ref or update HTML? HTML uses this class for selection.
+    // HTML in template: <button class="icon-button toggle-playback-btn" ...><i class="fa-solid fa-play"></i></button>
+    // I will change the innerHTML and title.
+    if (user.enable_remote_access) {
+        remoteBtn.style.color = 'var(--color-success)';
+        remoteBtn.title = 'Connessione remota consentita';
     } else {
-        playBtn.style.color = 'var(--color-danger)';
-        playBtn.title = 'Riproduzione disabilitata';
+        remoteBtn.style.color = 'var(--color-danger)';
+        remoteBtn.title = 'Connessione remota disabilitata';
     }
-    playBtn.onclick = () => toggleUserPlayback(user.server_id, user.user_id, user.enable_playback);
+    remoteBtn.innerHTML = '<i class="fa-solid fa-network-wired"></i>';
+    remoteBtn.onclick = () => toggleUserRemote(user.server_id, user.user_id, user.enable_remote_access);
 
     // 2. Download Toggle
     const dlBtn = tpl.querySelector('.toggle-download-btn');
@@ -278,12 +379,12 @@ function createUserCard(user, options = {}) {
     if (options.isLinked && !user.is_leader && !options.isMaster) {
         const btn = tpl.querySelector('.set-leader-btn');
         btn.style.display = 'inline-block';
-        // Only allowed if playback is enabled
-        if (!user.enable_playback) {
+        // Only allowed if user is active
+        if (user.is_disabled) {
             btn.style.opacity = '0.5';
             btn.style.cursor = 'not-allowed';
-            btn.title = 'Impossibile impostare come principale: riproduzione disabilitata';
-            btn.onclick = (e) => { e.preventDefault(); alert("Un utente senza permessi di riproduzione non può essere il Principale."); };
+            btn.title = 'Impossibile impostare come principale: utente disabilitato';
+            btn.onclick = (e) => { e.preventDefault(); alert("Un utente disabilitato non può essere il Principale."); };
         } else {
             btn.onclick = () => setGroupLeader(options.groupId, user.server_id, user.user_id);
         }
@@ -313,17 +414,16 @@ function createUserCard(user, options = {}) {
 
 // --- ACTIONS ---
 
-async function toggleUserPlayback(serverId, userId, currentEnabled) {
+async function toggleUserRemote(serverId, userId, currentEnabled) {
     const newState = !currentEnabled;
-    // Optimistic update or reload? Reload is safer to reflect all sub-policies (transcoding etc)
     const formData = new FormData();
     formData.append('server_id', serverId);
     formData.append('user_id', userId);
     formData.append('enable', newState);
     
-    const res = await fetch('/api/emby/users/toggle-playback', { method: 'POST', body: formData });
+    const res = await fetch('/api/emby/users/toggle-remote', { method: 'POST', body: formData });
     if (res.ok) loadEmbyUsers();
-    else alert("Errore cambio permessi riproduzione");
+    else alert("Errore cambio permessi connessione remota");
 }
 
 async function toggleUserDownload(serverId, userId, currentEnabled) {
@@ -446,12 +546,18 @@ async function setGroupLeader(groupId, serverId, userId) {
 // --- ICON MANAGEMENT ---
 
 async function loadIconManagement() {
-    // Load both users and icon config to resolve bindings
+    // Load both users (cache ok) and fresh icon config
     await Promise.all([
-        loadEmbyUsers(true),
+        loadEmbyUsers(false),
         fetchIconConfig()
     ]);
     renderIconProfiles();
+}
+
+async function refreshIconConfigOnly() {
+    await fetchIconConfig();
+    renderIconProfiles();
+    renderEmbyUsers(currentUsersData); // Update user list icons too
 }
 
 async function fetchIconConfig() {
@@ -466,20 +572,17 @@ async function fetchIconConfig() {
 }
 
 function renderIconProfiles() {
-    // Target the table structure defined in HTML
     const tableHeadRow = document.querySelector('#icon-matrix-table thead tr');
     const tableBody = document.getElementById('icon-matrix-body');
     
     if (!tableHeadRow || !tableBody) return;
     
-    // Reset Header: Keep first th "Profilo"
     tableHeadRow.innerHTML = '<th style="text-align: left; padding: 1rem; min-width: 250px;">Profilo</th>';
     tableBody.innerHTML = '';
     
     if (!currentIconData || !currentIconData.profiles) return;
     const servers = currentUsersData ? (currentUsersData.servers || []) : [];
     
-    // Add Server Columns to Header
     servers.forEach(s => {
         const th = document.createElement('th');
         th.style.textAlign = 'center';
@@ -490,16 +593,15 @@ function renderIconProfiles() {
         tableHeadRow.appendChild(th);
     });
     
-    // Add Rows (Profiles)
+    const timestamp = new Date().getTime();
+
     currentIconData.profiles.forEach(profile => {
         const tr = document.createElement('tr');
         tr.style.borderBottom = '1px solid var(--border-color)';
         
-        // Profile Name Cell
         const tdName = document.createElement('td');
         tdName.style.padding = '1rem';
         
-        // Flex container for name and delete button
         const nameDiv = document.createElement('div');
         nameDiv.style.display = 'flex';
         nameDiv.style.justifyContent = 'space-between';
@@ -520,7 +622,6 @@ function renderIconProfiles() {
         tdName.appendChild(nameDiv);
         tr.appendChild(tdName);
         
-        // Server Cells
         servers.forEach(server => {
             const td = document.createElement('td');
             td.style.textAlign = 'center';
@@ -529,7 +630,6 @@ function renderIconProfiles() {
             
             const iconPath = currentIconData.matrix[profile.id]?.[server.id];
             
-            // Container for icon + upload
             const cellDiv = document.createElement('div');
             cellDiv.style.display = 'flex';
             cellDiv.style.flexDirection = 'column';
@@ -537,7 +637,6 @@ function renderIconProfiles() {
             cellDiv.style.gap = '0.5rem';
             cellDiv.style.position = 'relative';
             
-            // Hidden file input
             const fileInput = document.createElement('input');
             fileInput.type = 'file';
             fileInput.style.display = 'none';
@@ -554,7 +653,8 @@ function renderIconProfiles() {
                 imgContainer.onclick = () => fileInput.click();
 
                 const img = document.createElement('img');
-                img.src = iconPath.startsWith('/') ? iconPath : `/static/${iconPath}`;
+                const srcPath = iconPath.startsWith('/') ? iconPath : `/static/${iconPath}`;
+                img.src = `${srcPath}?t=${timestamp}`;
                 img.style.width = '48px';
                 img.style.height = '48px';
                 img.style.objectFit = 'cover';
@@ -614,8 +714,16 @@ async function saveIconBinding(type, id, profileId) {
     formData.append('target_type', type);
     formData.append('target_id', id);
     formData.append('profile_id', profileId);
+    
+    // Optimistic Update
+    if (currentIconData && currentIconData.bindings) {
+        const key = `${type}:${id}`;
+        currentIconData.bindings[key] = profileId;
+        renderEmbyUsers(currentUsersData); // Re-render list
+    }
+    
     await fetch('/api/emby/icons/binding', { method: 'POST', body: formData });
-    loadIconManagement();
+    // No full reload needed
 }
 
 async function uploadIconRule(profileId, serverId, file) {
@@ -624,7 +732,7 @@ async function uploadIconRule(profileId, serverId, file) {
     formData.append('column_key', serverId);
     formData.append('file', file);
     await fetch('/api/emby/icons/rule', { method: 'POST', body: formData });
-    loadIconManagement();
+    refreshIconConfigOnly();
 }
 
 async function deleteIconRule(profileId, serverId) {
@@ -632,7 +740,7 @@ async function deleteIconRule(profileId, serverId) {
     formData.append('profile_id', profileId);
     formData.append('column_key', serverId);
     await fetch('/api/emby/icons/rule', { method: 'DELETE', body: formData });
-    loadIconManagement();
+    refreshIconConfigOnly();
 }
 
 async function deleteIconProfile(profileId) {
@@ -640,19 +748,19 @@ async function deleteIconProfile(profileId) {
     const formData = new FormData();
     formData.append('profile_id', profileId);
     await fetch('/api/emby/icons/profile', { method: 'DELETE', body: formData });
-    loadIconManagement();
+    refreshIconConfigOnly();
 }
 
 async function createIconProfile(label) {
     const formData = new FormData();
     formData.append('label', label);
     await fetch('/api/emby/icons/profile', { method: 'POST', body: formData });
-    loadIconManagement();
+    refreshIconConfigOnly();
 }
 
 // --- COMPATIBILITY FIX ---
-// Mappa le funzioni chiamate dall'HTML alle nuove implementazioni
-window.loadIconConfig = loadIconManagement;
+// Use refreshIconConfigOnly for the button (loadIconConfig alias) to avoid user list reload
+window.loadIconConfig = refreshIconConfigOnly;
 
 window.addIconProfile = async function() {
     const label = prompt("Nome del nuovo Profilo Icone:");

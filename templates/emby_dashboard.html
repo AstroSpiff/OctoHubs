@@ -183,13 +183,16 @@
                     <!-- Filters Toolbar -->
                     <div class="users-toolbar" style="display: flex; gap: 1rem; margin-bottom: 1rem; padding: 0.5rem; background: var(--bg-card); border-bottom: 1px solid var(--border-color); flex-wrap: wrap;">
                         <div class="filters" style="display: flex; gap: 0.5rem; flex: 1; min-width: 300px;">
-                            <select id="filter-server" class="form-input compact" onchange="filterUsers()">
+                            <select id="filter-server" class="form-input compact interactive-multiselect" multiple>
                                 <option value="all">Tutti i Server</option>
                             </select>
-                            <select id="filter-status" class="form-input compact" onchange="filterUsers()">
+                            <select id="filter-status" class="form-input compact interactive-multiselect" multiple>
                                 <option value="all">Tutti gli stati</option>
                                 <option value="active">Attivi</option>
                                 <option value="disabled">Disabilitati</option>
+                            </select>
+                            <select id="filter-icon-profile" class="form-input compact interactive-multiselect" multiple>
+                                <option value="all">Tutti i Profili Icona</option>
                             </select>
                             <input type="text" id="filter-search" class="form-input compact" placeholder="Cerca utente..." oninput="filterUsers()">
                         </div>

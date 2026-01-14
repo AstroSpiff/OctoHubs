@@ -1785,8 +1785,8 @@ async def api_emby_users_toggle(
     return {"ok": success}
 
 
-@fastapi_app.post("/api/emby/users/toggle-playback")
-async def api_emby_users_toggle_playback(
+@fastapi_app.post("/api/emby/users/toggle-remote")
+async def api_emby_users_toggle_remote(
     server_id: str = Form(...),
     user_id: str = Form(...),
     enable: bool = Form(...),
@@ -1795,7 +1795,7 @@ async def api_emby_users_toggle_playback(
     manager = get_emby_user_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    success = manager.toggle_playback_permissions(server_id, user_id, enable)
+    success = manager.toggle_remote_access(server_id, user_id, enable)
     return {"ok": success}
 
 

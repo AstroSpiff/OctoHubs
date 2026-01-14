@@ -1867,3 +1867,21 @@
     flex-wrap: wrap;
     justify-content: flex-end;
 }
+
+/* Compact Multiselects */
+select.form-input.compact[multiple] {
+    height: 82px; /* Approx 3.5 lines */
+    padding: 0.2rem 0.4rem;
+    overflow-y: auto;
+    vertical-align: top;
+    background-image: none; /* Remove chevron if present */
+}
+select.form-input.compact[multiple] option {
+    padding: 0.2rem 0.4rem;
+}
+
+#filter-search {
+    height: 30px;
+    align-self: flex-start; /* Prevent stretching in flex container */
+    padding: 0 0.5rem; /* Ensure padding fits height */
+}

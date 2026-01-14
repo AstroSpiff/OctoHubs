@@ -444,7 +444,7 @@ class EmbyUserManager:
                 "image_url": image_url,
                 "has_password": u.get("HasPassword", False),
                 "is_disabled": policy.get("IsDisabled", False),
-                "enable_playback": policy.get("EnableMediaPlayback", True),
+                "enable_remote_access": policy.get("EnableRemoteAccess", True),
                 "enable_audio_transcoding": policy.get("EnableAudioPlaybackTranscoding", True),
                 "enable_video_transcoding": policy.get("EnableVideoPlaybackTranscoding", True),
                 "enable_remuxing": policy.get("EnablePlaybackRemuxing", True),
@@ -476,10 +476,10 @@ class EmbyUserManager:
             "servers": [{"id": s["id"], "name": s["name"]} for s in active_servers]
         }
 
-    def toggle_playback_permissions(self, server_id: str, user_id: str, enable: bool) -> bool:
+    def toggle_remote_access(self, server_id: str, user_id: str, enable: bool) -> bool:
         """
-        Toggles playback permissions for a user.
-        Controls: EnableMediaPlayback, Transcoding (Audio/Video), Remuxing.
+        Toggles remote access for a user.
+        Controls: EnableRemoteAccess.
         """
         server = self._get_server_by_id(server_id)
         if not server:
@@ -490,10 +490,7 @@ class EmbyUserManager:
             return False
             
         policy = details.get("Policy", {})
-        policy["EnableMediaPlayback"] = enable
-        policy["EnableAudioPlaybackTranscoding"] = enable
-        policy["EnableVideoPlaybackTranscoding"] = enable
-        policy["EnablePlaybackRemuxing"] = enable
+        policy["EnableRemoteAccess"] = enable
         
         success, _ = _update_emby_user_policy(server, user_id, policy)
         return success
