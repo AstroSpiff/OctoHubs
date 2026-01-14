@@ -362,7 +362,7 @@ function createUserCard(user, options = {}) {
         remoteBtn.title = 'Connessione remota disabilitata';
     }
     remoteBtn.innerHTML = '<i class="fa-solid fa-network-wired"></i>';
-    remoteBtn.onclick = () => toggleUserRemote(user.server_id, user.user_id, user.enable_remote_access);
+    remoteBtn.onclick = () => toggleUserRemote(user.server_id, user.user_id, remoteBtn);
 
     // 2. Download Toggle
     const dlBtn = tpl.querySelector('.toggle-download-btn');
@@ -373,7 +373,7 @@ function createUserCard(user, options = {}) {
         dlBtn.style.color = 'var(--color-danger)';
         dlBtn.title = 'Scaricamento disabilitato';
     }
-    dlBtn.onclick = () => toggleUserDownload(user.server_id, user.user_id, user.enable_downloading);
+    dlBtn.onclick = () => toggleUserDownload(user.server_id, user.user_id, dlBtn);
 
     // 3. Set Leader (Only for linked groups, and if not already leader)
     if (options.isLinked && !user.is_leader && !options.isMaster) {
@@ -414,28 +414,99 @@ function createUserCard(user, options = {}) {
 
 // --- ACTIONS ---
 
-async function toggleUserRemote(serverId, userId, currentEnabled) {
-    const newState = !currentEnabled;
-    const formData = new FormData();
-    formData.append('server_id', serverId);
-    formData.append('user_id', userId);
-    formData.append('enable', newState);
-    
-    const res = await fetch('/api/emby/users/toggle-remote', { method: 'POST', body: formData });
-    if (res.ok) loadEmbyUsers();
-    else alert("Errore cambio permessi connessione remota");
+function findUserInCache(serverId, userId) {
+    if (!currentUsersData || !currentUsersData.groups) return null;
+    for (const group of currentUsersData.groups) {
+        const u = group.users.find(u => u.server_id === serverId && u.user_id === userId);
+        if (u) return u;
+    }
+    return null;
 }
 
-async function toggleUserDownload(serverId, userId, currentEnabled) {
-    const newState = !currentEnabled;
+async function toggleUserRemote(serverId, userId, btnElement) {
+    const user = findUserInCache(serverId, userId);
+    if (!user) return; // Should not happen
+
+    const oldState = user.enable_remote_access;
+    const newState = !oldState;
+    
+    // Optimistic Update
+    user.enable_remote_access = newState;
+    if (btnElement) {
+        if (newState) {
+            btnElement.style.color = 'var(--color-success)';
+            btnElement.title = 'Connessione remota consentita';
+        } else {
+            btnElement.style.color = 'var(--color-danger)';
+            btnElement.title = 'Connessione remota disabilitata';
+        }
+    }
+
     const formData = new FormData();
     formData.append('server_id', serverId);
     formData.append('user_id', userId);
     formData.append('enable', newState);
     
-    const res = await fetch('/api/emby/users/toggle-download', { method: 'POST', body: formData });
-    if (res.ok) loadEmbyUsers();
-    else alert("Errore cambio permessi scaricamento");
+    try {
+        const res = await fetch('/api/emby/users/toggle-remote', { method: 'POST', body: formData });
+        if (!res.ok) throw new Error("Failed");
+    } catch (e) {
+        // Revert UI
+        user.enable_remote_access = oldState;
+        if (btnElement) {
+            if (oldState) {
+                btnElement.style.color = 'var(--color-success)';
+                btnElement.title = 'Connessione remota consentita';
+            } else {
+                btnElement.style.color = 'var(--color-danger)';
+                btnElement.title = 'Connessione remota disabilitata';
+            }
+        }
+        alert("Errore cambio permessi connessione remota");
+    }
+}
+
+async function toggleUserDownload(serverId, userId, btnElement) {
+    const user = findUserInCache(serverId, userId);
+    if (!user) return;
+
+    const oldState = user.enable_downloading;
+    const newState = !oldState;
+    
+    // Optimistic Update
+    user.enable_downloading = newState;
+    if (btnElement) {
+        if (newState) {
+            btnElement.style.color = 'var(--color-success)';
+            btnElement.title = 'Scaricamento consentito';
+        } else {
+            btnElement.style.color = 'var(--color-danger)';
+            btnElement.title = 'Scaricamento disabilitato';
+        }
+    }
+
+    const formData = new FormData();
+    formData.append('server_id', serverId);
+    formData.append('user_id', userId);
+    formData.append('enable', newState);
+    
+    try {
+        const res = await fetch('/api/emby/users/toggle-download', { method: 'POST', body: formData });
+        if (!res.ok) throw new Error("Failed");
+    } catch (e) {
+        // Revert
+        user.enable_downloading = oldState;
+        if (btnElement) {
+            if (oldState) {
+                btnElement.style.color = 'var(--color-success)';
+                btnElement.title = 'Scaricamento consentito';
+            } else {
+                btnElement.style.color = 'var(--color-danger)';
+                btnElement.title = 'Scaricamento disabilitato';
+            }
+        }
+        alert("Errore cambio permessi scaricamento");
+    }
 }
 
 async function openCloneModalForUser(user) {
