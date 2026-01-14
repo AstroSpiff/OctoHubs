@@ -60,6 +60,53 @@ def _emby_base_url(server):
         return None
     return url.rstrip('/')
 
+__all__ = [
+    "EMBY_ACTIONS",
+    "_emby_has_credentials",
+    "_emby_base_url",
+    "_call_emby_api",
+    "_fetch_emby_scheduled_tasks",
+    "_fetch_emby_virtual_folders",
+    "_fetch_emby_status",
+    "_fetch_emby_libraries",
+    "_format_ticks",
+    "_fetch_emby_active_sessions",
+    "_trigger_library_scan",
+    "_stop_emby_task",
+    "_run_emby_scheduled_task",
+    "_autodetect_emby_strm_task_id",
+    "_autodetect_emby_task_id_by_key",
+    "_execute_emby_action",
+    "_prepare_emby_servers_for_view",
+    "get_jellyseerr_requests",
+    "send_to_qbittorrent",
+    "_ping_api_service",
+    "_ping_jellyseerr",
+    "_ping_prowlarr",
+    "_ping_qbittorrent",
+    "_extract_tmdb_id",
+    "_fetch_tmdb_payload",
+    "fetch_request_details",
+    "fetch_media_info",
+    "search_jellyseerr",
+    "submit_jellyseerr_request",
+    "search_prowlarr",
+    "search_jackett",
+    "search_tmdb",
+    "get_tmdb_tv_details",
+    "check_emby_availability",
+    "check_jellyseerr_availability",
+    "_fetch_emby_users_list",
+    "_fetch_emby_user_details",
+    "_update_emby_user_policy",
+    "_update_emby_user_configuration",
+    "_create_emby_user",
+    "_fetch_emby_user_items_for_sync",
+    "_mark_emby_item_played",
+    "_mark_emby_item_unplayed"
+]
+
+
 
 def _call_emby_api(server, path, method="GET", params=None, json_payload=None) -> Tuple[bool, Any]:
     base_url = _emby_base_url(server)

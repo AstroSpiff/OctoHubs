@@ -1,8 +1,11 @@
 // Emby User Management Logic
 
 let currentUsersData = null;
+let currentIconData = null;
 
-async function loadEmbyUsers() {
+async function loadEmbyUsers(force = false) {
+    if (!force && currentUsersData) return;
+
     const containerGroups = document.getElementById('user-groups-container');
     const containerMaster = document.getElementById('master-users-container');
     
@@ -11,10 +14,20 @@ async function loadEmbyUsers() {
     containerMaster.innerHTML = '<div class="loading-state"><i class="fa-solid fa-circle-notch fa-spin"></i> Caricamento Master...</div>';
 
     try {
-        const res = await fetch(`/api/emby/users/list?t=${new Date().getTime()}`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
+        // Fetch Users AND Icon Config in parallel
+        const [usersRes, iconRes] = await Promise.all([
+            fetch(`/api/emby/users/list?t=${new Date().getTime()}`),
+            fetch('/api/emby/icons/config')
+        ]);
+
+        if (!usersRes.ok) throw new Error(`HTTP ${usersRes.status}`);
+        const data = await usersRes.json();
         currentUsersData = data;
+
+        if (iconRes.ok) {
+            currentIconData = await iconRes.json();
+        }
+
         populateUserFilters(data);
         renderEmbyUsers(data);
     } catch (e) {
@@ -72,24 +85,15 @@ function renderEmbyUsers(data) {
             return true;
         });
 
-        // Check if this is a Master user (name is "Master" or similar)
-        // Adjust logic: The requirement says "Utente denominato Master fuori dai gruppi".
-        // So we look for users named specifically "Master" (case insensitive).
-        
         const isMasterGroup = group.users.some(u => u.name.toLowerCase() === 'master');
         
         if (isMasterGroup) {
-            // Add visible Master users to master list
             visibleUsers.forEach(u => {
                 if (u.name.toLowerCase() === 'master') {
                     masterGroup.users.push(u);
                     serversWithMaster.add(u.server_id);
                 }
             });
-            // If group has other users NOT named Master (e.g. linked to Master but renamed?), 
-            // those should probably stay in regular list? 
-            // Req: "Master dovrà figurare in cima... fuori dai gruppi utenti".
-            // Implementation: We extract "Master" users.
         } else {
             if (visibleUsers.length > 0) {
                 regularGroups.push({ ...group, users: visibleUsers });
@@ -98,17 +102,13 @@ function renderEmbyUsers(data) {
     });
 
     // --- RENDER MASTER SECTION ---
-    // 1. Render actual Master users
     masterGroup.users.forEach(user => {
         const card = createUserCard(user, { isMaster: true });
         containerMaster.appendChild(card);
     });
 
-    // 2. Render placeholders for missing Masters (if filter allows)
     data.servers.forEach(server => {
-        // Skip check if we are filtering by a specific server and it's not this one
         if (serverFilter !== 'all' && server.id !== serverFilter) return;
-        
         if (!serversWithMaster.has(server.id)) {
             const tpl = document.getElementById('tpl-master-placeholder').content.cloneNode(true);
             tpl.querySelector('.server-name').textContent = server.name;
@@ -125,25 +125,64 @@ function renderEmbyUsers(data) {
         const groupEl = document.getElementById('tpl-group-container').content.cloneNode(true);
         groupEl.querySelector('.group-name').textContent = group.name;
         
+        // --- Profile Dropdown Logic ---
+        const select = groupEl.querySelector('.icon-profile-select');
+        if (select && currentIconData && currentIconData.profiles) {
+             currentIconData.profiles.forEach(p => {
+                 const opt = document.createElement('option');
+                 opt.value = p.id;
+                 opt.textContent = p.label;
+                 select.appendChild(opt);
+             });
+
+             // Determine current binding
+             let currentProfileId = '';
+             
+             if (group.is_linked) {
+                 // Group Binding
+                 if (currentIconData.bindings && currentIconData.bindings[`group:${group.id}`]) {
+                     currentProfileId = currentIconData.bindings[`group:${group.id}`];
+                 }
+             } else {
+                 // User Binding (for unlinked, check the single user)
+                 if (group.users.length > 0) {
+                     const u = group.users[0];
+                     if (currentIconData.bindings && currentIconData.bindings[`user:${u.server_id}:${u.user_id}`]) {
+                         currentProfileId = currentIconData.bindings[`user:${u.server_id}:${u.user_id}`];
+                     }
+                 }
+             }
+
+             if (currentProfileId) select.value = currentProfileId;
+
+             select.onchange = async (e) => {
+                 const newProfileId = e.target.value;
+                 const type = group.is_linked ? 'group' : 'user';
+                 const id = group.is_linked ? group.id : (group.users[0] ? `${group.users[0].server_id}:${group.users[0].user_id}` : null);
+                 
+                 if (id) {
+                     await saveIconBinding(type, id, newProfileId);
+                     // Reload users to see new icons
+                     loadEmbyUsers(true); 
+                 }
+             };
+        }
+
         if (!group.is_linked) {
-            // Hide "Linked" badge if it's just a single unlinked user (auto-group)
-            // Actually, `get_users_dashboard_data` groups unlinked by unique ID.
-            // So unlinked groups have 1 user.
+            // Unlinked (Single User)
             groupEl.querySelector('.badge').style.display = 'none';
-            // Make unlinked containers look less like groups
-            groupEl.querySelector('.group-container').style.background = 'transparent';
-            groupEl.querySelector('.group-container').style.border = 'none';
-            groupEl.querySelector('.group-container').style.padding = '0';
-            groupEl.querySelector('.group-header').style.display = 'none';
+            // We KEEP the header now to show the Dropdown, but maybe hide the name if redundant?
+            // Actually, keep the name so we know who it is in the header context too.
+            // But styling was transparent before.
+            // Let's make it look slightly cleaner but visible.
+            groupEl.querySelector('.group-container').style.background = 'rgba(255,255,255,0.02)';
+            groupEl.querySelector('.group-container').style.border = '1px solid var(--border-color)'; // Keep border
         } else {
-            // It is a linked group
             const count = group.users.length;
             groupEl.querySelector('.group-meta').textContent = `${count} utenti`;
         }
 
         const grid = groupEl.querySelector('.group-grid');
-        
-        // Sort users: Leader first
         group.users.sort((a, b) => (b.is_leader === true) - (a.is_leader === true));
 
         group.users.forEach(user => {
@@ -395,6 +434,7 @@ async function setGroupLeader(groupId, serverId, userId) {
         const res = await fetch('/api/emby/users/link', { method: 'POST', body: formData });
         if (res.ok) {
             loadEmbyUsers(); // Reload to see changes
+            if (currentIconData) loadIconManagement(); // Refresh icons if active
         } else {
             alert("Errore aggiornamento leader");
         }
@@ -402,6 +442,227 @@ async function setGroupLeader(groupId, serverId, userId) {
         alert("Errore: " + e.message);
     }
 }
+
+// --- ICON MANAGEMENT ---
+
+async function loadIconManagement() {
+    // Load both users and icon config to resolve bindings
+    await Promise.all([
+        loadEmbyUsers(true),
+        fetchIconConfig()
+    ]);
+    renderIconProfiles();
+}
+
+async function fetchIconConfig() {
+    try {
+        const res = await fetch('/api/emby/icons/config');
+        if (res.ok) {
+            currentIconData = await res.json();
+        }
+    } catch (e) {
+        console.error("Error loading icon config", e);
+    }
+}
+
+function renderIconProfiles() {
+    // Target the table structure defined in HTML
+    const tableHeadRow = document.querySelector('#icon-matrix-table thead tr');
+    const tableBody = document.getElementById('icon-matrix-body');
+    
+    if (!tableHeadRow || !tableBody) return;
+    
+    // Reset Header: Keep first th "Profilo"
+    tableHeadRow.innerHTML = '<th style="text-align: left; padding: 1rem; min-width: 250px;">Profilo</th>';
+    tableBody.innerHTML = '';
+    
+    if (!currentIconData || !currentIconData.profiles) return;
+    const servers = currentUsersData ? (currentUsersData.servers || []) : [];
+    
+    // Add Server Columns to Header
+    servers.forEach(s => {
+        const th = document.createElement('th');
+        th.style.textAlign = 'center';
+        th.style.padding = '1rem';
+        th.style.width = '120px';
+        th.style.background = 'rgba(255,255,255,0.02)';
+        th.textContent = s.name;
+        tableHeadRow.appendChild(th);
+    });
+    
+    // Add Rows (Profiles)
+    currentIconData.profiles.forEach(profile => {
+        const tr = document.createElement('tr');
+        tr.style.borderBottom = '1px solid var(--border-color)';
+        
+        // Profile Name Cell
+        const tdName = document.createElement('td');
+        tdName.style.padding = '1rem';
+        
+        // Flex container for name and delete button
+        const nameDiv = document.createElement('div');
+        nameDiv.style.display = 'flex';
+        nameDiv.style.justifyContent = 'space-between';
+        nameDiv.style.alignItems = 'center';
+        
+        const nameSpan = document.createElement('span');
+        nameSpan.textContent = profile.label;
+        nameSpan.style.fontWeight = '500';
+        
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn ghost compact danger-hover';
+        delBtn.title = 'Elimina Profilo';
+        delBtn.innerHTML = '<i class="fa-solid fa-trash"></i>';
+        delBtn.onclick = () => deleteIconProfile(profile.id);
+        
+        nameDiv.appendChild(nameSpan);
+        nameDiv.appendChild(delBtn);
+        tdName.appendChild(nameDiv);
+        tr.appendChild(tdName);
+        
+        // Server Cells
+        servers.forEach(server => {
+            const td = document.createElement('td');
+            td.style.textAlign = 'center';
+            td.style.padding = '0.5rem';
+            td.style.verticalAlign = 'middle';
+            
+            const iconPath = currentIconData.matrix[profile.id]?.[server.id];
+            
+            // Container for icon + upload
+            const cellDiv = document.createElement('div');
+            cellDiv.style.display = 'flex';
+            cellDiv.style.flexDirection = 'column';
+            cellDiv.style.alignItems = 'center';
+            cellDiv.style.gap = '0.5rem';
+            cellDiv.style.position = 'relative';
+            
+            // Hidden file input
+            const fileInput = document.createElement('input');
+            fileInput.type = 'file';
+            fileInput.style.display = 'none';
+            fileInput.accept = 'image/*';
+            fileInput.onchange = (e) => {
+                if (e.target.files[0]) uploadIconRule(profile.id, server.id, e.target.files[0]);
+            };
+            
+            if (iconPath) {
+                const imgContainer = document.createElement('div');
+                imgContainer.style.position = 'relative';
+                imgContainer.style.cursor = 'pointer';
+                imgContainer.title = 'Clicca per cambiare icona';
+                imgContainer.onclick = () => fileInput.click();
+
+                const img = document.createElement('img');
+                img.src = iconPath.startsWith('/') ? iconPath : `/static/${iconPath}`;
+                img.style.width = '48px';
+                img.style.height = '48px';
+                img.style.objectFit = 'cover';
+                img.style.borderRadius = '50%';
+                img.style.border = '2px solid var(--border-color)';
+                
+                const delRuleBtn = document.createElement('button');
+                delRuleBtn.className = 'btn ghost xs'; 
+                delRuleBtn.style.position = 'absolute';
+                delRuleBtn.style.top = '-5px';
+                delRuleBtn.style.right = '-10px';
+                delRuleBtn.style.background = 'var(--bg-card)';
+                delRuleBtn.style.border = '1px solid var(--border-color)';
+                delRuleBtn.style.borderRadius = '50%';
+                delRuleBtn.style.width = '20px';
+                delRuleBtn.style.height = '20px';
+                delRuleBtn.style.padding = '0';
+                delRuleBtn.style.fontSize = '0.7rem';
+                delRuleBtn.style.color = 'var(--color-danger)';
+                delRuleBtn.innerHTML = '<i class="fa-solid fa-times"></i>';
+                delRuleBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    deleteIconRule(profile.id, server.id);
+                };
+
+                imgContainer.appendChild(img);
+                imgContainer.appendChild(delRuleBtn);
+                cellDiv.appendChild(imgContainer);
+            } else {
+                const placeholder = document.createElement('div');
+                placeholder.style.width = '48px';
+                placeholder.style.height = '48px';
+                placeholder.style.borderRadius = '50%';
+                placeholder.style.background = 'rgba(255,255,255,0.05)';
+                placeholder.style.border = '1px dashed var(--text-muted)';
+                placeholder.style.display = 'flex';
+                placeholder.style.alignItems = 'center';
+                placeholder.style.justifyContent = 'center';
+                placeholder.innerHTML = '<i class="fa-solid fa-plus" style="font-size: 0.8rem; color: var(--text-muted);"></i>';
+                placeholder.style.cursor = 'pointer';
+                placeholder.title = 'Carica icona';
+                placeholder.onclick = () => fileInput.click();
+                cellDiv.appendChild(placeholder);
+            }
+            
+            cellDiv.appendChild(fileInput);
+            td.appendChild(cellDiv);
+            tr.appendChild(td);
+        });
+        
+        tableBody.appendChild(tr);
+    });
+}
+
+async function saveIconBinding(type, id, profileId) {
+    const formData = new FormData();
+    formData.append('target_type', type);
+    formData.append('target_id', id);
+    formData.append('profile_id', profileId);
+    await fetch('/api/emby/icons/binding', { method: 'POST', body: formData });
+    loadIconManagement();
+}
+
+async function uploadIconRule(profileId, serverId, file) {
+    const formData = new FormData();
+    formData.append('profile_id', profileId);
+    formData.append('column_key', serverId);
+    formData.append('file', file);
+    await fetch('/api/emby/icons/rule', { method: 'POST', body: formData });
+    loadIconManagement();
+}
+
+async function deleteIconRule(profileId, serverId) {
+    const formData = new FormData();
+    formData.append('profile_id', profileId);
+    formData.append('column_key', serverId);
+    await fetch('/api/emby/icons/rule', { method: 'DELETE', body: formData });
+    loadIconManagement();
+}
+
+async function deleteIconProfile(profileId) {
+    if(!confirm("Eliminare questo profilo?")) return;
+    const formData = new FormData();
+    formData.append('profile_id', profileId);
+    await fetch('/api/emby/icons/profile', { method: 'DELETE', body: formData });
+    loadIconManagement();
+}
+
+async function createIconProfile(label) {
+    const formData = new FormData();
+    formData.append('label', label);
+    await fetch('/api/emby/icons/profile', { method: 'POST', body: formData });
+    loadIconManagement();
+}
+
+// --- COMPATIBILITY FIX ---
+// Mappa le funzioni chiamate dall'HTML alle nuove implementazioni
+window.loadIconConfig = loadIconManagement;
+
+window.addIconProfile = async function() {
+    const label = prompt("Nome del nuovo Profilo Icone:");
+    if (label === null) return;
+    if (!label.trim()) {
+        alert("Il nome è obbligatorio.");
+        return;
+    }
+    await createIconProfile(label);
+};
 
 // --- SELECTION & BULK ACTIONS ---
 
@@ -573,4 +834,51 @@ async function openSyncModal() {
         msg += `Playstate: ${json.results.playstate.success.length} Server aggiornati.`;
     }
     alert(msg);
+}
+
+async function openCloneModal() {
+    const selected = getSelectedUsers();
+    if (selected.length !== 1) {
+        alert("Seleziona un solo utente sorgente per la clonazione (o il leader del gruppo).");
+        return;
+    }
+    const source = selected[0];
+    
+    // Get available servers (from filter dropdown which has all servers)
+    const servers = Array.from(document.querySelectorAll('#filter-server option'))
+        .map(o => ({id: o.value, name: o.textContent}))
+        .filter(s => s.id !== 'all' && s.id !== source.server_id);
+        
+    if (servers.length === 0) {
+        alert("Nessun altro server disponibile per la clonazione.");
+        return;
+    }
+    
+    const serverList = servers.map((s, i) => `${i+1}: ${s.name}`).join('\n');
+    const choice = prompt(`Scegli server di destinazione per clonare ${source.username}:\n${serverList}`);
+    if (!choice) return;
+    const idx = parseInt(choice) - 1;
+    
+    if (isNaN(idx) || idx < 0 || idx >= servers.length) return;
+    const targetServer = servers[idx];
+    
+    if (!confirm(`Clonare l'utente ${source.username} su ${targetServer.name}?`)) return;
+    
+    const formData = new FormData();
+    formData.append('source_server_id', source.server_id);
+    formData.append('source_user_id', source.user_id);
+    formData.append('target_server_id', targetServer.id);
+    
+    try {
+        const res = await fetch('/api/emby/users/clone', { method: 'POST', body: formData });
+        const json = await res.json();
+        if (json.ok) {
+            alert(`Utente clonato con successo.\nPlaystate Sync: ${json.result.playstate_stats.success.length} OK.`);
+            loadEmbyUsers(true);
+        } else {
+            alert("Errore clonazione: " + (json.error || "Sconosciuto"));
+        }
+    } catch (e) {
+        alert("Errore: " + e.message);
+    }
 }

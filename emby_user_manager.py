@@ -3,7 +3,9 @@ Manager for Emby Users, handling sync, policies, and multi-server orchestration.
 """
 import uuid
 import logging
-from typing import List, Dict, Any, Optional
+import os
+import shutil
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
 from api_clients import (
@@ -14,9 +16,11 @@ from api_clients import (
     _fetch_emby_user_items_for_sync,
     _mark_emby_item_played,
     _create_emby_user,
-    _call_emby_api
+    _call_emby_api,
+    _emby_base_url
 )
 from storage import DatabaseStorage
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +28,45 @@ class EmbyUserManager:
     def __init__(self, storage: DatabaseStorage, config: Dict[str, Any]):
         self.storage = storage
         self.config = config
+        self._ensure_icon_dir()
+        self._migrate_icons_to_db()
+
+    def _ensure_icon_dir(self):
+        self.icon_dir = os.path.join(os.getcwd(), "static", "user_icons")
+        os.makedirs(self.icon_dir, exist_ok=True)
+
+    def _migrate_icons_to_db(self):
+        """
+        Migrates existing file-based icons to the database.
+        """
+        try:
+            rules = self.storage.get_icon_rules()
+            for rule in rules:
+                if not rule.get("has_data") and rule.get("icon_path"):
+                    # It has a path but no data in DB. Try to load from file.
+                    path = rule["icon_path"]
+                    # If path starts with /api/, it's already migrated URL but maybe no data? 
+                    # No, if it was migrated, has_data should be true.
+                    # Current path format: "user_icons/filename"
+                    if path.startswith("user_icons/"):
+                        full_path = os.path.join(os.getcwd(), "static", path)
+                        if os.path.exists(full_path):
+                            try:
+                                with open(full_path, "rb") as f:
+                                    data = f.read()
+                                mime = "image/png"
+                                if full_path.lower().endswith(".jpg") or full_path.lower().endswith(".jpeg"):
+                                    mime = "image/jpeg"
+                                
+                                # Update DB
+                                # Use new URL format for path
+                                new_path = f"/api/emby/icons/image/{rule['profile_id']}/{rule['column_key']}"
+                                self.storage.save_icon_rule(rule['profile_id'], rule['column_key'], new_path, data, mime)
+                                logger.info(f"Migrated icon to DB: {full_path}")
+                            except Exception as e:
+                                logger.error(f"Failed to migrate icon {full_path}: {e}")
+        except Exception as e:
+             logger.error(f"Migration error: {e}")
 
     def _get_server_by_id(self, server_id: str) -> Optional[Dict[str, Any]]:
         servers = self.config.get("EMBY", {}).get("SERVERS", [])
@@ -31,6 +74,302 @@ class EmbyUserManager:
             if s.get("id") == server_id:
                 return s
         return None
+
+    # --- ICON MANAGEMENT START ---
+
+    def get_icon_dashboard_data(self) -> Dict[str, Any]:
+        """
+        Returns all data needed to render the Icon Matrix UI.
+        """
+        profiles = self.storage.get_icon_profiles()
+        rules = self.storage.get_icon_rules()
+        bindings = self.storage.get_icon_bindings()
+        
+        # Organize rules into a matrix structure: {profile_id: {column_key: icon_path}}
+        matrix = {}
+        for r in rules:
+            if r["profile_id"] not in matrix:
+                matrix[r["profile_id"]] = {}
+            # Return the stored path (which should be the API URL now)
+            matrix[r["profile_id"]][r["column_key"]] = r["icon_path"]
+
+        # Organize bindings: {target_key: profile_id}
+        # target_key for single user: "user:server_id:user_id" -> Wait, actually "user:user_id"
+        # target_key for group: "group:group_id"
+        binding_map = {}
+        for b in bindings:
+            key = f"{b['target_type']}:{b['target_id']}"
+            binding_map[key] = b["profile_id"]
+
+        return {
+            "profiles": profiles,
+            "matrix": matrix,
+            "bindings": binding_map
+        }
+
+    def save_icon_profile(self, label: str, is_group_profile: bool = False, profile_id: Optional[str] = None) -> str:
+        if not profile_id:
+            profile_id = str(uuid.uuid4())
+        self.storage.save_icon_profile(profile_id, label, False) # Universal template (is_group_profile ignored/false)
+        return profile_id
+
+    def delete_icon_profile(self, profile_id: str) -> None:
+        self.storage.delete_icon_profile(profile_id)
+
+    def save_icon_binding(self, target_type: str, target_id: str, profile_id: str) -> None:
+        """
+        Binds a User or Group to a Profile and triggers sync.
+        """
+        self.storage.save_icon_binding(target_type, target_id, profile_id)
+        self._sync_icons_for_binding(target_type, target_id)
+
+    def save_icon_rule(self, profile_id: str, column_key: str, file_storage) -> str:
+        """
+        Saves an uploaded icon file to DB and creates the rule. Triggers sync.
+        file_storage: FastAPI UploadFile or similar
+        """
+        # Read file content
+        file_storage.file.seek(0)
+        data = file_storage.file.read()
+        
+        filename = file_storage.filename or "icon.png"
+        mime_type = file_storage.content_type or "image/png"
+        
+        # Determine strict mime from extension if content_type is generic
+        ext = os.path.splitext(filename)[1].lower()
+        if ext in ['.jpg', '.jpeg']:
+            mime_type = "image/jpeg"
+        elif ext == '.png':
+            mime_type = "image/png"
+            
+        # New API URL Path
+        rel_path = f"/api/emby/icons/image/{profile_id}/{column_key}"
+        
+        self.storage.save_icon_rule(profile_id, column_key, rel_path, data, mime_type)
+        self._sync_icons_for_rule(profile_id, column_key)
+        return rel_path
+
+    def delete_icon_rule(self, profile_id: str, column_key: str) -> None:
+        """
+        Deletes a rule (cell) and data from DB.
+        Note: Does NOT revert the icon on Emby (per specs "No action if empty").
+        """
+        self.storage.delete_icon_rule(profile_id, column_key)
+
+    def get_icon_image(self, profile_id: str, column_key: str) -> Optional[Tuple[bytes, str]]:
+        """
+        Retrieves the binary image data and mime type.
+        """
+        return self.storage.get_icon_rule_data(profile_id, column_key)
+
+    def _sync_icons_for_rule(self, profile_id: str, column_key: str):
+        """
+        Syncs all users affected by a specific rule change (cell change).
+        """
+        self._apply_icon_logic(filter_profile_id=profile_id, filter_column_key=column_key)
+
+    def _sync_icons_for_binding(self, target_type: str, target_id: str):
+        """
+        Syncs users affected by a binding change.
+        """
+        self._apply_icon_logic(filter_target_type=target_type, filter_target_id=target_id)
+
+    def sync_all_icons(self):
+        """
+        Syncs everything.
+        """
+        self._apply_icon_logic()
+
+    def _apply_icon_logic(self, filter_profile_id=None, filter_column_key=None, filter_target_type=None, filter_target_id=None):
+        """
+        Core logic to determine and upload icons.
+        Refactored to follow the deterministic model:
+        Profile x ReferenceServer -> Icon
+        """
+        # 1. Get all context data
+        dashboard_data = self.get_users_dashboard_data()
+        groups = dashboard_data["groups"]
+        bindings = self.storage.get_icon_bindings()
+        
+        # Map bindings for quick lookup
+        # group binding: "group:GROUP_ID" -> profile_id
+        # user binding: "user:SERVER_ID:USER_ID" -> profile_id
+        binding_map = {f"{b['target_type']}:{b['target_id']}": b['profile_id'] for b in bindings}
+        
+        # Map rules: profile_id -> { col_key: icon_path }
+        rules = self.storage.get_icon_rules()
+        rule_map = {}
+        for r in rules:
+            if r['profile_id'] not in rule_map:
+                rule_map[r['profile_id']] = {}
+            rule_map[r['profile_id']][r['column_key']] = r['icon_path']
+
+        # 2. Iterate all users in all groups
+        for group in groups:
+            group_id = group["id"]
+            
+            # Determine Group Profile
+            group_profile_id = binding_map.get(f"group:{group_id}")
+            
+            # Determine Group Reference Server (from Leader)
+            leader_user = next((u for u in group["users"] if u.get("is_leader")), None)
+            
+            group_ref_server_id = leader_user["server_id"] if leader_user else None
+
+            for user in group["users"]:
+                server_id = user["server_id"]
+                user_id = user["user_id"]
+                
+                # Check filters (optimization)
+                if filter_target_type == "group" and filter_target_id != group_id:
+                    continue
+                if filter_target_type == "user" and filter_target_id != f"{server_id}:{user_id}":
+                    continue
+                
+                # ALGORITHM: Determine Profile & Reference Server
+                profile_id = None
+                reference_server_id = None
+                is_group_application = False
+                
+                if group_profile_id:
+                    # Group Binding
+                    if not group_ref_server_id:
+                        logger.warning(f"[ICON_LOGIC] Group {group['name']} ({group_id}) has binding but NO LEADER. Skipping.")
+                        continue
+                    profile_id = group_profile_id
+                    reference_server_id = group_ref_server_id
+                    is_group_application = True
+
+                else:
+                    # User Binding
+                    user_binding_key = f"user:{server_id}:{user_id}"
+                    user_profile_id = binding_map.get(user_binding_key)
+                    if user_profile_id:
+                        profile_id = user_profile_id
+                        reference_server_id = server_id
+                        is_group_application = False
+                
+                # Debug logging for single users (or all)
+                if not is_group_application:
+                   logger.info(f"[ICON_DEBUG] Check User: {user['name']} | Key={user_binding_key} | Profile={profile_id}")
+
+                if not profile_id:
+                    continue
+
+                if filter_profile_id and filter_profile_id != profile_id:
+                    continue
+
+                # Filter by Column Key (Reference Server)
+                # We only proceed if the changed column matches our reference server
+                if filter_column_key and filter_column_key != reference_server_id:
+                    continue
+
+                # Resolve Icon
+                # icon = matrix[profile_id][reference_server_id]
+                icon_path = rule_map.get(profile_id, {}).get(reference_server_id)
+                
+                # Debug Logging (Mandatory for Groups)
+                if is_group_application:
+                    logger.info(
+                        f"[ICON_DEBUG] Group Apply: "
+                        f"Group={group['name']} | "
+                        f"Leader={(leader_user['name'] if leader_user else 'Unknown')}@{group_ref_server_id} | "
+                        f"Member={user['name']}@{server_id} | "
+                        f"Profile={profile_id} | "
+                        f"RefServer={reference_server_id} | "
+                        f"Icon={'FOUND' if icon_path else 'EMPTY'}"
+                    )
+ 
+                # Apply         
+                if icon_path:
+                    # Upload to the USER'S server (upload_server_id = user.server_id)
+                    # Use profile_id and reference_server_id (column_key) to fetch data
+                    self._upload_icon_to_emby(server_id, user_id, profile_id, reference_server_id)
+
+    def _upload_icon_to_emby(self, server_id: str, user_id: str, profile_id: str, column_key: str):
+        import base64
+        
+        server = self._get_server_by_id(server_id)
+        if not server:
+            logger.error(f"[ICON_UPLOAD] Server not found: {server_id}")
+            return
+
+        # 1. READ & ENCODE from DB
+        try:
+            data_tuple = self.get_icon_image(profile_id, column_key)
+            if not data_tuple:
+                 logger.error(f"[ICON_UPLOAD] Icon data not found for {profile_id}/{column_key}")
+                 return
+            
+            raw_bytes, mime_type = data_tuple
+            b64_data = base64.b64encode(raw_bytes) # This is bytes
+        except Exception as e:
+            logger.error(f"[ICON_UPLOAD] Failed to read/encode file: {e}")
+            return
+
+        base_url = _emby_base_url(server)
+        token = server.get("api_key")
+        
+        user_url = f"{base_url}/Users/{user_id}"
+        image_url = f"{base_url}/Users/{user_id}/Images/Primary"
+        headers = {"X-Emby-Token": token}
+
+        # 2. PRE-CHECK
+        old_tag = "N/A"
+        try:
+            r = requests.get(user_url, headers=headers, timeout=10)
+            if r.ok:
+                old_tag = r.json().get("PrimaryImageTag", "None")
+            logger.info(f"[ICON_UPLOAD] Pre-check {user_id}@{server['name']}: OldTag={old_tag}")
+        except Exception as e:
+            logger.warning(f"[ICON_UPLOAD] Pre-check failed: {e}")
+
+        # 3. DELETE (Robustness)
+        try:
+            # logger.info(f"[ICON_UPLOAD] Deleting existing Primary image...")
+            r_del = requests.delete(image_url, headers=headers, timeout=10)
+            # if r_del.ok:
+            #     logger.info(f"[ICON_UPLOAD] Delete success ({r_del.status_code})")
+        except Exception as e:
+            pass
+
+        # 4. UPLOAD (POST Base64)
+        headers["Content-Type"] = mime_type 
+        
+        try:
+            logger.info(f"[ICON_UPLOAD] Uploading Base64 to {image_url} (Size: {len(b64_data)})")
+            
+            response = requests.post(image_url, headers=headers, data=b64_data, timeout=30)
+            
+            if not response.ok:
+                logger.error(f"[ICON_UPLOAD] Status: {response.status_code} - {response.text}")
+            
+            response.raise_for_status()
+            
+        except Exception as e:
+            logger.error(f"[ICON_UPLOAD] Upload Failed: {e}")
+            return
+
+        # 5. VERIFY
+        try:
+            r = requests.get(user_url, headers={"X-Emby-Token": token}, timeout=10)
+            new_tag = "N/A"
+            if r.ok:
+                new_tag = r.json().get("PrimaryImageTag", "None")
+            
+            logger.info(f"[ICON_UPLOAD] Post-check: NewTag={new_tag}")
+            
+            if new_tag != old_tag:
+                 logger.info(f"[ICON_UPLOAD] SUCCESS: Tag changed {old_tag} -> {new_tag}")
+            elif new_tag == "None":
+                 logger.warning(f"[ICON_UPLOAD] FAILURE: Tag is None (Image not set?)")
+            else:
+                 pass # Same tag is possible if same image?
+                 
+        except Exception as e:
+            logger.warning(f"[ICON_UPLOAD] Verify failed: {e}")
+
+    # --- ICON MANAGEMENT END ---
 
     def get_users_dashboard_data(self) -> Dict[str, Any]:
         """

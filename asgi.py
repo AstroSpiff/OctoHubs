@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from queue import Queue, Empty
 from typing import Optional, Dict
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, Form, Depends
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, Form, Depends, UploadFile, File
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -1881,6 +1881,101 @@ async def api_emby_users_sync(
             results["playstate"] = manager.sync_user_playstate(source_server_id, source_user_id, targets)
         
     return {"ok": True, "results": results}
+
+
+# --- ICON MANAGEMENT ROUTES ---
+
+@fastapi_app.get("/api/emby/icons/config")
+async def api_emby_icons_config(user=Depends(require_user)):
+    manager = get_emby_user_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
+    return manager.get_icon_dashboard_data()
+
+@fastapi_app.get("/api/emby/icons/image/{profile_id}/{column_key}")
+async def api_emby_icons_image(
+    profile_id: str,
+    column_key: str,
+    request: Request
+):
+    user = _get_current_user(request)
+    if not user:
+        return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+    manager = get_emby_user_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
+
+    data_tuple = manager.get_icon_image(profile_id, column_key)
+    if not data_tuple:
+        return JSONResponse(status_code=404, content={"error": "Icon not found"})
+    
+    data, mime_type = data_tuple
+    import io
+    return StreamingResponse(io.BytesIO(data), media_type=mime_type)
+
+@fastapi_app.post("/api/emby/icons/profile")
+async def api_emby_icons_profile_save(
+    profile_id: str = Form(""),
+    label: str = Form(...),
+    is_group_profile: bool = Form(False),
+    user=Depends(require_user)
+):
+    manager = get_emby_user_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
+    new_id = manager.save_icon_profile(label, is_group_profile, profile_id)
+    return {"ok": True, "profile_id": new_id}
+
+@fastapi_app.delete("/api/emby/icons/profile")
+async def api_emby_icons_profile_delete(
+    profile_id: str = Form(...),
+    user=Depends(require_user)
+):
+    manager = get_emby_user_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
+    manager.delete_icon_profile(profile_id)
+    return {"ok": True}
+
+@fastapi_app.post("/api/emby/icons/binding")
+async def api_emby_icons_binding_save(
+    target_type: str = Form(...),
+    target_id: str = Form(...),
+    profile_id: str = Form(...),
+    user=Depends(require_user)
+):
+    manager = get_emby_user_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
+    manager.save_icon_binding(target_type, target_id, profile_id)
+    return {"ok": True}
+
+@fastapi_app.post("/api/emby/icons/rule")
+async def api_emby_icons_rule_save(
+    profile_id: str = Form(...),
+    column_key: str = Form(...),
+    file: UploadFile = File(...),
+    user=Depends(require_user)
+):
+    manager = get_emby_user_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
+    
+    path = manager.save_icon_rule(profile_id, column_key, file)
+    return {"ok": True, "icon_path": path}
+
+@fastapi_app.delete("/api/emby/icons/rule")
+async def api_emby_icons_rule_delete(
+    profile_id: str = Form(...),
+    column_key: str = Form(...),
+    user=Depends(require_user)
+):
+    manager = get_emby_user_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
+    manager.delete_icon_rule(profile_id, column_key)
+    return {"ok": True}
 
 
 @fastapi_app.post("/api/emby/users/clone")

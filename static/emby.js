@@ -411,6 +411,7 @@
             this.handlers.clear();
         }
     };
+    window.ScanWebSocketClient = ScanWebSocketClient;
 
     // Connect ScanWebSocketClient on page load
     ScanWebSocketClient.connect();
@@ -1165,6 +1166,7 @@
             }
         }
     };
+    window.ScanTracker = ScanTracker;
 
     // Custom confirmation dialog without "don't show again" option
     const showConfirmDialog = (message) => {
@@ -1420,6 +1422,15 @@
                 localStorage.setItem('embyActiveTab', target);
                 if (target === 'latest') {
                     loadLatestReleases();
+                }
+                if (target === 'users') {
+                    if (typeof window.loadEmbyUsers === 'function') {
+                        window.loadEmbyUsers().then(() => {
+                             if (typeof window.renderIconProfiles === 'function') {
+                                 window.renderIconProfiles();
+                             }
+                        });
+                    }
                 }
             };
             tabButtons.forEach(btn => {
@@ -6589,7 +6600,11 @@
                 console.log('[SCAN_RESUME] Resuming job:', job.job_id, 'in container:', container);
 
                 // Riaggancia tracking con WebSocket
-                ScanTracker.startTracking(job.job_id, container, job.group_name);
+                if (window.ScanTracker) {
+                    window.ScanTracker.startTracking(job.job_id, container, job.group_name);
+                } else {
+                    console.error('[SCAN_RESUME] ScanTracker not found on window object');
+                }
 
                 // Mostra progress bar con stato corrente
                 const progressElement = container.querySelector('[data-scan-progress]');
@@ -6646,7 +6661,7 @@
     // Esegui resume quando WebSocket è connesso
     // Aspetta che ScanWebSocketClient sia pronto (max 5s)
     function waitForWebSocketAndResume() {
-        if (ScanWebSocketClient.isConnected) {
+        if (window.ScanWebSocketClient && window.ScanWebSocketClient.isConnected) {
             resumeActiveScans();
         } else {
             const maxWait = 5000; // 5 secondi
@@ -6656,7 +6671,7 @@
             const interval = setInterval(() => {
                 elapsed += checkInterval;
 
-                if (ScanWebSocketClient.isConnected) {
+                if (window.ScanWebSocketClient && window.ScanWebSocketClient.isConnected) {
                     clearInterval(interval);
                     resumeActiveScans();
                 } else if (elapsed >= maxWait) {

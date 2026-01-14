@@ -224,6 +224,38 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- ICON MANAGEMENT SECTION -->
+                <div class="card" id="icon-management-card">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                        <div>
+                            <h2>Gestione Icone Utente</h2>
+                            <p class="tagline">Gestisci i template grafici (Profili) e le regole di assegnazione (Binding) per gruppi e utenti singoli.</p>
+                        </div>
+                        <div class="actions">
+                            <button class="btn primary compact" onclick="addIconProfile()">
+                                <i class="fa-solid fa-plus"></i> Nuovo Profilo
+                            </button>
+                            <button class="btn secondary compact" onclick="loadIconConfig()">
+                                <i class="fa-solid fa-rotate"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="icon-profiles-container" class="icon-matrix-container" style="overflow-x: auto; margin-bottom: 1.5rem;">
+                        <table class="icon-matrix-table" id="icon-matrix-table" style="width: 100%; border-collapse: collapse; min-width: 800px;">
+                            <thead>
+                                <tr style="border-bottom: 2px solid var(--border-color);">
+                                    <th style="text-align: left; padding: 1rem; min-width: 250px;">Profilo</th>
+                                    <!-- Server columns injected via JS -->
+                                </tr>
+                            </thead>
+                            <tbody id="icon-matrix-body">
+                                <!-- Rows injected via JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
 
             <!-- Sticky Actions Bar -->
@@ -1326,7 +1358,12 @@
                     <span class="group-name" style="font-weight: bold; font-size: 1.1rem;"></span>
                     <span class="badge" style="background: var(--color-primary); color: white; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.7rem;">Linked</span>
                 </div>
-                <div class="group-meta text-muted small"></div>
+                <div style="display: flex; align-items: center; gap: 1rem;">
+                    <select class="icon-profile-select" style="padding: 0.25rem 0.5rem; border-radius: 4px; border: 1px solid var(--border-color); background: var(--bg-input); color: var(--text-main); font-size: 0.85rem;">
+                        <option value="">Seleziona Profilo Icona...</option>
+                    </select>
+                    <div class="group-meta text-muted small"></div>
+                </div>
             </div>
             <div class="group-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem;"></div>
         </div>
@@ -1344,7 +1381,7 @@
         </div>
     </template>
 
-    <script src="{{ url_for('static', filename='emby_users.js') }}?v=20260108-2200"></script>
+    <script src="{{ url_for('static', filename='emby_users.js') }}?v=20260113-icon-mgmt"></script>
     <script src="{{ url_for('static', filename='emby.js') }}?v=20260110-verify-fix"></script>
 </body>
 </html>

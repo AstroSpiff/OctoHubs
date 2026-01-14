@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 try:
-    from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String, Text, create_engine, func, or_, text
+    from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String, Text, LargeBinary, create_engine, func, or_, text
     from sqlalchemy.exc import SQLAlchemyError
     from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -183,6 +183,29 @@ if SQLALCHEMY_AVAILABLE:
         data = Column(JSON, nullable=False)  # type: ignore[assignment]
         created_at = Column(DateTime, default=_utcnow, nullable=False)  # type: ignore[assignment]
 
+    class EmbyIconProfile(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "emby_icon_profiles"
+        id = Column(String(36), primary_key=True)  # type: ignore[assignment]
+        label = Column(String(255), nullable=False)  # type: ignore[assignment]
+        is_group_profile = Column(Boolean, default=False, nullable=False)  # type: ignore[assignment]
+        updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
+
+    class EmbyIconRule(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "emby_icon_rules"
+        profile_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
+        column_key = Column(String(36), primary_key=True)  # type: ignore[assignment] # 'admin' or server_id
+        icon_path = Column(String(1000), nullable=False)  # type: ignore[assignment]
+        image_data = Column(LargeBinary)  # type: ignore[assignment]
+        mime_type = Column(String(50))  # type: ignore[assignment]
+        updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
+
+    class EmbyIconBinding(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "emby_icon_bindings"
+        target_type = Column(String(20), primary_key=True)  # type: ignore[assignment] # 'user' or 'group'
+        target_id = Column(String(255), primary_key=True)  # type: ignore[assignment] # group_id OR "server_id:user_id"
+        profile_id = Column(String(36), nullable=False, index=True)  # type: ignore[assignment]
+        updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
+
 
 def is_sqlalchemy_available() -> bool:
     return SQLALCHEMY_AVAILABLE
@@ -272,6 +295,13 @@ class DatabaseStorage:
                 # User Link/Backup migrations
                 conn.execute(text(
                     "ALTER TABLE emby_user_links ADD COLUMN IF NOT EXISTS is_leader BOOLEAN DEFAULT FALSE"
+                ))
+                # Icon Rules migrations
+                conn.execute(text(
+                    "ALTER TABLE emby_icon_rules ADD COLUMN IF NOT EXISTS image_data BYTEA" if "postgresql" in self.url else "ALTER TABLE emby_icon_rules ADD COLUMN IF NOT EXISTS image_data BLOB"
+                ))
+                conn.execute(text(
+                    "ALTER TABLE emby_icon_rules ADD COLUMN IF NOT EXISTS mime_type VARCHAR(50)"
                 ))
         except SQLAlchemyError as exc:  # pragma: no cover
             raise StorageError(f"Errore migrazioni DB: {exc}") from exc
@@ -1568,6 +1598,172 @@ class DatabaseStorage:
         except SQLAlchemyError as exc:  # pragma: no cover
             session.rollback()
             raise StorageError(f"Errore eliminazione key: {exc}") from exc
+        finally:
+            session.close()
+
+    # --- Icon Management ---
+
+    def get_icon_profiles(self) -> list[Dict[str, Any]]:
+        session = self._get_session()
+        try:
+            entries = session.query(EmbyIconProfile).all()
+            return [
+                {
+                    "id": entry.id,
+                    "label": entry.label,
+                    "is_group_profile": bool(entry.is_group_profile)
+                }
+                for entry in entries
+            ]
+        finally:
+            session.close()
+
+    def save_icon_profile(self, profile_id: str, label: str, is_group_profile: bool) -> None:
+        session = self._get_session()
+        try:
+            entry = session.get(EmbyIconProfile, profile_id)
+            if entry:
+                entry.label = label  # type: ignore[assignment]
+                entry.is_group_profile = is_group_profile  # type: ignore[assignment]
+            else:
+                new_entry = EmbyIconProfile(
+                    id=profile_id,
+                    label=label,
+                    is_group_profile=is_group_profile
+                )
+                session.add(new_entry)
+            session.commit()
+        except SQLAlchemyError as exc:
+            session.rollback()
+            raise StorageError(f"Error saving icon profile: {exc}") from exc
+        finally:
+            session.close()
+
+    def delete_icon_profile(self, profile_id: str) -> None:
+        session = self._get_session()
+        try:
+            # Cascading deletes (manual)
+            session.query(EmbyIconRule).filter(EmbyIconRule.profile_id == profile_id).delete()  # type: ignore
+            session.query(EmbyIconBinding).filter(EmbyIconBinding.profile_id == profile_id).delete()  # type: ignore
+            session.query(EmbyIconProfile).filter(EmbyIconProfile.id == profile_id).delete()  # type: ignore
+            session.commit()
+        except SQLAlchemyError as exc:
+            session.rollback()
+            raise StorageError(f"Error deleting icon profile: {exc}") from exc
+        finally:
+            session.close()
+
+    def get_icon_rules(self) -> list[Dict[str, Any]]:
+        session = self._get_session()
+        try:
+            entries = session.query(EmbyIconRule).all()
+            return [
+                {
+                    "profile_id": entry.profile_id,
+                    "column_key": entry.column_key,
+                    "icon_path": entry.icon_path,
+                    "mime_type": entry.mime_type,
+                    "has_data": entry.image_data is not None
+                }
+                for entry in entries
+            ]
+        finally:
+            session.close()
+
+    def save_icon_rule(self, profile_id: str, column_key: str, icon_path: str, image_data: Optional[bytes] = None, mime_type: Optional[str] = None) -> None:
+        session = self._get_session()
+        try:
+            entry = session.get(EmbyIconRule, (profile_id, column_key))
+            if entry:
+                entry.icon_path = icon_path  # type: ignore[assignment]
+                if image_data is not None:
+                    entry.image_data = image_data # type: ignore[assignment]
+                if mime_type is not None:
+                    entry.mime_type = mime_type # type: ignore[assignment]
+            else:
+                new_entry = EmbyIconRule(
+                    profile_id=profile_id,
+                    column_key=column_key,
+                    icon_path=icon_path,
+                    image_data=image_data,
+                    mime_type=mime_type
+                )
+                session.add(new_entry)
+            session.commit()
+        except SQLAlchemyError as exc:
+            session.rollback()
+            raise StorageError(f"Error saving icon rule: {exc}") from exc
+        finally:
+            session.close()
+
+    def delete_icon_rule(self, profile_id: str, column_key: str) -> None:
+        session = self._get_session()
+        try:
+            entry = session.get(EmbyIconRule, (profile_id, column_key))
+            if entry:
+                session.delete(entry)
+                session.commit()
+        except SQLAlchemyError as exc:
+            session.rollback()
+            raise StorageError(f"Error deleting icon rule: {exc}") from exc
+        finally:
+            session.close()
+
+    def get_icon_rule_data(self, profile_id: str, column_key: str) -> Optional[Tuple[bytes, str]]:
+        session = self._get_session()
+        try:
+            entry = session.get(EmbyIconRule, (profile_id, column_key))
+            if entry and entry.image_data:
+                return entry.image_data, (entry.mime_type or "image/png")
+            return None
+        finally:
+            session.close()
+
+    def get_icon_bindings(self) -> list[Dict[str, Any]]:
+        session = self._get_session()
+        try:
+            entries = session.query(EmbyIconBinding).all()
+            return [
+                {
+                    "target_type": entry.target_type,
+                    "target_id": entry.target_id,
+                    "profile_id": entry.profile_id
+                }
+                for entry in entries
+            ]
+        finally:
+            session.close()
+
+    def save_icon_binding(self, target_type: str, target_id: str, profile_id: str) -> None:
+        session = self._get_session()
+        try:
+            entry = session.get(EmbyIconBinding, (target_type, target_id))
+            if entry:
+                entry.profile_id = profile_id  # type: ignore[assignment]
+            else:
+                new_entry = EmbyIconBinding(
+                    target_type=target_type,
+                    target_id=target_id,
+                    profile_id=profile_id
+                )
+                session.add(new_entry)
+            session.commit()
+        except SQLAlchemyError as exc:
+            session.rollback()
+            raise StorageError(f"Error saving icon binding: {exc}") from exc
+        finally:
+            session.close()
+
+    def delete_icon_binding(self, target_type: str, target_id: str) -> None:
+        session = self._get_session()
+        try:
+            entry = session.get(EmbyIconBinding, (target_type, target_id))
+            if entry:
+                session.delete(entry)
+                session.commit()
+        except SQLAlchemyError as exc:
+            session.rollback()
+            raise StorageError(f"Error deleting icon binding: {exc}") from exc
         finally:
             session.close()
 
