@@ -294,7 +294,7 @@ class EmbyUserManager:
             logger.error(f"[ICON_UPLOAD] Server not found: {server_id}")
             return
 
-        # 1. READ & ENCODE from DB
+        # 1. READ from DB
         try:
             data_tuple = self.get_icon_image(profile_id, column_key)
             if not data_tuple:
@@ -302,9 +302,10 @@ class EmbyUserManager:
                  return
             
             raw_bytes, mime_type = data_tuple
-            b64_data = base64.b64encode(raw_bytes) # This is bytes
+            # Emby expects BASE64 String in the body for /Images/Primary (despite some docs saying otherwise)
+            b64_data = base64.b64encode(raw_bytes)
         except Exception as e:
-            logger.error(f"[ICON_UPLOAD] Failed to read/encode file: {e}")
+            logger.error(f"[ICON_UPLOAD] Failed to read file: {e}")
             return
 
         base_url = _emby_base_url(server)
@@ -325,19 +326,16 @@ class EmbyUserManager:
             logger.warning(f"[ICON_UPLOAD] Pre-check failed: {e}")
 
         # 3. DELETE (Robustness)
-        try:
-            # logger.info(f"[ICON_UPLOAD] Deleting existing Primary image...")
-            r_del = requests.delete(image_url, headers=headers, timeout=10)
-            # if r_del.ok:
-            #     logger.info(f"[ICON_UPLOAD] Delete success ({r_del.status_code})")
-        except Exception as e:
-            pass
+        # try:
+        #     r_del = requests.delete(image_url, headers=headers, timeout=10)
+        # except Exception as e:
+        #     pass
 
         # 4. UPLOAD (POST Base64)
-        headers["Content-Type"] = mime_type 
+        headers["Content-Type"] = mime_type # e.g. image/png or image/jpeg
         
         try:
-            logger.info(f"[ICON_UPLOAD] Uploading Base64 to {image_url} (Size: {len(b64_data)})")
+            logger.info(f"[ICON_UPLOAD] Uploading Base64 to {image_url} (Original Size: {len(raw_bytes)})")
             
             response = requests.post(image_url, headers=headers, data=b64_data, timeout=30)
             

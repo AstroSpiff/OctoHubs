@@ -261,7 +261,7 @@ function renderEmbyUsers(data) {
                  if (id) {
                      await saveIconBinding(type, id, newProfileId);
                      // Reload users to see new icons
-                     loadEmbyUsers(true); 
+                     // loadEmbyUsers(true); 
                  }
              };
         }
@@ -283,8 +283,37 @@ function renderEmbyUsers(data) {
         const grid = groupEl.querySelector('.group-grid');
         group.users.sort((a, b) => (b.is_leader === true) - (a.is_leader === true));
 
+        // Find leader's server ID if group is linked
+        let leaderServerId = null;
+        if (group.is_linked) {
+             const leader = group.users.find(u => u.is_leader);
+             if (leader) leaderServerId = leader.server_id;
+             // Fallback if no leader found
+             if (!leaderServerId && group.users.length > 0) leaderServerId = group.users[0].server_id;
+        }
+
         group.users.forEach(user => {
-            const card = createUserCard(user, { isLinked: group.is_linked, groupId: group.id });
+            // Resolve Icon dynamically based on current bindings
+            let iconUrl = user.image_url;
+            if (currentIconData && currentIconData.bindings && currentIconData.matrix) {
+                let profileId = null;
+                let targetServerId = user.server_id; // Default: user's own server
+
+                if (group.is_linked) {
+                    profileId = currentIconData.bindings[`group:${group.id}`];
+                    if (leaderServerId) targetServerId = leaderServerId; // Override with leader's server
+                } else {
+                    profileId = currentIconData.bindings[`user:${user.server_id}:${user.user_id}`];
+                }
+                
+                if (profileId && currentIconData.matrix[profileId] && currentIconData.matrix[profileId][targetServerId]) {
+                     const path = currentIconData.matrix[profileId][targetServerId];
+                     iconUrl = path.startsWith('/') ? path : `/static/${path}`;
+                }
+            }
+
+            const userToRender = { ...user, image_url: iconUrl };
+            const card = createUserCard(userToRender, { isLinked: group.is_linked, groupId: group.id });
             grid.appendChild(card);
         });
 
@@ -628,7 +657,7 @@ async function loadIconManagement() {
 async function refreshIconConfigOnly() {
     await fetchIconConfig();
     renderIconProfiles();
-    renderEmbyUsers(currentUsersData); // Update user list icons too
+    updateIconsInPlace(); // Update user list icons efficiently
 }
 
 async function fetchIconConfig() {
@@ -790,11 +819,77 @@ async function saveIconBinding(type, id, profileId) {
     if (currentIconData && currentIconData.bindings) {
         const key = `${type}:${id}`;
         currentIconData.bindings[key] = profileId;
-        renderEmbyUsers(currentUsersData); // Re-render list
+        updateIconsInPlace(); // Efficient DOM update
     }
     
     await fetch('/api/emby/icons/binding', { method: 'POST', body: formData });
-    // No full reload needed
+}
+
+function updateIconsInPlace() {
+    if (!currentUsersData || !currentIconData) return;
+    
+    const timestamp = new Date().getTime();
+
+    currentUsersData.groups.forEach(group => {
+        // Determine Group Context
+        let groupProfileId = null;
+        let leaderServerId = null;
+        
+        if (group.is_linked) {
+             if (currentIconData.bindings && currentIconData.bindings[`group:${group.id}`]) {
+                 groupProfileId = currentIconData.bindings[`group:${group.id}`];
+             }
+             const leader = group.users.find(u => u.is_leader);
+             if (leader) leaderServerId = leader.server_id;
+             if (!leaderServerId && group.users.length > 0) leaderServerId = group.users[0].server_id;
+        }
+
+        group.users.forEach(user => {
+            // Resolve Icon Logic (Mirrors renderEmbyUsers)
+            let iconUrl = user.image_url; // Default from Emby User
+            
+            if (currentIconData.bindings && currentIconData.matrix) {
+                let profileId = null;
+                let targetServerId = user.server_id; 
+
+                if (group.is_linked) {
+                    profileId = groupProfileId;
+                    if (leaderServerId) targetServerId = leaderServerId; 
+                } else {
+                    profileId = currentIconData.bindings[`user:${user.server_id}:${user.user_id}`];
+                }
+                
+                if (profileId && currentIconData.matrix[profileId] && currentIconData.matrix[profileId][targetServerId]) {
+                     const path = currentIconData.matrix[profileId][targetServerId];
+                     iconUrl = path.startsWith('/') ? path : `/static/${path}`;
+                     iconUrl += `?t=${timestamp}`; // Force cache bust
+                }
+            }
+
+            // Find DOM Element
+            // Selector: .user-card[data-user-id="..."][data-server-id="..."]
+            // Note: There might be multiple cards if user is in multiple views (e.g. Master view and Group view)
+            const cards = document.querySelectorAll(`.user-card[data-user-id="${user.user_id}"][data-server-id="${user.server_id}"]`);
+            
+            cards.forEach(card => {
+                const img = card.querySelector('.user-img');
+                const placeholder = card.querySelector('.user-icon-placeholder');
+                
+                if (iconUrl) {
+                    if (img) {
+                        img.src = iconUrl;
+                        img.style.display = 'block';
+                    }
+                    if (placeholder) placeholder.style.display = 'none';
+                } else {
+                    // Revert to placeholder if no image? 
+                    // user.image_url might be empty too.
+                    if (img) img.style.display = 'none';
+                    if (placeholder) placeholder.style.display = 'flex';
+                }
+            });
+        });
+    });
 }
 
 async function uploadIconRule(profileId, serverId, file) {
