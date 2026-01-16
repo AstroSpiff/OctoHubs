@@ -13,6 +13,9 @@ from api_clients import (
     _fetch_emby_user_details,
     _update_emby_user_policy,
     _update_emby_user_configuration,
+    _rename_emby_user,
+    _update_emby_user_password,
+    _fetch_emby_user_last_playback,
     _fetch_emby_user_items_for_sync,
     _mark_emby_item_played,
     _create_emby_user,
@@ -82,6 +85,7 @@ class EmbyUserManager:
         Returns all data needed to render the Icon Matrix UI.
         """
         profiles = self.storage.get_icon_profiles()
+        profiles.sort(key=lambda p: p['label'].lower())
         rules = self.storage.get_icon_rules()
         bindings = self.storage.get_icon_bindings()
         
@@ -284,7 +288,7 @@ class EmbyUserManager:
                 if icon_path:
                     # Upload to the USER'S server (upload_server_id = user.server_id)
                     # Use profile_id and reference_server_id (column_key) to fetch data
-                    self._upload_icon_to_emby(server_id, user_id, profile_id, reference_server_id)
+                    self._upload_icon_to_emby(server_id, user_id, profile_id, str(reference_server_id))
 
     def _upload_icon_to_emby(self, server_id: str, user_id: str, profile_id: str, column_key: str):
         import base64
@@ -388,6 +392,17 @@ class EmbyUserManager:
                 u["_server_name"] = server["name"]
                 all_users_raw.append(u)
 
+        # 1b. Identify Server Owners (First Created User)
+        # Map: server_id -> {date, uid}
+        server_oldest_map = {} 
+        for u in all_users_raw:
+            sid = u["_server_id"]
+            created = u.get("DateCreated")
+            if not created: continue
+            
+            if sid not in server_oldest_map or created < server_oldest_map[sid]["date"]:
+                server_oldest_map[sid] = {"date": created, "uid": u["Id"]}
+
         # 2. Get existing links from DB
         links = self.storage.get_user_links()
         # Map: (server_id, user_id) -> {group_id, is_leader}
@@ -400,26 +415,30 @@ class EmbyUserManager:
 
         # 3. Group users
         grouped_users = {} # group_id -> list of user entries
+        owners_users = [] # Special list for admins/owners
         
+        # Load custom group names
+        custom_names = {}
+        try:
+            # Keys are "group_name:UUID"
+            kv_keys = self.storage.get_keys_by_prefix("group_name:")
+            for k in kv_keys:
+                gid = k.split(":", 1)[1]
+                val = self.storage.get_key_value(k)
+                if val:
+                    custom_names[gid] = val
+        except Exception as e:
+            logger.error(f"Error loading group names: {e}")
+
         for u in all_users_raw:
             sid = u["_server_id"]
             uid = u["Id"]
             name = u["Name"]
-            
-            link_info = link_map.get((sid, uid))
-            gid = link_info["group_id"] if link_info else f"unlinked_{sid}_{uid}"
-            db_is_leader = link_info["is_leader"] if link_info else False
-                
-            if gid not in grouped_users:
-                grouped_users[gid] = {
-                    "id": gid,
-                    "name": name, # Representative name
-                    "users": [],
-                    "is_linked": not gid.startswith("unlinked_")
-                }
+            policy = u.get("Policy", {})
+            is_admin = policy.get("IsAdministrator", False)
+            is_hidden = policy.get("IsHidden", False)
             
             # Enrich user object
-            policy = u.get("Policy", {})
             primary_image_tag = u.get("PrimaryImageTag")
             image_url = ""
             if primary_image_tag:
@@ -448,19 +467,43 @@ class EmbyUserManager:
                 "enable_remuxing": policy.get("EnablePlaybackRemuxing", True),
                 "enable_downloading": policy.get("EnableContentDownloading", True),
                 "last_login": u.get("LastLoginDate"),
-                "is_admin": policy.get("IsAdministrator", False),
-                "is_leader": db_is_leader
+                "is_admin": is_admin,
+                "is_leader": False # Will be updated later if in regular group
             }
+
+            # Check if Owner/Admin -> Special Group
+            # Criteria: Is Admin AND Is First User Created on Server
+            is_server_owner = (sid in server_oldest_map and server_oldest_map[sid]["uid"] == uid)
+            
+            if is_admin and is_server_owner:
+                owners_users.append(u_data)
+                continue # Skip regular grouping
+
+            link_info = link_map.get((sid, uid))
+            gid = link_info["group_id"] if link_info else f"unlinked_{sid}_{uid}"
+            db_is_leader = link_info["is_leader"] if link_info else False
+            u_data["is_leader"] = db_is_leader
+                
+            if gid not in grouped_users:
+                grouped_users[gid] = {
+                    "id": gid,
+                    "name": custom_names.get(gid) or name, # Use custom name if exists, else user name
+                    "users": [],
+                    "is_linked": not gid.startswith("unlinked_"),
+                    "has_custom_name": gid in custom_names
+                }
+            
             grouped_users[gid]["users"].append(u_data)
             
-            # Update group name logic: Prefer "Master", then longest name
-            current_name = grouped_users[gid]["name"]
-            if name.lower() == "master" and current_name.lower() != "master":
-                grouped_users[gid]["name"] = name
-            elif len(name) > len(current_name) and current_name.lower() != "master":
-                 grouped_users[gid]["name"] = name
+            # Update group name logic if NO custom name is set
+            if not grouped_users[gid].get("has_custom_name"):
+                current_name = grouped_users[gid]["name"]
+                if name.lower() == "master" and current_name.lower() != "master":
+                    grouped_users[gid]["name"] = name
+                elif len(name) > len(current_name) and current_name.lower() != "master":
+                     grouped_users[gid]["name"] = name
 
-        # Sort users within groups: Leader first, then Master, then Active, then Alphabetical
+        # Sort users within regular groups
         for group in grouped_users.values():
             group["users"].sort(key=lambda x: (
                 not x["is_leader"],
@@ -468,10 +511,110 @@ class EmbyUserManager:
                 x["is_disabled"],
                 x["name"]
             ))
+            
+        # Prepare final list
+        final_groups = list(grouped_users.values())
+        
+        # Add Owners group at the end if any
+        if owners_users:
+            owners_users.sort(key=lambda x: x["server_name"]) # Sort by server name
+            final_groups.append({
+                "id": "owners",
+                "name": "Proprietari",
+                "users": owners_users,
+                "is_linked": False, # Owners are just a visual group, not a sync group
+                "is_owners": True, # Flag for UI special handling if needed
+                "has_custom_name": True
+            })
 
         return {
-            "groups": list(grouped_users.values()),
+            "groups": final_groups,
             "servers": [{"id": s["id"], "name": s["name"]} for s in active_servers]
+        }
+
+    def rename_group(self, group_id: str, new_name: str) -> bool:
+        """
+        Renames a group.
+        If group_id is 'unlinked_...', creates a new single-user group first.
+        """
+        target_group_id = group_id
+        
+        if group_id.startswith("unlinked_"):
+            # Format: unlinked_{server_id}_{user_id}
+            parts = group_id.split("_", 2)
+            if len(parts) == 3:
+                sid, uid = parts[1], parts[2]
+                # Fetch user name for link
+                # We need to find the user details... assuming we can just link without name or fetch it.
+                # link_users expects username.
+                
+                # Simple fetch from dashboard data logic or just generic
+                # Actually, link_users stores username but it's optional? No, uses it.
+                # Let's just pass "User" if missing, it will be updated on next sync/fetch
+                target_group_id = self.link_users([{
+                    "server_id": sid,
+                    "user_id": uid,
+                    "username": new_name, # Use new name as username hint
+                    "is_leader": True
+                }])
+            else:
+                return False
+        
+        # Save custom name
+        self.storage.set_key_value(f"group_name:{target_group_id}", new_name)
+        return True
+
+    def rename_user(self, server_id: str, user_id: str, new_name: str) -> bool:
+        """
+        Renames a user on the specified server.
+        """
+        server = self._get_server_by_id(server_id)
+        if not server:
+            return False
+            
+        success, _ = _rename_emby_user(server, user_id, new_name)
+        return success
+
+    def update_user_password(self, server_id: str, user_id: str, new_password: str) -> bool:
+        server = self._get_server_by_id(server_id)
+        if not server:
+            return False
+        success, _ = _update_emby_user_password(server, user_id, new_password)
+        return success
+
+    def get_user_extended_details(self, server_id: str, user_id: str) -> Dict[str, Any]:
+        server = self._get_server_by_id(server_id)
+        if not server:
+            return {"error": "Server not found"}
+            
+        details, err = _fetch_emby_user_details(server, user_id)
+        if err or not details:
+            return {"error": "User details not found"}
+            
+        last_played_item = _fetch_emby_user_last_playback(server, user_id)
+        
+        last_played_text = "Mai"
+        last_played_date = None
+        
+        if last_played_item:
+            ud = last_played_item.get("UserData", {})
+            last_played_date = ud.get("LastPlayedDate")
+            name = last_played_item.get("Name")
+            series = last_played_item.get("SeriesName")
+            if series:
+                last_played_text = f"{series} - {name}"
+            else:
+                last_played_text = name
+                
+        return {
+            "last_activity_date": details.get("LastActivityDate"),
+            "date_created": details.get("DateCreated"),
+            "last_played_date": last_played_date,
+            "last_played_title": last_played_text,
+            "has_password": details.get("HasPassword", False),
+            # Add other interesting details
+            "connect_user_name": details.get("ConnectUserName"),
+            "connect_link_type": details.get("ConnectLinkType")
         }
 
     def toggle_remote_access(self, server_id: str, user_id: str, enable: bool) -> bool:
@@ -785,11 +928,25 @@ class EmbyUserManager:
             
         return results
 
-    def clone_user(self, source_server_id: str, source_user_id: str, target_server_id: str) -> Dict[str, Any]:
+    def check_user_exists(self, server_id: str, username: str) -> bool:
+        """
+        Checks if a user with the given name exists on the specified server.
+        """
+        server = self._get_server_by_id(server_id)
+        if not server:
+            return False
+            
+        users, err = _fetch_emby_users_list(server)
+        if err:
+            return False
+            
+        return any(u["Name"].lower() == username.lower() for u in users)
+
+    def clone_user(self, source_server_id: str, source_user_id: str, target_server_id: str, new_username: Optional[str] = None, sync_config: bool = True, sync_playstate: bool = True) -> Dict[str, Any]:
         """
         Clones a user from source to target server.
         Creates the user if missing (matching by Name).
-        Syncs Config, Policy and Playstate.
+        Syncs Config, Policy and Playstate based on flags.
         """
         src_server = self._get_server_by_id(source_server_id)
         tgt_server = self._get_server_by_id(target_server_id)
@@ -801,20 +958,21 @@ class EmbyUserManager:
         if not src_user:
             return {"error": "Source user not found"}
             
-        username = src_user["Name"]
+        # Use provided username or fallback to source name
+        target_username = new_username.strip() if new_username and new_username.strip() else src_user["Name"]
         
         # 2. Check/Create Target
         # Fetch target user list
         tgt_users, _ = _fetch_emby_users_list(tgt_server)
-        target_user = next((u for u in tgt_users if u["Name"].lower() == username.lower()), None)
+        target_user = next((u for u in tgt_users if u["Name"].lower() == target_username.lower()), None)
         
         tgt_user_id = None
         if target_user:
             tgt_user_id = target_user["Id"]
-            logger.info(f"User {username} exists on target, syncing...")
+            logger.info(f"User {target_username} exists on target, syncing...")
         else:
-            logger.info(f"Creating user {username} on target...")
-            ok, res = _create_emby_user(tgt_server, username)
+            logger.info(f"Creating user {target_username} on target...")
+            ok, res = _create_emby_user(tgt_server, target_username)
             if not ok:
                 return {"error": f"Failed to create user: {res}"}
             tgt_user_id = res.get("Id")
@@ -823,10 +981,13 @@ class EmbyUserManager:
             return {"error": "Failed to resolve target user ID"}
             
         # 3. Sync Config & Policy (Safe)
-        self.sync_user_config(source_server_id, source_user_id, [(target_server_id, tgt_user_id)])
+        if sync_config:
+            self.sync_user_config(source_server_id, source_user_id, [(target_server_id, tgt_user_id)])
         
         # 4. Sync Playstate (One-way Source -> Target)
-        res_play = self.sync_user_playstate(source_server_id, source_user_id, [(target_server_id, tgt_user_id)])
+        res_play = None
+        if sync_playstate:
+            res_play = self.sync_user_playstate(source_server_id, source_user_id, [(target_server_id, tgt_user_id)])
         
         return {"ok": True, "target_user_id": tgt_user_id, "playstate_stats": res_play}
 

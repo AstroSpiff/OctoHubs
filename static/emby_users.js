@@ -3,6 +3,24 @@
 let currentUsersData = null;
 let currentIconData = null;
 
+// Toast Helper
+function showToast(message, type = 'info') {
+    const container = document.getElementById('toast-container');
+    if (!container) return;
+    
+    const toast = document.createElement('div');
+    toast.className = `toast toast--${type}`;
+    toast.textContent = message;
+    
+    container.appendChild(toast);
+    
+    // Auto remove
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        setTimeout(() => toast.remove(), 300);
+    }, 5000);
+}
+
 async function loadEmbyUsers(force = false) {
     if (!force && currentUsersData) return;
 
@@ -200,8 +218,70 @@ function renderEmbyUsers(data) {
     });
 
     // --- RENDER MASTER SECTION ---
+    const masterSelect = document.getElementById('master-icon-profile-select');
+    
+    // 1. Populate Master Dropdown
+    if (masterSelect && currentIconData && currentIconData.profiles) {
+        masterSelect.innerHTML = '<option value="">Seleziona Profilo Icona...</option>';
+        currentIconData.profiles.forEach(p => {
+            const opt = document.createElement('option');
+            opt.value = p.id;
+            opt.textContent = p.label;
+            masterSelect.appendChild(opt);
+        });
+
+        // Determine current binding (check first master user)
+        if (masterGroup.users.length > 0) {
+            const u = masterGroup.users[0];
+            const bindingKey = `user:${u.server_id}:${u.user_id}`;
+            if (currentIconData.bindings && currentIconData.bindings[bindingKey]) {
+                masterSelect.value = currentIconData.bindings[bindingKey];
+            }
+        }
+
+        masterSelect.onchange = async (e) => {
+            const newProfileId = e.target.value;
+            if (!newProfileId) return; // Optional: handle clear?
+            
+            // Apply to ALL master users individually
+            const promises = masterGroup.users.map(u => {
+                const targetId = `${u.server_id}:${u.user_id}`;
+                // Update local cache optimistically
+                if (currentIconData && currentIconData.bindings) {
+                    currentIconData.bindings[`user:${targetId}`] = newProfileId;
+                }
+                return fetch('/api/emby/icons/binding', { 
+                    method: 'POST', 
+                    body: new URLSearchParams({
+                        'target_type': 'user',
+                        'target_id': targetId,
+                        'profile_id': newProfileId
+                    })
+                });
+            });
+            
+            await Promise.all(promises);
+            // Refresh to show new icons
+            updateIconsInPlace(); 
+        };
+    }
+
+    // 2. Render Cards with Icon Resolution
     masterGroup.users.forEach(user => {
-        const card = createUserCard(user, { isMaster: true });
+        // Resolve Icon dynamically
+        let iconUrl = user.image_url;
+        if (currentIconData && currentIconData.bindings && currentIconData.matrix) {
+            // Master users are always single user binding
+            const profileId = currentIconData.bindings[`user:${user.server_id}:${user.user_id}`];
+            
+            if (profileId && currentIconData.matrix[profileId] && currentIconData.matrix[profileId][user.server_id]) {
+                 const path = currentIconData.matrix[profileId][user.server_id];
+                 iconUrl = path.startsWith('/') ? path : `/static/${path}`;
+            }
+        }
+
+        const userToRender = { ...user, image_url: iconUrl };
+        const card = createUserCard(userToRender, { isMaster: true });
         containerMaster.appendChild(card);
     });
 
@@ -221,7 +301,25 @@ function renderEmbyUsers(data) {
     // --- RENDER REGULAR GROUPS ---
     regularGroups.forEach(group => {
         const groupEl = document.getElementById('tpl-group-container').content.cloneNode(true);
-        groupEl.querySelector('.group-name').textContent = group.name;
+        const nameContainer = groupEl.querySelector('.group-name');
+        
+        // Render name and edit button
+        nameContainer.innerHTML = ''; // Clear text content
+        const nameSpan = document.createElement('span');
+        nameSpan.textContent = group.name;
+        nameSpan.style.marginRight = '0.5rem';
+        nameContainer.appendChild(nameSpan);
+        
+        if (!group.is_owners) {
+            const editBtn = document.createElement('button');
+            editBtn.className = 'icon-button';
+            editBtn.style.fontSize = '0.8rem';
+            editBtn.style.opacity = '0.7';
+            editBtn.title = 'Rinomina gruppo';
+            editBtn.innerHTML = '<i class="fa-solid fa-pencil"></i>';
+            editBtn.onclick = () => renameGroup(group.id, group.name, nameSpan);
+            nameContainer.appendChild(editBtn);
+        }
         
         // --- Profile Dropdown Logic ---
         const select = groupEl.querySelector('.icon-profile-select');
@@ -266,7 +364,14 @@ function renderEmbyUsers(data) {
              };
         }
 
-        if (!group.is_linked) {
+        if (group.is_owners) {
+            groupEl.querySelector('.badge').textContent = 'Admin / Proprietari';
+            groupEl.querySelector('.badge').style.background = '#f59e0b'; // Gold
+            groupEl.querySelector('.group-container').style.border = '1px solid #f59e0b';
+            groupEl.querySelector('.group-container').style.background = 'rgba(245, 158, 11, 0.05)';
+            const count = group.users.length;
+            groupEl.querySelector('.group-meta').textContent = `${count} amministratori`;
+        } else if (!group.is_linked) {
             // Unlinked (Single User)
             groupEl.querySelector('.badge').style.display = 'none';
             // We KEEP the header now to show the Dropdown, but maybe hide the name if redundant?
@@ -326,7 +431,10 @@ function renderEmbyUsers(data) {
 }
 
 function createUserCard(user, options = {}) {
-    const tpl = document.getElementById('tpl-user-card').content.cloneNode(true);
+    const tplElement = document.getElementById('tpl-user-card');
+    if (!tplElement) return document.createElement('div'); // Fail safe
+    
+    const tpl = tplElement.content.cloneNode(true);
     const card = tpl.querySelector('.user-card');
     
     // Data attributes
@@ -337,105 +445,155 @@ function createUserCard(user, options = {}) {
     card.dataset.isMaster = options.isMaster || false;
 
     // Content
-    tpl.querySelector('.user-name').textContent = user.name;
-    tpl.querySelector('.server-name').textContent = user.server_name;
+    const userNameRow = tpl.querySelector('.user-name-row');
+    const userNameEl = tpl.querySelector('.user-name');
+    if (userNameEl) {
+        userNameEl.textContent = user.name;
+        userNameEl.title = 'Clicca per dettagli utente'; 
+        userNameEl.style.cursor = 'pointer';
+        
+        // Remove direct edit button, now handled in modal
+        // Add click handler to open details
+        userNameEl.onclick = (e) => {
+            e.stopPropagation(); // prevent card selection
+            openUserDetailModal(user, options.groupId);
+        };
+    }
+    const serverNameEl = tpl.querySelector('.server-name');
+    if (serverNameEl) serverNameEl.textContent = user.server_name;
     
     // Status Indicator (Green/Red)
-    const statusInd = tpl.querySelector('.status-indicator'); // inside avatar now
-    if (user.is_disabled) {
-        statusInd.style.background = 'var(--color-danger)';
-        statusInd.title = 'Disabilitato';
-    } else {
-        statusInd.style.background = 'var(--color-success)';
-        statusInd.title = 'Attivo';
+    const statusInd = tpl.querySelector('.status-indicator');
+    if (statusInd) {
+        if (user.is_disabled) {
+            statusInd.style.background = 'var(--color-danger)';
+            statusInd.title = 'Disabilitato';
+        } else {
+            statusInd.style.background = 'var(--color-success)';
+            statusInd.title = 'Attivo';
+        }
     }
 
-    // Leader Star
-    if (user.is_leader && !options.isMaster) {
-        tpl.querySelector('.leader-icon').style.display = 'inline-block';
+    // Leader Icon (Interactive)
+    const leaderIcon = tpl.querySelector('.leader-icon');
+    if (leaderIcon) {
+        if (options.isLinked && !options.isMaster) {
+            leaderIcon.style.display = 'inline-block';
+            if (user.is_leader) {
+                leaderIcon.className = 'fa-solid fa-star leader-icon';
+                leaderIcon.style.color = '#f59e0b';
+                leaderIcon.style.cursor = 'help';
+                leaderIcon.title = 'Utente Principale (Leader)';
+                leaderIcon.onclick = null;
+            } else {
+                leaderIcon.className = 'fa-regular fa-star leader-icon';
+                leaderIcon.style.color = 'var(--text-muted)';
+                leaderIcon.style.cursor = 'pointer';
+                leaderIcon.title = 'Imposta come Principale';
+                if (user.is_disabled) {
+                    leaderIcon.style.opacity = '0.5';
+                    leaderIcon.style.cursor = 'not-allowed';
+                    leaderIcon.title = 'Impossibile impostare: utente disabilitato';
+                } else {
+                    leaderIcon.onclick = (e) => {
+                        e.stopPropagation();
+                        setGroupLeader(options.groupId, user.server_id, user.user_id);
+                    };
+                }
+            }
+        } else {
+            leaderIcon.style.display = 'none';
+        }
     }
 
     // Admin Shield
-    if (user.is_admin) {
-        tpl.querySelector('.admin-icon').style.display = 'inline-block';
+    const adminIcon = tpl.querySelector('.admin-icon');
+    if (adminIcon && user.is_admin) {
+        adminIcon.style.display = 'inline-block';
     }
 
     // Checkbox
     const chk = tpl.querySelector('.user-select-chk');
-    chk.dataset.userId = user.user_id;
-    chk.dataset.serverId = user.server_id;
-    chk.dataset.username = user.name;
-    chk.dataset.groupId = options.groupId || '';
-    chk.dataset.isDisabled = user.is_disabled;
-    chk.onchange = updateUserSelectionUI;
+    if (chk) {
+        chk.dataset.userId = user.user_id;
+        chk.dataset.serverId = user.server_id;
+        chk.dataset.username = user.name;
+        chk.dataset.groupId = options.groupId || '';
+        chk.dataset.isDisabled = user.is_disabled;
+        chk.onchange = updateUserSelectionUI;
+    }
 
     // Image
     if (user.image_url) {
         const img = tpl.querySelector('.user-img');
         const icon = tpl.querySelector('.user-icon-placeholder');
-        img.src = user.image_url;
-        img.style.display = 'block';
-        icon.style.display = 'none';
+        if (img) {
+            img.src = user.image_url;
+            img.style.display = 'block';
+        }
+        if (icon) icon.style.display = 'none';
     }
 
     // Actions
-    // 1. Remote Access Toggle (replaced Playback)
-    const remoteBtn = tpl.querySelector('.toggle-playback-btn'); // Use existing class ref or update HTML? HTML uses this class for selection.
-    // HTML in template: <button class="icon-button toggle-playback-btn" ...><i class="fa-solid fa-play"></i></button>
-    // I will change the innerHTML and title.
-    if (user.enable_remote_access) {
-        remoteBtn.style.color = 'var(--color-success)';
-        remoteBtn.title = 'Connessione remota consentita';
-    } else {
-        remoteBtn.style.color = 'var(--color-danger)';
-        remoteBtn.title = 'Connessione remota disabilitata';
-    }
-    remoteBtn.innerHTML = '<i class="fa-solid fa-network-wired"></i>';
-    remoteBtn.onclick = () => toggleUserRemote(user.server_id, user.user_id, remoteBtn);
-
-    // 2. Download Toggle
-    const dlBtn = tpl.querySelector('.toggle-download-btn');
-    if (user.enable_downloading) {
-        dlBtn.style.color = 'var(--color-success)';
-        dlBtn.title = 'Scaricamento consentito';
-    } else {
-        dlBtn.style.color = 'var(--color-danger)';
-        dlBtn.title = 'Scaricamento disabilitato';
-    }
-    dlBtn.onclick = () => toggleUserDownload(user.server_id, user.user_id, dlBtn);
-
-    // 3. Set Leader (Only for linked groups, and if not already leader)
-    if (options.isLinked && !user.is_leader && !options.isMaster) {
-        const btn = tpl.querySelector('.set-leader-btn');
-        btn.style.display = 'inline-block';
-        // Only allowed if user is active
-        if (user.is_disabled) {
-            btn.style.opacity = '0.5';
-            btn.style.cursor = 'not-allowed';
-            btn.title = 'Impossibile impostare come principale: utente disabilitato';
-            btn.onclick = (e) => { e.preventDefault(); alert("Un utente disabilitato non può essere il Principale."); };
+    const isOwner = options.groupId === 'owners';
+    
+    const remoteBtn = tpl.querySelector('.toggle-playback-btn');
+    if (remoteBtn) {
+        if (isOwner || options.isMaster) {
+            remoteBtn.style.display = 'none';
         } else {
-            btn.onclick = () => setGroupLeader(options.groupId, user.server_id, user.user_id);
+            if (user.enable_remote_access) {
+                remoteBtn.style.color = 'var(--color-success)';
+                remoteBtn.title = 'Connessione remota consentita';
+            } else {
+                remoteBtn.style.color = 'var(--color-danger)';
+                remoteBtn.title = 'Connessione remota disabilitata';
+            }
+            remoteBtn.innerHTML = '<i class="fa-solid fa-network-wired"></i>';
+            remoteBtn.onclick = () => toggleUserRemote(user.server_id, user.user_id, remoteBtn);
         }
     }
 
-    // 4. Unlink (Only for linked groups)
-    if (options.isLinked) {
-        const btn = tpl.querySelector('.unlink-btn');
-        btn.style.display = 'inline-block';
-        btn.onclick = () => unlinkUser(user.server_id, user.user_id, user.name);
+    const dlBtn = tpl.querySelector('.toggle-download-btn');
+    if (dlBtn) {
+        if (isOwner || options.isMaster) {
+            dlBtn.style.display = 'none';
+        } else {
+            if (user.enable_downloading) {
+                dlBtn.style.color = 'var(--color-success)';
+                dlBtn.title = 'Scaricamento consentito';
+            } else {
+                dlBtn.style.color = 'var(--color-danger)';
+                dlBtn.title = 'Scaricamento disabilitato';
+            }
+            dlBtn.onclick = () => toggleUserDownload(user.server_id, user.user_id, dlBtn);
+        }
     }
 
-    // 5. Clone (Always available except for Master maybe?)
-    if (!options.isMaster) {
-        const btn = document.createElement('button');
-        btn.className = 'icon-button';
-        btn.title = 'Clona su un altro server';
-        btn.innerHTML = '<i class="fa-solid fa-copy"></i>';
-        btn.onclick = () => {
-            openCloneModalForUser(user);
-        };
-        tpl.querySelector('.user-actions-mini').appendChild(btn);
+    const unlinkBtn = tpl.querySelector('.unlink-btn');
+    if (options.isLinked && unlinkBtn) {
+        if (isOwner) {
+             unlinkBtn.style.display = 'none';
+        } else {
+             unlinkBtn.style.display = 'inline-block';
+             unlinkBtn.onclick = () => unlinkUser(user.server_id, user.user_id, user.name);
+        }
+    }
+
+    // 5. Clone (Always available except for Owners)
+    // Masters CAN be cloned (as templates), Owners cannot.
+    if (!isOwner) {
+        const actionsContainer = tpl.querySelector('.user-actions-mini');
+        if (actionsContainer) {
+            const btn = document.createElement('button');
+            btn.className = 'icon-button';
+            btn.title = 'Clona su un altro server';
+            btn.innerHTML = '<i class="fa-solid fa-copy"></i>';
+            btn.onclick = () => {
+                openCloneModalForUser(user);
+            };
+            actionsContainer.appendChild(btn);
+        }
     }
 
     return tpl;
@@ -538,46 +696,284 @@ async function toggleUserDownload(serverId, userId, btnElement) {
     }
 }
 
-async function openCloneModalForUser(user) {
-    const source = user;
-    
-    // Get available servers
-    const servers = Array.from(document.querySelectorAll('#filter-server option'))
-        .map(o => ({id: o.value, name: o.textContent}))
-        .filter(s => s.id !== 'all' && s.id !== source.server_id);
+// --- SELECTION HELPERS ---
+
+function toggleSelectAllUsers(checked) {
+    const visibleCheckboxes = document.querySelectorAll('.user-card:not([style*="display: none"]) .user-select-chk');
+    visibleCheckboxes.forEach(chk => {
+        chk.checked = checked;
+    });
+    updateUserSelectionUI();
+}
+
+function toggleSelectLeaders(checked) {
+    const visibleCheckboxes = document.querySelectorAll('.user-card:not([style*="display: none"]) .user-select-chk');
+    visibleCheckboxes.forEach(chk => {
+        const card = chk.closest('.user-card');
+        const cardIsLeader = card.dataset.isLeader === 'true';
+        const groupId = chk.dataset.groupId || '';
         
-    if (servers.length === 0) {
-        alert("Nessun altro server disponibile per la clonazione.");
-        return;
-    }
-    
-    const serverList = servers.map((s, i) => `${i+1}: ${s.name}`).join('\n');
-    const choice = prompt(`Scegli server di destinazione per clonare ${source.username}:\n${serverList}`);
-    if (!choice) return;
-    const idx = parseInt(choice) - 1;
-    
-    if (isNaN(idx) || idx < 0 || idx >= servers.length) return;
-    const targetServer = servers[idx];
-    
-    if (!confirm(`Clonare l'utente ${source.username} su ${targetServer.name}?`)) return;
-    
-    const formData = new FormData();
-    formData.append('source_server_id', source.server_id);
-    formData.append('source_user_id', source.user_id);
-    formData.append('target_server_id', targetServer.id);
-    
-    try {
-        const res = await fetch('/api/emby/users/clone', { method: 'POST', body: formData });
-        const json = await res.json();
-        if (json.ok) {
-            alert(`Utente clonato con successo.\nPlaystate Sync: ${json.result.playstate_stats.success.length} OK.`);
-            loadEmbyUsers();
+        // Select if Leader OR Singleton (unlinked group)
+        if (cardIsLeader || groupId.startsWith('unlinked_')) {
+            chk.checked = checked;
         } else {
-            alert("Errore clonazione: " + (json.error || "Sconosciuto"));
+            if (checked) chk.checked = false; 
         }
-    } catch (e) {
-        alert("Errore: " + e.message);
+    });
+    updateUserSelectionUI();
+}
+
+// --- CLONE WIZARD (Custom Modal) ---
+
+class CloneWizard {
+    constructor(sourceUser) {
+        this.sourceUser = sourceUser;
+        this.modal = document.getElementById('clone-user-modal');
+        this.currentStep = 1;
+        this.targetServerIds = [];
+        this.newUsername = sourceUser.name;
+        
+        // UI Elements
+        this.steps = {
+            1: document.getElementById('clone-step-1'),
+            2: document.getElementById('clone-step-2'),
+            3: document.getElementById('clone-step-3')
+        };
+        
+        this.btnCancel = document.getElementById('clone-btn-cancel');
+        this.btnBack = document.getElementById('clone-btn-back');
+        this.btnNext = document.getElementById('clone-btn-next');
+        this.btnConfirm = document.getElementById('clone-btn-confirm');
+        
+        this.serverList = document.getElementById('clone-target-list');
+        this.nameInput = document.getElementById('clone-new-username');
+        this.nameError = document.getElementById('clone-name-error');
+        
+        this.optConfig = document.getElementById('clone-opt-config');
+        this.optPlaystate = document.getElementById('clone-opt-playstate');
+        
+        this.subtitle = document.getElementById('clone-modal-subtitle');
+        
+        this.bindEvents();
+        this.init();
     }
+    
+    init() {
+        // Populate servers
+        const servers = Array.from(document.querySelectorAll('#filter-server option'))
+            .map(o => ({id: o.value, name: o.textContent}))
+            .filter(s => s.id !== 'all');
+            
+        this.serverList.innerHTML = '';
+        servers.forEach(s => {
+            const label = document.createElement('label');
+            label.className = 'checkbox-row';
+            label.style.padding = '0.25rem 0';
+            label.style.cursor = 'pointer';
+            
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.value = s.id;
+            
+            const span = document.createElement('span');
+            span.textContent = s.name + (s.id === this.sourceUser.server_id ? ' (Attuale)' : '');
+            
+            label.appendChild(checkbox);
+            label.appendChild(span);
+            this.serverList.appendChild(label);
+        });
+        
+        // Reset state
+        this.currentStep = 1;
+        this.targetServerIds = [];
+        this.nameInput.value = this.sourceUser.name;
+        this.nameError.style.display = 'none';
+        this.optConfig.checked = true;
+        this.optPlaystate.checked = true;
+        
+        this.showStep(1);
+        this.modal.style.display = 'flex';
+    }
+    
+    bindEvents() {
+        this.btnCancel.onclick = () => this.close();
+        this.btnBack.onclick = () => this.prevStep();
+        this.btnNext.onclick = () => this.nextStep();
+        this.btnConfirm.onclick = () => this.confirm();
+        
+        this.nameInput.oninput = () => {
+            this.nameError.style.display = 'none';
+            this.btnNext.disabled = false;
+        };
+    }
+    
+    close() {
+        this.modal.style.display = 'none';
+    }
+    
+    showStep(step) {
+        Object.values(this.steps).forEach(el => el.style.display = 'none');
+        this.steps[step].style.display = 'block';
+        
+        this.btnBack.style.display = step === 1 ? 'none' : 'block';
+        this.btnNext.style.display = step === 3 ? 'none' : 'block';
+        this.btnConfirm.style.display = step === 3 ? 'block' : 'none';
+        
+        if (step === 1) this.subtitle.textContent = "Passaggio 1: Seleziona i server di destinazione.";
+        if (step === 2) this.subtitle.textContent = "Passaggio 2: Scegli il nome per il nuovo utente.";
+        if (step === 3) this.subtitle.textContent = "Passaggio 3: Scegli cosa copiare.";
+        
+        this.currentStep = step;
+    }
+    
+    async nextStep() {
+        if (this.currentStep === 1) {
+            // Collect Selected Servers
+            this.targetServerIds = Array.from(this.serverList.querySelectorAll('input:checked')).map(cb => cb.value);
+            
+            if (this.targetServerIds.length === 0) {
+                alert("Seleziona almeno un server.");
+                return;
+            }
+            
+            this.showStep(2);
+            setTimeout(() => this.nameInput.focus(), 100);
+            
+        } else if (this.currentStep === 2) {
+            const name = this.nameInput.value.trim();
+            if (!name) {
+                this.showError("Il nome utente è obbligatorio.");
+                return;
+            }
+            
+            // Validation: Self-clone check
+            // If any selected server is the source server AND name is same -> Error
+            if (this.targetServerIds.includes(this.sourceUser.server_id) && name.toLowerCase() === this.sourceUser.name.toLowerCase()) {
+                this.showError("Non puoi clonare l'utente sullo stesso server con lo stesso nome.");
+                return;
+            }
+            
+            // Validation: Check existence on ALL targets
+            this.btnNext.disabled = true;
+            this.btnNext.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Verifica...';
+            
+            try {
+                let conflicts = [];
+                
+                // Parallel checks
+                const checks = this.targetServerIds.map(async (srvId) => {
+                    const formData = new FormData();
+                    formData.append('server_id', srvId);
+                    formData.append('username', name);
+                    const res = await fetch('/api/emby/users/check', { method: 'POST', body: formData });
+                    const json = await res.json();
+                    if (json.exists) {
+                        // Find server name
+                        const srvName = document.querySelector(`option[value="${srvId}"]`)?.textContent || srvId;
+                        conflicts.push(srvName);
+                    }
+                });
+                
+                await Promise.all(checks);
+                
+                if (conflicts.length > 0) {
+                    this.showError(`L'utente "${name}" esiste già su: ${conflicts.join(', ')}. Scegli un altro nome.`);
+                    this.btnNext.disabled = false;
+                    this.btnNext.textContent = "Avanti";
+                    return;
+                }
+                
+                // No conflicts
+                this.newUsername = name;
+                this.btnNext.disabled = false;
+                this.btnNext.textContent = "Avanti";
+                this.showStep(3);
+                
+            } catch (e) {
+                this.showError("Errore verifica: " + e.message);
+                this.btnNext.disabled = false;
+                this.btnNext.textContent = "Avanti";
+            }
+        }
+    }
+    
+    prevStep() {
+        if (this.currentStep > 1) {
+            this.showStep(this.currentStep - 1);
+        }
+    }
+    
+    showError(msg) {
+        this.nameError.textContent = msg;
+        this.nameError.style.display = 'block';
+    }
+    
+    async confirm() {
+        // 1. Close Modal Immediately
+        this.close();
+        
+        // 2. Notify Start
+        const total = this.targetServerIds.length;
+        showToast(`Clonazione avviata su ${total} server...`, 'info');
+        
+        // 3. Background Process
+        this.runBackgroundCloning();
+    }
+    
+    async runBackgroundCloning() {
+        let successCount = 0;
+        let errors = [];
+        const total = this.targetServerIds.length;
+        
+        for (const targetId of this.targetServerIds) {
+            const formData = new FormData();
+            formData.append('source_server_id', this.sourceUser.server_id);
+            formData.append('source_user_id', this.sourceUser.user_id);
+            formData.append('target_server_id', targetId);
+            formData.append('new_username', this.newUsername);
+            formData.append('sync_config', this.optConfig.checked);
+            formData.append('sync_playstate', this.optPlaystate.checked);
+            
+            try {
+                const res = await fetch('/api/emby/users/clone', { method: 'POST', body: formData });
+                const json = await res.json();
+                if (json.ok) {
+                    successCount++;
+                } else {
+                    const srvName = document.querySelector(`#clone-target-list input[value="${targetId}"]`)?.nextSibling?.textContent || targetId;
+                    errors.push(`${srvName}: ${json.error || "Errore sconosciuto"}`);
+                }
+            } catch (e) {
+                const srvName = document.querySelector(`#clone-target-list input[value="${targetId}"]`)?.nextSibling?.textContent || targetId;
+                errors.push(`${srvName}: ${e.message}`);
+            }
+        }
+        
+        // 4. Final Notification
+        if (successCount === total) {
+            showToast(`Clonazione completata con successo su tutti i server!`, 'success');
+        } else {
+            showToast(`Clonazione completata: ${successCount}/${total} successi.`, 'warning');
+            if (errors.length > 0) {
+                // Show errors in a second toast or alert if critical? 
+                // For now, console log and generic error toast
+                console.error("Cloning errors:", errors);
+                showToast(`Errori: ${errors.join(", ")}`, 'error');
+            }
+        }
+        
+        // 5. Refresh UI
+        loadEmbyUsers(true);
+    }
+}
+
+function openCustomCloneModal(user) {
+    new CloneWizard(user);
+}
+
+// Redirect old function
+async function openCloneModalForUser(user) {
+    openCustomCloneModal(user);
 }
 
 async function toggleUserStatus(serverId, userId, currentDisabled) {
@@ -640,6 +1036,299 @@ async function setGroupLeader(groupId, serverId, userId) {
         }
     } catch (e) {
         alert("Errore: " + e.message);
+    }
+}
+
+async function renameGroup(groupId, currentName, nameElement) {
+    const originalContent = nameElement.innerHTML;
+    const originalText = nameElement.textContent;
+    
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = currentName;
+    input.className = 'form-input compact';
+    input.style.width = 'auto';
+    input.style.minWidth = '150px';
+    input.style.display = 'inline-block';
+    
+    // Replace span with input
+    nameElement.innerHTML = '';
+    nameElement.appendChild(input);
+    input.focus();
+    
+    let isSaving = false;
+    
+    const save = async () => {
+        if (isSaving) return;
+        isSaving = true;
+        
+        const newName = input.value.trim();
+        if (!newName || newName === currentName) {
+            // Revert
+            nameElement.innerHTML = originalContent;
+            return;
+        }
+        
+        const formData = new FormData();
+        formData.append('group_id', groupId);
+        formData.append('new_name', newName);
+        
+        try {
+            const res = await fetch('/api/emby/users/group/rename', { method: 'POST', body: formData });
+            if (res.ok) {
+                // Update UI (optimistic or reload)
+                loadEmbyUsers(true);
+            } else {
+                alert("Errore durante la rinomina.");
+                nameElement.innerHTML = originalContent;
+            }
+        } catch (e) {
+            alert("Errore: " + e.message);
+            nameElement.innerHTML = originalContent;
+        }
+    };
+    
+    input.onblur = save;
+    input.onkeydown = (e) => {
+        if (e.key === 'Enter') {
+            save();
+        } else if (e.key === 'Escape') {
+            nameElement.innerHTML = originalContent;
+            isSaving = true; // Prevent blur from firing logic
+        }
+    };
+}
+
+async function renameUser(serverId, userId, currentName, nameElement) {
+    const originalContent = nameElement.textContent; // Just text, as we replaced innerHTML in renameGroup but here we act on the span
+    const parent = nameElement.parentNode;
+    
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = currentName;
+    input.className = 'form-input compact';
+    input.style.width = 'auto';
+    input.style.minWidth = '100px';
+    input.style.maxWidth = '150px';
+    input.style.display = 'inline-block';
+    input.style.fontSize = 'inherit';
+    input.style.padding = '0 0.25rem';
+    
+    // Replace span with input
+    nameElement.style.display = 'none';
+    parent.insertBefore(input, nameElement);
+    input.focus();
+    
+    let isSaving = false;
+    
+    const save = async () => {
+        if (isSaving) return;
+        isSaving = true;
+        
+        const newName = input.value.trim();
+        if (!newName || newName === currentName) {
+            // Revert
+            input.remove();
+            nameElement.style.display = '';
+            return;
+        }
+        
+        const formData = new FormData();
+        formData.append('server_id', serverId);
+        formData.append('user_id', userId);
+        formData.append('new_name', newName);
+        
+        try {
+            const res = await fetch('/api/emby/users/rename', { method: 'POST', body: formData });
+            if (res.ok) {
+                // Update UI (optimistic or reload)
+                loadEmbyUsers(true);
+            } else {
+                alert("Errore durante la rinomina dell'utente.");
+                input.remove();
+                nameElement.style.display = '';
+            }
+        } catch (e) {
+            alert("Errore: " + e.message);
+            input.remove();
+            nameElement.style.display = '';
+        }
+    };
+    
+    input.onblur = save;
+    input.onkeydown = (e) => {
+        if (e.key === 'Enter') {
+            save();
+        } else if (e.key === 'Escape') {
+            input.remove();
+            nameElement.style.display = '';
+            isSaving = true; 
+        }
+    };
+}
+
+async function openUserDetailModal(user, groupId = null) {
+    const modal = document.getElementById('user-details-modal');
+    if (!modal) return;
+    
+    const isOwner = groupId === 'owners';
+    
+    // 1. Setup Static Info
+    const img = modal.querySelector('img');
+    const icon = modal.querySelector('.fa-user');
+    if (user.image_url) {
+        img.src = user.image_url;
+        img.style.display = 'block';
+        icon.style.display = 'none';
+    } else {
+        img.style.display = 'none';
+        icon.style.display = 'block';
+    }
+    
+    const nameEl = document.getElementById('modal-user-name');
+    nameEl.textContent = user.name;
+    document.getElementById('modal-server-name').textContent = user.server_name;
+    
+    const pwStatus = document.getElementById('modal-password-status');
+    pwStatus.textContent = user.has_password ? '••••••••' : 'Nessuna';
+    pwStatus.style.opacity = user.has_password ? '1' : '0.5';
+
+    document.getElementById('modal-last-login').textContent = formatDate(user.last_login);
+    
+    // Reset extended fields
+    document.getElementById('modal-last-activity').textContent = 'Caricamento...';
+    document.getElementById('modal-date-created').textContent = 'Caricamento...';
+    document.getElementById('modal-last-played-title').textContent = '-';
+    document.getElementById('modal-last-played-date').textContent = '-';
+    document.getElementById('modal-connect-row').style.display = 'none';
+
+    // 2. Setup Actions
+    const closeBtn = modal.querySelector('.close-modal-btn');
+    closeBtn.onclick = () => {
+        modal.style.display = 'none';
+    };
+    
+    // Close on click outside
+    modal.onclick = (e) => {
+        if (e.target === modal) modal.style.display = 'none';
+    };
+    
+    // Edit Name
+    const editNameBtn = document.getElementById('modal-edit-name-btn');
+    if (editNameBtn) {
+        editNameBtn.onclick = () => {
+            const newName = prompt("Nuovo nome utente:", user.name);
+            if (newName && newName !== user.name) {
+                renameUserFromModal(user.server_id, user.user_id, newName);
+            }
+        };
+    }
+    
+    // Edit Password
+    const editPwBtn = document.getElementById('modal-edit-password-btn');
+    if (editPwBtn) {
+        editPwBtn.onclick = () => {
+            const newPw = prompt("Nuova password (lascia vuoto per rimuovere):");
+            if (newPw !== null) {
+                updateUserPassword(user.server_id, user.user_id, newPw);
+            }
+        };
+    }
+    
+    // Clone
+    const cloneBtn = document.getElementById('modal-clone-btn');
+    if (isOwner) {
+        cloneBtn.style.display = 'none';
+    } else {
+        cloneBtn.style.display = 'block';
+        cloneBtn.onclick = () => {
+            modal.style.display = 'none';
+            openCloneModalForUser(user);
+        };
+    }
+
+    modal.style.display = 'flex';
+
+    // 3. Fetch Extended Details
+    try {
+        const res = await fetch(`/api/emby/users/${user.server_id}/${user.user_id}/details`);
+        if (res.ok) {
+            const details = await res.json();
+            if (details.error) return;
+            
+            document.getElementById('modal-last-activity').textContent = formatDate(details.last_activity_date);
+            document.getElementById('modal-date-created').textContent = formatDate(details.date_created);
+            
+            if (details.last_played_title && details.last_played_title !== "Mai") {
+                document.getElementById('modal-last-played-title').textContent = details.last_played_title;
+                document.getElementById('modal-last-played-date').textContent = formatDate(details.last_played_date);
+            } else {
+                document.getElementById('modal-last-played-title').textContent = "Mai";
+                document.getElementById('modal-last-played-date').textContent = "";
+            }
+            
+            if (details.connect_user_name) {
+                document.getElementById('modal-connect-row').style.display = 'flex';
+                document.getElementById('modal-connect-user').textContent = details.connect_user_name;
+            }
+            
+            // Update password status if changed externally (though unlikely)
+            pwStatus.textContent = details.has_password ? '••••••••' : 'Nessuna';
+            pwStatus.style.opacity = details.has_password ? '1' : '0.5';
+        }
+    } catch (e) {
+        console.error("Error fetching user details", e);
+    }
+}
+
+async function renameUserFromModal(serverId, userId, newName) {
+    const formData = new FormData();
+    formData.append('server_id', serverId);
+    formData.append('user_id', userId);
+    formData.append('new_name', newName);
+    
+    try {
+        const res = await fetch('/api/emby/users/rename', { method: 'POST', body: formData });
+        if (res.ok) {
+            document.getElementById('modal-user-name').textContent = newName;
+            loadEmbyUsers(true); // Refresh background list
+        } else {
+            alert("Errore rinomina");
+        }
+    } catch (e) {
+        alert("Errore: " + e.message);
+    }
+}
+
+async function updateUserPassword(serverId, userId, newPassword) {
+    const formData = new FormData();
+    formData.append('server_id', serverId);
+    formData.append('user_id', userId);
+    formData.append('new_password', newPassword);
+    
+    try {
+        const res = await fetch('/api/emby/users/password', { method: 'POST', body: formData });
+        if (res.ok) {
+            alert("Password aggiornata.");
+            const pwStatus = document.getElementById('modal-password-status');
+            pwStatus.textContent = newPassword ? '••••••••' : 'Nessuna';
+            pwStatus.style.opacity = newPassword ? '1' : '0.5';
+            loadEmbyUsers(true);
+        } else {
+            alert("Errore aggiornamento password");
+        }
+    } catch (e) {
+        alert("Errore: " + e.message);
+    }
+}
+
+function formatDate(isoStr) {
+    if (!isoStr) return '-';
+    try {
+        const d = new Date(isoStr);
+        return d.toLocaleString();
+    } catch (e) {
+        return isoStr;
     }
 }
 
@@ -711,6 +1400,19 @@ function renderIconProfiles() {
         nameSpan.textContent = profile.label;
         nameSpan.style.fontWeight = '500';
         
+        const editBtn = document.createElement('button');
+        editBtn.className = 'icon-button';
+        editBtn.style.fontSize = '0.8rem';
+        editBtn.style.opacity = '0.7';
+        editBtn.style.marginLeft = '0.5rem';
+        editBtn.title = 'Rinomina Profilo';
+        editBtn.innerHTML = '<i class="fa-solid fa-pencil"></i>';
+        editBtn.onclick = () => renameIconProfile(profile.id, profile.label, nameDiv);
+
+        const actionsDiv = document.createElement('div');
+        actionsDiv.style.display = 'flex';
+        actionsDiv.style.alignItems = 'center';
+        
         const delBtn = document.createElement('button');
         delBtn.className = 'btn ghost compact danger-hover';
         delBtn.title = 'Elimina Profilo';
@@ -718,6 +1420,25 @@ function renderIconProfiles() {
         delBtn.onclick = () => deleteIconProfile(profile.id);
         
         nameDiv.appendChild(nameSpan);
+        nameDiv.appendChild(editBtn); // Add edit button
+        // nameDiv was space-between. Let's group name+edit on left, delete on right?
+        // Current: nameDiv (flex, space-between) -> nameSpan, delBtn
+        // Change: nameDiv -> leftGroup(name, edit), delBtn
+        
+        // Let's refactor the structure slightly for better alignment
+        nameDiv.innerHTML = '';
+        
+        const leftGroup = document.createElement('div');
+        leftGroup.style.display = 'flex';
+        leftGroup.style.alignItems = 'center';
+        leftGroup.style.gap = '0.5rem';
+        leftGroup.appendChild(nameSpan);
+        leftGroup.appendChild(editBtn);
+        
+        // Pass leftGroup to rename function so it replaces the whole name+edit block
+        editBtn.onclick = () => renameIconProfile(profile.id, profile.label, leftGroup);
+        
+        nameDiv.appendChild(leftGroup);
         nameDiv.appendChild(delBtn);
         tdName.appendChild(nameDiv);
         tr.appendChild(tdName);
@@ -924,6 +1645,69 @@ async function createIconProfile(label) {
     refreshIconConfigOnly();
 }
 
+async function renameIconProfile(profileId, currentName, nameElement) {
+    const originalContent = nameElement.innerHTML;
+    
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = currentName;
+    input.className = 'form-input compact';
+    input.style.width = 'auto';
+    input.style.minWidth = '150px';
+    input.style.fontWeight = '500';
+    
+    nameElement.innerHTML = '';
+    nameElement.appendChild(input);
+    input.focus();
+    
+    let isSaving = false;
+    
+    const save = async () => {
+        if (isSaving) return;
+        isSaving = true;
+        
+        const newName = input.value.trim();
+        if (!newName || newName === currentName) {
+            nameElement.innerHTML = originalContent;
+            return;
+        }
+        
+        const formData = new FormData();
+        formData.append('profile_id', profileId);
+        formData.append('label', newName);
+        // Preserve existing group flag (default false for now as UI doesn't expose it much)
+        // Ideally we should know it, but for simple rename it's fine.
+        // Actually, API might require is_group_profile. Let's check backend.
+        // Backend updates label if entry exists. It ALSO updates is_group_profile.
+        // So we need to send current is_group_profile or it might reset to False.
+        // Let's find the profile in currentIconData to get the flag.
+        const profile = currentIconData.profiles.find(p => p.id === profileId);
+        formData.append('is_group_profile', profile ? profile.is_group_profile : false);
+        
+        try {
+            const res = await fetch('/api/emby/icons/profile', { method: 'POST', body: formData });
+            if (res.ok) {
+                refreshIconConfigOnly();
+            } else {
+                alert("Errore salvataggio nome.");
+                nameElement.innerHTML = originalContent;
+            }
+        } catch (e) {
+            alert("Errore: " + e.message);
+            nameElement.innerHTML = originalContent;
+        }
+    };
+    
+    input.onblur = save;
+    input.onkeydown = (e) => {
+        if (e.key === 'Enter') save();
+        else if (e.key === 'Escape') {
+            nameElement.innerHTML = originalContent;
+            isSaving = true;
+        }
+    };
+}
+
 // --- COMPATIBILITY FIX ---
 // Use refreshIconConfigOnly for the button (loadIconConfig alias) to avoid user list reload
 window.loadIconConfig = refreshIconConfigOnly;
@@ -1110,49 +1894,373 @@ async function openSyncModal() {
     alert(msg);
 }
 
-async function openCloneModal() {
-    const selected = getSelectedUsers();
-    if (selected.length !== 1) {
-        alert("Seleziona un solo utente sorgente per la clonazione (o il leader del gruppo).");
-        return;
-    }
-    const source = selected[0];
-    
-    // Get available servers (from filter dropdown which has all servers)
-    const servers = Array.from(document.querySelectorAll('#filter-server option'))
-        .map(o => ({id: o.value, name: o.textContent}))
-        .filter(s => s.id !== 'all' && s.id !== source.server_id);
+// --- BULK CLONE WIZARD ---
+
+class BulkCloneWizard {
+    constructor(sourceUsers, duplicateGroupNames = []) {
+        this.sourceUsers = sourceUsers;
+        this.duplicateGroupNames = duplicateGroupNames;
+        this.modal = document.getElementById('bulk-clone-modal');
+        this.currentStep = 1;
+        this.targetServerIds = [];
+        this.userMap = []; // [{ source: userObj, newName: "name", inputEl: el }]
         
-    if (servers.length === 0) {
-        alert("Nessun altro server disponibile per la clonazione.");
+        // UI Elements
+        this.steps = {
+            0: document.getElementById('bulk-clone-step-warning'),
+            1: document.getElementById('bulk-clone-step-1'),
+            2: document.getElementById('bulk-clone-step-2'),
+            3: document.getElementById('bulk-clone-step-3')
+        };
+        
+        this.btnCancel = document.getElementById('bulk-clone-btn-cancel');
+        this.btnBack = document.getElementById('bulk-clone-btn-back');
+        this.btnNext = document.getElementById('bulk-clone-btn-next');
+        this.btnConfirm = document.getElementById('bulk-clone-btn-confirm');
+        
+        this.serverList = document.getElementById('bulk-clone-target-list');
+        this.renameList = document.getElementById('bulk-clone-rename-list');
+        this.errorMsg = document.getElementById('bulk-clone-error');
+        this.countLabel = document.getElementById('bulk-clone-count-label');
+        this.warningGroups = document.getElementById('bulk-clone-warning-groups');
+        
+        this.optConfig = document.getElementById('bulk-clone-opt-config');
+        this.optPlaystate = document.getElementById('bulk-clone-opt-playstate');
+        
+        this.subtitle = document.getElementById('bulk-clone-modal-subtitle');
+        
+        this.bindEvents();
+        this.init();
+    }
+    
+    init() {
+        // Populate servers
+        const servers = Array.from(document.querySelectorAll('#filter-server option'))
+            .map(o => ({id: o.value, name: o.textContent}))
+            .filter(s => s.id !== 'all');
+            
+        this.serverList.innerHTML = '';
+        servers.forEach(s => {
+            const label = document.createElement('label');
+            label.className = 'checkbox-row';
+            label.style.padding = '0.25rem 0';
+            label.style.cursor = 'pointer';
+            
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.value = s.id;
+            
+            const span = document.createElement('span');
+            span.textContent = s.name;
+            
+            label.appendChild(checkbox);
+            label.appendChild(span);
+            this.serverList.appendChild(label);
+        });
+        
+        // Populate Rename List (Initial)
+        this.renameList.innerHTML = '';
+        this.userMap = this.sourceUsers.map(u => {
+            const row = document.createElement('div');
+            row.style.display = 'grid';
+            row.style.gridTemplateColumns = '1fr 1fr';
+            row.style.gap = '1rem';
+            row.style.alignItems = 'center';
+            
+            const label = document.createElement('span');
+            label.textContent = `${u.username} (${u.server_id.substr(0,4)})`;
+            label.style.fontSize = '0.9rem';
+            
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.value = u.username; // Default to original
+            input.className = 'form-input compact';
+            input.dataset.sourceId = u.user_id;
+            
+            row.appendChild(label);
+            row.appendChild(input);
+            this.renameList.appendChild(row);
+            
+            return { source: u, inputEl: input };
+        });
+        
+        // Reset state
+        this.targetServerIds = [];
+        this.errorMsg.style.display = 'none';
+        this.optConfig.checked = true;
+        this.optPlaystate.checked = true;
+        this.countLabel.textContent = this.sourceUsers.length;
+        
+        // Determine start step
+        if (this.duplicateGroupNames.length > 0) {
+            this.warningGroups.textContent = this.duplicateGroupNames.join(', ');
+            this.showStep(0);
+        } else {
+            this.showStep(1);
+        }
+        
+        this.modal.style.display = 'flex';
+    }
+    
+    bindEvents() {
+        this.btnCancel.onclick = () => this.close();
+        this.btnBack.onclick = () => this.prevStep();
+        this.btnNext.onclick = () => this.nextStep();
+        this.btnConfirm.onclick = () => this.confirm();
+    }
+    
+    close() {
+        this.modal.style.display = 'none';
+    }
+    
+    showStep(step) {
+        Object.values(this.steps).forEach(el => { if(el) el.style.display = 'none'; });
+        if (this.steps[step]) this.steps[step].style.display = 'block';
+        
+        // Default visibility
+        this.btnBack.style.display = 'block';
+        this.btnNext.style.display = 'block';
+        this.btnConfirm.style.display = 'none';
+        
+        if (step === 0) {
+            this.subtitle.textContent = "Attenzione: Duplicati rilevati.";
+            this.btnBack.style.display = 'none';
+            this.btnNext.textContent = "Ignora e Procedi";
+        }
+        
+        if (step === 1) {
+            this.subtitle.textContent = "Passaggio 1: Seleziona i server di destinazione.";
+            if (this.duplicateGroupNames.length === 0) this.btnBack.style.display = 'none';
+            this.btnNext.textContent = "Avanti";
+        }
+        
+        if (step === 2) {
+            this.subtitle.textContent = "Passaggio 2: Rinominare utenti (Opzionale).";
+            this.btnNext.textContent = "Avanti";
+        }
+        
+        if (step === 3) {
+            this.subtitle.textContent = "Passaggio 3: Scegli cosa copiare.";
+            this.btnNext.style.display = 'none';
+            this.btnConfirm.style.display = 'block';
+        }
+        
+        this.currentStep = step;
+    }
+    
+    async nextStep() {
+        this.errorMsg.style.display = 'none';
+        
+        if (this.currentStep === 0) {
+            this.showStep(1);
+            return;
+        }
+        
+        if (this.currentStep === 1) {
+            this.targetServerIds = Array.from(this.serverList.querySelectorAll('input:checked')).map(cb => cb.value);
+            
+            if (this.targetServerIds.length === 0) {
+                alert("Seleziona almeno un server.");
+                return;
+            }
+            this.showStep(2);
+            
+        } else if (this.currentStep === 2) {
+            // Validate Names & Check Conflicts
+            this.btnNext.disabled = true;
+            this.btnNext.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Verifica...';
+            
+            let conflicts = [];
+            let internalCollisions = new Set(); // Track unique name per server in this batch
+            
+            // 1. Internal Collision Check (e.g. Renaming two users to same name)
+            for (const item of this.userMap) {
+                const newName = item.inputEl.value.trim();
+                if (!newName) {
+                    this.showError(`Il nome per ${item.source.username} non può essere vuoto.`);
+                    this.btnNext.disabled = false;
+                    this.btnNext.textContent = "Avanti";
+                    return;
+                }
+                
+                // Self-clone check
+                if (this.targetServerIds.includes(item.source.server_id) && newName.toLowerCase() === item.source.username.toLowerCase()) {
+                    this.showError(`Non puoi clonare ${item.source.username} su se stesso con lo stesso nome.`);
+                    this.btnNext.disabled = false;
+                    this.btnNext.textContent = "Avanti";
+                    return;
+                }
+
+                // Check internal batch collision
+                this.targetServerIds.forEach(srvId => {
+                    const key = `${srvId}:${newName.toLowerCase()}`;
+                    if (internalCollisions.has(key)) {
+                        const srvName = document.querySelector(`#filter-server option[value="${srvId}"]`)?.textContent || srvId;
+                        conflicts.push(`Conflitto interno: Più utenti rinominati in "${newName}" su ${srvName}`);
+                    } else {
+                        internalCollisions.add(key);
+                    }
+                });
+            }
+
+            if (conflicts.length > 0) {
+                this.showError(conflicts.join('<br>'));
+                this.btnNext.disabled = false;
+                this.btnNext.textContent = "Avanti";
+                return;
+            }
+            
+            // 2. External API Check (Exists on Target?)
+            const checks = [];
+            
+            for (const item of this.userMap) {
+                const newName = item.inputEl.value.trim();
+                this.targetServerIds.forEach(srvId => {
+                    const check = async () => {
+                        const formData = new FormData();
+                        formData.append('server_id', srvId);
+                        formData.append('username', newName);
+                        try {
+                            const res = await fetch('/api/emby/users/check', { method: 'POST', body: formData });
+                            const json = await res.json();
+                            if (json.exists) {
+                                const srvName = document.querySelector(`#filter-server option[value="${srvId}"]`)?.textContent || srvId;
+                                conflicts.push(`L'utente "${newName}" esiste già su ${srvName}`);
+                            }
+                        } catch (e) { /* ignore */ }
+                    };
+                    checks.push(check());
+                });
+            }
+            
+            try {
+                await Promise.all(checks);
+                
+                if (conflicts.length > 0) {
+                    this.showError(`Conflitti rilevati:<br>${conflicts.join('<br>')}<br><br>Modifica i nomi per procedere.`);
+                    this.btnNext.disabled = false;
+                    this.btnNext.textContent = "Avanti";
+                    return;
+                }
+                
+                this.btnNext.disabled = false;
+                this.btnNext.textContent = "Avanti";
+                this.showStep(3);
+                
+            } catch (e) {
+                this.showError("Errore verifica: " + e.message);
+                this.btnNext.disabled = false;
+                this.btnNext.textContent = "Avanti";
+            }
+        }
+    }
+    
+    prevStep() {
+        if (this.currentStep > 1) {
+            this.showStep(this.currentStep - 1);
+        }
+    }
+    
+    showError(msg) {
+        this.errorMsg.textContent = msg;
+        this.errorMsg.style.display = 'block';
+    }
+    
+    async confirm() {
+        // 1. Close Modal Immediately
+        this.close();
+        
+        // 2. Notify Start
+        const total = this.userMap.length * this.targetServerIds.length;
+        showToast(`Clonazione di massa avviata (${total} operazioni)...`, 'info');
+        
+        // 3. Background Process
+        this.runBackgroundCloning();
+    }
+    
+    async runBackgroundCloning() {
+        let successCount = 0;
+        let errors = [];
+        const total = this.userMap.length * this.targetServerIds.length;
+        
+        for (const item of this.userMap) {
+            const newName = item.inputEl.value.trim();
+            
+            for (const targetId of this.targetServerIds) {
+                const formData = new FormData();
+                formData.append('source_server_id', item.source.server_id);
+                formData.append('source_user_id', item.source.user_id);
+                formData.append('target_server_id', targetId);
+                formData.append('new_username', newName);
+                formData.append('sync_config', this.optConfig.checked);
+                formData.append('sync_playstate', this.optPlaystate.checked);
+                
+                try {
+                    const res = await fetch('/api/emby/users/clone', { method: 'POST', body: formData });
+                    const json = await res.json();
+                    if (json.ok) {
+                        successCount++;
+                    } else {
+                        // Try to find server name for error
+                        const srvName = document.querySelector(`#filter-server option[value="${targetId}"]`)?.textContent || targetId;
+                        errors.push(`${newName}->${srvName}: ${json.error}`);
+                    }
+                } catch (e) {
+                    const srvName = document.querySelector(`#filter-server option[value="${targetId}"]`)?.textContent || targetId;
+                    errors.push(`${newName}->${srvName}: ${e.message}`);
+                }
+            }
+        }
+        
+        if (successCount === total) {
+            showToast(`Clonazione di massa completata con successo!`, 'success');
+        } else {
+            showToast(`Clonazione: ${successCount}/${total} successi.`, 'warning');
+            if (errors.length > 0) {
+                console.error("Bulk errors:", errors);
+                showToast(`Errori: ${errors.length} (vedi console)`, 'error');
+            }
+        }
+        
+        loadEmbyUsers(true);
+    }
+}
+
+function openCustomBulkCloneModal() {
+    const selected = getSelectedUsers();
+    if (selected.length === 0) {
+        alert("Seleziona almeno un utente.");
         return;
     }
     
-    const serverList = servers.map((s, i) => `${i+1}: ${s.name}`).join('\n');
-    const choice = prompt(`Scegli server di destinazione per clonare ${source.username}:\n${serverList}`);
-    if (!choice) return;
-    const idx = parseInt(choice) - 1;
+    // Check for Group Duplicates
+    const groupCounts = {};
+    const groupNames = {};
     
-    if (isNaN(idx) || idx < 0 || idx >= servers.length) return;
-    const targetServer = servers[idx];
-    
-    if (!confirm(`Clonare l'utente ${source.username} su ${targetServer.name}?`)) return;
-    
-    const formData = new FormData();
-    formData.append('source_server_id', source.server_id);
-    formData.append('source_user_id', source.user_id);
-    formData.append('target_server_id', targetServer.id);
-    
-    try {
-        const res = await fetch('/api/emby/users/clone', { method: 'POST', body: formData });
-        const json = await res.json();
-        if (json.ok) {
-            alert(`Utente clonato con successo.\nPlaystate Sync: ${json.result.playstate_stats.success.length} OK.`);
-            loadEmbyUsers(true);
-        } else {
-            alert("Errore clonazione: " + (json.error || "Sconosciuto"));
+    for (const u of selected) {
+        // Check if user belongs to a linked group
+        if (u.group_id && !u.group_id.startsWith('unlinked_')) {
+            groupCounts[u.group_id] = (groupCounts[u.group_id] || 0) + 1;
+            
+            // Try to get group name from DOM
+            if (!groupNames[u.group_id]) {
+                const chk = document.querySelector(`.user-select-chk[data-user-id="${u.user_id}"][data-server-id="${u.server_id}"]`);
+                if (chk) {
+                    const groupContainer = chk.closest('.group-container');
+                    const nameEl = groupContainer ? groupContainer.querySelector('.group-name span') : null;
+                    if (nameEl) groupNames[u.group_id] = nameEl.textContent;
+                }
+            }
         }
-    } catch (e) {
-        alert("Errore: " + e.message);
     }
+    
+    const duplicates = Object.keys(groupCounts).filter(gid => groupCounts[gid] > 1);
+    const duplicateNames = duplicates.map(gid => groupNames[gid] || "Sconosciuto");
+    
+    new BulkCloneWizard(selected, duplicateNames);
+}
+
+// Redirect old function (Bound to the button)
+async function openCloneModal() {
+    openCustomBulkCloneModal();
 }

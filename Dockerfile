@@ -65,13 +65,13 @@ RUN chmod +x /app/docker-entrypoint.sh
 USER octohub
 
 # Expose port
-EXPOSE 5000
+EXPOSE 5050
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:5000/login', timeout=5)" || exit 1
+    CMD python -c "import requests; requests.get('http://localhost:5050/login', timeout=5)" || exit 1
 
-# Run with Waitress WSGI server
-# Increased threads to 16 to handle SSE + API requests concurrently
+# Run with Uvicorn ASGI server
+# Using single worker for SSE compatibility, relying on async for concurrency
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
-CMD ["python", "-m", "waitress", "--host=0.0.0.0", "--port=5000", "--threads=16", "--channel-timeout=300", "wsgi:application"]
+CMD ["uvicorn", "asgi:fastapi_app", "--host", "0.0.0.0", "--port", "5050", "--workers", "1", "--timeout-keep-alive", "300"]

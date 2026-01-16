@@ -265,6 +265,15 @@
             font-weight: 600;
             font-size: 0.85rem;
         }
+        label.checkbox-row {
+            display: flex !important;
+            flex-direction: row !important;
+            align-items: center !important;
+            justify-content: flex-start !important;
+            font-weight: 400;
+            width: 100%;
+            text-align: left;
+        }
         input[type="text"], input[type="url"], input[type="password"], select {
             border: 1px solid #cbd5e1;
             border-radius: 8px;
