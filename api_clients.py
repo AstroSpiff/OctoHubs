@@ -656,33 +656,124 @@ def get_jellyseerr_requests(config, silent=False):
 
 # --- FUNZIONI QBITTORRENT ---
 
-def send_to_qbittorrent(link, config):
+def send_to_qbittorrent(link, config, max_retries=2):
+    """
+    Invia un torrent (magnet link o URL .torrent) a qBittorrent.
+
+    Args:
+        link: Magnet link o URL del file .torrent
+        config: Configurazione con credenziali qBittorrent
+        max_retries: Numero massimo di tentativi in caso di errore (default: 2)
+
+    Returns:
+        Tupla (success: bool, message: str)
+    """
     qb_url = config.get("QBITTORRENT_URL")
     qb_user = config.get("QBITTORRENT_USERNAME")
     qb_pass = config.get("QBITTORRENT_PASSWORD")
 
-    if not (qb_url and qb_user and qb_pass and link):
+    if not (qb_url and qb_user and qb_pass):
         return False, "Configurazione qBittorrent incompleta."
 
+    if not link:
+        return False, "Link torrent mancante."
+
+    # Validazione base del link
+    link = link.strip()
+    is_magnet = link.startswith("magnet:?")
+    is_url = link.startswith("http://") or link.startswith("https://")
+
+    if not (is_magnet or is_url):
+        return False, f"Link non valido: deve essere un magnet link o URL HTTP(S). Ricevuto: {link[:50]}..."
+
+    print(f"   -> [QB] Invio torrent a qBittorrent: {link[:80]}...")
+
     session = requests.Session()
-    try:
-        login_resp = session.post(
-            f"{qb_url.rstrip('/')}/api/v2/auth/login",
-            data={"username": qb_user, "password": qb_pass},
-            timeout=10
-        )
-        if login_resp.status_code != 200 or login_resp.text.strip() != "Ok.":
-            return False, "Login qBittorrent fallito."
-        add_resp = session.post(
-            f"{qb_url.rstrip('/')}/api/v2/torrents/add",
-            data={"urls": link},
-            timeout=10
-        )
-        if add_resp.status_code == 200 and add_resp.text.strip() == "Ok." or add_resp.text.strip() == "":
-            return True, "Torrent aggiunto."
-        return False, f"Errore aggiunta torrent: {add_resp.text}"
-    except requests.exceptions.RequestException as exc:
-        return False, f"Errore qBittorrent: {exc}"
+    base_url = qb_url.rstrip('/')
+
+    for attempt in range(max_retries + 1):
+        try:
+            # Login a qBittorrent
+            print(f"   -> [QB] Login qBittorrent (tentativo {attempt + 1}/{max_retries + 1})...")
+            login_resp = session.post(
+                f"{base_url}/api/v2/auth/login",
+                data={"username": qb_user, "password": qb_pass},
+                timeout=15  # Aumentato da 10 a 15 secondi
+            )
+
+            if login_resp.status_code != 200:
+                error_msg = f"Login fallito: HTTP {login_resp.status_code}"
+                if attempt < max_retries:
+                    print(f"   -> [QB] {error_msg}, ritento...")
+                    time.sleep(1)
+                    continue
+                return False, error_msg
+
+            login_text = login_resp.text.strip()
+            if login_text != "Ok.":
+                error_msg = f"Login fallito: risposta inattesa '{login_text}'"
+                if attempt < max_retries:
+                    print(f"   -> [QB] {error_msg}, ritento...")
+                    time.sleep(1)
+                    continue
+                return False, error_msg
+
+            print(f"   -> [QB] Login OK, invio torrent...")
+
+            # Aggiunta torrent
+            add_resp = session.post(
+                f"{base_url}/api/v2/torrents/add",
+                data={"urls": link},
+                timeout=20  # Aumentato da 10 a 20 secondi per torrent grandi
+            )
+
+            add_text = add_resp.text.strip()
+
+            # FIX CRITICO: Parentesi corrette per la condizione logica
+            if add_resp.status_code == 200 and (add_text == "Ok." or add_text == ""):
+                print(f"   -> [QB] ✓ Torrent aggiunto con successo!")
+                return True, "Torrent aggiunto con successo."
+
+            # Errore nell'aggiunta
+            error_msg = f"Errore aggiunta (HTTP {add_resp.status_code}): {add_text}"
+
+            # Retry solo per errori server (5xx) o timeout
+            if add_resp.status_code >= 500 and attempt < max_retries:
+                print(f"   -> [QB] {error_msg}, ritento...")
+                time.sleep(2)
+                continue
+
+            print(f"   -> [QB] ✗ {error_msg}")
+            return False, error_msg
+
+        except requests.exceptions.Timeout as exc:
+            error_msg = f"Timeout connessione qBittorrent"
+            if attempt < max_retries:
+                print(f"   -> [QB] {error_msg}, ritento... (tentativo {attempt + 1}/{max_retries + 1})")
+                time.sleep(1)
+                continue
+            print(f"   -> [QB] ✗ {error_msg} dopo {max_retries + 1} tentativi")
+            return False, f"{error_msg}: {exc}"
+
+        except requests.exceptions.ConnectionError as exc:
+            error_msg = f"Impossibile connettersi a qBittorrent ({qb_url})"
+            if attempt < max_retries:
+                print(f"   -> [QB] {error_msg}, ritento...")
+                time.sleep(2)
+                continue
+            print(f"   -> [QB] ✗ {error_msg}")
+            return False, f"{error_msg}: {exc}"
+
+        except requests.exceptions.RequestException as exc:
+            error_msg = f"Errore comunicazione qBittorrent"
+            if attempt < max_retries:
+                print(f"   -> [QB] {error_msg} ({type(exc).__name__}), ritento...")
+                time.sleep(1)
+                continue
+            print(f"   -> [QB] ✗ {error_msg}: {type(exc).__name__} - {exc}")
+            return False, f"{error_msg}: {exc}"
+
+    return False, f"Fallito dopo {max_retries + 1} tentativi"
 
 
 # --- FUNZIONI DI PING GENERICHE ---

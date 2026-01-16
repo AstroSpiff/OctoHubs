@@ -877,10 +877,22 @@ async def send_torrent(request: Request):
     _require_auth(request)
     try:
         payload = await request.json()
-    except Exception:
+    except Exception as exc:
+        print(f"   -> [API] Errore parsing JSON payload send-torrent: {exc}")
         payload = {}
-    data, status_code = _build_send_torrent_snapshot(payload)
-    return JSONResponse(data, status_code=status_code)
+
+    try:
+        data, status_code = _build_send_torrent_snapshot(payload)
+        return JSONResponse(data, status_code=status_code)
+    except Exception as exc:
+        # Gestione errori non previsti
+        print(f"   -> [API] [ERRORE] Eccezione non gestita in send-torrent: {type(exc).__name__} - {exc}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            {"success": False, "message": f"Errore interno: {str(exc)}"},
+            status_code=500
+        )
 
 
 @fastapi_app.post("/api/send-torrent")
@@ -888,10 +900,22 @@ async def send_torrent_api(request: Request):
     _require_auth(request)
     try:
         payload = await request.json()
-    except Exception:
+    except Exception as exc:
+        print(f"   -> [API] Errore parsing JSON payload send-torrent: {exc}")
         payload = {}
-    data, status_code = _build_send_torrent_snapshot(payload)
-    return JSONResponse(data, status_code=status_code)
+
+    try:
+        data, status_code = _build_send_torrent_snapshot(payload)
+        return JSONResponse(data, status_code=status_code)
+    except Exception as exc:
+        # Gestione errori non previsti
+        print(f"   -> [API] [ERRORE] Eccezione non gestita in send-torrent: {type(exc).__name__} - {exc}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            {"success": False, "message": f"Errore interno: {str(exc)}"},
+            status_code=500
+        )
 
 
 @fastapi_app.get("/scan-status")
