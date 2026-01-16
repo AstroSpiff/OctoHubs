@@ -4776,7 +4776,9 @@ def _summarize_requests_for_dashboard(config):
         print(f"   -> Dashboard: Jellyseerr ha restituito {len(requests_data)} richieste (pending+approved)")
         _log_justwatch_status()
     except Exception as exc:
-        print(f"   -> Errore durante il recupero richieste Jellyseerr per dashboard: {exc}")
+        print(f"   -> [ERRORE] Errore durante il recupero richieste Jellyseerr per dashboard: {exc}")
+        import traceback
+        traceback.print_exc()
         return []
     summary = []
     details_cache = {}
@@ -4786,14 +4788,34 @@ def _summarize_requests_for_dashboard(config):
     skip_available = rules.get("skip_available_content", True)
     skip_unreleased = rules.get("skip_unreleased_content", False)
     enriched_requests = []
+
+    # Contatori per il logging
+    tv_count = 0
+    tv_detailed_success = 0
+    tv_detailed_failed = 0
+
     for req in requests_data:
         media_type = _normalize_media_type(req.get("type") or req.get("media", {}).get("mediaType"))
         if media_type == "tv":
-            detailed = fetch_request_details(req.get("id"), config, details_cache)
+            tv_count += 1
+            req_id = req.get("id")
+            detailed = fetch_request_details(req_id, config, details_cache)
             if detailed:
+                tv_detailed_success += 1
                 enriched_requests.append(detailed)
                 continue
+            else:
+                tv_detailed_failed += 1
+                print(f"   -> [WARNING] Impossibile recuperare dettagli per richiesta TV ID {req_id}, uso dati base")
         enriched_requests.append(req)
+
+    # Log riepilogo arricchimento
+    if tv_count > 0:
+        print(f"   -> Dashboard: Richieste TV trovate: {tv_count}")
+        print(f"   -> Dashboard: Dettagli recuperati con successo: {tv_detailed_success}")
+        if tv_detailed_failed > 0:
+            print(f"   -> Dashboard: [WARNING] Dettagli NON recuperati: {tv_detailed_failed}")
+
     requests_data = enriched_requests
     for req in requests_data:
         req_id = req.get("id")
@@ -7440,10 +7462,36 @@ def _build_refresh_requests_snapshot():
     config, is_valid = load_config()
     if not is_valid:
         return {"success": False, "message": "Config non valida"}, 400
+
+    print("   -> [REFRESH] Inizio aggiornamento lista richieste Jellyseerr...")
     overview = _summarize_requests_for_dashboard(config)
-    _save_cached_requests_overview(overview)
+
+    # Salva nella cache
+    try:
+        _save_cached_requests_overview(overview)
+        print(f"   -> [REFRESH] Cache aggiornata con successo: {len(overview)} richieste salvate")
+    except Exception as exc:
+        print(f"   -> [ERRORE] Impossibile salvare cache richieste: {exc}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "message": f"Errore salvataggio cache: {exc}"}, 500
+
     tv_list = [req for req in overview if (req.get("media_type") or "").lower() == "tv"]
     movies_list = [req for req in overview if (req.get("media_type") or "").lower() in ("movie", "movies", "film", "")]
+
+    # Log dettagli delle richieste TV con stagioni
+    tv_with_seasons = [req for req in tv_list if req.get("season_status")]
+    tv_without_seasons = [req for req in tv_list if not req.get("season_status")]
+    if tv_list:
+        print(f"   -> [REFRESH] Serie TV totali: {len(tv_list)}")
+        print(f"   -> [REFRESH] Serie TV con dettagli stagioni: {len(tv_with_seasons)}")
+        if tv_without_seasons:
+            print(f"   -> [REFRESH] [WARNING] Serie TV SENZA dettagli stagioni: {len(tv_without_seasons)}")
+            for req in tv_without_seasons[:5]:  # Mostra solo le prime 5
+                print(f"   -> [REFRESH]   - ID {req.get('id')}: {req.get('title', 'N/D')}")
+
+    print(f"   -> [REFRESH] Aggiornamento completato: {len(movies_list)} film, {len(tv_list)} serie TV")
+
     return {
         "success": True,
         "message": "Lista aggiornata da Jellyseerr.",

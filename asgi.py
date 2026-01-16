@@ -53,6 +53,19 @@ def _initialize_runtime_services() -> None:
         notify_func=_wf_notify
     )
 
+    # Initialize configuration and AutoScheduler at startup
+    # This ensures the AutoScheduler is running from the start
+    # and the request cache is populated
+    try:
+        print("[STARTUP] Inizializzazione configurazione e AutoScheduler...")
+        config, is_valid = load_config()
+        if is_valid:
+            print("[STARTUP] Configurazione caricata correttamente, AutoScheduler attivo.")
+        else:
+            print("[STARTUP] Configurazione non valida, AutoScheduler non attivo.")
+    except Exception as exc:
+        print(f"[STARTUP] Errore durante inizializzazione: {exc}")
+
 _initialize_runtime_services()
 
 # Add SessionMiddleware for FastAPI session handling
@@ -1842,6 +1855,69 @@ async def api_emby_users_unlink(
     return {"ok": True}
 
 
+@fastapi_app.post("/api/emby/users/group/rename")
+async def api_emby_users_group_rename(
+    group_id: str = Form(...),
+    new_name: str = Form(...),
+    user=Depends(require_user)
+):
+    manager = get_emby_user_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
+    success = manager.rename_group(group_id, new_name)
+    if not success:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Failed to rename group"})
+    return {"ok": True}
+
+
+@fastapi_app.post("/api/emby/users/rename")
+async def api_emby_users_rename(
+    server_id: str = Form(...),
+    user_id: str = Form(...),
+    new_name: str = Form(...),
+    user=Depends(require_user)
+):
+    manager = get_emby_user_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
+        
+    success = manager.rename_user(server_id, user_id, new_name)
+    if not success:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Rename failed"})
+    return {"ok": True}
+
+
+@fastapi_app.post("/api/emby/users/password")
+async def api_emby_users_password(
+    server_id: str = Form(...),
+    user_id: str = Form(...),
+    new_password: str = Form(...),
+    user=Depends(require_user)
+):
+    manager = get_emby_user_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
+        
+    success = manager.update_user_password(server_id, user_id, new_password)
+    if not success:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Password update failed"})
+    return {"ok": True}
+
+
+@fastapi_app.get("/api/emby/users/{server_id}/{user_id}/details")
+async def api_emby_user_details(
+    server_id: str,
+    user_id: str,
+    user=Depends(require_user)
+):
+    manager = get_emby_user_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
+    
+    details = manager.get_user_extended_details(server_id, user_id)
+    return details
+
+
 @fastapi_app.post("/api/emby/users/sync")
 async def api_emby_users_sync(
     source_server_id: str = Form(None),
@@ -1978,20 +2054,37 @@ async def api_emby_icons_rule_delete(
     return {"ok": True}
 
 
+@fastapi_app.post("/api/emby/users/check")
+async def api_emby_users_check(
+    server_id: str = Form(...),
+    username: str = Form(...),
+    user=Depends(require_user)
+):
+    manager = get_emby_user_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
+        
+    exists = manager.check_user_exists(server_id, username)
+    return {"exists": exists}
+
 @fastapi_app.post("/api/emby/users/clone")
 async def api_emby_users_clone(
     source_server_id: str = Form(...),
     source_user_id: str = Form(...),
     target_server_id: str = Form(...),
+    new_username: Optional[str] = Form(None),
+    sync_config: bool = Form(True),
+    sync_playstate: bool = Form(True),
     user=Depends(require_user)
 ):
     manager = get_emby_user_manager()
     if not manager:
-        return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
+        return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
     
-    result = manager.clone_user(source_server_id, source_user_id, target_server_id)
+    result = manager.clone_user(source_server_id, source_user_id, target_server_id, new_username, sync_config, sync_playstate)
     if "error" in result:
-        return JSONResponse(status_code=400, content={"ok": False, "error": result["error"]})
+        return JSONResponse(status_code=400, content=result)
+        
     return {"ok": True, "result": result}
 
 

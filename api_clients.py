@@ -100,8 +100,12 @@ __all__ = [
     "_fetch_emby_user_details",
     "_update_emby_user_policy",
     "_update_emby_user_configuration",
+    "_update_emby_user_password",
+    "_rename_emby_user",
     "_create_emby_user",
     "_fetch_emby_user_items_for_sync",
+    "_fetch_emby_user_last_playback",
+    "_mark_emby_item_played",
     "_mark_emby_item_played",
     "_mark_emby_item_unplayed"
 ]
@@ -807,27 +811,77 @@ def _fetch_tmdb_payload(tmdb_id, media_type_candidates, config, cache):
 
 # --- FUNZIONI JELLYSEERR ESTESE ---
 
-def fetch_request_details(request_id, config, cache):
-    """Recupera dettagli aggiuntivi di una richiesta se non presenti nella raccolta principale."""
+def fetch_request_details(request_id, config, cache, max_retries=2):
+    """
+    Recupera dettagli aggiuntivi di una richiesta se non presenti nella raccolta principale.
+
+    Args:
+        request_id: ID della richiesta Jellyseerr
+        config: Configurazione con credenziali Jellyseerr
+        cache: Cache per evitare chiamate duplicate
+        max_retries: Numero massimo di tentativi in caso di errore (default: 2)
+
+    Returns:
+        Dizionario con i dettagli della richiesta, o None se non disponibile
+    """
     if not request_id:
         return None
     if request_id in cache:
         return cache[request_id]
 
     headers = {"X-Api-Key": config["JELLYSEERR_API_KEY"]}
-    try:
-        response = requests.get(
-            f"{config['JELLYSEERR_URL']}/api/v1/request/{request_id}",
-            headers=headers,
-            timeout=10
-        )
-        response.raise_for_status()
-        data = response.json()
-        cache[request_id] = data
-        return data
-    except requests.exceptions.RequestException as exc:
-        print(f"   -> Impossibile ottenere dettagli per la richiesta {request_id}: {exc}")
-        return None
+    url = f"{config['JELLYSEERR_URL']}/api/v1/request/{request_id}"
+
+    for attempt in range(max_retries + 1):
+        try:
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=15  # Aumentato timeout da 10 a 15 secondi
+            )
+            response.raise_for_status()
+            data = response.json()
+            cache[request_id] = data
+
+            # Log successo solo al primo tentativo
+            if attempt == 0:
+                print(f"   -> Dettagli richiesta {request_id} recuperati correttamente")
+            else:
+                print(f"   -> Dettagli richiesta {request_id} recuperati al tentativo {attempt + 1}/{max_retries + 1}")
+
+            return data
+
+        except requests.exceptions.Timeout as exc:
+            if attempt < max_retries:
+                print(f"   -> Timeout richiesta {request_id}, ritento... (tentativo {attempt + 1}/{max_retries + 1})")
+                time.sleep(1)  # Attendi 1 secondo prima di riprovare
+                continue
+            else:
+                print(f"   -> [ERRORE] Timeout definitivo per richiesta {request_id} dopo {max_retries + 1} tentativi: {exc}")
+                return None
+
+        except requests.exceptions.HTTPError as exc:
+            status_code = exc.response.status_code if exc.response else "unknown"
+            print(f"   -> [ERRORE] HTTP {status_code} recuperando dettagli richiesta {request_id}: {exc}")
+            # Non ritentare per errori HTTP 4xx (client errors)
+            if exc.response and 400 <= exc.response.status_code < 500:
+                return None
+            # Ritenta per errori 5xx (server errors)
+            if attempt < max_retries:
+                print(f"   -> Ritento richiesta {request_id}... (tentativo {attempt + 1}/{max_retries + 1})")
+                time.sleep(2)  # Attendi 2 secondi per errori server
+                continue
+            return None
+
+        except requests.exceptions.RequestException as exc:
+            print(f"   -> [ERRORE] Impossibile ottenere dettagli per la richiesta {request_id}: {type(exc).__name__} - {exc}")
+            if attempt < max_retries:
+                print(f"   -> Ritento richiesta {request_id}... (tentativo {attempt + 1}/{max_retries + 1})")
+                time.sleep(1)
+                continue
+            return None
+
+    return None
 
 
 def fetch_media_info(media_entry, config, cache, fallback_media_type=None):
@@ -1322,6 +1376,90 @@ def _update_emby_user_configuration(server, user_id, configuration):
         json_payload=configuration
     )
     return success, payload
+
+
+def _rename_emby_user(server, user_id, new_name):
+    """
+    Rinomina un utente sul server Emby.
+    """
+    if not user_id or not new_name:
+        return False, "Dati mancanti"
+    
+    # 1. Fetch current user details
+    user_dto, err = _fetch_emby_user_details(server, user_id)
+    if err or not user_dto:
+        return False, f"Impossibile recuperare utente: {err}"
+    
+    # 2. Update Name
+    user_dto["Name"] = new_name
+    
+    # CRITICAL: Remove Password fields to prevent accidental reset!
+    # Emby API /Users/{Id} POST update might clear password if these are present but empty/null.
+    # We strip them to be safe.
+    keys_to_remove = ["Password", "OriginalPassword", "EasyPassword", "Salt", "PasswordSalt", "ConnectPassword"]
+    for k in keys_to_remove:
+        user_dto.pop(k, None)
+    
+    # 3. Post update
+    # Endpoint: /Users/{Id}
+    success, payload = _call_emby_api(
+        server, 
+        f"Users/{user_id}", 
+        method="POST", 
+        json_payload=user_dto
+    )
+    return success, payload
+
+
+def _update_emby_user_password(server, user_id, new_password):
+    """
+    Aggiorna la password dell'utente.
+    Richiede privilegi amministrativi (API Key) per ignorare la password corrente.
+    """
+    if not user_id:
+        return False, "User ID mancante"
+    
+    # Endpoint: /Users/{Id}/Password
+    payload = {
+        "Id": user_id,
+        "NewPw": new_password
+        # "CurrentPassword": "" # Admin can typically omit this
+    }
+    
+    success, resp = _call_emby_api(
+        server, 
+        f"Users/{user_id}/Password", 
+        method="POST", 
+        json_payload=payload
+    )
+    return success, resp
+
+
+def _fetch_emby_user_last_playback(server, user_id):
+    """
+    Recupera l'ultimo elemento riprodotto dall'utente.
+    """
+    if not user_id:
+        return None
+        
+    params = {
+        "Recursive": "true",
+        "Limit": 1,
+        "SortBy": "DatePlayed",
+        "SortOrder": "Descending",
+        "Filters": "IsPlayed",
+        "IncludeItemTypes": "Movie,Episode",
+        "Fields": "DatePlayed,Name,SeriesName"
+    }
+    
+    success, payload = _call_emby_api(server, f"Users/{user_id}/Items", params=params)
+    if not success or not isinstance(payload, dict):
+        return None
+        
+    items = payload.get("Items", [])
+    if items:
+        return items[0]
+    return None
 
 
 def _create_emby_user(server, name, copy_from_user_id=None):
