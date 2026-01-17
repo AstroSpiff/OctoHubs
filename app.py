@@ -1,5 +1,6 @@
 # app.py
 import argparse
+import asyncio
 import copy
 import json
 import html
@@ -21,7 +22,32 @@ import requests
 from typing import Dict, Any, cast, Optional, List
 
 # Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 logger = logging.getLogger(__name__)
+
+# Helper per logging con flush immediato
+def _log_flush(msg: str):
+    """Print con flush immediato per debugging real-time."""
+    print(msg, flush=True)
+
+_APP_EVENT_LOOP: Optional[asyncio.AbstractEventLoop] = None
+
+
+def _register_app_event_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Store the main async event loop so other threads can schedule coroutines."""
+    global _APP_EVENT_LOOP
+    _APP_EVENT_LOOP = loop
+
+
+def _get_app_event_loop() -> Optional[asyncio.AbstractEventLoop]:
+    """Return the stored event loop used by FastAPI/Uvicorn."""
+    return _APP_EVENT_LOOP
 
 from jinja2 import Undefined, TemplateSyntaxError
 from jinja2.sandbox import SandboxedEnvironment
@@ -52,7 +78,6 @@ from config import (
 
 from emby_websocket_manager import get_websocket_manager
 from emby_user_manager import EmbyUserManager
-# REMOVED: emby_progress_poller deprecated, replaced by WebSocket real-time events
 from api_clients import (
     _prepare_emby_servers_for_view,
     _execute_emby_action,
@@ -333,7 +358,9 @@ class LibraryScanTracker:
     """
     def __init__(self):
         self._jobs = {}  # job_id -> job_data
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # Use RLock for reentrant locking (nested locks)
+        self._max_jobs_per_server = 100
+        self._job_retention_hours = 24
 
     def create_job(self, server_id: str, library_ids: list, group_name: Optional[str] = None, scan_type: str = "content") -> str:
         """
@@ -341,8 +368,18 @@ class LibraryScanTracker:
         scan_type: "content" for file scan, "metadata" for metadata refresh
         Returns job_id.
         """
+        _log_flush(f"[TRACKER] >>> create_job CALLED <<<")
+        _log_flush(f"[TRACKER]   server_id: {server_id}")
+        _log_flush(f"[TRACKER]   library_ids: {library_ids}")
+        _log_flush(f"[TRACKER]   group_name: {group_name}")
+        _log_flush(f"[TRACKER]   scan_type: {scan_type}")
+
         job_id = str(uuid.uuid4())
+        _log_flush(f"[TRACKER]   generated job_id: {job_id}")
+
+        _log_flush(f"[TRACKER]   acquiring lock...")
         with self._lock:
+            _log_flush(f"[TRACKER]   lock acquired, creating job data...")
             self._jobs[job_id] = {
                 "id": job_id,
                 "server_id": server_id,
@@ -359,6 +396,11 @@ class LibraryScanTracker:
                 "completed_at": None,
                 "error": None
             }
+            self._jobs[job_id]["created_at"] = datetime.now(timezone.utc).isoformat()
+            _log_flush(f"[TRACKER]   calling _enforce_job_limits...")
+            self._enforce_job_limits(server_id)
+            _log_flush(f"[TRACKER]   lock releasing...")
+        _log_flush(f"[TRACKER] ✓ create_job completed, returning job_id: {job_id}")
         return job_id
 
     def get_job(self, job_id: str) -> Optional[dict]:
@@ -384,16 +426,32 @@ class LibraryScanTracker:
             job["updated_at"] = datetime.now(timezone.utc).isoformat()
 
     def update_library_status(self, job_id: str, library_id: str, status: str,
-                            progress: Optional[float] = None, message: Optional[str] = None):
+                            progress: Optional[float] = None, message: Optional[str] = None,
+                            metadata: Optional[dict] = None):
         """Update status of a specific library within a job."""
+        _log_flush(f"\n{'='*80}")
+        _log_flush(f"[TRACKER] >>> update_library_status CALLED <<<")
+        _log_flush(f"[TRACKER]   job_id: {job_id}")
+        _log_flush(f"[TRACKER]   library_id: {library_id}")
+        _log_flush(f"[TRACKER]   status: {status}")
+        progress_str = f"{progress*100:.1f}%" if progress is not None else "N/A"
+        _log_flush(f"[TRACKER]   progress: {progress} ({progress_str})")
+        _log_flush(f"[TRACKER]   message: {message}")
+        _log_flush(f"[TRACKER]   metadata keys: {list(metadata.keys()) if metadata else 'None'}")
+        _log_flush(f"{'='*80}\n")
+
         job_completed = False
         job_data_copy = None
         should_broadcast_progress = False
         overall_progress = 0.0
+        lib_metadata = None
 
         with self._lock:
+            _log_flush(f"[TRACKER] Lock acquired for job {job_id}")
             if job_id not in self._jobs:
+                _log_flush(f"[TRACKER] ✗ Job {job_id} NOT FOUND in tracker!")
                 return
+            _log_flush(f"[TRACKER] ✓ Job {job_id} found in tracker")
             job = self._jobs[job_id]
             if "library_status" not in job:
                 job["library_status"] = {}
@@ -404,6 +462,9 @@ class LibraryScanTracker:
                 lib_status["progress"] = progress
             if message is not None:
                 lib_status["message"] = message
+            if metadata and isinstance(metadata, dict):
+                lib_status.update(metadata)
+                lib_status["metadata"] = copy.deepcopy(metadata)
             job["library_status"][library_id] = lib_status
 
             # Update overall progress
@@ -429,15 +490,25 @@ class LibraryScanTracker:
             elif job["status"] == "queued":
                 job["status"] = "active"
 
-            # Se è in progress (non completato), broadcast progress
-            if status == "active" and progress is not None:
+            # Broadcast progress per status active, completed, error
+            _log_flush(f"[TRACKER] Checking broadcast conditions: status={status}, progress={progress}")
+            if status in ("active", "completed", "error") and progress is not None:
                 should_broadcast_progress = True
+                lib_metadata = job["library_status"].get(library_id, {}).get("metadata")
+                _log_flush(f"[TRACKER] ✓ Broadcast will be triggered! status={status}, overall_progress={overall_progress:.1%}")
+            else:
+                _log_flush(f"[TRACKER] ✗ Broadcast NOT triggered (status={status}, progress={progress})")
 
             job["updated_at"] = datetime.now(timezone.utc).isoformat()
+            _log_flush(f"[TRACKER] Lock will be released now")
 
-        # Broadcast progress durante esecuzione
+        # Broadcast progress fuori dal lock
+        _log_flush(f"[TRACKER] Lock released. should_broadcast_progress={should_broadcast_progress}")
         if should_broadcast_progress:
-            _broadcast_scan_progress(job_id, library_id, overall_progress, message)
+            _log_flush(f"[TRACKER] Calling _broadcast_scan_progress...")
+            _broadcast_scan_progress(job_id, library_id, overall_progress, message, metadata=lib_metadata)
+        else:
+            _log_flush(f"[TRACKER] Skipping broadcast (should_broadcast_progress=False)")
 
         # Broadcast completion fuori dal lock
         if job_completed and job_data_copy:
@@ -466,6 +537,86 @@ class LibraryScanTracker:
             for job_id in to_delete:
                 self._jobs.pop(job_id, None)
 
+    def clear_jobs(self):
+        """Remove all tracked scan jobs (used when forcing a reset)."""
+        with self._lock:
+            self._jobs.clear()
+
+    def _parse_iso(self, iso_str: Optional[str]) -> Optional[datetime]:
+        if not iso_str:
+            return None
+        try:
+            return datetime.fromisoformat(iso_str)
+        except (TypeError, ValueError):
+            return None
+
+    def is_scan_complete(self, job_id: str) -> tuple[bool, dict]:
+        """Return True if the job is finished (completed/error/timeout)."""
+        job = self.get_job(job_id)
+        if not job:
+            return True, {"status": "missing"}
+        status = job.get("status")
+        summary = {
+            "job_id": job_id,
+            "status": status,
+            "progress": job.get("progress"),
+            "completed_at": job.get("completed_at"),
+            "error": job.get("error")
+        }
+        return status in ("completed", "error", "timeout"), summary
+
+    def prune_old_jobs(self, max_age_hours: int = 24):
+        """Remove jobs completed/error older than the configured retention."""
+        self.cleanup_old_jobs(max_age_hours)
+
+    def _enforce_job_limits(self, server_id: str):
+        """Remove oldest jobs for the server if we exceed limits."""
+        with self._lock:
+            server_jobs = [
+                (job_id, job)
+                for job_id, job in self._jobs.items()
+                if job.get("server_id") == server_id
+            ]
+            if len(server_jobs) <= self._max_jobs_per_server:
+                return
+            server_jobs.sort(key=lambda pair: self._parse_iso(pair[1].get("created_at")) or datetime.min)
+            excess = len(server_jobs) - self._max_jobs_per_server
+            for job_id, _ in server_jobs[:excess]:
+                self._jobs.pop(job_id, None)
+
+    def limit_jobs(self, max_per_server: int, max_age_hours: int = 24):
+        """Adjust job retention and per-server limits."""
+        self._max_jobs_per_server = max_per_server
+        self._job_retention_hours = max_age_hours
+        self.prune_old_jobs(max_age_hours)
+        servers = {job.get("server_id") for job in self._jobs.values() if job.get("server_id")}
+        for server_id in servers:
+            self._enforce_job_limits(server_id)
+
+    def get_queue_position(self, server_id: str, library_id: str) -> int:
+        """Estimate the queue position for a library in the given server."""
+        now = datetime.now(timezone.utc)
+        running_count = 0
+        earlier_waiting = 0
+        target_requested = None
+        with self._lock:
+            for job in self._jobs.values():
+                if job.get("server_id") != server_id:
+                    continue
+                for lid, state in job.get("library_status", {}).items():
+                    if lid == library_id:
+                        if state.get("status") == "running":
+                            return 0
+                        target_requested = state.get("scan_requested_at")
+                    if state.get("status") == "running":
+                        running_count += 1
+                    elif state.get("status") == "waiting":
+                        requested_ts = state.get("scan_requested_at")
+                        if requested_ts and target_requested and requested_ts < target_requested:
+                            earlier_waiting += 1
+                        elif requested_ts and not target_requested:
+                            earlier_waiting += 1
+        return running_count + earlier_waiting
     def find_jobs_by_library(self, server_id: str, library_id: str) -> list:
         """
         Find all active job IDs that include the given server and library.
@@ -539,28 +690,32 @@ def _broadcast_scan_completion(job_id: str, job_data: dict):
 
         manager = get_scan_connection_manager()
         library_poller = get_library_poller()
-        loop = asyncio.get_event_loop()
+        loop = _get_app_event_loop()
 
-        if loop.is_running():
-            # Broadcast completamento
-            asyncio.create_task(manager.broadcast_to_job(job_id, message))
+        if loop and loop.is_running():
+            # Broadcast completamento usando run_coroutine_threadsafe
+            asyncio.run_coroutine_threadsafe(
+                manager.broadcast_to_job(job_id, message),
+                loop
+            )
 
             # Ferma tracking poller per tutte le librerie del job
             server_id = job_data.get("server_id")
             library_ids = job_data.get("library_ids", [])
             if server_id:  # Verifica che server_id non sia None
                 for library_id in library_ids:
-                    asyncio.create_task(
-                        library_poller.stop_tracking_library(str(server_id), str(library_id))
+                    asyncio.run_coroutine_threadsafe(
+                        library_poller.stop_tracking_library(str(server_id), str(library_id)),
+                        loop
                     )
         else:
             # Fallback sync (non dovrebbe succedere con FastAPI)
-            print(f"[SCAN_BROADCAST] Warning: no event loop running for job {job_id}")
+            print(f"[SCAN_BROADCAST] Warning: no event loop available for job {job_id}")
     except Exception as e:
         print(f"[SCAN_BROADCAST] Error broadcasting completion for job {job_id}: {e}")
 
 
-def _broadcast_scan_progress(job_id: str, library_id: str, progress: float, message: Optional[str] = None):
+def _broadcast_scan_progress(job_id: str, library_id: str, progress: float, message: Optional[str] = None, metadata: Optional[dict] = None):
     """
     Broadcast evento di progress scan via WebSocket durante l'esecuzione.
 
@@ -575,9 +730,9 @@ def _broadcast_scan_progress(job_id: str, library_id: str, progress: float, mess
 
     try:
         manager = get_scan_connection_manager()
-        loop = asyncio.get_event_loop()
+        loop = _get_app_event_loop()
 
-        if loop.is_running():
+        if loop and loop.is_running():
             ws_message = {
                 "type": "progress",
                 "job_id": job_id,
@@ -586,11 +741,19 @@ def _broadcast_scan_progress(job_id: str, library_id: str, progress: float, mess
                 "message": message or f"Scanning library {library_id}...",
                 "source": "virtualfolders.RefreshProgress"
             }
-            asyncio.create_task(manager.broadcast_to_job(job_id, ws_message))
+            if metadata:
+                ws_message["metadata"] = metadata
+
+            # Schedule coroutine in the app event loop
+            future = asyncio.run_coroutine_threadsafe(
+                manager.broadcast_to_job(job_id, ws_message),
+                loop
+            )
+            _log_flush(f"[SCAN_PROGRESS] ✓ Broadcast scheduled: job={job_id}, lib={library_id}, progress={progress:.1%}, msg='{message}'")
         else:
-            print(f"[SCAN_PROGRESS] Warning: no event loop running for job {job_id}")
+            _log_flush(f"[SCAN_PROGRESS] ✗ Warning: no event loop available for job {job_id}")
     except Exception as e:
-        print(f"[SCAN_PROGRESS] Error broadcasting progress for job {job_id}: {e}")
+        _log_flush(f"[SCAN_PROGRESS] Error broadcasting progress for job {job_id}: {e}")
 
 
 def _update_latest_progress(state=None, total=None, completed=None, message=None):
@@ -4261,11 +4424,28 @@ def _internal_send_notifications(limit, per_server_limit, server_filter=None):
     failed = 0
     notified_items = []
 
+    # FIX PROBLEMA #3: Deduplica notifiche - traccia items già inviati in questa execution
+    sent_item_signatures = set()
+
     for rule_run in rule_runs:
         template = rule_run.get("template") or _default_latest_message_template()
         rule_items = rule_run.get("items") or []
         recipients = rule_run.get("recipients") or []
         for item in rule_items:
+            # Crea signature unica per l'item (server_id + item_id)
+            server_id = item.get("server_id")
+            item_id = item.get("item_id")
+
+            if not server_id or not item_id:
+                continue
+
+            item_signature = f"{server_id}:{item_id}"
+
+            # Skip se già inviato in questa execution
+            if item_signature in sent_item_signatures:
+                print(f"   -> [NOTIFY] Skip duplicato: {item.get('name', 'Unknown')} (già notificato)")
+                continue
+
             message, image_url = _build_latest_message(item, template)
             if not message and not image_url:
                 continue
@@ -4296,6 +4476,7 @@ def _internal_send_notifications(limit, per_server_limit, server_filter=None):
 
             if item_success:
                 notified_items.append(item)
+                sent_item_signatures.add(item_signature)  # Marca come inviato
 
     # Aggiorna il flag notified=True per tutti gli item notificati con successo
     if notified_items:
@@ -5665,430 +5846,59 @@ def _default_telegram_settings() -> Dict[str, Any]:
 
 
 EMBY_LATEST_KEY = "EMBY_LATEST"
-EMBY_SCAN_SESSIONS_KEY = "EMBY_SCAN_SESSIONS"
-EMBY_SCAN_QUEUE_KEY = "EMBY_SCAN_QUEUE"
-EMBY_SCAN_SESSION_TTL_SECONDS = 6 * 60 * 60
-EMBY_SCAN_SESSION_TIMEOUT_SECONDS = 5 * 60
-EMBY_SCAN_SESSION_INACTIVE_GRACE_SECONDS = 60
 
 
-def _parse_scan_session_ts(value):
-    if not value:
-        return None
-    if isinstance(value, datetime):
-        return value
-    if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(value, tz=timezone.utc)
-    if isinstance(value, str):
-        try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    return None
-
-
-def _load_emby_scan_sessions():
-    settings = _load_app_settings_snapshot()
-    sessions = settings.get(EMBY_SCAN_SESSIONS_KEY)
-    return sessions if isinstance(sessions, list) else []
-
-
-def _save_emby_scan_sessions(sessions):
-    settings = _load_app_settings_snapshot()
-    settings[EMBY_SCAN_SESSIONS_KEY] = sessions
-    _save_app_settings_snapshot(settings)
-
-
-def _load_emby_scan_queue():
-    settings = _load_app_settings_snapshot()
-    queue = settings.get(EMBY_SCAN_QUEUE_KEY)
-    return queue if isinstance(queue, list) else []
-
-
-def _save_emby_scan_queue(queue):
-    settings = _load_app_settings_snapshot()
-    settings[EMBY_SCAN_QUEUE_KEY] = queue
-    _save_app_settings_snapshot(settings)
-
-
-def _cleanup_emby_scan_queue(queue, now_dt=None):
-    if not queue:
-        return []
-    now_dt = now_dt or datetime.now(timezone.utc)
-    cleaned = []
-    for entry in queue:
-        if not isinstance(entry, dict):
-            continue
-        requested_at = _parse_scan_session_ts(entry.get("requested_at")) or now_dt
-        if (now_dt - requested_at).total_seconds() > EMBY_SCAN_SESSION_TTL_SECONDS:
-            continue
-        if not entry.get("group_name") or not entry.get("scan_type"):
-            continue
-        cleaned.append(entry)
-    return cleaned
-
-
-def _has_active_scan_sessions(sessions):
-    for session in sessions:
-        if not isinstance(session, dict):
-            continue
-        status = session.get("status")
-        if status in ("running", "starting"):
-            return True
-        servers_state = session.get("servers")
-        if isinstance(servers_state, dict):
-            for state in servers_state.values():
-                if isinstance(state, dict) and state.get("status") in ("running", "starting", "active"):
-                    return True
-    return False
-
-
-def _enqueue_group_scan_request(queue, group_name, scan_type, server_map, now_dt=None):
-    now_dt = now_dt or datetime.now(timezone.utc)
-    for entry in queue:
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("group_name") == group_name and entry.get("scan_type") == scan_type:
-            existing_map = entry.get("library_ids")
-            if not isinstance(existing_map, dict):
-                existing_map = {}
-            for server_id, libs in server_map.items():
-                lib_list = existing_map.get(server_id)
-                if not isinstance(lib_list, list):
-                    lib_list = []
-                for lib_id in libs:
-                    if lib_id not in lib_list:
-                        lib_list.append(lib_id)
-                existing_map[server_id] = lib_list
-            entry["library_ids"] = existing_map
-            entry["server_ids"] = list(existing_map.keys())
-            entry["requested_at"] = now_dt.isoformat()
-            return entry, False
-    entry = {
-        "id": str(uuid.uuid4()),
-        "group_name": group_name,
-        "scan_type": scan_type,
-        "server_ids": list(server_map.keys()),
-        "library_ids": server_map,
-        "requested_at": now_dt.isoformat()
-    }
-    queue.append(entry)
-    return entry, True
-
-
-def _dequeue_next_scan_request(queue):
-    if not queue:
-        return None
-    return queue.pop(0)
-
-
-def _server_has_active_library_scan(server, library_ids):
-    folders, error = _fetch_emby_virtual_folders(server)
-    if error:
-        return False, 0.0
-    folder_map = {str(entry.get("ItemId") or entry.get("Id")): entry for entry in folders}
-    max_progress = 0.0
-    for lib_id in library_ids:
-        folder = folder_map.get(str(lib_id))
-        if not folder:
-            continue
-        refresh_status = (folder.get("RefreshStatus") or "").lower()
-        refresh_progress = float(folder.get("RefreshProgress") or 0.0)
-        is_scanning = (
-            refresh_status in ("active", "running", "scanning")
-            or (refresh_progress > 0 and refresh_progress < 100)
-        )
-        if is_scanning:
-            max_progress = max(max_progress, refresh_progress / 100.0)
-    return max_progress > 0.0, max_progress
-
-
-def _start_group_scan_session(config, group_name, scan_type, server_map, now_dt=None):
-    now_dt = now_dt or datetime.now(timezone.utc)
-    sessions = _load_emby_scan_sessions()
-    sessions = _cleanup_emby_scan_sessions(sessions, now_dt)
-    session = _get_or_create_scan_session(sessions, group_name, scan_type, now_dt)
-
-    server_ids = [str(server_id) for server_id in server_map.keys()]
-    session["server_ids"] = server_ids
-    session["library_ids"] = {str(server_id): [str(lib_id) for lib_id in libs] for server_id, libs in server_map.items()}
-
-    servers_state = session.get("servers")
-    if not isinstance(servers_state, dict):
-        servers_state = {}
-
-    failed_servers = []
-    for server_id in server_ids:
-        state = servers_state.get(server_id)
-        if not isinstance(state, dict):
-            state = {}
-        state["status"] = "starting"
-        state["started_at"] = state.get("started_at") or now_dt.isoformat()
-        state["last_seen"] = now_dt.isoformat()
-        state["last_progress"] = state.get("last_progress", 0.0) or 0.0
-        servers_state[server_id] = state
-
-    session["servers"] = servers_state
-    session["status"] = "running"
-    session["updated_at"] = now_dt.isoformat()
-    session["expires_at"] = (now_dt + timedelta(seconds=EMBY_SCAN_SESSION_TTL_SECONDS)).isoformat()
-    _save_emby_scan_sessions(sessions)
-
-    for server_id, library_ids in server_map.items():
-        emby_config = config.get("EMBY") or {}
-        servers = emby_config.get("SERVERS") or []
-        server = next((entry for entry in servers if str(entry.get("id")) == str(server_id)), None)
-        if not server or not server.get("enabled"):
-            failed_servers.append(server_id)
-            state = servers_state.get(server_id, {})
-            state["status"] = "failed"
-            state["last_error"] = "Server non valido o disabilitato"
-            state["last_seen"] = now_dt.isoformat()
-            servers_state[server_id] = state
-            continue
-
-        is_active, progress = _server_has_active_library_scan(server, library_ids)
-        if is_active:
-            state = servers_state.get(server_id, {})
-            state["status"] = "active"
-            state["last_progress"] = max(state.get("last_progress") or 0.0, progress)
-            state["last_seen"] = now_dt.isoformat()
-            servers_state[server_id] = state
-            continue
-
-        for library_id in library_ids:
-            success, response = _trigger_library_scan(server, str(library_id), scan_type)
-            if not success:
-                failed_servers.append(server_id)
-                state = servers_state.get(server_id, {})
-                state["status"] = "failed"
-                state["last_error"] = str(response)
-                state["last_seen"] = now_dt.isoformat()
-                servers_state[server_id] = state
-                break
-
-    session["servers"] = servers_state
-    if failed_servers:
-        session["status"] = "failed"
-        session["error"] = f"Errore avvio scan: {', '.join(sorted(set(failed_servers)))}"
-    session["updated_at"] = now_dt.isoformat()
-    session["expires_at"] = (now_dt + timedelta(seconds=EMBY_SCAN_SESSION_TTL_SECONDS)).isoformat()
-    _save_emby_scan_sessions(sessions)
-
-    return session, failed_servers
-
-def _cleanup_emby_scan_sessions(sessions, now_dt=None):
-    if not sessions:
-        return []
-    now_dt = now_dt or datetime.now(timezone.utc)
-    cleaned = []
-    for session in sessions:
-        if not isinstance(session, dict):
-            continue
-        expires_at = _parse_scan_session_ts(session.get("expires_at"))
-        if not expires_at:
-            started_at = _parse_scan_session_ts(session.get("started_at")) or now_dt
-            expires_at = started_at + timedelta(seconds=EMBY_SCAN_SESSION_TTL_SECONDS)
-            session["expires_at"] = expires_at.isoformat()
-        if expires_at <= now_dt:
-            continue
-        cleaned.append(session)
-    return cleaned
-
-
-def _get_or_create_scan_session(sessions, group_name, scan_type, now_dt=None):
-    now_dt = now_dt or datetime.now(timezone.utc)
-    for session in sessions:
-        if not isinstance(session, dict):
-            continue
-        if (
-            session.get("group_name") == group_name
-            and session.get("scan_type") == scan_type
-            and session.get("status") in (None, "running")
-        ):
-            return session
-    session = {
-        "id": str(uuid.uuid4()),
-        "group_name": group_name,
-        "scan_type": scan_type,
-        "status": "starting",
-        "server_ids": [],
-        "library_ids": {},
-        "servers": {},
-        "started_at": now_dt.isoformat(),
-        "updated_at": now_dt.isoformat(),
-        "expires_at": (now_dt + timedelta(seconds=EMBY_SCAN_SESSION_TTL_SECONDS)).isoformat()
-    }
-    sessions.append(session)
-    return session
 
 
 def _build_active_library_scans_snapshot():
-    """Build active Emby library scan snapshot for API responses."""
-    config, is_valid = load_config()
-    if not is_valid or not config:
-        return {"success": True, "scans": [], "sessions": []}
+    """Return active library job data from the tracker."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    scans = []
+    sessions = []
 
-    emby_config = config.get("EMBY") or {}
-    servers = emby_config.get("SERVERS") or []
-    active_scans = []
-    now_dt = datetime.now(timezone.utc)
-    now_iso = now_dt.isoformat()
-
-    for server in servers:
-        if not isinstance(server, dict):
+    for job in _LIBRARY_SCAN_TRACKER.get_all_jobs():
+        job_status = job.get('status', 'queued')
+        if job_status in ('completed', 'error'):
             continue
-        if not server.get("enabled") and not server.get("ENABLED"):
-            continue
-        server_id = server.get("id")
-        if server_id is None:
-            continue
-        server_id = str(server_id)
-        folders, error = _fetch_emby_virtual_folders(server)
-        if error:
-            continue
-        for folder in folders:
-            if not isinstance(folder, dict):
-                continue
-            lib_id = str(folder.get("ItemId") or folder.get("Id") or "")
-            if not lib_id:
-                continue
-            refresh_status = (folder.get("RefreshStatus") or "").lower()
-            refresh_progress = float(folder.get("RefreshProgress") or 0.0)
-            is_scanning = (
-                refresh_status in ("active", "running", "scanning") or
-                (refresh_progress > 0 and refresh_progress < 100)
-            )
-            if not is_scanning:
-                continue
-            scan_type = folder.get("RefreshType") or folder.get("RefreshMode") or "metadata"
-            active_scans.append({
-                "server_id": str(server_id),
-                "library_id": lib_id,
-                "scan_type": str(scan_type).lower(),
-                "status": "active",
-                "progress": min(max(refresh_progress / 100.0, 0.0), 1.0),
-                "message": folder.get("RefreshMessage") or "",
-                "updated_at": folder.get("LastRefreshTime") or now_iso
+        server_id = job.get('server_id')
+        library_ids = job.get('library_ids') or []
+        library_states = job.get('library_status') or {}
+        for lib_id in library_ids:
+            lib_key = str(lib_id)
+            lib_state = library_states.get(lib_key, {})
+            state_status = lib_state.get('status') or job_status
+            progress = lib_state.get('progress')
+            if progress is None:
+                progress = job.get('progress', 0.0)
+            scans.append({
+                'job_id': job.get('id'),
+                'server_id': str(server_id) if server_id else None,
+                'library_id': lib_key,
+                'scan_type': job.get('scan_type'),
+                'status': state_status,
+                'progress': min(max(progress, 0.0), 1.0),
+                'message': lib_state.get('message') or '',
+                'updated_at': lib_state.get('updated_at') or job.get('updated_at') or now_iso,
+                'queue_position': lib_state.get('queue_position'),
+                'metadata': lib_state.get('metadata') or {}
             })
-
-    sessions = _load_emby_scan_sessions()
-    sessions = _cleanup_emby_scan_sessions(sessions, now_dt)
-    queue = _load_emby_scan_queue()
-    queue_before = len(queue)
-    queue = _cleanup_emby_scan_queue(queue, now_dt)
-    queue_changed = len(queue) != queue_before
-    sessions_changed = False
-    if sessions:
-        active_by_server: Dict[str, list] = {}
-        for scan in active_scans:
-            server_key = scan.get("server_id")
-            if not server_key:
-                continue
-            active_by_server.setdefault(server_key, []).append(scan)
-
-        for session in sessions:
-            if not isinstance(session, dict):
-                continue
-            server_ids = session.get("server_ids") or []
-            if not isinstance(server_ids, list):
-                server_ids = []
-            servers_state = session.get("servers")
-            if not isinstance(servers_state, dict):
-                servers_state = {}
-            library_map = session.get("library_ids")
-            if not isinstance(library_map, dict):
-                library_map = {}
-            updated = False
-
-            normalized_server_ids = [str(server_id) for server_id in server_ids]
-            server_ids = normalized_server_ids
-            for server_id in server_ids:
-                state = servers_state.get(server_id)
-                if not isinstance(state, dict):
-                    state = {}
-                all_scans = active_by_server.get(server_id, [])
-                scans = list(all_scans)
-                library_ids = library_map.get(server_id)
-                if isinstance(library_ids, list) and library_ids:
-                    library_ids_str = {str(lib_id) for lib_id in library_ids}
-                    scans = [scan for scan in scans if str(scan.get("library_id")) in library_ids_str]
-                has_other_scans = bool(all_scans) and not scans
-
-                if scans:
-                    max_progress = max((scan.get("progress") or 0.0) for scan in scans)
-                    state["status"] = "active"
-                    state["last_progress"] = max(state.get("last_progress") or 0.0, max_progress)
-                    state["last_seen"] = now_iso
-                    state.setdefault("started_at", session.get("started_at") or now_iso)
-                    updated = True
-                else:
-                    status = state.get("status") or "starting"
-                    started_at = _parse_scan_session_ts(state.get("started_at")) or _parse_scan_session_ts(session.get("started_at")) or now_dt
-                    last_seen_dt = _parse_scan_session_ts(state.get("last_seen"))
-                    last_progress = float(state.get("last_progress") or 0.0)
-                    if status == "starting":
-                        if has_other_scans:
-                            state["last_seen"] = now_iso
-                            updated = True
-                        elif (now_dt - started_at).total_seconds() > EMBY_SCAN_SESSION_TIMEOUT_SECONDS:
-                            state["status"] = "timeout"
-                            state["last_error"] = "Timeout avvio"
-                            state["last_seen"] = now_iso
-                            updated = True
-                    elif status == "active":
-                        effective_last_seen = last_seen_dt or started_at
-                        if not last_seen_dt or (now_dt - effective_last_seen).total_seconds() > EMBY_SCAN_SESSION_INACTIVE_GRACE_SECONDS:
-                            if last_progress >= 0.99:
-                                state["status"] = "completed"
-                                state["completed_at"] = now_iso
-                                state["last_progress"] = 1.0
-                                updated = True
-                            elif last_progress >= 0.90:
-                                # Allow extra time for metadata phase to start/finish
-                                if (now_dt - effective_last_seen).total_seconds() > (EMBY_SCAN_SESSION_INACTIVE_GRACE_SECONDS * 5):
-                                    state["status"] = "completed"
-                                    state["completed_at"] = now_iso
-                                    state["last_progress"] = max(state.get("last_progress") or 0.0, 1.0)
-                                    updated = True
-                            else:
-                                state["status"] = "active"
-                                updated = True
-
-                servers_state[server_id] = state
-
-            if server_ids:
-                statuses = [servers_state.get(server_id, {}).get("status") for server_id in server_ids]
-                if any(status in ("failed", "timeout") for status in statuses):
-                    session["status"] = "failed"
-                elif all(status == "completed" for status in statuses):
-                    session["status"] = "completed"
-                else:
-                    session["status"] = "running"
-                updated = True
-
-            if updated:
-                session["servers"] = servers_state
-                session["updated_at"] = now_iso
-                session["expires_at"] = (now_dt + timedelta(seconds=EMBY_SCAN_SESSION_TTL_SECONDS)).isoformat()
-                sessions_changed = True
-
-    if sessions_changed:
-        _save_emby_scan_sessions(sessions)
-
-    if queue_changed:
-        _save_emby_scan_queue(queue)
-
-    if not _has_active_scan_sessions(sessions) and queue:
-        next_entry = _dequeue_next_scan_request(queue)
-        if next_entry:
-            _save_emby_scan_queue(queue)
-            server_map = next_entry.get("library_ids") if isinstance(next_entry.get("library_ids"), dict) else {}
-            _start_group_scan_session(config, next_entry.get("group_name"), next_entry.get("scan_type"), server_map, now_dt)
-            sessions = _load_emby_scan_sessions()
-
-    return {"success": True, "scans": active_scans, "sessions": sessions}
-
+        if job.get('group_name'):
+            sessions.append({
+                'job_id': job.get('id'),
+                'group_name': job.get('group_name'),
+                'scan_type': job.get('scan_type'),
+                'status': job_status,
+                'server_id': str(server_id) if server_id else None,
+                'library_ids': library_ids,
+                'updated_at': job.get('updated_at') or now_iso,
+                'progress': min(max(job.get('progress', 0.0), 0.0), 1.0)
+            })
+    return {
+        'success': True,
+        'scans': scans,
+        'sessions': sessions,
+        'now': now_iso
+    }
 
 def _build_scan_library_snapshot(payload):
     payload = payload or {}
@@ -6126,7 +5936,7 @@ def _build_scan_library_tracked_snapshot(payload):
     server_id = payload.get("server_id")
     library_ids = payload.get("library_ids")
     group_name = payload.get("group_name")
-    scan_type = payload.get("scan_type", "content")
+    scan_type = (payload.get("scan_type") or "content").strip().lower()
 
     print(f"[SCAN_TRACKED] Received: server_id={server_id}, library_ids={library_ids}, scan_type={scan_type}")
 
@@ -6135,7 +5945,7 @@ def _build_scan_library_tracked_snapshot(payload):
 
     server_key = str(server_id)
 
-    if isinstance(library_ids, str):
+    if isinstance(library_ids, (str, int)):
         library_ids = [library_ids]
     elif not isinstance(library_ids, list):
         return {"success": False, "message": "library_ids deve essere stringa o lista"}, 400
@@ -6160,69 +5970,6 @@ def _build_scan_library_tracked_snapshot(payload):
     if not target_server.get("enabled"):
         return {"success": False, "message": "Server disabilitato"}, 400
 
-    if group_name:
-        try:
-            now_dt = datetime.now(timezone.utc)
-            sessions = _load_emby_scan_sessions()
-            sessions = _cleanup_emby_scan_sessions(sessions, now_dt)
-            queue = _load_emby_scan_queue()
-            queue = _cleanup_emby_scan_queue(queue, now_dt)
-            if _has_active_scan_sessions(sessions) or queue:
-                server_map = {server_key: [str(lib_id) for lib_id in library_ids]}
-                entry, _ = _enqueue_group_scan_request(queue, group_name, scan_type, server_map, now_dt)
-                _save_emby_scan_queue(queue)
-                return {
-                    "success": True,
-                    "queued": True,
-                    "queue_length": len(queue),
-                    "queue_position": queue.index(entry) + 1,
-                    "message": "Scan accodata"
-                }, 202
-            session = _get_or_create_scan_session(sessions, group_name, scan_type, now_dt)
-
-            server_ids = session.get("server_ids")
-            if not isinstance(server_ids, list):
-                server_ids = []
-            if server_key not in server_ids:
-                server_ids.append(server_key)
-            session["server_ids"] = server_ids
-
-            library_map = session.get("library_ids")
-            if not isinstance(library_map, dict):
-                library_map = {}
-            existing_libs = library_map.get(server_key)
-            if not isinstance(existing_libs, list):
-                existing_libs = []
-            for lib_id in library_ids:
-                lib_value = str(lib_id)
-                if lib_value not in existing_libs:
-                    existing_libs.append(lib_value)
-            library_map[server_key] = existing_libs
-            session["library_ids"] = library_map
-
-            servers_state = session.get("servers")
-            if not isinstance(servers_state, dict):
-                servers_state = {}
-            state = servers_state.get(server_key)
-            if not isinstance(state, dict):
-                state = {}
-            if "status" not in state:
-                state["status"] = "starting"
-            if "started_at" not in state:
-                state["started_at"] = now_dt.isoformat()
-            state["last_seen"] = now_dt.isoformat()
-            if "last_progress" not in state:
-                state["last_progress"] = 0.0
-            servers_state[server_key] = state
-            session["servers"] = servers_state
-
-            session["status"] = "running"
-            session["updated_at"] = now_dt.isoformat()
-            session["expires_at"] = (now_dt + timedelta(seconds=EMBY_SCAN_SESSION_TTL_SECONDS)).isoformat()
-            _save_emby_scan_sessions(sessions)
-        except StorageError:
-            pass
-
     job_id = _LIBRARY_SCAN_TRACKER.create_job(server_key, library_ids, group_name, scan_type)
 
     # Avvia poller per tracking RefreshProgress in /Library/VirtualFolders
@@ -6231,62 +5978,41 @@ def _build_scan_library_tracked_snapshot(payload):
 
     library_poller = get_library_poller()
     emby_client = EmbyApiClient(target_server)
+    loop = _get_app_event_loop()
+    errors = []
 
-    # Progress now tracked by polling /Library/VirtualFolders (RefreshProgress field)
-    for library_id in library_ids:
+    for library_id in [str(lib_id) for lib_id in library_ids]:
         print(f"[SCAN_TRACKED] Triggering {scan_type} scan for library {library_id}")
-        success, response = _trigger_library_scan(target_server, str(library_id), scan_type)
+        success, response = _trigger_library_scan(target_server, library_id, scan_type)
         print(f"[SCAN_TRACKED] Trigger result: success={success}, response={response}")
-
         if success:
             print(f"[SCAN_TRACKED] Scan triggered for library {library_id}, starting poller tracking")
-
-            # Avvia tracking asincrono per questa libreria
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.create_task(
+                if loop and loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
                         library_poller.start_tracking_library(
                             server_key,
-                            str(library_id),
+                            library_id,
                             job_id,
-                            emby_client
-                        )
+                            emby_client,
+                            scan_type=scan_type,
+                            library_name=None
+                        ),
+                        loop
                     )
                 else:
-                    print(f"[SCAN_TRACKED] WARNING: No event loop running, polling not started")
-            except Exception as e:
-                print(f"[SCAN_TRACKED] Error starting poller: {e}")
-
-        if not success:
+                    _log_flush("[SCAN_TRACKED] ✗ No event loop running, polling not started")
+            except Exception as exc:
+                _log_flush(f"[SCAN_TRACKED] ✗ Error starting poller: {exc}")
+        else:
+            errors.append(f"{library_id}: {response}")
             _LIBRARY_SCAN_TRACKER.update_library_status(
                 job_id, library_id, "error", 0.0, f"Errore avvio: {response}"
             )
-            if group_name:
-                try:
-                    now_dt = datetime.now(timezone.utc)
-                    sessions = _load_emby_scan_sessions()
-                    sessions = _cleanup_emby_scan_sessions(sessions, now_dt)
-                    session = _get_or_create_scan_session(sessions, group_name, scan_type, now_dt)
-                    servers_state = session.get("servers")
-                    if not isinstance(servers_state, dict):
-                        servers_state = {}
-                    state = servers_state.get(server_key)
-                    if not isinstance(state, dict):
-                        state = {}
-                    state["status"] = "failed"
-                    state["last_error"] = str(response)
-                    state["last_seen"] = now_dt.isoformat()
-                    servers_state[server_key] = state
-                    session["servers"] = servers_state
-                    session["status"] = "failed"
-                    session["updated_at"] = now_dt.isoformat()
-                    session["expires_at"] = (now_dt + timedelta(seconds=EMBY_SCAN_SESSION_TTL_SECONDS)).isoformat()
-                    _save_emby_scan_sessions(sessions)
-                except StorageError:
-                    pass
 
     message = "Scansione file avviata" if scan_type == "content" else "Aggiornamento metadati avviato"
+    if errors:
+        message = f"{message} (errori: {'; '.join(errors)})"
     print(f"[SCAN_TRACKED] Created job {job_id}, starting background polling thread")
     return {"success": True, "job_id": job_id, "message": message}, 200
 
@@ -6324,38 +6050,72 @@ def _build_scan_group_tracked_snapshot(payload):
     if not is_valid or not config:
         return {"success": False, "message": "Config non valida"}, 400
 
-    now_dt = datetime.now(timezone.utc)
-    sessions = _load_emby_scan_sessions()
-    sessions = _cleanup_emby_scan_sessions(sessions, now_dt)
-    queue = _load_emby_scan_queue()
-    queue_before = len(queue)
-    queue = _cleanup_emby_scan_queue(queue, now_dt)
-    queue_changed = len(queue) != queue_before
+    emby_config = config.get("EMBY") or {}
+    servers = emby_config.get("SERVERS") or []
+    library_poller = None
+    job_ids = []
+    failed_servers = []
+    loop = _get_app_event_loop()
+    import asyncio
 
-    if _has_active_scan_sessions(sessions) or queue:
-        entry, _ = _enqueue_group_scan_request(queue, group_name, scan_type, server_map, now_dt)
-        _save_emby_scan_queue(queue)
-        return {
-            "success": True,
-            "queued": True,
-            "queue_length": len(queue),
-            "queue_position": queue.index(entry) + 1,
-            "message": "Scan accodata"
-        }, 202
+    for server_key, library_ids in server_map.items():
+        target_server = next((entry for entry in servers if str(entry.get("id")) == server_key), None)
+        if not target_server or not target_server.get("enabled"):
+            failed_servers.append(server_key)
+            _log_flush(f"[SCAN_GROUP] ✗ Server {server_key} non trovato o disabilitato")
+            continue
 
-    session, failed_servers = _start_group_scan_session(config, group_name, scan_type, server_map, now_dt)
+        if library_poller is None:
+            from emby_library_poller import get_library_poller
+            library_poller = get_library_poller()
+
+        job_id = _LIBRARY_SCAN_TRACKER.create_job(server_key, library_ids, group_name, scan_type)
+        job_ids.append(job_id)
+        emby_client = EmbyApiClient(target_server)
+        for library_id in library_ids:
+            print(f"[SCAN_GROUP] Triggering {scan_type} scan for library {library_id} on server {server_key}")
+            success, response = _trigger_library_scan(target_server, str(library_id), scan_type)
+            print(f"[SCAN_GROUP] Trigger result: success={success}, response={response}")
+            if success:
+                _log_flush(f"[SCAN_GROUP] ✓ Scan triggered for library {library_id} (job {job_id})")
+                try:
+                    if loop and loop.is_running():
+                        asyncio.run_coroutine_threadsafe(
+                            library_poller.start_tracking_library(
+                                server_key,
+                                str(library_id),
+                                job_id,
+                                emby_client,
+                                scan_type=scan_type,
+                                library_name=None
+                            ),
+                            loop
+                        )
+                    else:
+                        _log_flush("[SCAN_GROUP] ✗ Nessun event loop disponibile, poller non avviato")
+                except Exception as exc:
+                    _log_flush(f"[SCAN_GROUP] ✗ Errore avvio poller per {library_id}: {exc}")
+            else:
+                _log_flush(f"[SCAN_GROUP] ✗ Errore avvio scan {library_id}: {response}")
+                _LIBRARY_SCAN_TRACKER.update_library_status(
+                    job_id, library_id, "error", 0.0, f"Errore avvio: {response}"
+                )
+
+    if not job_ids:
+        return {"success": False, "message": "Nessun server valido per lo scan"}, 400
+
+    message = f"Scan di gruppo '{group_name}' avviato"
     if failed_servers:
-        return {
-            "success": False,
-            "message": f"Errore avvio scan: {', '.join(sorted(set(failed_servers)))}",
-            "failed_servers": sorted(set(failed_servers)),
-            "session": session
-        }, 500
+        message = f"{message} (server scartati: {', '.join(sorted(set(failed_servers)))})"
 
-    if queue_changed:
-        _save_emby_scan_queue(queue)
-
-    return {"success": True, "queued": False, "session": session}, 200
+    return {
+        "success": True,
+        "group_name": group_name,
+        "scan_type": scan_type,
+        "job_ids": job_ids,
+        "failed_servers": sorted(set(failed_servers)),
+        "message": message
+    }, 200
 
 
 def _build_associations_get_snapshot():
@@ -7648,6 +7408,20 @@ def _build_trakt_clear_snapshot():
         return {"success": False, "message": str(exc)}, 500
 
 
+def _get_task_value(task, *keys):
+    """
+    Return the first non-None value for the provided keys inside a task dict.
+    """
+    if not isinstance(task, dict):
+        return None
+    for key in keys:
+        if key in task:
+            value = task.get(key)
+            if value is not None:
+                return value
+    return None
+
+
 def _build_active_scans_snapshot():
     """Build active ScheduledTasks scan snapshot for API responses."""
     config, is_valid = load_config()
@@ -7670,27 +7444,34 @@ def _build_active_scans_snapshot():
 
         print(f"[ACTIVE_SCANS_DEBUG] Server {server_name}: found {len(tasks)} tasks")
         for task in tasks:
-            task_name = task.get("Name", "")
-            task_state = task.get("State", "Idle")
+            task_name = _get_task_value(task, "Name", "name") or ""
+            task_state = _get_task_value(task, "State", "state") or "Idle"
             print(f"[ACTIVE_SCANS_DEBUG]   Task: {task_name} | State: {task_state}")
 
         for task in tasks:
-            task_name = task.get("Name", "")
-            task_state = task.get("State", "Idle")
+            task_name = _get_task_value(task, "Name", "name") or ""
+            task_state = _get_task_value(task, "State", "state") or "Idle"
             task_name_lower = task_name.lower()
+            task_state_lower = task_state.lower()
 
-            if ("scan" in task_name_lower or "refresh" in task_name_lower or "library" in task_name_lower) and task_state == "Running":
-                progress = task.get("CurrentProgressPercentage", 0.0)
-                progress_normalized = float(progress) / 100.0 if progress > 1.0 else float(progress)
+            if ("scan" in task_name_lower or "refresh" in task_name_lower or "library" in task_name_lower) and task_state_lower == "running":
+                progress_raw = _get_task_value(task, "progress", "CurrentProgressPercentage")
+                if progress_raw is None:
+                    progress_raw = 0
+                try:
+                    progress_value = float(progress_raw)
+                except (TypeError, ValueError):
+                    progress_value = 0.0
+                progress_normalized = progress_value / 100.0 if progress_value > 1.0 else progress_value
 
-                print(f"[ACTIVE_SCANS_DEBUG] MATCH FOUND: {task_name} at {progress}%")
+                print(f"[ACTIVE_SCANS_DEBUG] MATCH FOUND: {task_name} at {progress_value}%")
 
                 active_scans.append({
                     "server_id": server_id,
                     "server_name": server_name,
                     "task_name": task_name,
                     "progress": progress_normalized,
-                    "task_id": task.get("Id", "")
+                    "task_id": _get_task_value(task, "Id", "id") or ""
                 })
 
     return {"success": True, "active_scans": active_scans}, 200
@@ -10639,15 +10420,6 @@ def _has_users() -> bool:
     return bool(get_all_users())
 
 
-# REMOVED: This function is now obsolete - replaced by WebSocket + EmbyProgressPoller
-# def _poll_library_scan_progress(job_id: str, server: dict, library_ids: list):
-#     """
-#     Background thread function to poll library scan progress from Emby.
-#     DEPRECATED: Now using EmbyWebSocketManager for events + EmbyProgressPoller for granular progress.
-#     """
-#     pass
-
-
 def _trigger_library_scan(server: dict, library_id: str, scan_type: str = "content"):
     """
     Trigger a library scan on Emby server.
@@ -10667,6 +10439,41 @@ def _trigger_library_scan(server: dict, library_id: str, scan_type: str = "conte
     if not success:
         return False, response
     return True, "Scan triggered"
+
+
+def _schedule_library_tracking(server: dict, job_id: str, library_id: str, scan_type: str = "content",
+                               library_name: Optional[str] = None) -> None:
+    """Schedule the async poller to start tracking a library scan on the App event loop."""
+    loop = _get_app_event_loop()
+    if loop is None:
+        logger.warning(f"[LibWorkflow] Nessun event loop registrato: impossibile avviare tracking per {library_id}")
+        return
+    from emby_library_poller import get_library_poller
+
+    poller = get_library_poller()
+    if not poller:
+        logger.warning(f"[LibWorkflow] Poller non disponibile per libreria {library_id}")
+        return
+
+    server_id = str(server.get("id"))
+    emby_client = EmbyApiClient(server)
+    coro = poller.start_tracking_library(
+        server_id,
+        str(library_id),
+        job_id,
+        emby_client,
+        scan_type=scan_type,
+        library_name=library_name
+    )
+
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+
+    def _tracking_done(task):
+        exc = task.exception()
+        if exc:
+            logger.error(f"[LibWorkflow] Tracking fallito per {library_id} (job: {job_id}): {exc}")
+
+    future.add_done_callback(_tracking_done)
 
 
 def _get_total_blacklist_counts() -> tuple[int, int]:
@@ -12221,13 +12028,18 @@ def _wf_trigger_scan(context):
     Returns:
         bool: True se avviato con successo
     """
+    print("[WORKFLOW] [SCAN] Inizio _wf_trigger_scan()")
+    print(f"[WORKFLOW] [SCAN] Context: {context}")
+
     config, is_valid = load_config()
     if not is_valid or not config:
-        print("[WORKFLOW] Config non valida, impossibile avviare scan")
+        print("[WORKFLOW] [SCAN] Config non valida, impossibile avviare scan")
         return False
 
     server_id = context.get("server_id")
     library_id = context.get("library_id")
+    scan_type = context.get("scan_type") or "content"
+    print(f"[WORKFLOW] [SCAN] server_id={server_id}, library_id={library_id}, scan_type={scan_type}")
 
     emby_servers = (config.get("EMBY") or {}).get("SERVERS") or []
     enabled_servers = [
@@ -12235,60 +12047,106 @@ def _wf_trigger_scan(context):
         if isinstance(server, dict) and server.get("enabled")
     ]
 
+    print(f"[WORKFLOW] [SCAN] Server Emby abilitati: {len(enabled_servers)}")
+
     if not enabled_servers:
-        print("[WORKFLOW] Nessun server Emby abilitato")
+        print("[WORKFLOW] [SCAN] Nessun server Emby abilitato")
         return False
 
     # Se c'è un server_id e library_id specifico, lancia scan su quella libreria
     if server_id and library_id:
+        print(f"[WORKFLOW] [SCAN] Modalità specifica: server={server_id}, library={library_id}")
         target_server = next((s for s in enabled_servers if s.get("id") == server_id), None)
         if not target_server:
-            print(f"[WORKFLOW] Server {server_id} non trovato o non abilitato")
+            print(f"[WORKFLOW] [SCAN] Server {server_id} non trovato o non abilitato")
             return False
+
+        print(f"[WORKFLOW] [SCAN] Server target trovato: {target_server.get('name')}")
 
         # Create tracked job for workflow scan
         job_id = _LIBRARY_SCAN_TRACKER.create_job(server_id, [library_id], group_name="Workflow")
         context["workflow_job_id"] = job_id  # Store job_id in context for status checking
+        print(f"[WORKFLOW] [SCAN] Job creato: {job_id}")
+        _schedule_library_tracking(target_server, job_id, library_id, scan_type=scan_type)
 
         def _run_library_scan():
             try:
-                # REMOVED: Old polling - now using WebSocket + EmbyProgressPoller
-                # _poll_library_scan_progress(job_id, target_server, [library_id])
+                print(f"[WORKFLOW] [SCAN] Thread scan avviato per libreria {library_id}")
 
                 # Start progress poller for granular updates
                 # Progress handled via WebSocket events, no polling needed
 
                 # Trigger the scan
-                success, response = _trigger_library_scan(target_server, library_id)
+                success, response = _trigger_library_scan(target_server, library_id, scan_type)
                 if success:
-                    print(f"[WORKFLOW] Scan tracciato avviato su server {server_id}, libreria {library_id} (job: {job_id})")
+                    print(f"[WORKFLOW] [SCAN] ✓ Scan avviato con successo su server {server_id}, libreria {library_id} (job: {job_id})")
                 else:
-                    print(f"[WORKFLOW] Errore avvio scan libreria {library_id}: {response}")
+                    print(f"[WORKFLOW] [SCAN] ✗ Errore avvio scan libreria {library_id}: {response}")
                     _LIBRARY_SCAN_TRACKER.update_library_status(job_id, library_id, "error", 0.0, str(response))
             except Exception as exc:
-                print(f"[WORKFLOW] Errore avvio scan libreria {library_id}: {exc}")
+                print(f"[WORKFLOW] [SCAN] ✗ Eccezione in thread scan libreria {library_id}: {exc}")
+                import traceback
+                traceback.print_exc()
                 _LIBRARY_SCAN_TRACKER.update_library_status(job_id, library_id, "error", 0.0, str(exc))
 
         threading.Thread(target=_run_library_scan, daemon=True).start()
+        print(f"[WORKFLOW] [SCAN] Thread scan lanciato, return True")
         return True
 
     # Altrimenti, avvia refresh su tutti i server abilitati
     # Triggera le scheduled tasks di tipo RefreshLibrary
+    print(f"[WORKFLOW] [SCAN] Modalità globale: scansione su tutti i {len(enabled_servers)} server")
     try:
         for server in enabled_servers:
-            tasks = _fetch_emby_scheduled_tasks(server) or []
+            server_name = server.get("name", "unknown")
+            print(f"[WORKFLOW] [SCAN] Processando server: {server_name}")
+            # FIX: _fetch_emby_scheduled_tasks ritorna (tasks_list, error), spacchetta la tupla
+            result = _fetch_emby_scheduled_tasks(server)
+            if isinstance(result, tuple) and len(result) >= 1:
+                tasks = result[0] if isinstance(result[0], list) else []
+            else:
+                tasks = result if isinstance(result, list) else []
+            print(f"[WORKFLOW] [SCAN] Server {server_name}: {len(tasks)} scheduled tasks trovati")
+
+            # Log TUTTI i task trovati per debugging
+            print(f"[WORKFLOW] [SCAN] Debug: tasks type={type(tasks)}, len={len(tasks) if tasks else 0}")
+            for i, task in enumerate(tasks):
+                print(f"[WORKFLOW] [SCAN]   Debug task #{i+1}: type={type(task)}, isinstance(dict)={isinstance(task, dict)}")
+                if isinstance(task, dict):
+                    task_name = _get_task_value(task, "Name", "name") or "N/A"
+                    task_id = _get_task_value(task, "Id", "id") or "N/A"
+                    task_state = _get_task_value(task, "State", "state") or "N/A"
+                    print(f"[WORKFLOW] [SCAN]   Task #{i+1}: Name='{task_name}', ID='{task_id}', State='{task_state}'")
+                    print(f"[WORKFLOW] [SCAN]   Task #{i+1} full data: {task}")
+                else:
+                    print(f"[WORKFLOW] [SCAN]   Task #{i+1} NOT A DICT: {task}")
+
+            # Cerca task di scan/refresh
+            task_found = False
             for task in tasks:
                 if isinstance(task, dict):
-                    task_name = (task.get("Name") or "").lower()
-                    if "refresh" in task_name or "scan" in task_name:
-                        task_id = task.get("Id")
+                    task_name_value = _get_task_value(task, "Name", "name") or ""
+                    task_name_lower = task_name_value.lower()
+                    if "refresh" in task_name_lower or "scan" in task_name_lower:
+                        task_id = _get_task_value(task, "Id", "id")
                         if task_id:
+                            print(f"[WORKFLOW] [SCAN] Avvio task '{task_name_value}' (ID: {task_id}) su server {server.get('id')}")
                             _call_emby_api(server, f"ScheduledTasks/Running/{task_id}", method="POST")
-                            print(f"[WORKFLOW] Avviato task '{task.get('Name')}' su server {server.get('id')}")
+                            print(f"[WORKFLOW] [SCAN] ✓ Task avviato")
+                            task_found = True
                             break
+                        else:
+                            print(f"[WORKFLOW] [SCAN] ⚠️ Task '{task_name_value}' trovato ma senza ID!")
+
+            if not task_found:
+                print(f"[WORKFLOW] [SCAN] ⚠️ Nessun task 'scan' o 'refresh' trovato su server {server_name}!")
+
+        print(f"[WORKFLOW] [SCAN] Tutti i server processati, return True")
         return True
     except Exception as exc:
-        print(f"[WORKFLOW] Errore avvio scan globale: {exc}")
+        print(f"[WORKFLOW] [SCAN] ✗ Errore avvio scan globale: {exc}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -12300,21 +12158,28 @@ def _wf_check_scan(context=None):
     Returns:
         bool: True se NESSUN scan è in corso (completato), False se ancora in esecuzione
     """
+    print("[WORKFLOW] [CHECK_SCAN] Inizio verifica stato scan")
+
     # Check tracked job first if available
     if context and "workflow_job_id" in context:
         job_id = context["workflow_job_id"]
+        print(f"[WORKFLOW] [CHECK_SCAN] Checking tracked job: {job_id}")
         job = _LIBRARY_SCAN_TRACKER.get_job(job_id)
         if job:
             status = job.get("status")
+            print(f"[WORKFLOW] [CHECK_SCAN] Job {job_id} status: {status}")
             if status in ("completed", "error"):
-                print(f"[WORKFLOW] Scan tracciato completato (job: {job_id}, status: {status})")
+                print(f"[WORKFLOW] [CHECK_SCAN] ✓ Scan completato (job: {job_id}, status: {status})")
                 return True
             elif status in ("active", "queued"):
-                # print(f"[WORKFLOW] Scan tracciato ancora in corso (job: {job_id})")
+                print(f"[WORKFLOW] [CHECK_SCAN] ⏳ Scan ancora in corso (job: {job_id}, status: {status})")
                 return False
+        else:
+            print(f"[WORKFLOW] [CHECK_SCAN] ⚠️ Job {job_id} non trovato nel tracker")
 
     config, is_valid = load_config()
     if not is_valid or not config:
+        print("[WORKFLOW] [CHECK_SCAN] Config non valida, assumo completato")
         return True  # Assume completato se config non disponibile
 
     emby_servers = (config.get("EMBY") or {}).get("SERVERS") or []
@@ -12323,24 +12188,34 @@ def _wf_check_scan(context=None):
         if isinstance(server, dict) and server.get("enabled")
     ]
 
+    print(f"[WORKFLOW] [CHECK_SCAN] Controllo {len(enabled_servers)} server abilitati")
+
     if not enabled_servers:
+        print("[WORKFLOW] [CHECK_SCAN] Nessun server abilitato, assumo completato")
         return True
 
     try:
         for server in enabled_servers:
+            server_name = server.get("name", "unknown")
             tasks = _fetch_emby_scheduled_tasks(server) or []
+            print(f"[WORKFLOW] [CHECK_SCAN] Server {server_name}: controllo {len(tasks)} tasks")
             for task in tasks:
                 if isinstance(task, dict):
-                    task_name = (task.get("Name") or "").lower()
+                    task_name_value = _get_task_value(task, "Name", "name") or ""
+                    task_name = task_name_value.lower()
                     if "refresh" in task_name or "scan" in task_name:
-                        state = (task.get("State") or "").lower()
+                        state_value = _get_task_value(task, "State", "state") or ""
+                        state = state_value.lower()
+                        print(f"[WORKFLOW] [CHECK_SCAN] Task '{task_name_value}' state: {state}")
                         if state == "running":
-                            # print(f"[WORKFLOW] Scan ancora in corso su server {server.get('id')}")
+                            print(f"[WORKFLOW] [CHECK_SCAN] ⏳ Scan ancora in corso su server {server.get('id')}")
                             return False
-        # print("[WORKFLOW] Tutti gli scan sono completati")
+        print("[WORKFLOW] [CHECK_SCAN] ✓ Tutti gli scan sono completati")
         return True
     except Exception as exc:
-        print(f"[WORKFLOW] Errore check scan: {exc}")
+        print(f"[WORKFLOW] [CHECK_SCAN] ✗ Errore check scan: {exc}")
+        import traceback
+        traceback.print_exc()
         return True  # Assume completato in caso di errore
 
 
@@ -12354,9 +12229,12 @@ def _wf_trigger_probe(context):
     Returns:
         bool: True se avviato con successo
     """
+    print("[WORKFLOW] [PROBE] Inizio _wf_trigger_probe()")
+    print(f"[WORKFLOW] [PROBE] Context: {context}")
+
     config, is_valid = load_config()
     if not is_valid or not config:
-        print("[WORKFLOW] Config non valida, impossibile avviare probe")
+        print("[WORKFLOW] [PROBE] Config non valida, impossibile avviare probe")
         return False
 
     emby_servers = (config.get("EMBY") or {}).get("SERVERS") or []
@@ -12365,30 +12243,41 @@ def _wf_trigger_probe(context):
         if isinstance(server, dict) and server.get("enabled")
     ]
 
+    print(f"[WORKFLOW] [PROBE] Server Emby abilitati: {len(enabled_servers)}")
+
     if not enabled_servers:
-        print("[WORKFLOW] Nessun server Emby abilitato per probe")
+        print("[WORKFLOW] [PROBE] Nessun server Emby abilitato per probe")
         return False
 
     server_id = context.get("server_id")
 
     # Filtra per server_id se specificato
     if server_id:
+        print(f"[WORKFLOW] [PROBE] Filtro per server_id: {server_id}")
         enabled_servers = [s for s in enabled_servers if s.get("id") == server_id]
+        print(f"[WORKFLOW] [PROBE] Server dopo filtro: {len(enabled_servers)}")
 
     servers_payload = [
         {"id": s.get("id"), "url": s.get("url"), "api_key": s.get("api_key")}
         for s in enabled_servers
     ]
 
+    print(f"[WORKFLOW] [PROBE] Payload preparato per {len(servers_payload)} server(s)")
+
     try:
         # Avvia recent discovery sequence su tutti i server (o solo quello filtrato)
         limit = 50  # Default limit per recent items
+        print(f"[WORKFLOW] [PROBE] Chiamata start_recent_discovery_sequence() con limit={limit}")
         started = get_probe_manager().start_recent_discovery_sequence(servers_payload, limit)
         if started:
-            print(f"[WORKFLOW] Probe avviato su {len(servers_payload)} server(s)")
+            print(f"[WORKFLOW] [PROBE] ✓ Probe avviato con successo su {len(servers_payload)} server(s)")
+        else:
+            print(f"[WORKFLOW] [PROBE] ✗ Probe NON avviato (started=False)")
         return started
     except Exception as exc:
-        print(f"[WORKFLOW] Errore avvio probe: {exc}")
+        print(f"[WORKFLOW] [PROBE] ✗ Errore avvio probe: {exc}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -12399,56 +12288,129 @@ def _wf_check_probe():
     Returns:
         bool: True se NON in esecuzione (completato), False se in esecuzione
     """
+    print("[WORKFLOW] [CHECK_PROBE] Inizio verifica stato probe")
     try:
         manager = get_probe_manager()
         global_workers = getattr(manager, "_global_workers", {})
         global_worker = global_workers.get("recent_discovery_all")
-        if global_worker and getattr(global_worker, "is_alive", None) and global_worker.is_alive():
-            return False
+
+        print(f"[WORKFLOW] [CHECK_PROBE] Global worker exist: {global_worker is not None}")
+        if global_worker:
+            is_alive = getattr(global_worker, "is_alive", None) and global_worker.is_alive()
+            print(f"[WORKFLOW] [CHECK_PROBE] Global worker is_alive: {is_alive}")
+            if is_alive:
+                print("[WORKFLOW] [CHECK_PROBE] ⏳ Global worker ancora attivo")
+                return False
 
         config, is_valid = load_config()
         if not is_valid or not config:
+            print("[WORKFLOW] [CHECK_PROBE] Config non valida, assumo completato")
             return True
+
         emby_servers = (config.get("EMBY") or {}).get("SERVERS") or []
         enabled_servers = [
             server for server in emby_servers
             if isinstance(server, dict) and server.get("enabled")
         ]
+
+        print(f"[WORKFLOW] [CHECK_PROBE] Controllo {len(enabled_servers)} server abilitati")
+
         for server in enabled_servers:
             server_id = server.get("id")
             if not server_id:
                 continue
             status = manager.get_status(server_id) or {}
             recent_state = status.get("recent_discovery") or {}
-            if isinstance(recent_state, dict) and recent_state.get("running"):
+            is_running = recent_state.get("running", False) if isinstance(recent_state, dict) else False
+
+            print(f"[WORKFLOW] [CHECK_PROBE] Server {server_id}: recent_discovery.running = {is_running}")
+
+            if is_running:
+                print(f"[WORKFLOW] [CHECK_PROBE] ⏳ Probe ancora in corso su server {server_id}")
                 return False
+
+        print("[WORKFLOW] [CHECK_PROBE] ✓ Probe completato su tutti i server")
         return True
     except Exception as exc:
-        print(f"[WORKFLOW] Errore check probe: {exc}")
+        print(f"[WORKFLOW] [CHECK_PROBE] ✗ Errore check probe: {exc}")
+        import traceback
+        traceback.print_exc()
         return True  # Assume completato in caso di errore
 
 
 def _wf_refresh_cache(context):
     """
-    Aggiorna la cache "Latest" in background.
+    Aggiorna la cache "Latest" in background e attende il completamento.
 
     Args:
         context: dict (non usato al momento)
     """
+    print("[WORKFLOW] [CACHE] Inizio _wf_refresh_cache()")
+    print(f"[WORKFLOW] [CACHE] Context: {context}")
+
     try:
+        import time
         limit = 50
         per_server_limit = 50
+
+        print(f"[WORKFLOW] [CACHE] Parametri: limit={limit}, per_server_limit={per_server_limit}")
+
         # Avvia il refresh in background
-        # Nota: _refresh_latest_cache_full_background è già un task in background thread
-        # quindi chiamiamolo direttamente, ma dobbiamo aspettare che finisca
-        # Per ora chiamiamo direttamente senza aspettare
         refresh_func = globals().get("_refresh_latest_cache_full_background")
         if not callable(refresh_func):
+            print("[WORKFLOW] [CACHE] ✗ Refresh cache function NOT available")
             raise RuntimeError("Refresh cache function not available")
-        refresh_func(limit, per_server_limit)
-        print("[WORKFLOW] Cache refresh avviato")
+
+        print("[WORKFLOW] [CACHE] Refresh function trovata")
+
+        # Verifica che il refresh non sia già in corso
+        with _LATEST_CACHE_LOCK:
+            is_refreshing = _LATEST_CACHE.get("is_refreshing", False)
+            print(f"[WORKFLOW] [CACHE] is_refreshing prima dell'avvio: {is_refreshing}")
+
+            if is_refreshing:
+                print("[WORKFLOW] [CACHE] Cache refresh già in corso, attendo completamento...")
+            else:
+                # Avvia il refresh
+                print("[WORKFLOW] [CACHE] Avvio refresh_func()...")
+                refresh_func(limit, per_server_limit)
+                print("[WORKFLOW] [CACHE] refresh_func() chiamata, attendo completamento...")
+
+        # Polling loop: attende fino a quando is_refreshing diventa False
+        max_wait_seconds = 300  # 5 minuti max
+        start_time = time.time()
+        poll_interval = 2  # Controlla ogni 2 secondi
+
+        print(f"[WORKFLOW] [CACHE] Inizio polling (max {max_wait_seconds}s, interval {poll_interval}s)")
+
+        poll_count = 0
+        while True:
+            elapsed = time.time() - start_time
+            poll_count += 1
+
+            # Log ogni 10 poll (ogni 20 secondi)
+            if poll_count % 10 == 0:
+                print(f"[WORKFLOW] [CACHE] Polling #{poll_count}: elapsed={elapsed:.1f}s")
+
+            # Timeout check
+            if elapsed > max_wait_seconds:
+                print(f"[WORKFLOW] [CACHE] ⚠️ TIMEOUT cache refresh dopo {max_wait_seconds}s")
+                break
+
+            # Check se il refresh è completato
+            with _LATEST_CACHE_LOCK:
+                is_refreshing = _LATEST_CACHE.get("is_refreshing", False)
+
+            if not is_refreshing:
+                print(f"[WORKFLOW] [CACHE] ✓ Cache refresh completato in {elapsed:.1f}s ({poll_count} polls)")
+                break
+
+            time.sleep(poll_interval)
+
     except Exception as exc:
-        print(f"[WORKFLOW] Errore refresh cache: {exc}")
+        print(f"[WORKFLOW] [CACHE] ✗ Errore refresh cache: {exc}")
+        import traceback
+        traceback.print_exc()
         raise
 
 
@@ -12459,24 +12421,58 @@ def _wf_notify(context):
     Args:
         context: dict con 'server_id' opzionale come filtro
     """
+    print("[WORKFLOW] [NOTIFY] Inizio _wf_notify()")
+    print(f"[WORKFLOW] [NOTIFY] Context: {context}")
+
     try:
+        # FIX PROBLEMA #2: Validazione state persistence
+        # Verifica che il DATABASE sia abilitato prima di inviare notifiche
+        print("[WORKFLOW] [NOTIFY] Validazione DATABASE...")
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            print("[WORKFLOW] [NOTIFY] ✗ Configurazione non valida")
+            raise RuntimeError("Configurazione non valida")
+
+        state_enabled = _db_enabled(config.get("DATABASE", {}))
+        print(f"[WORKFLOW] [NOTIFY] DATABASE abilitato: {state_enabled}")
+
+        if not state_enabled:
+            error_msg = (
+                "⚠️ ERRORE: DATABASE non abilitato in configurazione. "
+                "Il workflow notifiche richiede DATABASE abilitato per tracciare "
+                "quali contenuti sono stati già notificati. Senza questo, "
+                "verrebbero inviate notifiche duplicate ad ogni esecuzione. "
+                "Abilita DATABASE in config per procedere."
+            )
+            print(f"[WORKFLOW] [NOTIFY] ✗ {error_msg}")
+            raise RuntimeError(error_msg)
+
         limit = 12
         per_server_limit = 12
         server_filter = context.get("server_id")
 
+        print(f"[WORKFLOW] [NOTIFY] Parametri: limit={limit}, per_server_limit={per_server_limit}, server_filter={server_filter}")
+
         notify_func = globals().get("_internal_send_notifications")
         if not callable(notify_func):
+            print("[WORKFLOW] [NOTIFY] ✗ Notification function NOT available")
             raise RuntimeError("Notification function not available")
+
+        print("[WORKFLOW] [NOTIFY] Notification function trovata, chiamata in corso...")
         result: dict = notify_func(limit, per_server_limit, server_filter)  # type: ignore[assignment]
 
+        print(f"[WORKFLOW] [NOTIFY] Result: {result}")
+
         if result.get("success"):
-            print(f"[WORKFLOW] Notifiche inviate: {result.get('sent')}")
+            print(f"[WORKFLOW] [NOTIFY] ✓ Notifiche inviate: {result.get('sent')}, fallite: {result.get('failed', 0)}")
         else:
-            print(f"[WORKFLOW] Notifiche fallite: {result.get('message')}")
+            print(f"[WORKFLOW] [NOTIFY] ✗ Notifiche fallite: {result.get('message')}")
 
         # Non solleva eccezioni, anche se fallisce
     except Exception as exc:
-        print(f"[WORKFLOW] Errore invio notifiche: {exc}")
+        print(f"[WORKFLOW] [NOTIFY] ✗ Errore invio notifiche: {exc}")
+        import traceback
+        traceback.print_exc()
         raise
 
 

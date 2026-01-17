@@ -243,6 +243,7 @@
         handlers: new Map(), // job_id -> callback
         isConnected: false,
         reconnectTimer: null,
+        pendingSubscriptions: new Set(),
 
         connect() {
             if (this.ws) {
@@ -263,6 +264,7 @@
                 console.log('[SCAN_WS] ✓ Connected');
                 this.isConnected = true;
                 this.reconnectAttempts = 0;
+                this.flushPendingSubscriptions();
             };
 
             this.ws.onmessage = (event) => {
@@ -282,6 +284,7 @@
                 console.log('[SCAN_WS] Disconnected');
                 this.isConnected = false;
                 this.ws = null;
+                this.requeueActiveJobs();
                 this.attemptReconnect();
             };
         },
@@ -307,26 +310,33 @@
         },
 
         subscribe(jobId, callback) {
-            console.log('[SCAN_WS] Subscribing to job:', jobId);
+            console.log('🔔 [SCAN_WS] >>> SUBSCRIBE REQUEST <<<');
+            console.log('  Job ID:', jobId);
+            console.log('  WebSocket state:', this.ws ? this.ws.readyState : 'null');
+            console.log('  Is connected:', this.isConnected);
 
             // Registra handler per job
             this.handlers.set(jobId, callback);
 
             // Invia subscribe al server se connesso
             if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                this.ws.send(JSON.stringify({
+                const subscribeMsg = {
                     action: 'subscribe',
                     job_id: jobId
-                }));
+                };
+                console.log('  ✓ Sending subscribe message:', subscribeMsg);
+                this.ws.send(JSON.stringify(subscribeMsg));
+                this.pendingSubscriptions.delete(jobId);
             } else {
-                console.warn('[SCAN_WS] Not connected, will subscribe when connection opens');
-                // TODO: Queue subscribe requests per inviarli quando si connette
+                console.warn('  ✗ Not connected, queuing subscription for later');
+                this.pendingSubscriptions.add(jobId);
             }
         },
 
         unsubscribe(jobId) {
             console.log('[SCAN_WS] Unsubscribing from job:', jobId);
             this.handlers.delete(jobId);
+            this.pendingSubscriptions.delete(jobId);
 
             if (this.ws && this.ws.readyState === WebSocket.OPEN) {
                 this.ws.send(JSON.stringify({
@@ -340,7 +350,15 @@
             const type = data.type;
             const jobId = data.job_id;
 
-            console.log('[SCAN_WS] Message:', type, 'for job:', jobId);
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log('[SCAN_WS] 📨 MESSAGE RECEIVED:');
+            console.log('  Type:', type);
+            console.log('  Job ID:', jobId);
+            console.log('  Progress:', data.progress);
+            console.log('  Message:', data.message);
+            console.log('  Library ID:', data.library_id);
+            console.log('  Full data:', data);
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
             if (type === 'subscribed') {
                 console.log('[SCAN_WS] Successfully subscribed to job:', jobId);
@@ -358,23 +376,58 @@
 
             const handler = this.handlers.get(jobId);
             if (!handler) {
-                console.warn('[SCAN_WS] No handler for job:', jobId);
+                console.warn('[SCAN_WS] ✗ No handler registered for job:', jobId);
+                console.warn('  Registered handlers:', Array.from(this.handlers.keys()));
                 return;
             }
 
             // Chiama handler con evento
             try {
-                handler({
+                console.log('[SCAN_WS] ✓ Calling handler for job:', jobId);
+                const eventData = {
                     type: type,
                     jobId: jobId,
                     progress: data.progress,
                     message: data.message,
                     summary: data.summary,
-                    error: data.error
-                });
+                    error: data.error,
+                    libraryId: data.library_id || data.libraryId || null,
+                    metadata: data.metadata || null
+                };
+                console.log('  Event data:', eventData);
+                handler(eventData);
+                console.log('[SCAN_WS] ✓ Handler completed successfully');
             } catch (err) {
-                console.error('[SCAN_WS] Error in handler for job', jobId, ':', err);
+                console.error('[SCAN_WS] ✗ Error in handler for job', jobId, ':', err);
             }
+        },
+
+        flushPendingSubscriptions() {
+            if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+                return;
+            }
+            const subscriptions = Array.from(this.pendingSubscriptions);
+            subscriptions.forEach((jobId) => {
+                console.log('[SCAN_WS] Flushing pending subscribe for job:', jobId);
+                this.ws.send(JSON.stringify({
+                    action: 'subscribe',
+                    job_id: jobId
+                }));
+                this.pendingSubscriptions.delete(jobId);
+            });
+            if (window.ScanTracker && typeof window.ScanTracker.resyncActiveJobs === 'function') {
+                window.ScanTracker.resyncActiveJobs();
+            }
+        },
+
+        requeueActiveJobs() {
+            const tracker = window.ScanTracker;
+            if (!tracker) {
+                return;
+            }
+            tracker.activeJobs.forEach((_, jobId) => {
+                this.pendingSubscriptions.add(jobId);
+            });
         },
 
         cancelJob(jobId) {
@@ -511,7 +564,7 @@
         }
     });
 
-    // === ScanTracker: Gestione Job di Scansione (Fixed for Group Aggregation) ===
+        // === ScanTracker: Gestione Job di Scansione (Fixed for Group Aggregation) ===
     const groupTotals = new Map();
     const groupPassiveState = new Map();
     const GROUP_PASSIVE_STORAGE_KEY = 'octohub_group_scan_state_v1';

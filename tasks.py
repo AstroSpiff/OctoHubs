@@ -555,7 +555,16 @@ class WorkflowManager:
         self._update_step_status(step_index, "running", "Scansione in corso...", 30)
 
         import time
+        # FIX PROBLEMA #8: Timeout a livello workflow (2 ore max per step scan)
+        max_timeout = 7200  # 2 ore
+        start_time = time.time()
+
         while not self._stop_event.is_set():
+            # Check timeout
+            elapsed = time.time() - start_time
+            if elapsed > max_timeout:
+                raise Exception(f"Timeout scansione dopo {max_timeout}s ({elapsed:.0f}s)")
+
             if self._check_scan_func():
                 # Scansione completata
                 self._update_step_status(step_index, "running", "Scansione completata", 90)
@@ -588,7 +597,16 @@ class WorkflowManager:
         self._update_step_status(step_index, "running", "Probe in corso...", 30)
 
         import time
+        # FIX PROBLEMA #8: Timeout a livello workflow (2 ore max per step probe)
+        max_timeout = 7200  # 2 ore
+        start_time = time.time()
+
         while not self._stop_event.is_set():
+            # Check timeout
+            elapsed = time.time() - start_time
+            if elapsed > max_timeout:
+                raise Exception(f"Timeout probe dopo {max_timeout}s ({elapsed:.0f}s)")
+
             if self._check_probe_func():
                 # Probe completato
                 self._update_step_status(step_index, "running", "Probe completato", 90)

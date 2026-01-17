@@ -89,7 +89,7 @@ class ScanConnectionManager:
 
             self.job_subscriptions[job_id].add(client_id)
 
-        logger.debug(f"[ScanConnectionManager] Client {client_id} subscribed to job {job_id}")
+        logger.info(f"[ScanConnectionManager] ✓ Client {client_id} SUBSCRIBED to job {job_id} (total clients for this job: {len(self.job_subscriptions[job_id])})")
 
     async def unsubscribe_from_job(self, client_id: str, job_id: str):
         """
@@ -107,7 +107,7 @@ class ScanConnectionManager:
                 if not self.job_subscriptions[job_id]:
                     del self.job_subscriptions[job_id]
 
-        logger.debug(f"[ScanConnectionManager] Client {client_id} unsubscribed from job {job_id}")
+        logger.info(f"[ScanConnectionManager] Client {client_id} UNSUBSCRIBED from job {job_id}")
 
     async def send_personal_message(self, client_id: str, message: dict):
         """
@@ -142,12 +142,14 @@ class ScanConnectionManager:
         # Copia set client per evitare modifiche durante iterazione
         async with self._lock:
             clients = self.job_subscriptions.get(job_id, set()).copy()
+            total_subs = len(self.job_subscriptions)
+            total_connections = len(self.active_connections)
 
         if not clients:
-            logger.debug(f"[ScanConnectionManager] No clients subscribed to job {job_id}")
+            logger.warning(f"[ScanConnectionManager] ✗ No clients subscribed to job {job_id} (total jobs: {total_subs}, total connections: {total_connections})")
             return
 
-        logger.debug(f"[ScanConnectionManager] Broadcasting to {len(clients)} clients for job {job_id}")
+        logger.info(f"[ScanConnectionManager] ✓ Broadcasting to {len(clients)} clients for job {job_id}: {message.get('type', 'unknown')}")
 
         # Invia a tutti in parallelo
         tasks = [

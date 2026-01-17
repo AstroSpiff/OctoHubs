@@ -306,8 +306,16 @@
 
             <div class="tab-panel" data-tab-panel="libraries">
                 <div class="card">
-                    <h2>Librerie – Singole</h2>
-                    <p class="tagline">Gestisci e scansiona le tue librerie raggruppate tra più server.</p>
+                    <div class="latest-label-row" style="justify-content: space-between;">
+                        <div>
+                            <h2>Librerie – Singole</h2>
+                            <p class="tagline">Gestisci e scansiona le tue librerie raggruppate tra più server.</p>
+                        </div>
+                        <label class="feature-toggle" title="Modalità Workflow Completo">
+                            <input type="checkbox" id="workflow-mode-toggle-single" checked data-workflow-toggle>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
                     <div id="grouped-libraries-container">
                         <div class="three-column-layout">
                             <div class="column">
@@ -328,10 +336,10 @@
                 <div class="card">
                     <div class="latest-label-row">
                         <h2>Librerie – Tutte</h2>
-                        <label class="feature-toggle" title="Modalità Workflow Completo">
-                            <input type="checkbox" id="workflow-mode-toggle" checked>
-                            <span class="toggle-slider"></span>
-                        </label>
+                    <label class="feature-toggle" title="Modalità Workflow Completo">
+                        <input type="checkbox" id="workflow-mode-toggle" checked data-workflow-toggle>
+                        <span class="toggle-slider"></span>
+                    </label>
                     </div>
                     <div class="form-help">Modalità Workflow Completo 🚀</div>
                     <p class="tagline">Avvia operazioni di aggiornamento sulle librerie di tutti i server o selezionane uno.</p>
@@ -362,11 +370,17 @@
                     {% endif %}
                 </div>
                 <div class="card" id="scan-history-card">
-                    <div class="latest-label-row">
+                    <div class="latest-label-row" style="gap:0.5rem;">
                         <h2>Cronologia Scansioni</h2>
                         <button class="btn ghost" id="refresh-history-btn" type="button" title="Aggiorna cronologia">
                             <i class="fa-solid fa-rotate-right"></i>
                         </button>
+                        <form action="{{ url_for('emby_library_scan_state_clear_route') }}" method="post" onsubmit="return confirm('⚠️ Questa operazione elimina i dati salvati a DB su scansioni e refresh metadata. Il tracking ripartirà da zero. Continuare?');">
+                            <input type="hidden" name="next" value="{{ url_for('emby_dashboard') }}">
+                            <button class="btn ghost compact danger" type="submit" title="Reset stato scansioni/metadati">
+                                <i class="fa-solid fa-broom"></i>
+                            </button>
+                        </form>
                     </div>
                     <p class="tagline">Visualizza le scansioni completate recentemente.</p>
                     <div id="scan-history-container">
@@ -628,6 +642,11 @@
                                         <input type="hidden" name="next" value="{{ url_for('emby_dashboard') }}">
                                         <p class="form-help">Azzera lo stato di tracking (notified flag) mantenendo tutte le altre configurazioni.</p>
                                         <button class="btn danger" type="submit">Azzera STATE Pubblicazioni</button>
+                                    </form>
+                                    <form action="{{ url_for('emby_library_scan_state_clear_route') }}" method="post" class="latest-config-form" onsubmit="return confirm('⚠️ Questa operazione elimina i dati salvati a DB su scansioni e refresh metadata. Il tracking ripartirà da zero. Continuare?');">
+                                        <input type="hidden" name="next" value="{{ url_for('emby_dashboard') }}">
+                                        <p class="form-help">Rimuovi i record persistiti (library_scan_state) per scansione e aggiornamenti metadati.</p>
+                                        <button class="btn danger" type="submit">Pulisci dati Scan/Metadata</button>
                                     </form>
                                 </div>
                             </div>
@@ -1213,7 +1232,14 @@
             const navbarIndicator = document.getElementById('workflow-navbar-indicator');
             let eventSource = null;
             let lastStatus = null;
-            const workflowToggle = document.getElementById('workflow-mode-toggle');
+            const workflowToggleControls = Array.from(document.querySelectorAll('[data-workflow-toggle]'));
+            const getWorkflowToggleState = () => workflowToggleControls.length ? workflowToggleControls[0].checked : false;
+            const setWorkflowToggleState = (checked) => {
+                workflowToggleControls.forEach((input) => {
+                    input.checked = checked;
+                });
+            };
+            const isWorkflowModeEnabled = () => workflowToggleControls.length > 0 && getWorkflowToggleState();
             const scanButtonSelector = 'button[value="refresh_libraries"], button[data-action="scan-single-content"], button[data-action="scan-group-content"]';
             let workflowButtonUpdateInProgress = false;
 
@@ -1479,15 +1505,19 @@
             if (navbarIndicator) {
                 navbarIndicator.addEventListener('click', () => workflowUI.open());
             }
-            if (workflowToggle) {
-                workflowToggle.addEventListener('change', () => {
-                    updateScanButtons(workflowToggle.checked);
+            if (workflowToggleControls.length) {
+                workflowToggleControls.forEach((input) => {
+                    input.addEventListener('change', () => {
+                        const enabled = input.checked;
+                        setWorkflowToggleState(enabled);
+                        updateScanButtons(enabled);
+                    });
                 });
-                updateScanButtons(workflowToggle.checked);
+                updateScanButtons(getWorkflowToggleState());
             }
             document.addEventListener('click', (event) => {
                 const trigger = event.target.closest('button[value="refresh_libraries"]');
-                if (!trigger || !workflowToggle || !workflowToggle.checked) {
+                if (!trigger || !isWorkflowModeEnabled()) {
                     return;
                 }
                 event.preventDefault();
@@ -1507,7 +1537,7 @@
 
             document.addEventListener('click', (event) => {
                 const trigger = event.target.closest('button[data-action="scan-single-content"]');
-                if (!trigger || !workflowToggle || !workflowToggle.checked) {
+                if (!trigger || !isWorkflowModeEnabled()) {
                     return;
                 }
                 event.preventDefault();
@@ -1529,7 +1559,7 @@
 
             document.addEventListener('click', (event) => {
                 const trigger = event.target.closest('button[data-action="scan-group-content"]');
-                if (!trigger || !workflowToggle || !workflowToggle.checked) {
+                if (!trigger || !isWorkflowModeEnabled()) {
                     return;
                 }
                 event.preventDefault();
@@ -1554,7 +1584,7 @@
             connectSSE();
 
             const workflowObserver = new MutationObserver((mutations) => {
-                if (!workflowToggle || !workflowToggle.checked || workflowButtonUpdateInProgress) {
+                if (!isWorkflowModeEnabled() || workflowButtonUpdateInProgress) {
                     return;
                 }
                 const hasNewNodes = mutations.some((mutation) => mutation.addedNodes && mutation.addedNodes.length > 0);
@@ -1627,6 +1657,7 @@
         </div>
     </template>
 
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
     <script src="{{ url_for('static', filename='emby_users.js') }}?v=20260114-leader-fix"></script>
     <script src="{{ url_for('static', filename='emby.js') }}?v=20260110-verify-fix"></script>
 </body>

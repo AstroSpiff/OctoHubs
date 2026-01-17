@@ -1601,6 +1601,25 @@ class DatabaseStorage:
         finally:
             session.close()
 
+    def set_library_scan_state(self, state_key: str, data: Dict[str, Any]) -> None:
+        """Persist a library scan state record."""
+        self.set_key_value(f"library_scan_state:{state_key}", data)
+
+    def get_library_scan_state(self, state_key: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a persisted library scan state."""
+        value = self.get_key_value(f"library_scan_state:{state_key}")
+        if isinstance(value, dict):
+            return value
+        return None
+
+    def delete_library_scan_state(self, state_key: str) -> None:
+        """Remove a persisted library scan state."""
+        self.delete_key(f"library_scan_state:{state_key}")
+
+    def list_library_scan_state_keys(self) -> list[str]:
+        """List all persisted library scan state keys."""
+        return self.get_keys_by_prefix("library_scan_state:")
+
     # --- Icon Management ---
 
     def get_icon_profiles(self) -> list[Dict[str, Any]]:

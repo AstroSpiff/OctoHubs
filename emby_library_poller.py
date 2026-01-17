@@ -16,11 +16,21 @@ Strategia:
 
 import asyncio
 import logging
+import time
 from typing import Dict, Set, Optional
 from datetime import datetime
 import copy
 
 logger = logging.getLogger(__name__)
+
+
+def _get_library_tracker():
+    """Lazy load application-wide LibraryScanTracker to avoid circular imports."""
+    try:
+        from app import _LIBRARY_SCAN_TRACKER
+        return _LIBRARY_SCAN_TRACKER
+    except ImportError:
+        return None
 
 
 class EmbyLibraryPoller:
@@ -41,7 +51,8 @@ class EmbyLibraryPoller:
         self.storage = None  # Dependency injection
 
         # Configurazione polling
-        self.active_poll_interval = 3.0  # secondi - quando ci sono scan attivi
+        self.rapid_poll_interval = 0.5   # secondi - solo dopo aver richiesto lo scan e prima di vedere il primo RefreshProgress
+        self.active_poll_interval = 3.0  # secondi - quando ci sono scan attivi e abbiamo già visto progress
         self.idle_poll_interval = 20.0   # secondi - quando tutto idle
         self.max_errors = 5  # errori consecutivi prima di fermare polling
 
@@ -60,7 +71,9 @@ class EmbyLibraryPoller:
         server_id: str,
         library_id: str,
         job_id: str,
-        emby_client
+        emby_client,
+        scan_type: str = "content",
+        library_name: Optional[str] = None
     ):
         """
         Inizia tracking di una libreria specifica.
@@ -71,6 +84,15 @@ class EmbyLibraryPoller:
             job_id: ID job interno per associazione
             emby_client: Client Emby per chiamate API
         """
+        logger.info(f"\n{'*'*80}")
+        logger.info(f"[POLLER] >>> start_tracking_library CALLED <<<")
+        logger.info(f"[POLLER]   server_id: {server_id}")
+        logger.info(f"[POLLER]   library_id: {library_id}")
+        logger.info(f"[POLLER]   job_id: {job_id}")
+        logger.info(f"[POLLER]   library_name: {library_name}")
+        logger.info(f"[POLLER]   scan_type: {scan_type}")
+        logger.info(f"{'*'*80}\n")
+
         async with self._lock:
             # Aggiungi libreria a tracking set
             if server_id not in self._tracked_libraries:
@@ -80,28 +102,56 @@ class EmbyLibraryPoller:
             # Inizializza stato libreria
             state_key = f"{server_id}:{library_id}"
             now = datetime.now()
+            queue_pos = 0
+            tracker = _get_library_tracker()
+            if tracker:
+                queue_pos = tracker.get_queue_position(server_id, library_id)
+            metadata = {
+                "library_name": library_name,
+                "scan_type": scan_type,
+                "rapid_poll_count": 0,
+                "total_poll_count": 0,
+                "triple_shot_detected": False
+            }
             if state_key not in self._library_states:
+                metadata["scan_type"] = metadata["scan_type"] or scan_type
+                metadata["library_name"] = metadata["library_name"] or library_name
                 self._library_states[state_key] = {
                     "server_id": server_id,
                     "library_id": library_id,
                     "job_id": job_id,
-                    "state": "unknown",  # unknown, waiting, running, idle
+                    "state": "waiting",  # waiting until RefreshProgress appears
                     "progress": 0.0,
-                    "scan_requested_at": now,  # Quando abbiamo richiesto lo scan
-                    "first_progress_seen_at": None,  # Quando RefreshProgress è apparso la prima volta
-                    "started_at": None,  # Quando stato diventa running
+                    "scan_requested_at": now,
+                    "first_progress_seen_at": None,
                     "last_seen_at": now,
                     "progress_source": "none",
-                    "ever_seen_progress": False,  # Se abbiamo mai visto RefreshProgress
-                    "scan_stage": "file", # 'file', 'metadata', 'completed'
-                    "completed_at": None, # Timestamp di completamento effettivo
+                    "ever_seen_progress": False,
+                    "scan_stage": "file",
+                    "completed_at": None,
+                    "next_poll_time": time.time(),
+                    "queue_position": queue_pos,
+                    "metadata": metadata
                 }
             else:
-                # Aggiorna job_id se libreria già tracciata
-                self._library_states[state_key]["job_id"] = job_id
-                self._library_states[state_key]["scan_requested_at"] = now
-                self._library_states[state_key]["scan_stage"] = "file"
-                self._library_states[state_key]["completed_at"] = None
+                state = self._library_states[state_key]
+                state.update({
+                    "job_id": job_id,
+                    "scan_requested_at": now,
+                    "scan_stage": "file",
+                    "completed_at": None,
+                    "state": "waiting",
+                    "progress": 0.0,
+                    "next_poll_time": time.time(),
+                    "queue_position": queue_pos
+                })
+                state_metadata = state.get("metadata")
+                if isinstance(state_metadata, dict):
+                    state_metadata["rapid_poll_count"] = 0
+                    state_metadata["total_poll_count"] = 0
+                    state_metadata["triple_shot_detected"] = False
+                    state_metadata["scan_type"] = scan_type
+                    state_metadata["library_name"] = library_name
 
             # Avvia polling per questo server se non già attivo
             if server_id not in self._polling_tasks:
@@ -112,6 +162,7 @@ class EmbyLibraryPoller:
                 logger.info(f"[LibPoller] Started polling for server {server_id}")
 
             logger.info(f"[LibPoller] Tracking library {library_id} on server {server_id} (job: {job_id})")
+        asyncio.create_task(self._attempt_initial_detection(server_id, library_id, emby_client))
 
     async def stop_tracking_library(self, server_id: str, library_id: str):
         """Ferma tracking di una libreria specifica."""
@@ -142,41 +193,155 @@ class EmbyLibraryPoller:
 
         while True:
             try:
-                # Determina intervallo polling (attivo se ci sono librerie tracciatedel)
-                async with self._lock:
-                    has_active_tracking = (
-                        server_id in self._tracked_libraries and
-                        len(self._tracked_libraries[server_id]) > 0
-                    )
-
-                if not has_active_tracking:
-                    # Nessuna libreria da trackare, usa intervallo lungo
-                    poll_interval = self.idle_poll_interval
-                else:
-                    poll_interval = self.active_poll_interval
-
-                # Esegui polling
-                await self._fetch_and_update_libraries(server_id, emby_client)
-                error_count = 0  # Reset error counter on success
-
-                # Attendi prossimo ciclo
-                await asyncio.sleep(poll_interval)
-
+                due_libraries = await self._collect_due_libraries(server_id)
+                if due_libraries:
+                    await self._fetch_and_update_libraries(server_id, emby_client, target_libraries=due_libraries)
+                error_count = 0
+                sleep_time = await self._calculate_sleep_for_server(server_id)
+                await asyncio.sleep(sleep_time)
             except asyncio.CancelledError:
                 logger.info(f"[LibPoller] Polling cancelled for server {server_id}")
                 break
             except Exception as e:
                 error_count += 1
                 logger.error(f"[LibPoller] Error polling server {server_id}: {e} (error {error_count}/{self.max_errors})")
-
                 if error_count >= self.max_errors:
                     logger.error(f"[LibPoller] Too many errors, stopping polling for server {server_id}")
                     break
+                await asyncio.sleep(min(self.active_poll_interval * (2 ** error_count), 60))
 
-                # Backoff esponenziale in caso di errori
-                await asyncio.sleep(min(poll_interval * (2 ** error_count), 60))
+    async def _calculate_sleep_for_server(self, server_id: str) -> float:
+        """Compute how long to wait before polling the next due library."""
+        now = time.time()
+        soonest = None
+        async with self._lock:
+            libraries = self._tracked_libraries.get(server_id) or set()
+            for library_id in libraries:
+                state_key = f"{server_id}:{library_id}"
+                state = self._library_states.get(state_key)
+                if not state:
+                    continue
+                next_poll = state.get("next_poll_time")
+                if next_poll is None:
+                    continue
+                if soonest is None or next_poll < soonest:
+                    soonest = next_poll
+        if soonest is None:
+            # No tracked libraries, back off to idle interval
+            return self.idle_poll_interval
+        delay = soonest - time.time()
+        if delay <= 0:
+            return 0.1
+        return max(0.1, delay)
 
-    async def _fetch_and_update_libraries(self, server_id: str, emby_client):
+    def _calculate_next_poll_time(self, library_state: dict) -> Optional[float]:
+        """Determine next wake-up time based on library-specific state."""
+        now = time.time()
+        state = library_state.get("state", "waiting")
+        ever_seen = library_state.get("ever_seen_progress", False)
+        scan_requested_at = library_state.get("scan_requested_at")
+        requested_ts = scan_requested_at.timestamp() if isinstance(scan_requested_at, datetime) else now
+
+        if state == "waiting":
+            if ever_seen:
+                return now + self.active_poll_interval
+            elapsed = now - requested_ts
+            if elapsed > self.progress_detection_timeout:
+                return None
+            return now + self.rapid_poll_interval
+
+        if state == "running":
+            return now + self.active_poll_interval
+
+        if state in ("completed", "error", "timeout"):
+            cleanup = library_state.get("cleanup_scheduled")
+            if not cleanup:
+                cleanup = now + 300.0
+                library_state["cleanup_scheduled"] = cleanup
+            return cleanup
+
+        return now + self.idle_poll_interval
+
+    async def _attempt_initial_detection(self, server_id: str, library_id: str, emby_client):
+        """Try to catch RefreshProgress immediately via triple-shot GETs."""
+        state_key = f"{server_id}:{library_id}"
+        delays = [0, 0.1, 0.2]
+        for delay in delays:
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                response = await asyncio.to_thread(emby_client.get, "/Library/VirtualFolders")
+            except Exception as exc:
+                logger.debug(f"[LibPoller] initial detection error ({state_key}): {exc}")
+                continue
+            if not isinstance(response, list):
+                continue
+            for vfolder in response:
+                lib_id = str(vfolder.get("ItemId") or vfolder.get("Id") or "")
+                if lib_id != str(library_id):
+                    continue
+                refresh_progress = vfolder.get("RefreshProgress")
+                if refresh_progress is None:
+                    continue
+                await self._handle_detected_progress(state_key, server_id, library_id, float(refresh_progress))
+                return
+        # If nothing detected, ensure next poll is sooner
+        async with self._lock:
+            state = self._library_states.get(state_key)
+            if state:
+                state["next_poll_time"] = time.time() + self.rapid_poll_interval
+
+    async def _handle_detected_progress(self, state_key: str, server_id: str, library_id: str, refresh_progress: float):
+        """Helper to set state to running when progress is spotted manually."""
+        async with self._lock:
+            state = self._library_states.get(state_key)
+            if not state:
+                return
+            now = datetime.now()
+            normalized = min(max(float(refresh_progress) / 100.0, 0.0), 1.0)
+            state["state"] = "running"
+            state["progress"] = normalized
+            state["scan_stage"] = "metadata" if refresh_progress >= 90 else "file"
+            state["ever_seen_progress"] = True
+            state["first_progress_seen_at"] = state.get("first_progress_seen_at") or now
+            state["last_seen_at"] = now
+            state["started_at"] = state.get("started_at") or now
+            state["next_poll_time"] = time.time() + self.active_poll_interval
+            metadata = state.get("metadata")
+            if isinstance(metadata, dict):
+                metadata["triple_shot_detected"] = True
+        await self._update_tracker_status(state_key, "active", normalized, f"RefreshProgress {refresh_progress:.1f}%", metadata=metadata if isinstance(metadata, dict) else None)
+
+    async def _should_use_rapid_polling(self, server_id: str) -> bool:
+        """Determina se servono poll rapidi localizzati finché non compare RefreshProgress."""
+        async with self._lock:
+            libraries = self._tracked_libraries.get(server_id) or set()
+            for library_id in libraries:
+                state_key = f"{server_id}:{library_id}"
+                state = self._library_states.get(state_key)
+                if state and not state.get("ever_seen_progress"):
+                    return True
+        return False
+
+    async def _collect_due_libraries(self, server_id: str) -> list[str]:
+        """Return list of libraries whose next_poll_time has elapsed."""
+        now = time.time()
+        due = []
+        async with self._lock:
+            libraries = self._tracked_libraries.get(server_id) or set()
+            for library_id in libraries:
+                state_key = f"{server_id}:{library_id}"
+                state = self._library_states.get(state_key)
+                if not state:
+                    continue
+                next_poll = state.get("next_poll_time")
+                if next_poll is None:
+                    continue
+                if next_poll <= now:
+                    due.append(library_id)
+        return due
+
+    async def _fetch_and_update_libraries(self, server_id: str, emby_client, target_libraries: Optional[list[str]] = None):
         """
         Interroga /Library/VirtualFolders e aggiorna stati.
         """
@@ -191,6 +356,7 @@ class EmbyLibraryPoller:
                 logger.warning(f"[LibPoller] Invalid response from /Library/VirtualFolders: {type(response)}")
                 return
 
+            target_set = {str(lib) for lib in target_libraries} if target_libraries else None
             # Processa ogni virtual folder
             async with self._lock:
                 for vfolder in response:
@@ -200,6 +366,9 @@ class EmbyLibraryPoller:
 
                     # Converti a stringa per consistenza
                     library_id = str(library_id)
+
+                    if target_set is not None and library_id not in target_set:
+                        continue
 
                     # Verifica se stiamo trackando questa libreria
                     if server_id not in self._tracked_libraries:
@@ -218,73 +387,86 @@ class EmbyLibraryPoller:
                     old_state = old_state_data["state"]
                     now = datetime.now()
 
-                    # Se troviamo RefreshProgress per la prima volta, registralo
-                    if refresh_progress is not None and not old_state_data["ever_seen_progress"]:
-                        self._library_states[state_key]["ever_seen_progress"] = True
-                        self._library_states[state_key]["first_progress_seen_at"] = now
-                        logger.info(f"[LibPoller] Library {library_id}: RefreshProgress detected for first time")
+                    # Valori di default (reuse stage/progress precedenti)
+                    current_scan_stage = old_state_data.get("scan_stage", "file")
+                    current_progress_value = (old_state_data.get("progress", 0.0) or 0.0) * 100.0
+                    new_state = old_state
+                    progress_source = old_state_data.get("progress_source", "none")
 
-                    # Deriva stato secondo regola: RefreshProgress exists = running
                     if refresh_progress is not None:
+                        try:
+                            emby_raw_progress = float(refresh_progress)
+                        except (TypeError, ValueError):
+                            emby_raw_progress = 0.0
+                        current_progress_value = min(max(emby_raw_progress, 0.0), 100.0)
+                        current_scan_stage = "file" if emby_raw_progress <= 90.0 else "metadata"
                         new_state = "running"
-                        emby_raw_progress = float(refresh_progress)
-                        
-                        if emby_raw_progress <= 90.0:
-                            current_scan_stage = "file"
-                            # Scala 0-90% di Emby a 0-100% del File stage
-                            current_progress_value = emby_raw_progress / 0.9 * 100.0 # Convert to 0-100 scale
-                        else:
-                            current_scan_stage = "metadata"
-                            # Scala 90-100% di Emby a 0-100% del Metadata stage
-                            current_progress_value = (emby_raw_progress - 90.0) / 0.1 * 100.0 # Convert to 0-100 scale
-                        
-                        # Assicurati che il progress non superi 100% nel suo stage
-                        current_progress_value = min(current_progress_value, 100.0)
+                        progress_source = "virtualfolders.RefreshProgress"
 
+                        if not old_state_data["ever_seen_progress"]:
+                            self._library_states[state_key]["ever_seen_progress"] = True
+                            self._library_states[state_key]["first_progress_seen_at"] = now
+                            logger.info(f"[LibPoller] Library {library_id}: RefreshProgress detected for first time")
+
+                        logger.debug(f"[LibPoller] Library {library_id}: running progress={current_progress_value:.1f}% stage={current_scan_stage}")
                     else:
-                        # RefreshProgress non presente
+                        progress_source = "none"
+                        elapsed_since_request = (now - old_state_data["scan_requested_at"]).total_seconds()
                         if old_state_data["ever_seen_progress"]:
-                            # Se lo abbiamo visto prima e ora è scomparso = COMPLETATO
                             new_state = "idle"
                             current_scan_stage = "completed"
-                            current_progress_value = 100.0  # 100% quando completa
+                            current_progress_value = 100.0
                             self._library_states[state_key]["completed_at"] = now
-                            logger.info(f"[LibPoller] Library {library_id}: RefreshProgress disappeared, assuming completed")
+                            logger.info(f"[LibPoller] Library {library_id}: RefreshProgress disappeared, marking completed")
+                        elif elapsed_since_request > self.progress_detection_timeout:
+                            new_state = "timeout"
+                            current_scan_stage = old_state_data.get("scan_stage", "file")
+                            current_progress_value = 100.0
+                            self._library_states[state_key]["completed_at"] = now
+                            logger.warning(f"[LibPoller] Library {library_id}: RefreshProgress never appeared after {elapsed_since_request:.1f}s, marking timeout")
                         else:
-                            # Non lo abbiamo mai visto - verifica timeout
-                            elapsed_since_request = (now - old_state_data["scan_requested_at"]).total_seconds()
-                            if elapsed_since_request > self.progress_detection_timeout:
-                                # Timeout: RefreshProgress non è mai apparso
-                                logger.warning(f"[LibPoller] Library {library_id}: RefreshProgress never appeared after {elapsed_since_request:.1f}s, assuming failed")
-                                new_state = "error"
-                                current_scan_stage = old_state_data.get("scan_stage", "file") # Mantiene lo stage precedente
-                                current_progress_value = 0.0
-                            else:
-                                # Ancora in attesa che appaia
-                                new_state = "waiting"
-                                current_scan_stage = old_state_data.get("scan_stage", "file") # Mantiene lo stage precedente
-                                current_progress_value = 0.0
-                                
-                    # Verifica timeout massimo scan
-                    if old_state_data.get("started_at"):
-                        elapsed_since_start = (now - old_state_data["started_at"]).total_seconds()
-                        if elapsed_since_start > self.max_scan_duration:
-                            logger.error(f"[LibPoller] Library {library_id}: scan timeout after {elapsed_since_start:.1f}s")
-                            new_state = "error"
-                            # Keep current_scan_stage and its progress for error reporting
-                            # current_scan_stage = old_state_data.get("scan_stage", "file") 
-                            # current_progress_value = old_state_data.get("progress", 0.0) * 100.0 
+                            new_state = "waiting"
+                            current_scan_stage = old_state_data.get("scan_stage", "file")
+                            current_progress_value = 0.0
+                            logger.debug(f"[LibPoller] Library {library_id}: waiting for RefreshProgress (elapsed {elapsed_since_request:.1f}s)")
 
+                    if old_state_data.get("started_at") and new_state == "running":
+                        elapsed_from_start = (now - old_state_data["started_at"]).total_seconds()
+                        if elapsed_from_start > self.max_scan_duration:
+                            logger.error(f"[LibPoller] Library {library_id}: running scan timeout after {elapsed_from_start:.1f}s")
+                            new_state = "error"
+                            current_scan_stage = old_state_data.get("scan_stage", "file")
+                            current_progress_value = old_state_data.get("progress", 0.0) * 100.0
+                            
                     state_changed = (old_state != new_state)
 
+                    # Log transizione stato
+                    if state_changed:
+                        logger.info(f"[LibPoller] Library {library_id}: STATE TRANSITION: {old_state} → {new_state} (progress: {current_progress_value:.1f}%, stage: {current_scan_stage})")
+                    else:
+                        logger.debug(f"[LibPoller] Library {library_id}: state unchanged ({new_state}), progress={current_progress_value:.1f}%")
+
                     # Aggiorna stato
+                    metadata = self._library_states[state_key].get("metadata") or {}
+                    metadata["state"] = new_state
+                    metadata["scan_stage"] = current_scan_stage
+                    queue_pos = self._library_states[state_key].get("queue_position")
+                    if queue_pos is not None:
+                        metadata["queue_position"] = queue_pos
+                    self._library_states[state_key]["metadata"] = metadata
+
                     self._library_states[state_key].update({
                         "state": new_state,
-                        "progress": current_progress_value / 100.0,  # Normalizza 0-100 -> 0.0-1.0
+                        "progress": current_progress_value / 100.0,
                         "scan_stage": current_scan_stage,
                         "last_seen_at": now,
-                        "progress_source": "virtualfolders.RefreshProgress" if refresh_progress is not None else "none"
+                        "progress_source": progress_source
                     })
+                    next_poll = self._calculate_next_poll_time(self._library_states[state_key])
+                    if next_poll is not None:
+                        self._library_states[state_key]["next_poll_time"] = next_poll
+                    else:
+                        self._library_states[state_key]["next_poll_time"] = time.time() + self.idle_poll_interval
 
                     # Se transizione a running, registra started_at
                     if state_changed and new_state == "running" and old_state != "running":
@@ -292,26 +474,80 @@ class EmbyLibraryPoller:
                         logger.info(f"[LibPoller] Library {library_id} on server {server_id}: scan STARTED (progress: {current_progress_value:.1f}%)")
 
                     # Gestisci stati finali e in-progress
-                    if new_state == "idle" and state_changed and old_state == "running":
-                        # Scan completato al 100%
-                        logger.info(f"[LibPoller] Library {library_id} on server {server_id}: scan COMPLETED (100%)")
-                        await self._update_tracker_status(state_key, "completed", 1.0)
-
+                    metadata = self._library_states[state_key].get("metadata")
+                    status_message = None
+                    tracker_status = "active"
+                    if new_state == "running":
+                        status_message = f"RefreshProgress {current_progress_value:.1f}%"
+                    elif new_state == "waiting":
+                        status_message = "Waiting for RefreshProgress"
+                    elif new_state == "idle":
+                        tracker_status = "completed"
+                        status_message = "Scan completed successfully"
+                    elif new_state == "timeout":
+                        tracker_status = "completed"
+                        status_message = f"RefreshProgress never appeared after {elapsed_since_request:.1f}s"
                     elif new_state == "error":
-                        # Errore (broadcast solo se cambio stato per evitare spam)
-                        if state_changed:
-                            logger.error(f"[LibPoller] Library {library_id} on server {server_id}: scan ERROR")
-                            await self._update_tracker_status(state_key, "error", old_state_data.get("progress", 0.0))
+                        tracker_status = "error"
+                        elapsed_error = (now - old_state_data.get("started_at", old_state_data["scan_requested_at"])).total_seconds()
+                        status_message = f"Scan error after {elapsed_error:.1f}s"
+
+                    if new_state == "idle" and state_changed:
+                        logger.info(f"[LibPoller] Library {library_id} on server {server_id}: scan COMPLETED (100%)")
+                        await self._update_tracker_status(
+                            state_key,
+                            tracker_status,
+                            1.0,
+                            status_message,
+                            metadata=metadata
+                        )
+                        asyncio.create_task(self._schedule_tracking_cleanup(server_id, library_id))
+
+                    elif new_state == "timeout" and state_changed:
+                        logger.warning(f"[LibPoller] Library {library_id} on server {server_id}: scan TIMEOUT, forcing completion")
+                        await self._update_tracker_status(
+                            state_key,
+                            tracker_status,
+                            1.0,
+                            status_message,
+                            metadata=metadata
+                        )
+                        asyncio.create_task(self._schedule_tracking_cleanup(server_id, library_id))
+
+                    elif new_state == "error" and state_changed:
+                        logger.error(f"[LibPoller] Library {library_id} on server {server_id}: scan ERROR")
+                        await self._update_tracker_status(
+                            state_key,
+                            tracker_status,
+                            old_state_data.get("progress", 0.0),
+                            status_message,
+                            metadata=metadata
+                        )
+                        asyncio.create_task(self._schedule_tracking_cleanup(server_id, library_id))
 
                     elif new_state in ("running", "waiting"):
-                        # Broadcast progress SEMPRE (anche se stato uguale, progress potrebbe essere cambiato)
-                        await self._update_tracker_status(state_key, "active", current_progress_value / 100.0)
+                        logger.info(f"[LibPoller] Library {library_id}: state={new_state}, progress={current_progress_value:.1f}%, calling update_tracker_status")
+                        await self._update_tracker_status(
+                            state_key,
+                            tracker_status,
+                            current_progress_value / 100.0,
+                            status_message,
+                            metadata=metadata
+                        )
+                        logger.debug(f"[LibPoller] Library {library_id}: update_tracker_status completed")
 
         except Exception as e:
             logger.error(f"[LibPoller] Error fetching virtual folders for {server_id}: {e}", exc_info=True)
             raise
 
-    async def _update_tracker_status(self, state_key: str, status: str, progress: float):
+    async def _update_tracker_status(
+        self,
+        state_key: str,
+        status: str,
+        progress: float,
+        message: Optional[str] = None,
+        metadata: Optional[Dict] = None
+    ):
         """
         Aggiorna LibraryScanTracker con status e progress.
         Questo trigghererà automaticamente il broadcast WebSocket se necessario.
@@ -325,37 +561,51 @@ class EmbyLibraryPoller:
             library_id = state_data["library_id"]
             scan_stage = state_data.get("scan_stage", "file") # Default to file if not set
 
-            # Prepara messaggio appropriato
-            if status == "active":
-                if scan_stage == "file":
-                    message = f"Scanning Files: {progress:.1%}"
-                elif scan_stage == "metadata":
-                    message = f"Updating Metadata: {progress:.1%}"
-                else: # Fallback
-                    message = f"Progress: {progress:.1%}"
-            elif status == "completed":
-                message = "Scan completed successfully"
-            elif status == "error":
-                elapsed_since_request = (state_data["last_seen_at"] - state_data["scan_requested_at"]).total_seconds()
-                if not state_data["ever_seen_progress"]:
-                    message = f"RefreshProgress never appeared (timeout after {elapsed_since_request:.1f}s)"
+            logger.info(f"\n{'*'*80}")
+            logger.info(f"[POLLER] >>> _update_tracker_status CALLED <<<")
+            logger.info(f"[POLLER]   state_key: {state_key}")
+            logger.info(f"[POLLER]   job_id: {job_id}")
+            logger.info(f"[POLLER]   library_id: {library_id}")
+            logger.info(f"[POLLER]   status: {status}")
+            logger.info(f"[POLLER]   progress: {progress:.4f} ({progress*100:.1f}%)")
+            logger.info(f"[POLLER]   message: {message}")
+            logger.info(f"[POLLER]   scan_stage: {scan_stage}")
+            logger.info(f"{'*'*80}\n")
+
+            # Prepara messaggio appropriato se non già fornito
+            if not message:
+                if status == "active":
+                    if scan_stage == "file":
+                        message = f"Scanning Files: {progress:.1%}"
+                    elif scan_stage == "metadata":
+                        message = f"Updating Metadata: {progress:.1%}"
+                    else:  # Fallback
+                        message = f"Progress: {progress:.1%}"
+                elif status == "completed":
+                    message = "Scan completed successfully"
+                elif status == "error":
+                    elapsed_since_request = (state_data["last_seen_at"] - state_data["scan_requested_at"]).total_seconds()
+                    if not state_data["ever_seen_progress"]:
+                        message = f"RefreshProgress never appeared (timeout after {elapsed_since_request:.1f}s)"
+                    else:
+                        message = f"Scan timeout after {elapsed_since_request:.1f}s"
                 else:
-                    message = f"Scan timeout after {elapsed_since_request:.1f}s"
-            else:
-                message = f"Status: {status}"
+                    message = f"Status: {status}"
 
             # Aggiorna tracker (thread-safe)
             # LibraryScanTracker.update_library_status si occuperà del broadcast
+            logger.info(f"[POLLER] Calling update_library_status via asyncio.to_thread...")
             await asyncio.to_thread(
                 _LIBRARY_SCAN_TRACKER.update_library_status,
                 job_id,
                 library_id,
                 status,
                 progress,
-                message
+                message,
+                metadata
             )
 
-            logger.debug(f"[LibPoller] Updated tracker for job {job_id}, library {library_id}: {status} ({progress:.1%}) - {message}")
+            logger.info(f"[POLLER] ✓ update_library_status completed: job={job_id}, lib={library_id}, status={status}, progress={progress:.1%}")
 
             # Persisti stato su DB per recovery in caso di restart
             await self._persist_library_state(state_key)
@@ -392,6 +642,12 @@ class EmbyLibraryPoller:
                 "scan_stage": state_data["scan_stage"],
                 "completed_at": state_data["completed_at"].isoformat() if state_data["completed_at"] else None
             }
+            persist_data["queue_position"] = state_data.get("queue_position", 0)
+            metadata = state_data.get("metadata")
+            if isinstance(metadata, dict):
+                persist_data["metadata"] = copy.deepcopy(metadata)
+            else:
+                persist_data["metadata"] = {}
 
             # Salva su DB (usa key-value store o tabella dedicata)
             await asyncio.to_thread(
@@ -499,6 +755,28 @@ class EmbyLibraryPoller:
             self._tracked_libraries.clear()
             self._library_states.clear()
         logger.info("[LibPoller] Stopped all polling")
+
+    async def clear_states(self):
+        """Cancella lo stato tracciato e le entry persistite nel database."""
+        await self.stop_all()
+
+        if not self.storage:
+            logger.debug("[LibPoller] Storage backend non configurato, nulla da cancellare")
+            return
+
+        try:
+            keys = await asyncio.to_thread(self.storage.get_keys_by_prefix, "library_scan_state:")
+            for key in keys:
+                await asyncio.to_thread(self.storage.delete_key, key)
+            logger.info(f"[LibPoller] Cancellati {len(keys)} stati scan memorizzati")
+        except Exception as exc:  # pragma: no cover
+            logger.error(f"[LibPoller] Impossibile cancellare gli stati scan: {exc}")
+            raise
+
+    async def _schedule_tracking_cleanup(self, server_id: str, library_id: str):
+        """Utility per fermare il tracking dopo aver rilasciato eventuali lock."""
+        await asyncio.sleep(0)
+        await self.stop_tracking_library(server_id, library_id)
 
 
 # Global singleton

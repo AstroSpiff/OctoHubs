@@ -19,14 +19,24 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import pass_context
 from starlette.middleware.sessions import SessionMiddleware
+from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse
 
-from app import _build_active_library_scans_snapshot, _build_scan_library_snapshot, _build_scan_library_tracked_snapshot, _build_scan_group_tracked_snapshot, _build_associations_get_snapshot, _build_associations_post_snapshot, _build_media_details_snapshot, _build_jellyseerr_request_snapshot, _build_tmdb_search_snapshot, _build_tmdb_tv_details_snapshot, _build_tmdb_check_availability_snapshot, _build_manual_search_snapshot, _build_rss_inspect_snapshot, _build_rss_inspect_json_snapshot, _build_rss_import_snapshot, _build_rss_import_json_snapshot, _build_rss_deduplicate_snapshot, _build_rss_items_snapshot, _build_send_torrent_snapshot, _build_scan_status_snapshot, _build_run_scan_snapshot, _build_update_request_rules_snapshot, _build_refresh_requests_snapshot, _build_test_connections_snapshot, _build_trakt_device_start_snapshot, _build_trakt_device_poll_snapshot, _build_trakt_clear_snapshot, _build_emby_stop_task_snapshot, _build_emby_server_status_snapshot, _build_emby_health_status_snapshot, _build_emby_activity_snapshot, _build_emby_tasks_snapshot, _build_emby_users_snapshot, _build_emby_plugins_snapshot, _build_emby_streams_snapshot, _build_emby_status_stream_payload, _build_emby_libraries_snapshot, _build_active_scans_snapshot, _build_debug_vf_query_snapshot, _build_strm_guard_status_snapshot, _build_grouped_libraries_snapshot, _build_movie_versions_snapshot, _build_series_seasons_snapshot, _build_season_episodes_snapshot, _build_lookup_snapshot, _build_item_details_snapshot, _build_availability_snapshot, _build_latest_snapshot, _build_latest_progress_payload, _build_latest_preview_snapshot, _build_latest_preview_cache_snapshot, _build_latest_enrich_snapshot, _build_latest_notify_snapshot, _build_emby_image_stream, _build_server_order_snapshot, _build_group_order_get_snapshot, _build_group_order_post_snapshot, _build_tab_order_get_snapshot, _build_tab_order_post_snapshot, _probe_discovery_start_snapshot, _probe_discovery_stop_snapshot, _probe_recent_start_snapshot, get_emby_user_manager, _probe_recent_start_all_snapshot, _probe_recent_stop_snapshot, _probe_recent_stop_all_snapshot, _probe_recent_processing_start_snapshot, _probe_recent_processing_start_all_snapshot, _probe_recent_processing_stop_snapshot, _probe_recent_processing_stop_all_snapshot, _probe_recent_combo_start_snapshot, _probe_recent_combo_start_all_snapshot, _probe_recent_combo_stop_snapshot, _probe_recent_combo_stop_all_snapshot, _probe_libraries_combo_start_snapshot, _probe_libraries_combo_stop_snapshot, _probe_processing_start_snapshot, _probe_processing_stop_snapshot, _probe_queue_get_snapshot, _probe_queue_delete_snapshot, _probe_history_get_snapshot, _probe_history_delete_snapshot, _probe_retry_snapshot, _probe_blacklist_get_snapshot, _probe_blacklist_delete_snapshot, _probe_debug_recent_items_snapshot, _coerce_request_bool, _coerce_request_int, _LIBRARY_SCAN_TRACKER, _ws_event_queues, _ws_queues_lock, _sse_event_queues, _sse_queues_lock, DateTimeEncoder, load_config, _default_emby_settings, _prepare_emby_servers_for_view, _get_total_blacklist_counts, _default_latest_settings, _load_latest_settings, _load_telegram_settings, _prepare_latest_notification_rules, EMBY_CATEGORY_OPTIONS, _resolve_next_url, _ensure_db_backend, _load_emby_settings_from_db, _build_emby_server_from_form, _fetch_emby_status, _save_emby_settings_to_db, _emby_display_name, _normalize_emby_server, _execute_emby_action, EMBY_ACTIONS, _db_enabled, _save_latest_settings, _get_emby_servers_from_config, _ensure_strm_guard_manager, _clear_latest_state, _update_app_settings_overrides
+from app import _build_active_library_scans_snapshot, _build_scan_library_snapshot, _build_scan_library_tracked_snapshot, _build_scan_group_tracked_snapshot, _build_associations_get_snapshot, _build_associations_post_snapshot, _build_media_details_snapshot, _build_jellyseerr_request_snapshot, _build_tmdb_search_snapshot, _build_tmdb_tv_details_snapshot, _build_tmdb_check_availability_snapshot, _build_manual_search_snapshot, _build_rss_inspect_snapshot, _build_rss_inspect_json_snapshot, _build_rss_import_snapshot, _build_rss_import_json_snapshot, _build_rss_deduplicate_snapshot, _build_rss_items_snapshot, _build_send_torrent_snapshot, _build_scan_status_snapshot, _build_run_scan_snapshot, _build_update_request_rules_snapshot, _build_refresh_requests_snapshot, _build_test_connections_snapshot, _build_trakt_device_start_snapshot, _build_trakt_device_poll_snapshot, _build_trakt_clear_snapshot, _build_emby_stop_task_snapshot, _build_emby_server_status_snapshot, _build_emby_health_status_snapshot, _build_emby_activity_snapshot, _build_emby_tasks_snapshot, _build_emby_users_snapshot, _build_emby_plugins_snapshot, _build_emby_streams_snapshot, _build_emby_status_stream_payload, _build_emby_libraries_snapshot, _build_active_scans_snapshot, _build_debug_vf_query_snapshot, _build_strm_guard_status_snapshot, _build_grouped_libraries_snapshot, _build_movie_versions_snapshot, _build_series_seasons_snapshot, _build_season_episodes_snapshot, _build_lookup_snapshot, _build_item_details_snapshot, _build_availability_snapshot, _build_latest_snapshot, _build_latest_progress_payload, _build_latest_preview_snapshot, _build_latest_preview_cache_snapshot, _build_latest_enrich_snapshot, _build_latest_notify_snapshot, _build_emby_image_stream, _build_server_order_snapshot, _build_group_order_get_snapshot, _build_group_order_post_snapshot, _build_tab_order_get_snapshot, _build_tab_order_post_snapshot, _probe_discovery_start_snapshot, _probe_discovery_stop_snapshot, _probe_recent_start_snapshot, get_emby_user_manager, _probe_recent_start_all_snapshot, _probe_recent_stop_snapshot, _probe_recent_stop_all_snapshot, _probe_recent_processing_start_snapshot, _probe_recent_processing_start_all_snapshot, _probe_recent_processing_stop_snapshot, _probe_recent_processing_stop_all_snapshot, _probe_recent_combo_start_snapshot, _probe_recent_combo_start_all_snapshot, _probe_recent_combo_stop_snapshot, _probe_recent_combo_stop_all_snapshot, _probe_libraries_combo_start_snapshot, _probe_libraries_combo_stop_snapshot, _probe_processing_start_snapshot, _probe_processing_stop_snapshot, _probe_queue_get_snapshot, _probe_queue_delete_snapshot, _probe_history_get_snapshot, _probe_history_delete_snapshot, _probe_retry_snapshot, _probe_blacklist_get_snapshot, _probe_blacklist_delete_snapshot, _probe_debug_recent_items_snapshot, _coerce_request_bool, _coerce_request_int, _LIBRARY_SCAN_TRACKER, _ws_event_queues, _ws_queues_lock, _sse_event_queues, _sse_queues_lock, DateTimeEncoder, load_config, _default_emby_settings, _prepare_emby_servers_for_view, _get_total_blacklist_counts, _default_latest_settings, _load_latest_settings, _load_telegram_settings, _prepare_latest_notification_rules, EMBY_CATEGORY_OPTIONS, _resolve_next_url, _ensure_db_backend, _load_emby_settings_from_db, _build_emby_server_from_form, _fetch_emby_status, _save_emby_settings_to_db, _emby_display_name, _normalize_emby_server, _execute_emby_action, EMBY_ACTIONS, _db_enabled, _save_latest_settings, _get_emby_servers_from_config, _ensure_strm_guard_manager, _clear_latest_state, _update_app_settings_overrides, _register_app_event_loop
 from storage import StorageError
 from tasks import workflow_manager
 from utils import _split_csv_field
 from scan_websocket_manager import get_scan_connection_manager
 
 fastapi_app = FastAPI()
+
+
+@fastapi_app.on_event("startup")
+async def _register_runtime_event_loop():
+    """Memorizza l'event loop usato da FastAPI per scheduling esterni."""
+    print("\n" + "="*100, flush=True)
+    print("🚀 OCTOHUB STARTUP - MEGA LOGGING ENABLED", flush=True)
+    print("="*100 + "\n", flush=True)
+    _register_app_event_loop(asyncio.get_event_loop())
 
 # Scan concurrency locks (per-server)
 _scan_locks: Dict[str, asyncio.Lock] = {}
@@ -35,6 +45,14 @@ _scan_locks_lock = asyncio.Lock()
 # Initialize authentication system
 from auth import init_auth
 init_auth(create_default_admin=True)
+
+def _append_scan_reset_param(url: str) -> str:
+    parsed = urlparse(url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["scan_reset"] = "1"
+    new_query = urlencode(query)
+    return urlunparse(parsed._replace(query=new_query))
+
 
 def _initialize_runtime_services() -> None:
     """Initialize background services."""
@@ -152,6 +170,7 @@ def url_for_fastapi(endpoint: str, **kwargs) -> str:
         "emby_latest_notification_settings": "/emby/latest/notification-settings",
         "emby_latest_state_clear": "/emby/latest/state/clear",
         "emby_latest_clear_state_route": "/emby/latest/state/clear",
+        "emby_library_scan_state_clear_route": "/emby/library-scan-state/clear",
 
         # Static files
         "static": lambda filename: f"/static/{filename}"
@@ -275,6 +294,7 @@ async def websocket_scan_endpoint(websocket: WebSocket, client_id: str):
 
             action = data.get("action")
             job_id = data.get("job_id")
+            print(f"[WebSocket /ws/scan/{client_id}] Received: action={action}, job_id={job_id}", flush=True)
 
             if action == "subscribe" and job_id:
                 # Sottoscrivi client a job
@@ -314,7 +334,7 @@ async def websocket_scan_endpoint(websocket: WebSocket, client_id: str):
         pass
     except Exception as e:
         # Errore imprevisto
-        print(f"[WebSocket /ws/scan/{client_id}] Error: {e}")
+        print(f"[WebSocket /ws/scan/{client_id}] Error: {e}", flush=True)
         import traceback
         traceback.print_exc()
     finally:
@@ -592,12 +612,21 @@ async def scan_library_tracked(request: Request):
 
 @fastapi_app.post("/api/emby/scan-group-tracked")
 async def scan_group_tracked(request: Request):
+    print("\n" + "="*100, flush=True)
+    print("🚀 [API] /api/emby/scan-group-tracked CALLED", flush=True)
+    print("="*100 + "\n", flush=True)
+
     _require_auth(request)
     try:
         payload = await request.json()
-    except Exception:
+        print(f"[API] Payload received: {payload}", flush=True)
+    except Exception as e:
+        print(f"[API] ✗ Error parsing JSON: {e}", flush=True)
         payload = {}
+
+    print(f"[API] Calling _build_scan_group_tracked_snapshot...", flush=True)
     data, status_code = _build_scan_group_tracked_snapshot(payload)
+    print(f"[API] Response status: {status_code}", flush=True)
     return JSONResponse(data, status_code=status_code)
 
 
@@ -2171,6 +2200,7 @@ async def emby_save_server_post(
 
     next_url = _resolve_next_url(next_param, "emby_dashboard")
     next_url = next_url if next_url.startswith("/") else f"/{next_url}"
+    redirect_url = next_url
 
     config, is_valid = load_config()
     if not is_valid or not config:
@@ -2217,7 +2247,7 @@ async def emby_save_server_post(
     load_config()
 
     flash(request, f"Server {_emby_display_name(updated_server)} salvato.")
-    return RedirectResponse(url=next_url, status_code=303)
+    return RedirectResponse(url=redirect_url, status_code=303)
 
 
 @fastapi_app.post("/emby/action")
@@ -2796,6 +2826,47 @@ async def emby_latest_state_clear_post(
         flash(request, "Stato notifiche azzerato con successo.")
     except Exception as e:
         flash(request, f"Errore durante l'azzeramento: {str(e)}")
+
+    return RedirectResponse(url=next_url, status_code=303)
+
+
+@fastapi_app.post("/emby/library-scan-state/clear")
+async def emby_library_scan_state_clear_post(
+    request: Request,
+    csrf_token: str = Form(None, alias="csrf_token"),
+    next_param: Optional[str] = Form(None, alias="next")
+):
+    """Clear persisted library scan/metadata update states."""
+    _require_auth(request)
+
+    next_url = next_param or '/emby'
+    redirect_url = next_url
+
+    if not validate_csrf(request, csrf_token):
+        flash(request, "CSRF token non valido.")
+        return RedirectResponse(url=next_url, status_code=303)
+
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        flash(request, "Config non valida.")
+        return RedirectResponse(url=next_url, status_code=303)
+
+    try:
+        _ensure_db_backend()
+    except StorageError as exc:
+        flash(request, f"Errore DB: {exc}")
+        return RedirectResponse(url=next_url, status_code=303)
+
+    try:
+        from emby_library_poller import get_library_poller
+
+        await get_library_poller().clear_states()
+        _LIBRARY_SCAN_TRACKER.clear_jobs()
+        _clear_latest_state()
+        flash(request, "Stato scansioni e metadata aggiornato cancellato dal DB.")
+        redirect_url = _append_scan_reset_param(next_url)
+    except Exception as e:
+        flash(request, f"Errore durante la pulizia: {str(e)}")
 
     return RedirectResponse(url=next_url, status_code=303)
 

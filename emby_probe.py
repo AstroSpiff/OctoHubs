@@ -2854,72 +2854,157 @@ class EmbyProbeManager:
         self,
         server: Dict[str, Any],
         item_id: str,
-        media_source_id: str | None = None
+        media_source_id: str | None = None,
+        max_retries: int = 2
     ) -> tuple[bool, str | None]:
-        # Use Items endpoint with Ids parameter instead of Items/{id}
-        # This avoids Emby's heavy caching on single-item endpoint
-        success, payload = _call_emby_api(
-            server,
-            "Items",
-            method="GET",
-            params={
-                "Ids": item_id,
-                "Fields": "MediaSources,MediaStreams,RunTimeTicks"
-            }
-        )
-        if not success:
-            # Return the actual error message from the API
-            error_msg = str(payload) if payload else "API non risponde"
-            return False, f"API error: {error_msg[:100]}"
+        """
+        Verifica metadata con retry logic per bypass cache Emby.
 
-        if not isinstance(payload, dict):
-            return False, "Risposta API non valida"
+        FIX PROBLEMA #9: Aggiunge retry con backoff esponenziale per evitare
+        letture stale dalla cache interna di Emby dopo probe.
 
-        # Extract item from Items list
-        items = payload.get("Items", [])
-        if not items or not isinstance(items, list):
-            return False, "Item non trovato nella risposta"
+        Args:
+            server: Server Emby
+            item_id: ID dell'item
+            media_source_id: ID del media source (opzionale)
+            max_retries: Numero massimo tentativi (default: 2)
 
-        item = items[0]
-        if not isinstance(item, dict):
-            return False, "Formato item non valido"
+        Returns:
+            Tupla (success: bool, error_msg: str | None)
+        """
+        import time
 
-        sources = item.get("MediaSources")
+        for attempt in range(max_retries + 1):
+            # Use Items endpoint with Ids parameter instead of Items/{id}
+            # This avoids Emby's heavy caching on single-item endpoint
+            success, payload = _call_emby_api(
+                server,
+                "Items",
+                method="GET",
+                params={
+                    "Ids": item_id,
+                    "Fields": "MediaSources,MediaStreams,RunTimeTicks"
+                }
+            )
 
-        # If media_source_id is specified, check that specific source
-        if media_source_id and isinstance(sources, list):
-            for source in sources:
-                if isinstance(source, dict) and source.get("Id") == media_source_id:
-                    streams = source.get("MediaStreams", [])
-                    runtime = source.get("RunTimeTicks")
+            if not success:
+                # Retry on API errors (might be temporary)
+                if attempt < max_retries:
+                    wait_time = 2 ** attempt  # Backoff esponenziale: 1s, 2s, 4s
+                    time.sleep(wait_time)
+                    continue
+                # Return the actual error message from the API
+                error_msg = str(payload) if payload else "API non risponde"
+                return False, f"API error: {error_msg[:100]}"
 
-                    if not runtime:
-                        return False, "RunTimeTicks mancante"
-                    if not streams or len(streams) == 0:
-                        return False, "MediaStreams vuoto"
+            if not isinstance(payload, dict):
+                if attempt < max_retries:
+                    time.sleep(2 ** attempt)
+                    continue
+                return False, "Risposta API non valida"
 
-                    return True, None
+            # Extract item from Items list
+            items = payload.get("Items", [])
+            if not items or not isinstance(items, list):
+                if attempt < max_retries:
+                    time.sleep(2 ** attempt)
+                    continue
+                return False, "Item non trovato nella risposta"
 
-            # media_source_id specified but not found
-            return False, "MediaSource non trovato"
+            item = items[0]
+            if not isinstance(item, dict):
+                if attempt < max_retries:
+                    time.sleep(2 ** attempt)
+                    continue
+                return False, "Formato item non valido"
 
-        # No media_source_id, check item level or first source
-        streams = item.get("MediaStreams", [])
-        runtime = item.get("RunTimeTicks")
+            # Metadata extraction e validazione
+            sources = item.get("MediaSources")
 
-        # If item-level metadata is missing, try first MediaSource
-        if (not runtime or not streams) and isinstance(sources, list) and sources:
-            first = sources[0] if isinstance(sources[0], dict) else None
-            if first:
-                streams = first.get("MediaStreams", [])
-                runtime = first.get("RunTimeTicks")
+            # If media_source_id is specified, check that specific source
+            if media_source_id and isinstance(sources, list):
+                for source in sources:
+                    if isinstance(source, dict) and source.get("Id") == media_source_id:
+                        streams = source.get("MediaStreams", [])
+                        runtime = source.get("RunTimeTicks")
 
-        if not runtime:
-            return False, "RunTimeTicks mancante"
-        if not streams or len(streams) == 0:
-            return False, "MediaStreams vuoto"
+                        if not runtime or not streams or len(streams) == 0:
+                            # Retry - metadata potrebbe essere stale
+                            if attempt < max_retries:
+                                time.sleep(2 ** attempt)
+                                break  # Esci dal for source, riprova il fetch
+                            return False, "RunTimeTicks o MediaStreams mancante"
 
-        return True, None
+                        # Validazione streams video
+                        has_valid_video = self._validate_video_streams(streams)
+                        if not has_valid_video:
+                            if attempt < max_retries:
+                                time.sleep(2 ** attempt)
+                                break
+                            return False, "Nessun stream video valido"
+
+                        return True, None
+
+                # media_source_id specified but not found
+                if attempt < max_retries:
+                    time.sleep(2 ** attempt)
+                    continue
+                return False, "MediaSource non trovato"
+
+            # No media_source_id, check item level or first source
+            streams = item.get("MediaStreams", [])
+            runtime = item.get("RunTimeTicks")
+
+            # If item-level metadata is missing, try first MediaSource
+            if (not runtime or not streams) and isinstance(sources, list) and sources:
+                first = sources[0] if isinstance(sources[0], dict) else None
+                if first:
+                    streams = first.get("MediaStreams", [])
+                    runtime = first.get("RunTimeTicks")
+
+            if not runtime or not streams or len(streams) == 0:
+                # Retry - metadata potrebbe essere stale
+                if attempt < max_retries:
+                    time.sleep(2 ** attempt)
+                    continue
+                return False, "RunTimeTicks o MediaStreams mancante"
+
+            # FIX PROBLEMA #5: Validazione avanzata streams
+            has_valid_video = self._validate_video_streams(streams)
+            if not has_valid_video:
+                # Retry - stream potrebbe non essere ancora processato
+                if attempt < max_retries:
+                    time.sleep(2 ** attempt)
+                    continue
+                return False, "Nessun stream video valido trovato"
+
+            # Success!
+            return True, None
+
+        # Se arriviamo qui, tutti i retry sono falliti
+        return False, "Verifica metadata fallita dopo tutti i tentativi"
+
+    def _validate_video_streams(self, streams: list) -> bool:
+        """
+        Valida che ci sia almeno uno stream video con codec valido.
+
+        Args:
+            streams: Lista di MediaStreams
+
+        Returns:
+            True se trovato almeno uno stream video valido
+        """
+        for stream in streams:
+            if not isinstance(stream, dict):
+                continue
+
+            stream_type = stream.get("Type", "").lower()
+            if stream_type == "video":
+                codec = stream.get("Codec")
+                if codec and isinstance(codec, str) and len(codec) > 0:
+                    return True
+
+        return False
 
     def _probe_item(
         self,

@@ -1393,6 +1393,79 @@
         .library-scan-progress .progress-bar.error {
             background-color: #ef4444; /* Rosso */
         }
+        .library-scan-progress.queue-waiting {
+            border-color: rgba(249, 115, 22, 0.5);
+        }
+        .library-scan-progress.queue-waiting .progress-track {
+            background: rgba(251, 191, 36, 0.25);
+        }
+        .library-scan-progress.queue-waiting .progress-row {
+            border: 1px dashed rgba(249, 115, 22, 0.4);
+        }
+        .library-scan-progress .progress-bar.waiting-bar {
+            background: linear-gradient(90deg, #fbbf24 0%, #f97316 100%);
+            box-shadow: 0 0 12px rgba(249, 115, 22, 0.4);
+            animation: waitingPulse 1.4s ease-in-out infinite;
+        }
+        @keyframes waitingPulse {
+            0% {
+                transform: translateX(0);
+                opacity: 0.85;
+            }
+            50% {
+                transform: translateX(5px);
+                opacity: 1;
+            }
+            100% {
+                transform: translateX(0);
+                opacity: 0.85;
+            }
+        }
+        .library-scan-progress .progress-badge-icon {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 4px;
+            border: 2px solid rgba(255, 255, 255, 0.9);
+            border-top-color: transparent;
+            vertical-align: middle;
+        }
+        .library-scan-progress .progress-badge-icon.spinner {
+            animation: badgeSpinner 0.8s linear infinite;
+        }
+        @keyframes badgeSpinner {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .library-scan-progress .progress-queue-tooltip {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-weight: 600;
+            cursor: help;
+        }
+        .library-scan-progress .progress-queue-tooltip::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            bottom: 110%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(15, 23, 42, 0.9);
+            color: #fff;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.65em;
+            white-space: nowrap;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+            pointer-events: none;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.35);
+        }
+        .library-scan-progress .progress-queue-tooltip:hover::after {
+            opacity: 1;
+        }
         .history-item {
             border: 1px solid #e5e7eb;
             border-radius: 8px;
