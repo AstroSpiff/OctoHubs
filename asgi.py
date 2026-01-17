@@ -1775,12 +1775,24 @@ async def workflow_events(request: Request):
         status = workflow_manager.get_status()
         yield f"data: {json.dumps(status)}\n\n"
         last_status = status
+        updates_without_change = 0
+
         while True:
             await asyncio.sleep(2)
             status = workflow_manager.get_status()
+
+            # Invia aggiornamento se cambiato O ogni 5 poll (10 secondi) per aggiornare il timer
             if status != last_status:
                 yield f"data: {json.dumps(status)}\n\n"
                 last_status = status
+                updates_without_change = 0
+            else:
+                updates_without_change += 1
+                # Ogni 5 poll (10 secondi), invia comunque per aggiornare il timer elapsed
+                if updates_without_change >= 5:
+                    yield f"data: {json.dumps(status)}\n\n"
+                    updates_without_change = 0
+
             if status.get("status") in ("completed", "failed", "idle"):
                 await asyncio.sleep(1)
                 break

@@ -10426,6 +10426,8 @@ def _trigger_library_scan(server: dict, library_id: str, scan_type: str = "conte
     scan_type: "content" for file scan, "metadata" for metadata refresh
     Returns: (success, message)
     """
+    server_name = server.get("name", "unknown")
+
     if scan_type == "metadata":
         # Metadata refresh: POST to Items/{ItemId}/Refresh
         endpoint = f"Items/{library_id}/Refresh"
@@ -10435,9 +10437,14 @@ def _trigger_library_scan(server: dict, library_id: str, scan_type: str = "conte
         endpoint = f"Items/{library_id}/Refresh"
         params = {"Recursive": "true", "MetadataRefreshMode": "Default", "ImageRefreshMode": "Default", "ReplaceAllMetadata": "false"}
 
+    print(f"[_trigger_library_scan] POST {server_name}/{endpoint} con params={params}")
     success, response = _call_emby_api(server, endpoint, method="POST", params=params)
+
     if not success:
+        print(f"[_trigger_library_scan] ✗ Chiamata API fallita: {response}")
         return False, response
+
+    print(f"[_trigger_library_scan] ✓ Chiamata API riuscita, response type: {type(response)}, content: {str(response)[:200]}")
     return True, "Scan triggered"
 
 
@@ -12020,10 +12027,10 @@ class TraktClient:
 
 def _wf_trigger_scan(context):
     """
-    Avvia una scansione Emby. Usato dal workflow.
+    Avvia una scansione Emby usando il sistema di scan gruppo esistente.
 
     Args:
-        context: dict con 'server_id' e/o 'library_id'
+        context: dict con opzionale 'group_name', 'libraries', ecc.
 
     Returns:
         bool: True se avviato con successo
@@ -12031,151 +12038,134 @@ def _wf_trigger_scan(context):
     print("[WORKFLOW] [SCAN] Inizio _wf_trigger_scan()")
     print(f"[WORKFLOW] [SCAN] Context: {context}")
 
-    config, is_valid = load_config()
-    if not is_valid or not config:
-        print("[WORKFLOW] [SCAN] Config non valida, impossibile avviare scan")
-        return False
+    # Il workflow usa il sistema di scan gruppo esistente
+    group_name = context.get("group_name")
+    scan_type = context.get("scan_type", "content")
+    libraries = context.get("libraries")
 
-    server_id = context.get("server_id")
-    library_id = context.get("library_id")
-    scan_type = context.get("scan_type") or "content"
-    print(f"[WORKFLOW] [SCAN] server_id={server_id}, library_id={library_id}, scan_type={scan_type}")
+    # Se ci sono librerie nel context, usale (scan di gruppo specifico)
+    if libraries and isinstance(libraries, list) and len(libraries) > 0:
+        print(f"[WORKFLOW] [SCAN] Modalità gruppo '{group_name or 'custom'}' con {len(libraries)} librerie")
 
-    emby_servers = (config.get("EMBY") or {}).get("SERVERS") or []
-    enabled_servers = [
-        server for server in emby_servers
-        if isinstance(server, dict) and server.get("enabled")
-    ]
+        payload = {
+            "group_name": group_name or "Workflow",
+            "scan_type": scan_type,
+            "libraries": libraries
+        }
 
-    print(f"[WORKFLOW] [SCAN] Server Emby abilitati: {len(enabled_servers)}")
+        # Chiama la funzione esistente
+        result, status_code = _build_scan_group_tracked_snapshot(payload)
 
-    if not enabled_servers:
-        print("[WORKFLOW] [SCAN] Nessun server Emby abilitato")
-        return False
-
-    # Se c'è un server_id e library_id specifico, lancia scan su quella libreria
-    if server_id and library_id:
-        print(f"[WORKFLOW] [SCAN] Modalità specifica: server={server_id}, library={library_id}")
-        target_server = next((s for s in enabled_servers if s.get("id") == server_id), None)
-        if not target_server:
-            print(f"[WORKFLOW] [SCAN] Server {server_id} non trovato o non abilitato")
+        if status_code == 200 and result.get("success"):
+            context["workflow_job_ids"] = result.get("job_ids", [])
+            print(f"[WORKFLOW] [SCAN] ✓ Scan gruppo avviato, job_ids: {context['workflow_job_ids']}")
+            return True
+        else:
+            print(f"[WORKFLOW] [SCAN] ✗ Errore: {result.get('message', 'Unknown')}")
             return False
 
-        print(f"[WORKFLOW] [SCAN] Server target trovato: {target_server.get('name')}")
+    # Altrimenti, scan globale di TUTTE le librerie
+    print("[WORKFLOW] [SCAN] Modalità globale: tutte le librerie")
 
-        # Create tracked job for workflow scan
-        job_id = _LIBRARY_SCAN_TRACKER.create_job(server_id, [library_id], group_name="Workflow")
-        context["workflow_job_id"] = job_id  # Store job_id in context for status checking
-        print(f"[WORKFLOW] [SCAN] Job creato: {job_id}")
-        _schedule_library_tracking(target_server, job_id, library_id, scan_type=scan_type)
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        print("[WORKFLOW] [SCAN] Config non valida")
+        return False
 
-        def _run_library_scan():
-            try:
-                print(f"[WORKFLOW] [SCAN] Thread scan avviato per libreria {library_id}")
+    emby_config = config.get("EMBY") or {}
+    servers = emby_config.get("SERVERS") or []
+    enabled_servers = [s for s in servers if isinstance(s, dict) and s.get("enabled")]
 
-                # Start progress poller for granular updates
-                # Progress handled via WebSocket events, no polling needed
+    if not enabled_servers:
+        print("[WORKFLOW] [SCAN] Nessun server abilitato")
+        return False
 
-                # Trigger the scan
-                success, response = _trigger_library_scan(target_server, library_id, scan_type)
-                if success:
-                    print(f"[WORKFLOW] [SCAN] ✓ Scan avviato con successo su server {server_id}, libreria {library_id} (job: {job_id})")
-                else:
-                    print(f"[WORKFLOW] [SCAN] ✗ Errore avvio scan libreria {library_id}: {response}")
-                    _LIBRARY_SCAN_TRACKER.update_library_status(job_id, library_id, "error", 0.0, str(response))
-            except Exception as exc:
-                print(f"[WORKFLOW] [SCAN] ✗ Eccezione in thread scan libreria {library_id}: {exc}")
-                import traceback
-                traceback.print_exc()
-                _LIBRARY_SCAN_TRACKER.update_library_status(job_id, library_id, "error", 0.0, str(exc))
+    # Costruisci payload per scan gruppo con TUTTE le librerie
+    all_libraries = []
+    for server in enabled_servers:
+        server_id = str(server.get("id", ""))
+        if not server_id:
+            continue
 
-        threading.Thread(target=_run_library_scan, daemon=True).start()
-        print(f"[WORKFLOW] [SCAN] Thread scan lanciato, return True")
+        # Get libraries for this server
+        success, libs_data = _call_emby_api(server, "Library/VirtualFolders", method="GET")
+        if not success or not isinstance(libs_data, list):
+            continue
+
+        for lib in libs_data:
+            library_id = lib.get("ItemId")
+            if library_id:
+                all_libraries.append({
+                    "server_id": server_id,
+                    "library_id": str(library_id)
+                })
+
+    if not all_libraries:
+        print("[WORKFLOW] [SCAN] Nessuna libreria trovata")
+        return False
+
+    payload = {
+        "group_name": "Workflow-Global",
+        "scan_type": scan_type,
+        "libraries": all_libraries
+    }
+
+    print(f"[WORKFLOW] [SCAN] Lancio scan gruppo globale con {len(all_libraries)} librerie")
+
+    # Chiama la funzione esistente
+    result, status_code = _build_scan_group_tracked_snapshot(payload)
+
+    if status_code == 200 and result.get("success"):
+        context["workflow_job_ids"] = result.get("job_ids", [])
+        print(f"[WORKFLOW] [SCAN] ✓ Scan gruppo avviato, job_ids: {context['workflow_job_ids']}")
         return True
-
-    # Altrimenti, avvia refresh su tutti i server abilitati
-    # Triggera le scheduled tasks di tipo RefreshLibrary
-    print(f"[WORKFLOW] [SCAN] Modalità globale: scansione su tutti i {len(enabled_servers)} server")
-    try:
-        for server in enabled_servers:
-            server_name = server.get("name", "unknown")
-            print(f"[WORKFLOW] [SCAN] Processando server: {server_name}")
-            # FIX: _fetch_emby_scheduled_tasks ritorna (tasks_list, error), spacchetta la tupla
-            result = _fetch_emby_scheduled_tasks(server)
-            if isinstance(result, tuple) and len(result) >= 1:
-                tasks = result[0] if isinstance(result[0], list) else []
-            else:
-                tasks = result if isinstance(result, list) else []
-            print(f"[WORKFLOW] [SCAN] Server {server_name}: {len(tasks)} scheduled tasks trovati")
-
-            # Log TUTTI i task trovati per debugging
-            print(f"[WORKFLOW] [SCAN] Debug: tasks type={type(tasks)}, len={len(tasks) if tasks else 0}")
-            for i, task in enumerate(tasks):
-                print(f"[WORKFLOW] [SCAN]   Debug task #{i+1}: type={type(task)}, isinstance(dict)={isinstance(task, dict)}")
-                if isinstance(task, dict):
-                    task_name = _get_task_value(task, "Name", "name") or "N/A"
-                    task_id = _get_task_value(task, "Id", "id") or "N/A"
-                    task_state = _get_task_value(task, "State", "state") or "N/A"
-                    print(f"[WORKFLOW] [SCAN]   Task #{i+1}: Name='{task_name}', ID='{task_id}', State='{task_state}'")
-                    print(f"[WORKFLOW] [SCAN]   Task #{i+1} full data: {task}")
-                else:
-                    print(f"[WORKFLOW] [SCAN]   Task #{i+1} NOT A DICT: {task}")
-
-            # Cerca task di scan/refresh
-            task_found = False
-            for task in tasks:
-                if isinstance(task, dict):
-                    task_name_value = _get_task_value(task, "Name", "name") or ""
-                    task_name_lower = task_name_value.lower()
-                    if "refresh" in task_name_lower or "scan" in task_name_lower:
-                        task_id = _get_task_value(task, "Id", "id")
-                        if task_id:
-                            print(f"[WORKFLOW] [SCAN] Avvio task '{task_name_value}' (ID: {task_id}) su server {server.get('id')}")
-                            _call_emby_api(server, f"ScheduledTasks/Running/{task_id}", method="POST")
-                            print(f"[WORKFLOW] [SCAN] ✓ Task avviato")
-                            task_found = True
-                            break
-                        else:
-                            print(f"[WORKFLOW] [SCAN] ⚠️ Task '{task_name_value}' trovato ma senza ID!")
-
-            if not task_found:
-                print(f"[WORKFLOW] [SCAN] ⚠️ Nessun task 'scan' o 'refresh' trovato su server {server_name}!")
-
-        print(f"[WORKFLOW] [SCAN] Tutti i server processati, return True")
-        return True
-    except Exception as exc:
-        print(f"[WORKFLOW] [SCAN] ✗ Errore avvio scan globale: {exc}")
-        import traceback
-        traceback.print_exc()
+    else:
+        print(f"[WORKFLOW] [SCAN] ✗ Errore: {result.get('message', 'Unknown')}")
         return False
 
 
 def _wf_check_scan(context=None):
     """
     Verifica se ci sono scan Emby in corso.
-    Se context contiene workflow_job_id, controlla quello specifico job.
+    Se context contiene workflow_job_id o workflow_job_ids, controlla quei job.
 
     Returns:
         bool: True se NESSUN scan è in corso (completato), False se ancora in esecuzione
     """
-    print("[WORKFLOW] [CHECK_SCAN] Inizio verifica stato scan")
+    print(f"[WORKFLOW] [CHECK_SCAN] Inizio verifica stato scan - context ricevuto: {context}")
 
-    # Check tracked job first if available
+    # Check tracked jobs first if available
+    job_ids_to_check = []
+
     if context and "workflow_job_id" in context:
-        job_id = context["workflow_job_id"]
-        print(f"[WORKFLOW] [CHECK_SCAN] Checking tracked job: {job_id}")
-        job = _LIBRARY_SCAN_TRACKER.get_job(job_id)
-        if job:
-            status = job.get("status")
-            print(f"[WORKFLOW] [CHECK_SCAN] Job {job_id} status: {status}")
-            if status in ("completed", "error"):
-                print(f"[WORKFLOW] [CHECK_SCAN] ✓ Scan completato (job: {job_id}, status: {status})")
-                return True
-            elif status in ("active", "queued"):
-                print(f"[WORKFLOW] [CHECK_SCAN] ⏳ Scan ancora in corso (job: {job_id}, status: {status})")
-                return False
+        job_ids_to_check.append(context["workflow_job_id"])
+        print(f"[WORKFLOW] [CHECK_SCAN] Trovato workflow_job_id: {context['workflow_job_id']}")
+
+    if context and "workflow_job_ids" in context:
+        job_ids_to_check.extend(context["workflow_job_ids"])
+        print(f"[WORKFLOW] [CHECK_SCAN] Trovato workflow_job_ids: {context['workflow_job_ids']}")
+
+    if job_ids_to_check:
+        print(f"[WORKFLOW] [CHECK_SCAN] Checking {len(job_ids_to_check)} tracked jobs")
+        all_completed = True
+
+        for job_id in job_ids_to_check:
+            job = _LIBRARY_SCAN_TRACKER.get_job(job_id)
+            if job:
+                status = job.get("status")
+                print(f"[WORKFLOW] [CHECK_SCAN] Job {job_id} status: {status}")
+                if status in ("active", "queued"):
+                    print(f"[WORKFLOW] [CHECK_SCAN] ⏳ Job {job_id} ancora in corso")
+                    all_completed = False
+            else:
+                print(f"[WORKFLOW] [CHECK_SCAN] ⚠️ Job {job_id} non trovato nel tracker")
+
+        if all_completed:
+            print(f"[WORKFLOW] [CHECK_SCAN] ✓ Tutti i {len(job_ids_to_check)} job completati")
+            return True
         else:
-            print(f"[WORKFLOW] [CHECK_SCAN] ⚠️ Job {job_id} non trovato nel tracker")
+            print(f"[WORKFLOW] [CHECK_SCAN] ⏳ Alcuni job ancora in corso")
+            return False
 
     config, is_valid = load_config()
     if not is_valid or not config:

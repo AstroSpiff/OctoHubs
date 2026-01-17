@@ -1,0 +1,497 @@
+Last login: Sat Jan 17 20:50:21 on ttys000
+roy@MacBook-Pro-2 ~ % cd /Users/roy/Documents/Project\ Tools/octohub 
+roy@MacBook-Pro-2 octohub % ./start_dev.sh                                 
+==========================================
+Starting OctoHub with MEGA LOGGING
+Database: jellychecker@localhost:5432
+==========================================
+INFO:     Will watch for changes in these directories: ['/Users/roy/Documents/Project Tools/octohub']
+INFO:     Uvicorn running on http://127.0.0.1:5050 (Press CTRL+C to quit)
+INFO:     Started reloader process [67300] using WatchFiles
+[API_CLIENTS] Module loaded - VERSION 2026-01-08-21:40 with metadata fix
+[AUTH] Sistema di autenticazione inizializzato (database: sqlite:///auth.db)
+2026-01-17 20:59:01,094 - emby_websocket_manager - INFO - [WSManager] Initialized
+   -> AutoScheduler: prossimo scan alle 2026-01-17T21:59:01.156021.   -> AutoScheduler: prossimo scan alle 2026-01-17T21:59:01.156205.
+   -> AutoScheduler: prossimo refresh alle 2026-01-17T21:14:01.156205.
+   -> AutoScheduler: workflow disabilitato.
+
+2026-01-17 20:59:01,156 - emby_websocket_manager - INFO - [WSManager] Registered handler for RefreshProgress
+2026-01-17 20:59:01,156 - emby_websocket_manager - INFO - [WSManager] Setup RefreshProgress forwarding to client WebSockets
+   -> AutoScheduler: prossimo refresh alle 2026-01-17T21:14:01.156021.
+[WS_INIT] ✓ Setup RefreshProgress forwarding to client WebSockets
+[WS_INIT] Initializing WebSocket connections for 3 Emby servers
+2026-01-17 20:59:01,156 - emby_websocket_manager - INFO - [WS:6e6272b3-9373-4bc4-a5bb-358cda2a0692] Connecting to wss://green.redprimrose.mov/embywebsocket?api_key=995f51d04b73498db3804edd259722c6&deviceId=OctoHub_6e6272b3
+   -> AutoScheduler: workflow disabilitato.
+2026-01-17 20:59:01,156 - emby_websocket_manager - INFO - [WS:6e6272b3-9373-4bc4-a5bb-358cda2a0692] WebSocket thread started
+2026-01-17 20:59:01,156 - emby_websocket_manager - INFO - [WSManager] Added server 6e6272b3-9373-4bc4-a5bb-358cda2a0692
+[WS_INIT] ✓ Initialized WebSocket for server 6e6272b3-9373-4bc4-a5bb-358cda2a0692
+2026-01-17 20:59:01,156 - emby_websocket_manager - INFO - [WS:63b0d06e-ec60-4b98-a661-ce202584b51b] Connecting to ws://185.107.71.105:52719/embywebsocket?api_key=ae277af1416245228fd1fe5352d579ac&deviceId=OctoHub_63b0d06e
+2026-01-17 20:59:01,156 - emby_websocket_manager - INFO - [WS:63b0d06e-ec60-4b98-a661-ce202584b51b] WebSocket thread started
+2026-01-17 20:59:01,156 - emby_websocket_manager - INFO - [WSManager] Added server 63b0d06e-ec60-4b98-a661-ce202584b51b
+[WS_INIT] ✓ Initialized WebSocket for server 63b0d06e-ec60-4b98-a661-ce202584b51b
+2026-01-17 20:59:01,157 - emby_websocket_manager - INFO - [WS:f987a388-12f2-4493-9859-83cb8a32738a] Connecting to ws://185.107.71.105:18331/embywebsocket?api_key=09844a8f15864eea890275f9f6f104a1&deviceId=OctoHub_f987a388
+2026-01-17 20:59:01,157 - emby_websocket_manager - INFO - [WS:f987a388-12f2-4493-9859-83cb8a32738a] WebSocket thread started
+2026-01-17 20:59:01,157 - emby_websocket_manager - INFO - [WSManager] Added server f987a388-12f2-4493-9859-83cb8a32738a
+[WS_INIT] ✓ Initialized WebSocket for server f987a388-12f2-4493-9859-83cb8a32738a
+[STARTUP] Inizializzazione configurazione e AutoScheduler...
+[STARTUP] Configurazione caricata correttamente, AutoScheduler attivo.
+INFO:     Started server process [67302]
+INFO:     Waiting for application startup.
+
+====================================================================================================
+🚀 OCTOHUB STARTUP - MEGA LOGGING ENABLED
+====================================================================================================
+
+INFO:     Application startup complete.
+2026-01-17 20:59:01,223 - websocket - INFO - Websocket connected
+2026-01-17 20:59:01,223 - emby_websocket_manager - INFO - [WS:63b0d06e-ec60-4b98-a661-ce202584b51b] ✓ Connected successfully (attempt #1)
+[WS_EVENT:63b0d06e-ec60-4b98-a661-ce202584b51b] ConnectionEstablished
+[WS_EVENT:63b0d06e-ec60-4b98-a661-ce202584b51b] ✓ WebSocket connection established
+2026-01-17 20:59:01,224 - websocket - INFO - Websocket connected
+2026-01-17 20:59:01,224 - emby_websocket_manager - INFO - [WS:f987a388-12f2-4493-9859-83cb8a32738a] ✓ Connected successfully (attempt #1)
+[WS_EVENT:f987a388-12f2-4493-9859-83cb8a32738a] ConnectionEstablished
+[WS_EVENT:f987a388-12f2-4493-9859-83cb8a32738a] ✓ WebSocket connection established
+2026-01-17 20:59:01,307 - websocket - INFO - Websocket connected
+2026-01-17 20:59:01,307 - emby_websocket_manager - INFO - [WS:6e6272b3-9373-4bc4-a5bb-358cda2a0692] ✓ Connected successfully (attempt #1)
+[WS_EVENT:6e6272b3-9373-4bc4-a5bb-358cda2a0692] ConnectionEstablished
+[WS_EVENT:6e6272b3-9373-4bc4-a5bb-358cda2a0692] ✓ WebSocket connection established
+INFO:     127.0.0.1:50649 - "GET /emby/server-status/6e6272b3-9373-4bc4-a5bb-358cda2a0692 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50637 - "GET /emby/server-status/63b0d06e-ec60-4b98-a661-ce202584b51b HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50636 - "GET /emby/server-status/f987a388-12f2-4493-9859-83cb8a32738a HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50649 - "GET /api/emby/strm-guard/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50635 - "GET /api/emby/events-stream HTTP/1.1" 200 OK
+2026-01-17 20:59:03,059 - scan_websocket_manager - INFO - [ScanConnectionManager] Initialized
+INFO:     127.0.0.1:50665 - "WebSocket /ws/scan/client_1768679431783_ad2r7s5dw" [accepted]
+2026-01-17 20:59:03,059 - scan_websocket_manager - INFO - [ScanConnectionManager] Client client_1768679431783_ad2r7s5dw connected (total: 1)
+INFO:     connection open
+[PREPARE VIEW] Server 6e6272: icon=fa-server, icon_color=#22C55E
+[PREPARE VIEW] Server 63b0d0: icon=fa-server, icon_color=#3B82F6
+[PREPARE VIEW] Server f987a3: icon=fa-server, icon_color=#EF4444
+INFO:     127.0.0.1:50649 - "GET /emby HTTP/1.1" 200 OK
+2026-01-17 20:59:03,463 - scan_websocket_manager - INFO - [ScanConnectionManager] Client client_1768679431783_ad2r7s5dw disconnected (total: 0)
+INFO:     connection closed
+INFO:     127.0.0.1:50649 - "GET /static/emby.css?v=20260108-2215 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50637 - "GET /static/emby_users.js?v=20260114-leader-fix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50636 - "GET /static/script.js HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50670 - "GET /static/emby.js?v=20260110-verify-fix HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50670 - "GET /.well-known/appspecific/com.chrome.devtools.json HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:50670 - "GET /api/workflow/events HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50636 - "GET /api/ui/tab-order?page=dashboard HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50637 - "GET /api/ui/tab-order?page=emby HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50649 - "GET /emby/server-status/6e6272b3-9373-4bc4-a5bb-358cda2a0692 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50636 - "GET /api/emby/grouped-libraries HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50673 - "WebSocket /ws/events" [accepted]
+INFO:     127.0.0.1:50637 - "GET /api/emby/active-library-scans HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50649 - "GET /api/emby/associations HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50674 - "GET /emby/server-status/63b0d06e-ec60-4b98-a661-ce202584b51b HTTP/1.1" 200 OK
+INFO:     connection open
+INFO:     127.0.0.1:50636 - "GET /api/emby/scan-jobs/history HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50675 - "GET /emby/server-status/f987a388-12f2-4493-9859-83cb8a32738a HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50637 - "GET /api/emby/strm-guard/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50649 - "GET /favicon.ico HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:50676 - "GET /api/emby/grouped-libraries HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50674 - "GET /api/emby/status-stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50675 - "GET /api/emby/active-library-scans HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50708 - "WebSocket /ws/scan/client_1768679943635_vrpj8ti0b" [accepted]
+2026-01-17 20:59:05,548 - scan_websocket_manager - INFO - [ScanConnectionManager] Client client_1768679943635_vrpj8ti0b connected (total: 1)
+INFO:     connection open
+[WORKFLOW] [DEBUG] ===== Starting step 0: scan =====INFO:     127.0.0.1:50675 - "POST /api/workflow/start HTTP/1.1" 200 OK
+
+[WORKFLOW] [DEBUG] Updating current_step_index to 0
+[WORKFLOW] [DEBUG] Marking step 0 as running
+[WORKFLOW] [SCAN] Inizio _wf_trigger_scan()
+[WORKFLOW] [SCAN] Context: {'group_name': 'Animazione', 'scan_type': 'content', 'libraries': [{'server_id': '6e6272b3-9373-4bc4-a5bb-358cda2a0692', 'library_id': '341187'}, {'server_id': '63b0d06e-ec60-4b98-a661-ce202584b51b', 'library_id': '30706'}, {'server_id': 'f987a388-12f2-4493-9859-83cb8a32738a', 'library_id': '401811'}]}
+[WORKFLOW] [SCAN] Modalità gruppo 'Animazione' con 3 librerie
+INFO:     127.0.0.1:50675 - "GET /api/workflow/events HTTP/1.1" 200 OK
+[TRACKER] >>> create_job CALLED <<<
+[TRACKER]   server_id: 6e6272b3-9373-4bc4-a5bb-358cda2a0692
+[TRACKER]   library_ids: ['341187']
+[TRACKER]   group_name: Animazione
+[TRACKER]   scan_type: content
+[TRACKER]   generated job_id: a2cc9f4a-9967-489b-8ec9-df5fac2416bf
+[TRACKER]   acquiring lock...
+[TRACKER]   lock acquired, creating job data...
+[TRACKER]   calling _enforce_job_limits...
+[TRACKER]   lock releasing...
+[TRACKER] ✓ create_job completed, returning job_id: a2cc9f4a-9967-489b-8ec9-df5fac2416bf
+[SCAN_GROUP] Triggering content scan for library 341187 on server 6e6272b3-9373-4bc4-a5bb-358cda2a0692
+[_trigger_library_scan] POST GreenPrimrose/Items/341187/Refresh con params={'Recursive': 'true', 'MetadataRefreshMode': 'Default', 'ImageRefreshMode': 'Default', 'ReplaceAllMetadata': 'false'}
+INFO:     127.0.0.1:50676 - "GET /api/emby/active-scan-jobs HTTP/1.1" 200 OK
+[WebSocket /ws/scan/client_1768679943635_vrpj8ti0b] Received: action=subscribe, job_id=a2cc9f4a-9967-489b-8ec9-df5fac2416bf
+2026-01-17 20:59:05,643 - scan_websocket_manager - INFO - [ScanConnectionManager] ✓ Client client_1768679943635_vrpj8ti0b SUBSCRIBED to job a2cc9f4a-9967-489b-8ec9-df5fac2416bf (total clients for this job: 1)
+[_trigger_library_scan] ✓ Chiamata API riuscita, response type: <class 'str'>, content: 
+[SCAN_GROUP] Trigger result: success=True, response=Scan triggered
+[SCAN_GROUP] ✓ Scan triggered for library 341187 (job a2cc9f4a-9967-489b-8ec9-df5fac2416bf)
+[TRACKER] >>> create_job CALLED <<<
+[TRACKER]   server_id: 63b0d06e-ec60-4b98-a661-ce202584b51b
+[TRACKER]   library_ids: ['30706']
+[TRACKER]   group_name: Animazione2026-01-17 20:59:05,787 - emby_library_poller - INFO - 
+********************************************************************************
+2026-01-17 20:59:05,787 - emby_library_poller - INFO - [POLLER] >>> start_tracking_library CALLED <<<
+2026-01-17 20:59:05,787 - emby_library_poller - INFO - [POLLER]   server_id: 6e6272b3-9373-4bc4-a5bb-358cda2a0692
+2026-01-17 20:59:05,787 - emby_library_poller - INFO - [POLLER]   library_id: 341187
+2026-01-17 20:59:05,787 - emby_library_poller - INFO - [POLLER]   job_id: a2cc9f4a-9967-489b-8ec9-df5fac2416bf
+2026-01-17 20:59:05,788 - emby_library_poller - INFO - [POLLER]   library_name: None
+2026-01-17 20:59:05,788 - emby_library_poller - INFO - [POLLER]   scan_type: content
+2026-01-17 20:59:05,788 - emby_library_poller - INFO - ********************************************************************************
+
+2026-01-17 20:59:05,788 - emby_library_poller - INFO - [LibPoller] Started polling for server 6e6272b3-9373-4bc4-a5bb-358cda2a0692
+2026-01-17 20:59:05,788 - emby_library_poller - INFO - [LibPoller] Tracking library 341187 on server 6e6272b3-9373-4bc4-a5bb-358cda2a0692 (job: a2cc9f4a-9967-489b-8ec9-df5fac2416bf)
+
+[TRACKER]   scan_type: content
+[TRACKER]   generated job_id: 599d2def-9302-4359-a479-7135f57dbbf6
+[TRACKER]   acquiring lock...
+[TRACKER]   lock acquired, creating job data...
+[TRACKER]   calling _enforce_job_limits...
+[TRACKER]   lock releasing...
+[TRACKER] ✓ create_job completed, returning job_id: 599d2def-9302-4359-a479-7135f57dbbf6
+[SCAN_GROUP] Triggering content scan for library 30706 on server 63b0d06e-ec60-4b98-a661-ce202584b51b
+[_trigger_library_scan] POST BluePrimrose/Items/30706/Refresh con params={'Recursive': 'true', 'MetadataRefreshMode': 'Default', 'ImageRefreshMode': 'Default', 'ReplaceAllMetadata': 'false'}
+[_trigger_library_scan] ✓ Chiamata API riuscita, response type: <class 'str'>, content: 
+[SCAN_GROUP] Trigger result: success=True, response=Scan triggered
+[SCAN_GROUP] ✓ Scan triggered for library 30706 (job 599d2def-9302-4359-a479-7135f57dbbf6)
+[TRACKER] >>> create_job CALLED <<<
+[TRACKER]   server_id: f987a388-12f2-4493-9859-83cb8a32738a
+[TRACKER]   library_ids: ['401811']
+[TRACKER]   group_name: Animazione
+[TRACKER]   scan_type: content
+[TRACKER]   generated job_id: 7fdc3fc4-f636-4e9b-a8e6-eb67125760dd
+[TRACKER]   acquiring lock...
+[TRACKER]   lock acquired, creating job data...
+[TRACKER]   calling _enforce_job_limits...
+[TRACKER]   lock releasing...
+[TRACKER] ✓ create_job completed, returning job_id: 7fdc3fc4-f636-4e9b-a8e6-eb67125760dd
+[SCAN_GROUP] Triggering content scan for library 401811 on server f987a388-12f2-4493-9859-83cb8a32738a
+[_trigger_library_scan] POST RedPrimrose/Items/401811/Refresh con params={'Recursive': 'true', 'MetadataRefreshMode': 'Default', 'ImageRefreshMode': 'Default', 'ReplaceAllMetadata': 'false'}
+2026-01-17 20:59:05,858 - emby_library_poller - INFO - 
+********************************************************************************
+2026-01-17 20:59:05,858 - emby_library_poller - INFO - [POLLER] >>> start_tracking_library CALLED <<<
+2026-01-17 20:59:05,858 - emby_library_poller - INFO - [POLLER]   server_id: 63b0d06e-ec60-4b98-a661-ce202584b51b
+2026-01-17 20:59:05,858 - emby_library_poller - INFO - [POLLER]   library_id: 30706
+2026-01-17 20:59:05,858 - emby_library_poller - INFO - [POLLER]   job_id: 599d2def-9302-4359-a479-7135f57dbbf6
+2026-01-17 20:59:05,858 - emby_library_poller - INFO - [POLLER]   library_name: None
+2026-01-17 20:59:05,858 - emby_library_poller - INFO - [POLLER]   scan_type: content
+2026-01-17 20:59:05,858 - emby_library_poller - INFO - ********************************************************************************
+
+2026-01-17 20:59:05,858 - emby_library_poller - INFO - [LibPoller] Started polling for server 63b0d06e-ec60-4b98-a661-ce202584b51b
+2026-01-17 20:59:05,858 - emby_library_poller - INFO - [LibPoller] Tracking library 30706 on server 63b0d06e-ec60-4b98-a661-ce202584b51b (job: 599d2def-9302-4359-a479-7135f57dbbf6)
+[_trigger_library_scan] ✓ Chiamata API riuscita, response type: <class 'str'>, content: 
+[SCAN_GROUP] Trigger result: success=True, response=Scan triggered
+[SCAN_GROUP] ✓ Scan triggered for library 401811 (job 7fdc3fc4-f636-4e9b-a8e6-eb67125760dd)
+[WORKFLOW] [SCAN] ✓ Scan gruppo avviato, job_ids: ['a2cc9f4a-9967-489b-8ec9-df5fac2416bf', '599d2def-9302-4359-a479-7135f57dbbf6', '7fdc3fc4-f636-4e9b-a8e6-eb67125760dd']
+[WORKFLOW] [CHECK_SCAN] Inizio verifica stato scan - context ricevuto: {'group_name': 'Animazione', 'scan_type': 'content', 'libraries': [{'server_id': '6e6272b3-9373-4bc4-a5bb-358cda2a0692', 'library_id': '341187'}, {'server_id': '63b0d06e-ec60-4b98-a661-ce202584b51b', 'library_id': '30706'}, {'server_id': 'f987a388-12f2-4493-9859-83cb8a32738a', 'library_id': '401811'}], 'workflow_job_ids': ['a2cc9f4a-9967-489b-8ec9-df5fac2416bf', '599d2def-9302-4359-a479-7135f57dbbf6', '7fdc3fc4-f636-4e9b-a8e6-eb67125760dd']}
+[WORKFLOW] [CHECK_SCAN] Trovato workflow_job_ids: ['a2cc9f4a-9967-489b-8ec9-df5fac2416bf', '599d2def-9302-4359-a479-7135f57dbbf6', '7fdc3fc4-f636-4e9b-a8e6-eb67125760dd']
+[WORKFLOW] [CHECK_SCAN] Checking 3 tracked jobs
+[WORKFLOW] [CHECK_SCAN] Job a2cc9f4a-9967-489b-8ec9-df5fac2416bf status: queued
+[WORKFLOW] [CHECK_SCAN] ⏳ Job a2cc9f4a-9967-489b-8ec9-df5fac2416bf ancora in corso
+[WORKFLOW] [CHECK_SCAN] Job 599d2def-9302-4359-a479-7135f57dbbf6 status: queued
+[WORKFLOW] [CHECK_SCAN] ⏳ Job 599d2def-9302-4359-a479-7135f57dbbf6 ancora in corso2026-01-17 20:59:05,921 - emby_library_poller - INFO - 
+********************************************************************************
+2026-01-17 20:59:05,921 - emby_library_poller - INFO - [POLLER] >>> start_tracking_library CALLED <<<
+2026-01-17 20:59:05,921 - emby_library_poller - INFO - [POLLER]   server_id: f987a388-12f2-4493-9859-83cb8a32738a
+2026-01-17 20:59:05,921 - emby_library_poller - INFO - [POLLER]   library_id: 401811
+2026-01-17 20:59:05,921 - emby_library_poller - INFO - [POLLER]   job_id: 7fdc3fc4-f636-4e9b-a8e6-eb67125760dd
+2026-01-17 20:59:05,921 - emby_library_poller - INFO - [POLLER]   library_name: None
+2026-01-17 20:59:05,921 - emby_library_poller - INFO - [POLLER]   scan_type: content
+2026-01-17 20:59:05,921 - emby_library_poller - INFO - ********************************************************************************
+
+2026-01-17 20:59:05,921 - emby_library_poller - INFO - [LibPoller] Started polling for server f987a388-12f2-4493-9859-83cb8a32738a
+2026-01-17 20:59:05,921 - emby_library_poller - INFO - [LibPoller] Tracking library 401811 on server f987a388-12f2-4493-9859-83cb8a32738a (job: 7fdc3fc4-f636-4e9b-a8e6-eb67125760dd)
+
+[WORKFLOW] [CHECK_SCAN] Job 7fdc3fc4-f636-4e9b-a8e6-eb67125760dd status: queued
+[WORKFLOW] [CHECK_SCAN] ⏳ Job 7fdc3fc4-f636-4e9b-a8e6-eb67125760dd ancora in corso
+[WORKFLOW] [CHECK_SCAN] ⏳ Alcuni job ancora in corso
+2026-01-17 20:59:05,958 - emby_library_poller - INFO - 
+********************************************************************************
+2026-01-17 20:59:05,959 - emby_library_poller - INFO - [POLLER] >>> _update_tracker_status CALLED <<<
+2026-01-17 20:59:05,959 - emby_library_poller - INFO - [POLLER]   state_key: 63b0d06e-ec60-4b98-a661-ce202584b51b:30706
+2026-01-17 20:59:05,959 - emby_library_poller - INFO - [POLLER]   job_id: 599d2def-9302-4359-a479-7135f57dbbf6
+2026-01-17 20:59:05,959 - emby_library_poller - INFO - [POLLER]   library_id: 30706
+2026-01-17 20:59:05,959 - emby_library_poller - INFO - [POLLER]   status: active
+2026-01-17 20:59:05,959 - emby_library_poller - INFO - [POLLER]   progress: 0.0000 (0.0%)
+2026-01-17 20:59:05,959 - emby_library_poller - INFO - [POLLER]   message: RefreshProgress 0.0%
+2026-01-17 20:59:05,959 - emby_library_poller - INFO - [POLLER]   scan_stage: file
+2026-01-17 20:59:05,959 - emby_library_poller - INFO - ********************************************************************************
+
+2026-01-17 20:59:05,959 - emby_library_poller - INFO - [POLLER] Calling update_library_status via asyncio.to_thread...
+
+================================================================================
+[TRACKER] >>> update_library_status CALLED <<<
+[TRACKER]   job_id: 599d2def-9302-4359-a479-7135f57dbbf6
+[TRACKER]   library_id: 30706
+[TRACKER]   status: active
+[TRACKER]   progress: 0.0 (0.0%)
+[TRACKER]   message: RefreshProgress 0.0%
+[TRACKER]   metadata keys: ['library_name', 'scan_type', 'rapid_poll_count', 'total_poll_count', 'triple_shot_detected', 'state', 'scan_stage', 'queue_position']
+================================================================================
+
+[TRACKER] Lock acquired for job 599d2def-9302-4359-a479-7135f57dbbf6
+[TRACKER] ✓ Job 599d2def-9302-4359-a479-7135f57dbbf6 found in tracker
+[TRACKER] Checking broadcast conditions: status=active, progress=0.0
+[TRACKER] ✓ Broadcast will be triggered! status=active, overall_progress=0.0%
+[TRACKER] Lock will be released now
+[TRACKER] Lock released. should_broadcast_progress=True
+[TRACKER] Calling _broadcast_scan_progress...
+[SCAN_PROGRESS] ✓ Broadcast scheduled: job=599d2def-9302-4359-a479-7135f57dbbf6, lib=30706, progress=0.0%, msg='RefreshProgress 0.0%'
+2026-01-17 20:59:05,960 - scan_websocket_manager - WARNING - [ScanConnectionManager] ✗ No clients subscribed to job 599d2def-9302-4359-a479-7135f57dbbf6 (total jobs: 1, total connections: 1)
+2026-01-17 20:59:05,960 - emby_library_poller - INFO - [POLLER] ✓ update_library_status completed: job=599d2def-9302-4359-a479-7135f57dbbf6, lib=30706, status=active, progress=0.0%
+2026-01-17 20:59:05,982 - emby_library_poller - INFO - [LibPoller] Library 341187: RefreshProgress detected for first time
+2026-01-17 20:59:05,982 - emby_library_poller - INFO - [LibPoller] Library 341187: STATE TRANSITION: waiting → running (progress: 90.9%, stage: metadata)
+2026-01-17 20:59:05,982 - emby_library_poller - INFO - [LibPoller] Library 341187 on server 6e6272b3-9373-4bc4-a5bb-358cda2a0692: scan STARTED (progress: 90.9%)
+2026-01-17 20:59:05,982 - emby_library_poller - INFO - [LibPoller] Library 341187: state=running, progress=90.9%, calling update_tracker_status
+2026-01-17 20:59:05,982 - emby_library_poller - INFO - 
+********************************************************************************
+2026-01-17 20:59:05,982 - emby_library_poller - INFO - [POLLER] >>> _update_tracker_status CALLED <<<
+2026-01-17 20:59:05,982 - emby_library_poller - INFO - [POLLER]   state_key: 6e6272b3-9373-4bc4-a5bb-358cda2a0692:341187
+2026-01-17 20:59:05,982 - emby_library_poller - INFO - [POLLER]   job_id: a2cc9f4a-9967-489b-8ec9-df5fac2416bf
+2026-01-17 20:59:05,982 - emby_library_poller - INFO - [POLLER]   library_id: 341187
+2026-01-17 20:59:05,982 - emby_library_poller - INFO - [POLLER]   status: active
+2026-01-17 20:59:05,982 - emby_library_poller - INFO - [POLLER]   progress: 0.9095 (90.9%)
+2026-01-17 20:59:05,982 - emby_library_poller - INFO - [POLLER]   message: RefreshProgress 90.9%
+2026-01-17 20:59:05,982 - emby_library_poller - INFO - [POLLER]   scan_stage: metadata
+2026-01-17 20:59:05,982 - emby_library_poller - INFO - ********************************************************************************
+
+2026-01-17 20:59:05,982 - emby_library_poller - INFO - [POLLER] Calling update_library_status via asyncio.to_thread...
+
+================================================================================
+[TRACKER] >>> update_library_status CALLED <<<
+[TRACKER]   job_id: a2cc9f4a-9967-489b-8ec9-df5fac2416bf
+[TRACKER]   library_id: 341187
+[TRACKER]   status: active
+[TRACKER]   progress: 0.9094972067039105 (90.9%)
+[TRACKER]   message: RefreshProgress 90.9%
+[TRACKER]   metadata keys: ['library_name', 'scan_type', 'rapid_poll_count', 'total_poll_count', 'triple_shot_detected', 'state', 'scan_stage', 'queue_position']
+================================================================================
+
+[TRACKER] Lock acquired for job a2cc9f4a-9967-489b-8ec9-df5fac2416bf
+[TRACKER] ✓ Job a2cc9f4a-9967-489b-8ec9-df5fac2416bf found in tracker
+[TRACKER] Checking broadcast conditions: status=active, progress=0.9094972067039105
+[TRACKER] ✓ Broadcast will be triggered! status=active, overall_progress=90.9%
+[TRACKER] Lock will be released now
+[TRACKER] Lock released. should_broadcast_progress=True
+[TRACKER] Calling _broadcast_scan_progress...
+[SCAN_PROGRESS] ✓ Broadcast scheduled: job=a2cc9f4a-9967-489b-8ec9-df5fac2416bf, lib=341187, progress=90.9%, msg='RefreshProgress 90.9%'
+2026-01-17 20:59:05,982 - scan_websocket_manager - INFO - [ScanConnectionManager] ✓ Broadcasting to 1 clients for job a2cc9f4a-9967-489b-8ec9-df5fac2416bf: progress
+2026-01-17 20:59:05,983 - emby_library_poller - INFO - [POLLER] ✓ update_library_status completed: job=a2cc9f4a-9967-489b-8ec9-df5fac2416bf, lib=341187, status=active, progress=90.9%
+2026-01-17 20:59:06,012 - emby_library_poller - INFO - 
+********************************************************************************
+2026-01-17 20:59:06,012 - emby_library_poller - INFO - [POLLER] >>> _update_tracker_status CALLED <<<
+2026-01-17 20:59:06,012 - emby_library_poller - INFO - [POLLER]   state_key: 6e6272b3-9373-4bc4-a5bb-358cda2a0692:341187
+2026-01-17 20:59:06,012 - emby_library_poller - INFO - [POLLER]   job_id: a2cc9f4a-9967-489b-8ec9-df5fac2416bf
+2026-01-17 20:59:06,012 - emby_library_poller - INFO - [POLLER]   library_id: 341187
+2026-01-17 20:59:06,012 - emby_library_poller - INFO - [POLLER]   status: active
+2026-01-17 20:59:06,012 - emby_library_poller - INFO - [POLLER]   progress: 0.9358 (93.6%)
+2026-01-17 20:59:06,012 - emby_library_poller - INFO - [POLLER]   message: RefreshProgress 93.6%
+2026-01-17 20:59:06,012 - emby_library_poller - INFO - [POLLER]   scan_stage: metadata
+2026-01-17 20:59:06,012 - emby_library_poller - INFO - ********************************************************************************
+
+2026-01-17 20:59:06,012 - emby_library_poller - INFO - [POLLER] Calling update_library_status via asyncio.to_thread...
+
+================================================================================
+[TRACKER] >>> update_library_status CALLED <<<
+[TRACKER]   job_id: a2cc9f4a-9967-489b-8ec9-df5fac2416bf
+[TRACKER]   library_id: 341187
+[TRACKER]   status: active
+[TRACKER]   progress: 0.9357541899441341 (93.6%)
+[TRACKER]   message: RefreshProgress 93.6%
+[TRACKER]   metadata keys: ['library_name', 'scan_type', 'rapid_poll_count', 'total_poll_count', 'triple_shot_detected', 'state', 'scan_stage', 'queue_position']
+================================================================================
+
+[TRACKER] Lock acquired for job a2cc9f4a-9967-489b-8ec9-df5fac2416bf
+[TRACKER] ✓ Job a2cc9f4a-9967-489b-8ec9-df5fac2416bf found in tracker
+[TRACKER] Checking broadcast conditions: status=active, progress=0.9357541899441341
+[TRACKER] ✓ Broadcast will be triggered! status=active, overall_progress=93.6%
+[TRACKER] Lock will be released now
+[TRACKER] Lock released. should_broadcast_progress=True
+[TRACKER] Calling _broadcast_scan_progress...
+[SCAN_PROGRESS] ✓ Broadcast scheduled: job=a2cc9f4a-9967-489b-8ec9-df5fac2416bf, lib=341187, progress=93.6%, msg='RefreshProgress 93.6%'
+2026-01-17 20:59:06,012 - scan_websocket_manager - INFO - [ScanConnectionManager] ✓ Broadcasting to 1 clients for job a2cc9f4a-9967-489b-8ec9-df5fac2416bf: progress
+2026-01-17 20:59:06,012 - emby_library_poller - INFO - [POLLER] ✓ update_library_status completed: job=a2cc9f4a-9967-489b-8ec9-df5fac2416bf, lib=341187, status=active, progress=93.6%
+2026-01-17 20:59:06,018 - emby_library_poller - INFO - 
+********************************************************************************
+2026-01-17 20:59:06,018 - emby_library_poller - INFO - [POLLER] >>> _update_tracker_status CALLED <<<
+2026-01-17 20:59:06,018 - emby_library_poller - INFO - [POLLER]   state_key: f987a388-12f2-4493-9859-83cb8a32738a:401811
+2026-01-17 20:59:06,018 - emby_library_poller - INFO - [POLLER]   job_id: 7fdc3fc4-f636-4e9b-a8e6-eb67125760dd
+2026-01-17 20:59:06,018 - emby_library_poller - INFO - [POLLER]   library_id: 401811
+2026-01-17 20:59:06,018 - emby_library_poller - INFO - [POLLER]   status: active
+2026-01-17 20:59:06,018 - emby_library_poller - INFO - [POLLER]   progress: 0.0000 (0.0%)
+2026-01-17 20:59:06,018 - emby_library_poller - INFO - [POLLER]   message: RefreshProgress 0.0%
+2026-01-17 20:59:06,018 - emby_library_poller - INFO - [POLLER]   scan_stage: file
+2026-01-17 20:59:06,019 - emby_library_poller - INFO - ********************************************************************************
+
+2026-01-17 20:59:06,019 - emby_library_poller - INFO - [POLLER] Calling update_library_status via asyncio.to_thread...
+
+================================================================================
+[TRACKER] >>> update_library_status CALLED <<<
+[TRACKER]   job_id: 7fdc3fc4-f636-4e9b-a8e6-eb67125760dd
+[TRACKER]   library_id: 401811
+[TRACKER]   status: active
+[TRACKER]   progress: 0.0 (0.0%)
+[TRACKER]   message: RefreshProgress 0.0%
+[TRACKER]   metadata keys: ['library_name', 'scan_type', 'rapid_poll_count', 'total_poll_count', 'triple_shot_detected']
+================================================================================
+
+[TRACKER] Lock acquired for job 7fdc3fc4-f636-4e9b-a8e6-eb67125760dd
+[TRACKER] ✓ Job 7fdc3fc4-f636-4e9b-a8e6-eb67125760dd found in tracker
+[TRACKER] Checking broadcast conditions: status=active, progress=0.0
+[TRACKER] ✓ Broadcast will be triggered! status=active, overall_progress=0.0%
+[TRACKER] Lock will be released now
+[TRACKER] Lock released. should_broadcast_progress=True
+[TRACKER] Calling _broadcast_scan_progress...
+[SCAN_PROGRESS] ✓ Broadcast scheduled: job=7fdc3fc4-f636-4e9b-a8e6-eb67125760dd, lib=401811, progress=0.0%, msg='RefreshProgress 0.0%'
+2026-01-17 20:59:06,019 - scan_websocket_manager - WARNING - [ScanConnectionManager] ✗ No clients subscribed to job 7fdc3fc4-f636-4e9b-a8e6-eb67125760dd (total jobs: 1, total connections: 1)
+2026-01-17 20:59:06,019 - emby_library_poller - INFO - [POLLER] ✓ update_library_status completed: job=7fdc3fc4-f636-4e9b-a8e6-eb67125760dd, lib=401811, status=active, progress=0.0%
+INFO:     127.0.0.1:50676 - "GET /api/emby/strm-guard/status HTTP/1.1" 200 OK
+2026-01-17 20:59:11,061 - emby_library_poller - INFO - [LibPoller] Library 30706: RefreshProgress disappeared, marking completed
+2026-01-17 20:59:11,062 - emby_library_poller - INFO - [LibPoller] Library 30706: STATE TRANSITION: running → idle (progress: 100.0%, stage: completed)
+2026-01-17 20:59:11,062 - emby_library_poller - INFO - [LibPoller] Library 30706 on server 63b0d06e-ec60-4b98-a661-ce202584b51b: scan COMPLETED (100%)
+2026-01-17 20:59:11,062 - emby_library_poller - INFO - 
+********************************************************************************
+2026-01-17 20:59:11,062 - emby_library_poller - INFO - [POLLER] >>> _update_tracker_status CALLED <<<
+2026-01-17 20:59:11,062 - emby_library_poller - INFO - [POLLER]   state_key: 63b0d06e-ec60-4b98-a661-ce202584b51b:30706
+2026-01-17 20:59:11,062 - emby_library_poller - INFO - [POLLER]   job_id: 599d2def-9302-4359-a479-7135f57dbbf6
+2026-01-17 20:59:11,062 - emby_library_poller - INFO - [POLLER]   library_id: 30706
+2026-01-17 20:59:11,062 - emby_library_poller - INFO - [POLLER]   status: completed
+2026-01-17 20:59:11,062 - emby_library_poller - INFO - [POLLER]   progress: 1.0000 (100.0%)
+2026-01-17 20:59:11,062 - emby_library_poller - INFO - [POLLER]   message: Scan completed successfully
+2026-01-17 20:59:11,062 - emby_library_poller - INFO - [POLLER]   scan_stage: completed
+2026-01-17 20:59:11,062 - emby_library_poller - INFO - ********************************************************************************
+
+2026-01-17 20:59:11,062 - emby_library_poller - INFO - [POLLER] Calling update_library_status via asyncio.to_thread...
+
+================================================================================
+[TRACKER] >>> update_library_status CALLED <<<
+[TRACKER]   job_id: 599d2def-9302-4359-a479-7135f57dbbf6
+[TRACKER]   library_id: 30706
+[TRACKER]   status: completed
+[TRACKER]   progress: 1.0 (100.0%)
+[TRACKER]   message: Scan completed successfully
+[TRACKER]   metadata keys: ['library_name', 'scan_type', 'rapid_poll_count', 'total_poll_count', 'triple_shot_detected', 'state', 'scan_stage', 'queue_position']
+================================================================================
+
+[TRACKER] Lock acquired for job 599d2def-9302-4359-a479-7135f57dbbf6
+[TRACKER] ✓ Job 599d2def-9302-4359-a479-7135f57dbbf6 found in tracker
+[TRACKER] Checking broadcast conditions: status=completed, progress=1.0
+[TRACKER] ✓ Broadcast will be triggered! status=completed, overall_progress=100.0%
+[TRACKER] Lock will be released now
+[TRACKER] Lock released. should_broadcast_progress=True
+[TRACKER] Calling _broadcast_scan_progress...
+[SCAN_PROGRESS] ✓ Broadcast scheduled: job=599d2def-9302-4359-a479-7135f57dbbf6, lib=30706, progress=100.0%, msg='Scan completed successfully'
+2026-01-17 20:59:11,063 - scan_websocket_manager - WARNING - [ScanConnectionManager] ✗ No clients subscribed to job 599d2def-9302-4359-a479-7135f57dbbf6 (total jobs: 1, total connections: 1)
+2026-01-17 20:59:11,063 - scan_websocket_manager - WARNING - [ScanConnectionManager] ✗ No clients subscribed to job 599d2def-9302-4359-a479-7135f57dbbf6 (total jobs: 1, total connections: 1)
+2026-01-17 20:59:11,063 - emby_library_poller - INFO - [POLLER] ✓ update_library_status completed: job=599d2def-9302-4359-a479-7135f57dbbf6, lib=30706, status=completed, progress=100.0%
+2026-01-17 20:59:11,064 - emby_library_poller - INFO - [LibPoller] Stopped polling for server 63b0d06e-ec60-4b98-a661-ce202584b51b
+2026-01-17 20:59:11,064 - emby_library_poller - INFO - [LibPoller] Stopped tracking library 30706 on server 63b0d06e-ec60-4b98-a661-ce202584b51b
+2026-01-17 20:59:11,064 - emby_library_poller - INFO - [LibPoller] Stopped tracking library 30706 on server 63b0d06e-ec60-4b98-a661-ce202584b51b
+2026-01-17 20:59:11,064 - emby_library_poller - INFO - [LibPoller] Polling cancelled for server 63b0d06e-ec60-4b98-a661-ce202584b51b
+2026-01-17 20:59:11,138 - emby_library_poller - INFO - [LibPoller] Library 401811: RefreshProgress disappeared, marking completed
+2026-01-17 20:59:11,138 - emby_library_poller - INFO - [LibPoller] Library 401811: STATE TRANSITION: running → idle (progress: 100.0%, stage: completed)
+2026-01-17 20:59:11,138 - emby_library_poller - INFO - [LibPoller] Library 401811 on server f987a388-12f2-4493-9859-83cb8a32738a: scan COMPLETED (100%)
+2026-01-17 20:59:11,138 - emby_library_poller - INFO - 
+********************************************************************************
+2026-01-17 20:59:11,138 - emby_library_poller - INFO - [POLLER] >>> _update_tracker_status CALLED <<<
+2026-01-17 20:59:11,138 - emby_library_poller - INFO - [POLLER]   state_key: f987a388-12f2-4493-9859-83cb8a32738a:401811
+2026-01-17 20:59:11,138 - emby_library_poller - INFO - [POLLER]   job_id: 7fdc3fc4-f636-4e9b-a8e6-eb67125760dd
+2026-01-17 20:59:11,138 - emby_library_poller - INFO - [POLLER]   library_id: 401811
+2026-01-17 20:59:11,138 - emby_library_poller - INFO - [POLLER]   status: completed
+2026-01-17 20:59:11,138 - emby_library_poller - INFO - [POLLER]   progress: 1.0000 (100.0%)
+2026-01-17 20:59:11,138 - emby_library_poller - INFO - [POLLER]   message: Scan completed successfully
+2026-01-17 20:59:11,138 - emby_library_poller - INFO - [POLLER]   scan_stage: completed
+2026-01-17 20:59:11,138 - emby_library_poller - INFO - ********************************************************************************
+
+2026-01-17 20:59:11,138 - emby_library_poller - INFO - [POLLER] Calling update_library_status via asyncio.to_thread...
+
+================================================================================
+[TRACKER] >>> update_library_status CALLED <<<
+[TRACKER]   job_id: 7fdc3fc4-f636-4e9b-a8e6-eb67125760dd
+[TRACKER]   library_id: 401811
+[TRACKER]   status: completed
+[TRACKER]   progress: 1.0 (100.0%)
+[TRACKER]   message: Scan completed successfully
+[TRACKER]   metadata keys: ['library_name', 'scan_type', 'rapid_poll_count', 'total_poll_count', 'triple_shot_detected', 'state', 'scan_stage', 'queue_position']
+================================================================================
+
+[TRACKER] Lock acquired for job 7fdc3fc4-f636-4e9b-a8e6-eb67125760dd
+[TRACKER] ✓ Job 7fdc3fc4-f636-4e9b-a8e6-eb67125760dd found in tracker
+[TRACKER] Checking broadcast conditions: status=completed, progress=1.0
+[TRACKER] ✓ Broadcast will be triggered! status=completed, overall_progress=100.0%
+[TRACKER] Lock will be released now
+[TRACKER] Lock released. should_broadcast_progress=True
+[TRACKER] Calling _broadcast_scan_progress...
+[SCAN_PROGRESS] ✓ Broadcast scheduled: job=7fdc3fc4-f636-4e9b-a8e6-eb67125760dd, lib=401811, progress=100.0%, msg='Scan completed successfully'
+2026-01-17 20:59:11,139 - scan_websocket_manager - WARNING - [ScanConnectionManager] ✗ No clients subscribed to job 7fdc3fc4-f636-4e9b-a8e6-eb67125760dd (total jobs: 1, total connections: 1)
+2026-01-17 20:59:11,139 - scan_websocket_manager - WARNING - [ScanConnectionManager] ✗ No clients subscribed to job 7fdc3fc4-f636-4e9b-a8e6-eb67125760dd (total jobs: 1, total connections: 1)
+2026-01-17 20:59:11,139 - emby_library_poller - INFO - [POLLER] ✓ update_library_status completed: job=7fdc3fc4-f636-4e9b-a8e6-eb67125760dd, lib=401811, status=completed, progress=100.0%
+2026-01-17 20:59:11,142 - emby_library_poller - INFO - [LibPoller] Stopped polling for server f987a388-12f2-4493-9859-83cb8a32738a
+2026-01-17 20:59:11,142 - emby_library_poller - INFO - [LibPoller] Stopped tracking library 401811 on server f987a388-12f2-4493-9859-83cb8a32738a
+2026-01-17 20:59:11,142 - emby_library_poller - INFO - [LibPoller] Stopped tracking library 401811 on server f987a388-12f2-4493-9859-83cb8a32738a
+2026-01-17 20:59:11,143 - emby_library_poller - INFO - [LibPoller] Polling cancelled for server f987a388-12f2-4493-9859-83cb8a32738a
+2026-01-17 20:59:11,302 - emby_library_poller - INFO - [LibPoller] Library 341187: RefreshProgress disappeared, marking completed
+2026-01-17 20:59:11,303 - emby_library_poller - INFO - [LibPoller] Library 341187: STATE TRANSITION: running → idle (progress: 100.0%, stage: completed)
+2026-01-17 20:59:11,303 - emby_library_poller - INFO - [LibPoller] Library 341187 on server 6e6272b3-9373-4bc4-a5bb-358cda2a0692: scan COMPLETED (100%)
+2026-01-17 20:59:11,303 - emby_library_poller - INFO - 
+********************************************************************************
+2026-01-17 20:59:11,303 - emby_library_poller - INFO - [POLLER] >>> _update_tracker_status CALLED <<<
+2026-01-17 20:59:11,303 - emby_library_poller - INFO - [POLLER]   state_key: 6e6272b3-9373-4bc4-a5bb-358cda2a0692:341187
+2026-01-17 20:59:11,303 - emby_library_poller - INFO - [POLLER]   job_id: a2cc9f4a-9967-489b-8ec9-df5fac2416bf
+2026-01-17 20:59:11,303 - emby_library_poller - INFO - [POLLER]   library_id: 341187
+2026-01-17 20:59:11,303 - emby_library_poller - INFO - [POLLER]   status: completed
+2026-01-17 20:59:11,303 - emby_library_poller - INFO - [POLLER]   progress: 1.0000 (100.0%)
+2026-01-17 20:59:11,303 - emby_library_poller - INFO - [POLLER]   message: Scan completed successfully
+2026-01-17 20:59:11,304 - emby_library_poller - INFO - [POLLER]   scan_stage: completed
+2026-01-17 20:59:11,304 - emby_library_poller - INFO - ********************************************************************************
+
+2026-01-17 20:59:11,304 - emby_library_poller - INFO - [POLLER] Calling update_library_status via asyncio.to_thread...
+
+================================================================================
+[TRACKER] >>> update_library_status CALLED <<<
+[TRACKER]   job_id: a2cc9f4a-9967-489b-8ec9-df5fac2416bf
+[TRACKER]   library_id: 341187
+[TRACKER]   status: completed
+[TRACKER]   progress: 1.0 (100.0%)
+[TRACKER]   message: Scan completed successfully
+[TRACKER]   metadata keys: ['library_name', 'scan_type', 'rapid_poll_count', 'total_poll_count', 'triple_shot_detected', 'state', 'scan_stage', 'queue_position']
+================================================================================
+
+[TRACKER] Lock acquired for job a2cc9f4a-9967-489b-8ec9-df5fac2416bf
+[TRACKER] ✓ Job a2cc9f4a-9967-489b-8ec9-df5fac2416bf found in tracker
+[TRACKER] Checking broadcast conditions: status=completed, progress=1.0
+[TRACKER] ✓ Broadcast will be triggered! status=completed, overall_progress=100.0%
+[TRACKER] Lock will be released now
+[TRACKER] Lock released. should_broadcast_progress=True
+[TRACKER] Calling _broadcast_scan_progress...
+[SCAN_PROGRESS] ✓ Broadcast scheduled: job=a2cc9f4a-9967-489b-8ec9-df5fac2416bf, lib=341187, progress=100.0%, msg='Scan completed successfully'
+2026-01-17 20:59:11,304 - scan_websocket_manager - INFO - [ScanConnectionManager] ✓ Broadcasting to 1 clients for job a2cc9f4a-9967-489b-8ec9-df5fac2416bf: progress
+2026-01-17 20:59:11,304 - scan_websocket_manager - INFO - [ScanConnectionManager] ✓ Broadcasting to 1 clients for job a2cc9f4a-9967-489b-8ec9-df5fac2416bf: completed
+2026-01-17 20:59:11,304 - emby_library_poller - INFO - [POLLER] ✓ update_library_status completed: job=a2cc9f4a-9967-489b-8ec9-df5fac2416bf, lib=341187, status=completed, progress=100.0%
+2026-01-17 20:59:11,305 - emby_library_poller - INFO - [LibPoller] Stopped polling for server 6e6272b3-9373-4bc4-a5bb-358cda2a0692
+2026-01-17 20:59:11,305 - emby_library_poller - INFO - [LibPoller] Stopped tracking library 341187 on server 6e6272b3-9373-4bc4-a5bb-358cda2a0692
+2026-01-17 20:59:11,305 - emby_library_poller - INFO - [LibPoller] Stopped tracking library 341187 on server 6e6272b3-9373-4bc4-a5bb-358cda2a0692
+2026-01-17 20:59:11,306 - emby_library_poller - INFO - [LibPoller] Polling cancelled for server 6e6272b3-9373-4bc4-a5bb-358cda2a0692
+[WebSocket /ws/scan/client_1768679943635_vrpj8ti0b] Received: action=unsubscribe, job_id=a2cc9f4a-9967-489b-8ec9-df5fac2416bf
+2026-01-17 20:59:11,311 - scan_websocket_manager - INFO - [ScanConnectionManager] Client client_1768679943635_vrpj8ti0b UNSUBSCRIBED from job a2cc9f4a-9967-489b-8ec9-df5fac2416bf
+INFO:     127.0.0.1:50676 - "GET /api/emby/strm-guard/status HTTP/1.1" 200 OK
+[WORKFLOW] [CHECK_SCAN] Inizio verifica stato scan - context ricevuto: {'group_name': 'Animazione', 'scan_type': 'content', 'libraries': [{'server_id': '6e6272b3-9373-4bc4-a5bb-358cda2a0692', 'library_id': '341187'}, {'server_id': '63b0d06e-ec60-4b98-a661-ce202584b51b', 'library_id': '30706'}, {'server_id': 'f987a388-12f2-4493-9859-83cb8a32738a', 'library_id': '401811'}], 'workflow_job_ids': ['a2cc9f4a-9967-489b-8ec9-df5fac2416bf', '599d2def-9302-4359-a479-7135f57dbbf6', '7fdc3fc4-f636-4e9b-a8e6-eb67125760dd']}
+[WORKFLOW] [CHECK_SCAN] Trovato workflow_job_ids: ['a2cc9f4a-9967-489b-8ec9-df5fac2416bf', '599d2def-9302-4359-a479-7135f57dbbf6', '7fdc3fc4-f636-4e9b-a8e6-eb67125760dd']
+[WORKFLOW] [CHECK_SCAN] Checking 3 tracked jobs
+[WORKFLOW] [CHECK_SCAN] Job a2cc9f4a-9967-489b-8ec9-df5fac2416bf status: completed
+[WORKFLOW] [CHECK_SCAN] Job 599d2def-9302-4359-a479-7135f57dbbf6 status: completed
+[WORKFLOW] [CHECK_SCAN] Job 7fdc3fc4-f636-4e9b-a8e6-eb67125760dd status: completed
+[WORKFLOW] [CHECK_SCAN] ✓ Tutti i 3 job completati
+[WORKFLOW] [SCAN_STEP] Scansione completata, uscita dal loop
+[WORKFLOW] [SCAN_STEP] Step scan completato, passaggio al prossimo step
+[WORKFLOW] [DEBUG] _execute_scan_step returned successfully
+[WORKFLOW] [DEBUG] Calculating duration for step 0 (scan)
+[WORKFLOW] [DEBUG] Duration calculated: 10.319016s
+[WORKFLOW] [DEBUG] Acquiring lock to mark step 0 as done
+2026-01-17 21:00:31,348 - emby_websocket_manager - ERROR - [WS:6e6272b3-9373-4bc4-a5bb-358cda2a0692] Error: Connection to remote host was lost.
+2026-01-17 21:00:31,348 - websocket - ERROR - Connection to remote host was lost. - goodbye
+2026-01-17 21:00:31,349 - emby_websocket_manager - WARNING - [WS:6e6272b3-9373-4bc4-a5bb-358cda2a0692] Connection closed (code: None, msg: None)
+[WS_EVENT:6e6272b3-9373-4bc4-a5bb-358cda2a0692] ConnectionClosed
+[WS_EVENT:6e6272b3-9373-4bc4-a5bb-358cda2a0692] ✗ WebSocket connection closed
+2026-01-17 21:00:31,350 - emby_websocket_manager - INFO - [WS:6e6272b3-9373-4bc4-a5bb-358cda2a0692] Connecting to wss://green.redprimrose.mov/embywebsocket?api_key=995f51d04b73498db3804edd259722c6&deviceId=OctoHub_6e6272b3
+2026-01-17 21:00:31,519 - websocket - INFO - Websocket connected
+2026-01-17 21:00:31,520 - emby_websocket_manager - INFO - [WS:6e6272b3-9373-4bc4-a5bb-358cda2a0692] ✓ Connected successfully (attempt #2)
+[WS_EVENT:6e6272b3-9373-4bc4-a5bb-358cda2a0692] ConnectionEstablished
+[WS_EVENT:6e6272b3-9373-4bc4-a5bb-358cda2a0692] ✓ WebSocket connection established
+

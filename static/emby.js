@@ -818,6 +818,7 @@
                 // Aggiorna jobData con progresso
                 const progress = event.progress || 0;
                 const message = event.message || 'Scanning...';
+                const libraryId = event.libraryId;
 
                 if (!tracker.jobData) {
                     tracker.jobData = {
@@ -832,7 +833,17 @@
                     tracker.jobData.message = message;
                 }
 
-                // Aggiorna UI per tutti i container
+                // Se c'è un library_id specifico, registralo e aggiorna la sua progress bar
+                if (libraryId) {
+                    tracker.libraryIds.add(libraryId);
+                    this.trackedLibraries.add(libraryId);
+
+                    if (tracker.hasGroup) {
+                        this.updateIndividualLibraryProgress(libraryId, progress);
+                    }
+                }
+
+                // Aggiorna UI per tutti i container (progress bar del gruppo)
                 (tracker.containers || []).forEach(({ container, groupName }) => {
                     this.updateProgressBar(container, groupName);
                 });
@@ -848,6 +859,19 @@
 
                 const effectiveGroupName = tracker.hasGroup ? tracker.groupName : null;
                 this.handleCompletion(tracker.jobData, effectiveGroupName);
+
+                // Nascondi progress bar delle singole librerie dopo un delay
+                if (tracker.libraryIds && tracker.libraryIds.size > 0) {
+                    setTimeout(() => {
+                        tracker.libraryIds.forEach(libId => {
+                            const progressEl = document.querySelector(`[data-scan-progress][data-library-id="${libId}"]`);
+                            if (progressEl) {
+                                progressEl.style.display = 'none';
+                                console.log('[ScanTracker] Hidden progress bar for completed library:', libId);
+                            }
+                        });
+                    }, 3000);
+                }
 
                 if (tracker.hasGroup && tracker.groupContainer) {
                     // Group scan: pause tracking e finalizza se tutti completati
@@ -1186,6 +1210,37 @@
                 active: activeCount,
                 completed: completedCount,
                 avgProgress: percentage
+            });
+        },
+
+        // Aggiorna progress bar di una singola libreria
+        updateIndividualLibraryProgress(libraryId, progress) {
+            if (!libraryId) return;
+
+            // Trova l'elemento progress bar per questa libreria
+            const progressEl = document.querySelector(`[data-scan-progress][data-library-id="${libraryId}"]`);
+            if (!progressEl) {
+                console.log('[ScanTracker] No progress element found for library:', libraryId);
+                return;
+            }
+
+            // Mostra la progress bar
+            progressEl.style.display = 'block';
+
+            // Calcola percentuale e fase
+            const percentage = normalizeRawPercent(progress * 100);
+            const phaseInfo = formatLibraryPhase(percentage);
+
+            // Aggiorna la barra con le fasi file/metadata
+            const rows = [
+                { phase: phaseInfo.phase, percent: phaseInfo.percent, label: phaseInfo.label, color: phaseInfo.color }
+            ];
+            updateProgressRows(progressEl, rows, '');
+
+            console.log('[ScanTracker] Updated individual library progress:', {
+                libraryId: libraryId,
+                progress: percentage,
+                phase: phaseInfo.phase
             });
         },
 
@@ -4886,6 +4941,7 @@
                 article.dataset.groupName = groupName;
                 article.dataset.collectionType = collectionType;
                 article.draggable = true;
+                const librariesJson = JSON.stringify(group.libraries || []);
                 article.innerHTML = `
                     <div class="library-group-header">
                         <div>
@@ -4893,10 +4949,10 @@
                             <p class="meta">${serverNames.join(', ')}</p>
                         </div>
                         <div class="action-grid compact">
-                            <button class="btn primary" data-action="scan-group-content" data-group="${groupName}" data-type="${collectionType}">
+                            <button class="btn primary" data-action="scan-group-content" data-group="${groupName}" data-type="${collectionType}" data-libraries='${librariesJson.replace(/'/g, "&#39;")}'>
                                 Scansione dei File
                             </button>
-                            <button class="btn secondary" data-action="scan-group-metadata" data-group="${groupName}" data-type="${collectionType}">
+                            <button class="btn secondary" data-action="scan-group-metadata" data-group="${groupName}" data-type="${collectionType}" data-libraries='${librariesJson.replace(/'/g, "&#39;")}'>
                                 Aggiorna Metadati
                             </button>
                         </div>
@@ -5100,6 +5156,19 @@
                             } else if (data.success) {
                                 const actionMsg = scanType === 'metadata' ? 'Aggiornamento metadati avviato' : 'Scansione file avviata';
                                 showToast(`${actionMsg} per ${groupName}.`, 'success');
+
+                                // Subscribe to job updates via WebSocket
+                                if (data.job_ids && Array.isArray(data.job_ids)) {
+                                    const groupContainer = document.querySelector(`[data-group-name="${groupName}"]`);
+                                    if (groupContainer) {
+                                        data.job_ids.forEach(jobId => {
+                                            console.log(`[SCAN_GROUP] Subscribing to job ${jobId} for group ${groupName}`);
+                                            ScanTracker.startTracking(jobId, groupContainer, groupName);
+                                        });
+                                    } else {
+                                        console.warn(`[SCAN_GROUP] Group container not found for: ${groupName}`);
+                                    }
+                                }
                             } else {
                                 showToast('Errore durante la scansione del gruppo.', 'error');
                             }

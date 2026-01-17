@@ -471,16 +471,21 @@ class WorkflowManager:
             steps = self._get_steps()
 
             for i, step in enumerate(steps):
+                print(f"[WORKFLOW] [DEBUG] ===== Starting step {i}: {step['id']} =====")
+
                 # Verifica se è stato richiesto lo stop
                 if self._stop_event.is_set():
+                    print(f"[WORKFLOW] [DEBUG] Stop event is set, skipping step {i}")
                     self._update_step_status(i, "skipped", "Interrotto dall'utente", 100)
                     continue
 
                 # Aggiorna lo step corrente
+                print(f"[WORKFLOW] [DEBUG] Updating current_step_index to {i}")
                 with self._lock:
                     self._status["current_step_index"] = i
 
                 # Marca lo step come in esecuzione
+                print(f"[WORKFLOW] [DEBUG] Marking step {i} as running")
                 self._update_step_status(i, "running", "In esecuzione...", 0)
                 step_start_time = datetime.now()
 
@@ -488,20 +493,28 @@ class WorkflowManager:
                     # Esegue la logica specifica dello step
                     if step["id"] == "scan":
                         self._execute_scan_step(i, context)
+                        print(f"[WORKFLOW] [DEBUG] _execute_scan_step returned successfully")
                     elif step["id"] == "probe":
                         self._execute_probe_step(i, context)
+                        print(f"[WORKFLOW] [DEBUG] _execute_probe_step returned successfully")
                     elif step["id"] == "cache":
                         self._execute_cache_step(i, context)
+                        print(f"[WORKFLOW] [DEBUG] _execute_cache_step returned successfully")
                     elif step["id"] == "notify":
                         self._execute_notify_step(i, context)
+                        print(f"[WORKFLOW] [DEBUG] _execute_notify_step returned successfully")
 
                     # Calcola la durata
+                    print(f"[WORKFLOW] [DEBUG] Calculating duration for step {i} ({step['id']})")
                     duration = (datetime.now() - step_start_time).total_seconds()
+                    print(f"[WORKFLOW] [DEBUG] Duration calculated: {duration}s")
 
                     # Marca lo step come completato se non è stato già marcato come failed
+                    print(f"[WORKFLOW] [DEBUG] Acquiring lock to mark step {i} as done")
                     with self._lock:
                         if self._status["steps"][i]["status"] != "failed":
                             self._update_step_status(i, "done", "Completato", 100, duration)
+                            print(f"[WORKFLOW] [DEBUG] Step {i} ({step['id']}) marked as done")
 
                 except Exception as exc:
                     duration = (datetime.now() - step_start_time).total_seconds()
@@ -544,15 +557,14 @@ class WorkflowManager:
         if not self._trigger_scan_func or not self._check_scan_func:
             raise Exception("Callback scan non configurate")
 
-        # Avvia la scansione
-        self._update_step_status(step_index, "running", "Avvio scansione...", 10)
+        # Avvia la scansione usando il sistema di scan gruppo esistente
+        self._update_step_status(step_index, "running", "Scansione in corso...", 50)
         success = self._trigger_scan_func(context)
 
         if not success:
             raise Exception("Impossibile avviare la scansione")
 
-        # Polling fino al completamento
-        self._update_step_status(step_index, "running", "Scansione in corso...", 30)
+        # Il progress viene mostrato nelle barre individuali delle librerie nella dashboard
 
         import time
         # FIX PROBLEMA #8: Timeout a livello workflow (2 ore max per step scan)
@@ -565,15 +577,20 @@ class WorkflowManager:
             if elapsed > max_timeout:
                 raise Exception(f"Timeout scansione dopo {max_timeout}s ({elapsed:.0f}s)")
 
-            if self._check_scan_func():
+            if self._check_scan_func(context):
                 # Scansione completata
+                print(f"[WORKFLOW] [SCAN_STEP] Scansione completata, uscita dal loop")
                 self._update_step_status(step_index, "running", "Scansione completata", 90)
                 break
 
-            time.sleep(2)  # Polling ogni 2 secondi
+            # Wait con timeout invece di sleep - permette interruzione immediata
+            self._stop_event.wait(timeout=10)
 
         if self._stop_event.is_set():
+            print(f"[WORKFLOW] [SCAN_STEP] Workflow interrotto da stop event")
             raise Exception("Scansione interrotta")
+
+        print(f"[WORKFLOW] [SCAN_STEP] Step scan completato, passaggio al prossimo step")
 
     def _execute_probe_step(self, step_index, context):
         """
@@ -607,12 +624,13 @@ class WorkflowManager:
             if elapsed > max_timeout:
                 raise Exception(f"Timeout probe dopo {max_timeout}s ({elapsed:.0f}s)")
 
-            if self._check_probe_func():
+            if self._check_probe_func(context):
                 # Probe completato
                 self._update_step_status(step_index, "running", "Probe completato", 90)
                 break
 
-            time.sleep(2)  # Polling ogni 2 secondi
+            # Wait con timeout invece di sleep - permette interruzione immediata
+            self._stop_event.wait(timeout=10)
 
         if self._stop_event.is_set():
             raise Exception("Probe interrotto")

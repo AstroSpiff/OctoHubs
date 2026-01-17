@@ -51,13 +51,13 @@ class EmbyLibraryPoller:
         self.storage = None  # Dependency injection
 
         # Configurazione polling
-        self.rapid_poll_interval = 0.5   # secondi - solo dopo aver richiesto lo scan e prima di vedere il primo RefreshProgress
-        self.active_poll_interval = 3.0  # secondi - quando ci sono scan attivi e abbiamo già visto progress
-        self.idle_poll_interval = 20.0   # secondi - quando tutto idle
+        self.rapid_poll_interval = 2.0   # secondi - solo dopo aver richiesto lo scan e prima di vedere il primo RefreshProgress (ridotto da 0.5s)
+        self.active_poll_interval = 5.0  # secondi - quando ci sono scan attivi e abbiamo già visto progress (ridotto da 3s)
+        self.idle_poll_interval = 30.0   # secondi - quando tutto idle (aumentato da 20s)
         self.max_errors = 5  # errori consecutivi prima di fermare polling
 
         # Timeout e fallback
-        self.progress_detection_timeout = 30.0  # secondi - se RefreshProgress non appare entro 30s, considera fallito
+        self.progress_detection_timeout = 60.0  # secondi - se RefreshProgress non appare entro 60s, considera fallito (aumentato da 30s)
         self.max_scan_duration = 3600.0  # secondi - timeout massimo scan (1 ora)
 
         self._running = False
@@ -526,15 +526,23 @@ class EmbyLibraryPoller:
                         asyncio.create_task(self._schedule_tracking_cleanup(server_id, library_id))
 
                     elif new_state in ("running", "waiting"):
-                        logger.info(f"[LibPoller] Library {library_id}: state={new_state}, progress={current_progress_value:.1f}%, calling update_tracker_status")
-                        await self._update_tracker_status(
-                            state_key,
-                            tracker_status,
-                            current_progress_value / 100.0,
-                            status_message,
-                            metadata=metadata
-                        )
-                        logger.debug(f"[LibPoller] Library {library_id}: update_tracker_status completed")
+                        # Solo broadcast se stato cambiato O progress cambiato significativamente (>1%)
+                        old_progress = old_state_data.get("progress", 0.0)
+                        progress_diff = abs(current_progress_value - old_progress)
+                        should_broadcast = state_changed or (new_state == "running" and progress_diff >= 1.0)
+
+                        if should_broadcast:
+                            logger.info(f"[LibPoller] Library {library_id}: state={new_state}, progress={current_progress_value:.1f}%, calling update_tracker_status")
+                            await self._update_tracker_status(
+                                state_key,
+                                tracker_status,
+                                current_progress_value / 100.0,
+                                status_message,
+                                metadata=metadata
+                            )
+                            logger.debug(f"[LibPoller] Library {library_id}: update_tracker_status completed")
+                        else:
+                            logger.debug(f"[LibPoller] Library {library_id}: skipping broadcast (no significant change)")
 
         except Exception as e:
             logger.error(f"[LibPoller] Error fetching virtual folders for {server_id}: {e}", exc_info=True)

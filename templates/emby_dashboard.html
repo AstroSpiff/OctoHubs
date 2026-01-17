@@ -1567,7 +1567,38 @@
                 if (event.stopImmediatePropagation) {
                     event.stopImmediatePropagation();
                 }
-                workflowUI.startSmart({});
+                // Recupera le informazioni del gruppo dal bottone
+                const groupName = trigger.dataset.group || '';
+                const librariesJson = trigger.dataset.libraries || '[]';
+
+                if (!groupName) {
+                    console.warn('[WORKFLOW] Group name not found');
+                    return;
+                }
+
+                // Parse libraries dal data-attribute
+                let libraries = [];
+                try {
+                    libraries = JSON.parse(librariesJson);
+                } catch (e) {
+                    console.error('[WORKFLOW] Failed to parse libraries:', e);
+                    return;
+                }
+
+                // Mappa le librerie nel formato corretto per il backend
+                const mappedLibraries = libraries.map(lib => ({
+                    server_id: lib.server_id,
+                    library_id: lib.library_id
+                }));
+
+                const context = {
+                    group_name: groupName,
+                    scan_type: 'content',
+                    libraries: mappedLibraries
+                };
+
+                console.log(`[WORKFLOW] Starting workflow for group "${groupName}" with ${mappedLibraries.length} libraries`, context);
+                workflowUI.startSmart(context);
             }, true);
             offcanvas.addEventListener('click', (event) => {
                 if (event.target === offcanvas) {
