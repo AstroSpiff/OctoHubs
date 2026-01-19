@@ -599,6 +599,7 @@
                         {% set scan_auto = auto_tasks.scan if auto_tasks else {} %}
                         {% set refresh_auto = auto_tasks.refresh if auto_tasks else {} %}
                         {% set workflow_auto = auto_tasks.workflow if auto_tasks else {} %}
+                        {% set collections_auto = collection_config if collection_config else {} %}
                         <form id="auto-task-form" action="/update-scheduler" method="post">
                             <input type="hidden" name="next" value="{{ url_for('configuration') }}">
                             <div class="auto-grid">
@@ -676,6 +677,31 @@
                                         <input type="text" name="workflow_times" placeholder="02:00, 04:00" value="{{ workflow_auto.times | join(', ') }}">
                                     </div>
                                     <p class="auto-note">Esegue sequenzialmente: Scansione Emby, Analisi nuovi file, Aggiornamento Cache e Notifiche Telegram.</p>
+                                </section>
+                                <section class="auto-section" data-task="collections">
+                                    <div class="auto-header">
+                                        <h3>Collezioni Emby</h3>
+                                        <label class="auto-inline" title="Attiva o disattiva questa automazione">
+                                            <input type="checkbox" name="collections_auto_refresh_enabled" class="auto-enable" {% if collection_config.AUTO_REFRESH_ENABLED %}checked{% endif %}>
+                                            Attiva
+                                        </label>
+                                    </div>
+                                    <div class="auto-mode">
+                                        <label class="auto-inline" title="Ripeti la sincronizzazione a intervalli costanti">
+                                            <input type="radio" name="collections_auto_refresh_mode" value="interval" {% if collections_auto.get('AUTO_REFRESH_MODE', 'interval') != 'fixed' %}checked{% endif %}>
+                                            Avvia ogni
+                                        </label>
+                                        <input type="number" name="collections_auto_refresh_interval" min="1" value="{{ collection_config.AUTO_REFRESH_INTERVAL_HOURS or 4 }}">
+                                        <span>ore</span>
+                                    </div>
+                                    <div class="auto-mode">
+                                        <label class="auto-inline" title="Esegui la sincronizzazione in orari precisi (usa 24h)">
+                                            <input type="radio" name="collections_auto_refresh_mode" value="fixed" {% if collections_auto.get('AUTO_REFRESH_MODE') == 'fixed' %}checked{% endif %}>
+                                            Orari fissi
+                                        </label>
+                                        <input type="text" name="collections_auto_refresh_times" placeholder="02:00, 05:30" value="{{ collections_auto.get('AUTO_REFRESH_TIMES', []) | join(', ') }}">
+                                    </div>
+                                    <p class="auto-note">Ricarica le liste dalle fonti configurate e aggiorna le collezioni abilitate.</p>
                                 </section>
                             </div>
                             <p class="tagline" style="margin-top:0.75rem;">Le automazioni lavorano solo sulle richieste abilitate e non avviano una nuova ricerca se ne è già attiva un'altra.</p>
@@ -782,34 +808,6 @@
                                     </div>
                                 </div>
                                 <div class="tagline">Ottieni una API key gratuita su <a href="https://mdblist.com/preferences/" target="_blank" rel="noopener">mdblist.com/preferences</a></div>
-                            </section>
-                            <section class="config-box">
-                                <h4>Collezioni Emby</h4>
-                                <div class="form-grid">
-                                    <div style="grid-column:1 / span 2;">
-                                        <label class="switch-toggle">
-                                            <input type="checkbox" name="collections_auto_refresh_enabled" {% if collection_config.AUTO_REFRESH_ENABLED %}checked{% endif %}>
-                                            <span>Attiva sincronizzazione automatica delle collezioni</span>
-                                        </label>
-                                    </div>
-                                    <div>
-                                        <label for="collections_auto_refresh_interval">Intervallo tra esecuzioni automatiche (ore)</label>
-                                        <input type="number" id="collections_auto_refresh_interval" name="collections_auto_refresh_interval" min="1" value="{{ collection_config.AUTO_REFRESH_INTERVAL_HOURS or 4 }}">
-                                    </div>
-                                    <div>
-                                        <label class="switch-toggle">
-                                            <input type="checkbox" name="collections_use_mdblist_description" {% if collection_config.USE_MDBLIST_COLLECTION_DESCRIPTION %}checked{% endif %}>
-                                            <span>Usa descrizione MDBList per le collezioni</span>
-                                        </label>
-                                    </div>
-                                    <div style="grid-column:1 / span 2;">
-                                        <label class="switch-toggle">
-                                            <input type="checkbox" name="collections_download_my_mdblist_lists" {% if collection_config.DOWNLOAD_MY_MDBLIST_LISTS %}checked{% endif %}>
-                                            <span>Scarica automaticamente le mie liste MDBList</span>
-                                        </label>
-                                    </div>
-                                </div>
-                                <p class="tagline">Le automazioni servono a mantenere aggiornate le collezioni e a importare rapidamente i contenuti da MDBList.</p>
                             </section>
                             <section class="config-box">
                                 <h4>OMDb (Open Movie Database)</h4>

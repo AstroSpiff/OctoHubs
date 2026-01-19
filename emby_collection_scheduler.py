@@ -1,12 +1,12 @@
 import logging
 import random
 import threading
-from typing import Any, Dict, Set, Tuple
+from datetime import datetime, timedelta
+from typing import Any, Dict
 
 from app import _ACTIVE_CONFIG
 from config import DEFAULT_CONFIG
-from emby_collection_sources import list_mdblist_user_lists
-from emby_collections import list_collection_definitions, run_collection_sync, save_collection_definition
+from emby_collections import list_collection_definitions, run_collection_sync
 
 logger = logging.getLogger(__name__)
 
@@ -15,18 +15,29 @@ class CollectionAutoRefresher(threading.Thread):
     def __init__(self):
         super().__init__(name="CollectionAutoRefresher", daemon=True)
         self._stop_event = threading.Event()
+        self._next_run = None
         self.start()
 
     def run(self) -> None:
         while not self._stop_event.is_set():
             settings = self._get_collection_settings()
-            interval_hours = max(1, int(settings.get("AUTO_REFRESH_INTERVAL_HOURS", DEFAULT_CONFIG["COLLECTIONS"]["AUTO_REFRESH_INTERVAL_HOURS"])))
-            if settings.get("AUTO_REFRESH_ENABLED"):
+            if not settings.get("AUTO_REFRESH_ENABLED"):
+                self._next_run = None
+                self._stop_event.wait(60)
+                continue
+
+            now = datetime.now()
+            if self._next_run is None:
+                self._next_run = self._calculate_next_run(settings, now)
+            if self._next_run and now >= self._next_run:
                 try:
                     self._run_cycle(settings)
                 except Exception as exc:
                     logger.exception("Errore nella sincronizzazione automatica collezioni: %s", exc)
-            wait_seconds = interval_hours * 3600
+                self._next_run = self._calculate_next_run(settings, datetime.now())
+                if self._next_run is None:
+                    self._next_run = datetime.now() + timedelta(minutes=5)
+            wait_seconds = self._calculate_wait_seconds(settings, self._next_run, now)
             self._stop_event.wait(wait_seconds)
 
     def stop(self) -> None:
@@ -38,13 +49,44 @@ class CollectionAutoRefresher(threading.Thread):
         merged.update((config.get("COLLECTIONS") or {}))
         return merged
 
+    def _calculate_next_run(self, settings: Dict[str, Any], reference: datetime) -> datetime | None:
+        mode = settings.get("AUTO_REFRESH_MODE") or "interval"
+        if mode == "fixed":
+            times = settings.get("AUTO_REFRESH_TIMES") or []
+            if isinstance(times, str):
+                times = [token.strip() for token in times.split(",") if token.strip()]
+            if times:
+                candidates = []
+                for token in times:
+                    try:
+                        hour = int(token.split(":")[0])
+                        minute = int(token.split(":")[1])
+                    except (ValueError, IndexError):
+                        continue
+                    candidate = reference.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                    if candidate <= reference:
+                        candidate += timedelta(days=1)
+                    candidates.append(candidate)
+                if candidates:
+                    return min(candidates)
+        interval_hours = max(
+            1,
+            int(settings.get("AUTO_REFRESH_INTERVAL_HOURS", DEFAULT_CONFIG["COLLECTIONS"]["AUTO_REFRESH_INTERVAL_HOURS"]))
+        )
+        return reference + timedelta(hours=interval_hours)
+
+    def _calculate_wait_seconds(self, settings: Dict[str, Any], next_run: datetime | None, now: datetime) -> float:
+        if next_run:
+            delta = (next_run - now).total_seconds()
+            return max(10, min(3600, delta))
+        interval_hours = max(
+            1,
+            int(settings.get("AUTO_REFRESH_INTERVAL_HOURS", DEFAULT_CONFIG["COLLECTIONS"]["AUTO_REFRESH_INTERVAL_HOURS"]))
+        )
+        return float(interval_hours * 3600)
+
     def _run_cycle(self, settings: Dict[str, Any]) -> None:
         definitions = list_collection_definitions()
-        source_keys: Set[Tuple[str, str]] = {
-            (entry.get("source_type"), entry.get("source_value")) for entry in definitions
-        }
-        if settings.get("DOWNLOAD_MY_MDBLIST_LISTS"):
-            self._ensure_my_mdblist_definitions(source_keys)
         for definition in definitions:
             if not definition.get("enabled") or not definition.get("auto_enabled"):
                 continue
@@ -59,37 +101,6 @@ class CollectionAutoRefresher(threading.Thread):
                 run_collection_sync(definition_id)
             except Exception:
                 logger.exception("Sincronizzazione automatica fallita per %s", definition_id)
-
-    def _ensure_my_mdblist_definitions(self, existing_keys: Set[Tuple[str, str]]) -> None:
-        try:
-            user_lists = list_mdblist_user_lists()
-        except RuntimeError as exc:
-            logger.warning("Impossibile scaricare le liste MDBList personali: %s", exc)
-            return
-        for entry in user_lists:
-            source_value = entry.get("source_value")
-            if not source_value:
-                continue
-            key = ("mdblist", source_value)
-            if key in existing_keys:
-                continue
-            payload = {
-                "name": entry.get("name") or f"MDBList {source_value}",
-                "sort_name": entry.get("name") or f"MDBList {source_value}",
-                "source_type": "mdblist",
-                "source_value": source_value,
-                "enabled": True,
-                "auto_enabled": True,
-                "auto_frequency": 100,
-                "collection_description": entry.get("description") or "",
-                "use_source_description": False
-            }
-            try:
-                definition = save_collection_definition(payload)
-                logger.info("Aggiunta automatica collezione MDBList %s (%s)", payload["name"], definition.get("id"))
-                existing_keys.add(key)
-            except Exception:
-                logger.exception("Errore creazione collezione MDBList %s", payload["name"])
 
 
 _REFRESHER: CollectionAutoRefresher | None = None

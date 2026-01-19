@@ -161,8 +161,8 @@ DEFAULT_CONFIG = {
     "COLLECTIONS": {
         "AUTO_REFRESH_ENABLED": True,
         "AUTO_REFRESH_INTERVAL_HOURS": 4,
-        "USE_MDBLIST_COLLECTION_DESCRIPTION": False,
-        "DOWNLOAD_MY_MDBLIST_LISTS": False
+        "AUTO_REFRESH_MODE": "interval",
+        "AUTO_REFRESH_TIMES": []
     }
 }
 

@@ -48,6 +48,22 @@ from scan_websocket_manager import get_scan_connection_manager
 
 logger = logging.getLogger(__name__)
 
+# Load .env file from config directory (if it exists) before any initialization
+# This is needed for Docker environments where the setup wizard saves the DB password to /config/.env
+def _load_config_env_file():
+    """Load environment variables from /config/.env if present."""
+    config_dir = os.path.dirname(os.environ.get("OCTOHUB_CONFIG_FILE", "/config/config.json"))
+    env_file_path = os.path.join(config_dir, ".env")
+    if os.path.exists(env_file_path):
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(env_file_path, override=False)  # Don't override existing ENV vars
+            print(f"[STARTUP] Loaded environment variables from {env_file_path}")
+        except Exception as e:
+            print(f"[STARTUP] Warning: Could not load {env_file_path}: {e}")
+
+_load_config_env_file()
+
 fastapi_app = FastAPI()
 
 
@@ -1873,15 +1889,14 @@ async def view_emby_collections(request: Request, user=Depends(get_current_user_
     raw_servers = (emby_config.get("SERVERS") if emby_config else []) or []
     emby_servers = _prepare_emby_servers_for_view(raw_servers, lazy=True)
     trakt_enabled = _trakt_enabled(_active_trakt_settings())
+    total_blacklist_count, total_incomplete_count = _get_total_blacklist_counts()
     from config import DEFAULT_CONFIG
     collections_config = (config or {}).get("COLLECTIONS") or DEFAULT_CONFIG["COLLECTIONS"]
     collection_settings = {
         "trakt_enabled": bool(trakt_enabled),
         "mdblist_enabled": bool(is_mdblist_enabled()),
         "auto_refresh_enabled": bool(collections_config.get("AUTO_REFRESH_ENABLED")),
-        "auto_refresh_interval_hours": int(collections_config.get("AUTO_REFRESH_INTERVAL_HOURS") or DEFAULT_CONFIG["COLLECTIONS"]["AUTO_REFRESH_INTERVAL_HOURS"]),
-        "use_mdblist_collection_description": bool(collections_config.get("USE_MDBLIST_COLLECTION_DESCRIPTION")),
-        "download_my_mdblist_lists": bool(collections_config.get("DOWNLOAD_MY_MDBLIST_LISTS"))
+        "auto_refresh_interval_hours": int(collections_config.get("AUTO_REFRESH_INTERVAL_HOURS") or DEFAULT_CONFIG["COLLECTIONS"]["AUTO_REFRESH_INTERVAL_HOURS"])
     }
 
     return templates.TemplateResponse(
@@ -1895,6 +1910,8 @@ async def view_emby_collections(request: Request, user=Depends(get_current_user_
             "collection_source_types": SOURCE_TYPES,
             "trakt_enabled": trakt_enabled,
             "collection_settings": collection_settings,
+            "total_blacklist_count": total_blacklist_count,
+            "total_incomplete_count": total_incomplete_count,
             "csrf_token": get_csrf_token(request)
         }
     )
@@ -3198,22 +3215,13 @@ async def emby_library_scan_state_clear_post(
 # AUTHENTICATION ROUTES
 # ============================================================================
 
-@fastapi_app.get("/")
-async def root_redirect():
-    """Redirect root to setup or login page depending on whether users exist."""
-    from app import _has_users
-
-    if not _has_users():
-        return RedirectResponse(url="/setup", status_code=303)
-    return RedirectResponse(url="/login", status_code=303)
-
 @fastapi_app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    """Login page - redirect to dashboard if already authenticated."""
+    """Login page - redirect to emby page if already authenticated."""
     # Check if already authenticated
     user_id = _get_current_user_id(request)
     if user_id:
-        return RedirectResponse(url="/", status_code=303)
+        return RedirectResponse(url="/emby", status_code=303)
 
     # Get flash messages
     messages = get_flash_messages(request)
@@ -3311,7 +3319,13 @@ async def logout(request: Request):
 @fastapi_app.get("/", response_class=HTMLResponse)
 async def dashboard_root(request: Request):
     """Main dashboard page - redirect to login if not authenticated."""
-    _require_auth(request)
+    from app import _has_users
+
+    user_id = _get_current_user_id(request)
+    if not user_id:
+        if not _has_users():
+            return RedirectResponse(url="/setup", status_code=303)
+        return RedirectResponse(url="/login", status_code=303)
 
     # Import required functions from app.py
     from app import scan_manager, load_results_file, _load_cached_requests_overview, _estimate_variant_summary, _default_auto_tasks, DEFAULT_CONFIG, TV_SORT_OPTIONS, MOVIE_SORT_OPTIONS
@@ -3382,6 +3396,11 @@ async def dashboard_root(request: Request):
             "csrf_token": _csrf_token_value
         }
     )
+
+
+@fastapi_app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard_alias(request: Request):
+    return await dashboard_root(request)
 
 
 @fastapi_app.get("/configuration", response_class=HTMLResponse)
@@ -4300,7 +4319,7 @@ async def update_scheduler_route(
     next_page: str = Form(None, alias="next"),
     csrf_token: str = Form(None, alias="csrf_token")
 ):
-    """Update scheduler automation settings (scan, refresh, workflow)."""
+    """Update scheduler automation settings (scan, refresh, workflow, collections)."""
     _require_auth(request)
 
     # Validate CSRF
@@ -4308,7 +4327,7 @@ async def update_scheduler_route(
         flash(request, "CSRF token non valido.", "error")
         return RedirectResponse(url="/dashboard", status_code=303)
 
-    from app import load_config, _resolve_next_url, _default_auto_tasks, _parse_auto_task_payload, _update_app_settings_overrides, _sync_auto_scheduler, _ACTIVE_CONFIG, DEFAULT_CONFIG
+    from app import load_config, _resolve_next_url, _default_auto_tasks, _parse_auto_task_payload, _update_app_settings_overrides, _sync_auto_scheduler, _ACTIVE_CONFIG, DEFAULT_CONFIG, _coerce_request_int
     from storage import StorageError
     import copy
 
@@ -4329,8 +4348,29 @@ async def update_scheduler_route(
     updated["refresh"] = _parse_auto_task_payload(form_data, "refresh", current.get("refresh", _default_auto_tasks()["refresh"]))
     updated["workflow"] = _parse_auto_task_payload(form_data, "workflow", current.get("workflow", _default_auto_tasks()["workflow"]))
 
+    collections_enabled = form_data.get("collections_auto_refresh_enabled")
+    collections_mode = form_data.get("collections_auto_refresh_mode") or "interval"
+    collections_interval_raw = form_data.get("collections_auto_refresh_interval")
+    collections_times_raw = form_data.get("collections_auto_refresh_times")
+    if collections_times_raw is not None and not isinstance(collections_times_raw, str):
+        collections_times_raw = str(collections_times_raw)
+    interval_default = DEFAULT_CONFIG["COLLECTIONS"]["AUTO_REFRESH_INTERVAL_HOURS"]
+    collections_interval = _coerce_request_int(collections_interval_raw, interval_default, 1, 168)
+    collections_times = _split_csv_field(collections_times_raw)
+    if collections_mode not in ("interval", "fixed"):
+        collections_mode = "interval"
+    collections_payload = {
+        "AUTO_REFRESH_ENABLED": bool(collections_enabled),
+        "AUTO_REFRESH_INTERVAL_HOURS": collections_interval,
+        "AUTO_REFRESH_MODE": collections_mode,
+        "AUTO_REFRESH_TIMES": collections_times
+    }
+
     try:
-        _update_app_settings_overrides({"AUTO_TASKS": updated})
+        _update_app_settings_overrides({
+            "AUTO_TASKS": updated,
+            "COLLECTIONS": collections_payload
+        })
     except StorageError as exc:
         flash(request, f"Errore salvataggio automazioni: {exc}", "error")
         return RedirectResponse(url=next_url, status_code=303)
@@ -4340,7 +4380,9 @@ async def update_scheduler_route(
     if app_module._ACTIVE_CONFIG is None:
         app_module._ACTIVE_CONFIG = copy.deepcopy(DEFAULT_CONFIG)
     app_module._ACTIVE_CONFIG["AUTO_TASKS"] = updated
+    app_module._ACTIVE_CONFIG["COLLECTIONS"] = collections_payload
     config["AUTO_TASKS"] = updated
+    config["COLLECTIONS"] = collections_payload
 
     _sync_auto_scheduler(is_valid)
 
@@ -4376,10 +4418,6 @@ async def update_config_route(
     tmdb_language: str = Form(""),
     mdblist_api_keys: str = Form(""),
     omdb_api_keys: str = Form(""),
-    collections_auto_refresh_enabled: str = Form(None),
-    collections_auto_refresh_interval: str = Form(""),
-    collections_use_mdblist_description: str = Form(None),
-    collections_download_my_mdblist_lists: str = Form(None),
     # Trakt fields
     trakt_enabled: str = Form(None),
     trakt_client_id: str = Form(""),
@@ -4496,17 +4534,6 @@ async def update_config_route(
         app_settings["OMDB_API_KEY"] = omdb_keys[0]
     else:
         app_settings["OMDB_API_KEY"] = ""
-
-    # Collection automation settings
-    interval_default = DEFAULT_CONFIG["COLLECTIONS"]["AUTO_REFRESH_INTERVAL_HOURS"]
-    auto_interval = _coerce_request_int(collections_auto_refresh_interval, interval_default, 1, 168)
-    collections_payload = {
-        "AUTO_REFRESH_ENABLED": bool(collections_auto_refresh_enabled),
-        "AUTO_REFRESH_INTERVAL_HOURS": auto_interval,
-        "USE_MDBLIST_COLLECTION_DESCRIPTION": bool(collections_use_mdblist_description),
-        "DOWNLOAD_MY_MDBLIST_LISTS": bool(collections_download_my_mdblist_lists)
-    }
-    app_settings["COLLECTIONS"] = collections_payload
 
     # Trakt configuration
     trakt_payload = {
@@ -4904,6 +4931,38 @@ async def setup_db_post_route(
         return templates.TemplateResponse("setup.html", {"request": request, "step": "db", "db": db_defaults})
 
     _seed_db_from_legacy_config(legacy_config, backend)
+
+    # Save password to .env file for Docker Compose
+    if password:
+        import os
+        env_file_path = os.path.join(os.path.dirname(os.environ.get("OCTOHUB_CONFIG_FILE", "/config/config.json")), ".env")
+        try:
+            # Read existing .env if present
+            existing_env = {}
+            if os.path.exists(env_file_path):
+                with open(env_file_path, "r") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            key, value = line.split("=", 1)
+                            existing_env[key.strip()] = value.strip()
+
+            # Update with new DB password
+            existing_env["OCTOHUB_DB_PASSWORD"] = password
+
+            # Write back to .env
+            with open(env_file_path, "w") as f:
+                f.write("# OctoHub Environment Variables\n")
+                f.write("# Generated by setup wizard\n\n")
+                for key, value in existing_env.items():
+                    f.write(f"{key}={value}\n")
+
+            flash(request, "Password salvata in .env. Riavvia il container per applicare.", "success")
+        except Exception as e:
+            flash(request, f"Attenzione: impossibile salvare .env: {e}", "warning")
+
+    # Save config without password
+    db_settings_base["PASSWORD"] = ""  # Don't save password in config.json
     _write_database_config(db_settings_base)
 
     return templates.TemplateResponse("setup.html", {"request": request, "step": "done"})

@@ -774,7 +774,7 @@
 </head>
 <body>
     <div class="wrapper collections-shell">
-        <h1>Emby Toolkit</h1>
+        <h1>Collezioni</h1>
         <nav class="primary-nav">
             <a href="{{ url_for('dashboard') }}"
                class="nav-link {% if active_page == 'dashboard' %}active{% endif %}">
@@ -791,6 +791,12 @@
             <a href="{{ url_for('emby_probe') }}"
                class="nav-link {% if active_page == 'emby_probe' %}active{% endif %}">
                 STRM Probe
+                {% if total_blacklist_count > 0 %}
+                    <span class="notification-badge" title="Errori / Incompleti">{{ total_blacklist_count }}</span>
+                {% endif %}
+                {% if total_incomplete_count > 0 %}
+                    <span class="notification-badge warning" title="Errori / Incompleti">{{ total_incomplete_count }}</span>
+                {% endif %}
             </a>
             <a href="{{ url_for('configuration') }}"
                class="nav-link {% if active_page == 'config' %}active{% endif %}">
@@ -1028,10 +1034,8 @@
                                 <div class="collection-source-panel__status" id="mdblist-lists-status">
                                     {% if not collection_settings.mdblist_enabled %}
                                         Configura le chiavi MDBList in Configurazione per accedere alle tue liste.
-                                    {% elif collection_settings.download_my_mdblist_lists %}
-                                        Caricamento liste MDBList…
                                     {% else %}
-                                        Abilita "Scarica automaticamente le mie liste MDBList" nella configurazione per popolare questo elenco.
+                                        Caricamento liste MDBList…
                                     {% endif %}
                                 </div>
                             </div>

@@ -26,7 +26,7 @@
         {% endwith %}
 
         {% if step == 'user' %}
-            <form action="{{ url_for('setup_user') }}" method="post">
+            <form action="/setup/user" method="post">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <div class="form-group">
                     <label for="username">Username admin</label>
@@ -58,7 +58,7 @@
                 </div>
             </div>
             <div class="tagline" style="margin-bottom:0.75rem;">Inserisci host, porta, user e nome DB.</div>
-            <form action="{{ url_for('setup_db') }}" method="post">
+            <form action="/setup/db" method="post">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <div class="form-group">
                     <label for="db_host">Host</label>
@@ -97,9 +97,13 @@
         {% else %}
             <div class="success-message">
                 <h2>Configurazione completata!</h2>
-                <p>La connessione al database è stata verificata.</p>
-                <p>Ora puoi accedere all'app.</p>
-                <a class="btn primary" href="{{ url_for('auth_login') }}">Vai all'app</a>
+                <p>La connessione al database è stata verificata e la password è stata salvata nel file .env.</p>
+                <p><strong>Importante:</strong> Riavvia il container per applicare le variabili d'ambiente:</p>
+                <div style="background: #f5f5f5; padding: 10px; margin: 10px 0; border-radius: 4px; font-family: monospace;">
+                    <code>docker compose restart app</code>
+                </div>
+                <p>Oppure in Portainer: vai alla stack e clicca "Restart".</p>
+                <a class="btn primary" href="/login">Vai all'app</a>
             </div>
         {% endif %}
     </div>
