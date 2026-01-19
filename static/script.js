@@ -1136,9 +1136,11 @@
             // Get only main table rows, not those in duplicates panel
             const mainTable = block.querySelector('.inner-table');
             if (!mainTable) return;
-            const mainTbody = mainTable.querySelector(':scope > tbody');
+            const mainTbody = (mainTable.tBodies && mainTable.tBodies.length)
+                ? mainTable.tBodies[0]
+                : mainTable.querySelector('tbody');
             if (!mainTbody) return;
-            const rows = Array.from(mainTbody.querySelectorAll(':scope > tr[data-result-row]'));
+            const rows = Array.from(mainTbody.querySelectorAll('tr[data-result-row]'));
             if (!rows.length) return;
             const filterInput = block.querySelector('[data-bucket-filter]');
             const selectAll = block.querySelector('[data-bucket-select-all]');
@@ -1621,6 +1623,37 @@
         };
         updateTraktAuthStatus();
 
+        const setTraktStatus = (message, showInstructions, linkUrl, userCode) => {
+            if (traktStatusLabel) {
+                traktStatusLabel.textContent = message || '';
+            }
+            if (traktInstructions) {
+                if (showInstructions) {
+                    traktInstructions.style.display = 'flex';
+                } else {
+                    traktInstructions.style.display = 'none';
+                }
+            }
+            if (traktDeviceLink) {
+                if (linkUrl) {
+                    traktDeviceLink.href = linkUrl;
+                    traktDeviceLink.textContent = `Apri ${linkUrl}`;
+                } else {
+                    traktDeviceLink.href = '#';
+                    traktDeviceLink.textContent = 'Apri https://trakt.tv/activate';
+                }
+            }
+            if (traktDeviceCode) {
+                traktDeviceCode.textContent = userCode ? `Codice ${userCode}` : '';
+            }
+        };
+        const clearTraktTimer = () => {
+            if (traktPollTimer) {
+                clearTimeout(traktPollTimer);
+                traktPollTimer = null;
+            }
+        };
+
         if (traktDisconnectBtn) {
             traktDisconnectBtn.addEventListener('click', async () => {
                 clearTraktTimer();
@@ -1653,36 +1686,6 @@
         }
 
         if (traktConnectBtn) {
-            const setTraktStatus = (message, showInstructions, linkUrl, userCode) => {
-                if (traktStatusLabel) {
-                    traktStatusLabel.textContent = message || '';
-                }
-                if (traktInstructions) {
-                    if (showInstructions) {
-                        traktInstructions.style.display = 'flex';
-                    } else {
-                        traktInstructions.style.display = 'none';
-                    }
-                }
-                if (traktDeviceLink) {
-                    if (linkUrl) {
-                        traktDeviceLink.href = linkUrl;
-                        traktDeviceLink.textContent = `Apri ${linkUrl}`;
-                    } else {
-                        traktDeviceLink.href = '#';
-                        traktDeviceLink.textContent = 'Apri https://trakt.tv/activate';
-                    }
-                }
-                if (traktDeviceCode) {
-                    traktDeviceCode.textContent = userCode ? `Codice ${userCode}` : '';
-                }
-            };
-            const clearTraktTimer = () => {
-                if (traktPollTimer) {
-                    clearTimeout(traktPollTimer);
-                    traktPollTimer = null;
-                }
-            };
             traktConnectBtn.addEventListener('click', async () => {
                 const clientId = traktClientInput ? traktClientInput.value.trim() : '';
                 if (!clientId) {
@@ -2260,7 +2263,12 @@
                 const fields = ['tmdb-id', 'tmdb-type', 'tmdb-title', 'tmdb-original-title', 'tmdb-year', 'tmdb-poster'];
                 fields.forEach(id => {
                     const field = document.getElementById(id);
-                    if (field) field.value = '';
+                    if (field) {
+                        field.value = '';
+                        if (id === 'tmdb-id') {
+                            field.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                    }
                 });
 
                 // Clear year input if present
@@ -3396,7 +3404,10 @@
                 const tmdbYearField = document.getElementById('tmdb-year');
                 const tmdbPosterField = document.getElementById('tmdb-poster');
 
-                if (tmdbIdField) tmdbIdField.value = item.tmdb_id || '';
+                if (tmdbIdField) {
+                    tmdbIdField.value = item.tmdb_id || '';
+                    tmdbIdField.dispatchEvent(new Event('change', { bubbles: true }));
+                }
                 if (tmdbTypeField) tmdbTypeField.value = item.media_type || '';
                 if (tmdbTitleField) tmdbTitleField.value = item.title || '';
                 if (tmdbOriginalField) tmdbOriginalField.value = item.original_title || '';
@@ -4221,12 +4232,21 @@
                 }
                 return 'other';
             };
+            const buildManualServerIconHtml = (icon, style, color, fallbackIcon = '') => {
+                const value = typeof icon === 'string' ? icon.trim() : '';
+                if (value && value.startsWith('fa-')) {
+                    const faStyle = style === 'regular' ? 'fa-regular' : 'fa-solid';
+                    const faColor = typeof color === 'string' && color.trim() ? color.trim() : '#3b82f6';
+                    return `<i class="${faStyle} ${value}" style="color: ${faColor}"></i>`;
+                }
+                return fallbackIcon ? escapeHtml(fallbackIcon) : escapeHtml(value || '');
+            };
                 const renderResultActions = (item) => {
                     const actions = [];
                     const badgeIcon = item.server_icon || item.emby_icon || '';
                     const badgeIconStyle = item.server_icon_style || item.emby_icon_style || '';
                     const badgeIconColor = item.server_icon_color || item.emby_icon_color || '';
-                    const badgeIconHtml = buildServerIconHtml(
+                    const badgeIconHtml = buildManualServerIconHtml(
                         badgeIcon,
                         badgeIconStyle,
                         badgeIconColor,
@@ -4285,6 +4305,9 @@
             const buildResolutionBlocks = (items, requestId, showEpisode) => {
                 const buckets = { '2160p': [], '1080p': [], '720p': [], 'other': [] };
                 items.forEach(item => {
+                    if (!item || typeof item !== 'object') {
+                        return;
+                    }
                     const bucket = normalizeBucket(item.resolution_bucket || item.resolution);
                     buckets[bucket].push(item);
                 });
@@ -4411,6 +4434,9 @@
                 }
                 const groups = new Map();
                 items.forEach(item => {
+                    if (!item || typeof item !== 'object') {
+                        return;
+                    }
                     const seasonNumber = Number.isFinite(item.season_number) ? item.season_number : null;
                     const label = item.season_label ? String(item.season_label) : '';
                     const tag = label
@@ -4595,6 +4621,17 @@
                 }
                 applyManualFilters();
             };
+            const updateJellyseerrToggleAvailability = () => {
+                if (!jellyseerrToggle) {
+                    return;
+                }
+                const hasTmdb = tmdbIdField && tmdbIdField.value;
+                jellyseerrToggle.disabled = !hasTmdb;
+                if (!hasTmdb && jellyseerrToggle.checked) {
+                    jellyseerrToggle.checked = false;
+                }
+                updateManualOptionsState();
+            };
 
             const setModalText = (element, value, fallback = '—') => {
                 if (!element) {
@@ -4702,8 +4739,11 @@
 
             if (jellyseerrToggle) {
                 jellyseerrToggle.addEventListener('change', updateManualOptionsState);
-                updateManualOptionsState();
             }
+            if (tmdbIdField) {
+                tmdbIdField.addEventListener('change', updateJellyseerrToggleAvailability);
+            }
+            updateJellyseerrToggleAvailability();
 
             if (historyContainer && historyToggle) {
                 historyToggle.addEventListener('click', () => {
@@ -5060,23 +5100,48 @@
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(payload)
                     });
-                    const data = await response.json().catch(() => ({}));
-                    if (!response.ok || data.success === false) {
-                        renderMessage(data.message || 'Errore durante la ricerca.');
+                    let data = null;
+                    try {
+                        data = await response.json();
+                    } catch (err) {
+                        console.error('Manual search JSON parse error', err);
+                    }
+                    const resultsCount = Array.isArray(data && data.results) ? data.results.length : 0;
+                    console.debug('Manual search response', {
+                        ok: response.ok,
+                        status: response.status,
+                        resultsCount,
+                        hasWarnings: Array.isArray(data && data.warnings) && data.warnings.length > 0
+                    });
+                    window.__lastManualSearch = { payload, status: response.status, data };
+                    if (!response.ok || (data && data.success === false)) {
+                        const message = (data && data.message) ? data.message : 'Errore durante la ricerca.';
+                        renderMessage(message);
                         setLoading(false);
                         return;
                     }
-                    if (Array.isArray(data.warnings) && data.warnings.length) {
+                    if (data && Array.isArray(data.warnings) && data.warnings.length) {
                         showToast(data.warnings.join(' · '), 'error');
                     }
-                    storeHistoryEntry({
-                        query: queryValue,
-                        media_type: payload.media_type,
-                        indexers: payload.indexers
-                    });
-                    renderResults(data.results || [], data.warnings || []);
+                    const results = Array.isArray(data && data.results)
+                        ? data.results.filter(item => item && typeof item === 'object')
+                        : [];
+                    try {
+                        storeHistoryEntry({
+                            query: queryValue,
+                            media_type: payload.media_type,
+                            indexers: payload.indexers
+                        });
+                        renderResults(results, data.warnings || []);
+                        console.debug('Manual search render completed', { resultsCount: results.length });
+                    } catch (err) {
+                        console.error('Manual search render error', err);
+                        renderMessage('Errore durante il rendering dei risultati.');
+                    }
                 } catch (err) {
-                    renderMessage('Errore di rete durante la ricerca.');
+                    console.error('Manual search request error', err);
+                    const message = err && err.message ? err.message : 'Errore di rete durante la ricerca.';
+                    renderMessage(message);
                 } finally {
                     setLoading(false);
                 }

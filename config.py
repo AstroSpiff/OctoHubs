@@ -152,6 +152,12 @@ DEFAULT_CONFIG = {
             "mode": "interval",
             "interval_minutes": 360,
             "times": []
+        },
+        "sync": {
+            "enabled": False,
+            "mode": "interval",
+            "interval_minutes": 60,
+            "times": []
         }
     },
     "EMBY": {

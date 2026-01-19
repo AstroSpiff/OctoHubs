@@ -5850,6 +5850,61 @@ def _save_emby_settings_to_db(emby_settings: Dict[str, Any]) -> None:
     _save_app_settings_snapshot(settings)
 
 
+def _prune_emby_latest_settings_for_server(server_id: str) -> None:
+    server_key = str(server_id)
+    latest_settings = _load_latest_settings()
+    rules = latest_settings.get("NOTIFICATION_RULES") or []
+    cleaned_rules = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        raw_server_ids = rule.get("server_ids") or []
+        if isinstance(raw_server_ids, str):
+            raw_server_ids = [raw_server_ids]
+        rule_server_ids = [str(value) for value in raw_server_ids if str(value)]
+        if server_key in rule_server_ids:
+            remaining_ids = [srv_id for srv_id in rule_server_ids if srv_id != server_key]
+            if rule_server_ids and not remaining_ids:
+                continue
+            updated_rule = dict(rule)
+            updated_rule["server_ids"] = remaining_ids
+            cleaned_rules.append(updated_rule)
+        else:
+            cleaned_rules.append(rule)
+    latest_settings["NOTIFICATION_RULES"] = cleaned_rules
+
+    state = latest_settings.get("STATE")
+    if isinstance(state, dict):
+        state.pop(server_key, None)
+
+    cache = latest_settings.get("CACHE")
+    if isinstance(cache, dict):
+        for key in ("movies", "series"):
+            items = cache.get(key)
+            if isinstance(items, list):
+                cache[key] = [
+                    item for item in items
+                    if not isinstance(item, dict)
+                    or str(item.get("server_id")) != server_key
+                ]
+
+    _save_latest_settings(latest_settings)
+
+
+def _prune_emby_strm_guard_state_for_server(server_id: str) -> None:
+    server_key = str(server_id)
+    state = _load_emby_strm_guard_state()
+    if isinstance(state, dict) and state.pop(server_key, None) is not None:
+        _save_emby_strm_guard_state(state)
+
+
+def _purge_emby_server_settings(server_id: str) -> None:
+    if not server_id:
+        return
+    _prune_emby_latest_settings_for_server(server_id)
+    _prune_emby_strm_guard_state_for_server(server_id)
+
+
 def _default_telegram_settings() -> Dict[str, Any]:
     return {"BOTS": [], "GROUPS": [], "CHANNELS": [], "PRESETS": []}
 
@@ -6385,6 +6440,33 @@ def _build_manual_search_snapshot(payload, form_payload=None):
 
     effective_config = copy.deepcopy(config)
     effective_rules = copy.deepcopy(config.get("SEARCH_RULES", {}))
+    request_rule = None
+    request_item = None
+    request_details = None
+    if use_jellyseerr_logic and tmdb_id and media_type:
+        if config.get("JELLYSEERR_URL") and config.get("JELLYSEERR_API_KEY"):
+            try:
+                requests_data = get_jellyseerr_requests(config, silent=True)
+            except Exception:
+                requests_data = []
+            target_type = _normalize_media_type(media_type)
+            for req in requests_data or []:
+                req_type = _normalize_media_type(req.get("type") or req.get("media", {}).get("mediaType"))
+                if target_type and req_type and req_type != target_type:
+                    continue
+                req_tmdb = _extract_tmdb_id(req, req.get("media"), req.get("mediaInfo"))
+                if req_tmdb and int(req_tmdb) == tmdb_id:
+                    request_item = req
+                    break
+            if request_item and request_item.get("id"):
+                request_rule = _get_request_rule(config, request_item.get("id"))
+                if not request_rule.get("enabled", True):
+                    request_rule = None
+                if _normalize_media_type(media_type) == "tv":
+                    details_cache = {}
+                    request_details = fetch_request_details(request_item.get("id"), config, details_cache) or request_item
+                else:
+                    request_details = request_item
     if use_jellyseerr_logic and custom_rules:
         overrides = {}
         if isinstance(custom_rules.get("SEARCH_RULES"), dict):
@@ -6411,6 +6493,8 @@ def _build_manual_search_snapshot(payload, form_payload=None):
                 exclude_tags = custom_rules.get("exclude_tags")
             if exclude_tags is not None:
                 effective_config["EXCLUDE_TAGS"] = exclude_tags
+    if use_jellyseerr_logic and request_rule:
+        effective_rules = _compose_request_search_rules(effective_rules, request_rule)
 
     warnings = []
     warnings_set = set()
@@ -6436,13 +6520,41 @@ def _build_manual_search_snapshot(payload, form_payload=None):
                 year_value = _extract_year_from_title(query)
             if title_candidates:
                 search_media_type = resolved_type or media_type
-                query_variants = build_search_queries(
-                    title_candidates,
-                    year_value,
-                    effective_config,
-                    media_type=search_media_type,
-                    search_rules_override=effective_rules
-                )
+                season_targets = [None]
+                if _normalize_media_type(search_media_type) == "tv":
+                    seasons_payload = payload.get("seasons")
+                    seasons_list = []
+                    if isinstance(seasons_payload, list):
+                        for entry in seasons_payload:
+                            try:
+                                seasons_list.append(int(entry))
+                            except (TypeError, ValueError):
+                                continue
+                    if not seasons_list and request_details:
+                        seasons_list = extract_request_seasons(request_details, skip_available=False)
+                    if seasons_list:
+                        season_targets = sorted(set(seasons_list))
+                year_variance = request_rule.get("year_variance", 0) if request_rule and _normalize_media_type(search_media_type) == "movie" else 0
+                sources = []
+                if request_details:
+                    sources.extend([request_details, request_details.get("media"), request_details.get("mediaInfo")])
+                if tmdb_payload:
+                    sources.append(tmdb_payload)
+                for season_code in season_targets:
+                    episode_count = get_episode_count_for_season(sources, season_code) if season_code is not None else None
+                    pending_episodes = get_pending_episode_numbers(request_details, season_code) if request_details else None
+                    query_variants.extend(build_search_queries(
+                        title_candidates,
+                        year_value,
+                        effective_config,
+                        media_type=search_media_type,
+                        season_code=season_code,
+                        episode_count=episode_count,
+                        request_terms=request_rule,
+                        pending_episodes=pending_episodes,
+                        search_rules_override=effective_rules,
+                        year_variance=year_variance
+                    ))
 
     if not query_variants:
         query_variants = [query]
@@ -6491,7 +6603,12 @@ def _build_manual_search_snapshot(payload, form_payload=None):
     results = []
 
     if use_jellyseerr_logic:
-        filtered = filter_results(prepared, effective_config, media_type=search_media_type)
+        filtered = filter_results(
+            prepared,
+            effective_config,
+            media_type=search_media_type,
+            request_rules=request_rule
+        )
         raw_map = {}
         for entry in prepared:
             title = entry.get("title") or ""

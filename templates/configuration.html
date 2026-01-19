@@ -139,6 +139,7 @@
                                         </details>
                                         <div class="server-actions">
                                             <button class="btn primary" type="submit" title="Salva o aggiorna questo server">Salva server</button>
+                                            <button class="btn danger" type="submit" formaction="/emby/remove-server" formmethod="post" formnovalidate title="Rimuovi questo server" onclick="return confirm('Confermi la rimozione di questo server Emby? Tutti i dati associati nel database verranno eliminati.');">Rimuovi server</button>
                                         </div>
                                     </form>
                                 </article>
@@ -861,11 +862,9 @@
                                     <div style="grid-column:1 / span 2;" class="trakt-actions">
                                         <div class="inline-actions">
                                             <button type="button" class="btn light" id="trakt-connect-btn">Collega Trakt</button>
-                                            <button type="submit"
+                                            <button type="button"
                                                     class="btn ghost"
-                                                    id="trakt-disconnect-btn"
-                                                    formaction="/trakt/clear"
-                                                    formmethod="post">
+                                                    id="trakt-disconnect-btn">
                                                 Disconnetti
                                             </button>
                                             <span class="tagline" id="trakt-device-status"></span>

@@ -22,8 +22,9 @@ from jinja2 import pass_context
 from starlette.middleware.sessions import SessionMiddleware
 from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse
 
-from app import _build_active_library_scans_snapshot, _build_scan_library_snapshot, _build_scan_library_tracked_snapshot, _build_scan_group_tracked_snapshot, _build_associations_get_snapshot, _build_associations_post_snapshot, _build_media_details_snapshot, _build_jellyseerr_request_snapshot, _build_tmdb_search_snapshot, _build_tmdb_tv_details_snapshot, _build_tmdb_check_availability_snapshot, _build_manual_search_snapshot, _build_rss_inspect_snapshot, _build_rss_inspect_json_snapshot, _build_rss_import_snapshot, _build_rss_import_json_snapshot, _build_rss_deduplicate_snapshot, _build_rss_items_snapshot, _build_send_torrent_snapshot, _build_scan_status_snapshot, _build_run_scan_snapshot, _build_update_request_rules_snapshot, _build_refresh_requests_snapshot, _build_test_connections_snapshot, _build_trakt_device_start_snapshot, _build_trakt_device_poll_snapshot, _build_trakt_clear_snapshot, _build_emby_stop_task_snapshot, _build_emby_server_status_snapshot, _build_emby_health_status_snapshot, _build_emby_activity_snapshot, _build_emby_tasks_snapshot, _build_emby_users_snapshot, _build_emby_plugins_snapshot, _build_emby_streams_snapshot, _build_emby_status_stream_payload, _build_emby_libraries_snapshot, _build_active_scans_snapshot, _build_debug_vf_query_snapshot, _build_strm_guard_status_snapshot, _build_grouped_libraries_snapshot, _build_movie_versions_snapshot, _build_series_seasons_snapshot, _build_season_episodes_snapshot, _build_lookup_snapshot, _build_item_details_snapshot, _build_availability_snapshot, _build_latest_snapshot, _build_latest_progress_payload, _build_latest_preview_snapshot, _build_latest_preview_cache_snapshot, _build_latest_enrich_snapshot, _build_latest_notify_snapshot, _build_emby_image_stream, _build_server_order_snapshot, _build_group_order_get_snapshot, _build_group_order_post_snapshot, _build_tab_order_get_snapshot, _build_tab_order_post_snapshot, _probe_discovery_start_snapshot, _probe_discovery_stop_snapshot, _probe_recent_start_snapshot, get_emby_user_manager, _probe_recent_start_all_snapshot, _probe_recent_stop_snapshot, _probe_recent_stop_all_snapshot, _probe_recent_processing_start_snapshot, _probe_recent_processing_start_all_snapshot, _probe_recent_processing_stop_snapshot, _probe_recent_processing_stop_all_snapshot, _probe_recent_combo_start_snapshot, _probe_recent_combo_start_all_snapshot, _probe_recent_combo_stop_snapshot, _probe_recent_combo_stop_all_snapshot, _probe_libraries_combo_start_snapshot, _probe_libraries_combo_stop_snapshot, _probe_processing_start_snapshot, _probe_processing_stop_snapshot, _probe_queue_get_snapshot, _probe_queue_delete_snapshot, _probe_history_get_snapshot, _probe_history_delete_snapshot, _probe_retry_snapshot, _probe_blacklist_get_snapshot, _probe_blacklist_delete_snapshot, _probe_debug_recent_items_snapshot, _coerce_request_bool, _coerce_request_int, _LIBRARY_SCAN_TRACKER, _ws_event_queues, _ws_queues_lock, _sse_event_queues, _sse_queues_lock, DateTimeEncoder, load_config, _default_emby_settings, _prepare_emby_servers_for_view, _get_total_blacklist_counts, _default_latest_settings, _load_latest_settings, _load_telegram_settings, _prepare_latest_notification_rules, EMBY_CATEGORY_OPTIONS, _resolve_next_url, _ensure_db_backend, _load_emby_settings_from_db, _build_emby_server_from_form, _fetch_emby_status, _save_emby_settings_to_db, _emby_display_name, _normalize_emby_server, _execute_emby_action, EMBY_ACTIONS, _db_enabled, _save_latest_settings, _get_emby_servers_from_config, _ensure_strm_guard_manager, _clear_latest_state, _update_app_settings_overrides, _register_app_event_loop, _active_trakt_settings, _trakt_enabled
+from app import _build_active_library_scans_snapshot, _build_scan_library_snapshot, _build_scan_library_tracked_snapshot, _build_scan_group_tracked_snapshot, _build_associations_get_snapshot, _build_associations_post_snapshot, _build_media_details_snapshot, _build_jellyseerr_request_snapshot, _build_tmdb_search_snapshot, _build_tmdb_tv_details_snapshot, _build_tmdb_check_availability_snapshot, _build_manual_search_snapshot, _build_rss_inspect_snapshot, _build_rss_inspect_json_snapshot, _build_rss_import_snapshot, _build_rss_import_json_snapshot, _build_rss_deduplicate_snapshot, _build_rss_items_snapshot, _build_send_torrent_snapshot, _build_scan_status_snapshot, _build_run_scan_snapshot, _build_update_request_rules_snapshot, _build_refresh_requests_snapshot, _build_test_connections_snapshot, _build_trakt_device_start_snapshot, _build_trakt_device_poll_snapshot, _build_trakt_clear_snapshot, _build_emby_stop_task_snapshot, _build_emby_server_status_snapshot, _build_emby_health_status_snapshot, _build_emby_activity_snapshot, _build_emby_tasks_snapshot, _build_emby_users_snapshot, _build_emby_plugins_snapshot, _build_emby_streams_snapshot, _build_emby_status_stream_payload, _build_emby_libraries_snapshot, _build_active_scans_snapshot, _build_debug_vf_query_snapshot, _build_strm_guard_status_snapshot, _build_grouped_libraries_snapshot, _build_movie_versions_snapshot, _build_series_seasons_snapshot, _build_season_episodes_snapshot, _build_lookup_snapshot, _build_item_details_snapshot, _build_availability_snapshot, _build_latest_snapshot, _build_latest_progress_payload, _build_latest_preview_snapshot, _build_latest_preview_cache_snapshot, _build_latest_enrich_snapshot, _build_latest_notify_snapshot, _build_emby_image_stream, _build_server_order_snapshot, _build_group_order_get_snapshot, _build_group_order_post_snapshot, _build_tab_order_get_snapshot, _build_tab_order_post_snapshot, _probe_discovery_start_snapshot, _probe_discovery_stop_snapshot, _probe_recent_start_snapshot, get_emby_user_manager, _probe_recent_start_all_snapshot, _probe_recent_stop_snapshot, _probe_recent_stop_all_snapshot, _probe_recent_processing_start_snapshot, _probe_recent_processing_start_all_snapshot, _probe_recent_processing_stop_snapshot, _probe_recent_processing_stop_all_snapshot, _probe_recent_combo_start_snapshot, _probe_recent_combo_start_all_snapshot, _probe_recent_combo_stop_snapshot, _probe_recent_combo_stop_all_snapshot, _probe_libraries_combo_start_snapshot, _probe_libraries_combo_stop_snapshot, _probe_processing_start_snapshot, _probe_processing_stop_snapshot, _probe_queue_get_snapshot, _probe_queue_delete_snapshot, _probe_history_get_snapshot, _probe_history_delete_snapshot, _probe_retry_snapshot, _probe_blacklist_get_snapshot, _probe_blacklist_delete_snapshot, _probe_debug_recent_items_snapshot, _coerce_request_bool, _coerce_request_int, _LIBRARY_SCAN_TRACKER, _ws_event_queues, _ws_queues_lock, _sse_event_queues, _sse_queues_lock, DateTimeEncoder, load_config, _default_emby_settings, _prepare_emby_servers_for_view, _get_total_blacklist_counts, _default_latest_settings, _load_latest_settings, _load_telegram_settings, _prepare_latest_notification_rules, EMBY_CATEGORY_OPTIONS, _resolve_next_url, _ensure_db_backend, _load_emby_settings_from_db, _build_emby_server_from_form, _fetch_emby_status, _save_emby_settings_to_db, _purge_emby_server_settings, _emby_display_name, _normalize_emby_server, _execute_emby_action, EMBY_ACTIONS, _db_enabled, _save_latest_settings, _get_emby_servers_from_config, _ensure_strm_guard_manager, _clear_latest_state, _update_app_settings_overrides, _register_app_event_loop, _active_trakt_settings, _trakt_enabled
 from storage import StorageError
+from emby_websocket_manager import get_websocket_manager
 from emby_collection_sources import SOURCE_TYPES, list_trakt_lists, list_mdblist_user_lists, is_mdblist_enabled
 from emby_collections import (
     list_collection_definitions,
@@ -2590,6 +2591,77 @@ async def emby_save_server_post(
     return RedirectResponse(url=redirect_url, status_code=303)
 
 
+@fastapi_app.post("/emby/remove-server")
+async def emby_remove_server_post(
+    request: Request,
+    server_id: Optional[str] = Form(None, alias="server_id"),
+    csrf_token: str = Form(None, alias="csrf_token"),
+    next_param: Optional[str] = Form(None, alias="next")
+):
+    """Remove Emby server configuration (POST form handler)."""
+    _require_auth(request)
+
+    next_url = _resolve_next_url(next_param, "emby_dashboard")
+    next_url = next_url if next_url.startswith("/") else f"/{next_url}"
+
+    # Validate CSRF token
+    if not validate_csrf(request, csrf_token):
+        flash(request, "CSRF token non valido.")
+        return RedirectResponse(url=next_url, status_code=303)
+
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        flash(request, "Config non valida.")
+        return RedirectResponse(url=next_url, status_code=303)
+
+    if not server_id:
+        flash(request, "Server non valido.")
+        return RedirectResponse(url=next_url, status_code=303)
+
+    try:
+        backend = _ensure_db_backend()
+    except StorageError as exc:
+        flash(request, f"Errore DB: {exc}")
+        return RedirectResponse(url=next_url, status_code=303)
+
+    emby_section = _load_emby_settings_from_db()
+    servers = copy.deepcopy(emby_section.get("SERVERS") or [])
+    remaining = []
+    removed_server = None
+    server_key = str(server_id)
+    for server in servers:
+        if str(server.get("id")) == server_key:
+            removed_server = server
+            continue
+        remaining.append(server)
+
+    if not removed_server:
+        flash(request, "Server non trovato.")
+        return RedirectResponse(url=next_url, status_code=303)
+
+    _save_emby_settings_to_db({"SERVERS": remaining})
+
+    cleanup_error = None
+    try:
+        backend.remove_emby_server_data(server_key)
+    except StorageError as exc:
+        cleanup_error = str(exc)
+
+    _purge_emby_server_settings(server_key)
+    try:
+        get_websocket_manager().remove_server(server_key)
+    except Exception:
+        pass
+    load_config()
+
+    label = _emby_display_name(removed_server)
+    if cleanup_error:
+        flash(request, f"Server {label} rimosso, ma pulizia DB fallita: {cleanup_error}")
+    else:
+        flash(request, f"Server {label} rimosso.")
+    return RedirectResponse(url=next_url, status_code=303)
+
+
 @fastapi_app.post("/emby/action")
 async def emby_action_post(
     request: Request,
@@ -4327,7 +4399,8 @@ async def update_scheduler_route(
         flash(request, "CSRF token non valido.", "error")
         return RedirectResponse(url="/dashboard", status_code=303)
 
-    from app import load_config, _resolve_next_url, _default_auto_tasks, _parse_auto_task_payload, _update_app_settings_overrides, _sync_auto_scheduler, _ACTIVE_CONFIG, DEFAULT_CONFIG, _coerce_request_int
+    from app import load_config, _resolve_next_url, _default_auto_tasks, _parse_auto_task_payload, _update_app_settings_overrides, _sync_auto_scheduler, _ACTIVE_CONFIG, _coerce_request_int
+    from config import DEFAULT_CONFIG as CONFIG_DEFAULTS, _normalize_time_list
     from storage import StorageError
     import copy
 
@@ -4341,12 +4414,36 @@ async def update_scheduler_route(
     # Get form data as dict
     form_data = await request.form()
 
-    current = config.get("AUTO_TASKS") or _default_auto_tasks()
+    defaults = _default_auto_tasks()
+    current = config.get("AUTO_TASKS") or defaults
     updated = copy.deepcopy(current)
 
-    updated["scan"] = _parse_auto_task_payload(form_data, "scan", current.get("scan", _default_auto_tasks()["scan"]))
-    updated["refresh"] = _parse_auto_task_payload(form_data, "refresh", current.get("refresh", _default_auto_tasks()["refresh"]))
-    updated["workflow"] = _parse_auto_task_payload(form_data, "workflow", current.get("workflow", _default_auto_tasks()["workflow"]))
+    def _parse_auto_section(section_key: str, fallback: dict) -> dict:
+        if form_data.get(section_key) is not None:
+            return _parse_auto_task_payload(form_data, section_key, fallback)
+        enabled = bool(form_data.get(f"{section_key}_enabled"))
+        mode = form_data.get(f"{section_key}_mode") or fallback.get("mode", "interval")
+        if mode not in ("interval", "fixed"):
+            mode = "interval"
+        interval_default = fallback.get("interval_minutes", 60)
+        interval = _coerce_request_int(form_data.get(f"{section_key}_interval"), interval_default, 5)
+        times_raw = form_data.get(f"{section_key}_times")
+        if times_raw is None:
+            times = fallback.get("times") or []
+        else:
+            if not isinstance(times_raw, str):
+                times_raw = str(times_raw)
+            times = _normalize_time_list(times_raw)
+        return {
+            "enabled": enabled,
+            "mode": mode,
+            "interval_minutes": interval,
+            "times": times
+        }
+
+    updated["scan"] = _parse_auto_section("scan", current.get("scan", defaults["scan"]))
+    updated["refresh"] = _parse_auto_section("refresh", current.get("refresh", defaults["refresh"]))
+    updated["workflow"] = _parse_auto_section("workflow", current.get("workflow", defaults["workflow"]))
 
     collections_enabled = form_data.get("collections_auto_refresh_enabled")
     collections_mode = form_data.get("collections_auto_refresh_mode") or "interval"
@@ -4354,7 +4451,7 @@ async def update_scheduler_route(
     collections_times_raw = form_data.get("collections_auto_refresh_times")
     if collections_times_raw is not None and not isinstance(collections_times_raw, str):
         collections_times_raw = str(collections_times_raw)
-    interval_default = DEFAULT_CONFIG["COLLECTIONS"]["AUTO_REFRESH_INTERVAL_HOURS"]
+    interval_default = CONFIG_DEFAULTS["COLLECTIONS"]["AUTO_REFRESH_INTERVAL_HOURS"]
     collections_interval = _coerce_request_int(collections_interval_raw, interval_default, 1, 168)
     collections_times = _split_csv_field(collections_times_raw)
     if collections_mode not in ("interval", "fixed"):
@@ -4378,7 +4475,7 @@ async def update_scheduler_route(
     # Update global config
     import app as app_module
     if app_module._ACTIVE_CONFIG is None:
-        app_module._ACTIVE_CONFIG = copy.deepcopy(DEFAULT_CONFIG)
+        app_module._ACTIVE_CONFIG = copy.deepcopy(CONFIG_DEFAULTS)
     app_module._ACTIVE_CONFIG["AUTO_TASKS"] = updated
     app_module._ACTIVE_CONFIG["COLLECTIONS"] = collections_payload
     config["AUTO_TASKS"] = updated
