@@ -121,6 +121,9 @@ DEFAULT_CONFIG = {
         "CLIENT_ID": "",
         "ACCESS_TOKEN": ""
     },
+    "MDBLIST": {
+        "API_KEY": ""
+    },
     "JUSTWATCH": {
         "ENABLED": False,
         "LOCALE": "it_IT"
@@ -153,6 +156,13 @@ DEFAULT_CONFIG = {
     },
     "EMBY": {
         "SERVERS": []
+    }
+    ,
+    "COLLECTIONS": {
+        "AUTO_REFRESH_ENABLED": True,
+        "AUTO_REFRESH_INTERVAL_HOURS": 4,
+        "USE_MDBLIST_COLLECTION_DESCRIPTION": False,
+        "DOWNLOAD_MY_MDBLIST_LISTS": False
     }
 }
 
@@ -303,6 +313,29 @@ def _merge_rss_import_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
             merged["SOURCES"] = sources
         else:
             merged[key] = value
+    return merged
+
+
+def _merge_collection_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
+    """Merge user-defined collection settings with defaults."""
+    merged = copy.deepcopy(DEFAULT_CONFIG["COLLECTIONS"])
+    if not isinstance(user_settings, dict):
+        return merged
+    for key, value in user_settings.items():
+        normalized = key.upper()
+        if normalized not in merged:
+            merged[normalized] = value
+            continue
+        current = merged[normalized]
+        if isinstance(current, bool):
+            merged[normalized] = bool(value)
+        elif isinstance(current, int):
+            try:
+                merged[normalized] = int(value)
+            except (TypeError, ValueError):
+                pass
+        else:
+            merged[normalized] = value
     return merged
 
 def _normalize_emby_server(entry: Optional[Dict]) -> Dict[str, Any]:

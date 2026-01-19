@@ -1,0 +1,956 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="{{ csrf_token }}">
+    <title>Emby Collezioni</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='emby.css') }}">
+    <style>
+        .tagline.small {
+            font-size: 0.75rem;
+        }
+        .text-muted {
+            color: #64748b;
+        }
+        .collections-hero {
+            padding: 1.5rem 1.7rem;
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 1.5rem;
+            flex-wrap: wrap;
+        }
+        .collections-hero h1 {
+            margin-bottom: 0.2rem;
+        }
+        .collections-hero__status {
+            font-weight: 600;
+            color: #0f172a;
+            min-width: 220px;
+        }
+        .collections-hero__actions button {
+            cursor: pointer;
+        }
+        .collections-gallery {
+            margin-top: 1.8rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+        .collections-gallery__header {
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        .collections-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 1.4rem;
+        }
+        @media (max-width: 1200px) {
+            .collections-grid {
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+            }
+        }
+        @media (max-width: 900px) {
+            .collections-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+        }
+        @media (max-width: 600px) {
+            .collections-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        .collection-tile {
+            display: flex;
+            flex-direction: column;
+            gap: 0.6rem;
+            animation: collection-rise 0.6s ease both;
+            animation-delay: var(--delay, 0ms);
+        }
+        @keyframes collection-rise {
+            from {
+                opacity: 0;
+                transform: translateY(12px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .collection-tile {
+                animation: none;
+            }
+            .collection-card__inner {
+                transition: none;
+            }
+        }
+        .collection-card {
+            position: relative;
+            aspect-ratio: 2 / 3;
+            height: auto;
+            border-radius: 18px;
+            perspective: 1200px;
+        }
+        .collection-card__inner {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            border-radius: 18px;
+            transition: transform 0.7s cubic-bezier(0.2, 0.7, 0.2, 1);
+            transform-style: preserve-3d;
+        }
+        .collection-card:hover .collection-card__inner,
+        .collection-card:focus-within .collection-card__inner,
+        .collection-card.is-flipped .collection-card__inner {
+            transform: rotateY(180deg);
+        }
+        .collection-card__face {
+            position: absolute;
+            inset: 0;
+            border-radius: 18px;
+            overflow: hidden;
+            backface-visibility: hidden;
+            border: 1px solid rgba(15, 23, 42, 0.12);
+            box-shadow: 0 18px 40px rgba(15, 23, 42, 0.15);
+        }
+        .collection-card__front {
+            background: #0f172a;
+            color: #f8fafc;
+        }
+        .collection-card__back {
+            background: #fff;
+            transform: rotateY(180deg);
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 1rem;
+            gap: 0.8rem;
+        }
+        .collection-card--disabled .collection-card__front {
+            filter: grayscale(1) saturate(0.2);
+        }
+        .collection-card--disabled .collection-card__back {
+            border-color: rgba(239, 68, 68, 0.2);
+        }
+        .collection-poster {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .collection-poster img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .collection-poster__placeholder {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, rgba(15, 23, 42, 0.85), rgba(15, 98, 254, 0.65));
+            font-size: 2.5rem;
+            color: rgba(255, 255, 255, 0.9);
+        }
+        .collection-card__title {
+            position: absolute;
+            inset: auto 0 0 0;
+            padding: 0.85rem 0.9rem;
+            background: linear-gradient(180deg, transparent, rgba(15, 23, 42, 0.85));
+            font-weight: 600;
+            font-size: 0.95rem;
+        }
+        .collection-card__badge {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            padding: 0.25rem 0.6rem;
+            border-radius: 999px;
+            font-size: 0.65rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            font-weight: 700;
+            background: rgba(15, 23, 42, 0.6);
+            color: #f8fafc;
+        }
+        .collection-card__badge.success {
+            background: rgba(34, 197, 94, 0.85);
+        }
+        .collection-card__badge.partial,
+        .collection-card__badge.warning {
+            background: rgba(245, 158, 11, 0.85);
+        }
+        .collection-card__badge.error {
+            background: rgba(239, 68, 68, 0.9);
+        }
+        .collection-card__badge.empty {
+            background: rgba(148, 163, 184, 0.9);
+            color: #0f172a;
+        }
+        .collection-card__header {
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.8rem;
+            align-items: flex-start;
+        }
+        .collection-card__title-block {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+            margin-right: auto;
+        }
+        .collection-card__label {
+            font-size: 0.7rem;
+            color: #64748b;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+        .collection-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .collection-toggle input {
+            appearance: none;
+            width: 36px;
+            height: 20px;
+            border-radius: 999px;
+            background: rgba(100, 116, 139, 0.2);
+            position: relative;
+            outline: none;
+            cursor: pointer;
+            transition: background 0.2s ease;
+        }
+        .collection-toggle input::after {
+            content: "";
+            position: absolute;
+            width: 14px;
+            height: 14px;
+            border-radius: 999px;
+            background: #fff;
+            top: 3px;
+            left: 3px;
+            transition: transform 0.2s ease;
+            box-shadow: 0 2px 6px rgba(15, 23, 42, 0.2);
+        }
+        .collection-toggle input:checked {
+            background: rgba(34, 197, 94, 0.7);
+        }
+        .collection-toggle input:checked::after {
+            transform: translateX(16px);
+        }
+        .collection-meta {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            column-gap: 0.8rem;
+            row-gap: 1.2rem;
+            font-size: 0.8rem;
+            position: relative;
+            flex: 1 1 auto;
+            overflow: auto;
+            padding-right: 0.35rem;
+            align-content: start;
+        }
+        .collection-meta::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: 50%;
+            width: 1px;
+            background: rgba(15, 23, 42, 0.08);
+            pointer-events: none;
+        }
+        .collection-meta__item {
+            display: flex;
+            flex-direction: column;
+            gap: 0.55rem;
+            padding: 0 0.2rem;
+        }
+        .collection-meta__item.is-wide {
+            grid-column: 1 / -1;
+        }
+        .collection-meta__label {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #64748b;
+        }
+        .collection-meta__value {
+            color: #0f172a;
+            font-weight: 600;
+            word-break: break-word;
+        }
+        .collection-meta__value a {
+            color: #2563eb;
+            text-decoration: none;
+        }
+        .collection-link-icon {
+            margin-left: 0.35rem;
+            color: #0f62fe;
+            display: inline-flex;
+            align-items: center;
+            text-decoration: none;
+        }
+        .collection-meta__hint {
+            font-size: 0.8rem;
+            color: #64748b;
+        }
+        .collection-meta__value-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.6rem;
+        }
+        .collection-meta__value-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+            font-weight: 600;
+            color: #0f172a;
+        }
+        .collection-meta__value-row-name {
+            font-weight: 600;
+        }
+        .collection-meta__value-row-text {
+            display: flex;
+            flex-direction: column;
+            gap: 0.2rem;
+        }
+        .collection-meta__value-row-primary {
+            font-weight: 600;
+            color: #0f172a;
+        }
+        .collection-meta__value-row-secondary {
+            font-size: 0.8rem;
+            color: #64748b;
+            font-weight: 500;
+        }
+        .collection-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.4rem;
+            grid-column: 1 / -1;
+        }
+        .collection-chip {
+            padding: 0.2rem 0.5rem;
+            border-radius: 999px;
+            background: rgba(15, 23, 42, 0.08);
+            font-size: 0.68rem;
+            font-weight: 600;
+            color: #334155;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+        .collection-chips--tile {
+            margin: 0.1rem 0 0.2rem;
+        }
+        .collection-chip i {
+            font-size: 0.7rem;
+        }
+        .collection-chip__label {
+            max-width: 0;
+            opacity: 0;
+            overflow: hidden;
+            white-space: nowrap;
+            transition: max-width 0.2s ease, opacity 0.2s ease;
+        }
+        .collection-chip:hover .collection-chip__label {
+            max-width: 140px;
+            opacity: 1;
+        }
+        .collection-chip--server .collection-chip__label {
+            max-width: 40px;
+            opacity: 1;
+        }
+        .collection-actions {
+            display: flex;
+            gap: 0.5rem;
+            justify-content: space-between;
+            margin-top: auto;
+        }
+        @media (max-width: 520px) {
+            .collection-meta {
+                grid-template-columns: 1fr;
+            }
+            .collection-meta::before {
+                display: none;
+            }
+        }
+        .collection-action {
+            flex: 1;
+            border: none;
+            background: rgba(15, 23, 42, 0.08);
+            color: #0f172a;
+            border-radius: 12px;
+            padding: 0.5rem 0;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .collection-action:hover {
+            background: rgba(15, 98, 254, 0.18);
+            color: #0f62fe;
+        }
+        .collection-action.danger:hover {
+            background: rgba(239, 68, 68, 0.15);
+            color: #ef4444;
+        }
+        .collection-tile__label {
+            text-align: center;
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: #475569;
+        }
+        .collection-card--create {
+            border: 2px dashed rgba(148, 163, 184, 0.6);
+            background: rgba(148, 163, 184, 0.2);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #475569;
+            cursor: pointer;
+            box-shadow: none;
+        }
+        .collection-card--create:hover {
+            border-color: rgba(15, 98, 254, 0.7);
+            color: #0f62fe;
+        }
+        .collection-create__icon {
+            font-size: 3rem;
+            font-weight: 600;
+        }
+        .collection-empty {
+            font-style: italic;
+            color: #64748b;
+        }
+        .collection-modal {
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, 0.65);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 1.5rem;
+            z-index: 50;
+        }
+        .collection-modal.is-open {
+            display: flex;
+            animation: modal-fade 0.25s ease;
+        }
+        @keyframes modal-fade {
+            from {
+                opacity: 0;
+            }
+            to {
+                opacity: 1;
+            }
+        }
+        .collection-modal__dialog {
+            background: #fff;
+            border-radius: 20px;
+            width: min(1040px, 95vw);
+            max-height: 92vh;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 35px 80px rgba(15, 23, 42, 0.35);
+            overflow: hidden;
+        }
+        .collection-modal__header {
+            padding: 1.5rem 1.8rem 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 1rem;
+            border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+        }
+        .collection-modal__close {
+            border: none;
+            background: rgba(15, 23, 42, 0.08);
+            border-radius: 12px;
+            width: 36px;
+            height: 36px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        .collection-modal__body {
+            display: grid;
+            grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+            gap: 1.5rem;
+            padding: 1.5rem 1.8rem 1.8rem;
+            overflow: auto;
+        }
+        @media (max-width: 960px) {
+            .collection-modal__body {
+                grid-template-columns: 1fr;
+            }
+        }
+        .collections-form {
+            display: flex;
+            flex-direction: column;
+            gap: 0.9rem;
+        }
+        .collections-form .form-row {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+        }
+        .collections-form input[type="text"],
+        .collections-form input[type="url"],
+        .collections-form input[type="number"],
+        .collections-form select,
+        .collections-form textarea {
+            border-radius: 10px;
+            border: 1px solid rgba(15, 23, 42, 0.15);
+            padding: 0.65rem 0.8rem;
+            font-size: 0.95rem;
+            background: #fff;
+            font-family: inherit;
+        }
+        .collections-form textarea {
+            min-height: 90px;
+            resize: vertical;
+        }
+        .collection-server-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 0.6rem;
+            border: 1px solid rgba(15, 23, 42, 0.12);
+            border-radius: 12px;
+            padding: 0.7rem;
+            background: #f8fafc;
+        }
+        .collection-server-option {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: #0f172a;
+        }
+        .collection-server-option input {
+            width: 16px;
+            height: 16px;
+        }
+        .collection-server-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 1.1rem;
+            height: 1.1rem;
+            font-size: 0.85rem;
+        }
+        .collection-server-icon--muted {
+            color: #94a3b8;
+        }
+        .collection-server-icon--small {
+            width: 1rem;
+            height: 1rem;
+            font-size: 0.8rem;
+        }
+        .collections-form .switch-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+        .collections-form .actions {
+            display: flex;
+            gap: 0.6rem;
+            flex-wrap: wrap;
+            margin-top: 0.5rem;
+        }
+        .collection-source-panel {
+            border: 1px solid rgba(15, 23, 42, 0.12);
+            border-radius: 14px;
+            overflow: hidden;
+            background: #f8fafc;
+        }
+        .collection-source-panel summary {
+            list-style: none;
+            cursor: pointer;
+            padding: 0.9rem 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+        }
+        .collection-source-panel summary::-webkit-details-marker {
+            display: none;
+        }
+        .collection-source-panel summary i {
+            transition: transform 0.2s ease;
+        }
+        .collection-source-panel[open] summary i {
+            transform: rotate(180deg);
+        }
+        .collection-card__label,
+        .collection-card__title-block strong,
+        .collection-toggle span {
+            font-size: 0.8rem;
+        }
+        .collection-source-panel__title {
+            font-weight: 600;
+        }
+        .collection-source-panel__status {
+            font-size: 0.75rem;
+            color: #64748b;
+        }
+        .collection-source-panel__body {
+            padding: 0 1rem 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.8rem;
+        }
+        .collection-source-panel__actions {
+            display: flex;
+            justify-content: flex-end;
+        }
+        .collection-source-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+            background: #fff;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .collection-source-table th,
+        .collection-source-table td {
+            padding: 0.6rem 0.7rem;
+            border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+            text-align: left;
+            vertical-align: top;
+        }
+        .collection-source-table th {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #64748b;
+            background: #eef2ff;
+        }
+        .collection-source-table tbody tr:last-child td {
+            border-bottom: none;
+        }
+        .collection-source-table a {
+            color: #2563eb;
+            text-decoration: none;
+        }
+        .status-note {
+            font-weight: 600;
+            color: #475569;
+        }
+        body.modal-open {
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body>
+    <div class="wrapper collections-shell">
+        <h1>Emby Toolkit</h1>
+        <nav class="primary-nav">
+            <a href="{{ url_for('dashboard') }}"
+               class="nav-link {% if active_page == 'dashboard' %}active{% endif %}">
+                Ricerca
+            </a>
+            <a href="{{ url_for('emby_dashboard') }}"
+               class="nav-link {% if active_page == 'emby' %}active{% endif %}">
+                Emby Toolkit
+            </a>
+            <a href="{{ url_for('emby_collections') }}"
+               class="nav-link {% if active_page == 'emby_collections' %}active{% endif %}">
+                Collezioni
+            </a>
+            <a href="{{ url_for('emby_probe') }}"
+               class="nav-link {% if active_page == 'emby_probe' %}active{% endif %}">
+                STRM Probe
+            </a>
+            <a href="{{ url_for('configuration') }}"
+               class="nav-link {% if active_page == 'config' %}active{% endif %}">
+                Configurazione
+            </a>
+            <a href="{{ url_for('auth_logout') }}"
+               class="nav-link"
+               style="margin-left: auto;">
+                Logout
+            </a>
+        </nav>
+        <div id="toast-container"></div>
+
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for msg in messages %}
+                    <div class="alert success" data-toast="success">{{ msg }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <div class="card collections-hero">
+            <div>
+                <h1>Collezioni Emby</h1>
+                <p class="tagline">
+                    Crea collezioni personalizzate importando liste da Trakt, TMDB, IMDb o MDBList. Gestisci tutto come su Emby, ma con superpoteri.
+                </p>
+            </div>
+            <div class="collections-hero__status">
+                <span id="collection-status">Caricamento...</span>
+            </div>
+            <div class="collections-hero__actions">
+                <button class="btn primary" id="collection-sync-all">
+                    <i class="fa-solid fa-arrows-rotate"></i> Sincronizza tutto
+                </button>
+                <button class="btn secondary" id="collection-refresh">
+                    <i class="fa-solid fa-rotate"></i> Aggiorna collezioni
+                </button>
+            </div>
+        </div>
+
+        <section class="collections-gallery">
+            <div class="collections-gallery__header">
+                <div>
+                    <h2>Le tue collezioni</h2>
+                    <p class="tagline">Gestisci, sincronizza o modifica con un click.</p>
+                </div>
+            </div>
+            <div class="collections-grid" id="collections-grid" aria-live="polite">
+                <div class="collection-tile collection-tile--create">
+                    <button type="button" class="collection-card collection-card--create" id="collection-create-card" aria-label="Crea nuova collezione">
+                        <span class="collection-create__icon">+</span>
+                    </button>
+                    <span class="collection-tile__label">Crea nuova collezione</span>
+                </div>
+            </div>
+            <div id="collection-empty" class="collection-empty">Nessuna collezione salvata. Inizia con il tasto “+”.</div>
+        </section>
+    </div>
+
+    <div class="collection-modal" id="collection-modal" aria-hidden="true">
+        <div class="collection-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="collection-modal-title">
+            <div class="collection-modal__header">
+                <div>
+                    <h2 id="collection-modal-title">Crea nuova collezione</h2>
+                    <p class="tagline" id="collection-modal-subtitle">Definisci dettagli, immagini e sorgenti.</p>
+                </div>
+                <button type="button" class="collection-modal__close" id="collection-modal-close" aria-label="Chiudi">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <div class="collection-modal__body">
+                <div class="collection-modal__pane">
+                    <span class="tagline status-note" id="collection-form-status"></span>
+                    <form id="collection-form" class="collections-form">
+                        <div class="form-row">
+                            <label for="collection-name">Nome</label>
+                            <input type="text" id="collection-name" name="name" maxlength="120" required placeholder="Nome visualizzato">
+                        </div>
+                        <div class="form-row">
+                            <label for="collection-sort-name">
+                                Sort title
+                                <span class="tagline small text-muted" style="margin-top:0.35rem;">Usato come Forced Sort Name della collezione su Emby.</span>
+                            </label>
+                            <input type="text" id="collection-sort-name" name="sort_name" maxlength="120" placeholder="Oppure lascia vuoto per usare il nome">
+                        </div>
+                        <div class="form-row">
+                            <label for="collection-source-type">Fonte</label>
+                            <select id="collection-source-type" name="source_type" required>
+                                {% for option in collection_source_types %}
+                                    <option value="{{ option.value }}">{{ option.label }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="form-row">
+                            <label for="collection-source-value">Valore lista/collezione</label>
+                            <input type="text" id="collection-source-value" name="source_value" required>
+                            <div id="collection-source-hint" class="tagline small text-muted"></div>
+                        </div>
+                        <div class="form-row">
+                            <label for="collection-description">Descrizione collezione</label>
+                            <textarea id="collection-description" name="collection_description" rows="2" placeholder="Es. La migliore selezione di film horror"></textarea>
+                            <label class="switch-toggle" style="margin-top:0.35rem;">
+                                <input type="checkbox" id="collection-use-source-description" name="use_source_description">
+                                <span>Usa descrizione della fonte (se disponibile)</span>
+                            </label>
+                            <span class="tagline small text-muted">Puoi sovrascrivere liberamente la descrizione mostrata in Emby.</span>
+                        </div>
+                        <div class="form-row">
+                            <label>Server Emby</label>
+                            <div class="collection-server-grid" id="collection-server">
+                                <label class="collection-server-option">
+                                    <input type="checkbox" class="collection-server-option-input" value="__none__" data-none="true">
+                                    <span class="collection-server-icon collection-server-icon--muted">
+                                        <i class="fa-solid fa-circle-minus"></i>
+                                    </span>
+                                    <span class="collection-server-name">Nessun server (globale)</span>
+                                </label>
+                                {% for server in emby_servers %}
+                                    <label class="collection-server-option">
+                                        <input type="checkbox" class="collection-server-option-input" value="{{ server.id }}">
+                                        <span class="collection-server-icon" style="color: {{ server.icon_color or '#0f172a' }}">
+                                            <i class="fa-solid {{ server.icon or 'fa-server' }}"></i>
+                                        </span>
+                                        <span class="collection-server-name">{{ server.alias or server.original_name or server.name or server.url or server.id }}</span>
+                                    </label>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <label for="collection-poster-url">Poster collezione (URL)</label>
+                            <input type="text" id="collection-poster-url" name="poster_url" maxlength="400" placeholder="https://.../poster.jpg">
+                            <span class="tagline small text-muted">Inserisci un immagine remota per la collezione Emby.</span>
+                        </div>
+                        <div class="form-row">
+                            <label for="collection-poster-file">Poster locale</label>
+                            <input type="file" id="collection-poster-file" name="poster_file" accept="image/jpeg,image/png,image/webp,image/svg+xml">
+                            <div class="tagline small text-muted">Carica un poster dal tuo computer (max 5MB). Verrà salvato nel database.</div>
+                            <div class="actions" style="margin-top: 0.4rem;">
+                                <button class="btn ghost" type="button" id="collection-poster-remove" disabled>Rimuovi poster caricato</button>
+                            </div>
+                            <div class="tagline small text-muted" id="collection-poster-upload-status"></div>
+                        </div>
+                        <div class="form-row">
+                            <label for="collection-background-url">Background collezione (URL)</label>
+                            <input type="text" id="collection-background-url" name="background_url" maxlength="400" placeholder="https://.../background.jpg">
+                            <span class="tagline small text-muted">Immagine di sfondo per la collezione Emby.</span>
+                        </div>
+                        <div class="form-row">
+                            <label for="collection-background-file">Background locale</label>
+                            <input type="file" id="collection-background-file" name="background_file" accept="image/jpeg,image/png,image/webp,image/svg+xml">
+                            <div class="tagline small text-muted">Carica un background dal tuo computer (max 5MB). Verrà salvato nel database.</div>
+                            <div class="actions" style="margin-top: 0.4rem;">
+                                <button class="btn ghost" type="button" id="collection-background-remove" disabled>Rimuovi background caricato</button>
+                            </div>
+                            <div class="tagline small text-muted" id="collection-background-upload-status"></div>
+                        </div>
+                        <div class="form-row">
+                            <label for="collection-season-start">Visibilità stagionale</label>
+                            <div style="display:flex; gap:0.5rem;">
+                                <input type="text" id="collection-season-start" name="season_start" placeholder="MM-DD">
+                                <input type="text" id="collection-season-end" name="season_end" placeholder="MM-DD">
+                            </div>
+                            <span class="tagline small text-muted">Formato MM-DD; lascia vuoto per mostrare sempre.</span>
+                        </div>
+                        <div class="form-row" style="display:flex; gap:1rem; align-items:center;">
+                            <label class="switch-toggle">
+                                <input type="checkbox" id="collection-refresh-metadata" name="refresh_metadata">
+                                <span>Aggiorna metadata dopo sync</span>
+                            </label>
+                        </div>
+                        <div class="form-row" style="gap:1rem; align-items:center; flex-wrap: wrap;">
+                            <label class="switch-toggle">
+                                <input type="checkbox" id="collection-auto-enabled" name="auto_enabled">
+                                <span>Esegui automaticamente</span>
+                            </label>
+                            <label style="display:flex; flex-direction:column;">
+                                Frequenza automazione (%)
+                                <input type="number" id="collection-auto-frequency" name="auto_frequency" min="0" max="100" value="100">
+                            </label>
+                        </div>
+                        <div class="form-row">
+                            <label class="switch-toggle">
+                                <input type="checkbox" id="collection-enabled" name="enabled" checked>
+                                <span>Abilita subito</span>
+                            </label>
+                        </div>
+                        <div class="actions">
+                            <button class="btn primary" type="submit">Salva collezione</button>
+                            <button class="btn ghost" type="button" id="collection-reset">Reset</button>
+                            <button class="btn secondary" type="button" id="collection-cancel">Chiudi</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div class="collection-modal__pane">
+                    <details class="collection-source-panel" id="trakt-lists-card">
+                        <summary>
+                            <div>
+                                <div class="collection-source-panel__title">Liste Trakt</div>
+                                <div class="collection-source-panel__status" id="trakt-lists-status">
+                                    {% if trakt_enabled %}
+                                        Caricamento liste dal tuo account Trakt…
+                                    {% else %}
+                                        Trakt non configurato. Collega Trakt nella pagina Configurazione.
+                                    {% endif %}
+                                </div>
+                            </div>
+                            <i class="fa-solid fa-chevron-down"></i>
+                        </summary>
+                        <div class="collection-source-panel__body">
+                            <div class="collection-source-panel__actions">
+                                <button class="btn secondary compact" id="trakt-lists-refresh" type="button" {% if not trakt_enabled %}disabled{% endif %}>
+                                    <i class="fa-solid fa-rotate"></i> Aggiorna
+                                </button>
+                            </div>
+                            <table class="collection-source-table" id="trakt-lists-table" aria-live="polite">
+                                <thead>
+                                    <tr>
+                                        <th>Lista</th>
+                                        <th>Privacy</th>
+                                        <th>Elementi</th>
+                                        <th>Azioni</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="trakt-lists-body"></tbody>
+                            </table>
+                        </div>
+                    </details>
+
+                    <details class="collection-source-panel" id="mdblist-lists-card">
+                        <summary>
+                            <div>
+                                <div class="collection-source-panel__title">Liste MDBList</div>
+                                <div class="collection-source-panel__status" id="mdblist-lists-status">
+                                    {% if not collection_settings.mdblist_enabled %}
+                                        Configura le chiavi MDBList in Configurazione per accedere alle tue liste.
+                                    {% elif collection_settings.download_my_mdblist_lists %}
+                                        Caricamento liste MDBList…
+                                    {% else %}
+                                        Abilita "Scarica automaticamente le mie liste MDBList" nella configurazione per popolare questo elenco.
+                                    {% endif %}
+                                </div>
+                            </div>
+                            <i class="fa-solid fa-chevron-down"></i>
+                        </summary>
+                        <div class="collection-source-panel__body">
+                            <div class="collection-source-panel__actions">
+                                <button class="btn secondary compact" id="mdblist-lists-refresh" type="button" {% if not collection_settings.mdblist_enabled %}disabled{% endif %}>
+                                    <i class="fa-solid fa-rotate"></i> Aggiorna
+                                </button>
+                            </div>
+                            <table class="collection-source-table" id="mdblist-lists-table" aria-live="polite">
+                                <thead>
+                                    <tr>
+                                        <th>Lista</th>
+                                        <th>Elementi</th>
+                                        <th>Azioni</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="mdblist-lists-body"></tbody>
+                            </table>
+                        </div>
+                    </details>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        window.collectionSourceTypes = {{ collection_source_types | tojson }};
+        window.collectionSettings = {{ collection_settings | tojson }};
+        window.embyServerMeta = {{ emby_servers | tojson }};
+    </script>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+    <script src="{{ url_for('static', filename='emby_collections.js') }}"></script>
+</body>
+</html>

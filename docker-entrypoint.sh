@@ -1,11 +1,12 @@
 #!/bin/sh
 set -e
 
+# Default paths match docker-compose.yml volume mappings
 if [ -z "$OCTOHUB_CONFIG_FILE" ]; then
-  export OCTOHUB_CONFIG_FILE="/app/data/config.json"
+  export OCTOHUB_CONFIG_FILE="/config/config.json"
 fi
 if [ -z "$OCTOHUB_RESULTS_FILE" ]; then
-  export OCTOHUB_RESULTS_FILE="/app/data/last_results.json"
+  export OCTOHUB_RESULTS_FILE="/storage/last_results.json"
 fi
 
 CONFIG_FILE="$OCTOHUB_CONFIG_FILE"

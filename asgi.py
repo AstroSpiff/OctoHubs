@@ -5,6 +5,7 @@ Run with: uvicorn asgi:app --host 0.0.0.0 --port 5050
 import asyncio
 import copy
 import json
+import logging
 import os
 import secrets
 import traceback
@@ -14,18 +15,37 @@ from queue import Queue, Empty
 from typing import Optional, Dict
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, Form, Depends, UploadFile, File
-from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, HTMLResponse
+from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import pass_context
 from starlette.middleware.sessions import SessionMiddleware
 from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse
 
-from app import _build_active_library_scans_snapshot, _build_scan_library_snapshot, _build_scan_library_tracked_snapshot, _build_scan_group_tracked_snapshot, _build_associations_get_snapshot, _build_associations_post_snapshot, _build_media_details_snapshot, _build_jellyseerr_request_snapshot, _build_tmdb_search_snapshot, _build_tmdb_tv_details_snapshot, _build_tmdb_check_availability_snapshot, _build_manual_search_snapshot, _build_rss_inspect_snapshot, _build_rss_inspect_json_snapshot, _build_rss_import_snapshot, _build_rss_import_json_snapshot, _build_rss_deduplicate_snapshot, _build_rss_items_snapshot, _build_send_torrent_snapshot, _build_scan_status_snapshot, _build_run_scan_snapshot, _build_update_request_rules_snapshot, _build_refresh_requests_snapshot, _build_test_connections_snapshot, _build_trakt_device_start_snapshot, _build_trakt_device_poll_snapshot, _build_trakt_clear_snapshot, _build_emby_stop_task_snapshot, _build_emby_server_status_snapshot, _build_emby_health_status_snapshot, _build_emby_activity_snapshot, _build_emby_tasks_snapshot, _build_emby_users_snapshot, _build_emby_plugins_snapshot, _build_emby_streams_snapshot, _build_emby_status_stream_payload, _build_emby_libraries_snapshot, _build_active_scans_snapshot, _build_debug_vf_query_snapshot, _build_strm_guard_status_snapshot, _build_grouped_libraries_snapshot, _build_movie_versions_snapshot, _build_series_seasons_snapshot, _build_season_episodes_snapshot, _build_lookup_snapshot, _build_item_details_snapshot, _build_availability_snapshot, _build_latest_snapshot, _build_latest_progress_payload, _build_latest_preview_snapshot, _build_latest_preview_cache_snapshot, _build_latest_enrich_snapshot, _build_latest_notify_snapshot, _build_emby_image_stream, _build_server_order_snapshot, _build_group_order_get_snapshot, _build_group_order_post_snapshot, _build_tab_order_get_snapshot, _build_tab_order_post_snapshot, _probe_discovery_start_snapshot, _probe_discovery_stop_snapshot, _probe_recent_start_snapshot, get_emby_user_manager, _probe_recent_start_all_snapshot, _probe_recent_stop_snapshot, _probe_recent_stop_all_snapshot, _probe_recent_processing_start_snapshot, _probe_recent_processing_start_all_snapshot, _probe_recent_processing_stop_snapshot, _probe_recent_processing_stop_all_snapshot, _probe_recent_combo_start_snapshot, _probe_recent_combo_start_all_snapshot, _probe_recent_combo_stop_snapshot, _probe_recent_combo_stop_all_snapshot, _probe_libraries_combo_start_snapshot, _probe_libraries_combo_stop_snapshot, _probe_processing_start_snapshot, _probe_processing_stop_snapshot, _probe_queue_get_snapshot, _probe_queue_delete_snapshot, _probe_history_get_snapshot, _probe_history_delete_snapshot, _probe_retry_snapshot, _probe_blacklist_get_snapshot, _probe_blacklist_delete_snapshot, _probe_debug_recent_items_snapshot, _coerce_request_bool, _coerce_request_int, _LIBRARY_SCAN_TRACKER, _ws_event_queues, _ws_queues_lock, _sse_event_queues, _sse_queues_lock, DateTimeEncoder, load_config, _default_emby_settings, _prepare_emby_servers_for_view, _get_total_blacklist_counts, _default_latest_settings, _load_latest_settings, _load_telegram_settings, _prepare_latest_notification_rules, EMBY_CATEGORY_OPTIONS, _resolve_next_url, _ensure_db_backend, _load_emby_settings_from_db, _build_emby_server_from_form, _fetch_emby_status, _save_emby_settings_to_db, _emby_display_name, _normalize_emby_server, _execute_emby_action, EMBY_ACTIONS, _db_enabled, _save_latest_settings, _get_emby_servers_from_config, _ensure_strm_guard_manager, _clear_latest_state, _update_app_settings_overrides, _register_app_event_loop
+from app import _build_active_library_scans_snapshot, _build_scan_library_snapshot, _build_scan_library_tracked_snapshot, _build_scan_group_tracked_snapshot, _build_associations_get_snapshot, _build_associations_post_snapshot, _build_media_details_snapshot, _build_jellyseerr_request_snapshot, _build_tmdb_search_snapshot, _build_tmdb_tv_details_snapshot, _build_tmdb_check_availability_snapshot, _build_manual_search_snapshot, _build_rss_inspect_snapshot, _build_rss_inspect_json_snapshot, _build_rss_import_snapshot, _build_rss_import_json_snapshot, _build_rss_deduplicate_snapshot, _build_rss_items_snapshot, _build_send_torrent_snapshot, _build_scan_status_snapshot, _build_run_scan_snapshot, _build_update_request_rules_snapshot, _build_refresh_requests_snapshot, _build_test_connections_snapshot, _build_trakt_device_start_snapshot, _build_trakt_device_poll_snapshot, _build_trakt_clear_snapshot, _build_emby_stop_task_snapshot, _build_emby_server_status_snapshot, _build_emby_health_status_snapshot, _build_emby_activity_snapshot, _build_emby_tasks_snapshot, _build_emby_users_snapshot, _build_emby_plugins_snapshot, _build_emby_streams_snapshot, _build_emby_status_stream_payload, _build_emby_libraries_snapshot, _build_active_scans_snapshot, _build_debug_vf_query_snapshot, _build_strm_guard_status_snapshot, _build_grouped_libraries_snapshot, _build_movie_versions_snapshot, _build_series_seasons_snapshot, _build_season_episodes_snapshot, _build_lookup_snapshot, _build_item_details_snapshot, _build_availability_snapshot, _build_latest_snapshot, _build_latest_progress_payload, _build_latest_preview_snapshot, _build_latest_preview_cache_snapshot, _build_latest_enrich_snapshot, _build_latest_notify_snapshot, _build_emby_image_stream, _build_server_order_snapshot, _build_group_order_get_snapshot, _build_group_order_post_snapshot, _build_tab_order_get_snapshot, _build_tab_order_post_snapshot, _probe_discovery_start_snapshot, _probe_discovery_stop_snapshot, _probe_recent_start_snapshot, get_emby_user_manager, _probe_recent_start_all_snapshot, _probe_recent_stop_snapshot, _probe_recent_stop_all_snapshot, _probe_recent_processing_start_snapshot, _probe_recent_processing_start_all_snapshot, _probe_recent_processing_stop_snapshot, _probe_recent_processing_stop_all_snapshot, _probe_recent_combo_start_snapshot, _probe_recent_combo_start_all_snapshot, _probe_recent_combo_stop_snapshot, _probe_recent_combo_stop_all_snapshot, _probe_libraries_combo_start_snapshot, _probe_libraries_combo_stop_snapshot, _probe_processing_start_snapshot, _probe_processing_stop_snapshot, _probe_queue_get_snapshot, _probe_queue_delete_snapshot, _probe_history_get_snapshot, _probe_history_delete_snapshot, _probe_retry_snapshot, _probe_blacklist_get_snapshot, _probe_blacklist_delete_snapshot, _probe_debug_recent_items_snapshot, _coerce_request_bool, _coerce_request_int, _LIBRARY_SCAN_TRACKER, _ws_event_queues, _ws_queues_lock, _sse_event_queues, _sse_queues_lock, DateTimeEncoder, load_config, _default_emby_settings, _prepare_emby_servers_for_view, _get_total_blacklist_counts, _default_latest_settings, _load_latest_settings, _load_telegram_settings, _prepare_latest_notification_rules, EMBY_CATEGORY_OPTIONS, _resolve_next_url, _ensure_db_backend, _load_emby_settings_from_db, _build_emby_server_from_form, _fetch_emby_status, _save_emby_settings_to_db, _emby_display_name, _normalize_emby_server, _execute_emby_action, EMBY_ACTIONS, _db_enabled, _save_latest_settings, _get_emby_servers_from_config, _ensure_strm_guard_manager, _clear_latest_state, _update_app_settings_overrides, _register_app_event_loop, _active_trakt_settings, _trakt_enabled
 from storage import StorageError
+from emby_collection_sources import SOURCE_TYPES, list_trakt_lists, list_mdblist_user_lists, is_mdblist_enabled
+from emby_collections import (
+    list_collection_definitions,
+    run_collection_sync,
+    sync_all_collections,
+    save_collection_definition,
+    set_collection_enabled,
+    remove_collection_definition,
+    get_collection_poster_blob,
+    save_collection_poster_blob,
+    delete_collection_poster_blob,
+    get_collection_backdrop_blob,
+    save_collection_backdrop_blob,
+    delete_collection_backdrop_blob,
+    COLLECTION_POSTER_MIME_TYPES,
+    COLLECTION_POSTER_MAX_BYTES
+)
 from tasks import workflow_manager
 from utils import _split_csv_field
 from scan_websocket_manager import get_scan_connection_manager
+
+logger = logging.getLogger(__name__)
 
 fastapi_app = FastAPI()
 
@@ -81,6 +101,8 @@ def _initialize_runtime_services() -> None:
             print("[STARTUP] Configurazione caricata correttamente, AutoScheduler attivo.")
         else:
             print("[STARTUP] Configurazione non valida, AutoScheduler non attivo.")
+        from emby_collection_scheduler import start_collection_auto_refresher
+        start_collection_auto_refresher()
     except Exception as exc:
         print(f"[STARTUP] Errore durante inizializzazione: {exc}")
 
@@ -126,6 +148,7 @@ def url_for_fastapi(endpoint: str, **kwargs) -> str:
 
         # Dashboard routes
         "emby_dashboard": "/emby",
+        "emby_collections": "/emby/collections",
         "view_emby_users": "/emby/users",
         "emby_probe": "/emby/probe",
         "dashboard": "/",
@@ -1834,6 +1857,280 @@ async def view_emby_dashboard(request: Request, user=Depends(get_current_user_op
     })
 
 
+@fastapi_app.get("/emby/collections", response_class=HTMLResponse)
+async def view_emby_collections(request: Request, user=Depends(get_current_user_optional)):
+    """Page to manage Emby collection definitions."""
+    if not user:
+        return RedirectResponse(url="/login")
+
+    actor = user if user else {}
+    actor_id = actor.get("username") if isinstance(actor, dict) else getattr(actor, "username", None)
+    logger.info("Rendering collections page for user %s", actor_id or "unknown")
+
+    config, _ = load_config()
+    emby_config = (config or {}).get("EMBY") if config else _default_emby_settings()
+    raw_servers = (emby_config.get("SERVERS") if emby_config else []) or []
+    emby_servers = _prepare_emby_servers_for_view(raw_servers, lazy=True)
+    trakt_enabled = _trakt_enabled(_active_trakt_settings())
+    from config import DEFAULT_CONFIG
+    collections_config = (config or {}).get("COLLECTIONS") or DEFAULT_CONFIG["COLLECTIONS"]
+    collection_settings = {
+        "trakt_enabled": bool(trakt_enabled),
+        "mdblist_enabled": bool(is_mdblist_enabled()),
+        "auto_refresh_enabled": bool(collections_config.get("AUTO_REFRESH_ENABLED")),
+        "auto_refresh_interval_hours": int(collections_config.get("AUTO_REFRESH_INTERVAL_HOURS") or DEFAULT_CONFIG["COLLECTIONS"]["AUTO_REFRESH_INTERVAL_HOURS"]),
+        "use_mdblist_collection_description": bool(collections_config.get("USE_MDBLIST_COLLECTION_DESCRIPTION")),
+        "download_my_mdblist_lists": bool(collections_config.get("DOWNLOAD_MY_MDBLIST_LISTS"))
+    }
+
+    return templates.TemplateResponse(
+        "emby_collections.html",
+        {
+            "request": request,
+            "user": user,
+            "page": "emby_collections",
+            "active_page": "emby_collections",
+            "emby_servers": emby_servers,
+            "collection_source_types": SOURCE_TYPES,
+            "trakt_enabled": trakt_enabled,
+            "collection_settings": collection_settings,
+            "csrf_token": get_csrf_token(request)
+        }
+    )
+
+
+@fastapi_app.get("/api/emby/collections")
+async def api_emby_collections_list(user=Depends(require_user)):
+    actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
+    logger.info("User %s requested collection list", actor_id or "unknown")
+    try:
+        collections = list_collection_definitions()
+        return {"success": True, "collections": collections}
+    except StorageError as exc:
+        return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
+
+
+@fastapi_app.post("/api/emby/collections")
+async def api_emby_collections_save(request: Request, user=Depends(require_user)):
+    actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
+    logger.info("User %s saving collection definition", actor_id or "unknown")
+    try:
+        payload = await request.json()
+    except ValueError:
+        return JSONResponse(status_code=400, content={"success": False, "error": "JSON non valido"})
+    try:
+        collection = save_collection_definition(payload)
+        return {"success": True, "collection": collection}
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
+    except StorageError as exc:
+        return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
+
+
+@fastapi_app.post("/api/emby/collections/{collection_id}/poster")
+async def api_emby_collections_upload_poster(
+    collection_id: str,
+    file: UploadFile = File(...),
+    user=Depends(require_user)
+):
+    if not file or not file.filename:
+        return JSONResponse(status_code=400, content={"success": False, "error": "File mancante"})
+    content_type = (file.content_type or "").strip().lower()
+    if content_type not in COLLECTION_POSTER_MIME_TYPES:
+        return JSONResponse(status_code=400, content={"success": False, "error": "Formato poster non supportato"})
+    data = await file.read()
+    if not data:
+        return JSONResponse(status_code=400, content={"success": False, "error": "File vuoto"})
+    if len(data) > COLLECTION_POSTER_MAX_BYTES:
+        return JSONResponse(status_code=400, content={"success": False, "error": "Poster troppo grande"})
+    backend = _ensure_db_backend()
+    existing = backend.get_emby_collection_definition(collection_id)
+    if not existing:
+        return JSONResponse(status_code=404, content={"success": False, "error": "Collezione non trovata"})
+    try:
+        save_collection_poster_blob(collection_id, content_type, data)
+        return {"success": True}
+    except StorageError as exc:
+        return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
+
+
+@fastapi_app.get("/api/emby/collections/{collection_id}/poster")
+async def api_emby_collections_get_poster(collection_id: str):
+    poster = get_collection_poster_blob(collection_id)
+    if not poster:
+        return Response(status_code=404)
+    media_type = poster.get("mime_type") or "application/octet-stream"
+    return Response(
+        content=poster.get("data") or b"",
+        media_type=media_type,
+        headers={"Cache-Control": "no-store"}
+    )
+
+
+@fastapi_app.post("/api/emby/collections/{collection_id}/poster/delete")
+async def api_emby_collections_delete_poster(collection_id: str, user=Depends(require_user)):
+    backend = _ensure_db_backend()
+    existing = backend.get_emby_collection_definition(collection_id)
+    if not existing:
+        return JSONResponse(status_code=404, content={"success": False, "error": "Collezione non trovata"})
+    try:
+        delete_collection_poster_blob(collection_id)
+        return {"success": True}
+    except StorageError as exc:
+        return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
+
+
+@fastapi_app.post("/api/emby/collections/{collection_id}/backdrop")
+async def api_emby_collections_upload_backdrop(
+    collection_id: str,
+    file: UploadFile = File(...),
+    user=Depends(require_user)
+):
+    if not file or not file.filename:
+        return JSONResponse(status_code=400, content={"success": False, "error": "File mancante"})
+    content_type = (file.content_type or "").strip().lower()
+    if content_type not in COLLECTION_POSTER_MIME_TYPES:
+        return JSONResponse(status_code=400, content={"success": False, "error": "Formato backdrop non supportato"})
+    data = await file.read()
+    if not data:
+        return JSONResponse(status_code=400, content={"success": False, "error": "File vuoto"})
+    if len(data) > COLLECTION_POSTER_MAX_BYTES:
+        return JSONResponse(status_code=400, content={"success": False, "error": "Backdrop troppo grande"})
+    backend = _ensure_db_backend()
+    existing = backend.get_emby_collection_definition(collection_id)
+    if not existing:
+        return JSONResponse(status_code=404, content={"success": False, "error": "Collezione non trovata"})
+    try:
+        save_collection_backdrop_blob(collection_id, content_type, data)
+        return {"success": True}
+    except StorageError as exc:
+        return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
+
+
+@fastapi_app.get("/api/emby/collections/{collection_id}/backdrop")
+async def api_emby_collections_get_backdrop(collection_id: str):
+    backdrop = get_collection_backdrop_blob(collection_id)
+    if not backdrop:
+        return Response(status_code=404)
+    media_type = backdrop.get("mime_type") or "application/octet-stream"
+    return Response(
+        content=backdrop.get("data") or b"",
+        media_type=media_type,
+        headers={"Cache-Control": "no-store"}
+    )
+
+
+@fastapi_app.post("/api/emby/collections/{collection_id}/backdrop/delete")
+async def api_emby_collections_delete_backdrop(collection_id: str, user=Depends(require_user)):
+    backend = _ensure_db_backend()
+    existing = backend.get_emby_collection_definition(collection_id)
+    if not existing:
+        return JSONResponse(status_code=404, content={"success": False, "error": "Collezione non trovata"})
+    try:
+        delete_collection_backdrop_blob(collection_id)
+        return {"success": True}
+    except StorageError as exc:
+        return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
+
+
+@fastapi_app.post("/api/emby/collections/{collection_id}/toggle")
+async def api_emby_collections_toggle(
+    collection_id: str,
+    request: Request,
+    user=Depends(require_user)
+):
+    actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
+    logger.info("User %s toggling collection %s", actor_id or "unknown", collection_id)
+    try:
+        payload = await request.json()
+    except ValueError:
+        return JSONResponse(status_code=400, content={"success": False, "error": "JSON non valido"})
+    enabled = bool(payload.get("enabled", False))
+    try:
+        collection = set_collection_enabled(collection_id, enabled)
+        return {"success": True, "collection": collection}
+    except KeyError as exc:
+        return JSONResponse(status_code=404, content={"success": False, "error": str(exc)})
+    except StorageError as exc:
+        return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
+
+
+@fastapi_app.post("/api/emby/collections/{collection_id}/delete")
+async def api_emby_collections_delete(collection_id: str, user=Depends(require_user)):
+    actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
+    logger.info("User %s deleting collection %s", actor_id or "unknown", collection_id)
+    try:
+        result = remove_collection_definition(collection_id)
+        return {"success": True, "collection": result}
+    except KeyError as exc:
+        return JSONResponse(status_code=404, content={"success": False, "error": str(exc)})
+    except StorageError as exc:
+        return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
+
+
+@fastapi_app.post("/api/emby/collections/{collection_id}/sync")
+async def api_emby_collections_sync(
+    collection_id: str,
+    user=Depends(require_user)
+):
+    actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
+    logger.info("User %s syncing collection %s", actor_id or "unknown", collection_id)
+    try:
+        result = run_collection_sync(collection_id)
+        return {
+            "success": True,
+            "collection": result.get("collection"),
+            "details": result.get("details")
+        }
+    except KeyError as exc:
+        return JSONResponse(status_code=404, content={"success": False, "error": str(exc)})
+    except StorageError as exc:
+        return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
+    except RuntimeError as exc:
+        return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
+
+
+@fastapi_app.post("/api/emby/collections/sync-all")
+async def api_emby_collections_sync_all(user=Depends(require_user)):
+    actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
+    logger.info("User %s requested sync-all collections", actor_id or "unknown")
+    try:
+        result = sync_all_collections()
+        return {
+            "success": True,
+            "summary": result.get("summary", {})
+        }
+    except StorageError as exc:
+        return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
+    except RuntimeError as exc:
+        return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
+
+
+@fastapi_app.get("/api/emby/collections/trakt-lists")
+async def api_emby_collections_trakt_lists(user=Depends(require_user)):
+    actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
+    logger.info("User %s requested Trakt lists", actor_id or "unknown")
+    try:
+        trakt_lists = list_trakt_lists()
+        return {"success": True, "lists": trakt_lists}
+    except RuntimeError as exc:
+        return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
+
+@fastapi_app.get("/api/emby/collections/mdblist-lists")
+async def api_emby_collections_mdblist_lists(user=Depends(require_user)):
+    actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
+    logger.info("User %s requested MDBList lists", actor_id or "unknown")
+    try:
+        lists = list_mdblist_user_lists()
+        return {"success": True, "lists": lists}
+    except RuntimeError as exc:
+        return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
+
+
 @fastapi_app.get("/emby/users", response_class=HTMLResponse)
 async def view_emby_users(request: Request, user=Depends(get_current_user_optional)):
     if not user:
@@ -3077,6 +3374,7 @@ async def configuration_page(request: Request):
     raw_servers = (emby_config.get("SERVERS") if emby_config else []) or []
     emby_servers = _prepare_emby_servers_for_view(raw_servers, lazy=True)
     auto_tasks = (config.get("AUTO_TASKS") if config and config.get("AUTO_TASKS") else _default_auto_tasks())
+    collection_config = (config or {}).get("COLLECTIONS", {})
     total_blacklist_count, total_incomplete_count = _get_total_blacklist_counts()
 
     telegram_settings = _default_telegram_settings()
@@ -3108,6 +3406,7 @@ async def configuration_page(request: Request):
             "emby_config": emby_config,
             "emby_servers": emby_servers,
             "auto_tasks": auto_tasks,
+            "collection_config": collection_config,
             "telegram_settings": telegram_settings,
             "telegram_bots": telegram_settings.get("BOTS", []),
             "telegram_groups": telegram_settings.get("GROUPS", []),
@@ -4054,6 +4353,10 @@ async def update_config_route(
     tmdb_language: str = Form(""),
     mdblist_api_keys: str = Form(""),
     omdb_api_keys: str = Form(""),
+    collections_auto_refresh_enabled: str = Form(None),
+    collections_auto_refresh_interval: str = Form(""),
+    collections_use_mdblist_description: str = Form(None),
+    collections_download_my_mdblist_lists: str = Form(None),
     # Trakt fields
     trakt_enabled: str = Form(None),
     trakt_client_id: str = Form(""),
@@ -4077,6 +4380,7 @@ async def update_config_route(
         _merge_trakt_settings, _merge_justwatch_settings
     )
     from storage import DatabaseStorage, StorageError
+    from config import DEFAULT_CONFIG
 
     legacy_config = read_raw_config() or {}
     next_url = _resolve_next_url(next_page, 'dashboard')
@@ -4169,6 +4473,17 @@ async def update_config_route(
         app_settings["OMDB_API_KEY"] = omdb_keys[0]
     else:
         app_settings["OMDB_API_KEY"] = ""
+
+    # Collection automation settings
+    interval_default = DEFAULT_CONFIG["COLLECTIONS"]["AUTO_REFRESH_INTERVAL_HOURS"]
+    auto_interval = _coerce_request_int(collections_auto_refresh_interval, interval_default, 1, 168)
+    collections_payload = {
+        "AUTO_REFRESH_ENABLED": bool(collections_auto_refresh_enabled),
+        "AUTO_REFRESH_INTERVAL_HOURS": auto_interval,
+        "USE_MDBLIST_COLLECTION_DESCRIPTION": bool(collections_use_mdblist_description),
+        "DOWNLOAD_MY_MDBLIST_LISTS": bool(collections_download_my_mdblist_lists)
+    }
+    app_settings["COLLECTIONS"] = collections_payload
 
     # Trakt configuration
     trakt_payload = {

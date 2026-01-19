@@ -1256,14 +1256,20 @@ def get_tmdb_tv_details(api_key: str, tv_id: int, language: str = "it-IT") -> di
         return {}
 
 
-def check_emby_availability(emby_servers: list, tmdb_id: int, media_type: Optional[str] = None) -> list:
+def check_emby_availability(
+    emby_servers: list,
+    provider_id: Any,
+    media_type: Optional[str] = None,
+    provider_key: str = "Tmdb"
+) -> list:
     """
-    Check if content is available on any Emby server using TMDB ID.
+    Check if content is available on any Emby server using a provider ID.
 
     Args:
         emby_servers: List of Emby server configurations
-        tmdb_id: TMDB ID to search for
+        provider_id: Provider identifier (TMDB, IMDb, etc.)
         media_type: Optional media type ("movie" or "tv") to refine search
+        provider_key: Provider key used in Emby (e.g., "Tmdb" or "Imdb")
 
     Returns:
         List of server info dicts where content is found, with keys:
@@ -1275,11 +1281,11 @@ def check_emby_availability(emby_servers: list, tmdb_id: int, media_type: Option
         - item_id: Emby item ID
         - item_name: Item name
     """
-    if not emby_servers or not tmdb_id:
+    if not emby_servers or not provider_id:
         return []
 
     found_servers = []
-    provider_id_key = "Tmdb"
+    provider_id_key = provider_key
     normalized_type = _normalize_media_type(media_type)
     include_types = None
     if normalized_type == "tv":
@@ -1303,7 +1309,7 @@ def check_emby_availability(emby_servers: list, tmdb_id: int, media_type: Option
             # Search by provider ID (TMDB)
             search_url = f"{url}/Items"
             params = {
-                "AnyProviderIdEquals": f"{provider_id_key}.{tmdb_id}",
+                "AnyProviderIdEquals": f"{provider_id_key}.{provider_id}",
                 "Recursive": "true",
                 "Fields": "ProviderIds",
                 "api_key": api_key

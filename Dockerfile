@@ -40,13 +40,14 @@ WORKDIR /app
 COPY --chown=octohub:octohub . .
 
 # Set environment variables
+# Default paths match docker-compose.yml volume mappings
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     SECRET_KEY="" \
-    OCTOHUB_CONFIG_FILE="/app/data/config.json" \
-    OCTOHUB_RESULTS_FILE="/app/data/last_results.json" \
-    AUTH_DATABASE_URL="sqlite:////app/data/auth.db" \
+    OCTOHUB_CONFIG_FILE="/config/config.json" \
+    OCTOHUB_RESULTS_FILE="/storage/last_results.json" \
+    AUTH_DATABASE_URL="sqlite:////storage/auth.db" \
     ADMIN_USERNAME="" \
     ADMIN_PASSWORD="" \
     ADMIN_EMAIL="" \
@@ -56,8 +57,8 @@ ENV PATH="/opt/venv/bin:$PATH" \
     CSRF_TIME_LIMIT_SECONDS="3600"
 
 # Create directories for data persistence
-RUN mkdir -p /app/data /app/logs && \
-    chown -R octohub:octohub /app/data /app/logs
+RUN mkdir -p /config /storage /app/logs && \
+    chown -R octohub:octohub /config /storage /app/logs
 
 RUN chmod +x /app/docker-entrypoint.sh
 

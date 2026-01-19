@@ -30,6 +30,11 @@
                title="Apri Emby Toolkit">
                 Emby Toolkit
             </a>
+            <a href="{{ url_for('emby_collections') }}"
+               class="nav-link {% if active_page == 'emby_collections' %}active{% endif %}"
+               title="Gestisci collezioni">
+                Collezioni
+            </a>
             <a href="/emby/probe"
                class="nav-link {% if active_page == 'emby_probe' %}active{% endif %}"
                title="Apri STRM Probe">

@@ -11,6 +11,7 @@ OctoHub e una web app FastAPI per orchestrare server Emby e servizi collegati (J
 ## Funzionalita principali
 - Dashboard con stato scansioni, risultati e metriche principali.
 - Gestione multi-server Emby con azioni rapide.
+- Gestione collezioni Emby automatizzate (creazione/aggiornamento da liste MDBList, Trakt, IMDb).
 - Automazioni per scansioni e refresh programmati.
 - Import RSS e JSON con archivio consultabile.
 - Workflow STRM Extract e STRM Guard per Emby.
@@ -31,17 +32,17 @@ OctoHub e una web app FastAPI per orchestrare server Emby e servizi collegati (J
 1. Crea una nuova stack e incolla il contenuto di `docker-compose.yml`.
 2. Aggiorna i path `/mnt/shared/...` con il tuo storage reale.
 3. Imposta `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`.
-4. (Opzionale) Se non vuoi PostgreSQL, commenta il servizio `postgres`.
+4. (Opzionale) PostgreSQL è già commentato di default. L'app funziona senza DB esterno.
 5. (Opzionale) Per HTTPS, decommenta il blocco `nginx` e carica i cert in `/mnt/shared/config/octohub/nginx/ssl`.
-6. Deploy della stack e apri `http://IP:5000`.
+6. Deploy della stack e apri `http://IP:5050`.
 
 ## Avvio rapido (Docker)
 1. Avvia:
    - `docker compose up -d --build`
 2. Apri:
-   - `http://IP:5000`
+   - `http://IP:5050`
 I file `config.json` e `last_results.json` vengono creati automaticamente in `/mnt/shared/...` come da compose.
-Se non usi PostgreSQL, puoi commentare il servizio `postgres` in `docker-compose.yml`.
+PostgreSQL è opzionale e già commentato di default.
 
 ## HTTPS con Nginx (opzionale)
 1. Metti i certificati in `/mnt/shared/config/octohub/nginx/ssl`.

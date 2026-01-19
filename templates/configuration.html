@@ -24,6 +24,11 @@
                title="Apri Emby Toolkit">
                 Emby Toolkit
             </a>
+            <a href="{{ url_for('emby_collections') }}"
+               class="nav-link {% if active_page == 'emby_collections' %}active{% endif %}"
+               title="Gestisci collezioni">
+                Collezioni
+            </a>
             <a href="/emby/probe"
                class="nav-link {% if active_page == 'emby_probe' %}active{% endif %}"
                title="Apri STRM Probe">
@@ -777,6 +782,34 @@
                                     </div>
                                 </div>
                                 <div class="tagline">Ottieni una API key gratuita su <a href="https://mdblist.com/preferences/" target="_blank" rel="noopener">mdblist.com/preferences</a></div>
+                            </section>
+                            <section class="config-box">
+                                <h4>Collezioni Emby</h4>
+                                <div class="form-grid">
+                                    <div style="grid-column:1 / span 2;">
+                                        <label class="switch-toggle">
+                                            <input type="checkbox" name="collections_auto_refresh_enabled" {% if collection_config.AUTO_REFRESH_ENABLED %}checked{% endif %}>
+                                            <span>Attiva sincronizzazione automatica delle collezioni</span>
+                                        </label>
+                                    </div>
+                                    <div>
+                                        <label for="collections_auto_refresh_interval">Intervallo tra esecuzioni automatiche (ore)</label>
+                                        <input type="number" id="collections_auto_refresh_interval" name="collections_auto_refresh_interval" min="1" value="{{ collection_config.AUTO_REFRESH_INTERVAL_HOURS or 4 }}">
+                                    </div>
+                                    <div>
+                                        <label class="switch-toggle">
+                                            <input type="checkbox" name="collections_use_mdblist_description" {% if collection_config.USE_MDBLIST_COLLECTION_DESCRIPTION %}checked{% endif %}>
+                                            <span>Usa descrizione MDBList per le collezioni</span>
+                                        </label>
+                                    </div>
+                                    <div style="grid-column:1 / span 2;">
+                                        <label class="switch-toggle">
+                                            <input type="checkbox" name="collections_download_my_mdblist_lists" {% if collection_config.DOWNLOAD_MY_MDBLIST_LISTS %}checked{% endif %}>
+                                            <span>Scarica automaticamente le mie liste MDBList</span>
+                                        </label>
+                                    </div>
+                                </div>
+                                <p class="tagline">Le automazioni servono a mantenere aggiornate le collezioni e a importare rapidamente i contenuti da MDBList.</p>
                             </section>
                             <section class="config-box">
                                 <h4>OMDb (Open Movie Database)</h4>

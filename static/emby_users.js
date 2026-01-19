@@ -3,23 +3,7 @@
 let currentUsersData = null;
 let currentIconData = null;
 
-// Toast Helper
-function showToast(message, type = 'info') {
-    const container = document.getElementById('toast-container');
-    if (!container) return;
-    
-    const toast = document.createElement('div');
-    toast.className = `toast toast--${type}`;
-    toast.textContent = message;
-    
-    container.appendChild(toast);
-    
-    // Auto remove
-    setTimeout(() => {
-        toast.style.opacity = '0';
-        setTimeout(() => toast.remove(), 300);
-    }, 5000);
-}
+// showToast is already defined globally in emby.js
 
 async function loadEmbyUsers(force = false) {
     if (!force && currentUsersData) return;

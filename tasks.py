@@ -318,7 +318,7 @@ class WorkflowManager:
     """Gestisce workflow di aggiornamento sequenziali (Scan -> Probe -> Cache -> Notify)."""
 
     def __init__(self):
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # Reentrant lock per permettere acquisizioni multiple nello stesso thread
         self._thread = None
         self._stop_event = threading.Event()
         self._status = {

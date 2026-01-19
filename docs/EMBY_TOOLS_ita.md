@@ -6,6 +6,24 @@ Documenti: [README](../README_ita.md) | [Docker Deploy](DOCKER_DEPLOY_ita.md) | 
 
 Questo documento copre gli strumenti legati a Emby in OctoHub.
 
+## Collezioni Emby
+OctoHub supporta la gestione automatizzata delle collezioni Emby tramite integrazione con liste esterne:
+- **MDBList**: Importa collezioni da liste MDBList pubbliche o private
+- **Trakt**: Sincronizza collezioni da liste Trakt
+- **IMDb**: Importa collezioni da liste IMDb
+
+Funzionalità:
+- Creazione automatica di collezioni basate su liste esterne
+- Aggiornamento periodico delle collezioni esistenti
+- Scheduler per mantenere le collezioni sincronizzate
+- Gestione multipla di liste per server
+
+Dalla dashboard collezioni Emby puoi:
+- Configurare sorgenti di liste (MDBList, Trakt, IMDb)
+- Schedulare aggiornamenti automatici delle collezioni
+- Visualizzare lo stato di sincronizzazione
+- Gestire manualmente le collezioni create
+
 ## Setup manuale
 - Aggiungi i server Emby in `config.json` con API key admin.
 - Se vuoi automatizzare STRM Extract, imposta `strm_task_id` per il server.

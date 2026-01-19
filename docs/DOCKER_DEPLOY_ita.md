@@ -35,19 +35,19 @@ Se il tuo storage e diverso, modifica i path `/mnt/shared/...` in `docker-compos
 1. Crea una nuova stack e incolla `docker-compose.yml`.
 2. Aggiorna i path `/mnt/shared/...` con il tuo storage reale.
 3. Imposta `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`.
-4. Opzionale: commenta il servizio `postgres` se non ti serve.
+4. Opzionale: PostgreSQL è già commentato di default. Decommenta solo se ti serve.
 5. Opzionale: decommenta il blocco `nginx` per HTTPS.
 6. Fai deploy una volta per generare `config.json`.
 7. Modifica `/mnt/shared/config/octohub/config.json` con il tuo server Emby e le integrazioni.
 8. Riavvia il container `app` (o ridisponi la stack).
-9. Apri `http://IP:5000`.
+9. Apri `http://IP:5050`.
 
 ## Avvio rapido (CLI)
 ```bash
 docker compose up -d --build
 ```
 
-Apri: `http://IP:5000`
+Apri: `http://IP:5050`
 
 `config.json` e `last_results.json` vengono creati automaticamente nei path host definiti nel compose.
 Dopo il primo avvio, modifica `config.json` e riavvia il container `app`.
@@ -95,10 +95,15 @@ Esempio minimo:
 
 ## PostgreSQL (opzionale)
 Due storage separati:
-- Utenti: SQLite in `/mnt/shared/applications/octohub/auth.db` (default).
-- Dati app: PostgreSQL se abiliti `DATABASE` in `config.json`.
+- Utenti/Autenticazione: SQLite in `/storage/auth.db` (sempre attivo, non richiede configurazione).
+- Dati applicativi: PostgreSQL se abiliti `DATABASE` in `config.json` (opzionale).
 
-Esempio blocco `DATABASE`:
+NOTA: PostgreSQL è COMPLETAMENTE OPZIONALE e già commentato in `docker-compose.yml`.
+L'applicazione funziona perfettamente senza DB esterno usando solo file JSON e SQLite.
+
+Abilita PostgreSQL SOLO se vuoi storicizzare dati aggiuntivi (history, queue, analytics).
+
+Esempio blocco `DATABASE` in `config.json`:
 ```json
 {
   "DATABASE": {
@@ -113,7 +118,10 @@ Esempio blocco `DATABASE`:
 }
 ```
 
-Se non ti serve PostgreSQL, commenta il servizio `postgres` in `docker-compose.yml`.
+Per abilitare PostgreSQL:
+1. Decommenta il servizio `postgres` in `docker-compose.yml`
+2. Aggiungi il blocco `DATABASE` in `config.json` come sopra
+3. Riavvia i container con `docker compose up -d --build`
 
 ## Nginx (opzionale)
 Il servizio Nginx e commentato di default.

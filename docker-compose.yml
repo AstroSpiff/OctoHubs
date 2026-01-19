@@ -3,9 +3,14 @@ version: '3.8'
 services:
   # OctoHub Application
   app:
+    # Build locale (usa questa per sviluppo o feature non ancora pushate)
     build:
-      context: https://github.com/AstroSpiff/OctoHub.git#main
+      context: .
       dockerfile: Dockerfile
+    # Build da GitHub (commenta la sezione build sopra e decommenta questa per production)
+    # build:
+    #   context: https://github.com/AstroSpiff/OctoHub.git#main
+    #   dockerfile: Dockerfile
     image: octohub:latest
     container_name: octohub-app
     restart: unless-stopped
@@ -63,24 +68,33 @@ services:
 
   # PostgreSQL Database (Optional - for main app data)
   # Usato per i dati applicativi (configurazioni/risultati) se lo abiliti in config.json
-  # Se non ti serve, commenta questo servizio.
-  postgres:
-    image: postgres:15-alpine
-    container_name: octohub-postgres
-    restart: unless-stopped
-    environment:
-      - POSTGRES_DB=${POSTGRES_DB:-octohub}
-      - POSTGRES_USER=${POSTGRES_USER:-octohub}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-octohub_password}
-    volumes:
-      - /mnt/shared/applications/octohub/postgres:/var/lib/postgresql/data
-    networks:
-      - octohub-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-octohub}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+  # NOTA: PostgreSQL è OPZIONALE. L'applicazione funziona perfettamente senza DB esterno.
+  # - AUTH (utenti/sessioni): usa sempre SQLite in /storage/auth.db
+  # - CONFIG/RESULTS: salvati in /config/config.json e /storage/last_results.json
+  # - Abilita PostgreSQL SOLO se vuoi storicizzare dati aggiuntivi (history, queue, etc.)
+  #
+  # Per abilitare PostgreSQL:
+  # 1. Decommenta questo servizio
+  # 2. Aggiungi il blocco DATABASE in config.json (vedi docs/CONFIGURATION_ita.md)
+  # 3. Riavvia i container
+  #
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: octohub-postgres
+  #   restart: unless-stopped
+  #   environment:
+  #     - POSTGRES_DB=${POSTGRES_DB:-octohub}
+  #     - POSTGRES_USER=${POSTGRES_USER:-octohub}
+  #     - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-octohub_password}
+  #   volumes:
+  #     - /mnt/shared/applications/octohub/postgres:/var/lib/postgresql/data
+  #   networks:
+  #     - octohub-network
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-octohub}"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
 
   # Nginx Reverse Proxy (opzionale)
   # Decommenta questo blocco per abilitarlo.

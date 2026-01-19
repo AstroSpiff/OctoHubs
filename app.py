@@ -55,10 +55,12 @@ from markupsafe import Markup
 from storage import DatabaseStorage, StorageError
 from config import (
     CONFIG_FILE,
+    DEFAULT_CONFIG,
     _merge_database_settings,
     _merge_trakt_settings,
     _merge_justwatch_settings,
     _merge_rss_import_settings,
+    _merge_collection_settings,
     _normalize_sort_settings,
     _clean_sort_mode,
     _normalize_auto_settings,
@@ -4703,6 +4705,7 @@ def load_config():
     search_rules = _normalize_sort_settings(search_rules)
     auto_settings = _normalize_auto_settings(app_settings.get("AUTO_TASKS"))
     rss_import_settings = _merge_rss_import_settings(app_settings.get("RSS_IMPORT"))
+    collection_settings = _merge_collection_settings(app_settings.get("COLLECTIONS"))
 
     if need_save or not app_settings or "AUTO_TASKS" not in app_settings:
         persisted = dict(app_settings)
@@ -4714,18 +4717,19 @@ def load_config():
             "RSS_IMPORT": rss_import_settings,
             "TRAKT": merged["TRAKT"],
             "JUSTWATCH": merged["JUSTWATCH"],
-            "EMBY": merged["EMBY"]
+            "EMBY": merged["EMBY"],
+            "COLLECTIONS": collection_settings
         })
         for key in CONNECTION_FIELDS:
             value = merged.get(key)
-            # Preserve lists, use appropriate default
             if value is None:
-                # Use default from DEFAULT_CONFIG if available
                 persisted[key] = DEFAULT_CONFIG.get(key, "")
             else:
                 persisted[key] = value
         backend.save_app_settings(persisted)
         app_settings = persisted
+    else:
+        app_settings.setdefault("COLLECTIONS", collection_settings)
 
     request_rules = backend.load_request_rules()
     if (not request_rules) and legacy_request_rules:
@@ -4738,6 +4742,7 @@ def load_config():
     merged["REQUEST_RULES"] = request_rules or {}
     merged["AUTO_TASKS"] = auto_settings
     merged["RSS_IMPORT"] = rss_import_settings
+    merged["COLLECTIONS"] = collection_settings
 
     # Validazione: richiede Jellyseerr + almeno uno tra Prowlarr o Jackett
     jellyseerr_ok = bool(merged.get("JELLYSEERR_URL") and merged.get("JELLYSEERR_API_KEY"))
@@ -4813,6 +4818,10 @@ def _seed_db_from_legacy_config(legacy_config: Dict[str, Any], backend: Database
     legacy_rss = legacy_config.get("RSS_IMPORT")
     if isinstance(legacy_rss, dict):
         _set_if_missing("RSS_IMPORT", _merge_rss_import_settings(legacy_rss))
+
+    legacy_collections = legacy_config.get("COLLECTIONS")
+    if isinstance(legacy_collections, dict):
+        _set_if_missing("COLLECTIONS", _merge_collection_settings(legacy_collections))
 
     if changed:
         backend.save_app_settings(updated)

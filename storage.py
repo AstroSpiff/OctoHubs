@@ -38,6 +38,29 @@ if SQLALCHEMY_AVAILABLE:
         data = Column(JSON, nullable=False)  # type: ignore[assignment]
         updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
 
+    class EmbyCollectionDefinition(Base):  # type: ignore[valid-type,misc]
+        """Persist settings for Emby collection imports."""
+        __tablename__ = "emby_collection_definitions"
+        id = Column(String(36), primary_key=True)  # type: ignore[assignment]
+        data = Column(JSON, nullable=False)  # type: ignore[assignment]
+        updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
+
+    class EmbyCollectionPoster(Base):  # type: ignore[valid-type,misc]
+        """Persist poster images for Emby collections."""
+        __tablename__ = "emby_collection_posters"
+        collection_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
+        mime_type = Column(String(100), nullable=False)  # type: ignore[assignment]
+        data = Column(LargeBinary, nullable=False)  # type: ignore[assignment]
+        updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
+
+    class EmbyCollectionBackdrop(Base):  # type: ignore[valid-type,misc]
+        """Persist background images for Emby collections."""
+        __tablename__ = "emby_collection_backdrops"
+        collection_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
+        mime_type = Column(String(100), nullable=False)  # type: ignore[assignment]
+        data = Column(LargeBinary, nullable=False)  # type: ignore[assignment]
+        updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
+
     class RequestRuleEntry(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "request_rules"
         request_id = Column(String(32), primary_key=True)  # type: ignore[assignment]
@@ -1598,6 +1621,189 @@ class DatabaseStorage:
         except SQLAlchemyError as exc:  # pragma: no cover
             session.rollback()
             raise StorageError(f"Errore eliminazione key: {exc}") from exc
+        finally:
+            session.close()
+
+    def list_emby_collection_definitions(self) -> list[Dict[str, Any]]:
+        """Return all stored Emby collection definitions."""
+        session = self._get_session()
+        try:
+            entries = session.query(EmbyCollectionDefinition).all()
+            result = []
+            for entry in entries:
+                data = entry.data if isinstance(entry.data, dict) else None
+                if data:
+                    result.append(data)
+            return result
+        finally:
+            session.close()
+
+    def get_emby_collection_definition(self, definition_id: str) -> Optional[Dict[str, Any]]:
+        """Return a single Emby collection definition."""
+        session = self._get_session()
+        try:
+            entry = session.get(EmbyCollectionDefinition, definition_id)
+            data = entry.data if entry and isinstance(entry.data, dict) else None
+            return data
+        finally:
+            session.close()
+
+    def save_emby_collection_definition(self, definition: Dict[str, Any]) -> None:
+        """Create or update an Emby collection definition."""
+        definition_id = definition.get("id")
+        if not definition_id:
+            raise StorageError("Missing collection id")
+        session = self._get_session()
+        try:
+            entry = session.get(EmbyCollectionDefinition, definition_id)
+            if entry:
+                entry.data = definition  # type: ignore[assignment]
+            else:
+                entry = EmbyCollectionDefinition(
+                    id=str(definition_id),
+                    data=definition
+                )
+                session.add(entry)
+            session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore salvataggio collezione Emby: {exc}") from exc
+        finally:
+            session.close()
+
+    def delete_emby_collection_definition(self, definition_id: str) -> None:
+        """Remove an Emby collection definition."""
+        session = self._get_session()
+        try:
+            entry = session.get(EmbyCollectionDefinition, definition_id)
+            if entry:
+                session.delete(entry)
+                session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore eliminazione collezione Emby: {exc}") from exc
+        finally:
+            session.close()
+
+    def list_emby_collection_poster_ids(self) -> set[str]:
+        """Return collection ids that have a stored poster."""
+        session = self._get_session()
+        try:
+            entries = session.query(EmbyCollectionPoster.collection_id).all()
+            return {entry[0] for entry in entries if entry and entry[0]}
+        finally:
+            session.close()
+
+    def get_emby_collection_poster(self, collection_id: str) -> Optional[Dict[str, Any]]:
+        """Return poster data for a collection."""
+        session = self._get_session()
+        try:
+            entry = session.get(EmbyCollectionPoster, collection_id)
+            if not entry:
+                return None
+            return {
+                "collection_id": entry.collection_id,
+                "mime_type": entry.mime_type,
+                "data": entry.data,
+                "updated_at": entry.updated_at.isoformat() if entry.updated_at else None
+            }
+        finally:
+            session.close()
+
+    def save_emby_collection_poster(self, collection_id: str, mime_type: str, data: bytes) -> None:
+        """Create or update a collection poster blob."""
+        session = self._get_session()
+        try:
+            entry = session.get(EmbyCollectionPoster, collection_id)
+            if entry:
+                entry.mime_type = mime_type  # type: ignore[assignment]
+                entry.data = data  # type: ignore[assignment]
+            else:
+                entry = EmbyCollectionPoster(
+                    collection_id=collection_id,
+                    mime_type=mime_type,
+                    data=data
+                )
+                session.add(entry)
+            session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore salvataggio poster collezione Emby: {exc}") from exc
+        finally:
+            session.close()
+
+    def delete_emby_collection_poster(self, collection_id: str) -> None:
+        """Remove a collection poster blob."""
+        session = self._get_session()
+        try:
+            entry = session.get(EmbyCollectionPoster, collection_id)
+            if entry:
+                session.delete(entry)
+                session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore eliminazione poster collezione Emby: {exc}") from exc
+        finally:
+            session.close()
+
+    def list_emby_collection_backdrop_ids(self) -> set[str]:
+        """Return collection ids that have a stored backdrop."""
+        session = self._get_session()
+        try:
+            entries = session.query(EmbyCollectionBackdrop.collection_id).all()
+            return {entry[0] for entry in entries if entry and entry[0]}
+        finally:
+            session.close()
+
+    def get_emby_collection_backdrop(self, collection_id: str) -> Optional[Dict[str, Any]]:
+        """Return backdrop data for a collection."""
+        session = self._get_session()
+        try:
+            entry = session.get(EmbyCollectionBackdrop, collection_id)
+            if not entry:
+                return None
+            return {
+                "collection_id": entry.collection_id,
+                "mime_type": entry.mime_type,
+                "data": entry.data,
+                "updated_at": entry.updated_at.isoformat() if entry.updated_at else None
+            }
+        finally:
+            session.close()
+
+    def save_emby_collection_backdrop(self, collection_id: str, mime_type: str, data: bytes) -> None:
+        """Create or update a collection backdrop blob."""
+        session = self._get_session()
+        try:
+            entry = session.get(EmbyCollectionBackdrop, collection_id)
+            if entry:
+                entry.mime_type = mime_type  # type: ignore[assignment]
+                entry.data = data  # type: ignore[assignment]
+            else:
+                entry = EmbyCollectionBackdrop(
+                    collection_id=collection_id,
+                    mime_type=mime_type,
+                    data=data
+                )
+                session.add(entry)
+            session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore salvataggio backdrop collezione Emby: {exc}") from exc
+        finally:
+            session.close()
+
+    def delete_emby_collection_backdrop(self, collection_id: str) -> None:
+        """Remove a collection backdrop blob."""
+        session = self._get_session()
+        try:
+            entry = session.get(EmbyCollectionBackdrop, collection_id)
+            if entry:
+                session.delete(entry)
+                session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore eliminazione backdrop collezione Emby: {exc}") from exc
         finally:
             session.close()
 
