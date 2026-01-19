@@ -77,6 +77,7 @@
                             {% for server in emby_servers %}
                                 <article class="server-card compact">
                                     <form class="server-form" action="/emby/save-server" method="post">
+                                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                                         <input type="hidden" name="server_id" value="{{ server.id }}">
                                         <input type="hidden" name="next" value="{{ url_for('configuration') }}">
                                         <div class="field-grid">
@@ -150,6 +151,7 @@
                 <div class="card">
                     <h2>Aggiungi nuovo server</h2>
                     <form class="server-form" action="/emby/save-server" method="post">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                         <input type="hidden" name="next" value="{{ url_for('configuration') }}">
                         <div class="field-grid">
                             <div style="display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: start;">
@@ -718,33 +720,33 @@
                         {% set justwatch = config.JUSTWATCH if config and config.JUSTWATCH else None %}
                         <div class="config-grid">
                             <section class="config-box">
-                                <h4>Jellyseerr</h4>
+                                <h4>Jellyseerr (opzionale)</h4>
                                 <div class="form-grid">
                                     <div>
                                         <label for="jellyseerr_url">Indirizzo Jellyseerr</label>
-                                        <input type="text" id="jellyseerr_url" name="jellyseerr_url" value="{{ config.JELLYSEERR_URL if config else '' }}" required>
+                                        <input type="text" id="jellyseerr_url" name="jellyseerr_url" value="{{ config.JELLYSEERR_URL if config else '' }}" placeholder="http://jellyseerr:5055">
                                     </div>
                                     <div>
                                         <label for="jellyseerr_api_key">API Key Jellyseerr</label>
-                                        <input type="text" id="jellyseerr_api_key" name="jellyseerr_api_key" value="{{ config.JELLYSEERR_API_KEY if config else '' }}" required>
+                                        <input type="text" id="jellyseerr_api_key" name="jellyseerr_api_key" value="{{ config.JELLYSEERR_API_KEY if config else '' }}" placeholder="Lascia vuoto se non usi Jellyseerr">
                                     </div>
                                 </div>
                             </section>
                             <section class="config-box">
-                                <h4>Prowlarr</h4>
+                                <h4>Prowlarr (opzionale)</h4>
                                 <div class="form-grid">
                                     <div>
                                         <label for="prowlarr_url">Indirizzo Prowlarr</label>
-                                        <input type="text" id="prowlarr_url" name="prowlarr_url" value="{{ config.PROWLARR_URL if config else '' }}" required>
+                                        <input type="text" id="prowlarr_url" name="prowlarr_url" value="{{ config.PROWLARR_URL if config else '' }}" placeholder="http://prowlarr:9696">
                                     </div>
                                     <div>
                                         <label for="prowlarr_api_key">API Key Prowlarr</label>
-                                        <input type="text" id="prowlarr_api_key" name="prowlarr_api_key" value="{{ config.PROWLARR_API_KEY if config else '' }}" required>
+                                        <input type="text" id="prowlarr_api_key" name="prowlarr_api_key" value="{{ config.PROWLARR_API_KEY if config else '' }}" placeholder="Lascia vuoto se non usi Prowlarr">
                                     </div>
                                 </div>
                             </section>
                             <section class="config-box">
-                                <h4>Jackett</h4>
+                                <h4>Jackett (opzionale)</h4>
                                 <div class="form-grid">
                                     <div>
                                         <label for="jackett_url">Indirizzo Jackett</label>
@@ -752,12 +754,12 @@
                                     </div>
                                     <div>
                                         <label for="jackett_api_key">Jackett API Key</label>
-                                        <input type="text" id="jackett_api_key" name="jackett_api_key" value="{{ config.JACKETT_API_KEY if config else '' }}">
+                                        <input type="text" id="jackett_api_key" name="jackett_api_key" value="{{ config.JACKETT_API_KEY if config else '' }}" placeholder="Lascia vuoto se non usi Jackett">
                                     </div>
                                 </div>
                             </section>
                             <section class="config-box">
-                                <h4>qBittorrent</h4>
+                                <h4>qBittorrent (opzionale)</h4>
                                 <div class="form-grid">
                                     <div>
                                         <label for="qbittorrent_url">Indirizzo qBittorrent</label>
