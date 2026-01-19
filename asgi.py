@@ -2526,7 +2526,7 @@ async def emby_probe_page(request: Request):
 @fastapi_app.post("/emby/save-server")
 async def emby_save_server_post(
     request: Request,
-    server_id: str = Form(...),
+    server_id: Optional[str] = Form(None, alias="server_id"),
     csrf_token: str = Form(None, alias="csrf_token"),
     next_param: Optional[str] = Form(None, alias="next")
 ):

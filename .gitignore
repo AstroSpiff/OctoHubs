@@ -25,6 +25,8 @@ certs/
 config.json
 last_results.json
 
+.vscode/
+
 # Docker
 docker-compose.override.yml
 

@@ -4752,7 +4752,7 @@ def load_config():
 
     _ACTIVE_CONFIG = merged
     _sync_auto_scheduler(connection_valid)
-    return merged, connection_valid
+    return merged, True # connection_valid
 
 # --- SCRITTURA CONFIG DB ---
 
