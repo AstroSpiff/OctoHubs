@@ -34,23 +34,30 @@ If your storage differs, update the `/mnt/shared/...` paths in `docker-compose.y
 ## Portainer quick install
 1. Create a new stack and paste `docker-compose.yml`.
 2. Update `/mnt/shared/...` paths to your real storage.
-3. Set `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`.
-4. Optional: comment the `postgres` service if you do not need it.
+3. **Optional**: Set `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL` to create admin automatically.
+   - If you do NOT set these variables, you'll see the setup wizard at `/setup` on first run.
+4. Optional: PostgreSQL is already commented by default. Uncomment only if needed.
 5. Optional: uncomment the `nginx` block to enable HTTPS.
-6. Deploy once to generate `config.json`.
-7. Edit `/mnt/shared/config/octohub/config.json` with your Emby server and integrations.
-8. Restart the `app` container (or redeploy the stack).
-9. Open `http://IP:5000`.
+6. Deploy and open `http://IP:5050`.
+7. **First run**:
+   - If you set admin ENV variables: you'll see the login page immediately.
+   - Otherwise: you'll see the `/setup` wizard to create admin and configure DB (optional).
+8. After initial setup, edit `/mnt/shared/config/octohub/config.json` with your Emby server and integrations.
+9. Restart the `app` container to apply changes.
 
 ## CLI quick start
 ```bash
 docker compose up -d --build
 ```
 
-Open: `http://IP:5000`
+Open: `http://IP:5050`
+
+On first access:
+- If admin ENV variables are set, you'll see the login page.
+- Otherwise, you'll be redirected to the `/setup` wizard to create admin user and optionally configure PostgreSQL.
 
 `config.json` and `last_results.json` are created automatically at the host paths defined in the compose.
-After the first run, edit `config.json` and restart the `app` container.
+After the initial setup, edit `config.json` and restart the `app` container.
 
 ## Environment variables (optional)
 Set them in Portainer or your shell:

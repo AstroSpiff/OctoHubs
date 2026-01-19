@@ -3200,7 +3200,11 @@ async def emby_library_scan_state_clear_post(
 
 @fastapi_app.get("/")
 async def root_redirect():
-    """Redirect root to login page."""
+    """Redirect root to setup or login page depending on whether users exist."""
+    from app import _has_users
+
+    if not _has_users():
+        return RedirectResponse(url="/setup", status_code=303)
     return RedirectResponse(url="/login", status_code=303)
 
 @fastapi_app.get("/login", response_class=HTMLResponse)

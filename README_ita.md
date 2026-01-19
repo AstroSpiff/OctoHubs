@@ -110,8 +110,14 @@ Se vuoi usare integrazioni e automazioni:
 Nota: `config.json` contiene segreti. Non pubblicarlo se contiene credenziali reali.
 
 ## Primo accesso
-Admin di default da `.env`:
+Al primo deployment, OctoHub reindirizza automaticamente al wizard di configurazione `/setup`:
+1. **Crea utente admin**: Imposta username, password (ed email opzionale)
+2. **Configura database** (opzionale): Configura PostgreSQL se necessario, oppure salta per usare storage basato su file
+
+In alternativa, puoi preconfigurare l'utente admin tramite variabili d'ambiente in `docker-compose.yml` o `.env`:
 - `ADMIN_USERNAME` / `ADMIN_PASSWORD` / `ADMIN_EMAIL`
+
+Se queste variabili sono impostate, l'utente admin viene creato automaticamente al primo avvio e verrai reindirizzato al login invece che al setup.
 
 ## Gestione utenti
 - Lista utenti:

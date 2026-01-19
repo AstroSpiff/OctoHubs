@@ -34,13 +34,16 @@ Se il tuo storage e diverso, modifica i path `/mnt/shared/...` in `docker-compos
 ## Installazione rapida (Portainer)
 1. Crea una nuova stack e incolla `docker-compose.yml`.
 2. Aggiorna i path `/mnt/shared/...` con il tuo storage reale.
-3. Imposta `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`.
+3. **Opzionale**: Imposta `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL` per creare l'admin automaticamente.
+   - Se NON imposti queste variabili, al primo avvio vedrai il wizard di configurazione `/setup`.
 4. Opzionale: PostgreSQL è già commentato di default. Decommenta solo se ti serve.
 5. Opzionale: decommenta il blocco `nginx` per HTTPS.
-6. Fai deploy una volta per generare `config.json`.
-7. Modifica `/mnt/shared/config/octohub/config.json` con il tuo server Emby e le integrazioni.
-8. Riavvia il container `app` (o ridisponi la stack).
-9. Apri `http://IP:5050`.
+6. Fai deploy e apri `http://IP:5050`.
+7. **Primo avvio**:
+   - Se hai impostato le ENV admin: vedrai subito il login.
+   - Altrimenti: vedrai il wizard `/setup` per creare l'admin e configurare il DB (opzionale).
+8. Dopo il setup iniziale, modifica `/mnt/shared/config/octohub/config.json` con il tuo server Emby e le integrazioni.
+9. Riavvia il container `app` per applicare le modifiche.
 
 ## Avvio rapido (CLI)
 ```bash
