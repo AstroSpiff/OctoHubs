@@ -3944,6 +3944,18 @@
             let lastSearchContext = {};
             let historyOpen = false;
 
+            const queryParams = new URLSearchParams(window.location.search);
+            const initialQuery = queryParams.get('independent_query');
+            const initialType = queryParams.get('independent_media_type');
+            if (initialQuery && queryInput) {
+                queryInput.value = initialQuery;
+                queryInput.focus();
+                queryInput.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+            if (initialType && manualMediaTypeSelect) {
+                manualMediaTypeSelect.value = initialType;
+            }
+
             const setLoading = (isLoading) => {
                 if (submitButton) {
                     submitButton.disabled = isLoading;

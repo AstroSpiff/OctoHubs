@@ -79,6 +79,11 @@
     const modalClose = document.getElementById('collection-modal-close');
     const modalTitle = document.getElementById('collection-modal-title');
     const modalSubtitle = document.getElementById('collection-modal-subtitle');
+    const resultsModal = document.getElementById('collection-results-modal');
+    const resultsClose = document.getElementById('collection-results-close');
+    const resultsTitle = document.getElementById('collection-results-title');
+    const resultsSubtitle = document.getElementById('collection-results-subtitle');
+    const resultsBody = document.getElementById('collection-results-body');
     const collectionSettings = window.collectionSettings || {};
     const serverMetaList = Array.isArray(window.embyServerMeta) ? window.embyServerMeta : [];
     const serverMetaById = new Map();
@@ -367,6 +372,123 @@
         }
     };
 
+    const openResultsModal = () => {
+        if (!resultsModal) {
+            return;
+        }
+        resultsModal.classList.add('is-open');
+        resultsModal.setAttribute('aria-hidden', 'false');
+        document.body.classList.add('modal-open');
+    };
+
+    const closeResultsModal = () => {
+        if (!resultsModal) {
+            return;
+        }
+        resultsModal.classList.remove('is-open');
+        resultsModal.setAttribute('aria-hidden', 'true');
+        document.body.classList.remove('modal-open');
+    };
+
+    const buildResultsRow = (item) => {
+        const title = escapeHtml(item.title || item.provider_id || 'Titolo sconosciuto');
+        const yearValue = item.year ? String(item.year) : '';
+        const titleLabel = yearValue ? `${title} (${escapeHtml(yearValue)})` : title;
+        const providerLabel = escapeHtml(item.provider_label || item.provider_key || 'N/D');
+        const mediaType = escapeHtml(item.media_type || 'N/D');
+        const found = Boolean(item.found);
+        const statusClass = found ? 'collection-results-status--found' : 'collection-results-status--missing';
+        const statusLabel = found ? 'Trovato' : 'Mancante';
+        const tmdbId = item.provider_key === 'tmdb' ? item.provider_id : '';
+        const mediaTypeRaw = item.media_type || '';
+        const jellyDisabled = !(tmdbId && mediaTypeRaw);
+        const jellyLabel = jellyDisabled ? 'Jellyseerr' : 'Jellyseerr';
+        const jellyAttrs = jellyDisabled ? 'disabled' : '';
+        const queryLabel = item.title || item.provider_id || '';
+        const searchAttrs = queryLabel ? '' : 'disabled';
+        return `
+            <tr>
+                <td>${titleLabel}</td>
+                <td>${providerLabel}${item.provider_id ? ` · ${escapeHtml(item.provider_id)}` : ''}</td>
+                <td>${mediaType}</td>
+                <td><span class="collection-results-status ${statusClass}">${statusLabel}</span></td>
+                <td>
+                    ${found ? '-' : `
+                    <div class="collection-results-actions">
+                        <button type="button" class="collection-results-action primary" data-action="jellyseerr"
+                            data-tmdb-id="${escapeHtml(tmdbId)}"
+                            data-media-type="${escapeHtml(mediaTypeRaw)}"
+                            ${jellyAttrs}>${jellyLabel}</button>
+                        <button type="button" class="collection-results-action secondary" data-action="independent-search"
+                            data-query="${escapeHtml(queryLabel)}"
+                            data-media-type="${escapeHtml(mediaTypeRaw)}"
+                            ${searchAttrs}>Ricerca</button>
+                    </div>
+                    `}
+                </td>
+            </tr>
+        `;
+    };
+
+    const showResults = (collectionName, serverLabel, items = []) => {
+        if (resultsTitle) {
+            resultsTitle.textContent = `Risultati collezione`;
+        }
+        if (resultsSubtitle) {
+            resultsSubtitle.textContent = `${collectionName} · ${serverLabel}`;
+        }
+        if (!resultsBody) {
+            return;
+        }
+        if (!items.length) {
+            resultsBody.innerHTML = `
+                <tr>
+                    <td colspan="5" class="tagline">Nessun dettaglio disponibile.</td>
+                </tr>
+            `;
+            return;
+        }
+        resultsBody.innerHTML = items.map(buildResultsRow).join('');
+    };
+
+    const fetchResultsDetails = async (collectionId, serverId) => {
+        const response = await baseCsrfFetch(`${apiUrl}/${encodeURIComponent(collectionId)}/sync-details`, {
+            method: 'GET'
+        });
+        const data = await response.json();
+        if (!response.ok || data.success === false) {
+            throw new Error(data.error || 'Errore caricamento dettagli.');
+        }
+        const perServer = Array.isArray(data.details) ? data.details : [];
+        if (!perServer.length) {
+            return null;
+        }
+        if (serverId) {
+            const match = perServer.find((entry) => entry.server_id === serverId)
+                || perServer.find((entry) => entry.server_label === serverId);
+            return match || null;
+        }
+        return perServer[0] || null;
+    };
+
+    const handleResultDetails = async (collectionId, serverId) => {
+        const collection = state.collections.find((item) => item.id === collectionId);
+        const collectionName = collection ? collection.name : 'Collezione';
+        try {
+            const details = await fetchResultsDetails(collectionId, serverId);
+            if (!details) {
+                showToast('Dettagli risultati non disponibili.', 'warning');
+                return;
+            }
+            const serverLabel = details.server_label || details.server_id || 'Server';
+            const items = Array.isArray(details.items) ? details.items : [];
+            showResults(collectionName, serverLabel, items);
+            openResultsModal();
+        } catch (error) {
+            showToast(error.message || 'Errore caricamento risultati.', 'error');
+        }
+    };
+
     const buildCard = (entry, index) => {
         const safeName = escapeHtml(entry.name || 'Collezione');
         const description = entry.collection_description ? escapeHtml(entry.collection_description) : '';
@@ -497,22 +619,27 @@
             const candidates = Number.isFinite(row.candidates) ? Number(row.candidates) : 0;
             const matched = Number.isFinite(row.matched) ? Number(row.matched) : 0;
             const missing = Number.isFinite(row.missing) ? Number(row.missing) : Math.max(0, candidates - matched);
+            const serverId = row.server_id ? String(row.server_id) : '';
             if (candidates > 0) {
-                return `<div class="collection-meta__value-row">
+                return `<button type="button" class="collection-result-button" data-action="result-details" data-id="${entry.id}" data-server-id="${escapeHtml(serverId)}">
+                    <div class="collection-meta__value-row">
+                        ${icon}
+                        <div class="collection-meta__value-row-text">
+                            <span class="collection-meta__value-row-primary">${matched}/${candidates} ok</span>
+                            <span class="collection-meta__value-row-secondary">${missing} manc.</span>
+                        </div>
+                    </div>
+                </button>`;
+            }
+            return `<button type="button" class="collection-result-button" data-action="result-details" data-id="${entry.id}" data-server-id="${escapeHtml(serverId)}">
+                <div class="collection-meta__value-row">
                     ${icon}
                     <div class="collection-meta__value-row-text">
-                        <span class="collection-meta__value-row-primary">${matched}/${candidates} ok</span>
-                        <span class="collection-meta__value-row-secondary">${missing} manc.</span>
+                        <span class="collection-meta__value-row-primary">${escapeHtml(row.message || summaryPrimary || 'N/D')}</span>
+                        ${summarySecondary ? `<span class="collection-meta__value-row-secondary">${escapeHtml(summarySecondary)}</span>` : ''}
                     </div>
-                </div>`;
-            }
-            return `<div class="collection-meta__value-row">
-                ${icon}
-                <div class="collection-meta__value-row-text">
-                    <span class="collection-meta__value-row-primary">${escapeHtml(row.message || summaryPrimary || 'N/D')}</span>
-                    ${summarySecondary ? `<span class="collection-meta__value-row-secondary">${escapeHtml(summarySecondary)}</span>` : ''}
                 </div>
-            </div>`;
+            </button>`;
         }).join('')}</div>`;
 
         return `
@@ -1298,6 +1425,13 @@
             handleToggle(targetId, toggle.checked);
             return;
         }
+        const resultBtn = event.target.closest('button[data-action="result-details"]');
+        if (resultBtn) {
+            const targetId = resultBtn.dataset.id;
+            const serverId = resultBtn.dataset.serverId || '';
+            handleResultDetails(targetId, serverId);
+            return;
+        }
         const actionBtn = event.target.closest('button[data-action]');
         if (!actionBtn) {
             return;
@@ -1310,6 +1444,58 @@
             handleDelete(targetId, actionBtn);
         } else if (action === 'edit') {
             handleLoad(targetId);
+        }
+    };
+
+    const handleResultsActions = async (event) => {
+        const button = event.target.closest('button[data-action]');
+        if (!button) {
+            return;
+        }
+        const action = button.dataset.action;
+        if (action === 'jellyseerr') {
+            const tmdbId = button.dataset.tmdbId;
+            const mediaType = button.dataset.mediaType;
+            if (!tmdbId || !mediaType) {
+                showToast('TMDB ID mancante per Jellyseerr.', 'warning');
+                return;
+            }
+            button.disabled = true;
+            try {
+                const response = await baseCsrfFetch('/api/jellyseerr/request', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        tmdb_id: Number(tmdbId),
+                        media_type: mediaType
+                    })
+                });
+                const data = await response.json();
+                if (!response.ok || data.success === false) {
+                    throw new Error(data.message || data.error || 'Errore richiesta Jellyseerr.');
+                }
+                showToast(data.message || 'Richiesta inviata a Jellyseerr.', 'success');
+            } catch (error) {
+                showToast(error.message || 'Errore invio a Jellyseerr.', 'error');
+            } finally {
+                button.disabled = false;
+            }
+        }
+        if (action === 'independent-search') {
+            const query = button.dataset.query || '';
+            const mediaType = button.dataset.mediaType || '';
+            if (!query) {
+                showToast('Titolo mancante per la ricerca.', 'warning');
+                return;
+            }
+            const params = new URLSearchParams();
+            params.set('independent_query', query);
+            if (mediaType) {
+                params.set('independent_media_type', mediaType);
+            }
+            window.open(`/?${params.toString()}`, '_blank');
         }
     };
 
@@ -1352,9 +1538,21 @@
                 closeModal(true);
             }
         });
+        resultsClose?.addEventListener('click', closeResultsModal);
+        resultsModal?.addEventListener('click', (event) => {
+            if (event.target === resultsModal) {
+                closeResultsModal();
+            }
+        });
+        resultsBody?.addEventListener('click', handleResultsActions);
         document.addEventListener('keydown', (event) => {
-            if (event.key === 'Escape' && modal?.classList.contains('is-open')) {
-                closeModal(true);
+            if (event.key === 'Escape') {
+                if (modal?.classList.contains('is-open')) {
+                    closeModal(true);
+                }
+                if (resultsModal?.classList.contains('is-open')) {
+                    closeResultsModal();
+                }
             }
         });
         createCardButton?.addEventListener('click', () => {

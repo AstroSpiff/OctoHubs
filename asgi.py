@@ -32,6 +32,7 @@ from emby_collections import (
     save_collection_definition,
     set_collection_enabled,
     remove_collection_definition,
+    get_collection_sync_details,
     get_collection_poster_blob,
     save_collection_poster_blob,
     delete_collection_poster_blob,
@@ -2090,6 +2091,19 @@ async def api_emby_collections_sync(
         return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
 
 
+@fastapi_app.get("/api/emby/collections/{collection_id}/sync-details")
+async def api_emby_collections_sync_details(collection_id: str, user=Depends(require_user)):
+    actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
+    logger.info("User %s requested collection sync details %s", actor_id or "unknown", collection_id)
+    try:
+        details = get_collection_sync_details(collection_id)
+        return {"success": True, "details": details}
+    except KeyError as exc:
+        return JSONResponse(status_code=404, content={"success": False, "error": str(exc)})
+    except StorageError as exc:
+        return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
+
+
 @fastapi_app.post("/api/emby/collections/sync-all")
 async def api_emby_collections_sync_all(user=Depends(require_user)):
     actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
@@ -3183,6 +3197,11 @@ async def emby_library_scan_state_clear_post(
 # ============================================================================
 # AUTHENTICATION ROUTES
 # ============================================================================
+
+@fastapi_app.get("/")
+async def root_redirect():
+    """Redirect root to login page."""
+    return RedirectResponse(url="/login", status_code=303)
 
 @fastapi_app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
@@ -4889,59 +4908,8 @@ async def setup_db_post_route(
 # ============================================================================
 # AUTHENTICATION ROUTES - Login and logout
 # ============================================================================
-
-@fastapi_app.get("/login")
-async def login_get_route(request: Request, next: Optional[str] = None):
-    """Login page GET - show login form."""
-
-    # Check if already authenticated
-    user = _get_current_user(request)
-    if user:
-        return RedirectResponse(url="/dashboard", status_code=303)
-
-    return templates.TemplateResponse("login.html", {"request": request})
-
-
-@fastapi_app.post("/login")
-async def login_post_route(
-    request: Request,
-    username: str = Form(""),
-    password: str = Form(""),
-    next: Optional[str] = Form(None)
-):
-    """Login page POST - authenticate user."""
-    from auth import get_user_by_username, log_audit_event
-
-    # Check if already authenticated
-    user = _get_current_user(request)
-    if user:
-        return RedirectResponse(url="/dashboard", status_code=303)
-
-    username = (username or "").strip()
-    password = password or ""
-
-    if not username or not password:
-        flash(request, "Username e password sono obbligatori.", "error")
-        return templates.TemplateResponse("login.html", {"request": request})
-
-    user = get_user_by_username(username)
-
-    if user is not None and bool(user.is_active) and user.check_password(password):
-        # Set session as permanent and store user_id
-        request.session["permanent"] = True
-        request.session["user_id"] = user.id
-        user.update_last_login()
-        log_audit_event(user, "login", "success", request)
-        flash(request, f"Benvenuto, {user.username}!", "success")
-
-        # Redirect to next page or dashboard
-        next_page = request.query_params.get('next') or next
-        if next_page and next_page.startswith('/'):
-            return RedirectResponse(url=next_page, status_code=303)
-        return RedirectResponse(url="/dashboard", status_code=303)
-    else:
-        flash(request, "Username o password non validi.", "error")
-        return templates.TemplateResponse("login.html", {"request": request})
+# Note: Both GET and POST /login routes are defined earlier in the file (around line 3206)
+# with proper flash messages and CSRF token support
 
 
 @fastapi_app.get("/logout")

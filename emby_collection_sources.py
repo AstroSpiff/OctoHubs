@@ -31,6 +31,25 @@ TMDB_LIST_ENDPOINT = "https://api.themoviedb.org/3/list/{list_id}"
 TMDB_COLLECTION_ENDPOINT = "https://api.themoviedb.org/3/collection/{collection_id}"
 IMDB_LIST_URL = "https://www.imdb.com/list/{list_id}/"
 
+def _extract_year(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        trimmed = value.strip()
+        if len(trimmed) >= 4 and trimmed[:4].isdigit():
+            try:
+                return int(trimmed[:4])
+            except ValueError:
+                return None
+        if trimmed.isdigit():
+            try:
+                return int(trimmed)
+            except ValueError:
+                return None
+    return None
+
 
 def _ensure_trakt_client() -> Any:
     settings = _active_trakt_settings()
@@ -162,12 +181,14 @@ def _extract_trakt_candidate(entry: Any) -> Optional[Dict[str, Any]]:
     media_type = _normalize_media_type(entry_type or target.get("media_type") or target.get("type"))
     label = PROVIDER_LABEL_MAP.get(provider_key, provider_key.title())
     title = (target.get("title") or target.get("name") or target.get("original_name") or "") or ""
+    year = _extract_year(target.get("year") or entry.get("year"))
     return {
         "provider_key": provider_key,
         "provider_id": provider_id,
         "provider_label": label,
         "media_type": media_type,
-        "title": title
+        "title": title,
+        "year": year
     }
 
 
@@ -264,12 +285,19 @@ def _normalize_tmdb_entries(entries: List[Any]) -> List[Dict[str, Any]]:
         media_type = _normalize_media_type(
             entry.get("media_type") or entry.get("mediaType") or entry.get("type")
         )
+        year = _extract_year(
+            entry.get("release_date")
+            or entry.get("first_air_date")
+            or entry.get("air_date")
+            or entry.get("year")
+        )
         normalized.append({
             "provider_key": "tmdb",
             "provider_id": str(tmdb_id),
             "provider_label": "Tmdb",
             "media_type": media_type,
-            "title": entry.get("title") or entry.get("name") or ""
+            "title": entry.get("title") or entry.get("name") or "",
+            "year": year
         })
     return normalized
 
@@ -379,7 +407,7 @@ class MdblistClient:
         while True:
             endpoint = f"{self.BASE_URL}/lists/{list_id}/items/"
             params = [
-                "fields=imdb_id,tmdb_id,title,name,mediatype",
+                "fields=imdb_id,tmdb_id,title,name,mediatype,year",
                 f"limit={limit}",
                 f"offset={current_offset}"
             ]
@@ -481,12 +509,19 @@ def _normalize_mdblist_entries(entries: List[Any]) -> List[Dict[str, Any]]:
         if not provider_key or not provider_id:
             continue
         media_type = _normalize_media_type(item.get("mediatype") or item.get("mediaType") or item.get("type"))
+        year = _extract_year(
+            item.get("year")
+            or item.get("release_date")
+            or item.get("first_air_date")
+            or item.get("released")
+        )
         normalized.append({
             "provider_key": provider_key,
             "provider_id": provider_id,
             "provider_label": provider_label or PROVIDER_LABEL_MAP.get(provider_key, provider_key.upper()),
             "media_type": media_type,
-            "title": item.get("title") or item.get("name") or ""
+            "title": item.get("title") or item.get("name") or "",
+            "year": year
         })
     return normalized
 

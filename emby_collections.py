@@ -232,6 +232,16 @@ def list_collection_definitions() -> List[Dict[str, Any]]:
     ]
     enriched = [entry for entry in enriched if not entry.get("delete_pending")]
     for entry in enriched:
+        per_server = entry.get("last_sync_per_server")
+        if isinstance(per_server, list):
+            cleaned = []
+            for item in per_server:
+                if not isinstance(item, dict):
+                    continue
+                cleaned_item = dict(item)
+                cleaned_item.pop("items", None)
+                cleaned.append(cleaned_item)
+            entry["last_sync_per_server"] = cleaned
         definition_id = entry.get("id")
         if definition_id and definition_id in poster_ids:
             entry["poster_uploaded"] = True
@@ -247,6 +257,17 @@ def list_collection_definitions() -> List[Dict[str, Any]]:
             entry["background_blob_url"] = ""
     enriched.sort(key=lambda item: item.get("sort_key", ""))
     return enriched
+
+
+def get_collection_sync_details(definition_id: str) -> List[Dict[str, Any]]:
+    backend = _ensure_db_backend()
+    existing = backend.get_emby_collection_definition(definition_id)
+    if not isinstance(existing, dict):
+        raise KeyError("Definizione non trovata")
+    raw = existing.get("last_sync_per_server")
+    if not isinstance(raw, list):
+        return []
+    return [entry for entry in raw if isinstance(entry, dict)]
 
 
 def get_collection_poster_blob(definition_id: str) -> Dict[str, Any] | None:
@@ -1100,14 +1121,40 @@ def _sync_collection_to_server(
     matched_ids: List[str] = []
     matched_entries = 0
     missing = []
+    item_results: List[Dict[str, Any]] = []
     total_candidates = len(source_items)
     for entry in source_items:
         item_ids = _find_emby_item_ids(server, entry)
+        provider_key = entry.get("provider_key") or ""
+        provider_id = entry.get("provider_id") or ""
+        provider_label = entry.get("provider_label") or PROVIDER_LABEL_MAP.get(provider_key, str(provider_key).upper())
+        title = entry.get("title") or provider_id or ""
+        year = entry.get("year")
         if item_ids:
             matched_entries += 1
             matched_ids.extend(item_ids)
+            item_results.append({
+                "title": title,
+                "year": year,
+                "provider_key": provider_key,
+                "provider_label": provider_label,
+                "provider_id": provider_id,
+                "media_type": entry.get("media_type"),
+                "found": True,
+                "emby_count": len(item_ids)
+            })
         else:
             missing.append(entry.get("title") or entry.get("provider_id"))
+            item_results.append({
+                "title": title,
+                "year": year,
+                "provider_key": provider_key,
+                "provider_label": provider_label,
+                "provider_id": provider_id,
+                "media_type": entry.get("media_type"),
+                "found": False,
+                "emby_count": 0
+            })
     unique_ids = list(dict.fromkeys(matched_ids))
     if not unique_ids:
         return {
@@ -1116,6 +1163,7 @@ def _sync_collection_to_server(
             "matched": 0,
             "candidates": total_candidates,
             "missing": len(missing),
+            "items": item_results,
             "server_label": (
                 server.get("alias") or server.get("original_name") or server.get("name") or server.get("id") or ""
             )
@@ -1167,6 +1215,7 @@ def _sync_collection_to_server(
         "matched": matched_entries,
         "candidates": total_candidates,
         "missing": len(missing),
+        "items": item_results,
         "server_label": (
             server.get("alias") or server.get("original_name") or server.get("name") or server.get("id") or ""
         )
