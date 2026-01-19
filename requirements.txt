@@ -7,3 +7,7 @@ websocket-client
 fastapi
 uvicorn[standard]
 python-multipart
+jinja2
+itsdangerous
+python-dotenv
+markupsafe
