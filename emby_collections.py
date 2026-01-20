@@ -1122,6 +1122,7 @@ def _sync_collection_to_server(
     matched_entries = 0
     missing = []
     item_results: List[Dict[str, Any]] = []
+    primary_ids: List[str] = []
     total_candidates = len(source_items)
     for entry in source_items:
         item_ids = _find_emby_item_ids(server, entry)
@@ -1130,18 +1131,23 @@ def _sync_collection_to_server(
         provider_label = entry.get("provider_label") or PROVIDER_LABEL_MAP.get(provider_key, str(provider_key).upper())
         title = entry.get("title") or provider_id or ""
         year = entry.get("year")
+        tmdb_id = entry.get("tmdb_id") or (provider_id if provider_key == "tmdb" else None)
         if item_ids:
             matched_entries += 1
             matched_ids.extend(item_ids)
+            primary_id = item_ids[0]
+            primary_ids.append(primary_id)
             item_results.append({
                 "title": title,
                 "year": year,
                 "provider_key": provider_key,
                 "provider_label": provider_label,
                 "provider_id": provider_id,
+                "tmdb_id": tmdb_id,
                 "media_type": entry.get("media_type"),
                 "found": True,
-                "emby_count": len(item_ids)
+                "emby_count": len(item_ids),
+                "emby_id": primary_id
             })
         else:
             missing.append(entry.get("title") or entry.get("provider_id"))
@@ -1151,10 +1157,35 @@ def _sync_collection_to_server(
                 "provider_key": provider_key,
                 "provider_label": provider_label,
                 "provider_id": provider_id,
+                "tmdb_id": tmdb_id,
                 "media_type": entry.get("media_type"),
                 "found": False,
                 "emby_count": 0
             })
+    if primary_ids:
+        metadata = _fetch_items_metadata(
+            server,
+            list(dict.fromkeys(primary_ids)),
+            ["ProductionYear", "Name"]
+        )
+        if metadata:
+            for item in item_results:
+                emby_id = item.get("emby_id")
+                if not emby_id:
+                    continue
+                details = metadata.get(emby_id)
+                if not details:
+                    continue
+                if not item.get("title") or item.get("title") == item.get("provider_id"):
+                    name = details.get("Name") or details.get("SortName")
+                    if name:
+                        item["title"] = name
+                if not item.get("year"):
+                    year = details.get("ProductionYear") or details.get("Year")
+                    if year:
+                        item["year"] = year
+    for item in item_results:
+        item.pop("emby_id", None)
     unique_ids = list(dict.fromkeys(matched_ids))
     if not unique_ids:
         return {
@@ -1175,6 +1206,8 @@ def _sync_collection_to_server(
         definition["sort_name"],
         initial_item_ids=initial_ids
     )
+    if not was_created:
+        _clear_collection_items(server, collection_id)
     remaining_ids = unique_ids
     if was_created and initial_ids:
         remaining_ids = unique_ids[1:]

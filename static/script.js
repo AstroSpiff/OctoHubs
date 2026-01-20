@@ -366,7 +366,7 @@
 
         const connectionBtn = document.getElementById('test-connections-btn');
         if (connectionBtn) {
-            const services = ['jellyseerr', 'prowlarr', 'jackett', 'qbittorrent', 'omdb', 'trakt', 'justwatch', 'database'];
+            const services = ['jellyseerr', 'prowlarr', 'jackett', 'qbittorrent', 'mdblist', 'omdb', 'trakt', 'justwatch', 'database'];
             const setConnectionStatus = (service, state, message, label) => {
                 const pill = document.querySelector(`[data-service="${service}-status"]`);
                 const msg = document.querySelector(`[data-service="${service}-msg"]`);

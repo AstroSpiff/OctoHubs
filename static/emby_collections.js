@@ -54,12 +54,18 @@
     const enabledInput = document.getElementById('collection-enabled');
     const posterInput = document.getElementById('collection-poster-url');
     const posterFileInput = document.getElementById('collection-poster-file');
-    const posterRemoveButton = document.getElementById('collection-poster-remove');
     const posterUploadStatus = document.getElementById('collection-poster-upload-status');
+    const posterPreview = document.getElementById('collection-poster-preview');
+    const posterPreviewImg = document.getElementById('collection-poster-preview-img');
+    const posterPreviewRemove = document.getElementById('collection-poster-preview-remove');
+    const posterDropzone = document.getElementById('collection-poster-dropzone');
     const backgroundInput = document.getElementById('collection-background-url');
     const backgroundFileInput = document.getElementById('collection-background-file');
-    const backgroundRemoveButton = document.getElementById('collection-background-remove');
     const backgroundUploadStatus = document.getElementById('collection-background-upload-status');
+    const backgroundPreview = document.getElementById('collection-background-preview');
+    const backgroundPreviewImg = document.getElementById('collection-background-preview-img');
+    const backgroundPreviewRemove = document.getElementById('collection-background-preview-remove');
+    const backgroundDropzone = document.getElementById('collection-background-dropzone');
     const seasonStartInput = document.getElementById('collection-season-start');
     const seasonEndInput = document.getElementById('collection-season-end');
     const refreshMetadataInput = document.getElementById('collection-refresh-metadata');
@@ -129,6 +135,94 @@
         'image/svg+xml'
     ]);
     const posterMaxBytes = 5 * 1024 * 1024;
+    const mediaElements = {
+        poster: {
+            preview: posterPreview,
+            previewImg: posterPreviewImg,
+            input: posterInput,
+            fileInput: posterFileInput,
+            dropzone: posterDropzone,
+            remove: posterPreviewRemove
+        },
+        background: {
+            preview: backgroundPreview,
+            previewImg: backgroundPreviewImg,
+            input: backgroundInput,
+            fileInput: backgroundFileInput,
+            dropzone: backgroundDropzone,
+            remove: backgroundPreviewRemove
+        }
+    };
+    const mediaPreviewState = {
+        poster: { objectUrl: '' },
+        background: { objectUrl: '' }
+    };
+
+    const revokePreviewUrl = (kind) => {
+        const state = mediaPreviewState[kind];
+        if (state && state.objectUrl) {
+            URL.revokeObjectURL(state.objectUrl);
+            state.objectUrl = '';
+        }
+    };
+
+    const setMediaPreview = (kind, url, source) => {
+        const target = mediaElements[kind];
+        if (!target || !target.preview || !target.previewImg) {
+            return;
+        }
+        if (source !== 'local') {
+            revokePreviewUrl(kind);
+        }
+        if (!url) {
+            target.preview.classList.remove('has-image');
+            target.preview.dataset.source = '';
+            target.previewImg.removeAttribute('src');
+            return;
+        }
+        target.previewImg.src = url;
+        target.preview.classList.add('has-image');
+        target.preview.dataset.source = source || '';
+    };
+
+    const setMediaPreviewFromFile = (kind, file) => {
+        if (!file) {
+            return;
+        }
+        revokePreviewUrl(kind);
+        const objectUrl = URL.createObjectURL(file);
+        mediaPreviewState[kind].objectUrl = objectUrl;
+        setMediaPreview(kind, objectUrl, 'local');
+    };
+
+    const clearMediaPreview = (kind) => {
+        revokePreviewUrl(kind);
+        setMediaPreview(kind, '', '');
+    };
+
+    const validateMediaFile = (file, label) => {
+        if (!file) {
+            return false;
+        }
+        if (file.size > posterMaxBytes) {
+            showToast(`${label} troppo grande. Limite 5MB.`, 'warning');
+            return false;
+        }
+        if (file.type && !posterAllowedTypes.has(file.type)) {
+            showToast(`Formato ${label.toLowerCase()} non supportato.`, 'warning');
+            return false;
+        }
+        return true;
+    };
+
+    const assignFileInput = (input, file) => {
+        if (!input || !file) {
+            return;
+        }
+        const transfer = new DataTransfer();
+        transfer.items.add(file);
+        input.files = transfer.files;
+    };
 
     const formatDateParts = (value) => {
         if (!value) {
@@ -181,14 +275,19 @@
         if (posterUploadStatus) {
             posterUploadStatus.textContent = text || '';
         }
-        if (posterRemoveButton) {
-            posterRemoveButton.disabled = !removable;
+        if (posterPreview && removable) {
+            posterPreview.dataset.removable = 'true';
+        } else if (posterPreview) {
+            posterPreview.dataset.removable = '';
         }
     };
 
     const clearPosterFile = () => {
         if (posterFileInput) {
             posterFileInput.value = '';
+        }
+        if (posterPreview && posterPreview.dataset.source === 'local') {
+            clearMediaPreview('poster');
         }
     };
 
@@ -252,14 +351,19 @@
         if (backgroundUploadStatus) {
             backgroundUploadStatus.textContent = text || '';
         }
-        if (backgroundRemoveButton) {
-            backgroundRemoveButton.disabled = !removable;
+        if (backgroundPreview && removable) {
+            backgroundPreview.dataset.removable = 'true';
+        } else if (backgroundPreview) {
+            backgroundPreview.dataset.removable = '';
         }
     };
 
     const clearBackgroundFile = () => {
         if (backgroundFileInput) {
             backgroundFileInput.value = '';
+        }
+        if (backgroundPreview && backgroundPreview.dataset.source === 'local') {
+            clearMediaPreview('background');
         }
     };
 
@@ -333,6 +437,132 @@
         sourceValueInput.placeholder = selected.placeholder || '';
     };
 
+    const applyEntryMediaPreview = (entry) => {
+        const posterUrl = entry.poster_blob_url || entry.poster_url || '';
+        const posterSource = entry.poster_blob_url ? 'uploaded' : (entry.poster_url ? 'url' : '');
+        setMediaPreview('poster', posterUrl, posterSource);
+        const backgroundUrl = entry.background_blob_url || entry.background_url || '';
+        const backgroundSource = entry.background_blob_url ? 'uploaded' : (entry.background_url ? 'url' : '');
+        setMediaPreview('background', backgroundUrl, backgroundSource);
+    };
+
+    const applyUrlPreview = (kind) => {
+        const target = mediaElements[kind];
+        if (!target || !target.input) {
+            return;
+        }
+        if (target.preview && target.preview.dataset.source === 'local') {
+            return;
+        }
+        const value = target.input.value.trim();
+        if (value) {
+            setMediaPreview(kind, value, 'url');
+        } else if (target.preview && target.preview.dataset.source === 'url') {
+            clearMediaPreview(kind);
+        }
+    };
+
+    const handleMediaFileSelection = (kind, file) => {
+        const label = kind === 'poster' ? 'Poster' : 'Background';
+        if (!validateMediaFile(file, label)) {
+            const target = mediaElements[kind];
+            if (target && target.fileInput) {
+                target.fileInput.value = '';
+            }
+            return;
+        }
+        if (file) {
+            setMediaPreviewFromFile(kind, file);
+        }
+    };
+
+    const handleMediaRemove = async (kind) => {
+        const target = mediaElements[kind];
+        if (!target || !target.preview) {
+            return;
+        }
+        const source = target.preview.dataset.source || '';
+        if (source === 'uploaded') {
+            const collectionId = form?.dataset.editing;
+            if (!collectionId) {
+                showToast('Salva prima la collezione.', 'warning');
+                return;
+            }
+            const removed = kind === 'poster'
+                ? await removePoster(collectionId)
+                : await removeBackground(collectionId);
+            if (removed) {
+                const value = target.input ? target.input.value.trim() : '';
+                if (value) {
+                    setMediaPreview(kind, value, 'url');
+                } else {
+                    clearMediaPreview(kind);
+                }
+            }
+            return;
+        }
+        if (source === 'local') {
+            if (target.fileInput) {
+                target.fileInput.value = '';
+            }
+            clearMediaPreview(kind);
+            applyUrlPreview(kind);
+            return;
+        }
+        if (source === 'url') {
+            if (target.input) {
+                target.input.value = '';
+            }
+            clearMediaPreview(kind);
+        }
+    };
+
+    const setupDropzone = (kind) => {
+        const target = mediaElements[kind];
+        if (!target || !target.dropzone || !target.fileInput) {
+            return;
+        }
+        const dropzone = target.dropzone;
+        const fileInput = target.fileInput;
+        const setDragState = (active) => {
+            dropzone.classList.toggle('is-dragover', active);
+        };
+        dropzone.addEventListener('click', () => fileInput.click());
+        dropzone.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                fileInput.click();
+            }
+        });
+        dropzone.addEventListener('dragenter', (event) => {
+            event.preventDefault();
+            setDragState(true);
+        });
+        dropzone.addEventListener('dragover', (event) => {
+            event.preventDefault();
+            setDragState(true);
+        });
+        dropzone.addEventListener('dragleave', () => setDragState(false));
+        dropzone.addEventListener('drop', (event) => {
+            event.preventDefault();
+            setDragState(false);
+            const file = event.dataTransfer && event.dataTransfer.files ? event.dataTransfer.files[0] : null;
+            if (!file) {
+                return;
+            }
+            assignFileInput(fileInput, file);
+            handleMediaFileSelection(kind, file);
+        });
+        fileInput.addEventListener('change', () => {
+            const file = fileInput.files ? fileInput.files[0] : null;
+            if (!file) {
+                clearMediaPreview(kind);
+                return;
+            }
+            handleMediaFileSelection(kind, file);
+        });
+    };
+
     const toggleEmptyMessage = (displayed) => {
         if (!emptyNotice) {
             return;
@@ -399,7 +629,7 @@
         const found = Boolean(item.found);
         const statusClass = found ? 'collection-results-status--found' : 'collection-results-status--missing';
         const statusLabel = found ? 'Trovato' : 'Mancante';
-        const tmdbId = item.provider_key === 'tmdb' ? item.provider_id : '';
+        const tmdbId = item.tmdb_id || (item.provider_key === 'tmdb' ? item.provider_id : '');
         const mediaTypeRaw = item.media_type || '';
         const jellyDisabled = !(tmdbId && mediaTypeRaw);
         const jellyLabel = jellyDisabled ? 'Jellyseerr' : 'Jellyseerr';
@@ -737,20 +967,37 @@
         return `https://trakt.tv/users/${encodeURIComponent(entry.username)}/lists/${encodeURIComponent(entry.slug)}`;
     };
 
+    const buildTruncatedDescription = (value, limit = 100) => {
+        const raw = value ? String(value).trim() : '';
+        if (!raw) {
+            return '';
+        }
+        if (raw.length <= limit) {
+            return `<div class="tagline small">${escapeHtml(raw)}</div>`;
+        }
+        const truncated = raw.slice(0, limit).trimEnd();
+        const encodedFull = encodeURIComponent(raw);
+        const encodedTruncated = encodeURIComponent(truncated);
+        return `
+            <div class="tagline small description-toggle" data-full="${encodedFull}" data-truncated="${encodedTruncated}">
+                <span class="description-text">${escapeHtml(truncated)}</span>
+                <button type="button" class="description-expand" data-expanded="false" aria-expanded="false" title="Mostra descrizione completa">[…]</button>
+            </div>
+        `;
+    };
+
     const buildTraktRow = (entry) => {
-        const description = entry.description ? escapeHtml(entry.description) : '';
+        const description = buildTruncatedDescription(entry.description);
         const url = buildTraktUrl(entry);
         const itemCount = entry.item_count || 0;
-        const privacy = escapeHtml(entry.privacy || 'N/D');
         const name = escapeHtml(entry.name || 'Lista Trakt');
         const sourceValue = escapeHtml(entry.source_value || entry.list_id || '');
         return `
             <tr data-list-id="${sourceValue}">
                 <td>
                     <strong>${name}</strong>
-                    <div class="tagline small">${description}</div>
+                    ${description}
                 </td>
-                <td>${privacy}</td>
                 <td>${itemCount}</td>
                 <td style="white-space: nowrap;">
                     <button class="btn ghost compact" type="button" data-action="import-trakt"
@@ -771,7 +1018,7 @@
         if (!Array.isArray(entries) || entries.length === 0) {
             traktTableBody.innerHTML = `
                 <tr>
-                    <td colspan="4" class="tagline small" style="font-style: italic;">
+                    <td colspan="3" class="tagline small" style="font-style: italic;">
                         ${traktEnabled ? 'Nessuna lista disponibile.' : 'Trakt non configurato.'}
                     </td>
                 </tr>
@@ -789,7 +1036,7 @@
 
     const buildMdblistRow = (entry) => {
         const name = escapeHtml(entry.name || 'Lista MDBList');
-        const description = entry.description ? `<div class="tagline small">${escapeHtml(entry.description)}</div>` : '';
+        const description = buildTruncatedDescription(entry.description);
         const itemCount = entry.item_count || 0;
         const link = entry.link || '';
         const sourceValue = entry.source_value || '';
@@ -827,6 +1074,53 @@
             return;
         }
         mdblistTableBody.innerHTML = entries.map(buildMdblistRow).join('');
+    };
+
+    const handleDescriptionExpand = (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) {
+            return;
+        }
+        const button = target.closest('.description-expand');
+        if (!button) {
+            return;
+        }
+        const container = button.closest('.description-toggle');
+        if (!container) {
+            return;
+        }
+        const textEl = container.querySelector('.description-text');
+        if (!textEl) {
+            return;
+        }
+        const encodedFull = container.getAttribute('data-full') || '';
+        const encodedTruncated = container.getAttribute('data-truncated') || '';
+        let full = '';
+        let truncated = '';
+        try {
+            full = decodeURIComponent(encodedFull);
+        } catch (error) {
+            full = encodedFull;
+        }
+        try {
+            truncated = decodeURIComponent(encodedTruncated);
+        } catch (error) {
+            truncated = encodedTruncated;
+        }
+        const isExpanded = button.getAttribute('data-expanded') === 'true';
+        if (isExpanded) {
+            textEl.textContent = truncated;
+            button.textContent = '[…]';
+            button.setAttribute('data-expanded', 'false');
+            button.setAttribute('aria-expanded', 'false');
+            button.setAttribute('title', 'Mostra descrizione completa');
+        } else {
+            textEl.textContent = full;
+            button.textContent = '[riduci]';
+            button.setAttribute('data-expanded', 'true');
+            button.setAttribute('aria-expanded', 'true');
+            button.setAttribute('title', 'Riduci descrizione');
+        }
     };
 
     const updateMdblistStatus = (text) => {
@@ -879,17 +1173,18 @@
         if (!trimmed) {
             return null;
         }
-        const directMatch = /^([^/]+)\/([^/]+)$/.exec(trimmed);
+        const baseValue = trimmed.split('?', 1)[0];
+        const directMatch = /^([^/]+)\/([^/]+)$/.exec(baseValue);
         if (directMatch) {
             return `${directMatch[1]}/${directMatch[2]}`;
         }
         const userPattern = /trakt\.tv\/users\/([^/]+)\/lists\/([^/?#]+)/i;
-        const userMatch = userPattern.exec(trimmed);
+        const userMatch = userPattern.exec(baseValue);
         if (userMatch) {
             return `${userMatch[1]}/${userMatch[2]}`;
         }
         const listPattern = /trakt\.tv\/lists\/([^/?#]+)/i;
-        const listMatch = listPattern.exec(trimmed);
+        const listMatch = listPattern.exec(baseValue);
         if (listMatch) {
             return listMatch[1];
         }
@@ -909,6 +1204,20 @@
         }
         sourceTypeSelect.value = 'trakt_list';
         sourceValueInput.value = parsed;
+        updateSourceHint();
+    };
+
+    const handleSourceValueUpdate = () => {
+        if (!sourceValueInput) {
+            return;
+        }
+        const parsed = parseTraktListToken(sourceValueInput.value);
+        if (parsed) {
+            if (sourceTypeSelect) {
+                sourceTypeSelect.value = 'trakt_list';
+            }
+            sourceValueInput.value = parsed;
+        }
         updateSourceHint();
     };
 
@@ -980,6 +1289,8 @@
         if (sourceValueInput) {
             sourceValueInput.value = '';
         }
+        clearMediaPreview('poster');
+        clearMediaPreview('background');
         setSelectedServerIds([]);
         if (posterInput) {
             posterInput.value = '';
@@ -1018,6 +1329,7 @@
         if (!keepEditing && form) {
             form.removeAttribute('data-editing');
         }
+        updateSourceHint();
     };
 
     const fillImportForm = (sourceType, value, label) => {
@@ -1380,6 +1692,7 @@
         }
         clearPosterFile();
         clearBackgroundFile();
+        applyEntryMediaPreview(entry);
         if (entry.poster_uploaded || entry.poster_blob_url) {
             setPosterStatus('Poster caricato nel DB.', true);
         } else {
@@ -1518,11 +1831,15 @@
         setSelectedServerIds([]);
         fetchCollections();
         form?.addEventListener('submit', handleSave);
-        sourceTypeSelect?.addEventListener('change', () => {
-            updateSourceHint();
-        });
-        sourceValueInput?.addEventListener('blur', () => detectTraktListValue());
-        sourceValueInput?.addEventListener('paste', () => setTimeout(detectTraktListValue, 200));
+        sourceTypeSelect?.addEventListener('change', updateSourceHint);
+        sourceValueInput?.addEventListener('blur', handleSourceValueUpdate);
+        sourceValueInput?.addEventListener('paste', () => setTimeout(handleSourceValueUpdate, 200));
+        posterInput?.addEventListener('blur', () => applyUrlPreview('poster'));
+        backgroundInput?.addEventListener('blur', () => applyUrlPreview('background'));
+        posterPreviewRemove?.addEventListener('click', () => handleMediaRemove('poster'));
+        backgroundPreviewRemove?.addEventListener('click', () => handleMediaRemove('background'));
+        setupDropzone('poster');
+        setupDropzone('background');
         refreshButton?.addEventListener('click', fetchCollections);
         syncAllButton?.addEventListener('click', handleSyncAll);
         resetButton?.addEventListener('click', () => {
@@ -1563,30 +1880,10 @@
         grid?.addEventListener('change', delegateGridEvents);
         grid?.addEventListener('click', handleCardFlip);
         serverContainer?.addEventListener('change', handleServerSelection);
-        posterRemoveButton?.addEventListener('click', async () => {
-            const collectionId = form?.dataset.editing;
-            if (!collectionId) {
-                showToast('Salva prima la collezione.', 'warning');
-                return;
-            }
-            const removed = await removePoster(collectionId);
-            if (removed) {
-                await fetchCollections();
-            }
-        });
-        backgroundRemoveButton?.addEventListener('click', async () => {
-            const collectionId = form?.dataset.editing;
-            if (!collectionId) {
-                showToast('Salva prima la collezione.', 'warning');
-                return;
-            }
-            const removed = await removeBackground(collectionId);
-            if (removed) {
-                await fetchCollections();
-            }
-        });
+        traktTableBody?.addEventListener('click', handleDescriptionExpand);
         traktTableBody?.addEventListener('click', handleTraktActions);
         traktRefreshButton?.addEventListener('click', fetchTraktLists);
+        mdblistTableBody?.addEventListener('click', handleDescriptionExpand);
         mdblistTableBody?.addEventListener('click', handleMdblistActions);
         mdblistRefreshButton?.addEventListener('click', fetchMdblistLists);
         if (traktEnabled) {

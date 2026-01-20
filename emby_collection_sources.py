@@ -5,10 +5,12 @@ from __future__ import annotations
 import logging
 import os
 import re
+import json
 import requests
+import html
 import urllib.parse
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, TypedDict
 
 from app import (
     _active_trakt_settings,
@@ -30,6 +32,143 @@ PROVIDER_LABEL_MAP = {key: label for key, label in PROVIDER_PRIORITY}
 TMDB_LIST_ENDPOINT = "https://api.themoviedb.org/3/list/{list_id}"
 TMDB_COLLECTION_ENDPOINT = "https://api.themoviedb.org/3/collection/{collection_id}"
 IMDB_LIST_URL = "https://www.imdb.com/list/{list_id}/"
+TMDB_FIND_ENDPOINT = "https://api.themoviedb.org/3/find/{imdb_id}"
+IMDB_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+}
+
+
+def _extract_imdb_id_from_value(value: Any) -> Optional[str]:
+    if isinstance(value, dict):
+        for key in ("@id", "url", "sameAs", "mainEntityOfPage"):
+            candidate = value.get(key)
+            if candidate:
+                imdb_id = _extract_imdb_id_from_value(candidate)
+                if imdb_id:
+                    return imdb_id
+        return None
+    if isinstance(value, str):
+        match = re.search(r"(tt\d+)", value)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _clean_title(value: Any) -> str:
+    if not value:
+        return ""
+    return html.unescape(str(value)).strip()
+
+
+def _normalize_imdb_media_type(value: Any) -> Optional[str]:
+    normalized = _normalize_media_type(value)
+    if normalized:
+        return normalized
+    if not value:
+        return None
+    lowered = str(value).strip().lower()
+    if "tv" in lowered or "series" in lowered:
+        return "tv"
+    if "movie" in lowered or "film" in lowered:
+        return "movie"
+    return None
+
+
+def _extract_imdb_items_from_jsonld(html: str) -> List[Dict[str, Any]]:
+    if not html:
+        return []
+    scripts = re.findall(
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+        html,
+        re.IGNORECASE | re.DOTALL
+    )
+    itemlists: List[List[Dict[str, Any]]] = []
+    for raw in scripts:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            continue
+        stack = [data]
+        while stack:
+            current = stack.pop()
+            if isinstance(current, dict):
+                itemlist = current.get("itemListElement")
+                if isinstance(itemlist, list):
+                    ids_with_order = []
+                    for index, entry in enumerate(itemlist):
+                        imdb_id = None
+                        position = None
+                        title = None
+                        year = None
+                        media_type = None
+                        if isinstance(entry, dict):
+                            if "position" in entry:
+                                position_value = entry.get("position")
+                                try:
+                                    if isinstance(position_value, (int, str, float)):
+                                        position = int(position_value)
+                                except (TypeError, ValueError):
+                                    position = None
+                            item_payload = entry.get("item")
+                            imdb_id = _extract_imdb_id_from_value(item_payload or entry)
+                            if isinstance(item_payload, dict):
+                                title = _clean_title(item_payload.get("name") or item_payload.get("title"))
+                                year = _extract_year(
+                                    item_payload.get("datePublished")
+                                    or item_payload.get("startDate")
+                                    or item_payload.get("releaseDate")
+                                )
+                                media_type = _normalize_imdb_media_type(item_payload.get("@type"))
+                            if not title:
+                                title = _clean_title(entry.get("name") or entry.get("title"))
+                            if year is None:
+                                year = _extract_year(
+                                    entry.get("datePublished")
+                                    or entry.get("startDate")
+                                    or entry.get("releaseDate")
+                                )
+                            if not media_type:
+                                media_type = _normalize_imdb_media_type(entry.get("@type"))
+                        else:
+                            imdb_id = _extract_imdb_id_from_value(entry)
+                        if imdb_id:
+                            order_value = position if position is not None else index
+                            ids_with_order.append((
+                                order_value,
+                                {
+                                    "imdb_id": imdb_id,
+                                    "title": title or "",
+                                    "year": year,
+                                    "media_type": media_type
+                                }
+                            ))
+                    if ids_with_order:
+                        ids_with_order.sort(key=lambda item: item[0])
+                        ordered_items = [item[1] for item in ids_with_order]
+                        itemlists.append(ordered_items)
+                for value in current.values():
+                    if isinstance(value, (dict, list)):
+                        stack.append(value)
+            elif isinstance(current, list):
+                for entry in current:
+                    stack.append(entry)
+    if not itemlists:
+        return []
+    best = max(itemlists, key=len)
+    seen: set[str] = set()
+    ordered = []
+    for entry in best:
+        imdb_id = entry.get("imdb_id")
+        if not imdb_id or imdb_id in seen:
+            continue
+        seen.add(imdb_id)
+        ordered.append(entry)
+    return ordered
 
 def _extract_year(value: Any) -> Optional[int]:
     if value is None:
@@ -123,37 +262,84 @@ def list_trakt_lists() -> List[Dict[str, Any]]:
     return normalized_lists
 
 
-def _parse_trakt_list_reference(value: str) -> Optional[Dict[str, str]]:
+class TraktListReference(TypedDict):
+    username: str
+    list_id: str
+    path: str
+    sort_by: Optional[str]
+    sort_how: Optional[str]
+
+
+def _parse_trakt_list_reference(value: str) -> Optional[TraktListReference]:
     if not value:
         return None
     trimmed = value.strip()
     if not trimmed:
         return None
-    match = re.search(r"trakt\.tv/users/([^/]+)/lists/([^/?#]+)", trimmed, re.IGNORECASE)
+    base_value, _, query = trimmed.partition("?")
+    if query:
+        query = query.split("#", 1)[0]
+    params = urllib.parse.parse_qs(query)
+    sort_by = None
+    sort_how = None
+    sort_raw = params.get("sort", [None])[0]
+    if sort_raw:
+        parts = [part.strip() for part in str(sort_raw).split(",", 1)]
+        if parts and parts[0]:
+            sort_by = parts[0].lower()
+        if len(parts) > 1 and parts[1]:
+            sort_how = parts[1].lower()
+    else:
+        sort_by_candidate = params.get("sort_by", [None])[0]
+        sort_how_candidate = params.get("sort_how", [None])[0]
+        if sort_by_candidate:
+            sort_by = str(sort_by_candidate).strip().lower() or None
+        if sort_how_candidate:
+            sort_how = str(sort_how_candidate).strip().lower() or None
+    if sort_how not in (None, "asc", "desc"):
+        sort_how = None
+    match = re.search(r"trakt\.tv/users/([^/]+)/lists/([^/?#]+)", base_value, re.IGNORECASE)
     if match:
         username = match.group(1)
         list_id = match.group(2)
         return {
             "username": username,
             "list_id": list_id,
-            "path": f"/users/{username}/lists/{list_id}/items"
+            "path": f"/users/{username}/lists/{list_id}/items",
+            "sort_by": sort_by,
+            "sort_how": sort_how
         }
-    match = re.search(r"trakt\.tv/lists/([^/?#]+)", trimmed, re.IGNORECASE)
+    match = re.search(r"trakt\.tv/lists/([^/?#]+)", base_value, re.IGNORECASE)
     if match:
         list_id = match.group(1)
-        return {"username": "me", "list_id": list_id, "path": f"/lists/{list_id}/items"}
-    if "/" in trimmed:
-        username, list_id = trimmed.split("/", 1)
+        return {
+            "username": "me",
+            "list_id": list_id,
+            "path": f"/lists/{list_id}/items",
+            "sort_by": sort_by,
+            "sort_how": sort_how
+        }
+    if "/" in base_value:
+        username, list_id = base_value.split("/", 1)
         return {
             "username": username,
             "list_id": list_id,
-            "path": f"/users/{username}/lists/{list_id}/items"
+            "path": f"/users/{username}/lists/{list_id}/items",
+            "sort_by": sort_by,
+            "sort_how": sort_how
         }
-    return {"username": "me", "list_id": trimmed, "path": f"/lists/{trimmed}/items"}
+    return {
+        "username": "me",
+        "list_id": base_value,
+        "path": f"/lists/{base_value}/items",
+        "sort_by": sort_by,
+        "sort_how": sort_how
+    }
 
 
-def _pick_preferred_provider(provider_ids: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
-    normalized = {key.lower(): provider_ids.get(key) for key in provider_ids or {}}
+def _pick_preferred_provider(provider_ids: Optional[Dict[str, Any]]) -> Tuple[Optional[str], Optional[str]]:
+    safe_ids = provider_ids or {}
+    normalized = {key.lower(): safe_ids.get(key) for key in safe_ids}
     for key in ("tmdb", "imdb"):
         candidate = normalized.get(key)
         if candidate:
@@ -174,7 +360,8 @@ def _extract_trakt_candidate(entry: Any) -> Optional[Dict[str, Any]]:
                 break
     if not isinstance(target, dict):
         target = entry
-    provider_ids = target.get("ids") if isinstance(target.get("ids"), dict) else {}
+    provider_ids_raw = target.get("ids")
+    provider_ids: Dict[str, Any] = provider_ids_raw if isinstance(provider_ids_raw, dict) else {}
     provider_key, provider_id = _pick_preferred_provider(provider_ids)
     if not provider_key or not provider_id:
         return None
@@ -199,15 +386,22 @@ def _fetch_trakt_list_items(value: str) -> List[Dict[str, Any]]:
     client = _ensure_trakt_client()
     logger.info("Caricando lista Trakt %s", reference.get("list_id"))
     path = reference["path"]
+    sort_by = reference.get("sort_by")
+    sort_how = reference.get("sort_how") or ("asc" if sort_by else None)
     entries: List[Dict[str, Any]] = []
     page = 1
     limit = 100
     while True:
         try:
+            params = {"extended": "full", "page": page, "limit": limit}
+            if sort_by:
+                params["sort_by"] = sort_by
+            if sort_how:
+                params["sort_how"] = sort_how
             payload = client._request(
                 "GET",
                 path,
-                params={"extended": "full", "page": page, "limit": limit}
+                params=params
             ) or []
         except TraktAPIError as exc:
             raise RuntimeError(f"Trakt: {exc}") from exc
@@ -328,16 +522,50 @@ def _parse_imdb_list_id(value: str) -> Optional[str]:
         match = re.search(r"/list/(ls\d+)", trimmed, re.IGNORECASE)
         if match:
             return match.group(1)
+    if "?" in trimmed:
+        trimmed = trimmed.split("?", 1)[0]
     if re.fullmatch(r"ls\d+", trimmed, re.IGNORECASE):
         return trimmed
     return None
 
 
+def _normalize_imdb_chart_sort(url: str) -> str:
+    if not url or "/chart/" not in url:
+        return url
+    parsed = urllib.parse.urlparse(url)
+    if not parsed.query:
+        return url
+    params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+    raw_sort = params.get("sort", [None])[0]
+    if not raw_sort:
+        return url
+    parts = [part.strip().lower() for part in str(raw_sort).split(",", 1)]
+    if not parts or parts[0] != "list_order":
+        return url
+    order = parts[1] if len(parts) > 1 and parts[1] else "asc"
+    params["sort"] = [f"rank,{order}"]
+    new_query = urllib.parse.urlencode(params, doseq=True)
+    return urllib.parse.urlunparse(parsed._replace(query=new_query))
+
+
 def _fetch_imdb_list_from_value(value: str) -> List[Dict[str, Any]]:
-    list_id = _parse_imdb_list_id(value)
+    if not value:
+        raise RuntimeError("ID lista IMDb non valido")
+    trimmed = value.strip()
+    if not trimmed:
+        raise RuntimeError("ID lista IMDb non valido")
+    if trimmed.lower().startswith("http"):
+        parsed = urllib.parse.urlparse(trimmed)
+        if "imdb.com" in parsed.netloc and ("/list/" in parsed.path or "/chart/" in parsed.path):
+            return _fetch_imdb_list_items(url=trimmed)
+    base_value, _, query = trimmed.partition("?")
+    list_id = _parse_imdb_list_id(base_value) or _parse_imdb_list_id(trimmed)
     if not list_id:
         raise RuntimeError("ID lista IMDb non valido")
-    return _fetch_imdb_list_items(list_id)
+    url = IMDB_LIST_URL.format(list_id=list_id)
+    if query:
+        url = f"{url}?{query}"
+    return _fetch_imdb_list_items(list_id=list_id, url=url)
 
 
 def _fetch_tmdb_list_from_value(value: str) -> List[Dict[str, Any]]:
@@ -354,36 +582,123 @@ def _fetch_tmdb_collection_from_value(value: str) -> List[Dict[str, Any]]:
     return _fetch_tmdb_collection_items(collection_id)
 
 
-def _fetch_imdb_list_items(list_id: str) -> List[Dict[str, Any]]:
-    if not list_id:
+def _fetch_imdb_list_items(list_id: Optional[str] = None, url: Optional[str] = None) -> List[Dict[str, Any]]:
+    if not url and not list_id:
         raise RuntimeError("ID lista IMDb non valido")
-    url = IMDB_LIST_URL.format(list_id=list_id)
+    target_url = _normalize_imdb_chart_sort(url) if url else IMDB_LIST_URL.format(list_id=list_id)
     try:
-        response = requests.get(url, headers={"User-Agent": "OctoHub/1.0"}, timeout=15)
+        response = requests.get(target_url, headers=IMDB_HEADERS, timeout=15)
     except requests.RequestException as exc:
         raise RuntimeError(f"Errore comunicazione IMDb: {exc}") from exc
+    if response.status_code == 202 and response.headers.get("x-amzn-waf-action") == "challenge":
+        raise RuntimeError("IMDb ha richiesto una verifica anti-bot (WAF). Prova con un'altra fonte o un link differente.")
     if response.status_code != 200:
         raise RuntimeError(f"IMDb ha risposto con {response.status_code}")
     html = response.text or ""
-    matches = re.findall(r'/title/(tt\d+)/', html)
-    unique_ids = []
-    seen = set()
-    for imdb_id in matches:
-        candidate = imdb_id.strip()
-        if candidate and candidate not in seen:
-            seen.add(candidate)
-            unique_ids.append(candidate)
-    logger.info("IMDb lista %s restituisce %d titoli", list_id, len(unique_ids))
+    extracted_items = _extract_imdb_items_from_jsonld(html)
+    if not extracted_items:
+        matches = re.findall(r'/title/(tt\d+)/', html)
+        extracted_items = []
+        seen = set()
+        for imdb_id in matches:
+            candidate = imdb_id.strip()
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                extracted_items.append({"imdb_id": candidate})
+    extracted_items = _enrich_imdb_items_with_tmdb(extracted_items)
+    logger.info("IMDb lista %s restituisce %d titoli", list_id or target_url, len(extracted_items))
     return [
         {
             "provider_key": "imdb",
-            "provider_id": item,
+            "provider_id": item.get("imdb_id"),
             "provider_label": "Imdb",
-            "media_type": None,
-            "title": ""
+            "media_type": item.get("media_type"),
+            "tmdb_id": item.get("tmdb_id"),
+            "title": item.get("title") or "",
+            "year": item.get("year")
         }
-        for item in unique_ids
+        for item in extracted_items
     ]
+
+
+_TMDB_IMDB_CACHE: Dict[str, Dict[str, Any] | None] = {}
+
+
+def _fetch_tmdb_match_for_imdb(imdb_id: str) -> Optional[Dict[str, Any]]:
+    if not imdb_id:
+        return None
+    if imdb_id in _TMDB_IMDB_CACHE:
+        return _TMDB_IMDB_CACHE[imdb_id]
+    api_key, language = _get_tmdb_credentials()
+    if not api_key:
+        _TMDB_IMDB_CACHE[imdb_id] = None
+        return None
+    url = TMDB_FIND_ENDPOINT.format(imdb_id=imdb_id)
+    try:
+        response = requests.get(
+            url,
+            params={"api_key": api_key, "language": language, "external_source": "imdb_id"},
+            timeout=12
+        )
+    except requests.RequestException as exc:
+        logger.warning("Errore comunicazione TMDB (find %s): %s", imdb_id, exc)
+        _TMDB_IMDB_CACHE[imdb_id] = None
+        return None
+    if response.status_code != 200:
+        logger.warning("TMDB find ha risposto con %s per %s", response.status_code, imdb_id)
+        _TMDB_IMDB_CACHE[imdb_id] = None
+        return None
+    try:
+        payload = response.json()
+    except ValueError:
+        logger.warning("Risposta TMDB find non valida per %s", imdb_id)
+        _TMDB_IMDB_CACHE[imdb_id] = None
+        return None
+    result = None
+    for key, media_type in (("movie_results", "movie"), ("tv_results", "tv")):
+        entries = payload.get(key) or []
+        if entries:
+            entry = entries[0]
+            title = _clean_title(entry.get("title") or entry.get("name"))
+            date_value = entry.get("release_date") if media_type == "movie" else entry.get("first_air_date")
+            year = _extract_year(date_value)
+            tmdb_id = entry.get("id")
+            result = {
+                "title": title,
+                "year": year,
+                "media_type": media_type,
+                "tmdb_id": tmdb_id
+            }
+            break
+    _TMDB_IMDB_CACHE[imdb_id] = result
+    return result
+
+
+def _enrich_imdb_items_with_tmdb(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not items:
+        return items
+    api_key, _ = _get_tmdb_credentials()
+    if not api_key:
+        return items
+    for item in items:
+        imdb_id = item.get("imdb_id") or item.get("provider_id")
+        if not imdb_id:
+            continue
+        tmdb_match = _fetch_tmdb_match_for_imdb(str(imdb_id))
+        if not tmdb_match:
+            if item.get("title"):
+                item["title"] = _clean_title(item.get("title"))
+            continue
+        tmdb_title = tmdb_match.get("title")
+        if tmdb_title:
+            item["title"] = tmdb_title
+        if tmdb_match.get("year"):
+            item["year"] = tmdb_match.get("year")
+        if tmdb_match.get("media_type"):
+            item["media_type"] = tmdb_match.get("media_type")
+        if tmdb_match.get("tmdb_id"):
+            item["tmdb_id"] = tmdb_match.get("tmdb_id")
+    return items
 
 
 class MdblistClient:
@@ -470,24 +785,36 @@ class MdblistClient:
             return data
         return None
 
-def _ensure_mdblist_client() -> MdblistClient:
-    config, _ = load_config()
+def _collect_mdblist_api_keys(config: Optional[Dict[str, Any]] = None) -> List[str]:
+    if config is None:
+        config, _ = load_config()
+    keys: List[str] = []
     mdblist_settings = (config or {}).get("MDBLIST") or {}
     api_key = str(mdblist_settings.get("API_KEY") or "").strip()
-    if not api_key:
-        env_key = os.environ.get("MDBLIST_API_KEY")
-        if env_key:
-            api_key = env_key.strip()
-    if not api_key:
-        keys = (config or {}).get("MDBLIST_API_KEYS") or []
-        for candidate in keys:
-            candidate_value = str(candidate or "").strip()
-            if candidate_value:
-                api_key = candidate_value
-                break
-    if not api_key:
+    if api_key:
+        keys.append(api_key)
+    env_key = os.environ.get("MDBLIST_API_KEY")
+    if env_key:
+        keys.append(env_key.strip())
+    for candidate in (config or {}).get("MDBLIST_API_KEYS") or []:
+        candidate_value = str(candidate or "").strip()
+        if candidate_value:
+            keys.append(candidate_value)
+    unique_keys = []
+    seen = set()
+    for key in keys:
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_keys.append(key)
+    return unique_keys
+
+
+def _ensure_mdblist_client() -> MdblistClient:
+    keys = _collect_mdblist_api_keys()
+    if not keys:
         raise RuntimeError("MDBList non configurato")
-    return MdblistClient(api_key)
+    return MdblistClient(keys[0])
 
 
 def _normalize_mdblist_entries(entries: List[Any]) -> List[Dict[str, Any]]:
@@ -543,49 +870,60 @@ def _fetch_mdblist_items(value: str, max_items: Optional[int] = None) -> List[Di
 
 
 def list_mdblist_user_lists() -> List[Dict[str, Any]]:
-    client = _ensure_mdblist_client()
-    raw_lists = client.get_my_lists() or []
-    normalized = []
-    for entry in raw_lists:
-        if not isinstance(entry, dict):
+    config, _ = load_config()
+    keys = _collect_mdblist_api_keys(config)
+    if not keys:
+        raise RuntimeError("MDBList non configurato")
+    normalized: List[Dict[str, Any]] = []
+    seen = set()
+    last_error = ""
+    for index, api_key in enumerate(keys, start=1):
+        client = MdblistClient(api_key)
+        raw_lists = client.get_my_lists()
+        if raw_lists is None:
+            last_error = f"Errore MDBList (chiave {index})"
             continue
-        list_id = entry.get("id") or entry.get("list_id")
-        if not list_id:
-            continue
-        slug = entry.get("slug") or ""
-        user_name = entry.get("user_name") or entry.get("user_id") or ""
-        name = entry.get("name") or f"Lista MDBList {list_id}"
-        description = entry.get("description") or ""
-        item_count = entry.get("items") or 0
-        link = ""
-        if user_name and slug:
-            link = f"https://mdblist.com/lists/{user_name}/{slug}"
-        else:
-            link = f"https://mdblist.com/list/{list_id}"
-        normalized.append({
-            "name": name,
-            "description": description,
-            "list_id": str(list_id),
-            "slug": slug,
-            "user_name": user_name,
-            "source_value": str(list_id),
-            "item_count": item_count,
-            "link": link,
-            "dynamic": bool(entry.get("dynamic")),
-            "private": bool(entry.get("private"))
-        })
-    logger.info("MDBList personali restituiscono %d liste", len(normalized))
+        for entry in raw_lists or []:
+            if not isinstance(entry, dict):
+                continue
+            list_id = entry.get("id") or entry.get("list_id")
+            if not list_id:
+                continue
+            slug = entry.get("slug") or ""
+            user_name = entry.get("user_name") or entry.get("user_id") or ""
+            name = entry.get("name") or f"Lista MDBList {list_id}"
+            description = entry.get("description") or ""
+            item_count = entry.get("items") or 0
+            link = ""
+            if user_name and slug:
+                link = f"https://mdblist.com/lists/{user_name}/{slug}"
+            else:
+                link = f"https://mdblist.com/list/{list_id}"
+            dedupe_key = (str(list_id), str(user_name))
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            normalized.append({
+                "name": name,
+                "description": description,
+                "list_id": str(list_id),
+                "slug": slug,
+                "user_name": user_name,
+                "source_value": str(list_id),
+                "item_count": item_count,
+                "link": link,
+                "dynamic": bool(entry.get("dynamic")),
+                "private": bool(entry.get("private"))
+            })
+    if not normalized and last_error:
+        raise RuntimeError(last_error)
+    logger.info("MDBList personali restituiscono %d liste (chiavi: %d)", len(normalized), len(keys))
     return normalized
 
 
 def is_mdblist_enabled() -> bool:
     config, _ = load_config()
-    mdblist_settings = (config or {}).get("MDBLIST") or {}
-    api_key = str(mdblist_settings.get("API_KEY") or "").strip()
-    if api_key:
-        return True
-    keys = (config or {}).get("MDBLIST_API_KEYS") or []
-    return bool(keys)
+    return bool(_collect_mdblist_api_keys(config))
 
 
 def build_source_link(source_type: str, source_value: str) -> str:
@@ -598,7 +936,11 @@ def build_source_link(source_type: str, source_value: str) -> str:
         parts = value.split("/", 2)
         if len(parts) == 1:
             return f"https://trakt.tv/users/{parts[0]}/lists"
-        return f"https://trakt.tv/users/{parts[0]}/lists/{parts[1]}"
+        list_value, _, query = parts[1].partition("?")
+        url = f"https://trakt.tv/users/{urllib.parse.quote(parts[0])}/lists/{urllib.parse.quote(list_value)}"
+        if query:
+            url = f"{url}?{query}"
+        return url
     if source_type == "imdb_list":
         if value.startswith("ls"):
             return f"https://www.imdb.com/list/{value}"
@@ -621,9 +963,9 @@ SOURCE_PROVIDER_CONFIG: List[Tuple[str, Dict[str, Any]]] = [
         "trakt_list",
         {
             "label": "Lista Trakt",
-            "description": "Formato <code>utente/lista</code> oppure slug completo (pubblica o privata con accesso).",
+            "description": "Formato <code>utente/lista</code> oppure URL completo.",
             "placeholder": "mio-utente/la-mia-lista",
-            "help": "Indirizza una lista Trakt (public/private). Usa user/lista o lo slug completo.",
+            "help": "Indirizza una lista Trakt (public/private). Usa user/lista o link completo.",
             "fetch": _fetch_trakt_list_items
         }
     ),
@@ -631,9 +973,9 @@ SOURCE_PROVIDER_CONFIG: List[Tuple[str, Dict[str, Any]]] = [
         "imdb_list",
         {
             "label": "Lista IMDb",
-            "description": "Copia l'ID <code>ls</code> (es. <code>ls123456789</code>) o l'URL <code>https://www.imdb.com/list/ls...</code>.",
+            "description": "Copia l'ID <code>ls</code> o l'URL IMDb (lista o chart).",
             "placeholder": "ls123456789",
-            "help": "Supporta sia l'ID che l'URL completo.",
+            "help": "Supporta ID, URL lista e chart.",
             "fetch": _fetch_imdb_list_from_value
         }
     ),

@@ -11,6 +11,17 @@
         .tagline.small {
             font-size: 0.75rem;
         }
+        .description-expand {
+            background: none;
+            border: none;
+            color: #2563eb;
+            cursor: pointer;
+            font: inherit;
+            padding: 0;
+        }
+        .description-expand:hover {
+            text-decoration: underline;
+        }
         .text-muted {
             color: #64748b;
         }
@@ -46,6 +57,110 @@
             gap: 1rem;
             flex-wrap: wrap;
         }
+        .collection-media-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 1rem;
+        }
+        .collection-media-card {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 0.9rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.6rem;
+        }
+        .collection-media-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-weight: 600;
+            color: #0f172a;
+        }
+        .collection-media-preview {
+            position: relative;
+            border-radius: 10px;
+            background: #e2e8f0;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #64748b;
+        }
+        .collection-media-preview--poster {
+            aspect-ratio: 2 / 3;
+        }
+        .collection-media-preview--background {
+            aspect-ratio: 2 / 3;
+        }
+        .collection-media-preview img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: none;
+        }
+        .collection-media-preview--poster img {
+            object-fit: contain;
+            background: #0f172a;
+        }
+        .collection-media-preview--background img {
+            object-fit: cover;
+            object-position: center;
+        }
+        .collection-media-preview.has-image img {
+            display: block;
+        }
+        .collection-media-preview.has-image .collection-media-placeholder {
+            display: none;
+        }
+        .collection-media-placeholder {
+            font-size: 0.8rem;
+            padding: 0.6rem;
+            text-align: center;
+        }
+        .collection-media-remove {
+            position: absolute;
+            top: 0.4rem;
+            right: 0.4rem;
+            background: rgba(15, 23, 42, 0.75);
+            color: #fff;
+            border: none;
+            width: 28px;
+            height: 28px;
+            border-radius: 999px;
+            cursor: pointer;
+            font-size: 0.95rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s ease;
+        }
+        .collection-media-preview.has-image .collection-media-remove {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        .collection-dropzone {
+            border: 1px dashed #94a3b8;
+            border-radius: 10px;
+            padding: 0.65rem;
+            text-align: center;
+            cursor: pointer;
+            background: #fff;
+            color: #475569;
+            font-size: 0.85rem;
+            transition: border-color 0.2s ease, background 0.2s ease;
+        }
+        .collection-dropzone.is-dragover {
+            border-color: #2563eb;
+            background: #eef2ff;
+            color: #1d4ed8;
+        }
+        .collection-file-input {
+            display: none;
+        }
         .collections-grid {
             display: grid;
             grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -59,6 +174,12 @@
         @media (max-width: 900px) {
             .collections-grid {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+            .collection-media-grid {
+                grid-template-columns: minmax(0, 1fr);
+            }
+            .collection-toggle-grid {
+                grid-template-columns: minmax(0, 1fr);
             }
         }
         @media (max-width: 600px) {
@@ -543,7 +664,7 @@
         }
         .collection-modal__body {
             display: grid;
-            grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
             gap: 1.5rem;
             padding: 1.5rem 1.8rem 1.8rem;
             overflow: auto;
@@ -638,6 +759,9 @@
             min-height: 90px;
             resize: vertical;
         }
+        #collection-description {
+            min-height: 70px;
+        }
         .collection-server-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -649,6 +773,7 @@
         }
         .collection-server-option {
             display: flex;
+            flex-direction: row;
             align-items: center;
             gap: 0.5rem;
             font-size: 0.85rem;
@@ -677,10 +802,22 @@
         }
         .collections-form .switch-toggle {
             display: inline-flex;
+            flex-direction: row;
             align-items: center;
             gap: 0.5rem;
             font-size: 0.85rem;
             font-weight: 600;
+        }
+        .collection-toggle-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 1rem;
+            align-items: start;
+        }
+        .collection-toggle-col {
+            display: flex;
+            flex-direction: column;
+            gap: 0.8rem;
         }
         .collections-form .actions {
             display: flex;
@@ -693,6 +830,9 @@
             border-radius: 14px;
             overflow: hidden;
             background: #f8fafc;
+        }
+        .collection-source-panel + .collection-source-panel {
+            margin-top: 0.9rem;
         }
         .collection-source-panel summary {
             list-style: none;
@@ -892,7 +1032,7 @@
                             </select>
                         </div>
                         <div class="form-row">
-                            <label for="collection-source-value">Valore lista/collezione</label>
+                            <label for="collection-source-value">Link o ID lista/collezione</label>
                             <input type="text" id="collection-source-value" name="source_value" required>
                             <div id="collection-source-hint" class="tagline small text-muted"></div>
                         </div>
@@ -927,32 +1067,39 @@
                             </div>
                         </div>
                         <div class="form-row">
-                            <label for="collection-poster-url">Poster collezione (URL)</label>
-                            <input type="text" id="collection-poster-url" name="poster_url" maxlength="400" placeholder="https://.../poster.jpg">
-                            <span class="tagline small text-muted">Inserisci un immagine remota per la collezione Emby.</span>
-                        </div>
-                        <div class="form-row">
-                            <label for="collection-poster-file">Poster locale</label>
-                            <input type="file" id="collection-poster-file" name="poster_file" accept="image/jpeg,image/png,image/webp,image/svg+xml">
-                            <div class="tagline small text-muted">Carica un poster dal tuo computer (max 5MB). Verrà salvato nel database.</div>
-                            <div class="actions" style="margin-top: 0.4rem;">
-                                <button class="btn ghost" type="button" id="collection-poster-remove" disabled>Rimuovi poster caricato</button>
+                            <label>Immagini collezione</label>
+                            <div class="collection-media-grid">
+                                <div class="collection-media-card" data-kind="poster">
+                                    <div class="collection-media-header">Poster</div>
+                                    <div class="collection-media-preview collection-media-preview--poster" id="collection-poster-preview" data-source="">
+                                        <img id="collection-poster-preview-img" alt="Anteprima poster">
+                                        <div class="collection-media-placeholder">Nessuna anteprima</div>
+                                        <button type="button" class="collection-media-remove" id="collection-poster-preview-remove" aria-label="Rimuovi poster">×</button>
+                                    </div>
+                                    <div class="collection-dropzone" id="collection-poster-dropzone" role="button" tabindex="0">
+                                        Trascina qui l'immagine o clicca per selezionare
+                                    </div>
+                                    <input class="collection-file-input" type="file" id="collection-poster-file" name="poster_file" accept="image/jpeg,image/png,image/webp,image/svg+xml">
+                                    <input type="text" id="collection-poster-url" name="poster_url" maxlength="400" placeholder="https://.../poster.jpg">
+                                    <span class="tagline small text-muted">Inserisci un immagine remota o carica un poster (max 5MB).</span>
+                                    <div class="tagline small text-muted" id="collection-poster-upload-status"></div>
+                                </div>
+                                <div class="collection-media-card" data-kind="background">
+                                    <div class="collection-media-header">Background</div>
+                                    <div class="collection-media-preview collection-media-preview--background" id="collection-background-preview" data-source="">
+                                        <img id="collection-background-preview-img" alt="Anteprima background">
+                                        <div class="collection-media-placeholder">Nessuna anteprima</div>
+                                        <button type="button" class="collection-media-remove" id="collection-background-preview-remove" aria-label="Rimuovi background">×</button>
+                                    </div>
+                                    <div class="collection-dropzone" id="collection-background-dropzone" role="button" tabindex="0">
+                                        Trascina qui l'immagine o clicca per selezionare
+                                    </div>
+                                    <input class="collection-file-input" type="file" id="collection-background-file" name="background_file" accept="image/jpeg,image/png,image/webp,image/svg+xml">
+                                    <input type="text" id="collection-background-url" name="background_url" maxlength="400" placeholder="https://.../background.jpg">
+                                    <span class="tagline small text-muted">Immagine di sfondo remota o caricata (max 5MB).</span>
+                                    <div class="tagline small text-muted" id="collection-background-upload-status"></div>
+                                </div>
                             </div>
-                            <div class="tagline small text-muted" id="collection-poster-upload-status"></div>
-                        </div>
-                        <div class="form-row">
-                            <label for="collection-background-url">Background collezione (URL)</label>
-                            <input type="text" id="collection-background-url" name="background_url" maxlength="400" placeholder="https://.../background.jpg">
-                            <span class="tagline small text-muted">Immagine di sfondo per la collezione Emby.</span>
-                        </div>
-                        <div class="form-row">
-                            <label for="collection-background-file">Background locale</label>
-                            <input type="file" id="collection-background-file" name="background_file" accept="image/jpeg,image/png,image/webp,image/svg+xml">
-                            <div class="tagline small text-muted">Carica un background dal tuo computer (max 5MB). Verrà salvato nel database.</div>
-                            <div class="actions" style="margin-top: 0.4rem;">
-                                <button class="btn ghost" type="button" id="collection-background-remove" disabled>Rimuovi background caricato</button>
-                            </div>
-                            <div class="tagline small text-muted" id="collection-background-upload-status"></div>
                         </div>
                         <div class="form-row">
                             <label for="collection-season-start">Visibilità stagionale</label>
@@ -962,27 +1109,29 @@
                             </div>
                             <span class="tagline small text-muted">Formato MM-DD; lascia vuoto per mostrare sempre.</span>
                         </div>
-                        <div class="form-row" style="display:flex; gap:1rem; align-items:center;">
-                            <label class="switch-toggle">
-                                <input type="checkbox" id="collection-refresh-metadata" name="refresh_metadata">
-                                <span>Aggiorna metadata dopo sync</span>
-                            </label>
-                        </div>
-                        <div class="form-row" style="gap:1rem; align-items:center; flex-wrap: wrap;">
-                            <label class="switch-toggle">
-                                <input type="checkbox" id="collection-auto-enabled" name="auto_enabled">
-                                <span>Esegui automaticamente</span>
-                            </label>
-                            <label style="display:flex; flex-direction:column;">
-                                Frequenza automazione (%)
-                                <input type="number" id="collection-auto-frequency" name="auto_frequency" min="0" max="100" value="100">
-                            </label>
-                        </div>
                         <div class="form-row">
-                            <label class="switch-toggle">
-                                <input type="checkbox" id="collection-enabled" name="enabled" checked>
-                                <span>Abilita subito</span>
-                            </label>
+                            <div class="collection-toggle-grid">
+                                <div class="collection-toggle-col">
+                                    <label class="switch-toggle">
+                                        <input type="checkbox" id="collection-enabled" name="enabled" checked>
+                                        <span>Abilita subito</span>
+                                    </label>
+                                    <label class="switch-toggle">
+                                        <input type="checkbox" id="collection-refresh-metadata" name="refresh_metadata">
+                                        <span>Aggiorna metadata dopo sync</span>
+                                    </label>
+                                </div>
+                                <div class="collection-toggle-col">
+                                    <label class="switch-toggle">
+                                        <input type="checkbox" id="collection-auto-enabled" name="auto_enabled">
+                                        <span>Esegui automaticamente</span>
+                                    </label>
+                                    <label>
+                                        Frequenza automazione (%)
+                                        <input type="number" id="collection-auto-frequency" name="auto_frequency" min="0" max="100" value="100">
+                                    </label>
+                                </div>
+                            </div>
                         </div>
                         <div class="actions">
                             <button class="btn primary" type="submit">Salva collezione</button>
@@ -1017,8 +1166,7 @@
                                 <thead>
                                     <tr>
                                         <th>Lista</th>
-                                        <th>Privacy</th>
-                                        <th>Elementi</th>
+                                        <th>Item</th>
                                         <th>Azioni</th>
                                     </tr>
                                 </thead>
@@ -1051,7 +1199,7 @@
                                 <thead>
                                     <tr>
                                         <th>Lista</th>
-                                        <th>Elementi</th>
+                                        <th>Item</th>
                                         <th>Azioni</th>
                                     </tr>
                                 </thead>
