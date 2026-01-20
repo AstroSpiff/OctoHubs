@@ -1897,7 +1897,7 @@ async def view_emby_collections(request: Request, user=Depends(get_current_user_
         "trakt_enabled": bool(trakt_enabled),
         "mdblist_enabled": bool(is_mdblist_enabled()),
         "auto_refresh_enabled": bool(collections_config.get("AUTO_REFRESH_ENABLED")),
-        "auto_refresh_interval_hours": int(collections_config.get("AUTO_REFRESH_INTERVAL_HOURS") or DEFAULT_CONFIG["COLLECTIONS"]["AUTO_REFRESH_INTERVAL_HOURS"])
+        "auto_refresh_interval_minutes": int(collections_config.get("AUTO_REFRESH_INTERVAL_MINUTES") or DEFAULT_CONFIG["COLLECTIONS"]["AUTO_REFRESH_INTERVAL_MINUTES"])
     }
 
     return templates.TemplateResponse(
@@ -2660,6 +2660,38 @@ async def emby_remove_server_post(
     else:
         flash(request, f"Server {label} rimosso.")
     return RedirectResponse(url=next_url, status_code=303)
+
+
+@fastapi_app.post("/api/emby/users/group/settings")
+async def emby_save_group_settings(request: Request):
+    _require_auth(request)
+    try:
+        data = await request.json()
+    except:
+        return JSONResponse({"success": False, "message": "Invalid JSON"}, status_code=400)
+    
+    group_id = data.get("group_id")
+    # Handle boolean conversion safely
+    auto_sync = data.get("auto_sync")
+    if isinstance(auto_sync, str):
+        auto_sync = auto_sync.lower() in ("true", "1", "yes")
+    else:
+        auto_sync = bool(auto_sync)
+
+    sync_type = data.get("sync_type", "merge")
+    
+    if not group_id:
+        return JSONResponse({"success": False, "message": "Missing group_id"}, status_code=400)
+        
+    manager = get_emby_user_manager()
+    if not manager:
+         return JSONResponse({"success": False, "message": "Manager not available"}, status_code=500)
+         
+    success = manager.save_group_settings(group_id, auto_sync, sync_type)
+    if success:
+        return JSONResponse({"success": True})
+    else:
+        return JSONResponse({"success": False, "message": "Failed to save"}, status_code=500)
 
 
 @fastapi_app.post("/emby/action")
@@ -4451,14 +4483,14 @@ async def update_scheduler_route(
     collections_times_raw = form_data.get("collections_auto_refresh_times")
     if collections_times_raw is not None and not isinstance(collections_times_raw, str):
         collections_times_raw = str(collections_times_raw)
-    interval_default = CONFIG_DEFAULTS["COLLECTIONS"]["AUTO_REFRESH_INTERVAL_HOURS"]
-    collections_interval = _coerce_request_int(collections_interval_raw, interval_default, 1, 168)
+    interval_default = CONFIG_DEFAULTS["COLLECTIONS"]["AUTO_REFRESH_INTERVAL_MINUTES"]
+    collections_interval = _coerce_request_int(collections_interval_raw, interval_default, 5, 10080)
     collections_times = _split_csv_field(collections_times_raw)
     if collections_mode not in ("interval", "fixed"):
         collections_mode = "interval"
     collections_payload = {
         "AUTO_REFRESH_ENABLED": bool(collections_enabled),
-        "AUTO_REFRESH_INTERVAL_HOURS": collections_interval,
+        "AUTO_REFRESH_INTERVAL_MINUTES": collections_interval,
         "AUTO_REFRESH_MODE": collections_mode,
         "AUTO_REFRESH_TIMES": collections_times
     }

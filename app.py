@@ -5798,7 +5798,8 @@ def _ensure_auto_scheduler():
         _AUTO_SCHEDULER.set_callbacks(
             summarize_func=_summarize_requests_for_dashboard,
             save_overview_func=_save_cached_requests_overview,
-            process_requests_func=process_requests
+            process_requests_func=process_requests,
+            sync_users_func=_wf_trigger_sync
         )
     return _AUTO_SCHEDULER
 
@@ -12150,6 +12151,14 @@ class TraktClient:
 
 # --- WORKFLOW CALLBACKS ---
 # Funzioni wrapper per il WorkflowManager
+
+def _wf_trigger_sync():
+    """Wrapper per avviare la sincronizzazione utenti."""
+    manager = get_emby_user_manager()
+    if manager:
+        manager.run_auto_sync()
+        return True
+    return False
 
 def _wf_trigger_scan(context):
     """

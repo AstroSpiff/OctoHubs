@@ -119,17 +119,18 @@ class AutoScheduler:
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._settings = _default_auto_tasks()
-        self._next_run: Dict[str, Optional[datetime]] = {"scan": None, "refresh": None, "workflow": None}
+        self._next_run: Dict[str, Optional[datetime]] = {"scan": None, "refresh": None, "workflow": None, "sync": None}
         self._config = None
         self._refresh_running = False
         self._scan_manager = scan_manager_instance
         self._summarize_func = None
         self._save_overview_func = None
         self._process_requests_func = None
+        self._sync_users_func = None
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
 
-    def set_callbacks(self, summarize_func, save_overview_func, process_requests_func):
+    def set_callbacks(self, summarize_func, save_overview_func, process_requests_func, sync_users_func=None):
         """
         Set callback functions to avoid circular imports.
 
@@ -137,10 +138,12 @@ class AutoScheduler:
             summarize_func: Function to summarize requests for dashboard
             save_overview_func: Function to save cached overview
             process_requests_func: Function to process requests
+            sync_users_func: Function to sync users
         """
         self._summarize_func = summarize_func
         self._save_overview_func = save_overview_func
         self._process_requests_func = process_requests_func
+        self._sync_users_func = sync_users_func
 
     def update_config(self, config):
         with self._lock:
@@ -153,9 +156,11 @@ class AutoScheduler:
             # IMPORTANT: Only reset next_run if tasks are newly enabled or config structure changed
             # Otherwise preserve existing scheduled times to avoid infinite postponement
             if not hasattr(self, '_next_run') or self._next_run is None:
-                self._next_run = {"scan": None, "refresh": None, "workflow": None}
+                self._next_run = {"scan": None, "refresh": None, "workflow": None, "sync": None}
             if "workflow" not in self._next_run:
                 self._next_run["workflow"] = None
+            if "sync" not in self._next_run:
+                self._next_run["sync"] = None
             settings_snapshot = copy.deepcopy(self._settings)
         self._wake.set()
         # Only log next runs on initial config or when explicitly changed
@@ -181,7 +186,7 @@ class AutoScheduler:
     def _log_next_runs(self, settings, reference=None):
         """Log the next scheduled runs for enabled tasks."""
         ref = reference or datetime.now()
-        for kind in ("scan", "refresh", "workflow"):
+        for kind in ("scan", "refresh", "workflow", "sync"):
             entry = settings.get(kind) or {}
             if not entry.get("enabled"):
                 print(f"   -> AutoScheduler: {kind} disabilitato.")
@@ -215,7 +220,7 @@ class AutoScheduler:
             return 120
         now = datetime.now()
         min_wait = None
-        for kind in ("scan", "refresh", "workflow"):
+        for kind in ("scan", "refresh", "workflow", "sync"):
             entry = self._settings.get(kind)
             if not entry or not entry.get("enabled"):
                 continue
@@ -228,8 +233,10 @@ class AutoScheduler:
                     executed = self._trigger_scan(config)
                 elif kind == "refresh":
                     executed = self._trigger_refresh(config)
-                else:
+                elif kind == "workflow":
                     executed = self._trigger_workflow(config)
+                else:
+                    executed = self._trigger_sync()
                 self._next_run[kind] = self._calculate_next_run(entry, datetime.now())
                 if not executed and self._next_run[kind] is None:
                     # Ritenta dopo un minuto in caso di errore continuo
@@ -265,6 +272,19 @@ class AutoScheduler:
             return min(candidates) if candidates else None
         minutes = _coerce_request_int(entry.get("interval_minutes"), 60, min_value=5)
         return reference + timedelta(minutes=minutes)
+
+    def _trigger_sync(self):
+        if not self._sync_users_func:
+            print("   -> AutoScheduler: sync non avviato (callback sync non impostata).")
+            return False
+        try:
+            print("   -> AutoScheduler: avvio sincronizzazione automatica utenti...")
+            self._sync_users_func()
+            print("   -> AutoScheduler: sincronizzazione utenti completata.")
+            return True
+        except Exception as exc:
+            print(f"   -> AutoScheduler: errore sincronizzazione utenti: {exc}")
+            return False
 
     def _trigger_scan(self, config):
         if not self._scan_manager:

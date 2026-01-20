@@ -69,21 +69,21 @@ class CollectionAutoRefresher(threading.Thread):
                     candidates.append(candidate)
                 if candidates:
                     return min(candidates)
-        interval_hours = max(
-            1,
-            int(settings.get("AUTO_REFRESH_INTERVAL_HOURS", DEFAULT_CONFIG["COLLECTIONS"]["AUTO_REFRESH_INTERVAL_HOURS"]))
+        interval_minutes = max(
+            5,
+            int(settings.get("AUTO_REFRESH_INTERVAL_MINUTES", DEFAULT_CONFIG["COLLECTIONS"]["AUTO_REFRESH_INTERVAL_MINUTES"]))
         )
-        return reference + timedelta(hours=interval_hours)
+        return reference + timedelta(minutes=interval_minutes)
 
     def _calculate_wait_seconds(self, settings: Dict[str, Any], next_run: datetime | None, now: datetime) -> float:
         if next_run:
             delta = (next_run - now).total_seconds()
             return max(10, min(3600, delta))
-        interval_hours = max(
-            1,
-            int(settings.get("AUTO_REFRESH_INTERVAL_HOURS", DEFAULT_CONFIG["COLLECTIONS"]["AUTO_REFRESH_INTERVAL_HOURS"]))
+        interval_minutes = max(
+            5,
+            int(settings.get("AUTO_REFRESH_INTERVAL_MINUTES", DEFAULT_CONFIG["COLLECTIONS"]["AUTO_REFRESH_INTERVAL_MINUTES"]))
         )
-        return float(interval_hours * 3600)
+        return float(interval_minutes * 60)
 
     def _run_cycle(self, settings: Dict[str, Any]) -> None:
         definitions = list_collection_definitions()

@@ -166,7 +166,7 @@ DEFAULT_CONFIG = {
     ,
     "COLLECTIONS": {
         "AUTO_REFRESH_ENABLED": True,
-        "AUTO_REFRESH_INTERVAL_HOURS": 4,
+        "AUTO_REFRESH_INTERVAL_MINUTES": 240,
         "AUTO_REFRESH_MODE": "interval",
         "AUTO_REFRESH_TIMES": []
     }
@@ -327,8 +327,19 @@ def _merge_collection_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
     merged = copy.deepcopy(DEFAULT_CONFIG["COLLECTIONS"])
     if not isinstance(user_settings, dict):
         return merged
+    has_minutes = any(
+        str(key).upper() == "AUTO_REFRESH_INTERVAL_MINUTES"
+        for key in user_settings.keys()
+    )
     for key, value in user_settings.items():
         normalized = key.upper()
+        if normalized == "AUTO_REFRESH_INTERVAL_HOURS":
+            if not has_minutes and value not in (None, "") and merged.get("AUTO_REFRESH_INTERVAL_MINUTES") is not None:
+                try:
+                    merged["AUTO_REFRESH_INTERVAL_MINUTES"] = int(value) * 60
+                except (TypeError, ValueError):
+                    pass
+            continue
         if normalized not in merged:
             merged[normalized] = value
             continue

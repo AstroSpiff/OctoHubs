@@ -305,8 +305,109 @@ function renderEmbyUsers(data) {
             nameContainer.appendChild(editBtn);
         }
         
-        // --- Profile Dropdown Logic ---
+        // Move "Linked" Badge next to Name/Pencil
+        const badge = groupEl.querySelector('.badge');
+        if (badge) {
+            nameContainer.appendChild(badge);
+            badge.style.marginLeft = '0.5rem';
+            // Reset template styles that might interfere
+            badge.style.alignSelf = 'center'; 
+        }
+
+        // Get Right-Side Container (parent of select)
         const select = groupEl.querySelector('.icon-profile-select');
+        let rightContainer = null;
+        if (select) rightContainer = select.parentNode;
+
+        // New: Auto Sync Controls (Moved to Right Side)
+        if (!group.is_owners && group.is_linked && rightContainer) {
+             const syncControls = document.createElement('div');
+             syncControls.className = 'group-sync-controls';
+             syncControls.style.display = 'flex'; // Ensure flex
+             syncControls.style.alignItems = 'center';
+             syncControls.style.marginRight = '1.5rem'; // Spaced from Icone
+             syncControls.style.gap = '0.5rem';
+             syncControls.style.fontSize = '0.85rem';
+             
+             const chkLabel = document.createElement('label');
+             chkLabel.style.display = 'flex';
+             chkLabel.style.flexDirection = 'row';
+             chkLabel.style.alignItems = 'center';
+             chkLabel.style.gap = '0.3rem';
+             chkLabel.style.cursor = 'pointer';
+             chkLabel.title = "Sincronizza automaticamente lo stato di visione";
+             chkLabel.style.whiteSpace = 'nowrap'; // Prevent wrapping
+             
+             const chk = document.createElement('input');
+             chk.type = 'checkbox';
+             chk.checked = group.auto_sync || false;
+             chk.style.margin = '0'; // Reset default margins
+             
+             chkLabel.appendChild(chk);
+             
+             const textSpan = document.createElement('span');
+             textSpan.textContent = 'Auto-Sync';
+             chkLabel.appendChild(textSpan);
+             
+             const typeSelect = document.createElement('select');
+             typeSelect.className = 'form-select compact';
+             typeSelect.style.padding = '0.1rem 0.5rem';
+             typeSelect.style.fontSize = '0.8rem';
+             typeSelect.disabled = !chk.checked;
+             typeSelect.style.width = 'auto';
+             
+             const optMerge = document.createElement('option');
+             optMerge.value = 'merge';
+             optMerge.textContent = 'Bidirezionale';
+             if (group.sync_type === 'merge') optMerge.selected = true;
+             
+             const optOneWay = document.createElement('option');
+             optOneWay.value = 'one_way';
+             optOneWay.textContent = 'Monodirezionale';
+             if (group.sync_type === 'one_way') optOneWay.selected = true;
+             
+             typeSelect.appendChild(optMerge);
+             typeSelect.appendChild(optOneWay);
+             
+             chk.onclick = (e) => e.stopPropagation(); 
+             chk.onchange = () => {
+                 typeSelect.disabled = !chk.checked;
+                 saveGroupSettings(group.id, chk.checked, typeSelect.value);
+             };
+             
+             typeSelect.onclick = (e) => e.stopPropagation();
+             typeSelect.onchange = () => {
+                 saveGroupSettings(group.id, chk.checked, typeSelect.value);
+             };
+             
+             syncControls.appendChild(chkLabel);
+             syncControls.appendChild(typeSelect);
+             
+             // Insert BEFORE the select (or the profile container if already wrapped, but we haven't wrapped yet in this flow)
+             // The wrapper logic is below. We insert syncControls into rightContainer first.
+             // rightContainer has [select, meta]. We want [SyncControls, Select, Meta].
+             rightContainer.insertBefore(syncControls, select);
+        }
+        
+        // --- Profile Dropdown Logic ---
+        const profileContainer = document.createElement('div');
+        profileContainer.style.display = 'inline-flex';
+        profileContainer.style.alignItems = 'center';
+        profileContainer.style.gap = '0.5rem';
+        
+        const profileLabel = document.createElement('span');
+        profileLabel.textContent = 'Icone'; // No colon
+        profileLabel.style.fontSize = '0.85rem';
+        profileLabel.style.fontWeight = 'bold'; // Bold
+        profileLabel.style.opacity = '1';
+        profileContainer.appendChild(profileLabel);
+
+        // Move select into our container
+        if (select) {
+            select.parentNode.insertBefore(profileContainer, select);
+            profileContainer.appendChild(select);
+        }
+
         if (select && currentIconData && currentIconData.profiles) {
              currentIconData.profiles.forEach(p => {
                  const opt = document.createElement('option');
@@ -1081,6 +1182,36 @@ async function renameGroup(groupId, currentName, nameElement) {
             isSaving = true; // Prevent blur from firing logic
         }
     };
+}
+
+async function saveGroupSettings(groupId, autoSync, syncType) {
+    const formData = new FormData();
+    // Use JSON payload for better type handling if backend supports it, but backend uses json()
+    // My backend implementation uses request.json()
+    
+    try {
+        const res = await fetch('/api/emby/users/group/settings', { 
+            method: 'POST', 
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                group_id: groupId,
+                auto_sync: autoSync,
+                sync_type: syncType
+            })
+        });
+        
+        if (!res.ok) {
+            alert("Errore salvataggio impostazioni gruppo.");
+        } else {
+            // Optimistic update local data if needed, but not strictly required as UI is already updated
+            // Reloading might flicker
+        }
+    } catch (e) {
+        console.error(e);
+        alert("Errore di connessione.");
+    }
 }
 
 async function renameUser(serverId, userId, currentName, nameElement) {

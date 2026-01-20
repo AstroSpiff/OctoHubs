@@ -681,6 +681,31 @@
                                     </div>
                                     <p class="auto-note">Esegue sequenzialmente: Scansione Emby, Analisi nuovi file, Aggiornamento Cache e Notifiche Telegram.</p>
                                 </section>
+                                <section class="auto-section" data-task="sync">
+                                    <div class="auto-header">
+                                        <h3>Sincronizzazione Utenti</h3>
+                                        <label class="auto-inline" title="Attiva o disattiva questa automazione">
+                                            <input type="checkbox" name="sync_enabled" class="auto-enable" {% if auto_tasks.sync and auto_tasks.sync.enabled %}checked{% endif %}>
+                                            Attiva
+                                        </label>
+                                    </div>
+                                    <div class="auto-mode">
+                                        <label class="auto-inline" title="Ripeti la sincronizzazione a intervalli costanti">
+                                            <input type="radio" name="sync_mode" value="interval" {% if auto_tasks.sync and auto_tasks.sync.mode != 'fixed' %}checked{% endif %}>
+                                            Avvia ogni
+                                        </label>
+                                        <input type="number" name="sync_interval" min="5" value="{{ (auto_tasks.sync.interval_minutes if auto_tasks.sync else 60) }}">
+                                        <span>minuti</span>
+                                    </div>
+                                    <div class="auto-mode">
+                                        <label class="auto-inline" title="Esegui la sincronizzazione in orari precisi (usa 24h)">
+                                            <input type="radio" name="sync_mode" value="fixed" {% if auto_tasks.sync and auto_tasks.sync.mode == 'fixed' %}checked{% endif %}>
+                                            Orari fissi
+                                        </label>
+                                        <input type="text" name="sync_times" placeholder="03:00, 15:00" value="{{ (auto_tasks.sync.times | join(', ')) if auto_tasks.sync else '' }}">
+                                    </div>
+                                    <p class="auto-note">Sincronizza lo stato di visione degli utenti nei gruppi abilitati.</p>
+                                </section>
                                 <section class="auto-section" data-task="collections">
                                     <div class="auto-header">
                                         <h3>Collezioni Emby</h3>
@@ -694,8 +719,8 @@
                                             <input type="radio" name="collections_auto_refresh_mode" value="interval" {% if collections_auto.get('AUTO_REFRESH_MODE', 'interval') != 'fixed' %}checked{% endif %}>
                                             Avvia ogni
                                         </label>
-                                        <input type="number" name="collections_auto_refresh_interval" min="1" value="{{ collection_config.AUTO_REFRESH_INTERVAL_HOURS or 4 }}">
-                                        <span>ore</span>
+                                        <input type="number" name="collections_auto_refresh_interval" min="5" value="{{ collection_config.AUTO_REFRESH_INTERVAL_MINUTES or 240 }}">
+                                        <span>minuti</span>
                                     </div>
                                     <div class="auto-mode">
                                         <label class="auto-inline" title="Esegui la sincronizzazione in orari precisi (usa 24h)">

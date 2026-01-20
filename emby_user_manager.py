@@ -417,8 +417,9 @@ class EmbyUserManager:
         grouped_users = {} # group_id -> list of user entries
         owners_users = [] # Special list for admins/owners
         
-        # Load custom group names
+        # Load custom group names and settings
         custom_names = {}
+        group_settings = {}
         try:
             # Keys are "group_name:UUID"
             kv_keys = self.storage.get_keys_by_prefix("group_name:")
@@ -427,8 +428,17 @@ class EmbyUserManager:
                 val = self.storage.get_key_value(k)
                 if val:
                     custom_names[gid] = val
+            
+            # Keys are "group_settings:UUID"
+            setting_keys = self.storage.get_keys_by_prefix("group_settings:")
+            for k in setting_keys:
+                gid = k.split(":", 1)[1]
+                val = self.storage.get_key_value(k)
+                if val:
+                    group_settings[gid] = val
+
         except Exception as e:
-            logger.error(f"Error loading group names: {e}")
+            logger.error(f"Error loading group names/settings: {e}")
 
         for u in all_users_raw:
             sid = u["_server_id"]
@@ -485,12 +495,15 @@ class EmbyUserManager:
             u_data["is_leader"] = db_is_leader
                 
             if gid not in grouped_users:
+                g_settings = group_settings.get(gid) or {}
                 grouped_users[gid] = {
                     "id": gid,
                     "name": custom_names.get(gid) or name, # Use custom name if exists, else user name
                     "users": [],
                     "is_linked": not gid.startswith("unlinked_"),
-                    "has_custom_name": gid in custom_names
+                    "has_custom_name": gid in custom_names,
+                    "auto_sync": g_settings.get("auto_sync", False),
+                    "sync_type": g_settings.get("sync_type", "merge")
                 }
             
             grouped_users[gid]["users"].append(u_data)
@@ -563,6 +576,76 @@ class EmbyUserManager:
         # Save custom name
         self.storage.set_key_value(f"group_name:{target_group_id}", new_name)
         return True
+
+    def save_group_settings(self, group_id: str, auto_sync: bool, sync_type: str) -> bool:
+        """
+        Saves group settings (auto_sync, sync_type).
+        """
+        if group_id.startswith("unlinked_"):
+            return False # Cannot save settings for unlinked groups yet
+        
+        settings = {
+            "auto_sync": auto_sync,
+            "sync_type": sync_type
+        }
+        self.storage.set_key_value(f"group_settings:{group_id}", settings)
+        return True
+
+    def run_auto_sync(self):
+        """
+        Executes auto-sync for all enabled groups.
+        """
+        logger.info("[AUTO_SYNC] Starting user auto-sync...")
+        
+        # 1. Fetch dashboard data to get fully formed groups
+        dashboard_data = self.get_users_dashboard_data()
+        groups = dashboard_data.get("groups", [])
+        
+        count = 0
+        for group in groups:
+            if not group.get("auto_sync"):
+                continue
+                
+            gid = group["id"]
+            sync_type = group.get("sync_type", "merge")
+            users = group.get("users", [])
+            
+            if len(users) < 2:
+                continue
+                
+            logger.info(f"[AUTO_SYNC] Processing group {group['name']} ({gid}) - Type: {sync_type}")
+            
+            # Prepare targets tuple list
+            targets = [(u["server_id"], u["user_id"]) for u in users]
+            
+            try:
+                if sync_type == "merge":
+                    # Bidirectional merge
+                    res = self.sync_merge_playstate(targets)
+                    logger.info(f"[AUTO_SYNC] Merge result for {group['name']}: {res.get('counts')}")
+                    
+                elif sync_type == "one_way":
+                    # One-way from Leader -> Others
+                    leader = next((u for u in users if u.get("is_leader")), None)
+                    if not leader:
+                        # Fallback to first user if no leader
+                        leader = users[0]
+                        
+                    source_server_id = leader["server_id"]
+                    source_user_id = leader["user_id"]
+                    
+                    # Filter targets (exclude leader)
+                    dest_targets = [(t[0], t[1]) for t in targets if not (t[0] == source_server_id and t[1] == source_user_id)]
+                    
+                    if dest_targets:
+                        res = self.sync_user_playstate(source_server_id, source_user_id, dest_targets)
+                        logger.info(f"[AUTO_SYNC] One-way result for {group['name']}: {res.get('counts')}")
+                
+                count += 1
+            except Exception as e:
+                logger.error(f"[AUTO_SYNC] Error processing group {group['name']}: {e}")
+                
+        logger.info(f"[AUTO_SYNC] Completed. Processed {count} groups.")
 
     def rename_user(self, server_id: str, user_id: str, new_name: str) -> bool:
         """
