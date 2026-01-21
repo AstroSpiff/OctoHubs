@@ -327,6 +327,11 @@ def get_emby_user_manager():
         except Exception as e:
             logger.error(f"Failed to initialize EmbyUserManager: {e}")
             return None
+
+    # Always ensure config is up to date with _ACTIVE_CONFIG
+    if _EMBY_USER_MANAGER and _ACTIVE_CONFIG:
+        _EMBY_USER_MANAGER.config = _ACTIVE_CONFIG
+
     return _EMBY_USER_MANAGER
 
 
@@ -4751,6 +4756,12 @@ def load_config():
     connection_valid = jellyseerr_ok and (prowlarr_ok or jackett_ok)
 
     _ACTIVE_CONFIG = merged
+
+    # Aggiorna la config di EmbyUserManager se istanziato,
+    # altrimenti manterrebbe il riferimento al vecchio dizionario
+    if _EMBY_USER_MANAGER:
+        _EMBY_USER_MANAGER.config = merged
+
     _sync_auto_scheduler(connection_valid)
     return merged, True # connection_valid
 
