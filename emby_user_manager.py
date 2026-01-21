@@ -395,6 +395,8 @@ class EmbyUserManager:
         # 1b. Identify Server Owners (First Created User)
         # Map: server_id -> {date, uid}
         server_oldest_map = {} 
+        server_map = {s["id"]: s for s in active_servers}
+
         for u in all_users_raw:
             sid = u["_server_id"]
             created = u.get("DateCreated")
@@ -448,6 +450,9 @@ class EmbyUserManager:
             is_admin = policy.get("IsAdministrator", False)
             is_hidden = policy.get("IsHidden", False)
             
+            # Resolve server correctly
+            current_server = server_map.get(sid, {})
+            
             # Enrich user object
             primary_image_tag = u.get("PrimaryImageTag")
             image_url = ""
@@ -466,10 +471,10 @@ class EmbyUserManager:
             u_data = {
                 "server_id": sid,
                 "server_name": u["_server_name"],
-                "server_alias": server.get("alias"),
-                "server_icon": server.get("icon", "fa-server"),
-                "server_icon_color": server.get("icon_color", "#3b82f6"),
-                "server_icon_style": server.get("icon_style", "solid"),
+                "server_alias": current_server.get("alias"),
+                "server_icon": current_server.get("icon", "fa-server"),
+                "server_icon_color": current_server.get("icon_color", "#3b82f6"),
+                "server_icon_style": current_server.get("icon_style", "solid"),
                 "user_id": uid,
                 "name": name,
                 "image_url": image_url,
@@ -548,7 +553,7 @@ class EmbyUserManager:
             "groups": final_groups,
             "servers": [{
                 "id": s["id"], 
-                "name": s["name"],
+                "name": s.get("alias") or s["name"],
                 "icon": s.get("icon", "fa-server"),
                 "icon_color": s.get("icon_color", "#3b82f6"),
                 "icon_style": s.get("icon_style", "solid")
