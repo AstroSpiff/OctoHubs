@@ -466,6 +466,10 @@ class EmbyUserManager:
             u_data = {
                 "server_id": sid,
                 "server_name": u["_server_name"],
+                "server_alias": server.get("alias"),
+                "server_icon": server.get("icon", "fa-server"),
+                "server_icon_color": server.get("icon_color", "#3b82f6"),
+                "server_icon_style": server.get("icon_style", "solid"),
                 "user_id": uid,
                 "name": name,
                 "image_url": image_url,
@@ -542,7 +546,13 @@ class EmbyUserManager:
 
         return {
             "groups": final_groups,
-            "servers": [{"id": s["id"], "name": s["name"]} for s in active_servers]
+            "servers": [{
+                "id": s["id"], 
+                "name": s["name"],
+                "icon": s.get("icon", "fa-server"),
+                "icon_color": s.get("icon_color", "#3b82f6"),
+                "icon_style": s.get("icon_style", "solid")
+            } for s in active_servers]
         }
 
     def rename_group(self, group_id: str, new_name: str) -> bool:

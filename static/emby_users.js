@@ -545,7 +545,23 @@ function createUserCard(user, options = {}) {
         };
     }
     const serverNameEl = tpl.querySelector('.server-name');
-    if (serverNameEl) serverNameEl.textContent = user.server_name;
+    if (serverNameEl) {
+        serverNameEl.innerHTML = ''; // Clear text
+        
+        // Icon
+        if (user.server_icon) {
+            const icon = document.createElement('i');
+            const stylePrefix = user.server_icon_style === 'regular' ? 'fa-regular' : 'fa-solid';
+            icon.className = `${stylePrefix} ${user.server_icon}`;
+            icon.style.color = user.server_icon_color || 'inherit';
+            icon.style.marginRight = '0.3rem';
+            serverNameEl.appendChild(icon);
+        }
+        
+        const nameSpan = document.createElement('span');
+        nameSpan.textContent = user.server_alias || user.server_name;
+        serverNameEl.appendChild(nameSpan);
+    }
     
     // Status Indicator (Green/Red)
     const statusInd = tpl.querySelector('.status-indicator');
@@ -845,9 +861,14 @@ class CloneWizard {
     
     init() {
         // Populate servers
-        const servers = Array.from(document.querySelectorAll('#filter-server option'))
-            .map(o => ({id: o.value, name: o.textContent}))
-            .filter(s => s.id !== 'all');
+        let servers = [];
+        if (currentUsersData && currentUsersData.servers) {
+            servers = currentUsersData.servers;
+        } else {
+            servers = Array.from(document.querySelectorAll('#filter-server option'))
+                .map(o => ({id: o.value, name: o.textContent}))
+                .filter(s => s.id !== 'all');
+        }
             
         this.serverList.innerHTML = '';
         servers.forEach(s => {
@@ -855,13 +876,30 @@ class CloneWizard {
             label.className = 'checkbox-row';
             label.style.padding = '0.25rem 0';
             label.style.cursor = 'pointer';
+            label.style.display = 'flex';
+            label.style.alignItems = 'center';
             
             const checkbox = document.createElement('input');
             checkbox.type = 'checkbox';
             checkbox.value = s.id;
             
             const span = document.createElement('span');
-            span.textContent = s.name + (s.id === this.sourceUser.server_id ? ' (Attuale)' : '');
+            span.style.display = 'inline-flex';
+            span.style.alignItems = 'center';
+            span.style.marginLeft = '0.5rem';
+            
+            // Icon
+            if (s.icon) {
+                const i = document.createElement('i');
+                const style = s.icon_style === 'regular' ? 'fa-regular' : 'fa-solid';
+                i.className = `${style} ${s.icon}`;
+                i.style.color = s.icon_color || 'inherit';
+                i.style.marginRight = '0.4rem';
+                span.appendChild(i);
+            }
+
+            const text = document.createTextNode(s.name + (s.id === this.sourceUser.server_id ? ' (Attuale)' : ''));
+            span.appendChild(text);
             
             label.appendChild(checkbox);
             label.appendChild(span);
