@@ -2013,26 +2013,26 @@
         // Auto-refresh ogni 60 secondi per controllare se ci sono aggiornamenti
         autoRefreshTimer = setTimeout(() => {
             if (latestState.loaded && !latestState.loading) {
-                loadLatestReleases(false);
+                loadLatestReleases(false, true);
             }
         }, 60000);
     }
 
-    function loadLatestReleases(force = false) {
+    function loadLatestReleases(force = false, allowRefresh = false) {
         if (!latestMoviesContainer || !latestSeriesContainer) {
             return;
         }
         if (latestState.loading) {
             return;
         }
-        if (latestState.loaded && !force) {
+        if (latestState.loaded && !force && !allowRefresh) {
             return;
         }
         startLatestProgressPolling();
 
+        latestState.loading = true;
         const isFirstLoad = !latestState.loaded;
         if (isFirstLoad) {
-            latestState.loading = true;
             latestMoviesContainer.innerHTML = '<div class="empty-state">Caricamento...</div>';
             latestSeriesContainer.innerHTML = '<div class="empty-state">Caricamento...</div>';
         }

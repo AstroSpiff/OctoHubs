@@ -1870,6 +1870,17 @@ async def view_emby_dashboard(request: Request, user=Depends(get_current_user_op
     raw_servers = (emby_config.get("SERVERS") if emby_config else []) or []
     emby_servers = _prepare_emby_servers_for_view(raw_servers, lazy=True)
     total_blacklist_count, total_incomplete_count = _get_total_blacklist_counts()
+    latest_settings = _load_latest_settings()
+    latest_message_presets = latest_settings.get("PRESETS") or []
+    latest_rules = latest_settings.get("NOTIFICATION_RULES") or []
+    telegram_settings = _load_telegram_settings()
+    telegram_presets = telegram_settings.get("PRESETS") or []
+    latest_notification_rules = _prepare_latest_notification_rules(
+        latest_rules,
+        raw_servers,
+        latest_message_presets,
+        telegram_presets
+    )
     
     return templates.TemplateResponse("emby_dashboard.html", {
         "request": request, 
@@ -1879,6 +1890,9 @@ async def view_emby_dashboard(request: Request, user=Depends(get_current_user_op
         "emby_servers": emby_servers,
         "total_blacklist_count": total_blacklist_count,
         "total_incomplete_count": total_incomplete_count,
+        "latest_message_presets": latest_message_presets,
+        "latest_notification_rules": latest_notification_rules,
+        "telegram_presets": telegram_presets,
         "csrf_token": get_csrf_token(request)
     })
 
