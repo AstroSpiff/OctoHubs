@@ -12394,48 +12394,62 @@ def _wf_trigger_probe(context):
         print(f"[WORKFLOW] [PROBE] Server dopo filtro: {len(enabled_servers)}")
 
     servers_payload = [
-        {"id": s.get("id"), "url": s.get("url"), "api_key": s.get("api_key")}
+        {
+            "id": s.get("id"),
+            "url": s.get("url"),
+            "api_key": s.get("api_key"),
+            "enabled": True,  # IMPORTANTE: necessario per il filtro in start_combo_workflow_all_servers
+            "name": s.get("name")  # Utile per i log
+        }
         for s in enabled_servers
     ]
 
     print(f"[WORKFLOW] [PROBE] Payload preparato per {len(servers_payload)} server(s)")
+    for idx, srv in enumerate(servers_payload, 1):
+        print(f"[WORKFLOW] [PROBE]   Server {idx}: id={srv.get('id')}, name={srv.get('name')}, enabled={srv.get('enabled')}")
 
     try:
-        # Avvia recent discovery sequence su tutti i server (o solo quello filtrato)
-        limit = 50  # Default limit per recent items
-        print(f"[WORKFLOW] [PROBE] Chiamata start_recent_discovery_sequence() con limit={limit}")
-        started = get_probe_manager().start_recent_discovery_sequence(servers_payload, limit)
+        # Avvia combo workflow (discovery + processing) su tutti i server
+        mode = "smart"  # Usa modalità smart per evitare conflitti con stream attivi
+        scope = "recent"  # Scope "ultimi aggiunti"
+        print(f"[WORKFLOW] [PROBE] Chiamata start_combo_workflow_all_servers() con mode={mode}, scope={scope}")
+        started = get_probe_manager().start_combo_workflow_all_servers(servers_payload, mode=mode, scope=scope)
         if started:
-            print(f"[WORKFLOW] [PROBE] ✓ Probe avviato con successo su {len(servers_payload)} server(s)")
+            print(f"[WORKFLOW] [PROBE] ✓ Combo workflow avviato con successo su {len(servers_payload)} server(s)")
+            print(f"[WORKFLOW] [PROBE]   Fase 1: Discovery ultimi aggiunti")
+            print(f"[WORKFLOW] [PROBE]   Fase 2: Processing file STRM trovati")
         else:
-            print(f"[WORKFLOW] [PROBE] ✗ Probe NON avviato (started=False)")
+            print(f"[WORKFLOW] [PROBE] ✗ Combo workflow NON avviato (started=False)")
         return started
     except Exception as exc:
-        print(f"[WORKFLOW] [PROBE] ✗ Errore avvio probe: {exc}")
+        print(f"[WORKFLOW] [PROBE] ✗ Errore avvio combo workflow: {exc}")
         import traceback
         traceback.print_exc()
         return False
 
 
-def _wf_check_probe():
+def _wf_check_probe(context=None):
     """
-    Verifica se il probe è completato.
+    Verifica se il combo workflow (discovery + processing) è completato.
+
+    Args:
+        context: dict (opzionale, non usato ma passato dal workflow)
 
     Returns:
         bool: True se NON in esecuzione (completato), False se in esecuzione
     """
-    print("[WORKFLOW] [CHECK_PROBE] Inizio verifica stato probe")
+    print("[WORKFLOW] [CHECK_PROBE] Inizio verifica stato combo workflow")
     try:
         manager = get_probe_manager()
         global_workers = getattr(manager, "_global_workers", {})
-        global_worker = global_workers.get("recent_discovery_all")
+        combo_worker = global_workers.get("combo_recent_all")
 
-        print(f"[WORKFLOW] [CHECK_PROBE] Global worker exist: {global_worker is not None}")
-        if global_worker:
-            is_alive = getattr(global_worker, "is_alive", None) and global_worker.is_alive()
-            print(f"[WORKFLOW] [CHECK_PROBE] Global worker is_alive: {is_alive}")
+        print(f"[WORKFLOW] [CHECK_PROBE] Combo worker exist: {combo_worker is not None}")
+        if combo_worker:
+            is_alive = getattr(combo_worker, "is_alive", None) and combo_worker.is_alive()
+            print(f"[WORKFLOW] [CHECK_PROBE] Combo worker is_alive: {is_alive}")
             if is_alive:
-                print("[WORKFLOW] [CHECK_PROBE] ⏳ Global worker ancora attivo")
+                print("[WORKFLOW] [CHECK_PROBE] ⏳ Combo workflow ancora attivo")
                 return False
 
         config, is_valid = load_config()
@@ -12456,16 +12470,28 @@ def _wf_check_probe():
             if not server_id:
                 continue
             status = manager.get_status(server_id) or {}
-            recent_state = status.get("recent_discovery") or {}
-            is_running = recent_state.get("running", False) if isinstance(recent_state, dict) else False
 
-            print(f"[WORKFLOW] [CHECK_PROBE] Server {server_id}: recent_discovery.running = {is_running}")
+            # Verifica combo_recent workflow
+            combo_state = status.get("combo_recent") or {}
+            combo_running = combo_state.get("running", False) if isinstance(combo_state, dict) else False
 
-            if is_running:
-                print(f"[WORKFLOW] [CHECK_PROBE] ⏳ Probe ancora in corso su server {server_id}")
+            # Verifica anche discovery e processing separatamente (fallback)
+            discovery_state = status.get("recent_discovery") or {}
+            discovery_running = discovery_state.get("running", False) if isinstance(discovery_state, dict) else False
+
+            processing_state = status.get("recent_processing") or {}
+            processing_running = processing_state.get("running", False) if isinstance(processing_state, dict) else False
+
+            print(f"[WORKFLOW] [CHECK_PROBE] Server {server_id}:")
+            print(f"[WORKFLOW] [CHECK_PROBE]   combo_recent.running = {combo_running}")
+            print(f"[WORKFLOW] [CHECK_PROBE]   recent_discovery.running = {discovery_running}")
+            print(f"[WORKFLOW] [CHECK_PROBE]   recent_processing.running = {processing_running}")
+
+            if combo_running or discovery_running or processing_running:
+                print(f"[WORKFLOW] [CHECK_PROBE] ⏳ Combo workflow ancora in corso su server {server_id}")
                 return False
 
-        print("[WORKFLOW] [CHECK_PROBE] ✓ Probe completato su tutti i server")
+        print("[WORKFLOW] [CHECK_PROBE] ✓ Combo workflow completato su tutti i server")
         return True
     except Exception as exc:
         print(f"[WORKFLOW] [CHECK_PROBE] ✗ Errore check probe: {exc}")
@@ -12507,10 +12533,18 @@ def _wf_refresh_cache(context):
             if is_refreshing:
                 print("[WORKFLOW] [CACHE] Cache refresh già in corso, attendo completamento...")
             else:
-                # Avvia il refresh
-                print("[WORKFLOW] [CACHE] Avvio refresh_func()...")
-                refresh_func(limit, per_server_limit)
-                print("[WORKFLOW] [CACHE] refresh_func() chiamata, attendo completamento...")
+                # Avvia il refresh in background thread
+                print("[WORKFLOW] [CACHE] Avvio refresh_func() in background thread...")
+                _LATEST_CACHE["is_refreshing"] = True
+
+                import threading
+                refresh_thread = threading.Thread(
+                    target=refresh_func,
+                    args=(limit, per_server_limit),
+                    daemon=True
+                )
+                refresh_thread.start()
+                print("[WORKFLOW] [CACHE] Thread refresh avviato, attendo completamento...")
 
         # Polling loop: attende fino a quando is_refreshing diventa False
         max_wait_seconds = 300  # 5 minuti max

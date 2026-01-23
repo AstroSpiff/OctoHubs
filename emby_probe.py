@@ -647,8 +647,15 @@ class EmbyProbeManager:
                 self._status[server_id] = {}
                 self._stop_flags[server_id] = {}
 
-            if worker_key in self._workers[server_id] and self._workers[server_id][worker_key].is_alive():
+            # Verifica se c'è già un worker attivo
+            existing_worker = self._workers[server_id].get(worker_key)
+            if existing_worker and existing_worker.is_alive():
+                print(f"[COMBO] Server {server_id}: worker {worker_key} già attivo, impossibile avviare")
                 return False
+            elif existing_worker:
+                print(f"[COMBO] Server {server_id}: worker {worker_key} presente ma non attivo (thread morto)")
+            else:
+                print(f"[COMBO] Server {server_id}: nessun worker {worker_key} esistente, procedo con avvio")
 
             stop_flag = threading.Event()
             self._stop_flags[server_id][worker_key] = stop_flag
@@ -698,14 +705,23 @@ class EmbyProbeManager:
             scope: PROBE_SCOPE_RECENT (libraries scope not supported for all servers)
         """
         enabled_servers = [s for s in servers if s and s.get("enabled") and s.get("id")]
+        print(f"[COMBO_ALL] Avvio combo workflow per {len(enabled_servers)} server(s), scope={scope}, mode={mode}")
         if scope == PROBE_SCOPE_RECENT:
             any_started = False
-            for server in enabled_servers:
+            for idx, server in enumerate(enabled_servers, 1):
                 server_id = server.get("id")
                 if not server_id:
+                    print(f"[COMBO_ALL] Server {idx}: ✗ ID mancante, skip")
                     continue
-                if self.start_combo_workflow(server, server_id, mode, scope=scope):
+                server_name = server.get("name") or server.get("url") or server_id
+                print(f"[COMBO_ALL] Server {idx}/{len(enabled_servers)} ({server_name}): tentativo avvio combo workflow...")
+                started = self.start_combo_workflow(server, server_id, mode, scope=scope)
+                if started:
+                    print(f"[COMBO_ALL] Server {idx}/{len(enabled_servers)} ({server_name}): ✓ combo workflow avviato")
                     any_started = True
+                else:
+                    print(f"[COMBO_ALL] Server {idx}/{len(enabled_servers)} ({server_name}): ✗ combo workflow NON avviato (worker già attivo?)")
+            print(f"[COMBO_ALL] Risultato finale: any_started={any_started}")
             return any_started
 
         with self._lock:

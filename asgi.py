@@ -109,6 +109,14 @@ def _initialize_runtime_services() -> None:
         notify_func=_wf_notify
     )
 
+    # Configura DatabaseStorage per workflow tracking
+    try:
+        db_storage = _ensure_db_backend()
+        workflow_manager.set_db_storage(db_storage)
+    except Exception as exc:
+        print(f"[STARTUP] ⚠️ DatabaseStorage non disponibile per workflow: {exc}")
+        workflow_manager.set_db_storage(None)
+
     # Initialize configuration and AutoScheduler at startup
     # This ensures the AutoScheduler is running from the start
     # and the request cache is populated
