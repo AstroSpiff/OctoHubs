@@ -1110,7 +1110,7 @@ def _build_emby_latest_item(item, server):
         "library_id": library_id,
         "library_name": library_name,
         "server_id": server.get("id") if server else None,
-        "server_name": server.get("name") if server else None,
+        "server_name": _emby_display_name(server) if server else None,
         "server_icon": server.get("icon") if server else None,
         "server_icon_color": server.get("icon_color") if server else None,
         "server_icon_style": server.get("icon_style") if server else None,
@@ -7678,12 +7678,20 @@ def _build_grouped_libraries_snapshot():
         if not server.get("enabled"):
             continue
         server_id = server.get("id")
+        server_icon = server.get("icon") or "fa-server"
+        server_icon_style = server.get("icon_style") or "solid"
+        server_icon_color = server.get("icon_color") or "#3b82f6"
         libraries, error = _fetch_emby_libraries(server)
         all_libraries[server_id] = {
             "ok": error is None,
             "libraries": libraries,
             "error": error,
-            "name": server.get("name")
+            "name": server.get("name"),
+            "alias": server.get("alias"),
+            "original_name": server.get("original_name"),
+            "icon": server_icon,
+            "icon_style": server_icon_style,
+            "icon_color": server_icon_color
         }
     try:
         backend = _ensure_db_backend()

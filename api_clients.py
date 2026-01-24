@@ -1297,7 +1297,9 @@ def check_emby_availability(
         try:
             url = server.get("url", "").rstrip("/")
             api_key = server.get("api_key", "")
-            server_name = server.get("name", "Emby Server")
+            server_name = (server.get("alias") or "").strip()
+            if not server_name:
+                server_name = server.get("original_name") or server.get("name") or server.get("url") or "Emby Server"
             server_id = server.get("id", "")
             server_icon = server.get("icon") or "fa-server"
             server_icon_color = server.get("icon_color") or "#3b82f6"

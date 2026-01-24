@@ -35,6 +35,9 @@
             font-weight: 600;
             color: #64748b;
             transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
         }
         .server-tab:hover {
             background: #e2e8f0;
@@ -792,13 +795,20 @@
             <h3>Seleziona Server Emby</h3>
             <div class="server-tabs">
                 {% for server in emby_servers %}
+                {% set server_label = server.alias or server.original_name or server.name or server.url or "Server Emby" %}
+                {% set server_icon = server.icon or 'fa-server' %}
+                {% set server_icon_style = 'fa-regular' if server.icon_style == 'regular' else 'fa-solid' %}
+                {% set server_icon_color = server.icon_color or '#3b82f6' %}
                 <button class="server-tab {% if loop.first %}active{% endif %}"
                         data-server-id="{{ server.id }}"
                         data-server-scope="libraries"
-                        data-server-name="{{ server.alias or server.original_name or server.name or server.url }}"
+                        data-server-name="{{ server_label }}"
                         title="Seleziona questo server"
                         onclick="switchServer('libraries', '{{ server.id }}')">
-                    {{ server.alias or server.original_name or server.name or server.url }}
+                    <span class="server-label">
+                        <i class="server-icon {{ server_icon_style }} {{ server_icon }}" data-icon-color="{{ server_icon_color }}"></i>
+                        <span>{{ server_label }}</span>
+                    </span>
                 </button>
                 {% endfor %}
             </div>
@@ -1052,13 +1062,20 @@
                     Tutti
                 </button>
                 {% for server in emby_servers %}
+                {% set server_label = server.alias or server.original_name or server.name or server.url or "Server Emby" %}
+                {% set server_icon = server.icon or 'fa-server' %}
+                {% set server_icon_style = 'fa-regular' if server.icon_style == 'regular' else 'fa-solid' %}
+                {% set server_icon_color = server.icon_color or '#3b82f6' %}
                 <button class="server-tab"
                         data-server-id="{{ server.id }}"
                         data-server-scope="recent"
-                        data-server-name="{{ server.alias or server.original_name or server.name or server.url }}"
+                        data-server-name="{{ server_label }}"
                         title="Seleziona questo server"
                         onclick="switchServer('recent', '{{ server.id }}')">
-                    {{ server.alias or server.original_name or server.name or server.url }}
+                    <span class="server-label">
+                        <i class="server-icon {{ server_icon_style }} {{ server_icon }}" data-icon-color="{{ server_icon_color }}"></i>
+                        <span>{{ server_label }}</span>
+                    </span>
                 </button>
                 {% endfor %}
             </div>
@@ -4106,6 +4123,16 @@
                     alert('Errore di connessione');
                 });
         }
+    </script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            document.querySelectorAll('.server-icon[data-icon-color]').forEach(icon => {
+                const color = icon.dataset.iconColor || '';
+                if (color) {
+                    icon.style.color = color;
+                }
+            });
+        });
     </script>
 </body>
 </html>

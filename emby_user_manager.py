@@ -5,6 +5,7 @@ import uuid
 import logging
 import os
 import shutil
+import copy
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 
@@ -387,23 +388,39 @@ class EmbyUserManager:
             if error:
                 logger.error(f"Error fetching users from {server['name']}: {error}")
                 continue
+            
+            # Defensive copy to ensure no shared references
+            users = copy.deepcopy(users)
+            
             for u in users:
                 u["_server_id"] = server["id"]
                 u["_server_name"] = server["name"]
+                # Debug log to verify assignment
+                # logger.debug(f"User {u.get('Name')} assigned to server {server.get('alias') or server['name']} ({server['id']})")
                 all_users_raw.append(u)
 
-        # 1b. Identify Server Owners (First Created User)
-        # Map: server_id -> {date, uid}
-        server_oldest_map = {} 
+        # 1b. Identify Server Owners (First Created Admin)
+        # Map: server_id -> {date: str, uid: str}
+        server_oldest_admin_map = {} 
         server_map = {s["id"]: s for s in active_servers}
 
         for u in all_users_raw:
+            # ONLY consider Administrators for ownership
+            policy = u.get("Policy", {})
+            if not policy.get("IsAdministrator"):
+                continue
+
             sid = u["_server_id"]
-            created = u.get("DateCreated")
-            if not created: continue
+            created_str = u.get("DateCreated")
+            if not created_str: continue
             
-            if sid not in server_oldest_map or created < server_oldest_map[sid]["date"]:
-                server_oldest_map[sid] = {"date": created, "uid": u["Id"]}
+            try:
+                # Check current oldest admin for this server
+                current = server_oldest_admin_map.get(sid)
+                if not current or created_str < current["date"]:
+                    server_oldest_admin_map[sid] = {"date": created_str, "uid": u["Id"]}
+            except Exception as e:
+                logger.warning(f"Error checking user date {u.get('Name')}: {e}")
 
         # 2. Get existing links from DB
         links = self.storage.get_user_links()
@@ -491,8 +508,8 @@ class EmbyUserManager:
             }
 
             # Check if Owner/Admin -> Special Group
-            # Criteria: Is Admin AND Is First User Created on Server
-            is_server_owner = (sid in server_oldest_map and server_oldest_map[sid]["uid"] == uid)
+            # Criteria: Is Admin AND Is First ADMIN Created on Server
+            is_server_owner = (sid in server_oldest_admin_map and server_oldest_admin_map[sid]["uid"] == uid)
             
             if is_admin and is_server_owner:
                 owners_users.append(u_data)
@@ -783,8 +800,21 @@ class EmbyUserManager:
         return new_group_id
 
     def unlink_user(self, server_id: str, user_id: str) -> None:
-        """Removes a user from their link group."""
+        """Removes a user from their link group. If only one user remains, dissolve group."""
+        # 1. Find current group
+        links = self.storage.get_user_links(server_id=server_id, user_id=user_id)
+        
+        # 2. Remove the user
         self.storage.remove_user_link(server_id, user_id)
+        
+        # 3. Check remaining users in the group
+        if links:
+            group_id = links[0]["group_id"]
+            remaining = self.storage.get_user_links(group_id=group_id)
+            if len(remaining) == 1:
+                # Dissolve: Remove the last user too
+                last_user = remaining[0]
+                self.storage.remove_user_link(last_user["server_id"], last_user["user_id"])
 
     def toggle_user_active(self, server_id: str, user_id: str, active: bool) -> bool:
         """

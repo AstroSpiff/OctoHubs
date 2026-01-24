@@ -142,6 +142,8 @@ function renderEmbyUsers(data) {
     const isAllServers = serverFilter.has('all');
     const isAllStatus = statusFilter.has('all');
     const isAllProfiles = profileFilter.has('all');
+    const sortMode = document.getElementById('sort-users') ? document.getElementById('sort-users').value : 'name_asc_server_asc';
+    const groupTypeFilter = document.getElementById('filter-group-type') ? document.getElementById('filter-group-type').value : 'all';
 
     // Separate Masters from Regular Groups
     const masterGroup = { users: [] };
@@ -151,6 +153,10 @@ function renderEmbyUsers(data) {
     const serversWithMaster = new Set();
 
     data.groups.forEach(group => {
+        // Filter by Group Type
+        if (groupTypeFilter === 'single' && group.is_linked) return;
+        if (groupTypeFilter === 'group' && !group.is_linked) return;
+
         // Filter users within group based on criteria
         const visibleUsers = group.users.filter(u => {
             // Server Filter
@@ -163,7 +169,14 @@ function renderEmbyUsers(data) {
             }
             
             // Search Filter
-            if (searchFilter && !u.name.toLowerCase().includes(searchFilter)) return false;
+            if (searchFilter) {
+                const search = searchFilter;
+                const uName = u.name.toLowerCase();
+                const gName = group.name ? group.name.toLowerCase() : '';
+                const sName = (u.server_alias || u.server_name).toLowerCase();
+                
+                if (!uName.includes(search) && !gName.includes(search) && !sName.includes(search)) return false;
+            }
             
             // Profile Filter
             if (!isAllProfiles) {
@@ -200,6 +213,58 @@ function renderEmbyUsers(data) {
             }
         }
     });
+
+    // --- SORTING ---
+    const getGroupServerName = (group) => {
+        let targetUser = null;
+        if (group.is_linked) {
+            targetUser = group.users.find(u => u.is_leader) || group.users[0];
+        } else {
+            targetUser = group.users[0];
+        }
+        return (targetUser && (targetUser.server_alias || targetUser.server_name) || "").toLowerCase();
+    };
+
+    const getGroupName = (group) => group.name.toLowerCase();
+
+    // Extract Owners to keep them at the bottom
+    let ownersGroup = null;
+    const ownersIndex = regularGroups.findIndex(g => g.is_owners);
+    if (ownersIndex !== -1) {
+        ownersGroup = regularGroups.splice(ownersIndex, 1)[0];
+    }
+
+    regularGroups.sort((a, b) => {
+        const nameA = getGroupName(a);
+        const nameB = getGroupName(b);
+        const srvA = getGroupServerName(a);
+        const srvB = getGroupServerName(b);
+
+        switch (sortMode) {
+            case 'name_asc_server_asc':
+                return nameA.localeCompare(nameB) || srvA.localeCompare(srvB);
+            case 'name_asc_server_desc':
+                return nameA.localeCompare(nameB) || srvB.localeCompare(srvA);
+            case 'name_desc_server_asc':
+                return nameB.localeCompare(nameA) || srvA.localeCompare(srvB);
+            case 'name_desc_server_desc':
+                return nameB.localeCompare(nameA) || srvB.localeCompare(srvA);
+            case 'server_asc_name_asc':
+                return srvA.localeCompare(srvB) || nameA.localeCompare(nameB);
+            case 'server_asc_name_desc':
+                return srvA.localeCompare(srvB) || nameB.localeCompare(nameA);
+            case 'server_desc_name_asc':
+                return srvB.localeCompare(srvA) || nameA.localeCompare(nameB);
+            case 'server_desc_name_desc':
+                return srvB.localeCompare(srvA) || nameB.localeCompare(nameA);
+            default:
+                return nameA.localeCompare(nameB);
+        }
+    });
+
+    if (ownersGroup) {
+        regularGroups.push(ownersGroup);
+    }
 
     // --- RENDER MASTER SECTION ---
     const masterSelect = document.getElementById('master-icon-profile-select');
@@ -1107,7 +1172,7 @@ async function toggleUserStatus(serverId, userId, currentDisabled) {
     formData.append('active', currentDisabled);
     
     const res = await fetch('/api/emby/users/toggle', { method: 'POST', body: formData });
-    if (res.ok) loadEmbyUsers();
+    if (res.ok) loadEmbyUsers(true);
     else alert("Errore cambio stato");
 }
 
@@ -1118,7 +1183,7 @@ async function unlinkUser(serverId, userId, username) {
     formData.append('user_id', userId);
     
     const res = await fetch('/api/emby/users/unlink', { method: 'POST', body: formData });
-    if (res.ok) loadEmbyUsers();
+    if (res.ok) loadEmbyUsers(true);
     else alert("Errore dissociazione");
 }
 
@@ -1138,12 +1203,57 @@ async function setGroupLeader(groupId, serverId, userId) {
 
     if (!confirm(`Impostare ${userToPromote.name} (${userToPromote.server_name}) come Utente Principale del gruppo?`)) return;
 
+    // Optimistic Update: Update local state immediately
+    group.users.forEach(u => {
+        u.is_leader = (u.server_id === serverId && u.user_id === userId);
+        
+        // Targeted DOM Update
+        const card = document.querySelector(`.user-card[data-user-id="${u.user_id}"][data-server-id="${u.server_id}"]`);
+        if (card) {
+            card.dataset.isLeader = u.is_leader;
+            
+            const icon = card.querySelector('.leader-icon');
+            if (icon) {
+                if (u.is_leader) {
+                    icon.className = 'fa-solid fa-star leader-icon';
+                    icon.style.color = '#f59e0b';
+                    icon.style.cursor = 'help';
+                    icon.title = 'Utente Principale (Leader)';
+                    icon.onclick = null;
+                } else {
+                    icon.className = 'fa-regular fa-star leader-icon';
+                    icon.style.color = 'var(--text-muted)';
+                    icon.style.cursor = 'pointer';
+                    icon.title = 'Imposta come Principale';
+                    
+                    // Re-bind click event
+                    // Note: We need to check disabled status again, or assume we know it from u.is_disabled
+                    if (u.is_disabled) {
+                        icon.style.opacity = '0.5';
+                        icon.style.cursor = 'not-allowed';
+                        icon.title = 'Impossibile impostare: utente disabilitato';
+                        icon.onclick = null;
+                    } else {
+                        icon.style.opacity = '1';
+                        icon.onclick = (e) => {
+                            e.stopPropagation();
+                            setGroupLeader(groupId, u.server_id, u.user_id);
+                        };
+                    }
+                }
+            }
+        }
+    });
+    
+    // Refresh icons as they might depend on the leader
+    if (currentIconData) updateIconsInPlace();
+
     // Prepare links payload: same users, update is_leader
     const links = group.users.map(u => ({
         server_id: u.server_id,
         user_id: u.user_id,
         username: u.name,
-        is_leader: (u.server_id === serverId && u.user_id === userId)
+        is_leader: u.is_leader
     }));
 
     const formData = new FormData();
@@ -1151,14 +1261,17 @@ async function setGroupLeader(groupId, serverId, userId) {
     
     try {
         const res = await fetch('/api/emby/users/link', { method: 'POST', body: formData });
-        if (res.ok) {
-            loadEmbyUsers(); // Reload to see changes
-            if (currentIconData) loadIconManagement(); // Refresh icons if active
+        if (!res.ok) {
+            // Revert on error
+            alert("Errore salvataggio leader. Ricarico...");
+            loadEmbyUsers(true);
         } else {
-            alert("Errore aggiornamento leader");
+            // Success - Check if we need to refresh icons if they depend on leader
+            if (currentIconData) updateIconsInPlace();
         }
     } catch (e) {
-        alert("Errore: " + e.message);
+        alert("Errore di connessione: " + e.message);
+        loadEmbyUsers(true);
     }
 }
 
@@ -1941,7 +2054,8 @@ async function linkSelectedUsers() {
     const res = await fetch('/api/emby/users/link', { method: 'POST', body: formData });
     if (res.ok) {
         clearUserSelection();
-        loadEmbyUsers();
+        // Add a small delay to ensure DB commit is visible to the next fetch
+        setTimeout(() => loadEmbyUsers(true), 200);
     } else {
         alert("Errore associazione");
     }

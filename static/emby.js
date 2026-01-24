@@ -1730,6 +1730,37 @@
         return `<i class="${faStyle} ${faIcon}" style="color: ${faColor}"></i>`;
     };
 
+    const buildServerLabelParts = (name, icon, style, color) => {
+        const iconHtml = buildServerIconHtml(icon, style, color);
+        const nameHtml = escapeHtml(name || '');
+        const parts = [];
+        if (iconHtml) {
+            parts.push(iconHtml);
+        }
+        if (nameHtml) {
+            parts.push(nameHtml);
+        }
+        return parts.join(' ');
+    };
+
+    const applyServerIconColors = (root = document) => {
+        if (!root) {
+            return;
+        }
+        root.querySelectorAll('.server-icon[data-icon-color]').forEach(icon => {
+            const color = icon.dataset.iconColor || '';
+            if (color) {
+                icon.style.color = color;
+            }
+        });
+    };
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => applyServerIconColors());
+    } else {
+        applyServerIconColors();
+    }
+
     const formatEpisodeCode = (seasonNumber, episodeNumber) => {
         const season = Number(seasonNumber);
         const episode = Number(episodeNumber);
@@ -4374,21 +4405,28 @@
         (group.libraries || []).forEach(library => {
             const row = document.createElement('div');
             row.className = 'library-row';
-            const libraryName = library.library_name || 'Libreria';
-            const serverName = library.server_name || library.server_id || '';
+            const libraryNameRaw = library.library_name || 'Libreria';
+            const libraryName = escapeHtml(libraryNameRaw);
+            const serverLabelText = library.server_alias || library.server_name || library.server_id || '';
+            const serverLabelHtml = buildServerLabelParts(
+                serverLabelText,
+                library.server_icon,
+                library.server_icon_style,
+                library.server_icon_color
+            );
             row.dataset.libraryId = library.library_id;
             row.dataset.serverId = library.server_id;
             row.innerHTML = `
                 <div class="library-row-info">
-                    <strong>${serverName}</strong>
+                    <strong class="server-label">${serverLabelHtml || escapeHtml(serverLabelText)}</strong>
                     <span class="tagline">${libraryName}</span>
                 </div>
                 <div class="library-actions-container">
                     <div class="action-grid compact">
-                        <button class="btn primary" data-action="scan-single-content" data-server-id="${library.server_id}" data-library-id="${library.library_id}" data-library-name="${libraryName}">
+                        <button class="btn primary" data-action="scan-single-content" data-server-id="${library.server_id}" data-library-id="${library.library_id}" data-library-name="${libraryNameRaw}">
                             Scansione dei File
                         </button>
-                        <button class="btn secondary" data-action="scan-single-metadata" data-server-id="${library.server_id}" data-library-id="${library.library_id}" data-library-name="${libraryName}">
+                        <button class="btn secondary" data-action="scan-single-metadata" data-server-id="${library.server_id}" data-library-id="${library.library_id}" data-library-name="${libraryNameRaw}">
                             Aggiorna Metadati
                         </button>
                     </div>
@@ -4933,9 +4971,10 @@
                 const collectionType = group.collection_type || 'N/D';
                 const serverNames = Array.from(new Set(
                     (group.libraries || [])
-                        .map(lib => lib && (lib.server_name || lib.server_id))
+                        .map(lib => lib && (lib.server_alias || lib.server_name || lib.server_id))
                         .filter(Boolean)
                 ));
+                const serverNamesHtml = serverNames.map(name => escapeHtml(name)).join(', ');
                 const article = document.createElement('article');
                 article.className = 'library-group';
                 article.dataset.groupName = groupName;
@@ -4946,7 +4985,7 @@
                     <div class="library-group-header">
                         <div>
                             <h3>${groupName} <span class="chevron" aria-hidden="true">▶</span></h3>
-                            <p class="meta">${serverNames.join(', ')}</p>
+                            <p class="meta">${serverNamesHtml}</p>
                         </div>
                         <div class="action-grid compact">
                             <button class="btn primary" data-action="scan-group-content" data-group="${groupName}" data-type="${collectionType}" data-libraries='${librariesJson.replace(/'/g, "&#39;")}'>

@@ -544,6 +544,9 @@
             border-radius: 999px;
             font-weight: 600;
             cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
         }
         .server-tab:hover {
             background: #eef2f7;
@@ -801,6 +804,13 @@
             border: 1px solid #e2e8f0;
             border-radius: 8px;
             background: #fff;
+        }
+        .latest-config-row.latest-config-row-inline {
+            justify-content: flex-start;
+            gap: 0.6rem;
+        }
+        .latest-config-row.latest-config-row-inline input[type="checkbox"] {
+            margin: 0;
         }
         .latest-config-actions {
             display: flex;
@@ -1326,6 +1336,11 @@
         .library-row-info .tagline {
             font-size: 0.85rem;
             color: #6b7280;
+        }
+        .server-label {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
         }
         .library-row .btn.primary {
             background: #0f62fe;

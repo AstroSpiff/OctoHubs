@@ -4474,7 +4474,8 @@ async def update_scheduler_route(
 
     def _parse_auto_section(section_key: str, fallback: dict) -> dict:
         if form_data.get(section_key) is not None:
-            return _parse_auto_task_payload(form_data, section_key, fallback)
+            parsed = _parse_auto_task_payload(form_data, section_key, fallback)
+            return parsed if isinstance(parsed, dict) else fallback
         enabled = bool(form_data.get(f"{section_key}_enabled"))
         mode = form_data.get(f"{section_key}_mode") or fallback.get("mode", "interval")
         if mode not in ("interval", "fixed"):

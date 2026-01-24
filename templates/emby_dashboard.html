@@ -89,7 +89,12 @@
                                 <article class="server-card" data-server-id="{{ server.id }}">
                                     <div class="server-card-header">
                                         <div>
-                                            <h3>{{ server.alias or server.original_name or server.name or "Server Emby" }}</h3>
+                                            <h3 class="server-label">
+                                                {% if server.icon %}
+                                                    <i class="server-icon {{ 'fa-regular' if server.icon_style == 'regular' else 'fa-solid' }} {{ server.icon }}" data-icon-color="{{ server.icon_color or '#3b82f6' }}"></i>
+                                                {% endif %}
+                                                <span>{{ server.alias or server.original_name or server.name or "Server Emby" }}</span>
+                                            </h3>
                                             <p class="meta">{{ server.url }}</p>
                                         </div>
                                         {% if server.status and server.status.ok %}
@@ -207,36 +212,78 @@
                 </div>
 
                 <div class="card">
-                    <!-- Filters Toolbar -->
-                    <div class="users-toolbar" style="display: flex; gap: 1rem; margin-bottom: 1rem; padding: 0.5rem; background: var(--bg-card); border-bottom: 1px solid var(--border-color); flex-wrap: wrap; align-items: center;">
-                        <div style="display: flex; gap: 0.5rem; align-items: center; border-right: 1px solid var(--border-color); padding-right: 1rem; margin-right: 0.5rem;">
-                            <label style="display: flex; align-items: center; gap: 0.3rem; font-weight: normal; font-size: 0.85rem; cursor: pointer;">
-                                <input type="checkbox" id="select-all-users" onchange="toggleSelectAllUsers(this.checked)">
-                                Tutti
-                            </label>
-                            <label style="display: flex; align-items: center; gap: 0.3rem; font-weight: normal; font-size: 0.85rem; cursor: pointer;">
-                                <input type="checkbox" id="select-leaders-users" onchange="toggleSelectLeaders(this.checked)">
-                                Leader/Singoli
-                            </label>
-                        </div>
-                        <div class="filters" style="display: flex; gap: 0.5rem; flex: 1; min-width: 300px;">
-                            <select id="filter-server" class="form-input compact interactive-multiselect" multiple>
-                                <option value="all">Tutti i Server</option>
-                            </select>
-                            <select id="filter-status" class="form-input compact interactive-multiselect" multiple>
-                                <option value="all">Tutti gli stati</option>
-                                <option value="active">Attivi</option>
-                                <option value="disabled">Disabilitati</option>
-                            </select>
-                            <select id="filter-icon-profile" class="form-input compact interactive-multiselect" multiple>
-                                <option value="all">Tutti i Profili Icona</option>
-                            </select>
-                            <input type="text" id="filter-search" class="form-input compact" placeholder="Cerca utente..." oninput="filterUsers()">
-                        </div>
-                        <div class="actions">
-                            <button class="btn secondary compact" onclick="loadEmbyUsers(true)">
-                                <i class="fa-solid fa-rotate"></i> Aggiorna
+                    <!-- Filters Toolbar (Ultra-Compact) -->
+                    <div class="users-toolbar-container" style="background: var(--bg-card); border-bottom: 1px solid var(--border-color); padding: 0.75rem; margin-bottom: 1rem; border-radius: 6px; display: flex; flex-direction: column; gap: 0.5rem;">
+                        
+                        <!-- Row 1: Selection + Search + Refresh -->
+                        <div style="display: flex; gap: 0.5rem; align-items: center;">
+                            
+                            <!-- Selection Widget -->
+                            <div style="background: rgba(255,255,255,0.03); padding: 0 0.75rem; border-radius: 4px; display: flex; align-items: center; gap: 0.75rem; border: 1px solid var(--border-color); height: 38px; flex-shrink: 0;" title="Selezione rapida per azioni di massa">
+                                <label style="font-size: 0.85rem; cursor: pointer; display: flex; align-items: center; gap: 0.4rem; white-space: nowrap; font-weight: 500;">
+                                    <input type="checkbox" id="select-all-users" onchange="toggleSelectAllUsers(this.checked)"> Tutti
+                                </label>
+                                <div style="width: 1px; height: 18px; background: var(--border-color);"></div>
+                                <label style="font-size: 0.85rem; cursor: pointer; display: flex; align-items: center; gap: 0.4rem; white-space: nowrap; font-weight: 500;">
+                                    <input type="checkbox" id="select-leaders-users" onchange="toggleSelectLeaders(this.checked)"> Leader
+                                </label>
+                            </div>
+
+                            <!-- Search -->
+                            <div style="position: relative; flex-grow: 1;">
+                                <i class="fa-solid fa-search" style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--text-muted);"></i>
+                                <input type="text" id="filter-search" class="form-input" style="width: 100%; padding-left: 2.2rem; height: 38px;" placeholder="Cerca utente, server o gruppo..." oninput="filterUsers()">
+                            </div>
+
+                            <!-- Refresh -->
+                            <button class="btn secondary" onclick="loadEmbyUsers(true)" style="height: 38px; width: 38px; padding: 0; display: flex; align-items: center; justify-content: center; flex-shrink: 0;" title="Aggiorna lista">
+                                <i class="fa-solid fa-rotate"></i>
                             </button>
+                        </div>
+
+                        <!-- Row 2: Filters & Sort -->
+                        <div style="display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; justify-content: space-between;">
+                            
+                            <!-- Filters (Left) -->
+                            <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; flex-grow: 1;">
+                                <select id="filter-group-type" class="form-input compact" onchange="filterUsers()" title="Tipo Utente" style="max-width: 140px; flex-grow: 1;">
+                                    <option value="all">Tutti gli utenti</option>
+                                    <option value="single">Utenti Singoli</option>
+                                    <option value="group">Gruppi Utente</option>
+                                </select>
+
+                                <select id="filter-server" class="form-input compact interactive-multiselect" multiple title="Server" style="max-width: 160px; flex-grow: 1;">
+                                    <option value="all">Tutti i Server</option>
+                                </select>
+                                
+                                <select id="filter-status" class="form-input compact interactive-multiselect" multiple title="Stato" style="max-width: 130px; flex-grow: 1;">
+                                    <option value="all">Tutti gli stati</option>
+                                    <option value="active">Attivi</option>
+                                    <option value="disabled">Disabilitati</option>
+                                </select>
+
+                                <select id="filter-icon-profile" class="form-input compact interactive-multiselect" multiple title="Profilo Icone" style="max-width: 150px; flex-grow: 1;">
+                                    <option value="all">Tutti i Profili</option>
+                                </select>
+                            </div>
+
+                            <!-- Sort (Right) -->
+                            <div style="display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0;">
+                                <select id="sort-users" class="form-input compact" onchange="filterUsers()" title="Ordina per" style="min-width: 220px;">
+                                    <optgroup label="Per Utente + Server">
+                                        <option value="name_asc_server_asc" selected>Utente (A-Z) + Server</option>
+                                        <option value="name_asc_server_desc">Utente (A-Z) + Server (Desc)</option>
+                                        <option value="name_desc_server_asc">Utente (Z-A) + Server</option>
+                                        <option value="name_desc_server_desc">Utente (Z-A) + Server (Desc)</option>
+                                    </optgroup>
+                                    <optgroup label="Per Server + Utente">
+                                        <option value="server_asc_name_asc">Server (A-Z) + Utente</option>
+                                        <option value="server_asc_name_desc">Server (A-Z) + Utente (Desc)</option>
+                                        <option value="server_desc_name_asc">Server (Desc) + Utente</option>
+                                        <option value="server_desc_name_desc">Server (Desc) + Utente (Desc)</option>
+                                    </optgroup>
+                                </select>
+                            </div>
                         </div>
                     </div>
 
@@ -358,7 +405,14 @@
                                 <article class="server-card compact" data-server-id="{{ server.id }}">
                                     <div class="server-card-header">
                                         <div>
-                                            <h3>{{ server.alias or server.original_name or server.name or "Server Emby" }}</h3>
+                                            {% set server_label = server.alias or server.original_name or server.name or "Server Emby" %}
+                                            {% set server_icon = server.icon or 'fa-server' %}
+                                            {% set server_icon_style = 'fa-regular' if server.icon_style == 'regular' else 'fa-solid' %}
+                                            {% set server_icon_color = server.icon_color or '#3b82f6' %}
+                                            <h3 class="server-label">
+                                                <i class="server-icon {{ server_icon_style }} {{ server_icon }}" data-icon-color="{{ server_icon_color }}"></i>
+                                                <span>{{ server_label }}</span>
+                                            </h3>
                                             <p class="meta">{{ server.url }}</p>
                                         </div>
                                     </div>
@@ -455,8 +509,15 @@
                     {% if emby_servers %}
                         <div class="server-tabs latest-server-tabs" data-latest-server-tabs>
                             {% for server in emby_servers %}
+                                {% set server_label = server.alias or server.original_name or server.name or server.url or "Server Emby" %}
+                                {% set server_icon = server.icon or 'fa-server' %}
+                                {% set server_icon_style = 'fa-regular' if server.icon_style == 'regular' else 'fa-solid' %}
+                                {% set server_icon_color = server.icon_color or '#3b82f6' %}
                                 <button class="server-tab" type="button" data-latest-server="{{ server.id }}">
-                                    {{ server.alias or server.original_name or server.name or server.url }}
+                                    <span class="server-label">
+                                        <i class="server-icon {{ server_icon_style }} {{ server_icon }}" data-icon-color="{{ server_icon_color }}"></i>
+                                        <span>{{ server_label }}</span>
+                                    </span>
                                 </button>
                             {% endfor %}
                             <button class="server-tab active" type="button" data-latest-server="all">Tutti</button>
@@ -924,9 +985,16 @@
                     {% if emby_servers %}
                         <div class="latest-config-list" data-latest-rule-server-list>
                             {% for server in emby_servers %}
-                                <label class="latest-config-row">
-                                    <span>{{ server.alias or server.name }}</span>
+                                {% set server_label = server.alias or server.original_name or server.name or server.url or "Server Emby" %}
+                                {% set server_icon = server.icon or 'fa-server' %}
+                                {% set server_icon_style = 'fa-regular' if server.icon_style == 'regular' else 'fa-solid' %}
+                                {% set server_icon_color = server.icon_color or '#3b82f6' %}
+                                <label class="latest-config-row latest-config-row-inline">
                                     <input type="checkbox" name="latest_rule_servers" value="{{ server.id }}" data-latest-rule-server>
+                                    <span class="server-label">
+                                        <i class="server-icon {{ server_icon_style }} {{ server_icon }}" data-icon-color="{{ server_icon_color }}"></i>
+                                        <span>{{ server_label }}</span>
+                                    </span>
                                 </label>
                             {% endfor %}
                         </div>

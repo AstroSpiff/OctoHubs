@@ -32,6 +32,10 @@ def group_libraries(
         if not isinstance(payload, dict):
             continue
         server_name = payload.get("name") or payload.get("server_name") or str(server_id)
+        server_alias = payload.get("alias") or payload.get("original_name") or server_name
+        server_icon = payload.get("icon") or payload.get("server_icon") or "fa-server"
+        server_icon_color = payload.get("icon_color") or payload.get("server_icon_color") or "#3b82f6"
+        server_icon_style = payload.get("icon_style") or payload.get("server_icon_style") or "solid"
         libraries = payload.get("libraries") or []
         if not isinstance(libraries, list):
             continue
@@ -69,6 +73,10 @@ def group_libraries(
             group["libraries"].append({
                 "server_id": str(server_id),
                 "server_name": server_name,
+                "server_alias": server_alias,
+                "server_icon": server_icon,
+                "server_icon_color": server_icon_color,
+                "server_icon_style": server_icon_style,
                 "library_id": library_id,
                 "library_name": library_name
             })
