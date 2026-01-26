@@ -189,11 +189,29 @@
         }
 
         /* Status Badge */
+        .status-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            width: 100%;
+            flex-wrap: wrap;
+            row-gap: 0.35rem;
+        }
+        .status-header .status-badge {
+            margin-left: auto;
+            flex-shrink: 0;
+        }
         .status-badge {
             font-size: 0.75rem;
-            padding: 0.25rem 0.75rem;
+            padding: 0.3rem 0.9rem;
             border-radius: 12px;
             font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            line-height: 1.2;
+            white-space: nowrap;
+            width: auto;
+            height: auto;
         }
         .status-badge.running {
             background: #10b981;
@@ -822,7 +840,7 @@
                 <!-- Combo Workflow Worker -->
                 <div class="worker-card" style="grid-column: 1 / -1;">
                     <h3 class="combo-header">
-                        <span>Discovery + Processing Automatico</span>
+                        <span>Individuazione + Analisi Automatico</span>
                         <button class="btn ghost combo-history-btn" type="button" data-libraries-combo-history>
                             Ultimo run
                         </button>
@@ -851,21 +869,21 @@
                         </div>
                     </div>
                     <div class="worker-controls" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem;">
-                        <button class="btn primary" data-libraries-combo-start-smart title="Esegue Discovery e poi Processing in modalità Smart (pausa durante streaming)">
-                            🚀 Discovery + Processing [smart]
+                        <button class="btn primary" data-libraries-combo-start-smart title="Esegue Individuazione e poi Analisi in modalità Smart (pausa durante streaming)">
+                            🚀 Individuazione + Analisi [smart]
                         </button>
-                        <button class="btn secondary" data-libraries-combo-start-forced title="Esegue Discovery e poi Processing in modalità Forced (senza pause)">
-                            ⚡ Discovery + Processing [forced]
+                        <button class="btn secondary" data-libraries-combo-start-forced title="Esegue Individuazione e poi Analisi in modalità Forced (senza pause)">
+                            ⚡ Individuazione + Analisi [forced]
                         </button>
                         <button class="btn ghost" data-libraries-combo-stop disabled title="Ferma il combo workflow in corso">
                             ⏹️ Stop
                         </button>
                     </div>
                 </div>
-                <!-- Discovery Worker -->
+                <!-- Individuazione Worker -->
                 <div class="worker-card">
-                    <h3>
-                        Discovery
+                    <h3 class="status-header">
+                        Individuazione
                         <span class="status-badge idle" data-discovery-badge>Inattivo</span>
                     </h3>
 
@@ -894,19 +912,19 @@
                     </div>
                     <div class="worker-log" data-discovery-log>In attesa...</div>
                     <div class="worker-controls">
-                        <button class="btn primary" data-discovery-start title="Avvia la discovery per popolare la coda">Avvia Ricerca</button>
-                        <button class="btn ghost" data-discovery-stop disabled title="Ferma la discovery in corso">Stop</button>
+                        <button class="btn primary" data-discovery-start title="Avvia l'individuazione per popolare la coda">Avvia Individuazione</button>
+                        <button class="btn ghost" data-discovery-stop disabled title="Ferma l'individuazione in corso">Stop</button>
                     </div>
                 </div>
 
-                <!-- Processing Worker -->
+                <!-- Analisi Worker -->
                 <div class="worker-card">
-                    <h3>
-                        Processing
+                    <h3 class="status-header">
+                        Analisi
                         <span class="status-badge idle" data-processing-badge>Inattivo</span>
                     </h3>
 
-                    <!-- Library Filter for Processing -->
+                    <!-- Library Filter for Analisi -->
                     <div class="library-selection">
                         <h4 style="display: flex; justify-content: space-between; align-items: center;">
                             <span>Filtra Elaborazione per Libreria</span>
@@ -945,9 +963,9 @@
                     </div>
                     <div class="worker-log" data-processing-log>In attesa...</div>
                     <div class="worker-controls">
-                        <button class="btn primary" data-processing-start-smart title="Avvia processing con pausa automatica durante lo streaming">Avvia [smart]</button>
-                        <button class="btn secondary" data-processing-start-forced title="Avvia processing forzato senza pausa">Avvia [forced]</button>
-                        <button class="btn ghost" data-processing-stop disabled title="Ferma il processing in corso">Stop</button>
+                        <button class="btn primary" data-processing-start-smart title="Avvia analisi con pausa automatica durante lo streaming">Avvia [smart]</button>
+                        <button class="btn secondary" data-processing-start-forced title="Avvia analisi forzata senza pausa">Avvia [forced]</button>
+                        <button class="btn ghost" data-processing-stop disabled title="Ferma l'analisi in corso">Stop</button>
                     </div>
                 </div>
             </div>
@@ -955,7 +973,7 @@
 
         <!-- Tabs -->
         <div class="tabs" data-tab-group="libraries">
-            <button class="tab-btn active" data-tab="queue" data-tab-group="libraries" title="Coda in attesa di processing">Da Processare</button>
+            <button class="tab-btn active" data-tab="queue" data-tab-group="libraries" title="Coda in attesa di analisi">Da Processare</button>
             <button class="tab-btn" data-tab="history" data-tab-group="libraries" title="Storico delle operazioni">Storico</button>
             <button class="tab-btn" data-tab="blacklist" data-tab-group="libraries" title="Elementi con errori ripetuti">
                 Errori
@@ -1088,7 +1106,7 @@
                 <!-- Combo Workflow Worker -->
                 <div class="worker-card" style="grid-column: 1 / -1;">
                     <h3 class="combo-header">
-                        <span>Discovery + Processing Automatico</span>
+                        <span>Individuazione + Analisi Automatico</span>
                         <button class="btn ghost combo-history-btn" type="button" data-recent-combo-history>
                             Ultimo run
                         </button>
@@ -1117,11 +1135,11 @@
                         </div>
                     </div>
                     <div class="worker-controls" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem;">
-                        <button class="btn primary" data-recent-combo-start-smart title="Esegue Discovery e poi Processing in modalità Smart (pausa durante streaming)">
-                            🚀 Discovery + Processing [smart]
+                        <button class="btn primary" data-recent-combo-start-smart title="Esegue Individuazione e poi Analisi in modalità Smart (pausa durante streaming)">
+                            🚀 Individuazione + Analisi [smart]
                         </button>
-                        <button class="btn secondary" data-recent-combo-start-forced title="Esegue Discovery e poi Processing in modalità Forced (senza pause)">
-                            ⚡ Discovery + Processing [forced]
+                        <button class="btn secondary" data-recent-combo-start-forced title="Esegue Individuazione e poi Analisi in modalità Forced (senza pause)">
+                            ⚡ Individuazione + Analisi [forced]
                         </button>
                         <button class="btn ghost" data-recent-combo-stop disabled title="Ferma il combo workflow in corso">
                             ⏹️ Stop
@@ -1129,8 +1147,8 @@
                     </div>
                 </div>
                 <div class="worker-card">
-                    <h3>
-                        Discovery ultimi aggiunti
+                    <h3 class="status-header">
+                        Individuazione ultimi aggiunti
                         <span class="status-badge idle" data-recent-badge>Inattivo</span>
                     </h3>
                     <p class="tagline">
@@ -1148,15 +1166,15 @@
                     </div>
                     <div class="worker-log" data-recent-log>In attesa...</div>
                     <div class="worker-controls">
-                        <button class="btn primary" data-recent-start title="Avvia la discovery sugli ultimi aggiunti">Avvia Ricerca</button>
-                        <button class="btn secondary" data-recent-start-all title="Avvia la discovery su tutti i server">Avvia su tutti</button>
-                        <button class="btn ghost" data-recent-stop disabled title="Ferma la discovery ultimi aggiunti">Stop</button>
-                        <button class="btn ghost" data-recent-stop-all disabled title="Ferma la discovery ultimi aggiunti su tutti i server">Stop tutti</button>
+                        <button class="btn primary" data-recent-start title="Avvia l'individuazione sugli ultimi aggiunti">Avvia Individuazione</button>
+                        <button class="btn secondary" data-recent-start-all title="Avvia l'individuazione su tutti i server">Avvia su tutti</button>
+                        <button class="btn ghost" data-recent-stop disabled title="Ferma l'individuazione ultimi aggiunti">Stop</button>
+                        <button class="btn ghost" data-recent-stop-all disabled title="Ferma l'individuazione ultimi aggiunti su tutti i server">Stop tutti</button>
                     </div>
                 </div>
                 <div class="worker-card">
-                    <h3>
-                        Processing ultimi aggiunti
+                    <h3 class="status-header">
+                        Analisi ultimi aggiunti
                         <span class="status-badge idle" data-recent-processing-badge>Inattivo</span>
                     </h3>
                     <div class="worker-stats">
@@ -1184,17 +1202,17 @@
                     </div>
                     <div class="worker-log" data-recent-processing-log>In attesa...</div>
                     <div class="worker-controls">
-                        <button class="btn primary" data-recent-processing-start-smart title="Avvia processing con pausa automatica durante lo streaming">Avvia [smart]</button>
-                        <button class="btn secondary" data-recent-processing-start-forced title="Avvia processing forzato senza pausa">Avvia [forced]</button>
-                        <button class="btn ghost" data-recent-processing-stop disabled title="Ferma il processing in corso">Stop</button>
-                        <button class="btn ghost" data-recent-processing-stop-all disabled title="Ferma il processing su tutti i server">Stop tutti</button>
+                        <button class="btn primary" data-recent-processing-start-smart title="Avvia analisi con pausa automatica durante lo streaming">Avvia [smart]</button>
+                        <button class="btn secondary" data-recent-processing-start-forced title="Avvia analisi forzata senza pausa">Avvia [forced]</button>
+                        <button class="btn ghost" data-recent-processing-stop disabled title="Ferma l'analisi in corso">Stop</button>
+                        <button class="btn ghost" data-recent-processing-stop-all disabled title="Ferma l'analisi su tutti i server">Stop tutti</button>
                     </div>
                 </div>
             </div>
         </div>
 
         <div class="tabs" data-tab-group="recent">
-            <button class="tab-btn active" data-tab="queue" data-tab-group="recent" title="Coda in attesa di processing">Da Processare</button>
+            <button class="tab-btn active" data-tab="queue" data-tab-group="recent" title="Coda in attesa di analisi">Da Processare</button>
             <button class="tab-btn" data-tab="history" data-tab-group="recent" title="Storico delle operazioni">Storico</button>
             <button class="tab-btn" data-tab="blacklist" data-tab-group="recent" title="Elementi con errori ripetuti">
                 Errori
@@ -1204,7 +1222,7 @@
                 Incompleti
                 <span class="tab-badge" data-recent-incomplete-count style="background: #f59e0b; color: white; padding: 0.15rem 0.5rem; border-radius: 10px; font-size: 0.75rem; margin-left: 0.5rem;">0</span>
             </button>
-            <button class="tab-btn" data-tab="config" data-tab-group="recent" title="Parametri configurabili della discovery">⚙️ Configurazione</button>
+            <button class="tab-btn" data-tab="config" data-tab-group="recent" title="Parametri configurabili dell'individuazione">⚙️ Configurazione</button>
         </div>
 
         <div class="tab-panel active" data-panel="queue" data-tab-group="recent">
@@ -1285,7 +1303,7 @@
         <div class="tab-panel" data-panel="config" data-tab-group="recent">
             <div class="history-section">
                 <div class="section-header">
-                    <h3>Configurazione Discovery Algorithm</h3>
+                    <h3>Configurazione algoritmo di individuazione</h3>
                     <div class="section-actions">
                         <button class="btn primary" data-recent-config-save title="Salva le modifiche">Salva Configurazione</button>
                         <button class="btn secondary" data-recent-config-reset title="Ripristina i valori predefiniti">Ripristina Default</button>
@@ -1293,7 +1311,7 @@
                 </div>
 
                 <div style="background: #dbeafe; border-left: 4px solid #3b82f6; padding: 1rem; margin-bottom: 1.5rem; border-radius: 4px;">
-                    <strong>ℹ️ Info:</strong> Questi parametri controllano l'algoritmo di discovery ibrido (timestamp tracking + sliding window).
+                    <strong>ℹ️ Info:</strong> Questi parametri controllano l'algoritmo di individuazione ibrido (timestamp tracking + sliding window).
                     Le modifiche si applicano dal prossimo scan.
                 </div>
 
@@ -1385,7 +1403,7 @@
                                 <li><strong>Scan successivi:</strong> cerca solo nuovi file dall'ultimo scan (con <em>Margine di Sicurezza</em> per evitare gap)</li>
                                 <li><strong>Finestra scorrevole:</strong> analizza gli ultimi <em>Dimensione Finestra</em> file .strm e si ferma quando la <em>Soglia Completamento</em> ha già mediainfo</li>
                                 <li><strong>Stop condizioni:</strong> si ferma anche se supera <em>Massimo Giorni</em> o <em>Massimo Elementi</em> controllati</li>
-                                <li><strong>Processing intelligente:</strong> i file vengono processati dal più vecchio al più recente, così se interrompi il processing non perdi i file recenti (più importanti)</li>
+                                <li><strong>Analisi intelligente:</strong> i file vengono processati dal più vecchio al più recente, così se interrompi l'analisi non perdi i file recenti (più importanti)</li>
                             </ul>
                         </div>
                     </div>
@@ -1455,6 +1473,13 @@
                 incompleteBadge: '[data-recent-incomplete-count]',
                 historyFilter: '[data-recent-history-filter-errors]'
             }
+        };
+        const recentConfigDefaults = {
+            window_size: 500,
+            window_threshold: 0.90,
+            max_days: 60,
+            max_items: 2000,
+            safety_margin_days: 7
         };
         const comboHistoryState = {
             libraries: {},
@@ -1829,6 +1854,132 @@
             if (procStopAll) {
                 procStopAll.style.display = isAll ? '' : 'none';
             }
+            updateRecentConfigUI(isAll);
+        }
+
+        function getRecentConfigInputs() {
+            return {
+                windowSize: document.querySelector('[data-config-window-size]'),
+                windowThreshold: document.querySelector('[data-config-window-threshold]'),
+                safetyMargin: document.querySelector('[data-config-safety-margin]'),
+                maxDays: document.querySelector('[data-config-max-days]'),
+                maxItems: document.querySelector('[data-config-max-items]')
+            };
+        }
+
+        function setRecentConfigInputs(config) {
+            const merged = { ...recentConfigDefaults, ...(config || {}) };
+            const inputs = getRecentConfigInputs();
+            if (inputs.windowSize) {
+                inputs.windowSize.value = merged.window_size;
+            }
+            if (inputs.windowThreshold) {
+                const raw = merged.window_threshold;
+                const percent = typeof raw === 'number' ? (raw > 1 ? raw : Math.round(raw * 100)) : 90;
+                inputs.windowThreshold.value = percent;
+            }
+            if (inputs.safetyMargin) {
+                inputs.safetyMargin.value = merged.safety_margin_days;
+            }
+            if (inputs.maxDays) {
+                inputs.maxDays.value = merged.max_days;
+            }
+            if (inputs.maxItems) {
+                inputs.maxItems.value = merged.max_items;
+            }
+        }
+
+        function readRecentConfigInputs() {
+            const inputs = getRecentConfigInputs();
+            const windowSize = parseInt(inputs.windowSize?.value || '', 10);
+            const windowThreshold = parseFloat(inputs.windowThreshold?.value || '');
+            const safetyMargin = parseInt(inputs.safetyMargin?.value || '', 10);
+            const maxDays = parseInt(inputs.maxDays?.value || '', 10);
+            const maxItems = parseInt(inputs.maxItems?.value || '', 10);
+
+            return {
+                window_size: Number.isNaN(windowSize) ? recentConfigDefaults.window_size : windowSize,
+                window_threshold: Number.isNaN(windowThreshold) ? recentConfigDefaults.window_threshold * 100 : windowThreshold,
+                safety_margin_days: Number.isNaN(safetyMargin) ? recentConfigDefaults.safety_margin_days : safetyMargin,
+                max_days: Number.isNaN(maxDays) ? recentConfigDefaults.max_days : maxDays,
+                max_items: Number.isNaN(maxItems) ? recentConfigDefaults.max_items : maxItems
+            };
+        }
+
+        function setRecentConfigDisabled(disabled) {
+            const inputs = getRecentConfigInputs();
+            Object.values(inputs).forEach(input => {
+                if (input) {
+                    input.disabled = disabled;
+                }
+            });
+            const saveButton = document.querySelector('[data-recent-config-save]');
+            const resetButton = document.querySelector('[data-recent-config-reset]');
+            if (saveButton) {
+                saveButton.disabled = disabled;
+            }
+            if (resetButton) {
+                resetButton.disabled = disabled;
+            }
+        }
+
+        function updateRecentConfigUI(isAll) {
+            setRecentConfigDisabled(isAll);
+            if (isAll) {
+                setRecentConfigInputs(recentConfigDefaults);
+                return;
+            }
+            loadRecentConfig();
+        }
+
+        async function loadRecentConfig() {
+            const serverId = getScopeServerId('recent');
+            if (!serverId || serverId === 'all') {
+                setRecentConfigInputs(recentConfigDefaults);
+                return;
+            }
+            const params = new URLSearchParams({ server_id: serverId });
+            try {
+                const res = await csrfFetch(`/api/emby/probe/recent/config?${params.toString()}`);
+                const data = await res.json();
+                if (data && data.success) {
+                    setRecentConfigInputs(data.config || {});
+                } else {
+                    setRecentConfigInputs(recentConfigDefaults);
+                }
+            } catch (err) {
+                console.error('Error loading recent config:', err);
+                setRecentConfigInputs(recentConfigDefaults);
+            }
+        }
+
+        async function saveRecentConfig(configOverride = null) {
+            const serverId = getScopeServerId('recent');
+            if (!serverId || serverId === 'all') {
+                alert('Seleziona un server specifico per salvare la configurazione.');
+                return;
+            }
+            const config = configOverride || readRecentConfigInputs();
+            try {
+                const res = await csrfFetch('/api/emby/probe/recent/config', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ server_id: serverId, config })
+                });
+                const data = await res.json();
+                if (data && data.success) {
+                    setRecentConfigInputs(data.config || config);
+                } else {
+                    alert('Errore: ' + (data.message || 'Salvataggio fallito'));
+                }
+            } catch (err) {
+                console.error('Error saving recent config:', err);
+                alert('Errore di connessione');
+            }
+        }
+
+        function resetRecentConfig() {
+            saveRecentConfig({ ...recentConfigDefaults });
         }
 
         function loadScopeData(scope) {
@@ -2183,7 +2334,7 @@
                     : '';
                 let note = currentItem || details.join(' · ');
                 if (!note && hasTotals && total === 0) {
-                    note = 'Processing non necessario';
+                    note = 'Analisi non necessaria';
                 }
                 if (!note && hasTotals && total > 0 && done >= total) {
                     note = 'Completato';
@@ -2270,7 +2421,7 @@
                     state = 'todo';
                     progress = null;
                 }
-                const typeLabel = task.type === 'processing' ? 'Processing' : 'Discovery';
+                const typeLabel = task.type === 'processing' ? 'Analisi' : 'Individuazione';
                 const serverName = task.server_name || getServerLabel(task.server_id, scope);
                 const libraryName = task.library_id ? getLibraryLabel(task.server_id, task.library_id) : '';
                 const serverLine = libraryName ? `${serverName} · ${libraryName}` : serverName;
@@ -2370,7 +2521,7 @@
             const items = history.tasks.map(task => {
                 const result = task.result || 'success';
                 const label = resultLabels[result] || 'Completato';
-                const typeLabel = task.type === 'processing' ? 'Processing' : 'Discovery';
+                const typeLabel = task.type === 'processing' ? 'Analisi' : 'Individuazione';
                 const serverName = task.server_name || getServerLabel(task.server_id, scope);
                 const libraryName = task.library_id ? getLibraryLabel(task.server_id, task.library_id) : '';
                 const serverLine = libraryName ? `${serverName} · ${libraryName}` : serverName;
@@ -2815,6 +2966,12 @@
             });
             bindClick('[data-recent-stop-all]', () => {
                 callAPI('/api/emby/probe/recent/stop-all', 'POST', {});
+            });
+            bindClick('[data-recent-config-save]', () => {
+                saveRecentConfig();
+            });
+            bindClick('[data-recent-config-reset]', () => {
+                resetRecentConfig();
             });
 
             // Processing controls

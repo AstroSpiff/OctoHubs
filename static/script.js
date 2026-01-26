@@ -3879,17 +3879,18 @@
 
         const initIndependentSearchCustomize = () => {
             const customizeToggle = document.getElementById('independent-customize');
-            const advancedPanel = document.getElementById('independent-advanced-options');
             const manualMediaTypeSelect = document.getElementById('independent-media-type');
+            const advancedPanel = document.getElementById('independent-advanced-options');
             if (!customizeToggle || !advancedPanel) {
                 return;
             }
 
             const updateMediaOptions = () => {
                 const selectedType = manualMediaTypeSelect ? manualMediaTypeSelect.value : '';
+                const showAll = !selectedType;
                 advancedPanel.querySelectorAll('[data-media-scope]').forEach(block => {
                     const scope = block.dataset.mediaScope;
-                    const shouldShow = scope === 'both' || (selectedType && scope === selectedType);
+                    const shouldShow = scope === 'both' || showAll || scope === selectedType;
                     block.classList.toggle('is-hidden', !shouldShow);
                 });
             };
@@ -3906,6 +3907,199 @@
             updatePanelVisibility();
         };
 
+        const INDIE_RULES_STORAGE_KEY = 'indie-search-rules';
+
+        const parseIndieCsv = (value) => (value || '')
+            .split(',')
+            .map(entry => entry.trim())
+            .filter(Boolean);
+
+        const formatIndieCsv = (value) => {
+            if (Array.isArray(value)) {
+                return value.join(', ');
+            }
+            if (value === null || value === undefined) {
+                return '';
+            }
+            return String(value);
+        };
+
+        const readIndieFieldValue = (field) => {
+            const type = field.dataset.indieType || 'string';
+            if (type === 'bool') {
+                return field.checked;
+            }
+            if (type === 'int') {
+                const parsed = parseInt(field.value, 10);
+                return Number.isNaN(parsed) ? 0 : parsed;
+            }
+            if (type === 'csv') {
+                return parseIndieCsv(field.value);
+            }
+            return field.value;
+        };
+
+        const applyIndieFieldValue = (field, value) => {
+            const type = field.dataset.indieType || 'string';
+            if (type === 'bool') {
+                field.checked = Boolean(value);
+                return;
+            }
+            if (type === 'int') {
+                field.value = Number.isFinite(value) ? String(value) : '';
+                return;
+            }
+            if (type === 'csv') {
+                field.value = formatIndieCsv(value);
+                return;
+            }
+            field.value = value === null || value === undefined ? '' : String(value);
+        };
+
+        const collectIndieRules = () => {
+            const fields = Array.from(document.querySelectorAll('[data-indie-key]'));
+            if (!fields.length) {
+                return null;
+            }
+            const payload = { search_rules: {} };
+            fields.forEach(field => {
+                const key = field.dataset.indieKey;
+                const scope = field.dataset.indieScope || 'rules';
+                const value = readIndieFieldValue(field);
+                if (!key) {
+                    return;
+                }
+                if (scope === 'config') {
+                    payload[key] = value;
+                } else {
+                    payload.search_rules[key] = value;
+                }
+            });
+            return payload;
+        };
+
+        const applyIndieRules = (stored) => {
+            if (!stored || typeof stored !== 'object') {
+                return;
+            }
+            const fields = Array.from(document.querySelectorAll('[data-indie-key]'));
+            fields.forEach(field => {
+                const key = field.dataset.indieKey;
+                const scope = field.dataset.indieScope || 'rules';
+                if (!key) {
+                    return;
+                }
+                const source = scope === 'config' ? stored : stored.search_rules || {};
+                if (!(key in source)) {
+                    return;
+                }
+                applyIndieFieldValue(field, source[key]);
+            });
+        };
+
+        const initIndependentSearchRules = () => {
+            const advancedPanel = document.getElementById('independent-advanced-options');
+            if (!advancedPanel) {
+                return;
+            }
+            const customizeToggle = document.getElementById('independent-customize');
+            const fields = Array.from(advancedPanel.querySelectorAll('[data-indie-key]'));
+            if (!fields.length) {
+                return;
+            }
+
+            const episodeToggle = document.getElementById('indie-search-episode-variants');
+            const skipSeasonToggle = document.getElementById('indie-skip-season-query');
+            const refreshSkipSeason = () => {
+                if (!episodeToggle || !skipSeasonToggle) {
+                    return;
+                }
+                const enabled = episodeToggle.checked;
+                skipSeasonToggle.disabled = !enabled;
+                if (!enabled) {
+                    skipSeasonToggle.checked = false;
+                }
+            };
+
+            const setupIndieSortPicker = (primaryId, secondaryId) => {
+                const primary = document.getElementById(primaryId);
+                const secondary = document.getElementById(secondaryId);
+                if (!primary || !secondary) {
+                    return;
+                }
+                const toggleGroups = () => {
+                    const primaryGroup = primary.selectedOptions[0]?.dataset.sortGroup || '';
+                    const secondaryGroup = secondary.selectedOptions[0]?.dataset.sortGroup || '';
+                    const applyState = (select, forbiddenGroup, activeValue) => {
+                        Array.from(select.options).forEach(opt => {
+                            const group = opt.dataset.sortGroup || '';
+                            if (!group || !forbiddenGroup) {
+                                opt.disabled = false;
+                                return;
+                            }
+                            if (group === forbiddenGroup && opt.value !== activeValue) {
+                                opt.disabled = true;
+                            } else {
+                                opt.disabled = false;
+                            }
+                        });
+                    };
+                    applyState(primary, secondaryGroup, primary.value);
+                    applyState(secondary, primaryGroup, secondary.value);
+                };
+                primary.addEventListener('change', toggleGroups);
+                secondary.addEventListener('change', toggleGroups);
+                toggleGroups();
+            };
+
+            const loadStored = () => {
+                try {
+                    const raw = localStorage.getItem(INDIE_RULES_STORAGE_KEY);
+                    if (!raw) {
+                        return null;
+                    }
+                    const parsed = JSON.parse(raw);
+                    applyIndieRules(parsed);
+                    return parsed;
+                } catch (err) {
+                    // ignore storage errors
+                    return null;
+                }
+            };
+
+            const saveStored = () => {
+                const payload = collectIndieRules();
+                if (!payload) {
+                    return;
+                }
+                try {
+                    localStorage.setItem(INDIE_RULES_STORAGE_KEY, JSON.stringify(payload));
+                } catch (err) {
+                    // ignore storage errors
+                }
+            };
+
+            fields.forEach(field => {
+                field.addEventListener('change', saveStored);
+                field.addEventListener('input', saveStored);
+            });
+            if (episodeToggle) {
+                episodeToggle.addEventListener('change', () => {
+                    refreshSkipSeason();
+                    saveStored();
+                });
+            }
+
+            const stored = loadStored();
+            if (stored && customizeToggle && !customizeToggle.checked) {
+                customizeToggle.checked = true;
+                customizeToggle.dispatchEvent(new Event('change'));
+            }
+            refreshSkipSeason();
+            setupIndieSortPicker('indie-movie-sort-primary', 'indie-movie-sort-secondary');
+            setupIndieSortPicker('indie-tv-sort-primary', 'indie-tv-sort-secondary');
+        };
+
         const initManualSearch = () => {
             const form = document.getElementById('independent-search-form');
             const resultsTarget = document.querySelector('[data-results-target="independent-search"]');
@@ -3914,14 +4108,8 @@
             }
             const queryInput = document.getElementById('independent-query');
             const manualMediaTypeSelect = document.getElementById('independent-media-type');
-            const jellyseerrToggle = document.getElementById('independent-jellyseerr');
             const customizeToggle = document.getElementById('independent-customize');
             const advancedPanel = document.getElementById('independent-advanced-options');
-            const indexerInputs = form.querySelectorAll('input[name="indexer"]');
-            const includeFilter = document.getElementById('independent-include-filter');
-            const excludeFilter = document.getElementById('independent-exclude-filter');
-            const minSizeFilter = document.getElementById('independent-min-size');
-            const maxSizeFilter = document.getElementById('independent-max-size');
             const submitButton = form.querySelector('button[type="submit"]');
             const historyContainer = document.getElementById('independent-history');
             const historyToggle = document.getElementById('independent-history-toggle');
@@ -3948,7 +4136,6 @@
             const embyModalPath = document.getElementById('emby-detail-path');
             const embyModalTracks = document.getElementById('emby-detail-tracks');
             const embyModalMessage = document.getElementById('emby-detail-message');
-            const manualOptionBlocks = form.querySelectorAll('[data-manual-option]');
             const HISTORY_KEY = 'manualSearchHistory';
             const HISTORY_LIMIT = 10;
             let historyEntries = [];
@@ -4192,10 +4379,6 @@
                     manualMediaTypeSelect.value = mediaValue;
                     manualMediaTypeSelect.dispatchEvent(new Event('change'));
                 }
-                indexerInputs.forEach(input => {
-                    input.checked = entry.indexers.includes(input.value);
-                    input.dispatchEvent(new Event('change'));
-                });
                 hideHistoryList();
                 if (shouldSubmit) {
                     if (typeof form.requestSubmit === 'function') {
@@ -4537,8 +4720,8 @@
                                 ${rows}
                             </tbody>
                         </table>
-                        <p class="tagline manual-empty-state" data-manual-empty>
-                            Nessun risultato corrisponde ai filtri selezionati.
+                        <p class="tagline manual-empty-state ${results.length ? 'is-hidden' : ''}" data-manual-empty>
+                            Nessun risultato disponibile.
                         </p>
                     </div>
                 `;
@@ -4548,89 +4731,36 @@
                         setupResolutionBlock(block);
                     }
                 });
-                applyManualFilters();
             };
 
-            const parseTerms = (value) => (value || '')
-                .split(',')
-                .map(term => term.trim().toLowerCase())
-                .filter(Boolean);
+            // Esporta renderResults globalmente per search-history.js
+            window.renderManualSearchResults = function(results, searchInfo) {
+                // Salva il contesto attuale
+                const previousContext = Object.assign({}, lastSearchContext);
 
-            const applyManualFilters = () => {
-                const jellyseerrActive = jellyseerrToggle ? jellyseerrToggle.checked : false;
-                const includeTerms = jellyseerrActive ? [] : parseTerms(includeFilter ? includeFilter.value : '');
-                const excludeTerms = jellyseerrActive ? [] : parseTerms(excludeFilter ? excludeFilter.value : '');
-                const minSizeValue = jellyseerrActive || !minSizeFilter ? NaN : parseFloat(minSizeFilter.value);
-                const maxSizeValue = jellyseerrActive || !maxSizeFilter ? NaN : parseFloat(maxSizeFilter.value);
-                const minSize = Number.isNaN(minSizeValue) ? null : minSizeValue;
-                const maxSize = Number.isNaN(maxSizeValue) ? null : maxSizeValue;
-                const rows = resultsTarget.querySelectorAll('tr[data-result-row]');
-                let visibleCount = 0;
-                rows.forEach(row => {
-                    const title = row.dataset.title || '';
-                    const includeOk = includeTerms.length === 0 || includeTerms.every(term => title.includes(term));
-                    const excludeOk = excludeTerms.length === 0 || !excludeTerms.some(term => title.includes(term));
-                    let sizeOk = true;
-                    if (minSize !== null || maxSize !== null) {
-                        const sizeRaw = parseFloat(row.dataset.sizeGb || '');
-                        if (Number.isNaN(sizeRaw)) {
-                            sizeOk = false;
-                        } else {
-                            if (minSize !== null && sizeRaw < minSize) {
-                                sizeOk = false;
-                            }
-                            if (maxSize !== null && sizeRaw > maxSize) {
-                                sizeOk = false;
-                            }
-                        }
-                    }
-                    const shouldShow = includeOk && excludeOk && sizeOk;
-                    row.classList.toggle('manual-filter-hidden', !shouldShow);
-                    if (shouldShow) {
-                        visibleCount += 1;
-                    }
-                });
-                resultsTarget.querySelectorAll('.resolution-block').forEach(block => {
-                    const blockRows = Array.from(block.querySelectorAll('tr[data-result-row]'));
-                    const hasVisible = blockRows.some(row => !row.classList.contains('manual-filter-hidden') && !row.classList.contains('filter-hidden'));
-                    block.classList.toggle('is-hidden', !hasVisible);
-                });
-                const emptyState = resultsTarget.querySelector('[data-manual-empty]');
-                if (emptyState) {
-                    emptyState.classList.toggle('is-hidden', visibleCount > 0);
-                }
+                // Imposta il nuovo contesto dalla ricerca salvata
+                lastSearchContext.title = searchInfo.title || 'Ricerca Salvata';
+                lastSearchContext.year = searchInfo.year || null;
+                lastSearchContext.media_type = searchInfo.media_type || 'movie';
+
+                // Renderizza i risultati usando la funzione originale
+                renderResults(results, []);
+
+                // Ripristina il contesto precedente
+                Object.assign(lastSearchContext, previousContext);
             };
 
-            const updateManualOptionsState = () => {
-                const jellyseerrActive = jellyseerrToggle ? jellyseerrToggle.checked : false;
-                manualOptionBlocks.forEach(block => {
-                    block.classList.toggle('is-disabled', jellyseerrActive);
-                    block.querySelectorAll('input, select, textarea, button').forEach(field => {
-                        field.disabled = jellyseerrActive;
-                    });
-                });
-                if (customizeToggle) {
-                    if (jellyseerrActive && customizeToggle.checked) {
-                        customizeToggle.checked = false;
-                        customizeToggle.dispatchEvent(new Event('change'));
-                    }
-                    customizeToggle.disabled = jellyseerrActive;
+            const resolveManualIndexers = () => {
+                const useProwlarr = document.getElementById('indie-use-prowlarr');
+                const useJackett = document.getElementById('indie-use-jackett');
+                const indexers = [];
+                if (useProwlarr && useProwlarr.checked) {
+                    indexers.push('prowlarr');
                 }
-                if (advancedPanel && jellyseerrActive) {
-                    advancedPanel.classList.add('is-hidden');
+                if (useJackett && useJackett.checked) {
+                    indexers.push('jackett');
                 }
-                applyManualFilters();
-            };
-            const updateJellyseerrToggleAvailability = () => {
-                if (!jellyseerrToggle) {
-                    return;
-                }
-                const hasTmdb = tmdbIdField && tmdbIdField.value;
-                jellyseerrToggle.disabled = !hasTmdb;
-                if (!hasTmdb && jellyseerrToggle.checked) {
-                    jellyseerrToggle.checked = false;
-                }
-                updateManualOptionsState();
+                return indexers;
             };
 
             const setModalText = (element, value, fallback = '—') => {
@@ -4736,14 +4866,6 @@
                     }
                 });
             }
-
-            if (jellyseerrToggle) {
-                jellyseerrToggle.addEventListener('change', updateManualOptionsState);
-            }
-            if (tmdbIdField) {
-                tmdbIdField.addEventListener('change', updateJellyseerrToggleAvailability);
-            }
-            updateJellyseerrToggleAvailability();
 
             if (historyContainer && historyToggle) {
                 historyToggle.addEventListener('click', () => {
@@ -4976,19 +5098,6 @@
                 }
             });
 
-            if (includeFilter) {
-                includeFilter.addEventListener('input', applyManualFilters);
-            }
-            if (excludeFilter) {
-                excludeFilter.addEventListener('input', applyManualFilters);
-            }
-            if (minSizeFilter) {
-                minSizeFilter.addEventListener('input', applyManualFilters);
-            }
-            if (maxSizeFilter) {
-                maxSizeFilter.addEventListener('input', applyManualFilters);
-            }
-
             form.addEventListener('keydown', (event) => {
                 if (event.key !== 'Enter') {
                     return;
@@ -5012,11 +5121,9 @@
                     showToast('Inserisci un termine di ricerca', 'error');
                     return;
                 }
-                const indexers = Array.from(indexerInputs)
-                    .filter(input => input.checked)
-                    .map(input => input.value);
+                const indexers = resolveManualIndexers();
                 if (!indexers.length) {
-                    showToast('Seleziona almeno un indexer', 'error');
+                    showToast('Attiva Prowlarr o Jackett nelle regole locali', 'error');
                     return;
                 }
                 const mediaType = (manualMediaTypeSelect && manualMediaTypeSelect.value)
@@ -5024,14 +5131,14 @@
                     : (tmdbTypeField ? tmdbTypeField.value : 'unknown');
 
                 const useCustomRules = customizeToggle
-                    ? customizeToggle.checked && !(jellyseerrToggle && jellyseerrToggle.checked)
+                    ? customizeToggle.checked
                     : false;
 
                 const payload = {
                     query: queryValue,
                     media_type: mediaType || 'unknown',
                     indexers,
-                    use_jellyseerr_logic: jellyseerrToggle ? jellyseerrToggle.checked : false,
+                    use_jellyseerr_logic: false,
                     use_custom_rules: useCustomRules,
                     tmdb_id: tmdbIdField ? tmdbIdField.value : ''
                 };
@@ -5048,107 +5155,138 @@
 
                 // Add custom filters if enabled
                 if (useCustomRules) {
-                    const customRules = {};
+                    const customRules = collectIndieRules() || { search_rules: {} };
 
-                    if (includeFilter && includeFilter.value.trim()) {
-                        customRules.include_filter = includeFilter.value.trim();
-                    }
-                    if (excludeFilter && excludeFilter.value.trim()) {
-                        customRules.exclude_filter = excludeFilter.value.trim();
-                    }
-                    if (minSizeFilter && minSizeFilter.value) {
-                        customRules.min_size_gb = parseFloat(minSizeFilter.value);
-                    }
-                    if (maxSizeFilter && maxSizeFilter.value) {
-                        customRules.max_size_gb = parseFloat(maxSizeFilter.value);
-                    }
-
-                    // Add advanced options
-                    const qualitySelect = document.getElementById('independent-quality');
-                    const languageSelect = document.getElementById('independent-language');
-                    const editionSelect = document.getElementById('independent-edition');
-                    const seasonInput = document.getElementById('independent-season');
-                    const episodeInput = document.getElementById('independent-episode');
-
-                    if (qualitySelect && qualitySelect.value) {
-                        customRules.quality = qualitySelect.value;
-                    }
-                    if (languageSelect && languageSelect.value) {
-                        customRules.audio_language = languageSelect.value;
-                    }
-                    if (editionSelect && editionSelect.value) {
-                        customRules.edition = editionSelect.value;
-                    }
-                    if (seasonInput && seasonInput.value) {
-                        customRules.season = parseInt(seasonInput.value);
-                    }
-                    if (episodeInput && episodeInput.value) {
-                        customRules.episode = parseInt(episodeInput.value);
-                    }
-
-                    if (Object.keys(customRules).length > 0) {
-                        payload.custom_rules = customRules;
-                    }
+                    payload.custom_rules = customRules;
                 }
 
                 hideHistoryList();
                 setLoading(true);
                 renderLoading();
+
+                // === NUOVO: Ricerca Streaming via WebSocket ===
+                const streamingClient = new SearchStreamingClient();
+                const streamingResults = [];
+                let streamingProgress = 0;
+                let renderTimeout = null;
+
+                // Funzione per ordinare risultati per seeders (decrescente)
+                const sortResultsBySeeders = (results) => {
+                    return results.slice().sort((a, b) => {
+                        const seedersA = a.seeders || 0;
+                        const seedersB = b.seeders || 0;
+                        return seedersB - seedersA; // Ordine decrescente
+                    });
+                };
+
+                // Debounced render: aggiorna UI max ogni 500ms
+                const scheduleRender = () => {
+                    if (renderTimeout) {
+                        clearTimeout(renderTimeout);
+                    }
+                    renderTimeout = setTimeout(() => {
+                        const sorted = sortResultsBySeeders(streamingResults);
+                        renderResults(sorted, []);
+                    }, 500);
+                };
+
                 try {
-                    const response = await csrfFetch('/api/search/manual', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
+                    await streamingClient.startSearch({
+                        query_variants: [queryValue],
+                        search_types: [mediaType],
+                        indexers: indexers,
+                        use_jellyseerr_logic: payload.use_jellyseerr_logic || false,
+                        use_custom_rules: payload.use_custom_rules || false,
+                        tmdb_id: payload.tmdb_id || '',
+                        custom_rules: payload.custom_rules || null,
+
+                        // Callback: ogni volta che arriva un nuovo risultato
+                        onResult: (result) => {
+                            streamingResults.push(result);
+                            // Aggiorna UI con debouncing (evita troppi refresh)
+                            scheduleRender();
+                            console.debug('[Streaming] Nuovo risultato ricevuto, totale:', streamingResults.length);
+                        },
+
+                        // Callback: aggiornamento progresso
+                        onProgress: (progressData) => {
+                            if (progressData.type === 'query_completed') {
+                                streamingProgress = progressData.progress || 0;
+                                console.debug('[Streaming] Progress:', streamingProgress + '%',
+                                    `Query "${progressData.query}" su ${progressData.indexer} completata in ${progressData.duration}s (${progressData.count} risultati)`);
+                            }
+                        },
+
+                        // Callback: ricerca completata
+                        onComplete: (stats) => {
+                            console.log('[Streaming] Ricerca completata:', stats);
+
+                            // Cancella render debounced se esiste
+                            if (renderTimeout) {
+                                clearTimeout(renderTimeout);
+                                renderTimeout = null;
+                            }
+
+                            setLoading(false);
+
+                            // Store in history
+                            storeHistoryEntry({
+                                query: queryValue,
+                                media_type: payload.media_type,
+                                indexers: payload.indexers
+                            });
+
+                            // Se sono stati applicati filtri, usa i risultati filtrati
+                            // Altrimenti usa i risultati accumulati in streaming
+                            const finalResults = stats.results || streamingResults;
+                            const hasFilters = Boolean(stats.filters_applied);
+                            const renderedResults = hasFilters
+                                ? finalResults
+                                : sortResultsBySeeders(finalResults);
+
+                            // Render finale con tutti i risultati
+                            // NON ordinare qui per seeders se i filtri sono applicati,
+                            // perché il backend ha già applicato l'ordinamento corretto
+                            renderResults(renderedResults, []);
+                            showToast(
+                                `Ricerca completata: ${stats.total_results} risultati${hasFilters ? ' (filtri applicati)' : ''} in ${stats.total_duration}s`,
+                                'success'
+                            );
+
+                            // Debug global
+                            window.__lastManualSearch = {
+                                payload,
+                                streaming: true,
+                                stats,
+                                results: renderedResults
+                            };
+                        },
+
+                        // Callback: errore
+                        onError: (errorData) => {
+                            console.error('[Streaming] Errore:', errorData);
+                            setLoading(false);
+
+                            if (errorData.query) {
+                                // Errore specifico di una query
+                                showToast(`Errore ricerca "${errorData.query}" su ${errorData.indexer}: ${errorData.error}`, 'error');
+                            } else {
+                                // Errore generale
+                                renderMessage(errorData.message || 'Errore durante la ricerca streaming');
+                            }
+                        }
                     });
-                    let data = null;
-                    try {
-                        data = await response.json();
-                    } catch (err) {
-                        console.error('Manual search JSON parse error', err);
-                    }
-                    const resultsCount = Array.isArray(data && data.results) ? data.results.length : 0;
-                    console.debug('Manual search response', {
-                        ok: response.ok,
-                        status: response.status,
-                        resultsCount,
-                        hasWarnings: Array.isArray(data && data.warnings) && data.warnings.length > 0
-                    });
-                    window.__lastManualSearch = { payload, status: response.status, data };
-                    if (!response.ok || (data && data.success === false)) {
-                        const message = (data && data.message) ? data.message : 'Errore durante la ricerca.';
-                        renderMessage(message);
-                        setLoading(false);
-                        return;
-                    }
-                    if (data && Array.isArray(data.warnings) && data.warnings.length) {
-                        showToast(data.warnings.join(' · '), 'error');
-                    }
-                    const results = Array.isArray(data && data.results)
-                        ? data.results.filter(item => item && typeof item === 'object')
-                        : [];
-                    try {
-                        storeHistoryEntry({
-                            query: queryValue,
-                            media_type: payload.media_type,
-                            indexers: payload.indexers
-                        });
-                        renderResults(results, data.warnings || []);
-                        console.debug('Manual search render completed', { resultsCount: results.length });
-                    } catch (err) {
-                        console.error('Manual search render error', err);
-                        renderMessage('Errore durante il rendering dei risultati.');
-                    }
+
                 } catch (err) {
-                    console.error('Manual search request error', err);
-                    const message = err && err.message ? err.message : 'Errore di rete durante la ricerca.';
-                    renderMessage(message);
-                } finally {
+                    console.error('[Streaming] Errore generale:', err);
                     setLoading(false);
+                    renderMessage('Errore durante l\'avvio della ricerca streaming: ' + (err.message || 'Errore sconosciuto'));
                 }
             });
         };
 
         initIndependentSearchCustomize();
+        initIndependentSearchRules();
         initManualSearch();
 
         const initTelegramEditors = () => {

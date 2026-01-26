@@ -130,29 +130,6 @@
                             </div>
                         </div>
                         <div class="form-grid">
-                            <div class="indexer-group" data-required-wrapper="independent-indexer">
-                                <label>Selezione Indexer</label>
-                                <div class="checkbox-row">
-                                    <label>
-                                        <input type="checkbox"
-                                               name="indexer"
-                                               value="prowlarr"
-                                               data-required-group="independent-indexer"
-                                               {% if search_rules.use_prowlarr %}checked{% endif %}
-                                               >
-                                        Prowlarr
-                                    </label>
-                                    <label>
-                                        <input type="checkbox"
-                                               name="indexer"
-                                               value="jackett"
-                                               data-required-group="independent-indexer"
-                                               {% if search_rules.use_jackett %}checked{% endif %}>
-                                        Jackett
-                                    </label>
-                                </div>
-                                <div class="tagline">Seleziona almeno un indexer.</div>
-                            </div>
                             <div>
                                 <label for="independent-media-type">Tipo di Media</label>
                                 <select id="independent-media-type" name="media_type">
@@ -161,96 +138,305 @@
                                     <option value="tv">Serie TV</option>
                                 </select>
                             </div>
-                            <div>
-                                <label class="inline-field" for="independent-jellyseerr">
-                                    <input type="checkbox" id="independent-jellyseerr" name="use_jellyseerr_directives">
-                                    Usa direttive Jellyseerr
-                                </label>
-                            </div>
                             <div data-manual-option>
                                 <label class="inline-field" for="independent-customize">
                                     <input type="checkbox" id="independent-customize" name="use_custom_rules">
                                     Personalizza
                                 </label>
                             </div>
-                            <div data-manual-option>
-                                <label for="independent-include-filter">Filtro Inclusione</label>
-                                <input type="text"
-                                       id="independent-include-filter"
-                                       name="include_filter"
-                                       placeholder="Parole da includere">
-                            </div>
-                            <div data-manual-option>
-                                <label for="independent-exclude-filter">Filtro Esclusione</label>
-                                <input type="text"
-                                       id="independent-exclude-filter"
-                                       name="exclude_filter"
-                                       placeholder="Parole da escludere">
-                            </div>
-                            <div data-manual-option>
-                                <label for="independent-min-size">Min GB</label>
-                                <input type="number"
-                                       id="independent-min-size"
-                                       name="min_size_gb"
-                                       step="0.1"
-                                       min="0"
-                                       placeholder="0.0">
-                            </div>
-                            <div data-manual-option>
-                                <label for="independent-max-size">Max GB</label>
-                                <input type="number"
-                                       id="independent-max-size"
-                                       name="max_size_gb"
-                                       step="0.1"
-                                       min="0"
-                                       placeholder="0.0">
-                            </div>
                         </div>
                         <div class="advanced-options is-hidden" id="independent-advanced-options" data-manual-option>
-                            <h3>Opzioni avanzate</h3>
-                            <div class="advanced-grid">
-                                <div data-media-scope="both">
-                                    <label for="independent-quality">Qualità</label>
-                                    <select id="independent-quality" name="quality">
-                                        <option value="">Non definito</option>
-                                        <option value="2160p">2160p</option>
-                                        <option value="1080p">1080p</option>
-                                        <option value="720p">720p</option>
-                                    </select>
+                            <h3>Regole di ricerca locali</h3>
+                            <details class="accordion-block" open>
+                                <summary>Regole di ricerca</summary>
+                                <div class="rule-sections">
+                                    <section class="rule-block">
+                                        <h4>Termini di ricerca</h4>
+                                        <div class="rule-grid three-cols">
+                                            <div>
+                                                <label for="indie-query-languages" title="Lingue aggiunte direttamente alle stringhe di ricerca">
+                                                    Lingue target per la query
+                                                </label>
+                                                <input type="text"
+                                                       id="indie-query-languages"
+                                                       value="{{ (search_rules.query_languages if search_rules.query_languages is defined else (config.TARGET_LANGUAGES if config else [])) | join(',') }}"
+                                                       placeholder="ita,italian"
+                                                       title="Separare con virgole; es. ita,italian"
+                                                       data-indie-key="query_languages"
+                                                       data-indie-scope="rules"
+                                                       data-indie-type="csv">
+                                                <label class="inline-field" style="font-weight:400;margin-top:0.2rem;font-size:0.85rem;">
+                                                    <input type="checkbox"
+                                                           id="indie-include-target-lang-base"
+                                                           {% if search_rules.include_target_lang_base %}checked{% endif %}
+                                                           title="Quando attivo genera due varianti: con e senza lingua esplicita."
+                                                           data-indie-key="include_target_lang_base"
+                                                           data-indie-scope="rules"
+                                                           data-indie-type="bool">
+                                                    Prova anche senza lingua
+                                                </label>
+                                            </div>
+                                            <div>
+                                                <label for="indie-query-terms" title="Parole aggiuntive sempre presenti nelle query (risoluzioni, codec, ecc.)">
+                                                    Risoluzioni / Termini query
+                                                </label>
+                                                <input type="text"
+                                                       id="indie-query-terms"
+                                                       value="{{ search_rules.query_terms | join(',') }}"
+                                                       placeholder="2160p,webdl"
+                                                       title="Separare con virgole; esempio 2160p,remux"
+                                                       data-indie-key="query_terms"
+                                                       data-indie-scope="rules"
+                                                       data-indie-type="csv">
+                                                <div class="tagline">Aggiunti a ogni ricerca (separati da virgola).</div>
+                                            </div>
+                                            <div class="wide-field">
+                                                <label for="indie-season-templates" title="Template usati per rappresentare la stagione nelle query">
+                                                    Varianti stagione
+                                                </label>
+                                                <input type="text"
+                                                       id="indie-season-templates"
+                                                       value="{{ search_rules.season_templates | join(',') }}"
+                                                       placeholder="S{season02},{season}x,Stagione {season}"
+                                                       title="Usa {season} o {season02}; esempio S{season02}, {season}x"
+                                                       data-indie-key="season_templates"
+                                                       data-indie-scope="rules"
+                                                       data-indie-type="csv">
+                                                <div class="tagline">Usa {season} o {season02} come segnaposto del numero.</div>
+                                            </div>
+                                        </div>
+                                    </section>
+                                    <section class="rule-block">
+                                        <h4>Filtri risultati</h4>
+                                        <div class="rule-grid">
+                                            <div>
+                                                <label for="indie-target-languages" title="Lingue audio richieste nei risultati filtrati">
+                                                    Lingue target nei risultati
+                                                </label>
+                                                <input type="text"
+                                                       id="indie-target-languages"
+                                                       value="{{ (config.TARGET_LANGUAGES if config else []) | join(',') }}"
+                                                       placeholder="ita,italian"
+                                                       title="Lista separata da virgole; es. ita,italian"
+                                                       data-indie-key="target_languages"
+                                                       data-indie-scope="config"
+                                                       data-indie-type="csv">
+                                                <div class="tagline">Separate da virgola. Serve per verificare la lingua del risultato.</div>
+                                            </div>
+                                            <div>
+                                                <label for="indie-filter-terms" title="Parole obbligatorie nel titolo del risultato">
+                                                    Termini filtrati
+                                                </label>
+                                                <input type="text"
+                                                       id="indie-filter-terms"
+                                                       value="{{ search_rules.filter_terms | join(',') }}"
+                                                       placeholder="2160p,remux"
+                                                       title="Ogni termine va separato da virgole"
+                                                       data-indie-key="filter_terms"
+                                                       data-indie-scope="rules"
+                                                       data-indie-type="csv">
+                                                <div class="tagline">Almeno uno deve comparire nel titolo.</div>
+                                            </div>
+                                            <div>
+                                                <label for="indie-exclude-tags" title="Tag che, se presenti come parole isolate, causano l’esclusione del risultato">
+                                                    Tag da escludere
+                                                </label>
+                                                <input type="text"
+                                                       id="indie-exclude-tags"
+                                                       value="{{ (config.EXCLUDE_TAGS if config else []) | join(',') }}"
+                                                       placeholder="cam,ts"
+                                                       title="Esempio: cam,ts,md"
+                                                       data-indie-key="exclude_tags"
+                                                       data-indie-scope="config"
+                                                       data-indie-type="csv">
+                                            </div>
+                                            <div>
+                                                <label for="indie-min-seeders" title="Numero minimo di seeders richiesto per accettare un risultato">
+                                                    Seeders minimi
+                                                </label>
+                                                <input type="number"
+                                                       id="indie-min-seeders"
+                                                       value="{{ search_rules.min_seeders }}"
+                                                       min="0"
+                                                       title="Imposta 0 per accettare qualsiasi numero di seeders"
+                                                       data-indie-key="min_seeders"
+                                                       data-indie-scope="rules"
+                                                       data-indie-type="int">
+                                            </div>
+                                        </div>
+                                    </section>
                                 </div>
-                                <div data-media-scope="both">
-                                    <label for="independent-language">Lingua audio</label>
-                                    <select id="independent-language" name="audio_language">
-                                        <option value="">Non definito</option>
-                                        <option value="ita">Italiano</option>
-                                        <option value="eng">Inglese</option>
-                                    </select>
+                            </details>
+                            <details class="accordion-block">
+                                <summary>Ordinamento risultati</summary>
+                                <div class="sort-grid">
+                                    <div class="sort-column" data-media-scope="movie">
+                                        <h4>Film</h4>
+                                        <div class="sort-pair">
+                                            <div class="sort-field">
+                                                <label for="indie-movie-sort-primary" title="Ordine principale con cui verranno mostrati i risultati film">
+                                                    Primo criterio
+                                                </label>
+                                                <select id="indie-movie-sort-primary"
+                                                        data-indie-key="movie_sort_primary"
+                                                        data-indie-scope="rules"
+                                                        data-indie-type="string">
+                                                    {% for opt in movie_sort_options %}
+                                                        <option value="{{ opt.value }}" data-sort-group="{{ opt.group }}" {% if search_rules.movie_sort_primary == opt.value %}selected{% endif %}>{{ opt.label }}</option>
+                                                    {% endfor %}
+                                                </select>
+                                            </div>
+                                            <div class="sort-field">
+                                                <label for="indie-movie-sort-secondary" title="Viene applicato solo in caso di parità del primo criterio">
+                                                    Secondo criterio (opzionale)
+                                                </label>
+                                                <select id="indie-movie-sort-secondary"
+                                                        data-indie-key="movie_sort_secondary"
+                                                        data-indie-scope="rules"
+                                                        data-indie-type="string">
+                                                    <option value="" data-sort-group="" {% if not search_rules.movie_sort_secondary %}selected{% endif %}>Nessuno</option>
+                                                    {% for opt in movie_sort_options %}
+                                                        <option value="{{ opt.value }}" data-sort-group="{{ opt.group }}" {% if search_rules.movie_sort_secondary == opt.value %}selected{% endif %}>{{ opt.label }}</option>
+                                                    {% endfor %}
+                                                </select>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="sort-column" data-media-scope="tv">
+                                        <h4>Serie TV</h4>
+                                        <div class="sort-pair">
+                                            <div class="sort-field">
+                                                <label for="indie-tv-sort-primary" title="Ordine principale per i risultati TV">
+                                                    Primo criterio
+                                                </label>
+                                                <select id="indie-tv-sort-primary"
+                                                        data-indie-key="tv_sort_primary"
+                                                        data-indie-scope="rules"
+                                                        data-indie-type="string">
+                                                    {% for opt in tv_sort_options %}
+                                                        <option value="{{ opt.value }}" data-sort-group="{{ opt.group }}" {% if search_rules.tv_sort_primary == opt.value %}selected{% endif %}>{{ opt.label }}</option>
+                                                    {% endfor %}
+                                                </select>
+                                            </div>
+                                            <div class="sort-field">
+                                                <label for="indie-tv-sort-secondary" title="Usato come tie-break per i risultati TV">
+                                                    Secondo criterio (opzionale)
+                                                </label>
+                                                <select id="indie-tv-sort-secondary"
+                                                        data-indie-key="tv_sort_secondary"
+                                                        data-indie-scope="rules"
+                                                        data-indie-type="string">
+                                                    <option value="" data-sort-group="" {% if not search_rules.tv_sort_secondary %}selected{% endif %}>Nessuno</option>
+                                                    {% for opt in tv_sort_options %}
+                                                        <option value="{{ opt.value }}" data-sort-group="{{ opt.group }}" {% if search_rules.tv_sort_secondary == opt.value %}selected{% endif %}>{{ opt.label }}</option>
+                                                    {% endfor %}
+                                                </select>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
-                                <div data-media-scope="movie">
-                                    <label for="independent-edition">Edizione</label>
-                                    <select id="independent-edition" name="edition">
-                                        <option value="">Standard</option>
-                                        <option value="extended">Extended</option>
-                                        <option value="directors-cut">Director's Cut</option>
-                                    </select>
+                                <div class="sort-note tagline">Seleziona al massimo due criteri per ogni media. Il secondo funge da tie-breaker e non pu&#242; riutilizzare lo stesso gruppo del primo (seeders, dimensione, ecc.).</div>
+                            </details>
+                            <details class="accordion-block">
+                                <summary>Opzioni aggiuntive</summary>
+                                <div class="options-sections">
+                                    <div class="options-column">
+                                        <label title="Scarta risultati che riportano la lingua solo come sottotitolo">
+                                            <input type="checkbox"
+                                                   id="indie-require-audio-language"
+                                                   {% if search_rules.require_audio_language %}checked{% endif %}
+                                                   data-indie-key="require_audio_language"
+                                                   data-indie-scope="rules"
+                                                   data-indie-type="bool">
+                                            Richiedi lingua audio (esclude solo sub)
+                                        </label>
+                                        <label title="Genera query specifiche per ogni episodio mancante">
+                                            <input type="checkbox"
+                                                   id="indie-search-episode-variants"
+                                                   {% if search_rules.search_episode_variants %}checked{% endif %}
+                                                   data-indie-key="search_episode_variants"
+                                                   data-indie-scope="rules"
+                                                   data-indie-type="bool">
+                                            Cerca singoli episodi (non conteggiati nel limite)
+                                        </label>
+                                        <div class="nested-option">
+                                            <label>
+                                                <input type="checkbox"
+                                                       id="indie-skip-season-query"
+                                                       {% if search_rules.skip_season_queries_when_episode_search %}checked{% endif %}
+                                                       {% if not search_rules.search_episode_variants %}disabled{% endif %}
+                                                       data-indie-key="skip_season_queries_when_episode_search"
+                                                       data-indie-scope="rules"
+                                                       data-indie-type="bool">
+                                                Escludi dalla ricerca la stagione
+                                            </label>
+                                            <div class="tagline">Con questa opzione vengono create solo query episodiche (es. S01E01, 1x01) e non quelle generiche di stagione.</div>
+                                        </div>
+                                    </div>
                                 </div>
-                                <div data-media-scope="tv">
-                                    <label for="independent-season">Stagione</label>
-                                    <input type="number"
-                                           id="independent-season"
-                                           name="season"
-                                           min="1"
-                                           placeholder="1">
+                            </details>
+                            <details class="accordion-block">
+                                <summary>Servizi e filtri globali</summary>
+                                <div class="options-sections">
+                                    <div class="options-column">
+                                        <label title="Usa Prowlarr per interrogare gli indexer collegati">
+                                            <input type="checkbox"
+                                                   id="indie-use-prowlarr"
+                                                   {% if search_rules.use_prowlarr %}checked{% endif %}
+                                                   data-indie-key="use_prowlarr"
+                                                   data-indie-scope="rules"
+                                                   data-indie-type="bool">
+                                            Usa Prowlarr
+                                        </label>
+                                        <label title="Usa Jackett per interrogare gli indexer configurati">
+                                            <input type="checkbox"
+                                                   id="indie-use-jackett"
+                                                   {% if search_rules.use_jackett %}checked{% endif %}
+                                                   data-indie-key="use_jackett"
+                                                   data-indie-scope="rules"
+                                                   data-indie-type="bool">
+                                            Usa Jackett
+                                        </label>
+                                        <div class="tagline" style="margin-bottom:0.5rem;">Jackett e Prowlarr devono essere configurati.</div>
+                                        <label title="Rende i titoli più semplici (utile per gli indexer pi&#249; vecchi)">
+                                            <input type="checkbox"
+                                                   id="indie-sanitize-titles"
+                                                   {% if search_rules.sanitize_titles %}checked{% endif %}
+                                                   data-indie-key="sanitize_titles"
+                                                   data-indie-scope="rules"
+                                                   data-indie-type="bool">
+                                            Normalizza (rimuove accenti/punteggiatura)
+                                        </label>
+                                        <label title="Evita di includere l’anno nei termini di ricerca per le serie TV">
+                                            <input type="checkbox"
+                                                   id="indie-ignore-year-tv"
+                                                   {% if search_rules.ignore_year_for_tv %}checked{% endif %}
+                                                   data-indie-key="ignore_year_for_tv"
+                                                   data-indie-scope="rules"
+                                                   data-indie-type="bool">
+                                            Ignora anno per serie TV
+                                        </label>
+                                        <label title="Salta automaticamente richieste gi&#224; soddisfatte su Jellyseerr">
+                                            <input type="checkbox"
+                                                   id="indie-skip-available"
+                                                   {% if search_rules.skip_available_content %}checked{% endif %}
+                                                   data-indie-key="skip_available_content"
+                                                   data-indie-scope="rules"
+                                                   data-indie-type="bool">
+                                            Escludi episodi gi&#224; disponibili dalla ricerca
+                                        </label>
+                                        <label title="Salta le richieste con data di uscita futura">
+                                            <input type="checkbox"
+                                                   id="indie-skip-unreleased"
+                                                   {% if search_rules.skip_unreleased_content %}checked{% endif %}
+                                                   data-indie-key="skip_unreleased_content"
+                                                   data-indie-scope="rules"
+                                                   data-indie-type="bool">
+                                            Escludi stagioni/episodi non pubblicati
+                                        </label>
+                                    </div>
                                 </div>
-                                <div data-media-scope="tv">
-                                    <label for="independent-episode">Episodio</label>
-                                    <input type="number"
-                                           id="independent-episode"
-                                           name="episode"
-                                           min="1"
-                                           placeholder="1">
-                                </div>
-                            </div>
+                            </details>
                         </div>
                         <input type="hidden" id="tmdb-id" name="tmdb_id">
                         <input type="hidden" id="tmdb-type" name="tmdb_type">
@@ -269,6 +455,13 @@
                 <div class="card">
                     <h2>Risultati</h2>
                     <div class="results-placeholder" data-results-target="independent-search"></div>
+                </div>
+                <div class="card">
+                    <h2>Storico Ricerche</h2>
+                    <p class="tagline">Le tue ricerche manuali recenti. Clicca per visualizzare i risultati salvati.</p>
+                    <div id="search-history-container">
+                        <div class="tagline" style="text-align: center; padding: 2rem;">Caricamento...</div>
+                    </div>
                 </div>
             </div>
             <div class="tab-panel" data-tab-panel="scan">
@@ -950,4 +1143,6 @@
         </div>
     </div>
     <div id="toast-container"></div>
+    <script src="{{ url_for('static', filename='search-streaming.js') }}"></script>
+    <script src="{{ url_for('static', filename='search-history.js') }}"></script>
     <script src="{{ url_for('static', filename='script.js') }}"></script>

@@ -240,6 +240,13 @@ if SQLALCHEMY_AVAILABLE:
         started_at = Column(DateTime, default=_utcnow, nullable=False, index=True)  # type: ignore[assignment]
         completed_at = Column(DateTime, nullable=True)  # type: ignore[assignment]
 
+    class ManualSearchHistory(Base):  # type: ignore[valid-type,misc]
+        """Storico delle ricerche manuali indipendenti (stesso formato di ScanResultEntry)."""
+        __tablename__ = "manual_search_history"
+        id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
+        generated_at = Column(DateTime, default=_utcnow, nullable=False, index=True)  # type: ignore[assignment]
+        payload = Column(JSON, nullable=False)  # type: ignore[assignment]  # Stesso formato di scan_results
+
     class WorkflowStep(Base):  # type: ignore[valid-type,misc]
         """Traccia i singoli step di un workflow."""
         __tablename__ = "workflow_steps"
@@ -1571,30 +1578,29 @@ class DatabaseStorage:
 
     def get_recent_scan_config(self, server_id: str) -> Dict[str, Any]:
         """Get discovery configuration parameters for a server."""
-        session = self._get_session()
-        try:
-            # Check if we have a config entry (stored with library_id = '__config__')
-            entry = session.get(EmbyProbeRecentScan, (server_id, "__config__"))
-            if not entry or not entry.oldest_scanned_timestamp:
-                # Return defaults
-                return {
-                    "window_size": 500,
-                    "window_threshold": 0.90,
-                    "max_days": 60,
-                    "max_items": 2000,
-                    "safety_margin_days": 7
-                }
-            # Parse stored config from timestamp field (using it as a JSON storage hack)
-            # Actually, let's use a proper approach - we'll add this to app_settings instead
-            return {
-                "window_size": 500,
-                "window_threshold": 0.90,
-                "max_days": 60,
-                "max_items": 2000,
-                "safety_margin_days": 7
-            }
-        finally:
-            session.close()
+        defaults = {
+            "window_size": 500,
+            "window_threshold": 0.90,
+            "max_days": 60,
+            "max_items": 2000,
+            "safety_margin_days": 7
+        }
+        key = f"probe_recent_config:{server_id}"
+        value = self.get_key_value(key)
+        if isinstance(value, dict):
+            merged = defaults.copy()
+            for field in defaults:
+                if field in value:
+                    merged[field] = value[field]
+            return merged
+        return defaults
+
+    def save_recent_scan_config(self, server_id: str, config: Dict[str, Any]) -> None:
+        """Save discovery configuration parameters for a server."""
+        if not isinstance(config, dict):
+            raise StorageError("Config recente non valida")
+        key = f"probe_recent_config:{server_id}"
+        self.set_key_value(key, config)
 
     # --- Key-Value Store (Generic) ---
 
@@ -2206,6 +2212,68 @@ class DatabaseStorage:
             ]
         except SQLAlchemyError as exc:
             raise StorageError(f"Errore recupero workflow steps: {exc}") from exc
+        finally:
+            session.close()
+
+    # --- Manual Search History ---
+
+    def save_manual_search(self, payload: Dict[str, Any]) -> None:
+        """Salva una ricerca manuale (stesso formato di save_scan_result)."""
+        session = self._get_session()
+        try:
+            generated = payload.get("generated_at")
+            if isinstance(generated, str):
+                normalized = generated.replace("Z", "+00:00")
+                try:
+                    generated_dt = datetime.fromisoformat(normalized)
+                except ValueError:
+                    generated_dt = datetime.now(timezone.utc)
+            else:
+                generated_dt = datetime.now(timezone.utc)
+            entry = ManualSearchHistory(generated_at=generated_dt)
+            entry.payload = payload  # type: ignore[assignment]
+            session.add(entry)
+            session.commit()
+        except SQLAlchemyError as exc:
+            session.rollback()
+            raise StorageError(f"Errore salvataggio ricerca manuale: {exc}") from exc
+        finally:
+            session.close()
+
+    def load_manual_searches(self, limit: int = 20) -> list[Dict[str, Any]]:
+        """Recupera lo storico delle ricerche manuali recenti."""
+        session = self._get_session()
+        try:
+            entries = (
+                session.query(ManualSearchHistory)  # type: ignore[attr-defined]
+                .order_by(ManualSearchHistory.generated_at.desc())  # type: ignore[attr-defined]
+                .limit(limit)
+                .all()
+            )
+            return [
+                {
+                    "id": entry.id,
+                    "generated_at": entry.generated_at.isoformat() if entry.generated_at else None,
+                    **entry.payload  # type: ignore[misc]
+                }
+                for entry in entries
+            ]
+        except SQLAlchemyError as exc:
+            raise StorageError(f"Errore recupero ricerche manuali: {exc}") from exc
+        finally:
+            session.close()
+
+    def delete_manual_search(self, search_id: int) -> None:
+        """Elimina una ricerca manuale dallo storico."""
+        session = self._get_session()
+        try:
+            session.query(ManualSearchHistory).filter(  # type: ignore[attr-defined]
+                ManualSearchHistory.id == search_id
+            ).delete()
+            session.commit()
+        except SQLAlchemyError as exc:
+            session.rollback()
+            raise StorageError(f"Errore eliminazione ricerca manuale: {exc}") from exc
         finally:
             session.close()
 

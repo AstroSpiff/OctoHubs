@@ -519,17 +519,24 @@ def filter_results(
             continue
 
         if lang_found and not exclude_found:
-            magnet_link = result.get("guid")
-            if magnet_link and not str(magnet_link).startswith("magnet:"):
-                magnet_link = None
-            torrent_link = result.get("downloadUrl")
-            web_link = result.get("infoUrl") or result.get("indexerUrl") or result.get("details")
+            magnet_link = result.get("magnet")
+            if not magnet_link:
+                magnet_link = result.get("guid")
+                if magnet_link and not str(magnet_link).startswith("magnet:"):
+                    magnet_link = None
+            torrent_link = result.get("torrent") or result.get("downloadUrl")
+            web_link = result.get("web") or result.get("infoUrl") or result.get("indexerUrl") or result.get("details")
+            direct_link = result.get("link") or magnet_link or torrent_link or web_link
+            size_gb = result.get("size_gb")
+            if size_gb is None:
+                size_bytes = result.get("size", 0) or 0
+                size_gb = round(size_bytes / (1024**3), 2) if size_bytes else 0
             season_num, episode_num, episode_code, episode_sort = _extract_episode_from_title(result.get("title", ""))
             resolution_bucket = _detect_resolution_bucket(title_lower)
             clean_result = {
                 "title": result.get("title"),
-                "size_gb": round(result.get("size", 0) / (1024**3), 2),
-                "link": magnet_link or torrent_link or web_link,
+                "size_gb": size_gb,
+                "link": direct_link,
                 "seeders": seeders,
                 "indexer": result.get("indexer", "N/A"),
                 "magnet": magnet_link,

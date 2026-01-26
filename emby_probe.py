@@ -35,6 +35,37 @@ def _parse_emby_date(value: str | None) -> Optional[datetime]:
     return dt.astimezone(timezone.utc)
 
 
+def _coerce_int_range(value: Any, default: int, min_value: int, max_value: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    if number < min_value:
+        return min_value
+    if number > max_value:
+        return max_value
+    return number
+
+
+def _coerce_threshold(value: Any, default: float) -> float:
+    if value is None:
+        return default
+    text = str(value).strip().replace("%", "")
+    if not text:
+        return default
+    try:
+        threshold = float(text)
+    except ValueError:
+        return default
+    if threshold > 1:
+        threshold = threshold / 100.0
+    if threshold < 0.5:
+        return 0.5
+    if threshold > 1:
+        return 1.0
+    return threshold
+
+
 def _extract_source_label(path: str | None, source_name: str | None) -> str:
     if source_name:
         return str(source_name).strip()
@@ -1949,28 +1980,42 @@ class EmbyProbeManager:
             db = self._db_getter()
             page_size = max(20, min(500, int(limit or 200)))
 
-            # Get last scan timestamp with 7-day safety margin
+            config = {}
+            try:
+                config = db.get_recent_scan_config(server_id)
+            except Exception:
+                config = {}
+
+            WINDOW_SIZE = _coerce_int_range(config.get("window_size"), 500, 100, 2000)
+            WINDOW_THRESHOLD = _coerce_threshold(config.get("window_threshold"), 0.90)
+            MAX_DAYS = _coerce_int_range(config.get("max_days"), 60, 7, 365)
+            MAX_ITEMS = _coerce_int_range(config.get("max_items"), 2000, 500, 10000)
+            SAFETY_MARGIN_DAYS = _coerce_int_range(config.get("safety_margin_days"), 7, 1, 30)
+
+            now = datetime.now(timezone.utc)
+            max_days_cutoff = now - timedelta(days=MAX_DAYS)
+
+            # Get last scan timestamp with safety margin
             last_timestamp = db.get_recent_scan_timestamp(server_id)
             if last_timestamp:
-                cutoff_date = last_timestamp - timedelta(days=7)
+                cutoff_date = last_timestamp - timedelta(days=SAFETY_MARGIN_DAYS)
+                if cutoff_date < max_days_cutoff:
+                    cutoff_date = max_days_cutoff
                 self._update_status(
                     server_id,
                     "recent_discovery",
-                    last_log=f"{server_name}: Scan incrementale dal {cutoff_date.strftime('%Y-%m-%d')} (margine 7 giorni)..."
+                    last_log=(
+                        f"{server_name}: Scan incrementale dal {cutoff_date.strftime('%Y-%m-%d')} "
+                        f"(margine {SAFETY_MARGIN_DAYS} giorni, max {MAX_DAYS} giorni)..."
+                    )
                 )
             else:
-                cutoff_date = datetime.now(timezone.utc) - timedelta(days=90)
+                cutoff_date = max_days_cutoff
                 self._update_status(
                     server_id,
                     "recent_discovery",
-                    last_log=f"{server_name}: Primo scan completo (finestra 90 giorni)..."
+                    last_log=f"{server_name}: Primo scan completo (finestra {MAX_DAYS} giorni)..."
                 )
-
-            # Sliding window parameters
-            WINDOW_SIZE = 500
-            WINDOW_THRESHOLD = 0.90  # 90% with mediainfo
-            MAX_DAYS = 60
-            MAX_ITEMS = 2000
 
             start_index = 0
             total_items_checked = 0
@@ -2052,10 +2097,10 @@ class EmbyProbeManager:
             self._update_status(
                 server_id,
                 "recent_discovery",
-                last_log=f"{server_name}: Scansione ultimi 500 elementi aggiunti..."
+                last_log=f"{server_name}: Scansione ultimi {MAX_ITEMS} elementi aggiunti..."
             )
 
-            max_items_to_scan = 500  # Scan last 500 items by DateCreated
+            max_items_to_scan = MAX_ITEMS  # Scan last items by DateCreated
 
             while not stop_flag.is_set():
                 # Simple approach: get items sorted by DateCreated, process up to 500
@@ -2104,6 +2149,14 @@ class EmbyProbeManager:
 
                     item_date = _parse_emby_date(item.get("DateCreated"))
 
+                    if item_date and item_date < cutoff_date:
+                        self._update_status(
+                            server_id,
+                            "recent_discovery",
+                            last_log=f"{server_name}: Fermato - oltre {MAX_DAYS} giorni"
+                        )
+                        stop_flag.set()
+                        break
                     # Track oldest item date for timestamp saving
                     if item_date and (oldest_item_date is None or item_date < oldest_item_date):
                         oldest_item_date = item_date

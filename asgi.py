@@ -22,7 +22,7 @@ from jinja2 import pass_context
 from starlette.middleware.sessions import SessionMiddleware
 from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse
 
-from app import _build_active_library_scans_snapshot, _build_scan_library_snapshot, _build_scan_library_tracked_snapshot, _build_scan_group_tracked_snapshot, _build_associations_get_snapshot, _build_associations_post_snapshot, _build_media_details_snapshot, _build_jellyseerr_request_snapshot, _build_tmdb_search_snapshot, _build_tmdb_tv_details_snapshot, _build_tmdb_check_availability_snapshot, _build_manual_search_snapshot, _build_rss_inspect_snapshot, _build_rss_inspect_json_snapshot, _build_rss_import_snapshot, _build_rss_import_json_snapshot, _build_rss_deduplicate_snapshot, _build_rss_items_snapshot, _build_send_torrent_snapshot, _build_scan_status_snapshot, _build_run_scan_snapshot, _build_update_request_rules_snapshot, _build_refresh_requests_snapshot, _build_test_connections_snapshot, _build_trakt_device_start_snapshot, _build_trakt_device_poll_snapshot, _build_trakt_clear_snapshot, _build_emby_stop_task_snapshot, _build_emby_server_status_snapshot, _build_emby_health_status_snapshot, _build_emby_activity_snapshot, _build_emby_tasks_snapshot, _build_emby_users_snapshot, _build_emby_plugins_snapshot, _build_emby_streams_snapshot, _build_emby_status_stream_payload, _build_emby_libraries_snapshot, _build_active_scans_snapshot, _build_debug_vf_query_snapshot, _build_strm_guard_status_snapshot, _build_grouped_libraries_snapshot, _build_movie_versions_snapshot, _build_series_seasons_snapshot, _build_season_episodes_snapshot, _build_lookup_snapshot, _build_item_details_snapshot, _build_availability_snapshot, _build_latest_snapshot, _build_latest_progress_payload, _build_latest_preview_snapshot, _build_latest_preview_cache_snapshot, _build_latest_enrich_snapshot, _build_latest_notify_snapshot, _build_emby_image_stream, _build_server_order_snapshot, _build_group_order_get_snapshot, _build_group_order_post_snapshot, _build_tab_order_get_snapshot, _build_tab_order_post_snapshot, _probe_discovery_start_snapshot, _probe_discovery_stop_snapshot, _probe_recent_start_snapshot, get_emby_user_manager, _probe_recent_start_all_snapshot, _probe_recent_stop_snapshot, _probe_recent_stop_all_snapshot, _probe_recent_processing_start_snapshot, _probe_recent_processing_start_all_snapshot, _probe_recent_processing_stop_snapshot, _probe_recent_processing_stop_all_snapshot, _probe_recent_combo_start_snapshot, _probe_recent_combo_start_all_snapshot, _probe_recent_combo_stop_snapshot, _probe_recent_combo_stop_all_snapshot, _probe_libraries_combo_start_snapshot, _probe_libraries_combo_stop_snapshot, _probe_processing_start_snapshot, _probe_processing_stop_snapshot, _probe_queue_get_snapshot, _probe_queue_delete_snapshot, _probe_history_get_snapshot, _probe_history_delete_snapshot, _probe_retry_snapshot, _probe_blacklist_get_snapshot, _probe_blacklist_delete_snapshot, _probe_debug_recent_items_snapshot, _coerce_request_bool, _coerce_request_int, _LIBRARY_SCAN_TRACKER, _ws_event_queues, _ws_queues_lock, _sse_event_queues, _sse_queues_lock, DateTimeEncoder, load_config, _default_emby_settings, _prepare_emby_servers_for_view, _get_total_blacklist_counts, _default_latest_settings, _load_latest_settings, _load_telegram_settings, _prepare_latest_notification_rules, EMBY_CATEGORY_OPTIONS, _resolve_next_url, _ensure_db_backend, _load_emby_settings_from_db, _build_emby_server_from_form, _fetch_emby_status, _save_emby_settings_to_db, _purge_emby_server_settings, _emby_display_name, _normalize_emby_server, _execute_emby_action, EMBY_ACTIONS, _db_enabled, _save_latest_settings, _get_emby_servers_from_config, _ensure_strm_guard_manager, _clear_latest_state, _update_app_settings_overrides, _register_app_event_loop, _active_trakt_settings, _trakt_enabled
+from app import _build_active_library_scans_snapshot, _build_scan_library_snapshot, _build_scan_library_tracked_snapshot, _build_scan_group_tracked_snapshot, _build_associations_get_snapshot, _build_associations_post_snapshot, _build_media_details_snapshot, _build_jellyseerr_request_snapshot, _build_tmdb_search_snapshot, _build_tmdb_tv_details_snapshot, _build_tmdb_check_availability_snapshot, _build_manual_search_snapshot, _build_rss_inspect_snapshot, _build_rss_inspect_json_snapshot, _build_rss_import_snapshot, _build_rss_import_json_snapshot, _build_rss_deduplicate_snapshot, _build_rss_items_snapshot, _build_send_torrent_snapshot, _build_scan_status_snapshot, _build_run_scan_snapshot, _build_update_request_rules_snapshot, _build_refresh_requests_snapshot, _build_test_connections_snapshot, _build_trakt_device_start_snapshot, _build_trakt_device_poll_snapshot, _build_trakt_clear_snapshot, _build_emby_stop_task_snapshot, _build_emby_server_status_snapshot, _build_emby_health_status_snapshot, _build_emby_activity_snapshot, _build_emby_tasks_snapshot, _build_emby_users_snapshot, _build_emby_plugins_snapshot, _build_emby_streams_snapshot, _build_emby_status_stream_payload, _build_emby_libraries_snapshot, _build_active_scans_snapshot, _build_debug_vf_query_snapshot, _build_strm_guard_status_snapshot, _build_grouped_libraries_snapshot, _build_movie_versions_snapshot, _build_series_seasons_snapshot, _build_season_episodes_snapshot, _build_lookup_snapshot, _build_item_details_snapshot, _build_availability_snapshot, _build_latest_snapshot, _build_latest_progress_payload, _build_latest_preview_snapshot, _build_latest_preview_cache_snapshot, _build_latest_enrich_snapshot, _build_latest_notify_snapshot, _build_emby_image_stream, _build_server_order_snapshot, _build_group_order_get_snapshot, _build_group_order_post_snapshot, _build_tab_order_get_snapshot, _build_tab_order_post_snapshot, _probe_discovery_start_snapshot, _probe_discovery_stop_snapshot, _probe_recent_start_snapshot, get_emby_user_manager, _probe_recent_start_all_snapshot, _probe_recent_stop_snapshot, _probe_recent_stop_all_snapshot, _probe_recent_config_get_snapshot, _probe_recent_config_save_snapshot, _probe_recent_processing_start_snapshot, _probe_recent_processing_start_all_snapshot, _probe_recent_processing_stop_snapshot, _probe_recent_processing_stop_all_snapshot, _probe_recent_combo_start_snapshot, _probe_recent_combo_start_all_snapshot, _probe_recent_combo_stop_snapshot, _probe_recent_combo_stop_all_snapshot, _probe_libraries_combo_start_snapshot, _probe_libraries_combo_stop_snapshot, _probe_processing_start_snapshot, _probe_processing_stop_snapshot, _probe_queue_get_snapshot, _probe_queue_delete_snapshot, _probe_history_get_snapshot, _probe_history_delete_snapshot, _probe_retry_snapshot, _probe_blacklist_get_snapshot, _probe_blacklist_delete_snapshot, _probe_debug_recent_items_snapshot, _coerce_request_bool, _coerce_request_int, _LIBRARY_SCAN_TRACKER, _ws_event_queues, _ws_queues_lock, _sse_event_queues, _sse_queues_lock, DateTimeEncoder, load_config, _default_emby_settings, _prepare_emby_servers_for_view, _get_total_blacklist_counts, _default_latest_settings, _load_latest_settings, _load_telegram_settings, _prepare_latest_notification_rules, EMBY_CATEGORY_OPTIONS, _resolve_next_url, _ensure_db_backend, _load_emby_settings_from_db, _build_emby_server_from_form, _fetch_emby_status, _save_emby_settings_to_db, _purge_emby_server_settings, _emby_display_name, _normalize_emby_server, _execute_emby_action, EMBY_ACTIONS, _db_enabled, _save_latest_settings, _get_emby_servers_from_config, _ensure_strm_guard_manager, _clear_latest_state, _update_app_settings_overrides, _register_app_event_loop, _active_trakt_settings, _trakt_enabled
 from storage import StorageError
 from emby_websocket_manager import get_websocket_manager
 from emby_collection_sources import SOURCE_TYPES, list_trakt_lists, list_mdblist_user_lists, is_mdblist_enabled
@@ -389,6 +389,105 @@ async def websocket_scan_endpoint(websocket: WebSocket, client_id: str):
     finally:
         # Cleanup: rimuovi client e subscriptions
         await manager.disconnect(client_id)
+
+
+@fastapi_app.websocket("/ws/search/{session_id}")
+async def websocket_search_endpoint(websocket: WebSocket, session_id: str):
+    """
+    WebSocket endpoint per ricerca streaming in tempo reale.
+
+    I risultati vengono inviati al client appena arrivano da Prowlarr/Jackett,
+    senza attendere il completamento di tutte le query.
+
+    Messaggi inviati dal server al client:
+        - {"type": "connected", "session_id": "..."}
+        - {"type": "query_started", "query": "...", "indexer": "prowlarr|jackett", "media_type": "movie|tv"}
+        - {"type": "result", "data": {...}, "query": "...", "indexer": "..."}
+        - {"type": "query_completed", "query": "...", "indexer": "...", "count": 10, "duration": 2.3}
+        - {"type": "all_completed", "total_results": 45, "total_duration": 18.5}
+        - {"type": "error", "query": "...", "indexer": "...", "error": "..."}
+
+    Args:
+        websocket: Istanza WebSocket FastAPI
+        session_id: ID univoco sessione di ricerca
+    """
+    await websocket.accept()
+
+    try:
+        await websocket.send_json({
+            "type": "connected",
+            "session_id": session_id,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+
+        # Attendi parametri di ricerca dal client
+        data = await websocket.receive_json()
+        action = data.get("action")
+
+        if action == "start_search":
+            # Estrai parametri di ricerca
+            query_variants = data.get("query_variants", [])
+            search_types = data.get("search_types", [])
+            selected_indexers = set(data.get("indexers", []))
+            use_jellyseerr_logic = bool(data.get("use_jellyseerr_logic", False))
+            use_custom_rules = bool(data.get("use_custom_rules", False))
+            tmdb_id = data.get("tmdb_id", "")
+            custom_rules = data.get("custom_rules")
+
+            print(f"[WebSocket /ws/search/{session_id}] Avvio ricerca: {len(query_variants)} variants, {len(selected_indexers)} indexers, jellyseerr={use_jellyseerr_logic}")
+
+            # Carica config
+            from app import load_config, search_streaming_parallel
+            config, is_valid = load_config()
+
+            if not is_valid or not config:
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Configurazione non valida"
+                })
+                return
+
+            # Esegui ricerca streaming
+            stats = await search_streaming_parallel(
+                query_variants=query_variants,
+                search_types=search_types,
+                selected_indexers=selected_indexers,
+                config=config,
+                websocket=websocket,
+                session_id=session_id,
+                use_jellyseerr_logic=use_jellyseerr_logic,
+                use_custom_rules=use_custom_rules,
+                tmdb_id=tmdb_id,
+                custom_rules=custom_rules
+            )
+
+            print(f"[WebSocket /ws/search/{session_id}] Ricerca completata: {stats}")
+
+        # Mantieni connessione aperta per keepalive
+        while True:
+            try:
+                data = await websocket.receive_json()
+                action = data.get("action")
+
+                if action == "ping":
+                    await websocket.send_json({
+                        "type": "pong",
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    })
+
+            except Exception as e:
+                print(f"[WebSocket /ws/search/{session_id}] Receive error: {e}")
+                break
+
+    except WebSocketDisconnect:
+        print(f"[WebSocket /ws/search/{session_id}] Client disconnected")
+    except Exception as e:
+        print(f"[WebSocket /ws/search/{session_id}] Error: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        # Cleanup se necessario
+        pass
 
 
 @fastapi_app.get("/emby/events-stream")
@@ -772,7 +871,8 @@ async def manual_search(request: Request):
         form_payload["query"] = query_val.strip() if query_val else ""
         form_payload["media_type"] = get_str("media_type") or get_str("tmdb_type")
         form_payload["indexers"] = form.getlist("indexer")
-        form_payload["use_jellyseerr_logic"] = bool(get_str("use_jellyseerr_directives"))
+        # Frontend invia "use_jellyseerr_logic", non "use_jellyseerr_directives"
+        form_payload["use_jellyseerr_logic"] = bool(get_str("use_jellyseerr_logic") or get_str("use_jellyseerr_directives"))
         form_payload["use_custom_rules"] = bool(get_str("use_custom_rules"))
         form_payload["tmdb_id"] = get_str("tmdb_id")
         seasons = []
@@ -832,6 +932,89 @@ async def manual_search(request: Request):
 
     data, status_code = _build_manual_search_snapshot(payload, form_payload)
     return JSONResponse(data, status_code=status_code)
+
+
+@fastapi_app.post("/api/search/stream")
+async def start_search_stream(request: Request):
+    """
+    Avvia una ricerca streaming via WebSocket.
+
+    Returns:
+        {"session_id": "uuid", "websocket_url": "/ws/search/uuid"}
+
+    Il client deve poi connettersi al WebSocket e inviare i parametri di ricerca.
+    """
+    _require_auth(request)
+
+    import uuid
+    session_id = str(uuid.uuid4())
+
+    # Store session in memory (potremmo usare Redis in futuro)
+    from app import _active_search_sessions
+    _active_search_sessions[session_id] = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "status": "pending"
+    }
+
+    return JSONResponse({
+        "success": True,
+        "session_id": session_id,
+        "websocket_url": f"/ws/search/{session_id}"
+    }, status_code=200)
+
+
+@fastapi_app.get("/api/search/manual/history")
+async def get_manual_search_history(request: Request):
+    """
+    Recupera lo storico delle ricerche manuali indipendenti.
+
+    Returns:
+        {"success": True, "searches": [...]}
+    """
+    _require_auth(request)
+
+    try:
+        from app import _ensure_db_backend
+        backend = _ensure_db_backend()
+        searches = backend.load_manual_searches(limit=50)
+
+        return JSONResponse({
+            "success": True,
+            "searches": searches
+        }, status_code=200)
+    except Exception as e:
+        print(f"[API] Errore recupero storico: {e}")
+        return JSONResponse({
+            "success": False,
+            "message": f"Errore: {str(e)}"
+        }, status_code=500)
+
+
+@fastapi_app.delete("/api/search/manual/history/{search_id}")
+async def delete_manual_search(request: Request, search_id: int):
+    """
+    Elimina una ricerca manuale dallo storico.
+
+    Returns:
+        {"success": True, "message": "..."}
+    """
+    _require_auth(request)
+
+    try:
+        from app import _ensure_db_backend
+        backend = _ensure_db_backend()
+        backend.delete_manual_search(search_id)
+
+        return JSONResponse({
+            "success": True,
+            "message": "Ricerca eliminata con successo"
+        }, status_code=200)
+    except Exception as e:
+        print(f"[API] Errore eliminazione ricerca: {e}")
+        return JSONResponse({
+            "success": False,
+            "message": f"Errore: {str(e)}"
+        }, status_code=500)
 
 
 @fastapi_app.post("/rss/inspect")
@@ -1567,6 +1750,25 @@ async def probe_recent_stop(request: Request):
 async def probe_recent_stop_all(request: Request):
     _require_auth(request)
     payload, status_code = _probe_recent_stop_all_snapshot()
+    return JSONResponse(payload, status_code=status_code)
+
+
+@fastapi_app.get("/api/emby/probe/recent/config")
+async def probe_recent_config_get(request: Request):
+    _require_auth(request)
+    server_id = request.query_params.get("server_id")
+    payload, status_code = _probe_recent_config_get_snapshot(server_id)
+    return JSONResponse(payload, status_code=status_code)
+
+
+@fastapi_app.post("/api/emby/probe/recent/config")
+async def probe_recent_config_save(request: Request):
+    _require_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    payload, status_code = _probe_recent_config_save_snapshot(body)
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -4786,6 +4988,7 @@ async def update_rules_route(
     csrf_token: str = Form(None, alias="csrf_token"),
     target_languages: str = Form(""),
     exclude_tags: str = Form(""),
+    query_languages: str = Form(""),
     use_original_title: str = Form(None),
     use_alt_titles_original: str = Form(None),
     sanitize_titles: str = Form(None),
@@ -4836,6 +5039,7 @@ async def update_rules_route(
 
     target_langs = _split_csv_field(target_languages)
     exclude_tags_list = _split_csv_field(exclude_tags)
+    query_langs = _split_csv_field(query_languages)
 
     base_rules = config.get('SEARCH_RULES') or _default_search_rules()
     rules = copy.deepcopy(base_rules)
@@ -4869,6 +5073,7 @@ async def update_rules_route(
     rules['query_terms'] = _split_csv_field(query_terms)
     rules['filter_terms'] = _split_csv_field(filter_terms)
     rules['season_templates'] = _split_csv_field(season_templates) or DEFAULT_CONFIG['SEARCH_RULES']['season_templates']
+    rules['query_languages'] = query_langs
 
     # Language rules
     use_alt_language = bool(use_alt_titles_language)
