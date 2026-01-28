@@ -706,6 +706,31 @@
                                     </div>
                                     <p class="auto-note">Sincronizza lo stato di visione degli utenti nei gruppi abilitati.</p>
                                 </section>
+                                <section class="auto-section" data-task="rss">
+                                    <div class="auto-header">
+                                        <h3>RSS Import</h3>
+                                        <label class="auto-inline" title="Attiva o disattiva l'importazione automatica RSS">
+                                            <input type="checkbox" name="rss_enabled" class="auto-enable" {% if auto_tasks.rss and auto_tasks.rss.enabled %}checked{% endif %}>
+                                            Attiva
+                                        </label>
+                                    </div>
+                                    <div class="auto-mode">
+                                        <label class="auto-inline" title="Ripeti il polling RSS a intervalli costanti">
+                                            <input type="radio" name="rss_mode" value="interval" {% if auto_tasks.rss and auto_tasks.rss.mode != 'fixed' %}checked{% else %}checked{% endif %}>
+                                            Avvia ogni
+                                        </label>
+                                        <input type="number" name="rss_interval" min="5" value="{{ (auto_tasks.rss.interval_minutes if auto_tasks.rss else 30) }}">
+                                        <span>minuti</span>
+                                    </div>
+                                    <div class="auto-mode">
+                                        <label class="auto-inline" title="Esegui il polling RSS in orari precisi (usa 24h)">
+                                            <input type="radio" name="rss_mode" value="fixed" {% if auto_tasks.rss and auto_tasks.rss.mode == 'fixed' %}checked{% endif %}>
+                                            Orari fissi
+                                        </label>
+                                        <input type="text" name="rss_times" placeholder="01:00, 13:00" value="{{ (auto_tasks.rss.times | join(', ')) if auto_tasks.rss else '' }}">
+                                    </div>
+                                    <p class="auto-note">Importa automaticamente gli articoli dai feed RSS configurati.</p>
+                                </section>
                                 <section class="auto-section" data-task="collections">
                                     <div class="auto-header">
                                         <h3>Collezioni Emby</h3>
@@ -1052,21 +1077,11 @@
                 <div class="card">
                     <h2>RSS &amp; Import</h2>
                     <p class="tagline">Configura le sorgenti RSS, analizza i formati e prepara l'import nel database.</p>
+                    <p class="tagline"><strong>Nota:</strong> L'importazione automatica si configura nella sezione "Servizi &amp; Automazioni".</p>
                     <form action="/update-rss-import" method="post">
                         <input type="hidden" name="next" value="{{ url_for('configuration') }}">
                         {% set rss_import = config.RSS_IMPORT if config and config.RSS_IMPORT else {} %}
                         <div class="form-grid">
-                            <div>
-                                <label>
-                                    <input type="checkbox" name="rss_enabled" {% if rss_import.ENABLED %}checked{% endif %}>
-                                    Attiva ingestione RSS
-                                </label>
-                                <div class="tagline">Attiva il polling automatico (da collegare ai task).</div>
-                            </div>
-                            <div>
-                                <label for="rss_poll_interval">Intervallo polling (minuti)</label>
-                                <input type="number" id="rss_poll_interval" name="rss_poll_interval" min="5" value="{{ rss_import.POLL_INTERVAL_MINUTES or 30 }}">
-                            </div>
                             <div>
                                 <label for="rss_dedup_keep">Duplicati per link</label>
                                 <select id="rss_dedup_keep" name="rss_dedup_keep">

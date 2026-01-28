@@ -4701,6 +4701,7 @@ async def update_scheduler_route(
     updated["scan"] = _parse_auto_section("scan", current.get("scan", defaults["scan"]))
     updated["refresh"] = _parse_auto_section("refresh", current.get("refresh", defaults["refresh"]))
     updated["workflow"] = _parse_auto_section("workflow", current.get("workflow", defaults["workflow"]))
+    updated["rss"] = _parse_auto_section("rss", current.get("rss", defaults.get("rss", {"enabled": False, "mode": "interval", "interval_minutes": 30, "times": []})))
 
     collections_enabled = form_data.get("collections_auto_refresh_enabled")
     collections_mode = form_data.get("collections_auto_refresh_mode") or "interval"

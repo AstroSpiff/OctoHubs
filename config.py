@@ -158,6 +158,12 @@ DEFAULT_CONFIG = {
             "mode": "interval",
             "interval_minutes": 60,
             "times": []
+        },
+        "rss": {
+            "enabled": False,
+            "mode": "interval",
+            "interval_minutes": 30,
+            "times": []
         }
     },
     "EMBY": {
