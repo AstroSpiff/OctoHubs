@@ -1249,6 +1249,7 @@
         window.collectionSettings = {{ collection_settings | tojson }};
         window.embyServerMeta = {{ emby_servers | tojson }};
     </script>
+    <script src="{{ url_for('static', filename='actions.js') }}"></script>
     <script src="{{ url_for('static', filename='script.js') }}"></script>
     <script src="{{ url_for('static', filename='emby_collections.js') }}"></script>
 </body>

@@ -519,12 +519,13 @@ def filter_results(
             continue
 
         if lang_found and not exclude_found:
+            # Non usare guid come fallback per magnet perché potrebbe contenere il download link
             magnet_link = result.get("magnet")
-            if not magnet_link:
-                magnet_link = result.get("guid")
-                if magnet_link and not str(magnet_link).startswith("magnet:"):
-                    magnet_link = None
             torrent_link = result.get("torrent") or result.get("downloadUrl")
+            if isinstance(torrent_link, str) and torrent_link.startswith("magnet:"):
+                if not magnet_link:
+                    magnet_link = torrent_link
+                torrent_link = None
             web_link = result.get("web") or result.get("infoUrl") or result.get("indexerUrl") or result.get("details")
             direct_link = result.get("link") or magnet_link or torrent_link or web_link
             size_gb = result.get("size_gb")

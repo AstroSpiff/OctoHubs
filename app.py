@@ -93,6 +93,7 @@ from api_clients import (
     EMBY_ACTIONS,
     get_jellyseerr_requests,
     send_to_qbittorrent,
+    send_to_qbittorrent_batch,
     _ping_api_service,
     _ping_jellyseerr,
     _ping_prowlarr,
@@ -134,6 +135,7 @@ from scanner import (
     _has_audio_language,
     _contains_isolated_tag
 )
+from search_normalizer import build_dedupe_key, dedupe_results
 from tasks import ScanManager, AutoScheduler, workflow_manager
 from emby_probe import get_probe_manager, _format_display_name_from_queue
 from emby_streams import get_streams_manager
@@ -4750,6 +4752,20 @@ def load_config():
     merged["RSS_IMPORT"] = rss_import_settings
     merged["COLLECTIONS"] = collection_settings
 
+    # Auto-sync RSS_IMPORT.ENABLED with AUTO_TASKS.rss.enabled if misaligned
+    rss_auto_enabled = auto_settings.get("rss", {}).get("enabled", False)
+    rss_import_enabled = rss_import_settings.get("ENABLED", False)
+    if rss_auto_enabled != rss_import_enabled:
+        print(f"   -> Auto-sync: RSS_IMPORT.ENABLED {rss_import_enabled} → {rss_auto_enabled}")
+        rss_import_settings["ENABLED"] = rss_auto_enabled
+        merged["RSS_IMPORT"] = rss_import_settings
+        # Save to database
+        try:
+            app_settings["RSS_IMPORT"] = rss_import_settings
+            backend.save_app_settings(app_settings)
+        except Exception as e:
+            print(f"   -> Errore salvataggio sync RSS_IMPORT: {e}")
+
     # Validazione: richiede Jellyseerr + almeno uno tra Prowlarr o Jackett
     jellyseerr_ok = bool(merged.get("JELLYSEERR_URL") and merged.get("JELLYSEERR_API_KEY"))
     prowlarr_ok = _prowlarr_configured(merged)
@@ -5493,9 +5509,6 @@ def _parse_json_import(payload):
         })
     return items
 
-def _manual_result_key(result):
-    return result.get("magnet") or result.get("torrent") or f"{result.get('title')}|{result.get('size_gb')}"
-
 def _extract_year_from_title(title):
     if not title:
         return None
@@ -5547,7 +5560,12 @@ def _normalize_manual_result(raw):
     if not magnet and isinstance(guid, str) and guid.startswith("magnet:"):
         magnet = guid
     torrent = raw.get("downloadUrl")
+    if isinstance(torrent, str) and torrent.startswith("magnet:"):
+        if not magnet:
+            magnet = torrent
+        torrent = None
     web = raw.get("infoUrl") or raw.get("indexerUrl") or raw.get("details")
+    link = raw.get("link") or magnet or torrent or web
     season_num, episode_num, episode_code, episode_sort = _extract_episode_from_title(title)
     season_label = None
     if season_num is None:
@@ -5565,6 +5583,7 @@ def _normalize_manual_result(raw):
         "magnet": magnet,
         "torrent": torrent,
         "web": web,
+        "link": link,
         "resolution": resolution_bucket,
         "resolution_bucket": resolution_bucket,
         "season_number": season_num,
@@ -6648,62 +6667,59 @@ def _build_manual_search_snapshot(payload, form_payload=None):
         )
         raw_map = {}
         for entry in prepared:
-            title = entry.get("title") or ""
-            if not title:
+            if not isinstance(entry, dict):
                 continue
-            size_bytes = entry.get("size") or 0
-            size_gb = round(size_bytes / (1024**3), 2) if size_bytes else 0
-            key = (sanitize_title(title.lower()), size_gb)
+            key = build_dedupe_key(entry)
             raw_map.setdefault(key, entry)
         seen = set()
         for item in filtered:
-            normalized_title = item.get("normalized_title") or sanitize_title((item.get("title") or "").lower())
-            key = (normalized_title, item.get("size_gb"))
+            if not isinstance(item, dict):
+                continue
+            key = build_dedupe_key(item)
+            if key in seen:
+                continue
+            seen.add(key)
             raw_item = raw_map.get(key, {})
             leechers = _coerce_int(raw_item.get("leechers") or raw_item.get("Leechers"), 0)
-            normalized = {
-                "title": item.get("title"),
-                "size_gb": item.get("size_gb"),
-                "seeders": item.get("seeders", 0),
-                "leechers": leechers,
-                "indexer": item.get("indexer"),
-                "magnet": item.get("magnet"),
-                "torrent": item.get("torrent"),
-                "web": item.get("web"),
-                "resolution": item.get("resolution_bucket"),
-                "resolution_bucket": item.get("resolution_bucket"),
-                "season_number": item.get("season_number"),
-                "season_label": item.get("season_label"),
-                "episode_code": item.get("episode_code"),
-                "episode_sort": item.get("episode_sort"),
-                "episode_number": item.get("episode_number"),
-                "normalized_title": normalized_title,
-                "year": _extract_year_from_title(item.get("title") or "")
-            }
+            normalized = dict(item)
+            normalized["leechers"] = leechers
+            if normalized.get("resolution") is None:
+                normalized["resolution"] = normalized.get("resolution_bucket")
             if normalized.get("season_number") is None and not normalized.get("season_label"):
                 fallback_season, fallback_label = _extract_season_hint_from_title(item.get("title") or "")
                 if fallback_season is not None:
                     normalized["season_number"] = fallback_season
                 if fallback_label:
                     normalized["season_label"] = fallback_label
-            dedupe_key = _manual_result_key(normalized)
-            if dedupe_key in seen:
-                continue
-            seen.add(dedupe_key)
-            normalized["in_library"] = bool(library_index and normalized.get("normalized_title") in library_index)
+            normalized["year"] = _extract_year_from_title(item.get("title") or "")
+            normalized_title = normalized.get("normalized_title") or sanitize_title((item.get("title") or "").lower())
+            normalized["normalized_title"] = normalized_title
+            normalized["in_library"] = bool(library_index and normalized_title in library_index)
             results.append(normalized)
     else:
-        seen = set()
-        for entry in prepared:
-            normalized = _normalize_manual_result(entry)
-            if not normalized:
+        filtered = filter_results(
+            prepared,
+            effective_config,
+            media_type=search_media_type,
+            request_rules=None
+        )
+        for item in filtered:
+            if not isinstance(item, dict):
                 continue
-            dedupe_key = _manual_result_key(normalized)
-            if dedupe_key in seen:
-                continue
-            seen.add(dedupe_key)
-            normalized["in_library"] = bool(library_index and normalized.get("normalized_title") in library_index)
+            normalized = dict(item)
+            if normalized.get("resolution") is None:
+                normalized["resolution"] = normalized.get("resolution_bucket")
+            if normalized.get("season_number") is None and not normalized.get("season_label"):
+                fallback_season, fallback_label = _extract_season_hint_from_title(item.get("title") or "")
+                if fallback_season is not None:
+                    normalized["season_number"] = fallback_season
+                if fallback_label:
+                    normalized["season_label"] = fallback_label
+            normalized_title = normalized.get("normalized_title") or sanitize_title((item.get("title") or "").lower())
+            normalized["normalized_title"] = normalized_title
+            normalized["in_library"] = bool(library_index and normalized_title in library_index)
             results.append(normalized)
+        results = dedupe_results(results)
 
     if custom_rules:
         include_filter = custom_rules.get("include_filter")
@@ -7276,6 +7292,381 @@ def _build_rss_items_snapshot(limit, offset):
     return {"success": True, "data": payload}, 200
 
 
+def _build_rss_search_snapshot(keywords, limit, offset, use_regex=False, search_in=None):
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        return {"success": False, "message": "Configurazione non valida"}, 400
+    db_settings = config.get("DATABASE", {})
+    if not _db_enabled(db_settings):
+        return {"success": False, "message": "Database non abilitato"}, 400
+
+    if not keywords or not keywords.strip():
+        return {"success": False, "message": "Keywords richieste per la ricerca"}, 400
+
+    limit = _coerce_request_int(limit or 50, 50)
+    offset = _coerce_request_int(offset or 0, 0)
+    limit = max(1, min(1000000, limit))  # Permette fino a 1M risultati (praticamente illimitato)
+    offset = max(0, offset)
+
+    use_regex = _coerce_request_bool(use_regex, False)
+
+    # Valida search_in
+    if search_in not in ["all", "title", "summary", "content"]:
+        search_in = "all"
+
+    try:
+        backend = _get_db_backend(db_settings)
+    except StorageError as exc:
+        return {"success": False, "message": str(exc)}, 400
+
+    try:
+        payload = backend.search_rss_items(keywords=keywords.strip(), limit=limit, offset=offset, use_regex=use_regex, search_in=search_in)
+        payload["limit"] = limit
+        payload["offset"] = offset
+        payload["keywords"] = keywords.strip()
+        payload["use_regex"] = use_regex
+        payload["search_in"] = search_in
+        return {"success": True, "data": payload}, 200
+    except Exception as exc:
+        # Gestisci errori regex invalidi
+        error_msg = str(exc)
+        if "invalid regular expression" in error_msg.lower():
+            return {"success": False, "message": "Regex non valida"}, 400
+        return {"success": False, "message": f"Errore ricerca: {error_msg}"}, 500
+
+
+def _build_rss_delete_snapshot(item_ids):
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        return {"success": False, "message": "Configurazione non valida"}, 400
+    db_settings = config.get("DATABASE", {})
+    if not _db_enabled(db_settings):
+        return {"success": False, "message": "Database non abilitato"}, 400
+
+    if not item_ids or not isinstance(item_ids, list):
+        return {"success": False, "message": "Lista di ID richiesta"}, 400
+
+    try:
+        backend = _get_db_backend(db_settings)
+    except StorageError as exc:
+        return {"success": False, "message": str(exc)}, 400
+
+    try:
+        deleted_count = backend.delete_rss_items(item_ids)
+        return {"success": True, "deleted_count": deleted_count}, 200
+    except Exception as exc:
+        return {"success": False, "message": str(exc)}, 500
+
+
+def _build_categories_snapshot():
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        return {"success": False, "message": "Configurazione non valida"}, 400
+    db_settings = config.get("DATABASE", {})
+    if not _db_enabled(db_settings):
+        return {"success": False, "message": "Database non abilitato"}, 400
+
+    try:
+        backend = _get_db_backend(db_settings)
+    except StorageError as exc:
+        return {"success": False, "message": str(exc)}, 400
+
+    try:
+        data = backend.get_all_categories_with_counts()
+        return {"success": True, "data": data}, 200
+    except Exception as exc:
+        return {"success": False, "message": str(exc)}, 500
+
+
+def _build_blacklist_snapshot():
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        return {"success": False, "message": "Configurazione non valida"}, 400
+    db_settings = config.get("DATABASE", {})
+    if not _db_enabled(db_settings):
+        return {"success": False, "message": "Database non abilitato"}, 400
+
+    try:
+        backend = _get_db_backend(db_settings)
+    except StorageError as exc:
+        return {"success": False, "message": str(exc)}, 400
+
+    try:
+        categories = backend.list_blacklisted_categories()
+        return {"success": True, "categories": categories}, 200
+    except Exception as exc:
+        return {"success": False, "message": str(exc)}, 500
+
+
+def _build_blacklist_add_snapshot(category_name):
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        return {"success": False, "message": "Configurazione non valida"}, 400
+    db_settings = config.get("DATABASE", {})
+    if not _db_enabled(db_settings):
+        return {"success": False, "message": "Database non abilitato"}, 400
+
+    if not category_name or not category_name.strip():
+        return {"success": False, "message": "Nome categoria richiesto"}, 400
+
+    try:
+        backend = _get_db_backend(db_settings)
+    except StorageError as exc:
+        return {"success": False, "message": str(exc)}, 400
+
+    try:
+        added = backend.add_category_to_blacklist(category_name.strip())
+        if added:
+            return {"success": True, "message": "Categoria aggiunta alla blacklist"}, 200
+        else:
+            return {"success": False, "message": "Categoria già presente nella blacklist"}, 400
+    except Exception as exc:
+        return {"success": False, "message": str(exc)}, 500
+
+
+def _build_blacklist_remove_snapshot(category_name):
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        return {"success": False, "message": "Configurazione non valida"}, 400
+    db_settings = config.get("DATABASE", {})
+    if not _db_enabled(db_settings):
+        return {"success": False, "message": "Database non abilitato"}, 400
+
+    if not category_name:
+        return {"success": False, "message": "Nome categoria richiesto"}, 400
+
+    try:
+        backend = _get_db_backend(db_settings)
+    except StorageError as exc:
+        return {"success": False, "message": str(exc)}, 400
+
+    try:
+        removed = backend.remove_category_from_blacklist(category_name)
+        if removed:
+            # Update visibility status of affected items
+            backend.update_items_visibility_status()
+            return {"success": True, "message": "Categoria rimossa dalla blacklist"}, 200
+        else:
+            return {"success": False, "message": "Categoria non trovata nella blacklist"}, 404
+    except Exception as exc:
+        return {"success": False, "message": str(exc)}, 500
+
+
+def _build_hidden_snapshot():
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        return {"success": False, "message": "Configurazione non valida"}, 400
+    db_settings = config.get("DATABASE", {})
+    if not _db_enabled(db_settings):
+        return {"success": False, "message": "Database non abilitato"}, 400
+
+    try:
+        backend = _get_db_backend(db_settings)
+    except StorageError as exc:
+        return {"success": False, "message": str(exc)}, 400
+
+    try:
+        categories = backend.list_hidden_categories()
+        return {"success": True, "categories": categories}, 200
+    except Exception as exc:
+        return {"success": False, "message": str(exc)}, 500
+
+
+def _build_hidden_add_snapshot(category_name):
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        return {"success": False, "message": "Configurazione non valida"}, 400
+    db_settings = config.get("DATABASE", {})
+    if not _db_enabled(db_settings):
+        return {"success": False, "message": "Database non abilitato"}, 400
+
+    if not category_name or not category_name.strip():
+        return {"success": False, "message": "Nome categoria richiesto"}, 400
+
+    try:
+        backend = _get_db_backend(db_settings)
+    except StorageError as exc:
+        return {"success": False, "message": str(exc)}, 400
+
+    try:
+        added = backend.add_category_to_hidden(category_name.strip())
+        if added:
+            # Update visibility status of affected items
+            backend.update_items_visibility_status()
+            return {"success": True, "message": "Categoria aggiunta a nascoste"}, 200
+        else:
+            return {"success": False, "message": "Categoria già presente in nascoste"}, 400
+    except Exception as exc:
+        return {"success": False, "message": str(exc)}, 500
+
+
+def _build_hidden_remove_snapshot(category_name):
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        return {"success": False, "message": "Configurazione non valida"}, 400
+    db_settings = config.get("DATABASE", {})
+    if not _db_enabled(db_settings):
+        return {"success": False, "message": "Database non abilitato"}, 400
+
+    if not category_name:
+        return {"success": False, "message": "Nome categoria richiesto"}, 400
+
+    try:
+        backend = _get_db_backend(db_settings)
+    except StorageError as exc:
+        return {"success": False, "message": str(exc)}, 400
+
+    try:
+        removed = backend.remove_category_from_hidden(category_name)
+        if removed:
+            # Update visibility status of affected items
+            backend.update_items_visibility_status()
+            return {"success": True, "message": "Categoria rimossa da nascoste"}, 200
+        else:
+            return {"success": False, "message": "Categoria non trovata in nascoste"}, 404
+    except Exception as exc:
+        return {"success": False, "message": str(exc)}, 500
+
+
+def _build_hidden_add_batch_snapshot(category_names):
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        return {"success": False, "message": "Configurazione non valida"}, 400
+    db_settings = config.get("DATABASE", {})
+    if not _db_enabled(db_settings):
+        return {"success": False, "message": "Database non abilitato"}, 400
+
+    if not category_names or not isinstance(category_names, list):
+        return {"success": False, "message": "Lista di categorie richiesta"}, 400
+
+    try:
+        backend = _get_db_backend(db_settings)
+    except StorageError as exc:
+        return {"success": False, "message": str(exc)}, 400
+
+    try:
+        added_count = 0
+        for category_name in category_names:
+            if category_name and category_name.strip():
+                added = backend.add_category_to_hidden(category_name.strip())
+                if added:
+                    added_count += 1
+
+        return {"success": True, "message": f"{added_count} categorie aggiunte a nascoste", "count": added_count}, 200
+    except Exception as exc:
+        return {"success": False, "message": str(exc)}, 500
+
+
+def _build_hidden_remove_batch_snapshot(category_names):
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        return {"success": False, "message": "Configurazione non valida"}, 400
+    db_settings = config.get("DATABASE", {})
+    if not _db_enabled(db_settings):
+        return {"success": False, "message": "Database non abilitato"}, 400
+
+    if not category_names or not isinstance(category_names, list):
+        return {"success": False, "message": "Lista di categorie richiesta"}, 400
+
+    try:
+        backend = _get_db_backend(db_settings)
+    except StorageError as exc:
+        return {"success": False, "message": str(exc)}, 400
+
+    try:
+        removed_count = 0
+        for category_name in category_names:
+            if category_name:
+                removed = backend.remove_category_from_hidden(category_name)
+                if removed:
+                    removed_count += 1
+
+        return {"success": True, "message": f"{removed_count} categorie rimosse da nascoste", "count": removed_count}, 200
+    except Exception as exc:
+        return {"success": False, "message": str(exc)}, 500
+
+
+def _build_blacklist_add_batch_snapshot(category_names):
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        return {"success": False, "message": "Configurazione non valida"}, 400
+    db_settings = config.get("DATABASE", {})
+    if not _db_enabled(db_settings):
+        return {"success": False, "message": "Database non abilitato"}, 400
+
+    if not category_names or not isinstance(category_names, list):
+        return {"success": False, "message": "Lista di categorie richiesta"}, 400
+
+    try:
+        backend = _get_db_backend(db_settings)
+    except StorageError as exc:
+        return {"success": False, "message": str(exc)}, 400
+
+    try:
+        added_count = 0
+        for category_name in category_names:
+            if category_name and category_name.strip():
+                added = backend.add_category_to_blacklist(category_name.strip())
+                if added:
+                    added_count += 1
+
+        return {"success": True, "message": f"{added_count} categorie aggiunte a blacklist", "count": added_count}, 200
+    except Exception as exc:
+        return {"success": False, "message": str(exc)}, 500
+
+
+def _build_blacklist_remove_batch_snapshot(category_names):
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        return {"success": False, "message": "Configurazione non valida"}, 400
+    db_settings = config.get("DATABASE", {})
+    if not _db_enabled(db_settings):
+        return {"success": False, "message": "Database non abilitato"}, 400
+
+    if not category_names or not isinstance(category_names, list):
+        return {"success": False, "message": "Lista di categorie richiesta"}, 400
+
+    try:
+        backend = _get_db_backend(db_settings)
+    except StorageError as exc:
+        return {"success": False, "message": str(exc)}, 400
+
+    try:
+        removed_count = 0
+        for category_name in category_names:
+            if category_name:
+                removed = backend.remove_category_from_blacklist(category_name)
+                if removed:
+                    removed_count += 1
+
+        return {"success": True, "message": f"{removed_count} categorie rimosse da blacklist", "count": removed_count}, 200
+    except Exception as exc:
+        return {"success": False, "message": str(exc)}, 500
+
+
+def _build_delete_by_categories_snapshot(category_names):
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        return {"success": False, "message": "Configurazione non valida"}, 400
+    db_settings = config.get("DATABASE", {})
+    if not _db_enabled(db_settings):
+        return {"success": False, "message": "Database non abilitato"}, 400
+
+    if not category_names or not isinstance(category_names, list):
+        return {"success": False, "message": "Lista di categorie richiesta"}, 400
+
+    try:
+        backend = _get_db_backend(db_settings)
+    except StorageError as exc:
+        return {"success": False, "message": str(exc)}, 400
+
+    try:
+        deleted_count = backend.delete_items_by_categories(category_names)
+        return {"success": True, "deleted_count": deleted_count}, 200
+    except Exception as exc:
+        return {"success": False, "message": str(exc)}, 500
+
+
 def _build_send_torrent_snapshot(payload):
     config, is_valid = load_config()
     if not is_valid:
@@ -7289,6 +7680,24 @@ def _build_send_torrent_snapshot(payload):
     success, message = send_to_qbittorrent(link, config)
     status_code = 200 if success else 500
     return {"success": success, "message": message}, status_code
+
+
+def _build_send_torrent_batch_snapshot(payload):
+    config, is_valid = load_config()
+    if not is_valid:
+        return {"success": False, "message": "Config non valida"}, 400
+    payload = payload or {}
+    if not isinstance(payload, dict):
+        payload = {}
+    links = payload.get("links")
+    if not isinstance(links, list):
+        return {"success": False, "message": "Lista link mancante"}, 400
+    success, message, details = send_to_qbittorrent_batch(links, config)
+    status_code = 200 if success else 500
+    response = {"success": success, "message": message}
+    if isinstance(details, dict):
+        response.update(details)
+    return response, status_code
 
 
 def _build_scan_status_snapshot():
@@ -11979,58 +12388,48 @@ async def search_streaming_parallel(query_variants, search_types, selected_index
             query_duration = time.time() - query_start
             result_count = len(results) if results else 0
 
-            # Normalizza e processa risultati prima di inviarli
+            # Usa filter_results ESATTAMENTE come fa "Ricerche & Riepilogo"
             if results:
-                # Importa funzioni di normalizzazione
-                from scanner import _detect_resolution_bucket
+                from scanner import filter_results
+
+                # Applica filter_results immediatamente (come in Ricerche & Riepilogo)
+                # Usa effective_config e request_rule dallo scope esterno se disponibili
+                filter_config = effective_config if 'effective_config' in dir() else config
+                filter_request_rules = request_rule if 'request_rule' in dir() else None
+
+                filtered_results = filter_results(
+                    results,
+                    filter_config,
+                    media_type=media_type,
+                    request_rules=filter_request_rules
+                )
 
                 library_index = _load_emby_library_title_index()
 
-                for result in results:
+                # Invia i risultati filtrati via WebSocket
+                for result in filtered_results:
                     if not isinstance(result, dict):
                         continue
 
-                    # Normalizza il risultato
-                    title = result.get("title") or ""
-                    size_bytes = result.get("size", 0)
-                    size_gb = round(size_bytes / (1024**3), 2) if size_bytes else 0
-
-                    # Estrai informazioni dal titolo
-                    normalized_title = sanitize_title(title.lower())
-                    resolution_bucket = _detect_resolution_bucket(title)
-                    year = _extract_year_from_title(title)
-
-                    # Normalizza dati
-                    normalized = {
-                        "title": title,
-                        "normalized_title": normalized_title,
-                        "size_gb": size_gb,
-                        "seeders": result.get("seeders", 0),
-                        "leechers": result.get("leechers", 0),
-                        "indexer": result.get("indexer") or indexer,
-                        "magnet": result.get("magnetUri") or result.get("magnetUrl") or result.get("magnet") or result.get("guid"),
-                        "torrent": result.get("link"),
-                        "web": result.get("comments") or result.get("link"),
-                        "resolution": resolution_bucket,
-                        "resolution_bucket": resolution_bucket,
-                        "year": year,
-                        "in_library": bool(library_index and normalized_title in library_index)
-                    }
+                    # Aggiungi info sulla libreria Emby
+                    normalized_title = result.get("normalized_title") or sanitize_title((result.get("title") or "").lower())
+                    result["normalized_title"] = normalized_title
+                    result["in_library"] = bool(library_index and normalized_title in library_index)
 
                     # Deduplica basata su title normalizzato + size
-                    result_key = (normalized_title, size_gb)
+                    result_key = build_dedupe_key(result)
 
                     if result_key not in seen_results:
                         seen_results.add(result_key)
                         total_results += 1
 
                         # Aggiungi a lista risultati per salvataggio finale
-                        all_results.append(normalized)
+                        all_results.append(result)
 
                         # Invia risultato via WebSocket
                         await safe_send_json({
                             "type": "result",
-                            "data": normalized,
+                            "data": result,
                             "query": query,
                             "indexer": indexer,
                             "media_type": media_type,
@@ -12091,29 +12490,25 @@ async def search_streaming_parallel(query_variants, search_types, selected_index
     # Invia messaggio di completamento finale
     total_duration = time.time() - start_time
 
-    # Applica filtri se richiesti
-    filters_applied = False
-    if (use_jellyseerr_logic or (use_custom_rules and custom_rules)) and all_results:
-        try:
-            # Usa effective_config e request_rule già preparati sopra
-            filtered_results = filter_results(
-                all_results,
-                effective_config,
-                media_type=search_media_type,
-                request_rules=request_rule  # Usa il request_rule trovato da Jellyseerr
-            )
+    # I risultati sono già stati filtrati da filter_results in execute_and_stream
+    # Questo era il vecchio approccio dove si filtrava DOPO aver raccolto tutto
+    # Ora filtriamo IMMEDIATAMENTE, esattamente come fa "Ricerche & Riepilogo"
+    filters_applied = True  # I filtri sono stati applicati in execute_and_stream
 
-            print(f"[STREAM] Filtrati {len(filtered_results)}/{len(all_results)} risultati con logiche di filtro")
-            all_results = filtered_results
-            # Aggiorna il conteggio totale dopo filtri
-            total_results = len(all_results)
-            filters_applied = True
-        except Exception as e:
-            print(f"[STREAM] Errore applicazione filtri: {e}")
+    print(f"[STREAM] Risultati già filtrati durante lo streaming: {len(all_results)} totali")
 
     # Merge duplicati (raggruppa fonti multiple per stesso torrent)
     all_results = merge_duplicate_results(all_results)
     print(f"[STREAM] Dopo merge duplicati: {len(all_results)} risultati unici")
+
+    # Debug: stampa il primo risultato dopo merge
+    if all_results:
+        first = all_results[0]
+        print(f"      -> [DEBUG STREAM] Primo risultato DOPO merge_duplicate_results:")
+        print(f"         magnet: {first.get('magnet')}")
+        print(f"         torrent: {first.get('torrent')}")
+        print(f"         web: {first.get('web')}")
+
     # Aggiorna il conteggio dopo merge
     total_results = len(all_results)
 
@@ -12195,7 +12590,8 @@ def execute_search_with_variants(
     seen_keys = set()
 
     def _result_key(item):
-        return item.get("magnet") or item.get("torrent") or f"{item.get('title')}|{item.get('size_gb')}"
+        normalized_title, size_gb = build_dedupe_key(item)
+        return f"{normalized_title}|{size_gb}"
 
     for query in query_variants:
         raw_results = search_indexers(query, media_type, config)
@@ -12261,9 +12657,7 @@ def merge_duplicate_results(results):
     grouped = []
     index = {}
     for res in results:
-        key = (res.get("normalized_title"), res.get("size_gb"))
-        if not key[0]:
-            key = (res.get("title", "").lower(), res.get("size_gb"))
+        key = build_dedupe_key(res)
         existing = index.get(key)
         if not existing:
             res_copy = dict(res)

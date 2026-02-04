@@ -656,6 +656,24 @@ def get_jellyseerr_requests(config, silent=False):
 
 # --- FUNZIONI QBITTORRENT ---
 
+def _normalize_download_url(link: str) -> str:
+    if not link or not isinstance(link, str):
+        return link
+    cleaned = link.replace("&amp;", "&").strip()
+    if not cleaned.startswith(("http://", "https://")):
+        return cleaned
+    if "?" not in cleaned:
+        return cleaned
+    base, rest = cleaned.split("?", 1)
+    if "#" in rest:
+        query, frag = rest.split("#", 1)
+        frag = f"#{frag}"
+    else:
+        query, frag = rest, ""
+    # Preserve literal plus signs that would be decoded as spaces
+    query = query.replace("+", "%2B")
+    return f"{base}?{query}{frag}"
+
 def send_to_qbittorrent(link, config, max_retries=2):
     """
     Invia un torrent (magnet link o URL .torrent) a qBittorrent.
@@ -679,7 +697,7 @@ def send_to_qbittorrent(link, config, max_retries=2):
         return False, "Link torrent mancante."
 
     # Validazione base del link
-    link = link.strip()
+    link = _normalize_download_url(link.strip())
     is_magnet = link.startswith("magnet:?")
     is_url = link.startswith("http://") or link.startswith("https://")
 
@@ -731,8 +749,31 @@ def send_to_qbittorrent(link, config, max_retries=2):
 
             # FIX CRITICO: Parentesi corrette per la condizione logica
             if add_resp.status_code == 200 and (add_text == "Ok." or add_text == ""):
-                print(f"   -> [QB] ✓ Torrent aggiunto con successo!")
-                return True, "Torrent aggiunto con successo."
+                # Verifica che il torrent sia stato effettivamente aggiunto
+                time.sleep(1)  # Attendi che qBittorrent processi il torrent
+
+                # Ottieni lista torrent per verificare
+                torrents_resp = session.get(
+                    f"{base_url}/api/v2/torrents/info",
+                    params={"limit": 10, "sort": "added_on", "reverse": "true"},
+                    timeout=10
+                )
+
+                if torrents_resp.status_code == 200:
+                    try:
+                        torrents = torrents_resp.json()
+                        if torrents and len(torrents) > 0:
+                            latest_torrent = torrents[0]
+                            torrent_name = latest_torrent.get("name", "")
+                            torrent_state = latest_torrent.get("state", "")
+                            print(f"   -> [QB] ✓ Torrent aggiunto: '{torrent_name}' (stato: {torrent_state})")
+                            return True, f"Torrent aggiunto: {torrent_name}"
+                    except:
+                        pass
+
+                print(f"   -> [QB] ⚠️ qBittorrent ha accettato il link, ma nessun torrent trovato nella lista")
+                print(f"   -> [QB] Link inviato: {link}")
+                return True, "Link inviato a qBittorrent (verificare manualmente)"
 
             # Errore nell'aggiunta
             error_msg = f"Errore aggiunta (HTTP {add_resp.status_code}): {add_text}"
@@ -774,6 +815,140 @@ def send_to_qbittorrent(link, config, max_retries=2):
             return False, f"{error_msg}: {exc}"
 
     return False, f"Fallito dopo {max_retries + 1} tentativi"
+
+
+def send_to_qbittorrent_batch(links, config, max_retries=2):
+    """
+    Invia una lista di torrent (magnet link o URL .torrent) a qBittorrent usando
+    una singola sessione/login.
+
+    Args:
+        links: Lista di magnet link o URL del file .torrent
+        config: Configurazione con credenziali qBittorrent
+        max_retries: Numero massimo di tentativi in caso di errore (default: 2)
+
+    Returns:
+        Tupla (success: bool, message: str, details: dict)
+        details: { "sent": int, "failed": list[dict], "total": int }
+    """
+    qb_url = config.get("QBITTORRENT_URL")
+    qb_user = config.get("QBITTORRENT_USERNAME")
+    qb_pass = config.get("QBITTORRENT_PASSWORD")
+
+    if not (qb_url and qb_user and qb_pass):
+        return False, "Configurazione qBittorrent incompleta.", {"sent": 0, "failed": [], "total": 0}
+
+    if not links or not isinstance(links, list):
+        return False, "Lista link mancante.", {"sent": 0, "failed": [], "total": 0}
+
+    valid_links = []
+    failed = []
+    for raw_link in links:
+        if not raw_link:
+            continue
+        link = str(raw_link).strip()
+        if not link:
+            continue
+        is_magnet = link.startswith("magnet:?")
+        is_url = link.startswith("http://") or link.startswith("https://")
+        if not (is_magnet or is_url):
+            failed.append({"link": link, "error": "Link non valido (solo magnet o URL HTTP/S)."})
+            continue
+        if is_url:
+            link = _normalize_download_url(link)
+        valid_links.append(link)
+
+    if not valid_links:
+        message = "Nessun link valido da inviare."
+        return False, message, {"sent": 0, "failed": failed, "total": len(links)}
+
+    session = requests.Session()
+    base_url = qb_url.rstrip('/')
+
+    for attempt in range(max_retries + 1):
+        try:
+            print(f"   -> [QB] Login qBittorrent (batch) (tentativo {attempt + 1}/{max_retries + 1})...")
+            login_resp = session.post(
+                f"{base_url}/api/v2/auth/login",
+                data={"username": qb_user, "password": qb_pass},
+                timeout=15
+            )
+            if login_resp.status_code != 200:
+                error_msg = f"Login fallito: HTTP {login_resp.status_code}"
+                if attempt < max_retries:
+                    print(f"   -> [QB] {error_msg}, ritento...")
+                    time.sleep(1)
+                    continue
+                return False, error_msg, {"sent": 0, "failed": failed, "total": len(valid_links) + len(failed)}
+
+            login_text = login_resp.text.strip()
+            if login_text != "Ok.":
+                error_msg = f"Login fallito: risposta inattesa '{login_text}'"
+                if attempt < max_retries:
+                    print(f"   -> [QB] {error_msg}, ritento...")
+                    time.sleep(1)
+                    continue
+                return False, error_msg, {"sent": 0, "failed": failed, "total": len(valid_links) + len(failed)}
+
+            print(f"   -> [QB] Login OK, invio batch torrent...")
+            add_resp = session.post(
+                f"{base_url}/api/v2/torrents/add",
+                data={"urls": "\n".join(valid_links)},
+                timeout=30
+            )
+            add_text = add_resp.text.strip()
+            if add_resp.status_code == 200 and (add_text == "Ok." or add_text == ""):
+                sent = len(valid_links)
+                message = f"Inviati {sent} elementi a qBittorrent"
+                return True, message, {"sent": sent, "failed": failed, "total": sent + len(failed)}
+
+            print(f"   -> [QB] Batch fallito: HTTP {add_resp.status_code} - {add_text}")
+            # Fallback: invio uno per uno per isolare errori
+            sent = 0
+            for link in valid_links:
+                try:
+                    resp = session.post(
+                        f"{base_url}/api/v2/torrents/add",
+                        data={"urls": link},
+                        timeout=20
+                    )
+                    text = resp.text.strip()
+                    if resp.status_code == 200 and (text == "Ok." or text == ""):
+                        sent += 1
+                    else:
+                        failed.append({"link": link, "error": f"Errore aggiunta (HTTP {resp.status_code}): {text or 'N/D'}"})
+                except requests.exceptions.RequestException as exc:
+                    failed.append({"link": link, "error": f"Errore comunicazione: {type(exc).__name__}"})
+                time.sleep(0.2)
+            success = sent > 0
+            message = f"Inviati {sent} elementi a qBittorrent" if success else "Nessun elemento inviato a qBittorrent"
+            return success, message, {"sent": sent, "failed": failed, "total": sent + len(failed)}
+
+        except requests.exceptions.Timeout as exc:
+            error_msg = "Timeout connessione qBittorrent"
+            if attempt < max_retries:
+                print(f"   -> [QB] {error_msg}, ritento... (tentativo {attempt + 1}/{max_retries + 1})")
+                time.sleep(1)
+                continue
+            return False, f"{error_msg}: {exc}", {"sent": 0, "failed": failed, "total": len(valid_links) + len(failed)}
+
+        except requests.exceptions.ConnectionError as exc:
+            error_msg = f"Impossibile connettersi a qBittorrent ({qb_url})"
+            if attempt < max_retries:
+                print(f"   -> [QB] {error_msg}, ritento...")
+                time.sleep(2)
+                continue
+            return False, f"{error_msg}: {exc}", {"sent": 0, "failed": failed, "total": len(valid_links) + len(failed)}
+
+        except requests.exceptions.RequestException as exc:
+            error_msg = "Errore comunicazione qBittorrent"
+            if attempt < max_retries:
+                print(f"   -> [QB] {error_msg} ({type(exc).__name__}), ritento...")
+                time.sleep(1)
+                continue
+            return False, f"{error_msg}: {exc}", {"sent": 0, "failed": failed, "total": len(valid_links) + len(failed)}
+
+    return False, f"Fallito dopo {max_retries + 1} tentativi", {"sent": 0, "failed": failed, "total": len(valid_links) + len(failed)}
 
 
 # --- FUNZIONI DI PING GENERICHE ---
@@ -1066,7 +1241,86 @@ def search_prowlarr(query, media_type, config):
         if not isinstance(data, list):
             print("      -> Risposta inattesa da Prowlarr: verifica la configurazione.")
             return []
-        return data
+
+        # Normalizza i risultati per assicurare mapping corretto dei campi
+        normalized = []
+        for idx, item in enumerate(data):
+            if not isinstance(item, dict):
+                continue
+
+            title = item.get("title")
+            magnet_link = item.get("magnetUrl") or item.get("magnetUri")
+            download_link = item.get("downloadUrl")
+            info_url = item.get("infoUrl")
+            guid_value = item.get("guid")
+
+            # Debug: stampa il primo risultato
+            if idx == 0:
+                print(f"      -> [DEBUG Prowlarr] Primo risultato RAW:")
+                print(f"         title: {title}")
+                print(f"         magnetUrl: {item.get('magnetUrl')}")
+                print(f"         magnetUri: {item.get('magnetUri')}")
+                print(f"         downloadUrl: {download_link}")
+                print(f"         infoUrl: {info_url}")
+                print(f"         guid: {guid_value}")
+
+            # Se magnetUrl/magnetUri è vuoto ma guid è un magnet, usa guid come magnet
+            if not magnet_link and isinstance(guid_value, str) and guid_value.startswith("magnet:"):
+                magnet_link = guid_value
+
+            # Se download_link è un magnet, spostalo su magnet
+            if isinstance(download_link, str) and download_link.startswith("magnet:"):
+                if not magnet_link:
+                    magnet_link = download_link
+                download_link = None
+
+            # infoUrl deve essere solo il link alla pagina web, mai magnet o download
+            info_link = info_url
+            if not info_link and isinstance(guid_value, str):
+                # Usa guid solo se non è un magnet link
+                if not guid_value.startswith("magnet:"):
+                    # E se è un URL http, usalo solo se diverso dal download link
+                    if guid_value.startswith("http"):
+                        if guid_value != download_link:
+                            info_link = guid_value
+                    else:
+                        info_link = guid_value
+
+            # Se non c'è download_link ma guid è un http, potrebbe essere il download link
+            if not download_link and isinstance(guid_value, str) and guid_value.startswith("http") and not magnet_link:
+                download_link = guid_value
+
+            # guid per download: preferisci magnet, poi download link
+            if isinstance(magnet_link, str) and magnet_link.startswith("magnet:"):
+                guid_for_download = magnet_link
+            elif isinstance(download_link, str):
+                guid_for_download = download_link
+            else:
+                guid_for_download = magnet_link or download_link
+
+            result_dict = {
+                "title": title,
+                "guid": guid_for_download,
+                "magnet": magnet_link if (isinstance(magnet_link, str) and magnet_link.startswith("magnet:")) else None,
+                "magnetUri": magnet_link if isinstance(magnet_link, str) else None,
+                "torrent": download_link if isinstance(download_link, str) else None,
+                "downloadUrl": download_link if isinstance(download_link, str) else None,
+                "web": info_link if isinstance(info_link, str) else None,
+                "infoUrl": info_link if isinstance(info_link, str) else None,
+                "indexer": item.get("indexer") or "Prowlarr",
+                "seeders": item.get("seeders") or 0,
+                "size": item.get("size") or 0
+            }
+
+            # Debug: stampa il primo risultato normalizzato
+            if idx == 0:
+                print(f"      -> [DEBUG Prowlarr] Primo risultato NORMALIZZATO:")
+                print(f"         magnet: {result_dict['magnet']}")
+                print(f"         torrent: {result_dict['torrent']}")
+                print(f"         web: {result_dict['web']}")
+
+            normalized.append(result_dict)
+        return normalized
     except requests.exceptions.RequestException as e:
         print(f"   -> Impossibile contattare Prowlarr: {e}")
         return []
@@ -1103,23 +1357,76 @@ def search_jackett(query, media_type, config):
             print("      -> Risposta inattesa da Jackett.")
             return []
         normalized = []
-        for item in results:
+        for idx, item in enumerate(results):
             if not isinstance(item, dict):
                 continue
             title = item.get("Title")
             magnet_link = item.get("MagnetUri")
             download_link = item.get("Link")
-            info_link = item.get("Details") or item.get("Guid")
-            normalized.append({
+            details_link = item.get("Details")
+            guid_value = item.get("Guid")
+
+            # Debug: stampa il primo risultato
+            if idx == 0:
+                print(f"      -> [DEBUG Jackett] Primo risultato RAW:")
+                print(f"         Title: {title}")
+                print(f"         MagnetUri: {magnet_link}")
+                print(f"         Link: {download_link}")
+                print(f"         Details: {details_link}")
+                print(f"         Guid: {guid_value}")
+
+            # Se MagnetUri è vuoto ma Guid è un magnet, usa Guid come magnet
+            if not magnet_link and isinstance(guid_value, str) and guid_value.startswith("magnet:"):
+                magnet_link = guid_value
+
+            # Se Link è un magnet, spostalo su magnet
+            if isinstance(download_link, str) and download_link.startswith("magnet:"):
+                if not magnet_link:
+                    magnet_link = download_link
+                download_link = None
+
+            # infoUrl deve essere solo il link alla pagina web del sito, mai magnet o download
+            info_link = details_link
+            if not info_link and isinstance(guid_value, str):
+                # Usa Guid solo se non è un magnet link
+                if not guid_value.startswith("magnet:"):
+                    # E se è un URL http, usalo solo se diverso dal download link
+                    if guid_value.startswith("http"):
+                        if guid_value != download_link:
+                            info_link = guid_value
+                    else:
+                        info_link = guid_value
+
+            # guid per download: preferisci magnet, poi download link
+            if isinstance(magnet_link, str) and magnet_link.startswith("magnet:"):
+                guid_for_download = magnet_link
+            elif isinstance(download_link, str):
+                guid_for_download = download_link
+            else:
+                guid_for_download = magnet_link or download_link
+
+            result_dict = {
                 "title": title,
-                "guid": item.get("Guid") or magnet_link or download_link,
+                "guid": guid_for_download,
+                "magnet": magnet_link if (isinstance(magnet_link, str) and magnet_link.startswith("magnet:")) else None,
+                "magnetUri": magnet_link if isinstance(magnet_link, str) else None,
+                "torrent": download_link if isinstance(download_link, str) else None,
                 "downloadUrl": download_link if isinstance(download_link, str) else None,
+                "web": info_link if isinstance(info_link, str) else None,
                 "infoUrl": info_link if isinstance(info_link, str) else None,
                 "indexer": item.get("Indexer") or "Jackett",
                 "seeders": item.get("Seeders") or 0,
-                "size": item.get("Size") or 0,
-                "magnetUri": magnet_link
-            })
+                "size": item.get("Size") or 0
+            }
+
+            # Debug: stampa il primo risultato normalizzato
+            if idx == 0:
+                print(f"      -> [DEBUG Jackett] Primo risultato NORMALIZZATO:")
+                print(f"         magnet: {result_dict['magnet']}")
+                print(f"         torrent: {result_dict['torrent']}")
+                print(f"         web: {result_dict['web']}")
+
+            normalized.append(result_dict)
         return normalized
     except requests.exceptions.RequestException as exc:
         print(f"   -> Impossibile contattare Jackett: {exc}")

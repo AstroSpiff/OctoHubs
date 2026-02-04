@@ -983,6 +983,7 @@
                 Incompleti
                 <span class="tab-badge" data-incomplete-count style="background: #f59e0b; color: white; padding: 0.15rem 0.5rem; border-radius: 10px; font-size: 0.75rem; margin-left: 0.5rem;">0</span>
             </button>
+            <button class="btn light" id="export-libraries-csv-btn" style="margin-left: auto;" title="Esporta Errori e Incompleti in CSV">📥 Esporta resoconto CSV</button>
         </div>
 
         <!-- Queue Tab -->
@@ -4289,6 +4290,22 @@
                     icon.style.color = color;
                 }
             });
+
+            // Export CSV buttons
+            const exportLibrariesBtn = document.getElementById('export-libraries-csv-btn');
+            const exportRecentBtn = document.getElementById('export-recent-csv-btn');
+
+            if (exportLibrariesBtn) {
+                exportLibrariesBtn.addEventListener('click', () => {
+                    const serverTab = document.querySelector('.server-tab.active[data-server-scope="libraries"]');
+                    const serverId = serverTab ? serverTab.dataset.serverId : '';
+                    if (!serverId) {
+                        alert('Seleziona un server prima di esportare');
+                        return;
+                    }
+                    window.location.href = `/api/emby/probe/export-csv?server_id=${encodeURIComponent(serverId)}&scope=libraries`;
+                });
+            }
         });
     </script>
 </body>

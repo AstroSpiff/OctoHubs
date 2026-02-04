@@ -719,7 +719,7 @@
                                             <input type="radio" name="rss_mode" value="interval" {% if auto_tasks.rss and auto_tasks.rss.mode != 'fixed' %}checked{% else %}checked{% endif %}>
                                             Avvia ogni
                                         </label>
-                                        <input type="number" name="rss_interval" min="5" value="{{ (auto_tasks.rss.interval_minutes if auto_tasks.rss else 30) }}">
+                                        <input type="number" name="rss_interval" min="1" value="{{ (auto_tasks.rss.interval_minutes if auto_tasks.rss else 30) }}">
                                         <span>minuti</span>
                                     </div>
                                     <div class="auto-mode">
@@ -1132,6 +1132,68 @@
                     <div id="rss-dedup-result" class="rss-inspect-result"></div>
                 </div>
                 <div class="card">
+                    <h3>Gestione Categorie</h3>
+                    <p class="tagline">Gestisci la visibilità delle categorie: accettate (visibili), nascoste (non visibili ma non eliminate), blacklistate (da eliminare).</p>
+                    <div class="category-management-controls">
+                        <button type="button" class="btn" id="categories-refresh-btn">Aggiorna Categorie</button>
+                        <button type="button" class="btn light" id="categories-show-btn" disabled>Mostra</button>
+                        <button type="button" class="btn light" id="categories-hide-btn" disabled>Nascondi</button>
+                        <button type="button" class="btn light" id="categories-blacklist-btn" disabled>Blacklist</button>
+                        <button type="button" class="btn danger" id="categories-delete-blacklisted-btn" disabled>Elimina Articoli Blacklistati</button>
+                    </div>
+                    <div class="categories-three-column-layout">
+                        <div class="categories-column">
+                            <h4>Categorie Accettate <span id="accepted-count" class="category-column-count">(0)</span></h4>
+                            <div id="categories-accepted-list" class="categories-column-list"></div>
+                        </div>
+                        <div class="categories-column">
+                            <h4>Categorie Nascoste <span id="hidden-count" class="category-column-count">(0)</span></h4>
+                            <div id="categories-hidden-list" class="categories-column-list"></div>
+                        </div>
+                        <div class="categories-column">
+                            <h4>Categorie Blacklistate <span id="blacklisted-count" class="category-column-count">(0)</span></h4>
+                            <div id="categories-blacklisted-list" class="categories-column-list"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3>Cerca e pulisci archivio</h3>
+                    <p class="tagline">Cerca articoli per parole chiave ed elimina quelli non desiderati.</p>
+                    <div class="rss-cleanup-controls">
+                        <div class="rss-cleanup-search-row">
+                            <input type="text" id="rss-cleanup-search-input" placeholder="Cerca per parole chiave (titolo, sommario, contenuto)..." />
+                            <label class="rss-cleanup-regex-label">
+                                <input type="checkbox" id="rss-cleanup-regex-checkbox" />
+                                Regex
+                            </label>
+                            <select id="rss-cleanup-scope-select">
+                                <option value="all">Tutto</option>
+                                <option value="title">Solo titolo</option>
+                                <option value="summary">Solo sommario</option>
+                                <option value="content">Solo contenuto</option>
+                            </select>
+                        </div>
+                        <div class="rss-cleanup-buttons-row">
+                            <div class="rss-cleanup-buttons-left">
+                                <button type="button" class="btn" id="rss-cleanup-search-btn">Cerca</button>
+                                <button type="button" class="btn light" id="rss-cleanup-clear-btn">Cancella</button>
+                            </div>
+                            <select id="rss-cleanup-limit-select">
+                                <option value="50">50 risultati</option>
+                                <option value="100">100 risultati</option>
+                                <option value="500">500 risultati</option>
+                                <option value="1000">1000 risultati</option>
+                                <option value="999999">Tutti</option>
+                            </select>
+                        </div>
+                        <div class="rss-cleanup-actions-row">
+                            <span id="rss-cleanup-selected-count">0 selezionati</span>
+                            <button type="button" class="btn danger" id="rss-cleanup-delete-btn" disabled>Elimina selezionati</button>
+                        </div>
+                    </div>
+                    <div id="rss-cleanup-results" class="rss-cleanup-results"></div>
+                </div>
+                <div class="card">
                     <h3>Analizza RSS</h3>
                     <p class="tagline">Usa questa analisi per capire quali campi restituisce il feed.</p>
                     <div class="form-grid">
@@ -1169,6 +1231,17 @@
                 <button type="button" class="modal-close" data-modal-close aria-label="Chiudi">×</button>
             </div>
             <div class="modal-body">
+                <div class="rss-search-controls">
+                    <div class="rss-search-input-group">
+                        <input type="text" id="rss-search-input" placeholder="Cerca per parole chiave..." />
+                        <button type="button" class="btn" id="rss-search-btn">Cerca</button>
+                        <button type="button" class="btn light" id="rss-clear-search-btn">Mostra tutti</button>
+                    </div>
+                    <div class="rss-delete-controls">
+                        <span id="rss-selected-count">0 selezionati</span>
+                        <button type="button" class="btn danger" id="rss-delete-btn" disabled>Elimina selezionati</button>
+                    </div>
+                </div>
                 <div class="rss-view-controls">
                     <div class="rss-view-tabs">
                         <button type="button" class="btn light is-active" data-rss-view="table">Tabella</button>
@@ -1185,6 +1258,7 @@
         </div>
     </div>
     <div id="toast-container"></div>
+    <script src="{{ url_for('static', filename='actions.js') }}"></script>
     <script src="{{ url_for('static', filename='script.js') }}"></script>
     <script src="{{ url_for('static', filename='icon-picker.js') }}"></script>
 </body>

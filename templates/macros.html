@@ -7,12 +7,12 @@
         </button>
     {% endif %}
     {% if item.magnet %}
-        <a class="icon-link" href="{{ item.magnet }}" title="Apri magnet">
+        <a class="icon-link" href="{{ item.magnet }}" target="_blank" rel="noopener" title="Apri magnet">
             <img src="{{ url_for('static', filename='icon/magnet.svg') }}" alt="Magnet" class="action-icon-small">
         </a>
     {% endif %}
-    {% if item.torrent %}
-        <a class="icon-link" href="{{ item.torrent }}" title="Scarica torrent">
+    {% if item.torrent and item.torrent.startswith('http') %}
+        <a class="icon-link" href="{{ item.torrent }}" data-torrent-link="{{ item.torrent }}" title="Scarica torrent">
             <img src="{{ url_for('static', filename='icon/down.svg') }}" alt="Torrent" class="action-icon-small">
         </a>
     {% endif %}
@@ -160,8 +160,9 @@
                                                         data-request-id="{{ item.request_id }}"
                                                         data-bucket="{{ bucket }}"
                                                         data-magnet="{{ res.magnet or '' }}"
-                                                        data-torrent="{{ res.torrent or '' }}"
-                                                        data-web="{{ res.web or '' }}">
+                                                        data-torrent="{{ res.torrent if res.torrent and res.torrent.startswith('http') else '' }}"
+                                                        data-web="{{ res.web or '' }}"
+                                                        data-link="{{ res.link or '' }}">
                                                         <td class="result-select-cell col-select">
                                                             <input type="checkbox"
                                                                    class="result-select"
@@ -199,8 +200,9 @@
                                                                                     data-request-id="{{ item.request_id }}"
                                                                                     data-bucket="{{ bucket }}"
                                                                                     data-magnet="{{ dup.magnet or '' }}"
-                                                                                    data-torrent="{{ dup.torrent or '' }}"
-                                                                                    data-web="{{ dup.web or '' }}">
+                                                                                    data-torrent="{{ dup.torrent if dup.torrent and dup.torrent.startswith('http') else '' }}"
+                                                                                    data-web="{{ dup.web or '' }}"
+                                                                                    data-link="{{ dup.link or '' }}">
                                                                                     <td class="result-select-cell col-select">
                                                                                         <input type="checkbox" class="result-select">
                                                                                     </td>

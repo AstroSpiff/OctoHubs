@@ -264,7 +264,7 @@ class AutoScheduler:
         if mode == "fixed":
             times = entry.get("times") or []
             if not times:
-                minutes = _coerce_request_int(entry.get("interval_minutes"), 60, min_value=5)
+                minutes = _coerce_request_int(entry.get("interval_minutes"), 60, min_value=1)
                 return reference + timedelta(minutes=minutes)
             candidates = []
             for token in times:
@@ -278,7 +278,7 @@ class AutoScheduler:
                     candidate += timedelta(days=1)
                 candidates.append(candidate)
             return min(candidates) if candidates else None
-        minutes = _coerce_request_int(entry.get("interval_minutes"), 60, min_value=5)
+        minutes = _coerce_request_int(entry.get("interval_minutes"), 60, min_value=1)
         return reference + timedelta(minutes=minutes)
 
     def _trigger_sync(self):

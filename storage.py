@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import threading
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 try:
     from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String, Text, LargeBinary, create_engine, func, or_, text
+    from sqlalchemy.dialects.postgresql import ARRAY
     from sqlalchemy.exc import SQLAlchemyError
     from sqlalchemy.orm import declarative_base, sessionmaker
 
@@ -168,11 +169,23 @@ if SQLALCHEMY_AVAILABLE:
         author = Column(String(500))  # type: ignore[assignment]
         summary = Column(Text)  # type: ignore[assignment]
         content = Column(Text)  # type: ignore[assignment]
-        categories = Column(JSON)  # type: ignore[assignment]
+        categories = Column(ARRAY(String))  # type: ignore[assignment]
         published_at = Column(DateTime, index=True)  # type: ignore[assignment]
         updated_at = Column(DateTime, index=True)  # type: ignore[assignment]
         ingested_at = Column(DateTime, default=_utcnow, nullable=False, index=True)  # type: ignore[assignment]
         extra = Column(JSON)  # type: ignore[assignment]
+
+    class CategoryBlacklist(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "category_blacklist"
+        id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
+        category_name = Column(String(500), unique=True, nullable=False, index=True)  # type: ignore[assignment]
+        added_at = Column(DateTime, default=_utcnow, nullable=False)  # type: ignore[assignment]
+
+    class CategoryHidden(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "category_hidden"
+        id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
+        category_name = Column(String(500), unique=True, nullable=False, index=True)  # type: ignore[assignment]
+        added_at = Column(DateTime, default=_utcnow, nullable=False)  # type: ignore[assignment]
 
     class EmbyProbeRecentScan(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "emby_probe_recent_scan"
@@ -358,6 +371,76 @@ class DatabaseStorage:
                 conn.execute(text(
                     "ALTER TABLE emby_icon_rules ADD COLUMN IF NOT EXISTS mime_type VARCHAR(50)"
                 ))
+
+                # RSS Category Management migrations
+                # Drop visibility_status column (no longer needed - visibility determined by categories)
+                conn.execute(text(
+                    "DROP INDEX IF EXISTS ix_rss_items_visibility_status"
+                ))
+                conn.execute(text(
+                    "ALTER TABLE rss_items DROP COLUMN IF EXISTS visibility_status"
+                ))
+
+                # Create category_hidden table if not exists
+                if "postgresql" in self.url:
+                    conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS category_hidden (
+                            id SERIAL PRIMARY KEY,
+                            category_name VARCHAR(500) UNIQUE NOT NULL,
+                            added_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+                        )
+                    """))
+                else:
+                    conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS category_hidden (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            category_name VARCHAR(500) UNIQUE NOT NULL,
+                            added_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """))
+                # Create index on category_name
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_category_hidden_category_name ON category_hidden(category_name)"
+                ))
+
+                # Convert categories column from JSON to ARRAY for better performance
+                if "postgresql" in self.url:
+                    conn.execute(text("""
+                        DO $$
+                        BEGIN
+                            -- Check if column is JSON/JSONB type
+                            IF EXISTS (
+                                SELECT 1 FROM information_schema.columns
+                                WHERE table_name = 'rss_items'
+                                AND column_name = 'categories'
+                                AND (data_type = 'json' OR data_type = 'jsonb')
+                            ) THEN
+                                -- Create temporary function to convert JSON array to text array
+                                CREATE OR REPLACE FUNCTION temp_json_to_text_array(val json)
+                                RETURNS text[] AS $func$
+                                    SELECT CASE
+                                        WHEN val IS NULL THEN NULL
+                                        WHEN jsonb_typeof(val::jsonb) = 'array'
+                                        THEN ARRAY(SELECT jsonb_array_elements_text(val::jsonb))
+                                        ELSE ARRAY[]::text[]
+                                    END;
+                                $func$ LANGUAGE SQL IMMUTABLE;
+
+                                -- Convert column using helper function
+                                ALTER TABLE rss_items
+                                ALTER COLUMN categories
+                                TYPE varchar[]
+                                USING temp_json_to_text_array(categories);
+
+                                -- Drop temporary function
+                                DROP FUNCTION temp_json_to_text_array(json);
+                            END IF;
+                        END $$;
+                    """))
+                    # Create GIN index on categories array for fast overlap queries
+                    conn.execute(text(
+                        "CREATE INDEX IF NOT EXISTS ix_rss_items_categories_gin ON rss_items USING GIN(categories)"
+                    ))
         except SQLAlchemyError as exc:  # pragma: no cover
             raise StorageError(f"Errore migrazioni DB: {exc}") from exc
 
@@ -1207,9 +1290,13 @@ class DatabaseStorage:
 
     def save_rss_items(self, items: list[Dict[str, Any]], dedup_keep: str = "newest") -> Dict[str, int]:
         """Insert or update RSS items, deduplicating by link."""
+        import re
+        import html
+
         session = self._get_session()
         dedup_keep = "oldest" if dedup_keep == "oldest" else "newest"
         counts = {"inserted": 0, "updated": 0, "skipped": 0, "removed": 0}
+
         try:
             def ensure_aware(value: Optional[datetime]) -> datetime:
                 if value is None:
@@ -1223,6 +1310,27 @@ class DatabaseStorage:
                 if not link:
                     counts["skipped"] += 1
                     continue
+
+                # Check if any category is blacklisted (split composite categories)
+                import re
+                import html
+                categories = item.get("categories") or []
+                if isinstance(categories, list):
+                    is_blacklisted = False
+                    for cat in categories:
+                        if isinstance(cat, str):
+                            # Split composite categories by ',' and '/'
+                            parts = re.split(r'[,/]', cat)
+                            for part in parts:
+                                cleaned = html.unescape(part.strip())  # Decode HTML entities
+                                if cleaned and self.is_category_blacklisted(cleaned):
+                                    is_blacklisted = True
+                                    break
+                            if is_blacklisted:
+                                break
+                    if is_blacklisted:
+                        counts["skipped"] += 1
+                        continue
 
                 existing = (
                     session.query(RssItem)
@@ -1378,6 +1486,382 @@ class DatabaseStorage:
                 for entry in entries
             ]
             return {"total": total, "items": items}
+        finally:
+            session.close()
+
+    def search_rss_items(self, keywords: str, limit: int = 50, offset: int = 0, use_regex: bool = False, search_in: str = "all") -> Dict[str, Any]:
+        """Search RSS items by keywords in title, summary, and content.
+
+        Args:
+            keywords: Search pattern (literal text or regex pattern)
+            limit: Max results to return
+            offset: Offset for pagination
+            use_regex: If True, treat keywords as regex pattern (PostgreSQL ~* operator)
+            search_in: Where to search - "all", "title", "summary", "content"
+        """
+        session = self._get_session()
+        try:
+            # Determina i campi in cui cercare
+            search_fields = []
+            if search_in == "all":
+                search_fields = [RssItem.title, RssItem.summary, RssItem.content]
+            elif search_in == "title":
+                search_fields = [RssItem.title]
+            elif search_in == "summary":
+                search_fields = [RssItem.summary]
+            elif search_in == "content":
+                search_fields = [RssItem.content]
+            else:
+                # Default a "all" se valore non valido
+                search_fields = [RssItem.title, RssItem.summary, RssItem.content]
+
+            # Costruisci filtro di ricerca
+            if use_regex:
+                # Usa operatore regex PostgreSQL ~* (case-insensitive)
+                filters = [field.op('~*')(keywords) for field in search_fields]  # type: ignore[attr-defined]
+                query = session.query(RssItem).filter(or_(*filters))
+            else:
+                # Ricerca normale con ILIKE
+                search_filter = f"%{keywords}%"
+                filters = [field.ilike(search_filter) for field in search_fields]  # type: ignore[attr-defined]
+                query = session.query(RssItem).filter(or_(*filters))
+
+            total = query.count()
+
+            ordering = func.coalesce(
+                RssItem.published_at,  # type: ignore[attr-defined]
+                RssItem.updated_at,  # type: ignore[attr-defined]
+                RssItem.ingested_at  # type: ignore[attr-defined]
+            ).desc()
+            query = query.order_by(ordering)
+
+            if offset:
+                query = query.offset(offset)
+            if limit:
+                query = query.limit(limit)
+            entries = query.all()
+
+            def to_iso(value: Optional[datetime]) -> Optional[str]:
+                if value is None:
+                    return None
+                if value.tzinfo is None:
+                    value = value.replace(tzinfo=timezone.utc)
+                return value.astimezone(timezone.utc).isoformat()
+
+            items = [
+                {
+                    "id": entry.id,
+                    "source_name": entry.source_name,
+                    "source_url": entry.source_url,
+                    "source_tags": entry.source_tags,
+                    "title": entry.title,
+                    "link": entry.link,
+                    "guid": entry.guid,
+                    "author": entry.author,
+                    "summary": entry.summary,
+                    "content": entry.content,
+                    "categories": entry.categories,
+                    "published_at": to_iso(entry.published_at),
+                    "updated_at": to_iso(entry.updated_at),
+                    "ingested_at": to_iso(entry.ingested_at)
+                }
+                for entry in entries
+            ]
+            return {"total": total, "items": items}
+        finally:
+            session.close()
+
+    def delete_rss_items(self, item_ids: List[int]) -> int:
+        """Delete RSS items by IDs. Returns count of deleted items."""
+        if not item_ids:
+            return 0
+
+        session = self._get_session()
+        try:
+            deleted_count = session.query(RssItem).filter(
+                RssItem.id.in_(item_ids)  # type: ignore[attr-defined]
+            ).delete(synchronize_session=False)
+            session.commit()
+            return deleted_count
+        except Exception as exc:
+            session.rollback()
+            raise StorageError(f"Errore durante eliminazione items RSS: {exc}")
+        finally:
+            session.close()
+
+    def add_category_to_blacklist(self, category_name: str) -> bool:
+        """Add a category to the blacklist. Returns True if added, False if already exists."""
+        if not category_name or not category_name.strip():
+            return False
+
+        session = self._get_session()
+        try:
+            existing = session.query(CategoryBlacklist).filter(
+                CategoryBlacklist.category_name == category_name.strip()  # type: ignore[attr-defined]
+            ).first()
+
+            if existing:
+                return False
+
+            new_entry = CategoryBlacklist(category_name=category_name.strip())  # type: ignore[call-arg]
+            session.add(new_entry)
+            session.commit()
+            return True
+        except Exception as exc:
+            session.rollback()
+            raise StorageError(f"Errore durante aggiunta categoria alla blacklist: {exc}")
+        finally:
+            session.close()
+
+    def remove_category_from_blacklist(self, category_name: str) -> bool:
+        """Remove a category from the blacklist. Returns True if removed, False if not found."""
+        if not category_name:
+            return False
+
+        session = self._get_session()
+        try:
+            deleted_count = session.query(CategoryBlacklist).filter(
+                CategoryBlacklist.category_name == category_name.strip()  # type: ignore[attr-defined]
+            ).delete(synchronize_session=False)
+            session.commit()
+            return deleted_count > 0
+        except Exception as exc:
+            session.rollback()
+            raise StorageError(f"Errore durante rimozione categoria dalla blacklist: {exc}")
+        finally:
+            session.close()
+
+    def list_blacklisted_categories(self) -> List[Dict[str, Any]]:
+        """List all blacklisted categories."""
+        session = self._get_session()
+        try:
+            entries = session.query(CategoryBlacklist).order_by(CategoryBlacklist.category_name).all()  # type: ignore[attr-defined]
+
+            def to_iso(value: Optional[datetime]) -> Optional[str]:
+                if value is None:
+                    return None
+                if value.tzinfo is None:
+                    value = value.replace(tzinfo=timezone.utc)
+                return value.astimezone(timezone.utc).isoformat()
+
+            return [
+                {
+                    "id": entry.id,
+                    "category_name": entry.category_name,
+                    "added_at": to_iso(entry.added_at)
+                }
+                for entry in entries
+            ]
+        finally:
+            session.close()
+
+    def is_category_blacklisted(self, category_name: str) -> bool:
+        """Check if a category is blacklisted."""
+        if not category_name:
+            return False
+
+        session = self._get_session()
+        try:
+            exists = session.query(CategoryBlacklist).filter(
+                CategoryBlacklist.category_name == category_name.strip()  # type: ignore[attr-defined]
+            ).first() is not None
+            return exists
+        finally:
+            session.close()
+
+    def add_category_to_hidden(self, category_name: str) -> bool:
+        """Add a category to hidden list. Returns True if added, False if already exists."""
+        if not category_name:
+            return False
+
+        category_name = category_name.strip()
+        session = self._get_session()
+        try:
+            # Check if already exists
+            existing = session.query(CategoryHidden).filter(
+                CategoryHidden.category_name == category_name  # type: ignore[attr-defined]
+            ).first()
+
+            if existing:
+                return False
+
+            # Add new entry
+            entry = CategoryHidden()  # type: ignore[misc]
+            entry.category_name = category_name  # type: ignore[attr-defined]
+            entry.added_at = _utcnow()  # type: ignore[attr-defined]
+            session.add(entry)
+            session.commit()
+            return True
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore aggiunta categoria a hidden: {exc}") from exc
+        finally:
+            session.close()
+
+    def remove_category_from_hidden(self, category_name: str) -> bool:
+        """Remove a category from hidden list. Returns True if removed, False if not found."""
+        if not category_name:
+            return False
+
+        category_name = category_name.strip()
+        session = self._get_session()
+        try:
+            deleted = session.query(CategoryHidden).filter(
+                CategoryHidden.category_name == category_name  # type: ignore[attr-defined]
+            ).delete()
+            session.commit()
+            return deleted > 0
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore rimozione categoria da hidden: {exc}") from exc
+        finally:
+            session.close()
+
+    def list_hidden_categories(self) -> List[Dict[str, Any]]:
+        """List all hidden categories with their timestamps."""
+        session = self._get_session()
+        try:
+            entries = session.query(CategoryHidden).order_by(CategoryHidden.category_name).all()  # type: ignore[attr-defined]
+            return [
+                {
+                    "category_name": entry.category_name,
+                    "added_at": entry.added_at.isoformat() if entry.added_at else None
+                }
+                for entry in entries
+            ]
+        finally:
+            session.close()
+
+    def is_category_hidden(self, category_name: str) -> bool:
+        """Check if a category is hidden."""
+        if not category_name:
+            return False
+
+        session = self._get_session()
+        try:
+            exists = session.query(CategoryHidden).filter(
+                CategoryHidden.category_name == category_name.strip()  # type: ignore[attr-defined]
+            ).first() is not None
+            return exists
+        finally:
+            session.close()
+
+    def get_all_categories_with_counts(self) -> Dict[str, Any]:
+        """Get all categories from RSS items with article counts, plus blacklisted categories.
+        Composite categories (containing ',' or '/') are split into individual categories.
+        HTML entities are decoded (e.g., &amp; -> &)."""
+        import re
+        import html
+
+        session = self._get_session()
+        try:
+            # Ottieni tutti gli ID degli items per tracciare quali item hanno una categoria
+            items = session.query(RssItem.id, RssItem.categories).all()
+            category_item_ids: Dict[str, set] = {}  # category_name -> set of item IDs
+
+            for item in items:
+                if item.categories:
+                    item_id = item.id
+                    for cat in item.categories:
+                        if cat:
+                            # Split composite categories by ',' and '/'
+                            parts = re.split(r'[,/]', cat)
+                            for part in parts:
+                                cleaned = html.unescape(part.strip())  # Decode HTML entities
+                                if cleaned:
+                                    if cleaned not in category_item_ids:
+                                        category_item_ids[cleaned] = set()
+                                    category_item_ids[cleaned].add(item_id)
+
+            # Convert to counts
+            category_counts = {cat: len(ids) for cat, ids in category_item_ids.items()}
+
+            # Ottieni categorie blacklistate e nascoste
+            blacklist_entries = session.query(CategoryBlacklist).all()
+            blacklisted = {entry.category_name for entry in blacklist_entries}
+
+            hidden_entries = session.query(CategoryHidden).all()
+            hidden = {entry.category_name for entry in hidden_entries}
+
+            # Costruisci risultato
+            categories = []
+            for cat_name, count in sorted(category_counts.items()):
+                categories.append({
+                    "name": cat_name,
+                    "count": count,
+                    "blacklisted": cat_name in blacklisted,
+                    "hidden": cat_name in hidden
+                })
+
+            # Aggiungi categorie blacklistate senza articoli
+            for cat_name in sorted(blacklisted):
+                if cat_name not in category_counts:
+                    categories.append({
+                        "name": cat_name,
+                        "count": 0,
+                        "blacklisted": True,
+                        "hidden": cat_name in hidden
+                    })
+
+            # Aggiungi categorie nascoste senza articoli
+            for cat_name in sorted(hidden):
+                if cat_name not in category_counts and cat_name not in blacklisted:
+                    categories.append({
+                        "name": cat_name,
+                        "count": 0,
+                        "blacklisted": False,
+                        "hidden": True
+                    })
+
+            return {
+                "categories": categories,
+                "total_categories": len(categories),
+                "blacklisted_count": len(blacklisted),
+                "hidden_count": len(hidden)
+            }
+        finally:
+            session.close()
+
+    def delete_items_by_categories(self, category_names: List[str]) -> int:
+        """Delete all RSS items that have any of the specified categories (including composite categories).
+        Returns count of deleted items."""
+        import re
+        import html
+
+        if not category_names:
+            return 0
+
+        session = self._get_session()
+        try:
+            # Trova tutti gli item che hanno almeno una delle categorie specificate
+            items_to_delete = []
+            for item in session.query(RssItem).all():
+                if item.categories:
+                    should_delete = False
+                    for cat in item.categories:
+                        # Split composite categories by ',' and '/'
+                        parts = re.split(r'[,/]', cat)
+                        for part in parts:
+                            cleaned = html.unescape(part.strip())  # Decode HTML entities
+                            if cleaned in category_names:
+                                should_delete = True
+                                break
+                        if should_delete:
+                            break
+                    if should_delete:
+                        items_to_delete.append(item.id)
+
+            if not items_to_delete:
+                return 0
+
+            deleted_count = session.query(RssItem).filter(
+                RssItem.id.in_(items_to_delete)  # type: ignore[attr-defined]
+            ).delete(synchronize_session=False)
+            session.commit()
+            return deleted_count
+        except Exception as exc:
+            session.rollback()
+            raise StorageError(f"Errore durante eliminazione items per categoria: {exc}")
         finally:
             session.close()
 
@@ -2274,6 +2758,64 @@ class DatabaseStorage:
         except SQLAlchemyError as exc:
             session.rollback()
             raise StorageError(f"Errore eliminazione ricerca manuale: {exc}") from exc
+        finally:
+            session.close()
+
+    def delete_scan_results(self, keep_last: int = 0) -> int:
+        """Elimina i risultati ricerche salvati, opzionalmente mantenendo gli ultimi N."""
+        session = self._get_session()
+        try:
+            keep_last = int(keep_last or 0)
+            if keep_last > 0:
+                keep_ids = [
+                    entry.id
+                    for entry in session.query(ScanResultEntry)  # type: ignore[attr-defined]
+                    .order_by(ScanResultEntry.generated_at.desc())  # type: ignore[attr-defined]
+                    .limit(keep_last)
+                    .all()
+                ]
+                if keep_ids:
+                    deleted = session.query(ScanResultEntry).filter(  # type: ignore[attr-defined]
+                        ~ScanResultEntry.id.in_(keep_ids)
+                    ).delete(synchronize_session=False)
+                else:
+                    deleted = 0
+            else:
+                deleted = session.query(ScanResultEntry).delete()  # type: ignore[attr-defined]
+            session.commit()
+            return int(deleted or 0)
+        except SQLAlchemyError as exc:
+            session.rollback()
+            raise StorageError(f"Errore pulizia risultati: {exc}") from exc
+        finally:
+            session.close()
+
+    def delete_manual_searches(self, keep_last: int = 0) -> int:
+        """Elimina lo storico ricerche manuali, opzionalmente mantenendo gli ultimi N."""
+        session = self._get_session()
+        try:
+            keep_last = int(keep_last or 0)
+            if keep_last > 0:
+                keep_ids = [
+                    entry.id
+                    for entry in session.query(ManualSearchHistory)  # type: ignore[attr-defined]
+                    .order_by(ManualSearchHistory.generated_at.desc())  # type: ignore[attr-defined]
+                    .limit(keep_last)
+                    .all()
+                ]
+                if keep_ids:
+                    deleted = session.query(ManualSearchHistory).filter(  # type: ignore[attr-defined]
+                        ~ManualSearchHistory.id.in_(keep_ids)
+                    ).delete(synchronize_session=False)
+                else:
+                    deleted = 0
+            else:
+                deleted = session.query(ManualSearchHistory).delete()  # type: ignore[attr-defined]
+            session.commit()
+            return int(deleted or 0)
+        except SQLAlchemyError as exc:
+            session.rollback()
+            raise StorageError(f"Errore pulizia storico manuale: {exc}") from exc
         finally:
             session.close()
 

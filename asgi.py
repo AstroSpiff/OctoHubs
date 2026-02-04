@@ -7,6 +7,9 @@ import copy
 import json
 import logging
 import os
+import time
+import io
+import zipfile
 import secrets
 import traceback
 import uuid
@@ -20,9 +23,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import pass_context
 from starlette.middleware.sessions import SessionMiddleware
-from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse
+from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse, unquote
 
-from app import _build_active_library_scans_snapshot, _build_scan_library_snapshot, _build_scan_library_tracked_snapshot, _build_scan_group_tracked_snapshot, _build_associations_get_snapshot, _build_associations_post_snapshot, _build_media_details_snapshot, _build_jellyseerr_request_snapshot, _build_tmdb_search_snapshot, _build_tmdb_tv_details_snapshot, _build_tmdb_check_availability_snapshot, _build_manual_search_snapshot, _build_rss_inspect_snapshot, _build_rss_inspect_json_snapshot, _build_rss_import_snapshot, _build_rss_import_json_snapshot, _build_rss_deduplicate_snapshot, _build_rss_items_snapshot, _build_send_torrent_snapshot, _build_scan_status_snapshot, _build_run_scan_snapshot, _build_update_request_rules_snapshot, _build_refresh_requests_snapshot, _build_test_connections_snapshot, _build_trakt_device_start_snapshot, _build_trakt_device_poll_snapshot, _build_trakt_clear_snapshot, _build_emby_stop_task_snapshot, _build_emby_server_status_snapshot, _build_emby_health_status_snapshot, _build_emby_activity_snapshot, _build_emby_tasks_snapshot, _build_emby_users_snapshot, _build_emby_plugins_snapshot, _build_emby_streams_snapshot, _build_emby_status_stream_payload, _build_emby_libraries_snapshot, _build_active_scans_snapshot, _build_debug_vf_query_snapshot, _build_strm_guard_status_snapshot, _build_grouped_libraries_snapshot, _build_movie_versions_snapshot, _build_series_seasons_snapshot, _build_season_episodes_snapshot, _build_lookup_snapshot, _build_item_details_snapshot, _build_availability_snapshot, _build_latest_snapshot, _build_latest_progress_payload, _build_latest_preview_snapshot, _build_latest_preview_cache_snapshot, _build_latest_enrich_snapshot, _build_latest_notify_snapshot, _build_emby_image_stream, _build_server_order_snapshot, _build_group_order_get_snapshot, _build_group_order_post_snapshot, _build_tab_order_get_snapshot, _build_tab_order_post_snapshot, _probe_discovery_start_snapshot, _probe_discovery_stop_snapshot, _probe_recent_start_snapshot, get_emby_user_manager, _probe_recent_start_all_snapshot, _probe_recent_stop_snapshot, _probe_recent_stop_all_snapshot, _probe_recent_config_get_snapshot, _probe_recent_config_save_snapshot, _probe_recent_processing_start_snapshot, _probe_recent_processing_start_all_snapshot, _probe_recent_processing_stop_snapshot, _probe_recent_processing_stop_all_snapshot, _probe_recent_combo_start_snapshot, _probe_recent_combo_start_all_snapshot, _probe_recent_combo_stop_snapshot, _probe_recent_combo_stop_all_snapshot, _probe_libraries_combo_start_snapshot, _probe_libraries_combo_stop_snapshot, _probe_processing_start_snapshot, _probe_processing_stop_snapshot, _probe_queue_get_snapshot, _probe_queue_delete_snapshot, _probe_history_get_snapshot, _probe_history_delete_snapshot, _probe_retry_snapshot, _probe_blacklist_get_snapshot, _probe_blacklist_delete_snapshot, _probe_debug_recent_items_snapshot, _coerce_request_bool, _coerce_request_int, _LIBRARY_SCAN_TRACKER, _ws_event_queues, _ws_queues_lock, _sse_event_queues, _sse_queues_lock, DateTimeEncoder, load_config, _default_emby_settings, _prepare_emby_servers_for_view, _get_total_blacklist_counts, _default_latest_settings, _load_latest_settings, _load_telegram_settings, _prepare_latest_notification_rules, EMBY_CATEGORY_OPTIONS, _resolve_next_url, _ensure_db_backend, _load_emby_settings_from_db, _build_emby_server_from_form, _fetch_emby_status, _save_emby_settings_to_db, _purge_emby_server_settings, _emby_display_name, _normalize_emby_server, _execute_emby_action, EMBY_ACTIONS, _db_enabled, _save_latest_settings, _get_emby_servers_from_config, _ensure_strm_guard_manager, _clear_latest_state, _update_app_settings_overrides, _register_app_event_loop, _active_trakt_settings, _trakt_enabled
+import requests
+
+from app import _build_active_library_scans_snapshot, _build_scan_library_snapshot, _build_scan_library_tracked_snapshot, _build_scan_group_tracked_snapshot, _build_associations_get_snapshot, _build_associations_post_snapshot, _build_media_details_snapshot, _build_jellyseerr_request_snapshot, _build_tmdb_search_snapshot, _build_tmdb_tv_details_snapshot, _build_tmdb_check_availability_snapshot, _build_manual_search_snapshot, _build_rss_inspect_snapshot, _build_rss_inspect_json_snapshot, _build_rss_import_snapshot, _build_rss_import_json_snapshot, _build_rss_deduplicate_snapshot, _build_rss_items_snapshot, _build_rss_search_snapshot, _build_rss_delete_snapshot, _build_categories_snapshot, _build_blacklist_snapshot, _build_blacklist_add_snapshot, _build_blacklist_remove_snapshot, _build_hidden_snapshot, _build_hidden_add_snapshot, _build_hidden_remove_snapshot, _build_hidden_add_batch_snapshot, _build_hidden_remove_batch_snapshot, _build_blacklist_add_batch_snapshot, _build_blacklist_remove_batch_snapshot, _build_delete_by_categories_snapshot, _build_send_torrent_snapshot, _build_send_torrent_batch_snapshot, _build_scan_status_snapshot, _build_run_scan_snapshot, _build_update_request_rules_snapshot, _build_refresh_requests_snapshot, _build_test_connections_snapshot, _build_trakt_device_start_snapshot, _build_trakt_device_poll_snapshot, _build_trakt_clear_snapshot, _build_emby_stop_task_snapshot, _build_emby_server_status_snapshot, _build_emby_health_status_snapshot, _build_emby_activity_snapshot, _build_emby_tasks_snapshot, _build_emby_users_snapshot, _build_emby_plugins_snapshot, _build_emby_streams_snapshot, _build_emby_status_stream_payload, _build_emby_libraries_snapshot, _build_active_scans_snapshot, _build_debug_vf_query_snapshot, _build_strm_guard_status_snapshot, _build_grouped_libraries_snapshot, _build_movie_versions_snapshot, _build_series_seasons_snapshot, _build_season_episodes_snapshot, _build_lookup_snapshot, _build_item_details_snapshot, _build_availability_snapshot, _build_latest_snapshot, _build_latest_progress_payload, _build_latest_preview_snapshot, _build_latest_preview_cache_snapshot, _build_latest_enrich_snapshot, _build_latest_notify_snapshot, _build_emby_image_stream, _build_server_order_snapshot, _build_group_order_get_snapshot, _build_group_order_post_snapshot, _build_tab_order_get_snapshot, _build_tab_order_post_snapshot, _probe_discovery_start_snapshot, _probe_discovery_stop_snapshot, _probe_recent_start_snapshot, get_emby_user_manager, _probe_recent_start_all_snapshot, _probe_recent_stop_snapshot, _probe_recent_stop_all_snapshot, _probe_recent_config_get_snapshot, _probe_recent_config_save_snapshot, _probe_recent_processing_start_snapshot, _probe_recent_processing_start_all_snapshot, _probe_recent_processing_stop_snapshot, _probe_recent_processing_stop_all_snapshot, _probe_recent_combo_start_snapshot, _probe_recent_combo_start_all_snapshot, _probe_recent_combo_stop_snapshot, _probe_recent_combo_stop_all_snapshot, _probe_libraries_combo_start_snapshot, _probe_libraries_combo_stop_snapshot, _probe_processing_start_snapshot, _probe_processing_stop_snapshot, _probe_queue_get_snapshot, _probe_queue_delete_snapshot, _probe_history_get_snapshot, _probe_history_delete_snapshot, _probe_retry_snapshot, _probe_blacklist_get_snapshot, _probe_blacklist_delete_snapshot, _probe_debug_recent_items_snapshot, _coerce_request_bool, _coerce_request_int, _LIBRARY_SCAN_TRACKER, _ws_event_queues, _ws_queues_lock, _sse_event_queues, _sse_queues_lock, DateTimeEncoder, load_config, _default_emby_settings, _prepare_emby_servers_for_view, _get_total_blacklist_counts, _default_latest_settings, _load_latest_settings, _load_telegram_settings, _prepare_latest_notification_rules, EMBY_CATEGORY_OPTIONS, _resolve_next_url, _ensure_db_backend, _load_emby_settings_from_db, _build_emby_server_from_form, _fetch_emby_status, _save_emby_settings_to_db, _purge_emby_server_settings, _emby_display_name, _normalize_emby_server, _execute_emby_action, EMBY_ACTIONS, _db_enabled, _save_latest_settings, _get_emby_servers_from_config, _ensure_strm_guard_manager, _clear_latest_state, _update_app_settings_overrides, _register_app_event_loop, _active_trakt_settings, _trakt_enabled
 from storage import StorageError
 from emby_websocket_manager import get_websocket_manager
 from emby_collection_sources import SOURCE_TYPES, list_trakt_lists, list_mdblist_user_lists, is_mdblist_enabled
@@ -581,6 +586,62 @@ def _require_auth(request: Request):
     return user_id
 
 
+def _sanitize_download_url(raw_url: Optional[str]) -> Optional[str]:
+    if not raw_url or not isinstance(raw_url, str):
+        return None
+    url = raw_url.replace("&amp;", "&").strip()
+    if not url.startswith(("http://", "https://")):
+        return None
+    if "?" not in url:
+        return url
+    base, rest = url.split("?", 1)
+    if "#" in rest:
+        query, frag = rest.split("#", 1)
+        frag = f"#{frag}"
+    else:
+        query, frag = rest, ""
+    query = query.replace("+", "%2B")
+    return f"{base}?{query}{frag}"
+
+
+def _guess_torrent_filename(url: str, headers: Dict[str, str]) -> str:
+    filename = ""
+    content_disp = headers.get("content-disposition", "")
+    if "filename=" in content_disp:
+        parts = content_disp.split("filename=")
+        if len(parts) > 1:
+            filename = parts[1].strip().strip("\"'")
+    if not filename:
+        parsed = urlparse(url)
+        query = dict(parse_qsl(parsed.query))
+        candidate = query.get("file") or query.get("filename") or query.get("name")
+        if candidate:
+            filename = unquote(candidate)
+    if not filename:
+        path = urlparse(url).path or ""
+        tail = os.path.basename(path)
+        if tail:
+            filename = tail
+    if not filename:
+        filename = f"download_{int(time.time())}.torrent"
+    if not filename.lower().endswith(".torrent"):
+        filename = f"{filename}.torrent"
+    return filename
+
+
+def _download_torrent_file(url: str):
+    safe_url = _sanitize_download_url(url)
+    if not safe_url:
+        return None, None, "URL non valido"
+    try:
+        resp = requests.get(safe_url, timeout=30)
+        resp.raise_for_status()
+    except requests.exceptions.RequestException as exc:
+        return None, None, f"Errore download torrent: {exc}"
+    filename = _guess_torrent_filename(safe_url, resp.headers)
+    return resp.content, filename, None
+
+
 def get_current_user_optional(request: Request):
     """Dependency: Get current user or None."""
     return _get_current_user(request)
@@ -1133,6 +1194,179 @@ async def rss_items_api(request: Request):
     return JSONResponse(data, status_code=status_code)
 
 
+@fastapi_app.get("/api/rss/search")
+async def rss_search_api(request: Request):
+    _require_auth(request)
+    keywords = request.query_params.get("keywords")
+    limit = request.query_params.get("limit")
+    offset = request.query_params.get("offset")
+    use_regex = request.query_params.get("use_regex")
+    search_in = request.query_params.get("search_in")
+    data, status_code = _build_rss_search_snapshot(keywords, limit, offset, use_regex, search_in)
+    return JSONResponse(data, status_code=status_code)
+
+
+@fastapi_app.delete("/api/rss/items")
+async def rss_delete_api(request: Request):
+    _require_auth(request)
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        print(f"   -> [API] Errore parsing JSON payload rss delete: {exc}")
+        return JSONResponse({"success": False, "message": "Payload JSON non valido"}, status_code=400)
+
+    item_ids = payload.get("item_ids", [])
+    data, status_code = _build_rss_delete_snapshot(item_ids)
+    return JSONResponse(data, status_code=status_code)
+
+
+@fastapi_app.get("/api/rss/categories")
+async def rss_categories_api(request: Request):
+    _require_auth(request)
+    data, status_code = _build_categories_snapshot()
+    return JSONResponse(data, status_code=status_code)
+
+
+@fastapi_app.get("/api/rss/blacklist")
+async def rss_blacklist_get_api(request: Request):
+    _require_auth(request)
+    data, status_code = _build_blacklist_snapshot()
+    return JSONResponse(data, status_code=status_code)
+
+
+@fastapi_app.post("/api/rss/blacklist")
+async def rss_blacklist_add_api(request: Request):
+    _require_auth(request)
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        print(f"   -> [API] Errore parsing JSON payload blacklist add: {exc}")
+        return JSONResponse({"success": False, "message": "Payload JSON non valido"}, status_code=400)
+
+    category_name = payload.get("category_name", "")
+    data, status_code = _build_blacklist_add_snapshot(category_name)
+    return JSONResponse(data, status_code=status_code)
+
+
+@fastapi_app.delete("/api/rss/blacklist")
+async def rss_blacklist_remove_api(request: Request):
+    _require_auth(request)
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        print(f"   -> [API] Errore parsing JSON payload blacklist remove: {exc}")
+        return JSONResponse({"success": False, "message": "Payload JSON non valido"}, status_code=400)
+
+    category_name = payload.get("category_name", "")
+    data, status_code = _build_blacklist_remove_snapshot(category_name)
+    return JSONResponse(data, status_code=status_code)
+
+
+@fastapi_app.get("/api/rss/hidden")
+async def rss_hidden_get_api(request: Request):
+    _require_auth(request)
+    data, status_code = _build_hidden_snapshot()
+    return JSONResponse(data, status_code=status_code)
+
+
+@fastapi_app.post("/api/rss/hidden")
+async def rss_hidden_add_api(request: Request):
+    _require_auth(request)
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        print(f"   -> [API] Errore parsing JSON payload hidden add: {exc}")
+        return JSONResponse({"success": False, "message": "Payload JSON non valido"}, status_code=400)
+
+    category_name = payload.get("category_name", "")
+    data, status_code = _build_hidden_add_snapshot(category_name)
+    return JSONResponse(data, status_code=status_code)
+
+
+@fastapi_app.delete("/api/rss/hidden")
+async def rss_hidden_remove_api(request: Request):
+    _require_auth(request)
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        print(f"   -> [API] Errore parsing JSON payload hidden remove: {exc}")
+        return JSONResponse({"success": False, "message": "Payload JSON non valido"}, status_code=400)
+
+    category_name = payload.get("category_name", "")
+    data, status_code = _build_hidden_remove_snapshot(category_name)
+    return JSONResponse(data, status_code=status_code)
+
+
+@fastapi_app.post("/api/rss/hidden/batch")
+async def rss_hidden_add_batch_api(request: Request):
+    _require_auth(request)
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        print(f"   -> [API] Errore parsing JSON payload hidden add batch: {exc}")
+        return JSONResponse({"success": False, "message": "Payload JSON non valido"}, status_code=400)
+
+    category_names = payload.get("category_names", [])
+    data, status_code = _build_hidden_add_batch_snapshot(category_names)
+    return JSONResponse(data, status_code=status_code)
+
+
+@fastapi_app.delete("/api/rss/hidden/batch")
+async def rss_hidden_remove_batch_api(request: Request):
+    _require_auth(request)
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        print(f"   -> [API] Errore parsing JSON payload hidden remove batch: {exc}")
+        return JSONResponse({"success": False, "message": "Payload JSON non valido"}, status_code=400)
+
+    category_names = payload.get("category_names", [])
+    data, status_code = _build_hidden_remove_batch_snapshot(category_names)
+    return JSONResponse(data, status_code=status_code)
+
+
+@fastapi_app.post("/api/rss/blacklist/batch")
+async def rss_blacklist_add_batch_api(request: Request):
+    _require_auth(request)
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        print(f"   -> [API] Errore parsing JSON payload blacklist add batch: {exc}")
+        return JSONResponse({"success": False, "message": "Payload JSON non valido"}, status_code=400)
+
+    category_names = payload.get("category_names", [])
+    data, status_code = _build_blacklist_add_batch_snapshot(category_names)
+    return JSONResponse(data, status_code=status_code)
+
+
+@fastapi_app.delete("/api/rss/blacklist/batch")
+async def rss_blacklist_remove_batch_api(request: Request):
+    _require_auth(request)
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        print(f"   -> [API] Errore parsing JSON payload blacklist remove batch: {exc}")
+        return JSONResponse({"success": False, "message": "Payload JSON non valido"}, status_code=400)
+
+    category_names = payload.get("category_names", [])
+    data, status_code = _build_blacklist_remove_batch_snapshot(category_names)
+    return JSONResponse(data, status_code=status_code)
+
+
+@fastapi_app.delete("/api/rss/items/by-categories")
+async def rss_delete_by_categories_api(request: Request):
+    _require_auth(request)
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        print(f"   -> [API] Errore parsing JSON payload delete by categories: {exc}")
+        return JSONResponse({"success": False, "message": "Payload JSON non valido"}, status_code=400)
+
+    category_names = payload.get("category_names", [])
+    data, status_code = _build_delete_by_categories_snapshot(category_names)
+    return JSONResponse(data, status_code=status_code)
+
+
 @fastapi_app.post("/send-torrent")
 async def send_torrent(request: Request):
     _require_auth(request)
@@ -1148,6 +1382,28 @@ async def send_torrent(request: Request):
     except Exception as exc:
         # Gestione errori non previsti
         print(f"   -> [API] [ERRORE] Eccezione non gestita in send-torrent: {type(exc).__name__} - {exc}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            {"success": False, "message": f"Errore interno: {str(exc)}"},
+            status_code=500
+        )
+
+
+@fastapi_app.post("/send-torrent/batch")
+async def send_torrent_batch(request: Request):
+    _require_auth(request)
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        print(f"   -> [API] Errore parsing JSON payload send-torrent batch: {exc}")
+        payload = {}
+
+    try:
+        data, status_code = _build_send_torrent_batch_snapshot(payload)
+        return JSONResponse(data, status_code=status_code)
+    except Exception as exc:
+        print(f"   -> [API] [ERRORE] Eccezione non gestita in send-torrent batch: {type(exc).__name__} - {exc}")
         import traceback
         traceback.print_exc()
         return JSONResponse(
@@ -1177,6 +1433,104 @@ async def send_torrent_api(request: Request):
             {"success": False, "message": f"Errore interno: {str(exc)}"},
             status_code=500
         )
+
+
+@fastapi_app.post("/api/send-torrent/batch")
+async def send_torrent_batch_api(request: Request):
+    _require_auth(request)
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        print(f"   -> [API] Errore parsing JSON payload send-torrent batch: {exc}")
+        payload = {}
+
+    try:
+        data, status_code = _build_send_torrent_batch_snapshot(payload)
+        return JSONResponse(data, status_code=status_code)
+    except Exception as exc:
+        print(f"   -> [API] [ERRORE] Eccezione non gestita in send-torrent batch: {type(exc).__name__} - {exc}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse(
+            {"success": False, "message": f"Errore interno: {str(exc)}"},
+            status_code=500
+        )
+
+
+@fastapi_app.get("/api/torrent/proxy")
+async def torrent_proxy_api(request: Request, url: str = ""):
+    _require_auth(request)
+    content, filename, error = _download_torrent_file(url)
+    if error:
+        return JSONResponse({"success": False, "message": error}, status_code=502)
+
+    headers = {
+        "Content-Disposition": f"attachment; filename=\"{filename}\""
+    }
+    return Response(content, media_type="application/x-bittorrent", headers=headers)
+
+
+@fastapi_app.post("/api/torrent/proxy")
+async def torrent_proxy_post_api(request: Request):
+    _require_auth(request)
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    url = payload.get("url") if isinstance(payload, dict) else ""
+    content, filename, error = _download_torrent_file(url)
+    if error:
+        return JSONResponse({"success": False, "message": error}, status_code=502)
+
+    headers = {
+        "Content-Disposition": f"attachment; filename=\"{filename}\""
+    }
+    return Response(content, media_type="application/x-bittorrent", headers=headers)
+
+
+@fastapi_app.post("/api/torrent/zip")
+async def torrent_zip_api(request: Request):
+    _require_auth(request)
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    links = payload.get("links") if isinstance(payload, dict) else None
+    if not isinstance(links, list) or not links:
+        return JSONResponse({"success": False, "message": "Lista link mancante"}, status_code=400)
+
+    zip_buffer = io.BytesIO()
+    added = 0
+    errors = []
+    used_names = set()
+    with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for link in links:
+            content, filename, error = _download_torrent_file(link)
+            if error:
+                errors.append({"link": link, "error": error})
+                continue
+            base, ext = os.path.splitext(filename)
+            candidate = filename
+            counter = 1
+            while candidate in used_names:
+                candidate = f"{base}_{counter}{ext or '.torrent'}"
+                counter += 1
+            used_names.add(candidate)
+            zf.writestr(candidate, content)
+            added += 1
+
+    if added == 0:
+        message = "Nessun torrent disponibile per il download"
+        if errors:
+            message = f"{message}. Errori: {errors[0].get('error')}"
+        return JSONResponse({"success": False, "message": message, "errors": errors[:5]}, status_code=400)
+
+    zip_buffer.seek(0)
+    headers = {
+        "Content-Disposition": "attachment; filename=\"torrents.zip\""
+    }
+    return StreamingResponse(zip_buffer, media_type="application/zip", headers=headers)
 
 
 @fastapi_app.get("/scan-status")
@@ -1979,6 +2333,96 @@ async def probe_blacklist_delete(request: Request):
     scope = (body or {}).get("scope") or request.query_params.get("scope") or "libraries"
     payload, status_code = _probe_blacklist_delete_snapshot(server_id, item_id, media_source_id, error_type, scope)
     return JSONResponse(payload, status_code=status_code)
+
+
+@fastapi_app.get("/api/emby/probe/export-csv")
+async def probe_export_csv(request: Request):
+    """Export blacklist and incomplete items as CSV"""
+    _require_auth(request)
+    server_id = request.query_params.get("server_id")
+    scope = request.query_params.get("scope") or "libraries"
+
+    from app import _probe_blacklist_get_snapshot, load_config
+    from io import StringIO
+    import csv
+
+    # Load config to get server names
+    config, _ = load_config()
+    emby_servers = config.get("EMBY", {}).get("SERVERS", [])
+    server_name_map = {s.get("id"): s.get("name", s.get("id")) for s in emby_servers}
+
+    # Get all blacklist items (errors and incomplete)
+    all_items_payload, _ = _probe_blacklist_get_snapshot(server_id, "0", None, scope)
+    all_items = all_items_payload.get("blacklist", [])
+
+    # Create CSV
+    output = StringIO()
+    writer = csv.writer(output)
+
+    # Header with all useful information
+    writer.writerow([
+        "Tipo",
+        "Server",
+        "Titolo",
+        "Libreria",
+        "Tipo Errore",
+        "Dettaglio Errore",
+        "Tentativi",
+        "Data Ultimo Tentativo"
+    ])
+
+    # Process all items
+    for item in all_items:
+        error_type = item.get("error_type", "")
+        retry_count = item.get("retry_count", 0)
+
+        # Determine item type based on error_type and retry_count
+        if error_type == "INCOMPLETE":
+            tipo = "Incompleto"
+        elif retry_count >= 3:
+            tipo = "Errore"
+        else:
+            # Skip items that are not errors and not incomplete
+            continue
+
+        # Get server name
+        sid = item.get("server_id", "")
+        server_name = server_name_map.get(sid, sid)
+
+        # Format date
+        failed_at = item.get("failed_at", "")
+        if failed_at:
+            try:
+                from datetime import datetime as dt
+                date_obj = dt.fromisoformat(failed_at.replace('Z', '+00:00'))
+                failed_at = date_obj.strftime("%Y-%m-%d %H:%M:%S")
+            except:
+                pass
+
+        writer.writerow([
+            tipo,
+            server_name,
+            item.get("item_name", ""),
+            item.get("library_name", ""),
+            error_type,
+            item.get("reason", ""),
+            retry_count,
+            failed_at
+        ])
+
+    # Return CSV
+    csv_content = output.getvalue()
+    output.close()
+
+    filename = f"strm_probe_report_{scope}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}"
+        }
+    )
 
 
 @fastapi_app.get("/api/emby/probe/debug-recent-items")
@@ -4683,7 +5127,7 @@ async def update_scheduler_route(
         if mode not in ("interval", "fixed"):
             mode = "interval"
         interval_default = fallback.get("interval_minutes", 60)
-        interval = _coerce_request_int(form_data.get(f"{section_key}_interval"), interval_default, 5)
+        interval = _coerce_request_int(form_data.get(f"{section_key}_interval"), interval_default, 1)
         times_raw = form_data.get(f"{section_key}_times")
         if times_raw is None:
             times = fallback.get("times") or []
@@ -4701,7 +5145,14 @@ async def update_scheduler_route(
     updated["scan"] = _parse_auto_section("scan", current.get("scan", defaults["scan"]))
     updated["refresh"] = _parse_auto_section("refresh", current.get("refresh", defaults["refresh"]))
     updated["workflow"] = _parse_auto_section("workflow", current.get("workflow", defaults["workflow"]))
+    updated["sync"] = _parse_auto_section("sync", current.get("sync", defaults.get("sync", {"enabled": False, "mode": "interval", "interval_minutes": 60, "times": []})))
     updated["rss"] = _parse_auto_section("rss", current.get("rss", defaults.get("rss", {"enabled": False, "mode": "interval", "interval_minutes": 30, "times": []})))
+
+    # Sync RSS_IMPORT.ENABLED with AUTO_TASKS.rss.enabled
+    rss_import_config = config.get("RSS_IMPORT") or {}
+    if updated["rss"].get("enabled") != rss_import_config.get("ENABLED"):
+        rss_import_config["ENABLED"] = updated["rss"].get("enabled", False)
+        config["RSS_IMPORT"] = rss_import_config
 
     collections_enabled = form_data.get("collections_auto_refresh_enabled")
     collections_mode = form_data.get("collections_auto_refresh_mode") or "interval"
@@ -4724,7 +5175,8 @@ async def update_scheduler_route(
     try:
         _update_app_settings_overrides({
             "AUTO_TASKS": updated,
-            "COLLECTIONS": collections_payload
+            "COLLECTIONS": collections_payload,
+            "RSS_IMPORT": rss_import_config
         })
     except StorageError as exc:
         flash(request, f"Errore salvataggio automazioni: {exc}", "error")
@@ -4736,8 +5188,10 @@ async def update_scheduler_route(
         app_module._ACTIVE_CONFIG = copy.deepcopy(CONFIG_DEFAULTS)
     app_module._ACTIVE_CONFIG["AUTO_TASKS"] = updated
     app_module._ACTIVE_CONFIG["COLLECTIONS"] = collections_payload
+    app_module._ACTIVE_CONFIG["RSS_IMPORT"] = rss_import_config
     config["AUTO_TASKS"] = updated
     config["COLLECTIONS"] = collections_payload
+    config["RSS_IMPORT"] = rss_import_config
 
     _sync_auto_scheduler(is_valid)
 

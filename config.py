@@ -427,7 +427,7 @@ def _normalize_auto_entry(entry: Optional[Dict], fallback: Dict) -> Dict[str, An
     minutes = base.get("interval_minutes", 60)
     if raw_minutes not in (None, ""):
         minutes = _coerce_request_int(raw_minutes, base.get("interval_minutes", 60))
-    base["interval_minutes"] = max(5, minutes)
+    base["interval_minutes"] = max(1, minutes)
     times = _normalize_time_list(entry.get("times"))
     base["times"] = times
     return base

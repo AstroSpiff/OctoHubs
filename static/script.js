@@ -83,6 +83,7 @@
                 toast.remove();
             }, 4500);
         };
+        window.showToast = showToast;
         const consumeFlashMessages = () => {
             const alerts = document.querySelectorAll('.alert[data-toast]');
             alerts.forEach(alert => {
@@ -343,26 +344,6 @@
             refreshStatus();
             setInterval(refreshStatus, 4000);
         }
-
-        document.addEventListener('click', async (event) => {
-            const qbBtn = event.target.closest('.qb-button');
-            if (!qbBtn) return;
-            const link = qbBtn.dataset.link;
-            qbBtn.disabled = true;
-            try {
-                const resp = await csrfFetch('/api/send-torrent', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({link})
-                });
-                const data = await resp.json();
-                alert(data.message || 'Operazione completata');
-            } catch (err) {
-                alert('Errore invio torrent');
-            } finally {
-                qbBtn.disabled = false;
-            }
-        });
 
         const connectionBtn = document.getElementById('test-connections-btn');
         if (connectionBtn) {
@@ -711,11 +692,18 @@
         const rssPrevBtn = document.getElementById('rss-prev-btn');
         const rssNextBtn = document.getElementById('rss-next-btn');
         const rssViewTabs = rssModal ? rssModal.querySelectorAll('[data-rss-view]') : [];
+        const rssSearchInput = document.getElementById('rss-search-input');
+        const rssSearchBtn = document.getElementById('rss-search-btn');
+        const rssClearSearchBtn = document.getElementById('rss-clear-search-btn');
+        const rssDeleteBtn = document.getElementById('rss-delete-btn');
+        const rssSelectedCount = document.getElementById('rss-selected-count');
         let rssViewMode = 'table';
         let rssOffset = 0;
         let rssTotal = 0;
         let rssLastItems = [];
         const rssLimit = 50;
+        let rssSearchKeywords = '';
+        let rssSelectedIds = new Set();
 
         const escapeRssHtml = (value) => {
             const text = String(value ?? '');
@@ -751,8 +739,11 @@
                 rssViewContent.innerHTML = '<span class="tagline">Nessun articolo disponibile.</span>';
                 return;
             }
-            const rows = items.map(item => `
+            const rows = items.map(item => {
+                const isChecked = rssSelectedIds.has(item.id);
+                return `
                 <tr>
+                    <td><input type="checkbox" class="rss-item-checkbox" data-item-id="${item.id}" ${isChecked ? 'checked' : ''} /></td>
                     <td>${escapeRssHtml(item.title || '—')}</td>
                     <td>${escapeRssHtml(item.source_name || '—')}</td>
                     <td>${escapeRssHtml(item.source_url || '—')}</td>
@@ -767,11 +758,13 @@
                     <td>${escapeRssHtml(item.summary || '—')}</td>
                     <td>${escapeRssHtml(item.content || '—')}</td>
                 </tr>
-            `).join('');
+                `;
+            }).join('');
             rssViewContent.innerHTML = `
                 <table class="rss-items-table">
                     <thead>
                         <tr>
+                            <th><input type="checkbox" id="rss-select-all" /></th>
                             <th>Titolo</th>
                             <th>Sorgente</th>
                             <th>URL Sorgente</th>
@@ -790,6 +783,7 @@
                     <tbody>${rows}</tbody>
                 </table>
             `;
+            attachRssCheckboxHandlers();
         };
 
         const renderRssHtml = (items) => {
@@ -801,6 +795,7 @@
                 return;
             }
             const blocks = items.map(item => {
+                const isChecked = rssSelectedIds.has(item.id);
                 const summaryHtml = item.summary || '';
                 const contentHtml = item.content || '';
                 const safeTitle = escapeRssHtml(item.title || '—');
@@ -816,6 +811,9 @@
                 const guidLabel = escapeRssHtml(item.guid || '—');
                 return `
                     <article class="rss-html-item">
+                        <div class="rss-html-checkbox">
+                            <input type="checkbox" class="rss-item-checkbox" data-item-id="${item.id}" ${isChecked ? 'checked' : ''} />
+                        </div>
                         <h4>${safeTitle}</h4>
                         <div class="rss-html-meta">
                             <span>${safeSource}</span>
@@ -864,6 +862,7 @@
                 `;
             }).join('');
             rssViewContent.innerHTML = `<div class="rss-html-list">${blocks}</div>`;
+            attachRssCheckboxHandlers();
         };
 
         const updateRssRange = (count) => {
@@ -887,13 +886,58 @@
             }
         };
 
+        const updateSelectedCount = () => {
+            if (rssSelectedCount) {
+                rssSelectedCount.textContent = `${rssSelectedIds.size} selezionati`;
+            }
+            if (rssDeleteBtn) {
+                rssDeleteBtn.disabled = rssSelectedIds.size === 0;
+            }
+        };
+
+        const attachRssCheckboxHandlers = () => {
+            const checkboxes = document.querySelectorAll('.rss-item-checkbox');
+            checkboxes.forEach(checkbox => {
+                checkbox.addEventListener('change', (e) => {
+                    const itemId = parseInt(e.target.dataset.itemId);
+                    if (e.target.checked) {
+                        rssSelectedIds.add(itemId);
+                    } else {
+                        rssSelectedIds.delete(itemId);
+                    }
+                    updateSelectedCount();
+                });
+            });
+
+            const selectAllCheckbox = document.getElementById('rss-select-all');
+            if (selectAllCheckbox) {
+                selectAllCheckbox.addEventListener('change', (e) => {
+                    const isChecked = e.target.checked;
+                    checkboxes.forEach(checkbox => {
+                        const itemId = parseInt(checkbox.dataset.itemId);
+                        checkbox.checked = isChecked;
+                        if (isChecked) {
+                            rssSelectedIds.add(itemId);
+                        } else {
+                            rssSelectedIds.delete(itemId);
+                        }
+                    });
+                    updateSelectedCount();
+                });
+            }
+        };
+
         const loadRssItems = async () => {
             if (!rssViewContent) {
                 return;
             }
             rssViewContent.innerHTML = '<span class="tagline">Caricamento...</span>';
             try {
-                const resp = await csrfFetch(`/api/rss/items?limit=${rssLimit}&offset=${rssOffset}`);
+                let url = `/api/rss/items?limit=${rssLimit}&offset=${rssOffset}`;
+                if (rssSearchKeywords) {
+                    url = `/api/rss/search?keywords=${encodeURIComponent(rssSearchKeywords)}&limit=${rssLimit}&offset=${rssOffset}`;
+                }
+                const resp = await csrfFetch(url);
                 const data = await readJsonResponse(resp);
                 if (!resp.ok || !data.success) {
                     throw new Error(data.message || 'Errore caricamento RSS');
@@ -911,6 +955,66 @@
                 }
             } catch (err) {
                 rssViewContent.textContent = err.message || 'Errore caricamento RSS.';
+            }
+        };
+
+        const performRssSearch = () => {
+            if (!rssSearchInput) {
+                return;
+            }
+            rssSearchKeywords = rssSearchInput.value.trim();
+            if (!rssSearchKeywords) {
+                showToast('Inserisci parole chiave per la ricerca', 'warning');
+                return;
+            }
+            rssOffset = 0;
+            rssSelectedIds.clear();
+            updateSelectedCount();
+            loadRssItems();
+        };
+
+        const clearRssSearch = () => {
+            if (rssSearchInput) {
+                rssSearchInput.value = '';
+            }
+            rssSearchKeywords = '';
+            rssOffset = 0;
+            rssSelectedIds.clear();
+            updateSelectedCount();
+            loadRssItems();
+        };
+
+        const deleteRssItems = async () => {
+            if (rssSelectedIds.size === 0) {
+                return;
+            }
+            if (!confirm(`Eliminare ${rssSelectedIds.size} articoli selezionati?`)) {
+                return;
+            }
+            if (!rssDeleteBtn) {
+                return;
+            }
+            rssDeleteBtn.disabled = true;
+            rssDeleteBtn.textContent = 'Eliminazione...';
+            try {
+                const resp = await csrfFetch('/api/rss/items', {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ item_ids: Array.from(rssSelectedIds) })
+                });
+                const data = await readJsonResponse(resp);
+                if (!resp.ok || !data.success) {
+                    throw new Error(data.message || 'Errore eliminazione');
+                }
+                showToast(`${data.deleted_count} articoli eliminati`, 'success');
+                rssSelectedIds.clear();
+                updateSelectedCount();
+                loadRssItems();
+            } catch (err) {
+                showToast(err.message || 'Errore eliminazione articoli', 'error');
+            } finally {
+                rssDeleteBtn.disabled = false;
+                rssDeleteBtn.textContent = 'Elimina selezionati';
             }
         };
 
@@ -962,6 +1066,593 @@
                 loadRssItems();
             });
         }
+
+        if (rssSearchBtn) {
+            rssSearchBtn.addEventListener('click', performRssSearch);
+        }
+        if (rssClearSearchBtn) {
+            rssClearSearchBtn.addEventListener('click', clearRssSearch);
+        }
+        if (rssSearchInput) {
+            rssSearchInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    performRssSearch();
+                }
+            });
+        }
+        if (rssDeleteBtn) {
+            rssDeleteBtn.addEventListener('click', deleteRssItems);
+        }
+
+        // RSS Cleanup Section
+        const cleanupSearchInput = document.getElementById('rss-cleanup-search-input');
+        const cleanupSearchBtn = document.getElementById('rss-cleanup-search-btn');
+        const cleanupClearBtn = document.getElementById('rss-cleanup-clear-btn');
+        const cleanupDeleteBtn = document.getElementById('rss-cleanup-delete-btn');
+        const cleanupResults = document.getElementById('rss-cleanup-results');
+        const cleanupSelectedCount = document.getElementById('rss-cleanup-selected-count');
+        const cleanupLimitSelect = document.getElementById('rss-cleanup-limit-select');
+        const cleanupRegexCheckbox = document.getElementById('rss-cleanup-regex-checkbox');
+        const cleanupScopeSelect = document.getElementById('rss-cleanup-scope-select');
+        let cleanupSelectedIds = new Set();
+        let cleanupOffset = 0;
+        let cleanupTotal = 0;
+        let cleanupKeywords = '';
+        let cleanupLimit = 50;
+        let cleanupCurrentItems = [];
+
+        const updateCleanupCount = () => {
+            if (cleanupSelectedCount) {
+                cleanupSelectedCount.textContent = `${cleanupSelectedIds.size} selezionati`;
+            }
+            if (cleanupDeleteBtn) {
+                cleanupDeleteBtn.disabled = cleanupSelectedIds.size === 0;
+            }
+        };
+
+        const renderCleanupResults = (items) => {
+            if (!cleanupResults) return;
+            if (!items || !items.length) {
+                cleanupResults.innerHTML = '<div class="rss-cleanup-empty">Nessun risultato trovato</div>';
+                return;
+            }
+
+            const allChecked = items.every(item => cleanupSelectedIds.has(item.id));
+            const headerHtml = `
+                <div class="rss-cleanup-header">
+                    <div class="rss-cleanup-checkbox">
+                        <input type="checkbox" id="cleanup-select-all" ${allChecked ? 'checked' : ''} />
+                    </div>
+                    <div>Titolo</div>
+                    <div>Provenienza</div>
+                    <div>Azioni</div>
+                </div>
+            `;
+
+            const itemsHtml = items.map(item => {
+                const isChecked = cleanupSelectedIds.has(item.id);
+                const title = item.title || 'Senza titolo';
+                const source = item.source_name || item.source_url || '—';
+                return `
+                    <div class="rss-cleanup-item">
+                        <div class="rss-cleanup-checkbox">
+                            <input type="checkbox" class="cleanup-item-checkbox" data-item-id="${item.id}" ${isChecked ? 'checked' : ''} />
+                        </div>
+                        <div class="rss-cleanup-title" title="${escapeRssHtml(title)}">${escapeRssHtml(title)}</div>
+                        <div class="rss-cleanup-source" title="${escapeRssHtml(source)}">${escapeRssHtml(source)}</div>
+                        <div class="rss-cleanup-actions">
+                            <button type="button" class="btn light small" onclick="openCleanupItemDetails(${item.id})">Dettagli</button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            const start = cleanupOffset + 1;
+            const end = cleanupOffset + items.length;
+            const showPagination = cleanupTotal > items.length || cleanupOffset > 0;
+            const paginationHtml = showPagination ? `
+                <div class="rss-cleanup-pagination">
+                    <span class="rss-cleanup-range">${start}-${end} di ${cleanupTotal}</span>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <button type="button" class="btn light small" id="cleanup-prev-btn" ${cleanupOffset <= 0 ? 'disabled' : ''}>Precedenti</button>
+                        <button type="button" class="btn light small" id="cleanup-next-btn" ${cleanupOffset + items.length >= cleanupTotal ? 'disabled' : ''}>Successivi</button>
+                    </div>
+                </div>
+            ` : '';
+
+            cleanupResults.innerHTML = headerHtml + itemsHtml + paginationHtml;
+
+            // Attach checkbox handlers
+            cleanupResults.querySelectorAll('.cleanup-item-checkbox').forEach(checkbox => {
+                checkbox.addEventListener('change', (e) => {
+                    const itemId = parseInt(e.target.dataset.itemId);
+                    if (e.target.checked) {
+                        cleanupSelectedIds.add(itemId);
+                    } else {
+                        cleanupSelectedIds.delete(itemId);
+                    }
+                    updateCleanupCount();
+                    // Update select all checkbox state
+                    const selectAllCheckbox = document.getElementById('cleanup-select-all');
+                    if (selectAllCheckbox) {
+                        const allChecked = items.every(item => cleanupSelectedIds.has(item.id));
+                        selectAllCheckbox.checked = allChecked;
+                    }
+                });
+            });
+
+            // Attach select all handler
+            const selectAllCheckbox = document.getElementById('cleanup-select-all');
+            if (selectAllCheckbox) {
+                selectAllCheckbox.addEventListener('change', (e) => {
+                    const isChecked = e.target.checked;
+                    items.forEach(item => {
+                        if (isChecked) {
+                            cleanupSelectedIds.add(item.id);
+                        } else {
+                            cleanupSelectedIds.delete(item.id);
+                        }
+                    });
+                    // Update all individual checkboxes
+                    cleanupResults.querySelectorAll('.cleanup-item-checkbox').forEach(checkbox => {
+                        checkbox.checked = isChecked;
+                    });
+                    updateCleanupCount();
+                });
+            }
+
+            // Attach pagination handlers
+            const prevBtn = document.getElementById('cleanup-prev-btn');
+            const nextBtn = document.getElementById('cleanup-next-btn');
+            if (prevBtn) {
+                prevBtn.addEventListener('click', () => {
+                    cleanupOffset = Math.max(0, cleanupOffset - cleanupLimit);
+                    loadCleanupResults();
+                });
+            }
+            if (nextBtn) {
+                nextBtn.addEventListener('click', () => {
+                    cleanupOffset += cleanupLimit;
+                    loadCleanupResults();
+                });
+            }
+        };
+
+        const loadCleanupResults = async () => {
+            if (!cleanupResults || !cleanupKeywords) return;
+            cleanupResults.innerHTML = '<div class="rss-cleanup-empty">Caricamento...</div>';
+            try {
+                const useRegex = cleanupRegexCheckbox ? cleanupRegexCheckbox.checked : false;
+                const searchIn = cleanupScopeSelect ? cleanupScopeSelect.value : 'all';
+                const url = `/api/rss/search?keywords=${encodeURIComponent(cleanupKeywords)}&limit=${cleanupLimit}&offset=${cleanupOffset}&use_regex=${useRegex}&search_in=${searchIn}`;
+                const resp = await csrfFetch(url);
+                const data = await readJsonResponse(resp);
+                if (!resp.ok || !data.success) {
+                    throw new Error(data.message || 'Errore ricerca');
+                }
+                const payload = data.data || {};
+                cleanupTotal = payload.total ?? 0;
+                cleanupCurrentItems = payload.items || [];
+                renderCleanupResults(cleanupCurrentItems);
+            } catch (err) {
+                cleanupResults.innerHTML = `<div class="rss-cleanup-empty">${err.message || 'Errore caricamento risultati'}</div>`;
+            }
+        };
+
+        const performCleanupSearch = () => {
+            if (!cleanupSearchInput) return;
+            cleanupKeywords = cleanupSearchInput.value.trim();
+            if (!cleanupKeywords) {
+                showToast('Inserisci parole chiave per la ricerca', 'warning');
+                return;
+            }
+            cleanupOffset = 0;
+            cleanupSelectedIds.clear();
+            updateCleanupCount();
+            loadCleanupResults();
+        };
+
+        const clearCleanupSearch = () => {
+            if (cleanupSearchInput) {
+                cleanupSearchInput.value = '';
+            }
+            cleanupKeywords = '';
+            cleanupOffset = 0;
+            cleanupSelectedIds.clear();
+            updateCleanupCount();
+            if (cleanupResults) {
+                cleanupResults.innerHTML = '';
+            }
+        };
+
+        const deleteCleanupItems = async () => {
+            if (cleanupSelectedIds.size === 0) return;
+            if (!confirm(`Eliminare ${cleanupSelectedIds.size} articoli selezionati?`)) return;
+            if (!cleanupDeleteBtn) return;
+
+            cleanupDeleteBtn.disabled = true;
+            cleanupDeleteBtn.textContent = 'Eliminazione...';
+            try {
+                const resp = await csrfFetch('/api/rss/items', {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ item_ids: Array.from(cleanupSelectedIds) })
+                });
+                const data = await readJsonResponse(resp);
+                if (!resp.ok || !data.success) {
+                    throw new Error(data.message || 'Errore eliminazione');
+                }
+                showToast(`${data.deleted_count} articoli eliminati`, 'success');
+                cleanupSelectedIds.clear();
+                updateCleanupCount();
+                loadCleanupResults();
+            } catch (err) {
+                showToast(err.message || 'Errore eliminazione articoli', 'error');
+            } finally {
+                cleanupDeleteBtn.disabled = false;
+                cleanupDeleteBtn.textContent = 'Elimina selezionati';
+            }
+        };
+
+        window.openCleanupItemDetails = (itemId) => {
+            const item = cleanupCurrentItems.find(i => i.id === itemId);
+            if (!item) {
+                showToast('Articolo non trovato', 'error');
+                return;
+            }
+
+            const title = item.title || 'Senza titolo';
+            const source = item.source_name || '—';
+            const sourceUrl = item.source_url || '—';
+            const author = item.author || '—';
+            const link = item.link || '—';
+            const published = formatRssDate(item.published_at);
+            const summary = item.summary || '(nessun sommario)';
+            const content = item.content || '(nessun contenuto)';
+
+            // Crea messaggio dettagli
+            let details = `TITOLO:\n${title}\n\n`;
+            details += `SORGENTE: ${source}\n`;
+            details += `URL SORGENTE: ${sourceUrl}\n`;
+            details += `AUTORE: ${author}\n`;
+            details += `LINK: ${link}\n`;
+            details += `PUBBLICATO: ${published}\n\n`;
+            details += `SOMMARIO:\n${summary}\n\n`;
+            details += `CONTENUTO:\n${content}`;
+
+            alert(details);
+        };
+
+        if (cleanupSearchBtn) {
+            cleanupSearchBtn.addEventListener('click', performCleanupSearch);
+        }
+        if (cleanupClearBtn) {
+            cleanupClearBtn.addEventListener('click', clearCleanupSearch);
+        }
+        if (cleanupSearchInput) {
+            cleanupSearchInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    performCleanupSearch();
+                }
+            });
+        }
+        if (cleanupDeleteBtn) {
+            cleanupDeleteBtn.addEventListener('click', deleteCleanupItems);
+        }
+        if (cleanupLimitSelect) {
+            cleanupLimitSelect.addEventListener('change', (e) => {
+                cleanupLimit = parseInt(e.target.value);
+                cleanupOffset = 0;
+                if (cleanupKeywords) {
+                    loadCleanupResults();
+                }
+            });
+        }
+        if (cleanupRegexCheckbox && cleanupSearchInput) {
+            cleanupRegexCheckbox.addEventListener('change', (e) => {
+                if (e.target.checked) {
+                    cleanupSearchInput.placeholder = 'Cerca con regex (es: ^[A-Z].*(film|movie).*\\d{4}$)';
+                } else {
+                    cleanupSearchInput.placeholder = 'Cerca per parole chiave (titolo, sommario, contenuto)...';
+                }
+            });
+        }
+
+        // Category Management Section
+        const categoriesRefreshBtn = document.getElementById('categories-refresh-btn');
+        const categoriesShowBtn = document.getElementById('categories-show-btn');
+        const categoriesHideBtn = document.getElementById('categories-hide-btn');
+        const categoriesBlacklistBtn = document.getElementById('categories-blacklist-btn');
+        const categoriesDeleteBlacklistedBtn = document.getElementById('categories-delete-blacklisted-btn');
+        const categoriesAcceptedList = document.getElementById('categories-accepted-list');
+        const categoriesHiddenList = document.getElementById('categories-hidden-list');
+        const categoriesBlacklistedList = document.getElementById('categories-blacklisted-list');
+        const acceptedCountSpan = document.getElementById('accepted-count');
+        const hiddenCountSpan = document.getElementById('hidden-count');
+        const blacklistedCountSpan = document.getElementById('blacklisted-count');
+        let allCategories = [];
+        let selectedAccepted = new Set();
+        let selectedHidden = new Set();
+        let selectedBlacklisted = new Set();
+
+        const updateCategoryButtons = () => {
+            const totalSelected = selectedAccepted.size + selectedHidden.size + selectedBlacklisted.size;
+            const hasSelection = totalSelected > 0;
+
+            if (categoriesShowBtn) {
+                categoriesShowBtn.disabled = !hasSelection;
+            }
+            if (categoriesHideBtn) {
+                categoriesHideBtn.disabled = !hasSelection;
+            }
+            if (categoriesBlacklistBtn) {
+                categoriesBlacklistBtn.disabled = !hasSelection;
+            }
+            if (categoriesDeleteBlacklistedBtn) {
+                const blacklistedCount = allCategories.filter(cat => cat.blacklisted).length;
+                categoriesDeleteBlacklistedBtn.disabled = blacklistedCount === 0;
+            }
+        };
+
+        const renderCategoryList = (container, categories, selectedSet) => {
+            if (!container) return;
+            if (!categories || !categories.length) {
+                container.innerHTML = '<div class="categories-empty">Nessuna categoria</div>';
+                return;
+            }
+
+            const html = categories.map(cat => {
+                const isChecked = selectedSet.has(cat.name);
+                return `
+                    <div class="category-item">
+                        <div class="category-checkbox">
+                            <input type="checkbox" class="category-item-checkbox" data-category-name="${escapeRssHtml(cat.name)}" ${isChecked ? 'checked' : ''} />
+                        </div>
+                        <div class="category-name" title="${escapeRssHtml(cat.name)}">${escapeRssHtml(cat.name)}</div>
+                        <div class="category-count">${cat.count} articoli</div>
+                    </div>
+                `;
+            }).join('');
+
+            container.innerHTML = html;
+
+            // Attach checkbox handlers
+            container.querySelectorAll('.category-item-checkbox').forEach(checkbox => {
+                checkbox.addEventListener('change', (e) => {
+                    const categoryName = e.target.dataset.categoryName;
+                    if (e.target.checked) {
+                        selectedSet.add(categoryName);
+                    } else {
+                        selectedSet.delete(categoryName);
+                    }
+                    updateCategoryButtons();
+                });
+            });
+        };
+
+        const renderCategories = (categories) => {
+            if (!categories) return;
+
+            const accepted = categories.filter(cat => !cat.hidden && !cat.blacklisted);
+            const hidden = categories.filter(cat => cat.hidden && !cat.blacklisted);
+            const blacklisted = categories.filter(cat => cat.blacklisted);
+
+            renderCategoryList(categoriesAcceptedList, accepted, selectedAccepted);
+            renderCategoryList(categoriesHiddenList, hidden, selectedHidden);
+            renderCategoryList(categoriesBlacklistedList, blacklisted, selectedBlacklisted);
+
+            // Update counts
+            if (acceptedCountSpan) {
+                acceptedCountSpan.textContent = `(${accepted.length})`;
+            }
+            if (hiddenCountSpan) {
+                hiddenCountSpan.textContent = `(${hidden.length})`;
+            }
+            if (blacklistedCountSpan) {
+                blacklistedCountSpan.textContent = `(${blacklisted.length})`;
+            }
+
+            updateCategoryButtons();
+        };
+
+        const loadCategories = async () => {
+            if (!categoriesAcceptedList || !categoriesHiddenList || !categoriesBlacklistedList) return;
+
+            // Show loading state
+            categoriesAcceptedList.innerHTML = '<div class="categories-empty">Caricamento...</div>';
+            categoriesHiddenList.innerHTML = '<div class="categories-empty">Caricamento...</div>';
+            categoriesBlacklistedList.innerHTML = '<div class="categories-empty">Caricamento...</div>';
+
+            try {
+                const resp = await csrfFetch('/api/rss/categories');
+                const data = await readJsonResponse(resp);
+                if (!resp.ok || !data.success) {
+                    throw new Error(data.message || 'Errore caricamento categorie');
+                }
+                const payload = data.data || {};
+                allCategories = payload.categories || [];
+                renderCategories(allCategories);
+            } catch (err) {
+                const errorMsg = `<div class="categories-empty">${err.message || 'Errore caricamento categorie'}</div>`;
+                if (categoriesAcceptedList) categoriesAcceptedList.innerHTML = errorMsg;
+                if (categoriesHiddenList) categoriesHiddenList.innerHTML = errorMsg;
+                if (categoriesBlacklistedList) categoriesBlacklistedList.innerHTML = errorMsg;
+            }
+        };
+
+        const showCategories = async () => {
+            const totalSelected = selectedAccepted.size + selectedHidden.size + selectedBlacklisted.size;
+            if (totalSelected === 0) return;
+
+            try {
+                const apiCalls = [];
+
+                // Remove from hidden (batch)
+                if (selectedHidden.size > 0) {
+                    apiCalls.push(
+                        csrfFetch('/api/rss/hidden/batch', {
+                            method: 'DELETE',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ category_names: Array.from(selectedHidden) })
+                        })
+                    );
+                }
+
+                // Remove from blacklist (batch)
+                if (selectedBlacklisted.size > 0) {
+                    apiCalls.push(
+                        csrfFetch('/api/rss/blacklist/batch', {
+                            method: 'DELETE',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ category_names: Array.from(selectedBlacklisted) })
+                        })
+                    );
+                }
+
+                const responses = await Promise.all(apiCalls);
+
+                // Check all responses
+                for (const resp of responses) {
+                    const data = await readJsonResponse(resp);
+                    if (!resp.ok || !data.success) {
+                        throw new Error(data.message || 'Errore operazione');
+                    }
+                }
+
+                showToast(`${totalSelected} categori${totalSelected > 1 ? 'e' : 'a'} rese visibili`, 'success');
+                selectedAccepted.clear();
+                selectedHidden.clear();
+                selectedBlacklisted.clear();
+                await loadCategories();
+            } catch (err) {
+                showToast(err.message || 'Errore operazione Mostra', 'error');
+            }
+        };
+
+        const hideCategories = async () => {
+            const totalSelected = selectedAccepted.size + selectedHidden.size + selectedBlacklisted.size;
+            if (totalSelected === 0) return;
+
+            try {
+                // First: remove from blacklist (if any)
+                if (selectedBlacklisted.size > 0) {
+                    const resp = await csrfFetch('/api/rss/blacklist/batch', {
+                        method: 'DELETE',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ category_names: Array.from(selectedBlacklisted) })
+                    });
+                    const data = await readJsonResponse(resp);
+                    if (!resp.ok || !data.success) {
+                        throw new Error(data.message || 'Errore rimozione da blacklist');
+                    }
+                }
+
+                // Second: add to hidden (batch accepted + blacklisted)
+                const toHide = [...Array.from(selectedAccepted), ...Array.from(selectedBlacklisted)];
+                if (toHide.length > 0) {
+                    const resp = await csrfFetch('/api/rss/hidden/batch', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ category_names: toHide })
+                    });
+                    const data = await readJsonResponse(resp);
+                    if (!resp.ok || !data.success) {
+                        throw new Error(data.message || 'Errore aggiunta a nascoste');
+                    }
+                }
+
+                showToast(`${totalSelected} categori${totalSelected > 1 ? 'e' : 'a'} nascost${totalSelected > 1 ? 'e' : 'a'}`, 'success');
+                selectedAccepted.clear();
+                selectedHidden.clear();
+                selectedBlacklisted.clear();
+                await loadCategories();
+            } catch (err) {
+                showToast(err.message || 'Errore operazione Nascondi', 'error');
+            }
+        };
+
+        const blacklistCategories = async () => {
+            const totalSelected = selectedAccepted.size + selectedHidden.size + selectedBlacklisted.size;
+            if (totalSelected === 0) return;
+
+            try {
+                // Add to blacklist (batch accepted + hidden, blacklist has priority)
+                const toBlacklist = [...Array.from(selectedAccepted), ...Array.from(selectedHidden)];
+                if (toBlacklist.length > 0) {
+                    const resp = await csrfFetch('/api/rss/blacklist/batch', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ category_names: toBlacklist })
+                    });
+                    const data = await readJsonResponse(resp);
+                    if (!resp.ok || !data.success) {
+                        throw new Error(data.message || 'Errore aggiunta a blacklist');
+                    }
+                }
+
+                showToast(`${totalSelected} categori${totalSelected > 1 ? 'e' : 'a'} aggiunt${totalSelected > 1 ? 'e' : 'a'} a blacklist`, 'success');
+                selectedAccepted.clear();
+                selectedHidden.clear();
+                selectedBlacklisted.clear();
+                await loadCategories();
+            } catch (err) {
+                showToast(err.message || 'Errore operazione Blacklist', 'error');
+            }
+        };
+
+        const deleteBlacklistedArticles = async () => {
+            const blacklistedCategories = allCategories
+                .filter(cat => cat.blacklisted)
+                .map(cat => cat.name);
+
+            if (blacklistedCategories.length === 0) {
+                showToast('Nessuna categoria blacklistata', 'warning');
+                return;
+            }
+
+            const count = blacklistedCategories.length;
+            if (!confirm(`Eliminare tutti gli articoli delle ${count} categorie blacklistate?`)) return;
+
+            try {
+                const resp = await csrfFetch('/api/rss/items/by-categories', {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ category_names: blacklistedCategories })
+                });
+                const data = await readJsonResponse(resp);
+                if (!resp.ok || !data.success) {
+                    throw new Error(data.message || 'Errore eliminazione');
+                }
+                showToast(`${data.deleted_count} articoli eliminati`, 'success');
+                await loadCategories();
+            } catch (err) {
+                showToast(err.message || 'Errore eliminazione articoli', 'error');
+            }
+        };
+
+        // Event listeners
+        if (categoriesRefreshBtn) {
+            categoriesRefreshBtn.addEventListener('click', loadCategories);
+        }
+
+        if (categoriesShowBtn) {
+            categoriesShowBtn.addEventListener('click', showCategories);
+        }
+
+        if (categoriesHideBtn) {
+            categoriesHideBtn.addEventListener('click', hideCategories);
+        }
+
+        if (categoriesBlacklistBtn) {
+            categoriesBlacklistBtn.addEventListener('click', blacklistCategories);
+        }
+
+        if (categoriesDeleteBlacklistedBtn) {
+            categoriesDeleteBlacklistedBtn.addEventListener('click', deleteBlacklistedArticles);
+        }
+
+        // Auto-load categories on page load
+        loadCategories();
 
         function resetHighlights(scope) {
             const target = scope || document;
@@ -1273,71 +1964,12 @@
             });
             const batchButtons = block.querySelectorAll('.batch-icon-btn');
             batchButtons.forEach(btn => {
-                btn.addEventListener('click', () => handleBatchAction(btn.dataset.batchAction, rows, btn));
+                const batchHandler = window.octohubActions?.handleBatchAction;
+                if (batchHandler) {
+                    btn.addEventListener('click', () => batchHandler(btn.dataset.batchAction, rows, btn));
+                }
             });
             updateSelectState();
-        }
-
-        function openLinkInNewTab(link) {
-            if (!link) return;
-            const anchor = document.createElement('a');
-            anchor.href = link;
-            anchor.target = '_blank';
-            anchor.rel = 'noopener';
-            anchor.style.display = 'none';
-            document.body.appendChild(anchor);
-            anchor.click();
-            document.body.removeChild(anchor);
-        }
-
-        async function handleBatchAction(action, rows, button) {
-            if (!action) return;
-            const selectedRows = rows.filter(row => row.querySelector('.result-select')?.checked);
-            if (!selectedRows.length) {
-                alert('Seleziona almeno un risultato.');
-                return;
-            }
-            if (action === 'qb') {
-                if (button && button.disabled) return;
-                if (button) button.disabled = true;
-                let success = 0;
-                for (const row of selectedRows) {
-                    const link = row.dataset.magnet || row.dataset.torrent;
-                    if (!link) continue;
-                    try {
-                        const resp = await csrfFetch('/api/send-torrent', {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({link})
-                        });
-                        if (resp.ok) {
-                            success++;
-                        }
-                    } catch (err) {
-                        console.error('Errore invio torrent', err);
-                    }
-                }
-                if (button) button.disabled = false;
-                alert(success ? `Inviati ${success} elementi a qBittorrent` : 'Nessun elemento valido da inviare.');
-                return;
-            }
-            // For magnet/torrent actions, try to get the preferred type, fallback to the other
-            const links = selectedRows
-                .map(row => {
-                    if (action === 'magnet') {
-                        // Prefer magnet, fallback to torrent
-                        return row.dataset.magnet || row.dataset.torrent;
-                    } else {
-                        // Prefer torrent, fallback to magnet
-                        return row.dataset.torrent || row.dataset.magnet;
-                    }
-                })
-                .filter(Boolean);
-            if (!links.length) {
-                alert('Nessun link disponibile per questa azione.');
-                return;
-            }
-            links.forEach(link => openLinkInNewTab(link));
         }
 
         document.querySelectorAll('.resolution-block').forEach(block => setupResolutionBlock(block));
@@ -4460,14 +5092,14 @@
                 }
                 if (item.magnet) {
                     actions.push(`
-                        <a class="icon-link" href="${escapeHtml(item.magnet)}" title="Apri magnet">
+                        <a class="icon-link" href="${escapeHtml(item.magnet)}" target="_blank" rel="noopener" title="Apri magnet">
                             <img src="/static/icon/magnet.svg" alt="Magnet" class="action-icon-small">
                         </a>
                     `);
                 }
-                if (item.torrent) {
+                if (typeof item.torrent === 'string' && item.torrent.startsWith('http')) {
                     actions.push(`
-                        <a class="icon-link" href="${escapeHtml(item.torrent)}" title="Scarica torrent">
+                        <a class="icon-link" href="${escapeHtml(item.torrent)}" data-torrent-link="${escapeHtml(item.torrent)}" title="Scarica torrent">
                             <img src="/static/icon/down.svg" alt="Torrent" class="action-icon-small">
                         </a>
                     `);
@@ -4522,13 +5154,17 @@
                         const sizeAttr = Number.isFinite(sizeValue) ? sizeValue.toFixed(2) : '';
                         const source = escapeHtml(String(item.indexer || 'N/A'));
                         const episodeCode = showEpisode ? (item.episode_code || '—') : '';
+                        const torrentLink = (typeof item.torrent === 'string' && item.torrent.startsWith('http'))
+                            ? item.torrent
+                            : '';
                         return `
                             <tr data-result-row
                                 data-request-id="${escapeHtml(requestId)}"
                                 data-bucket="${escapeHtml(bucket)}"
                                 data-magnet="${escapeHtml(item.magnet || '')}"
-                                data-torrent="${escapeHtml(item.torrent || '')}"
+                                data-torrent="${escapeHtml(torrentLink)}"
                                 data-web="${escapeHtml(item.web || '')}"
+                                data-link="${escapeHtml(item.link || '')}"
                                 data-title="${escapeHtml(rawTitle.toLowerCase())}"
                                 data-size-gb="${escapeHtml(sizeAttr)}">
                                 <td class="result-select-cell col-select">
@@ -4940,21 +5576,14 @@
                             return;
                         }
                         bulkButton.disabled = true;
+                        const links = selectedRows
+                            .map(row => row.dataset.magnet || row.dataset.torrent)
+                            .filter(Boolean);
                         let successCount = 0;
-                        for (const row of selectedRows) {
-                            const link = row.dataset.link || row.dataset.magnet;
-                            if (!link) {
-                                continue;
-                            }
+                        if (links.length && window.octohubActions?.sendToQbBatch) {
                             try {
-                                const resp = await csrfFetch('/api/send-torrent', {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ link })
-                                });
-                                if (resp.ok) {
-                                    successCount += 1;
-                                }
+                                const payload = await window.octohubActions.sendToQbBatch(links);
+                                successCount = Number(payload.sent || 0);
                             } catch (err) {
                                 // ignore
                             }
