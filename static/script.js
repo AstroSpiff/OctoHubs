@@ -5042,7 +5042,7 @@
             const qbAvailable = document.body?.dataset.qbAvailable === 'true';
             const normalizeBucket = (value) => {
                 const lowered = String(value || '').toLowerCase();
-                if (['2160p', '1080p', '720p', 'other'].includes(lowered)) {
+                if (['2160p', '1440p', '1080p', '720p', '576p', '480p', 'other'].includes(lowered)) {
                     return lowered;
                 }
                 return 'other';
@@ -5118,7 +5118,7 @@
             };
 
             const buildResolutionBlocks = (items, requestId, showEpisode) => {
-                const buckets = { '2160p': [], '1080p': [], '720p': [], 'other': [] };
+                const buckets = { '2160p': [], '1440p': [], '1080p': [], '720p': [], '576p': [], '480p': [], 'other': [] };
                 items.forEach(item => {
                     if (!item || typeof item !== 'object') {
                         return;
@@ -5128,11 +5128,14 @@
                 });
                 const labels = {
                     '2160p': '2160p / 4K',
+                    '1440p': '1440p QHD',
                     '1080p': '1080p Full HD',
                     '720p': '720p HD',
+                    '576p': '576p DVD',
+                    '480p': '480p SD',
                     'other': 'Altre risoluzioni'
                 };
-                const bucketOrder = ['2160p', '1080p', '720p', 'other'];
+                const bucketOrder = ['2160p', '1440p', '1080p', '720p', '576p', '480p', 'other'];
                 return bucketOrder.map(bucket => {
                     const entries = buckets[bucket];
                     if (!entries.length) {

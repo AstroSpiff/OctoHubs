@@ -9,7 +9,6 @@ import json
 import requests
 import html
 import urllib.parse
-from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, TypedDict
 
 from app import (

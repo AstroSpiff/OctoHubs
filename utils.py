@@ -3,12 +3,92 @@
 
 import re
 import copy
-import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 
 # --- STRING AND FORM UTILITIES ---
+
+DEFAULT_RESOLUTION_RULES = {
+    "enabled": True,
+    "thresholds": {
+        "2160p": {"min_height": 2000, "min_width": 3800, "min_scope_height": 1400},
+        "1440p": {"min_height": 1200, "min_width": 2500},
+        "1080p": {"min_height": 700, "min_width": 1800},
+        "720p": {"min_height": 520, "min_width": 1200},
+        "576p": {"min_height": 540},
+        "480p": {"min_height": 450}
+    }
+}
+
+
+def _resolution_label_from_dims(width: Any, height: Any, rules: Optional[dict] = None) -> str:
+    if not width or not height:
+        return ""
+    try:
+        w = int(width)
+        h = int(height)
+    except (TypeError, ValueError):
+        return ""
+    if w <= 0 or h <= 0:
+        return ""
+    w, h = (w, h) if w >= h else (h, w)
+
+    active_rules = rules if isinstance(rules, dict) else DEFAULT_RESOLUTION_RULES
+    enabled = _coerce_request_bool(active_rules.get("enabled"), True)
+    thresholds = active_rules.get("thresholds") if isinstance(active_rules.get("thresholds"), dict) else None
+    if not isinstance(thresholds, dict):
+        thresholds = DEFAULT_RESOLUTION_RULES["thresholds"]
+
+    def _threshold(res_key: str, key: str, fallback: int) -> int:
+        value = thresholds.get(res_key, {}).get(key)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return fallback
+
+    if not enabled:
+        if h >= 2160:
+            return "2160p"
+        if h >= 1440:
+            return "1440p"
+        if h >= 1080:
+            return "1080p"
+        if h >= 720:
+            return "720p"
+        pal_min = _threshold("576p", "min_height", 540)
+        ntsc_min = _threshold("480p", "min_height", 450)
+        if h >= pal_min:
+            return "576p"
+        if h >= ntsc_min:
+            return "480p"
+        return f"{h}p"
+
+    uhd_min_height = _threshold("2160p", "min_height", 2000)
+    uhd_min_width = _threshold("2160p", "min_width", 3800)
+    uhd_scope_min_height = _threshold("2160p", "min_scope_height", 1400)
+    qhd_min_height = _threshold("1440p", "min_height", 1200)
+    qhd_min_width = _threshold("1440p", "min_width", 2500)
+    fhd_min_height = _threshold("1080p", "min_height", 700)
+    fhd_min_width = _threshold("1080p", "min_width", 1800)
+    hd_min_height = _threshold("720p", "min_height", 520)
+    hd_min_width = _threshold("720p", "min_width", 1200)
+    pal_min = _threshold("576p", "min_height", 540)
+    ntsc_min = _threshold("480p", "min_height", 450)
+
+    if h >= uhd_min_height or (w >= uhd_min_width and h >= uhd_scope_min_height):
+        return "2160p"
+    if w >= qhd_min_width and h >= qhd_min_height:
+        return "1440p"
+    if w >= fhd_min_width and h >= fhd_min_height:
+        return "1080p"
+    if w >= hd_min_width and h >= hd_min_height:
+        return "720p"
+    if h >= pal_min:
+        return "576p"
+    if h >= ntsc_min:
+        return "480p"
+    return f"{h}p"
 
 def _split_csv_field(value: Optional[str]) -> list[str]:
     """Splits a comma-separated string into a list of cleaned-up strings."""

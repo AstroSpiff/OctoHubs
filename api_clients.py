@@ -2,16 +2,14 @@
 import requests
 import copy
 import time
-import re
 from datetime import datetime, timezone
 from typing import Any, Tuple, Dict, cast, Optional
+from utils import _normalize_media_type
 
 print("[API_CLIENTS] Module loaded - VERSION 2026-01-08-21:40 with metadata fix")
 
 # Nota: Le funzioni che dipendono da variabili globali o da TraktClient
 # rimangono in checker.py per evitare dipendenze circolari
-
-from utils import _normalize_media_type
 
 # --- COSTANTI ---
 EMBY_REQUEST_TIMEOUT = 30
@@ -474,7 +472,7 @@ def _trigger_library_scan(server: Dict[str, Any], library_id: str, scan_type: st
             f.write(f"[{timestamp}] URL: {full_url}\n")
             f.write(f"[{timestamp}] PARAMS: {params}\n")
             f.flush()
-    except:
+    except Exception:
         pass
 
     result = _call_emby_api(server, endpoint, method="POST", params=params)
@@ -483,7 +481,7 @@ def _trigger_library_scan(server: Dict[str, Any], library_id: str, scan_type: st
         with open(log_file, "a") as f:
             f.write(f"[{timestamp}] RESULT: success={result[0]}\n")
             f.flush()
-    except:
+    except Exception:
         pass
 
     return result
@@ -736,7 +734,7 @@ def send_to_qbittorrent(link, config, max_retries=2):
                     continue
                 return False, error_msg
 
-            print(f"   -> [QB] Login OK, invio torrent...")
+            print("   -> [QB] Login OK, invio torrent...")
 
             # Aggiunta torrent
             add_resp = session.post(
@@ -768,10 +766,10 @@ def send_to_qbittorrent(link, config, max_retries=2):
                             torrent_state = latest_torrent.get("state", "")
                             print(f"   -> [QB] ✓ Torrent aggiunto: '{torrent_name}' (stato: {torrent_state})")
                             return True, f"Torrent aggiunto: {torrent_name}"
-                    except:
+                    except Exception:
                         pass
 
-                print(f"   -> [QB] ⚠️ qBittorrent ha accettato il link, ma nessun torrent trovato nella lista")
+                print("   -> [QB] ⚠️ qBittorrent ha accettato il link, ma nessun torrent trovato nella lista")
                 print(f"   -> [QB] Link inviato: {link}")
                 return True, "Link inviato a qBittorrent (verificare manualmente)"
 
@@ -788,7 +786,7 @@ def send_to_qbittorrent(link, config, max_retries=2):
             return False, error_msg
 
         except requests.exceptions.Timeout as exc:
-            error_msg = f"Timeout connessione qBittorrent"
+            error_msg = "Timeout connessione qBittorrent"
             if attempt < max_retries:
                 print(f"   -> [QB] {error_msg}, ritento... (tentativo {attempt + 1}/{max_retries + 1})")
                 time.sleep(1)
@@ -806,7 +804,7 @@ def send_to_qbittorrent(link, config, max_retries=2):
             return False, f"{error_msg}: {exc}"
 
         except requests.exceptions.RequestException as exc:
-            error_msg = f"Errore comunicazione qBittorrent"
+            error_msg = "Errore comunicazione qBittorrent"
             if attempt < max_retries:
                 print(f"   -> [QB] {error_msg} ({type(exc).__name__}), ritento...")
                 time.sleep(1)
@@ -890,7 +888,7 @@ def send_to_qbittorrent_batch(links, config, max_retries=2):
                     continue
                 return False, error_msg, {"sent": 0, "failed": failed, "total": len(valid_links) + len(failed)}
 
-            print(f"   -> [QB] Login OK, invio batch torrent...")
+            print("   -> [QB] Login OK, invio batch torrent...")
             add_resp = session.post(
                 f"{base_url}/api/v2/torrents/add",
                 data={"urls": "\n".join(valid_links)},
@@ -1256,7 +1254,7 @@ def search_prowlarr(query, media_type, config):
 
             # Debug: stampa il primo risultato
             if idx == 0:
-                print(f"      -> [DEBUG Prowlarr] Primo risultato RAW:")
+                print("      -> [DEBUG Prowlarr] Primo risultato RAW:")
                 print(f"         title: {title}")
                 print(f"         magnetUrl: {item.get('magnetUrl')}")
                 print(f"         magnetUri: {item.get('magnetUri')}")
@@ -1314,7 +1312,7 @@ def search_prowlarr(query, media_type, config):
 
             # Debug: stampa il primo risultato normalizzato
             if idx == 0:
-                print(f"      -> [DEBUG Prowlarr] Primo risultato NORMALIZZATO:")
+                print("      -> [DEBUG Prowlarr] Primo risultato NORMALIZZATO:")
                 print(f"         magnet: {result_dict['magnet']}")
                 print(f"         torrent: {result_dict['torrent']}")
                 print(f"         web: {result_dict['web']}")
@@ -1368,7 +1366,7 @@ def search_jackett(query, media_type, config):
 
             # Debug: stampa il primo risultato
             if idx == 0:
-                print(f"      -> [DEBUG Jackett] Primo risultato RAW:")
+                print("      -> [DEBUG Jackett] Primo risultato RAW:")
                 print(f"         Title: {title}")
                 print(f"         MagnetUri: {magnet_link}")
                 print(f"         Link: {download_link}")
@@ -1421,7 +1419,7 @@ def search_jackett(query, media_type, config):
 
             # Debug: stampa il primo risultato normalizzato
             if idx == 0:
-                print(f"      -> [DEBUG Jackett] Primo risultato NORMALIZZATO:")
+                print("      -> [DEBUG Jackett] Primo risultato NORMALIZZATO:")
                 print(f"         magnet: {result_dict['magnet']}")
                 print(f"         torrent: {result_dict['torrent']}")
                 print(f"         web: {result_dict['web']}")

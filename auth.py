@@ -173,7 +173,7 @@ def _create_default_admin():
             db_session.commit()
 
             print(f"[AUTH] Utente amministratore creato: {admin_username}")
-            print(f"[AUTH] ATTENZIONE: Cambia la password di default!")
+            print("[AUTH] ATTENZIONE: Cambia la password di default!")
     except SQLAlchemyError as e:
         print(f"[AUTH] Errore durante la creazione dell'admin: {e}")
         assert db_session is not None

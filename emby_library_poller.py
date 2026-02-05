@@ -85,7 +85,7 @@ class EmbyLibraryPoller:
             emby_client: Client Emby per chiamate API
         """
         logger.info(f"\n{'*'*80}")
-        logger.info(f"[POLLER] >>> start_tracking_library CALLED <<<")
+        logger.info("[POLLER] >>> start_tracking_library CALLED <<<")
         logger.info(f"[POLLER]   server_id: {server_id}")
         logger.info(f"[POLLER]   library_id: {library_id}")
         logger.info(f"[POLLER]   job_id: {job_id}")
@@ -212,7 +212,6 @@ class EmbyLibraryPoller:
 
     async def _calculate_sleep_for_server(self, server_id: str) -> float:
         """Compute how long to wait before polling the next due library."""
-        now = time.time()
         soonest = None
         async with self._lock:
             libraries = self._tracked_libraries.get(server_id) or set()
@@ -570,7 +569,7 @@ class EmbyLibraryPoller:
             scan_stage = state_data.get("scan_stage", "file") # Default to file if not set
 
             logger.info(f"\n{'*'*80}")
-            logger.info(f"[POLLER] >>> _update_tracker_status CALLED <<<")
+            logger.info("[POLLER] >>> _update_tracker_status CALLED <<<")
             logger.info(f"[POLLER]   state_key: {state_key}")
             logger.info(f"[POLLER]   job_id: {job_id}")
             logger.info(f"[POLLER]   library_id: {library_id}")
@@ -602,7 +601,7 @@ class EmbyLibraryPoller:
 
             # Aggiorna tracker (thread-safe)
             # LibraryScanTracker.update_library_status si occuperà del broadcast
-            logger.info(f"[POLLER] Calling update_library_status via asyncio.to_thread...")
+            logger.info("[POLLER] Calling update_library_status via asyncio.to_thread...")
             await asyncio.to_thread(
                 _LIBRARY_SCAN_TRACKER.update_library_status,
                 job_id,

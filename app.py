@@ -12,14 +12,85 @@ import re
 import uuid
 import logging
 import xml.etree.ElementTree as ET
-from queue import Queue, Empty, Full
-from urllib.parse import urlencode, urlparse
-from datetime import datetime, date, timezone, time as dt_time, timedelta
+from queue import Full
+from urllib.parse import urlencode
+from datetime import datetime, date, timezone, timedelta
 from email.utils import parsedate_to_datetime
-from functools import wraps
 
 import requests
-from typing import Dict, Any, cast, Optional, List
+from typing import Dict, Any, cast, Optional
+from jinja2 import Undefined, TemplateSyntaxError
+from jinja2.sandbox import SandboxedEnvironment
+from markupsafe import Markup
+from storage import DatabaseStorage, StorageError
+from config import (
+    CONFIG_FILE,
+    _merge_database_settings,
+    _merge_trakt_settings,
+    _merge_justwatch_settings,
+    _merge_resolution_settings,
+    _merge_rss_import_settings,
+    _merge_collection_settings,
+    _normalize_sort_settings,
+    _normalize_auto_settings,
+    _merge_emby_settings,
+    _default_search_rules,
+    _coerce_request_bool,
+    _coerce_request_int,
+    _normalize_alt_language
+)
+from emby_websocket_manager import get_websocket_manager
+from emby_user_manager import EmbyUserManager
+from api_clients import (
+    _execute_emby_action,
+    _fetch_emby_libraries,
+    _fetch_emby_active_sessions,
+    _fetch_emby_status,
+    _fetch_emby_scheduled_tasks,
+    _fetch_emby_virtual_folders,
+    _stop_emby_task,
+    _call_emby_api,
+    get_jellyseerr_requests,
+    send_to_qbittorrent,
+    send_to_qbittorrent_batch,
+    _ping_api_service,
+    _ping_jellyseerr,
+    _ping_prowlarr,
+    _ping_qbittorrent,
+    fetch_request_details,
+    fetch_media_info,
+    submit_jellyseerr_request,
+    search_prowlarr,
+    search_jackett,
+    search_tmdb,
+    get_tmdb_tv_details,
+    check_emby_availability,
+    check_jellyseerr_availability,
+    _extract_tmdb_id
+)
+from library_grouper import group_libraries
+from justwatch_manager import JustWatchManager, JustWatchError, is_justwatch_available
+from utils import (
+    _sanitize_terms_list,
+    _parse_date_value,
+    _normalize_media_type,
+    DEFAULT_RESOLUTION_RULES,
+    _resolution_label_from_dims as _resolution_label_from_dims_utils
+)
+from scanner import (
+    extract_title_and_year,
+    gather_title_candidates,
+    build_search_queries,
+    filter_results,
+    sanitize_title,
+    _extract_episode_from_title,
+    _detect_resolution_bucket
+)
+from search_normalizer import build_dedupe_key, dedupe_results
+from tasks import ScanManager, AutoScheduler
+from emby_probe import get_probe_manager, _format_display_name_from_queue
+from emby_streams import get_streams_manager
+from auth import get_all_users
 
 # Configure logging
 logging.basicConfig(
@@ -48,98 +119,6 @@ def _register_app_event_loop(loop: asyncio.AbstractEventLoop) -> None:
 def _get_app_event_loop() -> Optional[asyncio.AbstractEventLoop]:
     """Return the stored event loop used by FastAPI/Uvicorn."""
     return _APP_EVENT_LOOP
-
-from jinja2 import Undefined, TemplateSyntaxError
-from jinja2.sandbox import SandboxedEnvironment
-from markupsafe import Markup
-from storage import DatabaseStorage, StorageError
-from config import (
-    CONFIG_FILE,
-    DEFAULT_CONFIG,
-    _merge_database_settings,
-    _merge_trakt_settings,
-    _merge_justwatch_settings,
-    _merge_rss_import_settings,
-    _merge_collection_settings,
-    _normalize_sort_settings,
-    _clean_sort_mode,
-    _normalize_auto_settings,
-    _normalize_emby_server,
-    _merge_emby_settings,
-    TV_SORT_KEYS,
-    MOVIE_SORT_KEYS,
-    read_raw_config,
-    _default_search_rules,
-    _default_auto_tasks,
-    _default_emby_settings,
-    _split_csv_field,
-    _coerce_request_bool,
-    _coerce_request_int,
-    _normalize_alt_language
-)
-
-from emby_websocket_manager import get_websocket_manager
-from emby_user_manager import EmbyUserManager
-from api_clients import (
-    _prepare_emby_servers_for_view,
-    _execute_emby_action,
-    _fetch_emby_libraries,
-    _fetch_emby_active_sessions,
-    _fetch_emby_status,
-    _fetch_emby_scheduled_tasks,
-    _fetch_emby_virtual_folders,
-    _stop_emby_task,
-    _call_emby_api,
-    EMBY_ACTIONS,
-    get_jellyseerr_requests,
-    send_to_qbittorrent,
-    send_to_qbittorrent_batch,
-    _ping_api_service,
-    _ping_jellyseerr,
-    _ping_prowlarr,
-    _ping_qbittorrent,
-    fetch_request_details,
-    fetch_media_info,
-    search_jellyseerr,
-    submit_jellyseerr_request,
-    search_prowlarr,
-    search_jackett,
-    search_tmdb,
-    get_tmdb_tv_details,
-    check_emby_availability,
-    check_jellyseerr_availability,
-    _extract_tmdb_id,
-    _fetch_tmdb_payload
-)
-from library_grouper import group_libraries
-from justwatch_manager import JustWatchManager, JustWatchError, is_justwatch_available
-from utils import (
-    _safe_get_dict_value,
-    _normalize_form_input,
-    _apply_form_mapping,
-    _sanitize_terms_list,
-    _form_input_value,
-    _normalize_season_spec,
-    _parse_date_value,
-    _normalize_media_type
-)
-from scanner import (
-    extract_title_and_year,
-    gather_title_candidates,
-    build_search_queries,
-    filter_results,
-    sanitize_title,
-    _extract_episode_from_title,
-    _detect_resolution_bucket,
-    _contains_language_token,
-    _has_audio_language,
-    _contains_isolated_tag
-)
-from search_normalizer import build_dedupe_key, dedupe_results
-from tasks import ScanManager, AutoScheduler, workflow_manager
-from emby_probe import get_probe_manager, _format_display_name_from_queue
-from emby_streams import get_streams_manager
-from auth import get_user_by_username, get_all_users, create_user, log_audit_event
 
 # --- COSTANTI ---
 
@@ -194,6 +173,7 @@ DEFAULT_CONFIG = {
     "TMDB_LANGUAGE": "it-IT",
     "TARGET_LANGUAGES": ["ita", "italian"],
     "EXCLUDE_TAGS": ["md", "cam", "ts", "tc", "vmd", "sub", "subs", "forced", "screener"],
+    "RESOLUTION_RULES": copy.deepcopy(DEFAULT_RESOLUTION_RULES),
     "SEARCH_RULES": {
         "use_original_title": True,
         "use_alt_titles_original": True,
@@ -378,7 +358,7 @@ class LibraryScanTracker:
         scan_type: "content" for file scan, "metadata" for metadata refresh
         Returns job_id.
         """
-        _log_flush(f"[TRACKER] >>> create_job CALLED <<<")
+        _log_flush("[TRACKER] >>> create_job CALLED <<<")
         _log_flush(f"[TRACKER]   server_id: {server_id}")
         _log_flush(f"[TRACKER]   library_ids: {library_ids}")
         _log_flush(f"[TRACKER]   group_name: {group_name}")
@@ -387,9 +367,9 @@ class LibraryScanTracker:
         job_id = str(uuid.uuid4())
         _log_flush(f"[TRACKER]   generated job_id: {job_id}")
 
-        _log_flush(f"[TRACKER]   acquiring lock...")
+        _log_flush("[TRACKER]   acquiring lock...")
         with self._lock:
-            _log_flush(f"[TRACKER]   lock acquired, creating job data...")
+            _log_flush("[TRACKER]   lock acquired, creating job data...")
             self._jobs[job_id] = {
                 "id": job_id,
                 "server_id": server_id,
@@ -407,9 +387,9 @@ class LibraryScanTracker:
                 "error": None
             }
             self._jobs[job_id]["created_at"] = datetime.now(timezone.utc).isoformat()
-            _log_flush(f"[TRACKER]   calling _enforce_job_limits...")
+            _log_flush("[TRACKER]   calling _enforce_job_limits...")
             self._enforce_job_limits(server_id)
-            _log_flush(f"[TRACKER]   lock releasing...")
+            _log_flush("[TRACKER]   lock releasing...")
         _log_flush(f"[TRACKER] ✓ create_job completed, returning job_id: {job_id}")
         return job_id
 
@@ -440,7 +420,7 @@ class LibraryScanTracker:
                             metadata: Optional[dict] = None):
         """Update status of a specific library within a job."""
         _log_flush(f"\n{'='*80}")
-        _log_flush(f"[TRACKER] >>> update_library_status CALLED <<<")
+        _log_flush("[TRACKER] >>> update_library_status CALLED <<<")
         _log_flush(f"[TRACKER]   job_id: {job_id}")
         _log_flush(f"[TRACKER]   library_id: {library_id}")
         _log_flush(f"[TRACKER]   status: {status}")
@@ -510,15 +490,15 @@ class LibraryScanTracker:
                 _log_flush(f"[TRACKER] ✗ Broadcast NOT triggered (status={status}, progress={progress})")
 
             job["updated_at"] = datetime.now(timezone.utc).isoformat()
-            _log_flush(f"[TRACKER] Lock will be released now")
+            _log_flush("[TRACKER] Lock will be released now")
 
         # Broadcast progress fuori dal lock
         _log_flush(f"[TRACKER] Lock released. should_broadcast_progress={should_broadcast_progress}")
         if should_broadcast_progress:
-            _log_flush(f"[TRACKER] Calling _broadcast_scan_progress...")
+            _log_flush("[TRACKER] Calling _broadcast_scan_progress...")
             _broadcast_scan_progress(job_id, library_id, overall_progress, message, metadata=lib_metadata)
         else:
-            _log_flush(f"[TRACKER] Skipping broadcast (should_broadcast_progress=False)")
+            _log_flush("[TRACKER] Skipping broadcast (should_broadcast_progress=False)")
 
         # Broadcast completion fuori dal lock
         if job_completed and job_data_copy:
@@ -605,7 +585,6 @@ class LibraryScanTracker:
 
     def get_queue_position(self, server_id: str, library_id: str) -> int:
         """Estimate the queue position for a library in the given server."""
-        now = datetime.now(timezone.utc)
         running_count = 0
         earlier_waiting = 0
         target_requested = None
@@ -755,7 +734,7 @@ def _broadcast_scan_progress(job_id: str, library_id: str, progress: float, mess
                 ws_message["metadata"] = metadata
 
             # Schedule coroutine in the app event loop
-            future = asyncio.run_coroutine_threadsafe(
+            _future = asyncio.run_coroutine_threadsafe(
                 manager.broadcast_to_job(job_id, ws_message),
                 loop
             )
@@ -1225,6 +1204,12 @@ def _parse_resolution_height(value):
         except (TypeError, ValueError):
             return 0
     return 0
+
+
+def _get_resolution_rules(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if not isinstance(config, dict):
+        config = _ACTIVE_CONFIG or {}
+    return _merge_resolution_settings(config.get("RESOLUTION_RULES"))
 
 def _parse_bitrate_mbps(value):
     if value is None:
@@ -1828,7 +1813,7 @@ def _fetch_mdblist_ratings_by_imdb(imdb_id, api_keys, expected_type=None):
             break
 
         try:
-            url = f"https://mdblist.com/api/"
+            url = "https://mdblist.com/api/"
             params = {"apikey": api_key, "i": imdb_id}
             print(f"[MDBLIST DEBUG] Attempt {attempt + 1}: GET {url} with params {{'apikey': '***', 'i': '{imdb_id}'}}")
 
@@ -1846,7 +1831,7 @@ def _fetch_mdblist_ratings_by_imdb(imdb_id, api_keys, expected_type=None):
 
             # Check if the response is valid
             if isinstance(payload, dict) and not payload.get("error"):
-                print(f"[MDBLIST DEBUG] Valid payload received, no error field")
+                print("[MDBLIST DEBUG] Valid payload received, no error field")
 
                 # Verify media type if expected
                 if expected_type:
@@ -1854,7 +1839,7 @@ def _fetch_mdblist_ratings_by_imdb(imdb_id, api_keys, expected_type=None):
                     expected = "show" if expected_type in ("tv", "series") else "movie"
                     print(f"[MDBLIST DEBUG] Type check: actual={actual_type}, expected={expected}")
                     if actual_type and actual_type != expected:
-                        print(f"[MDBLIST DEBUG] Type mismatch - returning empty")
+                        print("[MDBLIST DEBUG] Type mismatch - returning empty")
                         return {}
 
                 output = _parse_mdblist_payload(payload, expected_type or "movie")
@@ -1866,11 +1851,11 @@ def _fetch_mdblist_ratings_by_imdb(imdb_id, api_keys, expected_type=None):
             if payload.get("error"):
                 print(f"[MDBLIST DEBUG] Error in payload: {payload.get('error')}")
                 if "limit" in str(payload.get("error")).lower():
-                    print(f"[MDBLIST DEBUG] Rate limit detected, marking key as failed")
+                    print("[MDBLIST DEBUG] Rate limit detected, marking key as failed")
                     _mark_api_key_failed("mdblist", api_key)
                     continue
 
-            print(f"[MDBLIST DEBUG] Payload has error or is invalid, returning empty")
+            print("[MDBLIST DEBUG] Payload has error or is invalid, returning empty")
             return {}
         except requests.RequestException as e:
             print(f"[MDBLIST DEBUG] Request exception at attempt {attempt + 1}: {type(e).__name__}: {str(e)}")
@@ -1884,7 +1869,7 @@ def _fetch_mdblist_tv_series_with_seasons(imdb_id, api_keys):
     Returns ratings with averaged Metacritic score across all seasons.
     """
     if not imdb_id or not api_keys:
-        print(f"[MDBLIST TV DEBUG] Empty imdb_id or api_keys")
+        print("[MDBLIST TV DEBUG] Empty imdb_id or api_keys")
         return {}
 
     print(f"[MDBLIST TV DEBUG] Fetching TV series {imdb_id}")
@@ -1896,14 +1881,14 @@ def _fetch_mdblist_tv_series_with_seasons(imdb_id, api_keys):
     # Try to fetch season data to calculate average Metacritic
     api_key = _get_next_api_key("mdblist", api_keys)
     if not api_key:
-        print(f"[MDBLIST TV DEBUG] No API key available for season fetch")
+        print("[MDBLIST TV DEBUG] No API key available for season fetch")
         return series_ratings
 
     try:
         # MDBList provides season data in the main response
         print(f"[MDBLIST TV DEBUG] Fetching season data for {imdb_id}")
         response = requests.get(
-            f"https://mdblist.com/api/",
+            "https://mdblist.com/api/",
             params={"apikey": api_key, "i": imdb_id},
             timeout=10
         )
@@ -1913,7 +1898,7 @@ def _fetch_mdblist_tv_series_with_seasons(imdb_id, api_keys):
         print(f"[MDBLIST TV DEBUG] Season payload type: {type(payload)}, has error: {payload.get('error') if isinstance(payload, dict) else 'N/A'}")
 
         if not isinstance(payload, dict) or payload.get("error"):
-            print(f"[MDBLIST TV DEBUG] Invalid payload or error, returning series_ratings")
+            print("[MDBLIST TV DEBUG] Invalid payload or error, returning series_ratings")
             return series_ratings
 
         # Check for season ratings
@@ -1954,7 +1939,7 @@ def _fetch_mdblist_tv_series_with_seasons(imdb_id, api_keys):
                 series_ratings["metacritic_rating"] = str(int(round(avg_metacritic)))
                 print(f"[MDBLIST TV DEBUG] Calculated average Metacritic: {series_ratings['metacritic_rating']} from {len(metacritic_scores)} seasons")
             else:
-                print(f"[MDBLIST TV DEBUG] No valid Metacritic scores found in seasons")
+                print("[MDBLIST TV DEBUG] No valid Metacritic scores found in seasons")
     except requests.RequestException as e:
         print(f"[MDBLIST TV DEBUG] Request exception: {type(e).__name__}: {str(e)}")
         pass
@@ -2612,6 +2597,7 @@ def _build_latest_message(item, template, return_error=False, allow_fallback=Tru
     change = changes[0] if changes else {}
     change_entries = [entry for entry in changes if isinstance(entry, dict)]
     versions_sorted = _sort_versions_by_quality(change_entries)
+    versions_by_quality = []
     best_version = versions_sorted[0] if versions_sorted else {}
     season_numbers = {entry.get("season_number") for entry in changes if entry.get("season_number") is not None}
     episode_numbers = [entry.get("episode_number") for entry in changes if entry.get("episode_number") is not None]
@@ -2625,6 +2611,24 @@ def _build_latest_message(item, template, return_error=False, allow_fallback=Tru
         type_token = "series"
     elif type_token == "episode":
         type_token = "episode"
+    if type_token in ("series", "episode") and change_entries:
+        def _episode_sort_key(entry):
+            try:
+                season_val = int(entry.get("season_number") or 0)
+            except (TypeError, ValueError):
+                season_val = 0
+            try:
+                episode_val = int(entry.get("episode_number") or 0)
+            except (TypeError, ValueError):
+                episode_val = 0
+            return (season_val, episode_val)
+        seen_quality = set()
+        for entry in sorted(change_entries, key=_episode_sort_key):
+            quality = entry.get("quality") or ""
+            if not quality or quality in seen_quality:
+                continue
+            versions_by_quality.append(entry)
+            seen_quality.add(quality)
     series_name = item.get("series_name") or ""
     if not series_name and str(raw_type).lower() == "series":
         series_name = item.get("title") or ""
@@ -2725,6 +2729,7 @@ def _build_latest_message(item, template, return_error=False, allow_fallback=Tru
         "container": str(change.get("container") or ""),
         "bitrate": str(change.get("bitrate") or ""),
         "versions": versions_sorted,
+        "versions_by_quality": versions_by_quality,
         "version_count": str(len(versions_sorted)),
         "best_version": best_version,
         "best_quality": str(best_version.get("quality") or ""),
@@ -2904,7 +2909,10 @@ def _fetch_emby_latest_series_from_episodes(server, limit, episodes=None):
     for candidate in series_candidates:
         series_id = candidate["series_id"]
         params = {
-            "Fields": "DateCreated,Overview,Genres,ProductionYear,RunTimeTicks,CommunityRating,CriticRating,OfficialRating,PremiereDate,ChildCount,ImageTags,OriginalTitle,Taglines,Studios,ProviderIds,People"
+            "Fields": (
+                "DateCreated,Overview,Genres,ProductionYear,RunTimeTicks,CommunityRating,CriticRating,OfficialRating,"
+                "PremiereDate,ChildCount,ImageTags,OriginalTitle,Taglines,Studios,ProviderIds,People,Path,ParentId"
+            )
         }
         success, payload = _call_emby_api(server, f"Items/{series_id}", params=params)
         item_payload = payload if success and isinstance(payload, dict) else None
@@ -2938,6 +2946,8 @@ def _fetch_emby_latest_series_from_episodes(server, limit, episodes=None):
                 item_payload["ImageTags"] = episode_payload.get("ImageTags")
             if not item_payload.get("ProductionYear") and episode_payload.get("SeriesProductionYear"):
                 item_payload["ProductionYear"] = episode_payload.get("SeriesProductionYear")
+            if not item_payload.get("Path") and episode_payload.get("Path"):
+                item_payload["Path"] = episode_payload.get("Path")
             item_people_raw = item_payload.get("People")
             item_people: list[dict[str, Any]] = []
             if isinstance(item_people_raw, list):
@@ -2995,7 +3005,7 @@ def _determine_latest_status(item, item_id, state_items, gap_minutes, state_enab
     # Caso 1: Item in DB - il flag notified decide tutto
     if state_enabled and item_id in state_items:
         existing = state_items[item_id]
-        if existing.get("notified") == True:
+        if existing.get("notified"):
             # Già notificato → Nuova Versione (scheda separata)
             return "update", "Nuova versione", "new_version"
         else:
@@ -3574,7 +3584,6 @@ def _collect_emby_latest_entries(
                     versions = episode.get("_version_group_versions") or _extract_latest_versions(episode)
                     version_time_map = episode.get("_version_time_map") or {}
                     version_gap = bool(episode.get("_version_group_has_split"))
-                    is_latest_version_group = bool(episode.get("_version_group_is_latest"))
                     existing_episode = episode_state.get(episode_key) if state_enabled else None
                     existing_key = episode_key
                     if existing_episode is None and state_enabled and episode_id:
@@ -3588,24 +3597,16 @@ def _collect_emby_latest_entries(
                     new_versions = [version for version in versions if version.get("key") and version.get("key") not in existing_keys]
 
                     if existing_episode is None:
-                        already_seen = episode_key in episode_seen if episode_key else False
-                        if already_seen:
-                            kind = "new_version"
-                            new_version = True
-                        elif version_gap and is_latest_version_group:
-                            kind = "new_version"
-                            new_version = True
+                        season_recent = season_recent_map.get(season_number, False)
+                        if existing_series is None and series_is_new and group_index == 0:
+                            kind = "new_episode"
+                            new_season = True
+                        elif season_number is not None and season_number not in local_seasons_seen and season_recent:
+                            kind = "new_episode"
+                            new_season = True
                         else:
-                            season_recent = season_recent_map.get(season_number, False)
-                            if existing_series is None and series_is_new and group_index == 0:
-                                kind = "new_season"
-                                new_season = True
-                            elif season_number is not None and season_number not in local_seasons_seen and season_recent:
-                                kind = "new_season"
-                                new_season = True
-                            else:
-                                kind = "new_episode"
-                                new_episode = True
+                            kind = "new_episode"
+                            new_episode = True
                     elif new_versions:
                         kind = "new_version"
                         new_version = True
@@ -4101,7 +4102,7 @@ def _refresh_latest_cache_full_background(limit, per_server_limit):
             _LATEST_CACHE["params"] = (limit, per_server_limit)
             _LATEST_CACHE["is_refreshing"] = False
 
-        print(f"[LATEST_CACHE] Full refresh completato")
+        print("[LATEST_CACHE] Full refresh completato")
     except Exception as e:
         with _LATEST_CACHE_LOCK:
             _LATEST_CACHE["is_refreshing"] = False
@@ -4213,7 +4214,7 @@ def _refresh_latest_cache_background(limit, per_server_limit):
 
         # Se non ci sono nuovi contenuti, mantieni cache attuale
         if not has_new_content:
-            print(f"[LATEST_CACHE] Nessun nuovo contenuto trovato")
+            print("[LATEST_CACHE] Nessun nuovo contenuto trovato")
             with _LATEST_CACHE_LOCK:
                 _LATEST_CACHE["is_refreshing"] = False
             return
@@ -4659,6 +4660,7 @@ def load_config():
     legacy_target = file_config.get("TARGET_LANGUAGES")
     legacy_exclude = file_config.get("EXCLUDE_TAGS")
     legacy_rules = (file_config or {}).get("SEARCH_RULES")
+    legacy_resolution = (file_config or {}).get("RESOLUTION_RULES")
     legacy_request_rules = (file_config or {}).get("REQUEST_RULES")
 
     app_settings = backend.load_app_settings() or {}
@@ -4694,6 +4696,9 @@ def load_config():
     if legacy_exclude and not app_settings.get("EXCLUDE_TAGS"):
         app_settings["EXCLUDE_TAGS"] = legacy_exclude
         need_save = True
+    if legacy_resolution and not app_settings.get("RESOLUTION_RULES"):
+        app_settings["RESOLUTION_RULES"] = legacy_resolution
+        need_save = True
 
     for key in CONNECTION_FIELDS:
         if key in app_settings:
@@ -4711,6 +4716,7 @@ def load_config():
     exclude_tags = app_settings.get("EXCLUDE_TAGS") or merged["EXCLUDE_TAGS"]
     search_rules.update(app_settings.get("SEARCH_RULES") or {})
     search_rules = _normalize_sort_settings(search_rules)
+    resolution_rules = _merge_resolution_settings(app_settings.get("RESOLUTION_RULES"))
     auto_settings = _normalize_auto_settings(app_settings.get("AUTO_TASKS"))
     rss_import_settings = _merge_rss_import_settings(app_settings.get("RSS_IMPORT"))
     collection_settings = _merge_collection_settings(app_settings.get("COLLECTIONS"))
@@ -4721,6 +4727,7 @@ def load_config():
             "TARGET_LANGUAGES": target_langs,
             "EXCLUDE_TAGS": exclude_tags,
             "SEARCH_RULES": search_rules,
+            "RESOLUTION_RULES": resolution_rules,
             "AUTO_TASKS": auto_settings,
             "RSS_IMPORT": rss_import_settings,
             "TRAKT": merged["TRAKT"],
@@ -4747,6 +4754,7 @@ def load_config():
     merged["TARGET_LANGUAGES"] = target_langs
     merged["EXCLUDE_TAGS"] = exclude_tags
     merged["SEARCH_RULES"] = search_rules
+    merged["RESOLUTION_RULES"] = resolution_rules
     merged["REQUEST_RULES"] = request_rules or {}
     merged["AUTO_TASKS"] = auto_settings
     merged["RSS_IMPORT"] = rss_import_settings
@@ -4838,6 +4846,10 @@ def _seed_db_from_legacy_config(legacy_config: Dict[str, Any], backend: Database
     legacy_rules = legacy_config.get("SEARCH_RULES")
     if isinstance(legacy_rules, dict):
         _set_if_missing("SEARCH_RULES", legacy_rules)
+
+    legacy_resolution = legacy_config.get("RESOLUTION_RULES")
+    if isinstance(legacy_resolution, dict):
+        _set_if_missing("RESOLUTION_RULES", legacy_resolution)
 
     legacy_auto = legacy_config.get("AUTO_TASKS")
     if isinstance(legacy_auto, dict):
@@ -5572,7 +5584,7 @@ def _normalize_manual_result(raw):
         season_num, season_label = _extract_season_hint_from_title(title)
     if season_num is not None and season_label is None:
         season_label = f"S{season_num:02d}"
-    resolution_bucket = _detect_resolution_bucket(title.lower())
+    resolution_bucket = _detect_resolution_bucket(title.lower(), _get_resolution_rules())
     year = _extract_year_from_title(title)
     return {
         "title": title,
@@ -5643,7 +5655,7 @@ def _load_cached_requests_overview():
         backend = _ensure_db_backend()
         data, timestamp = backend.load_request_overview()
         return data or [], timestamp
-    except:
+    except Exception:
         pass
     return [], None
 
@@ -5652,7 +5664,7 @@ def _save_cached_requests_overview(data):
     try:
         backend = _ensure_db_backend()
         backend.save_request_overview(data)
-    except:
+    except Exception:
         pass
 
 def _update_app_settings_overrides(data):
@@ -5687,7 +5699,7 @@ def _parse_auto_task_payload(form, key, fallback):
         if isinstance(value, str):
             return json.loads(value)
         return value
-    except:
+    except Exception:
         return fallback
 
 def _build_emby_server_from_form(form, existing):
@@ -7443,8 +7455,6 @@ def _build_blacklist_remove_snapshot(category_name):
     try:
         removed = backend.remove_category_from_blacklist(category_name)
         if removed:
-            # Update visibility status of affected items
-            backend.update_items_visibility_status()
             return {"success": True, "message": "Categoria rimossa dalla blacklist"}, 200
         else:
             return {"success": False, "message": "Categoria non trovata nella blacklist"}, 404
@@ -7491,8 +7501,6 @@ def _build_hidden_add_snapshot(category_name):
     try:
         added = backend.add_category_to_hidden(category_name.strip())
         if added:
-            # Update visibility status of affected items
-            backend.update_items_visibility_status()
             return {"success": True, "message": "Categoria aggiunta a nascoste"}, 200
         else:
             return {"success": False, "message": "Categoria già presente in nascoste"}, 400
@@ -7519,8 +7527,6 @@ def _build_hidden_remove_snapshot(category_name):
     try:
         removed = backend.remove_category_from_hidden(category_name)
         if removed:
-            # Update visibility status of affected items
-            backend.update_items_visibility_status()
             return {"success": True, "message": "Categoria rimossa da nascoste"}, 200
         else:
             return {"success": False, "message": "Categoria non trovata in nascoste"}, 404
@@ -8606,7 +8612,7 @@ def _build_latest_snapshot(limit: int, per_server_limit: int, force: bool):
                         daemon=True
                     )
                     thread.start()
-                    print(f"[LATEST] Avviato background refresh")
+                    print("[LATEST] Avviato background refresh")
                 else:
                     _LATEST_CACHE["is_refreshing"] = False
 
@@ -8622,7 +8628,7 @@ def _build_latest_snapshot(limit: int, per_server_limit: int, force: bool):
             "progress": progress_data
         }, 200
 
-    print(f"[LATEST] Nessun dato in DB, fetch sincrono iniziale")
+    print("[LATEST] Nessun dato in DB, fetch sincrono iniziale")
     if fast_first_load:
         payload, error = _collect_emby_latest_entries(
             limit,
@@ -8647,7 +8653,7 @@ def _build_latest_snapshot(limit: int, per_server_limit: int, force: bool):
                         daemon=True
                     )
                     thread.start()
-                    print(f"[LATEST] Avviato background full refresh")
+                    print("[LATEST] Avviato background full refresh")
                 else:
                     _LATEST_CACHE["is_refreshing"] = False
 
@@ -9492,22 +9498,10 @@ def _resolve_emby_server(config, server_id):
     return None
 
 
-def _resolution_label_from_dims(width, height):
-    if not height:
-        return ""
-    try:
-        height_value = int(height)
-    except (TypeError, ValueError):
-        return ""
-    if height_value >= 2160:
-        return "2160p"
-    if height_value >= 1440:
-        return "1440p"
-    if height_value >= 1080:
-        return "1080p"
-    if height_value >= 720:
-        return "720p"
-    return f"{height_value}p"
+def _resolution_label_from_dims(width, height, rules: Optional[Dict[str, Any]] = None):
+    if rules is None:
+        rules = _get_resolution_rules()
+    return _resolution_label_from_dims_utils(width, height, rules)
 
 
 def _detect_hdr_type(streams):
@@ -9745,6 +9739,7 @@ def _extract_emby_media_sources(item):
     sources = []
     if not isinstance(item, dict):
         return sources
+    resolution_rules = _get_resolution_rules()
     media_sources = item.get("MediaSources")
     item_streams = item.get("MediaStreams") if isinstance(item.get("MediaStreams"), list) else []
     if not isinstance(media_sources, list) or not media_sources:
@@ -9801,7 +9796,7 @@ def _extract_emby_media_sources(item):
         width = video_stream.get("Width") if isinstance(video_stream, dict) else None
         height = video_stream.get("Height") if isinstance(video_stream, dict) else None
         resolution = f"{width}x{height}" if width and height else ""
-        resolution_label = _resolution_label_from_dims(width, height) or resolution
+        resolution_label = _resolution_label_from_dims(width, height, resolution_rules) or resolution
         video_codec = video_stream.get("Codec") if isinstance(video_stream, dict) else ""
         audio_codec = audio_streams[0].get("Codec") if audio_streams else ""
         audio_channels = ""
@@ -9886,15 +9881,15 @@ def _default_latest_settings() -> Dict[str, Any]:
     - Configurabile dall'utente via interfaccia
 
     SOLUZIONE PROBLEMA 4 (Batch limit):
-    - max_movies/max_series ridotti per limitare la crescita del DB
+    - max_movies/max_series configurati per supportare più risultati
     - Retention days aumentato per mantenere storico più lungo
     - max_versions aumentato a 6 per supportare più qualità (720p, 1080p, 4K, HDR, Atmos, etc)
     """
     return {
         "SETTINGS": {
             "batch_gap_minutes": 180,      # 3 ore (era 60 minuti)
-            "max_movies": 50,
-            "max_series": 25,
+            "max_movies": 200,
+            "max_series": 150,
             "retention_days": 90,           # 3 mesi (era 60 giorni)
             "max_versions": 6,              # Aumentato da 4
             "batch_fetch_limit": 1000,      # NUOVO: limite fetch per server (era hardcoded 500)
@@ -10021,6 +10016,12 @@ def _load_latest_settings() -> Dict[str, Any]:
     batch_gap_minutes = int(merged_settings.get("batch_gap_minutes") or default_cfg["batch_gap_minutes"])
     max_movies = int(merged_settings.get("max_movies") or default_cfg["max_movies"])
     max_series = int(merged_settings.get("max_series") or default_cfg["max_series"])
+    legacy_max_movies = 50
+    legacy_max_series = 25
+    if max_movies == legacy_max_movies and default_cfg["max_movies"] > legacy_max_movies:
+        max_movies = default_cfg["max_movies"]
+    if max_series == legacy_max_series and default_cfg["max_series"] > legacy_max_series:
+        max_series = default_cfg["max_series"]
     retention_days = int(merged_settings.get("retention_days") or default_cfg["retention_days"])
     max_versions = int(merged_settings.get("max_versions") or default_cfg["max_versions"])
     batch_fetch_limit = int(merged_settings.get("batch_fetch_limit") or default_cfg.get("batch_fetch_limit", 1000))
@@ -11200,6 +11201,36 @@ def _clear_latest_state() -> None:
         _save_app_settings_snapshot(settings)
 
 
+def _reset_latest_cache_state() -> None:
+    """Reset latest STATE + CACHE + PREVIEW cache and in-memory cache."""
+    settings = _load_app_settings_snapshot()
+    latest = settings.get(EMBY_LATEST_KEY) if isinstance(settings, dict) else {}
+    if not isinstance(latest, dict):
+        latest = {}
+    latest["STATE"] = {}
+    latest["CACHE"] = {}
+    latest["PREVIEW_CACHE"] = {"movie": None, "series": None}
+    settings[EMBY_LATEST_KEY] = latest
+    _save_app_settings_snapshot(settings)
+
+    with _LATEST_CACHE_LOCK:
+        _LATEST_CACHE.clear()
+        _LATEST_CACHE.update({
+            "payload": None,
+            "timestamp": None,
+            "params": None,
+            "is_refreshing": False,
+            "last_refresh_start": None,
+            "progress": {
+                "state": "idle",
+                "total": 0,
+                "completed": 0,
+                "message": "",
+                "started_at": None,
+                "updated_at": None
+            }
+        })
+
 
 
 def _print_fastapi_start_hint(port: int = 8000) -> None:
@@ -12167,7 +12198,6 @@ async def search_streaming_parallel(query_variants, search_types, selected_index
     Returns:
         dict: Statistiche finali della ricerca
     """
-    import concurrent.futures
     import time
     import copy
     from datetime import datetime
@@ -12504,7 +12534,7 @@ async def search_streaming_parallel(query_variants, search_types, selected_index
     # Debug: stampa il primo risultato dopo merge
     if all_results:
         first = all_results[0]
-        print(f"      -> [DEBUG STREAM] Primo risultato DOPO merge_duplicate_results:")
+        print("      -> [DEBUG STREAM] Primo risultato DOPO merge_duplicate_results:")
         print(f"         magnet: {first.get('magnet')}")
         print(f"         torrent: {first.get('torrent')}")
         print(f"         web: {first.get('web')}")
@@ -12982,7 +13012,7 @@ def process_requests(config, status_callback=None, stop_event=None, target_map=N
         if aborted:
             break
 
-    print(f"\n--- Riepilogo ---")
+    print("\n--- Riepilogo ---")
     print(f"Ricerca completata. Trovati contenuti per {found_items_count} su {len(non_available_requests)} richieste analizzate.")
 
     run_summary = {
@@ -13393,7 +13423,7 @@ def _wf_check_scan(context=None):
             print(f"[WORKFLOW] [CHECK_SCAN] ✓ Tutti i {len(job_ids_to_check)} job completati")
             return True
         else:
-            print(f"[WORKFLOW] [CHECK_SCAN] ⏳ Alcuni job ancora in corso")
+            print("[WORKFLOW] [CHECK_SCAN] ⏳ Alcuni job ancora in corso")
             return False
 
     config, is_valid = load_config()
@@ -13499,10 +13529,10 @@ def _wf_trigger_probe(context):
         started = get_probe_manager().start_combo_workflow_all_servers(servers_payload, mode=mode, scope=scope)
         if started:
             print(f"[WORKFLOW] [PROBE] ✓ Combo workflow avviato con successo su {len(servers_payload)} server(s)")
-            print(f"[WORKFLOW] [PROBE]   Fase 1: Discovery ultimi aggiunti")
-            print(f"[WORKFLOW] [PROBE]   Fase 2: Processing file STRM trovati")
+            print("[WORKFLOW] [PROBE]   Fase 1: Discovery ultimi aggiunti")
+            print("[WORKFLOW] [PROBE]   Fase 2: Processing file STRM trovati")
         else:
-            print(f"[WORKFLOW] [PROBE] ✗ Combo workflow NON avviato (started=False)")
+            print("[WORKFLOW] [PROBE] ✗ Combo workflow NON avviato (started=False)")
         return started
     except Exception as exc:
         print(f"[WORKFLOW] [PROBE] ✗ Errore avvio combo workflow: {exc}")

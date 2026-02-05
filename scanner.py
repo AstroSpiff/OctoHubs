@@ -5,14 +5,24 @@ import re
 import unicodedata
 from typing import Optional, Tuple
 
-from utils import _sanitize_terms_list
+from utils import _sanitize_terms_list, _resolution_label_from_dims
 from api_clients import _try_parse_int
+from config import _merge_resolution_settings
 
 
 # --- CONSTANTS ---
 
 MAX_PRIMARY_QUERY_VARIANTS = 80
 _TAG_REGEX_CACHE = {}
+_DIMENSION_REGEX = re.compile(r"(?P<w>\d{3,4})\s*[x×]\s*(?P<h>\d{3,4})", re.IGNORECASE)
+_RESOLUTION_RANK = {
+    "2160p": 6,
+    "1440p": 5,
+    "1080p": 4,
+    "720p": 3,
+    "576p": 2,
+    "480p": 1
+}
 
 
 # --- METADATA EXTRACTION ---
@@ -446,16 +456,37 @@ def _extract_episode_from_title(title) -> Tuple[Optional[int], Optional[int], Op
     return None, None, None, None
 
 
-def _detect_resolution_bucket(title_lower):
+def _detect_resolution_bucket(title_lower, resolution_rules=None):
     """Detects the resolution category from a torrent title."""
     if not title_lower:
         return "other"
-    if "2160" in title_lower or "4k" in title_lower or "uhd" in title_lower:
+    rules = _merge_resolution_settings(resolution_rules)
+    text = title_lower.lower()
+    if "2160" in text or "4k" in text or "uhd" in text:
         return "2160p"
-    if "1080" in title_lower:
+    if "1440p" in text:
+        return "1440p"
+    if "1080" in text:
         return "1080p"
-    if "720" in title_lower:
+    if "720" in text:
         return "720p"
+    if "576p" in text:
+        return "576p"
+    if "480p" in text:
+        return "480p"
+
+    best_label = ""
+    best_rank = 0
+    for match in _DIMENSION_REGEX.finditer(text):
+        width = match.group("w")
+        height = match.group("h")
+        label = _resolution_label_from_dims(width, height, rules)
+        rank = _RESOLUTION_RANK.get(label, 0)
+        if rank > best_rank:
+            best_rank = rank
+            best_label = label
+    if best_label:
+        return best_label
     return "other"
 
 
@@ -485,6 +516,7 @@ def filter_results(
     request_filter_terms = [term.lower() for term in _sanitize_terms_list(request_rules.get("filter_terms"))]
     request_excluded_terms = [term.lower() for term in _sanitize_terms_list(request_rules.get("exclude_terms"))]
     required_terms = global_filter_terms + request_filter_terms
+    resolution_rules = config.get("RESOLUTION_RULES") if isinstance(config, dict) else None
 
     def _record_exclusion(result, reason):
         if exclusion_collector is not None:
@@ -533,7 +565,7 @@ def filter_results(
                 size_bytes = result.get("size", 0) or 0
                 size_gb = round(size_bytes / (1024**3), 2) if size_bytes else 0
             season_num, episode_num, episode_code, episode_sort = _extract_episode_from_title(result.get("title", ""))
-            resolution_bucket = _detect_resolution_bucket(title_lower)
+            resolution_bucket = _detect_resolution_bucket(title_lower, resolution_rules)
             clean_result = {
                 "title": result.get("title"),
                 "size_gb": size_gb,

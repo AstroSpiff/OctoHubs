@@ -1565,6 +1565,8 @@
     const latestSeriesCount = document.querySelector('[data-latest-series-count]');
     const latestRefreshBtn = document.querySelector('[data-latest-refresh]');
     const latestNotifyBtn = document.querySelector('[data-latest-notify]');
+    const latestDisplaySelect = document.querySelector('[data-latest-display-limit]');
+    const latestPanel = document.querySelector('[data-tab-panel="latest"]');
     const latestServerTabs = document.querySelectorAll('[data-latest-server]');
     const latestServerTabsContainer = document.querySelector('[data-latest-server-tabs]');
     const latestProgressWrap = document.querySelector('[data-latest-progress]');
@@ -1625,8 +1627,12 @@
         return template.innerHTML;
     };
 
-    const formatCount = (value) => {
+    const formatCount = (value, total) => {
         const count = Number(value) || 0;
+        const totalCount = total === undefined || total === null ? null : Number(total);
+        if (Number.isFinite(totalCount) && totalCount !== null && totalCount > count) {
+            return `${count} / ${totalCount} ${totalCount === 1 ? 'elemento' : 'elementi'}`;
+        }
         return `${count} ${count === 1 ? 'elemento' : 'elementi'}`;
     };
 
@@ -1883,7 +1889,7 @@
         `;
     };
 
-    const renderLatestList = (items, container, countEl, emptyText) => {
+    const renderLatestList = (items, container, countEl, emptyText, totalCount = null) => {
         if (!container) {
             return;
         }
@@ -1891,13 +1897,13 @@
         if (!list.length) {
             container.innerHTML = `<div class="empty-state">${escapeHtml(emptyText)}</div>`;
             if (countEl) {
-                countEl.textContent = formatCount(0);
+                countEl.textContent = formatCount(0, totalCount);
             }
             return;
         }
         container.innerHTML = list.map(renderLatestItem).join('');
         if (countEl) {
-            countEl.textContent = formatCount(list.length);
+            countEl.textContent = formatCount(list.length, totalCount);
         }
         if (!container.dataset.latestToggles) {
             container.dataset.latestToggles = 'true';
@@ -1926,14 +1932,55 @@
         if (!serverId || serverId === 'all') {
             return items;
         }
-        return (items || []).filter(item => item && item.server_id === serverId);
+        const target = String(serverId);
+        return (items || []).filter(item => {
+            if (!item || item.server_id === undefined || item.server_id === null) {
+                return false;
+            }
+            return String(item.server_id) === target;
+        });
+    };
+
+    const applyPerServerLimit = (items, limit) => {
+        if (!limit || limit <= 0) {
+            return items || [];
+        }
+        const counts = {};
+        const output = [];
+        (items || []).forEach(item => {
+            if (!item || typeof item !== 'object') {
+                return;
+            }
+            const key = item.server_id ? String(item.server_id) : 'unknown';
+            const current = counts[key] || 0;
+            if (current >= limit) {
+                return;
+            }
+            counts[key] = current + 1;
+            output.push(item);
+        });
+        return output;
     };
 
     const renderLatestView = () => {
-        const movies = filterLatestByServer(latestState.movies, latestState.currentServerId);
-        const series = filterLatestByServer(latestState.series, latestState.currentServerId);
-        renderLatestList(movies, latestMoviesContainer, latestMoviesCount, 'Nessun film trovato');
-        renderLatestList(series, latestSeriesContainer, latestSeriesCount, 'Nessuna serie trovata');
+        const limit = getLatestDisplayLimit();
+        let moviesAll = [];
+        let seriesAll = [];
+        let movies = [];
+        let series = [];
+        if (!latestState.currentServerId || latestState.currentServerId === 'all') {
+            moviesAll = latestState.movies || [];
+            seriesAll = latestState.series || [];
+            movies = applyPerServerLimit(moviesAll, limit);
+            series = applyPerServerLimit(seriesAll, limit);
+        } else {
+            moviesAll = filterLatestByServer(latestState.movies, latestState.currentServerId);
+            seriesAll = filterLatestByServer(latestState.series, latestState.currentServerId);
+            movies = limit ? moviesAll.slice(0, limit) : moviesAll;
+            series = limit ? seriesAll.slice(0, limit) : seriesAll;
+        }
+        renderLatestList(movies, latestMoviesContainer, latestMoviesCount, 'Nessun film trovato', moviesAll.length);
+        renderLatestList(series, latestSeriesContainer, latestSeriesCount, 'Nessuna serie trovata', seriesAll.length);
     };
 
     let latestProgressTimer = null;
@@ -2049,6 +2096,31 @@
         }, 60000);
     }
 
+    const getLatestFetchLimits = () => {
+        const fallbackLimit = 200;
+        const fallbackPerServer = 100;
+        const totalRaw = latestPanel?.dataset.latestFetchLimit;
+        const perServerRaw = latestPanel?.dataset.latestFetchPerServer;
+        let total = parseInt(totalRaw || '', 10);
+        let perServer = parseInt(perServerRaw || '', 10);
+        if (!Number.isFinite(total) || total <= 0) {
+            total = fallbackLimit;
+        }
+        if (!Number.isFinite(perServer) || perServer <= 0) {
+            perServer = fallbackPerServer;
+        }
+        return { total, perServer };
+    };
+
+    const getLatestDisplayLimit = () => {
+        const raw = latestDisplaySelect ? latestDisplaySelect.value : '10';
+        let limit = parseInt(raw, 10);
+        if (!Number.isFinite(limit) || limit <= 0) {
+            limit = 10;
+        }
+        return limit;
+    };
+
     function loadLatestReleases(force = false, allowRefresh = false) {
         if (!latestMoviesContainer || !latestSeriesContainer) {
             return;
@@ -2068,9 +2140,10 @@
             latestSeriesContainer.innerHTML = '<div class="empty-state">Caricamento...</div>';
         }
 
+        const limits = getLatestFetchLimits();
         const params = new URLSearchParams({
-            limit: '50',
-            per_server_limit: '10'
+            limit: String(limits.total),
+            per_server_limit: String(limits.perServer)
         });
         if (force) {
             params.set('force', '1');
@@ -2092,13 +2165,21 @@
                 // Al primo caricamento, imposta filtro sull'ultimo server disponibile
                 if (isFirstLoad) {
                     const serverIds = new Set();
-                    latestState.movies.forEach(m => m && m.server_id && serverIds.add(m.server_id));
-                    latestState.series.forEach(s => s && s.server_id && serverIds.add(s.server_id));
+                    latestState.movies.forEach(m => {
+                        if (m && m.server_id !== undefined && m.server_id !== null) {
+                            serverIds.add(String(m.server_id));
+                        }
+                    });
+                    latestState.series.forEach(s => {
+                        if (s && s.server_id !== undefined && s.server_id !== null) {
+                            serverIds.add(String(s.server_id));
+                        }
+                    });
                     const uniqueServers = Array.from(serverIds);
 
                     // Imposta l'ultimo server come default (o "all" se non ci sono server)
                     if (uniqueServers.length > 0) {
-                        latestState.currentServerId = uniqueServers[uniqueServers.length - 1];
+                        latestState.currentServerId = String(uniqueServers[uniqueServers.length - 1]);
 
                         // Aggiorna classe active sui tab
                         latestServerTabs.forEach(tab => {
@@ -2185,7 +2266,7 @@
             tab.addEventListener('click', () => {
                 latestServerTabs.forEach(btn => btn.classList.remove('active'));
                 tab.classList.add('active');
-                latestState.currentServerId = tab.dataset.latestServer || 'all';
+                latestState.currentServerId = String(tab.dataset.latestServer || 'all');
                 if (!latestState.loaded) {
                     loadLatestReleases(true);
                 } else {
@@ -2196,6 +2277,23 @@
             });
         });
     }
+
+    const initLatestDisplaySelect = () => {
+        if (!latestDisplaySelect) {
+            return;
+        }
+        const storedLimit = localStorage.getItem('octohub_latest_display_limit');
+        if (storedLimit && latestDisplaySelect.querySelector(`option[value="${storedLimit}"]`)) {
+            latestDisplaySelect.value = storedLimit;
+        }
+        latestDisplaySelect.addEventListener('change', () => {
+            localStorage.setItem('octohub_latest_display_limit', latestDisplaySelect.value);
+            renderLatestView();
+            updatePreviewSelectionOptions();
+            updatePreview();
+        });
+    };
+    initLatestDisplaySelect();
 
     const latestPresetForm = document.querySelector('[data-latest-preset-form]');
     const latestPresetIdInput = document.getElementById('latest_preset_id');
@@ -6126,7 +6224,12 @@
     // Load latest data from API
     async function loadLatestData() {
         try {
-            const response = await fetch('/api/emby/latest');
+            const limits = typeof getLatestFetchLimits === 'function' ? getLatestFetchLimits() : { total: 50, perServer: 50 };
+            const params = new URLSearchParams({
+                limit: String(limits.total || 50),
+                per_server_limit: String(limits.perServer || 10)
+            });
+            const response = await fetch(`/api/emby/latest?${params.toString()}`);
             const data = await response.json();
 
             if (!data.success) {

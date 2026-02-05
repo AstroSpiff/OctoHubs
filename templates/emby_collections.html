@@ -1058,7 +1058,7 @@
                                 {% for server in emby_servers %}
                                     <label class="collection-server-option">
                                         <input type="checkbox" class="collection-server-option-input" value="{{ server.id }}">
-                                        <span class="collection-server-icon" style="color: {{ server.icon_color or '#0f172a' }}">
+                                        <span class="collection-server-icon" data-icon-color="{{ server.icon_color or '#0f172a' }}">
                                             <i class="fa-solid {{ server.icon or 'fa-server' }}"></i>
                                         </span>
                                         <span class="collection-server-name">{{ server.alias or server.original_name or server.name or server.url or server.id }}</span>
@@ -1244,10 +1244,19 @@
         </div>
     </div>
 
+    <script id="collection-source-types-data" type="application/json">{{ collection_source_types | tojson }}</script>
+    <script id="collection-settings-data" type="application/json">{{ collection_settings | tojson }}</script>
+    <script id="emby-server-meta-data" type="application/json">{{ emby_servers | tojson }}</script>
     <script>
-        window.collectionSourceTypes = {{ collection_source_types | tojson }};
-        window.collectionSettings = {{ collection_settings | tojson }};
-        window.embyServerMeta = {{ emby_servers | tojson }};
+        // Parse JSON data from script tags
+        window.collectionSourceTypes = JSON.parse(document.getElementById('collection-source-types-data').textContent);
+        window.collectionSettings = JSON.parse(document.getElementById('collection-settings-data').textContent);
+        window.embyServerMeta = JSON.parse(document.getElementById('emby-server-meta-data').textContent);
+
+        // Apply icon colors from data attributes
+        document.querySelectorAll('.collection-server-icon[data-icon-color]').forEach(function(el) {
+            el.style.color = el.getAttribute('data-icon-color');
+        });
     </script>
     <script src="{{ url_for('static', filename='actions.js') }}"></script>
     <script src="{{ url_for('static', filename='script.js') }}"></script>

@@ -4,10 +4,8 @@ Manager for Emby Users, handling sync, policies, and multi-server orchestration.
 import uuid
 import logging
 import os
-import shutil
 import copy
 from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime
 
 from api_clients import (
     _fetch_emby_users_list,
@@ -20,7 +18,6 @@ from api_clients import (
     _fetch_emby_user_items_for_sync,
     _mark_emby_item_played,
     _create_emby_user,
-    _call_emby_api,
     _emby_base_url
 )
 from storage import DatabaseStorage
@@ -361,11 +358,11 @@ class EmbyUserManager:
                 new_tag = r.json().get("PrimaryImageTag", "None")
             
             logger.info(f"[ICON_UPLOAD] Post-check: NewTag={new_tag}")
-            
+
             if new_tag != old_tag:
                  logger.info(f"[ICON_UPLOAD] SUCCESS: Tag changed {old_tag} -> {new_tag}")
             elif new_tag == "None":
-                 logger.warning(f"[ICON_UPLOAD] FAILURE: Tag is None (Image not set?)")
+                 logger.warning("[ICON_UPLOAD] FAILURE: Tag is None (Image not set?)")
             else:
                  pass # Same tag is possible if same image?
                  
@@ -412,7 +409,8 @@ class EmbyUserManager:
 
             sid = u["_server_id"]
             created_str = u.get("DateCreated")
-            if not created_str: continue
+            if not created_str:
+                continue
             
             try:
                 # Check current oldest admin for this server
@@ -426,10 +424,10 @@ class EmbyUserManager:
         links = self.storage.get_user_links()
         # Map: (server_id, user_id) -> {group_id, is_leader}
         link_map = {}
-        for l in links:
-            link_map[(l["server_id"], l["user_id"])] = {
-                "group_id": l["group_id"],
-                "is_leader": l.get("is_leader", False)
+        for link in links:
+            link_map[(link["server_id"], link["user_id"])] = {
+                "group_id": link["group_id"],
+                "is_leader": link.get("is_leader", False)
             }
 
         # 3. Group users
@@ -465,7 +463,6 @@ class EmbyUserManager:
             name = u["Name"]
             policy = u.get("Policy", {})
             is_admin = policy.get("IsAdministrator", False)
-            is_hidden = policy.get("IsHidden", False)
             
             # Resolve server correctly
             current_server = server_map.get(sid, {})
@@ -779,22 +776,22 @@ class EmbyUserManager:
         Returns the new group_id.
         """
         new_group_id = str(uuid.uuid4())
-        
+
         # Check if any user is marked as leader in the request
-        has_leader = any(l.get("is_leader") for l in links)
-        
-        for l in links:
+        has_leader = any(link.get("is_leader") for link in links)
+
+        for link in links:
             # If no explicit leader, try to auto-detect "Master"
-            is_leader = l.get("is_leader", False)
-            if not has_leader and l.get("username", "").lower() == "master":
+            is_leader = link.get("is_leader", False)
+            if not has_leader and link.get("username", "").lower() == "master":
                 is_leader = True
                 has_leader = True # Only one auto-master
-            
+
             self.storage.set_user_link(
-                l["server_id"], 
-                l["user_id"], 
-                new_group_id, 
-                l.get("username"),
+                link["server_id"],
+                link["user_id"],
+                new_group_id,
+                link.get("username"),
                 is_leader=is_leader
             )
         return new_group_id
@@ -996,14 +993,17 @@ class EmbyUserManager:
         # 1. Gather phase
         for srv_id, uid in targets:
             server = self._get_server_by_id(srv_id)
-            if not server: continue
+            if not server:
+                continue
             
             items, err = _fetch_emby_user_items_for_sync(server, uid)
-            if err: continue
+            if err:
+                continue
             
             for item in items:
                 ud = item.get("UserData", {})
-                if not ud.get("Played"): continue
+                if not ud.get("Played"):
+                    continue
                 
                 keys = self._get_item_sync_keys(item)
                 date_played = ud.get("LastPlayedDate")
@@ -1022,7 +1022,8 @@ class EmbyUserManager:
         # 2. Apply phase
         for srv_id, uid in targets:
             server = self._get_server_by_id(srv_id)
-            if not server: continue
+            if not server:
+                continue
             
             all_items, err = self._fetch_all_media_for_user(server, uid)
             if err:
@@ -1032,7 +1033,8 @@ class EmbyUserManager:
             updated_count = 0
             for item in all_items:
                 ud = item.get("UserData", {})
-                if ud.get("Played"): continue # Already played locally
+                if ud.get("Played"):
+                    continue # Already played locally
                 
                 keys = self._get_item_sync_keys(item)
                 
@@ -1046,10 +1048,11 @@ class EmbyUserManager:
                 if match:
                     # Mark as played
                     ok, _ = _mark_emby_item_played(
-                        server, uid, item["Id"], 
+                        server, uid, item["Id"],
                         date_played=match["last_played"]
                     )
-                    if ok: updated_count += 1
+                    if ok:
+                        updated_count += 1
             
             results["success"].append(server['name'])
             results["counts"][server['name']] = updated_count
@@ -1144,11 +1147,14 @@ class EmbyUserManager:
         """
         keys = []
         pids = item.get("ProviderIds", {})
-        
+
         # 1. External IDs
-        if pids.get("Tmdb"): keys.append(f"tmdb:{pids['Tmdb']}")
-        if pids.get("Imdb"): keys.append(f"imdb:{pids['Imdb']}")
-        if pids.get("Tvdb"): keys.append(f"tvdb:{pids['Tvdb']}")
+        if pids.get("Tmdb"):
+            keys.append(f"tmdb:{pids['Tmdb']}")
+        if pids.get("Imdb"):
+            keys.append(f"imdb:{pids['Imdb']}")
+        if pids.get("Tvdb"):
+            keys.append(f"tvdb:{pids['Tvdb']}")
         
         # 2. Fallback: Name matching
         name = (item.get("Name") or "").lower().strip()

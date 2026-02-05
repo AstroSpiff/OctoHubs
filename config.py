@@ -14,7 +14,8 @@ from utils import (
     _coerce_request_bool,
     _coerce_request_int,
     _normalize_alt_language,
-    _sanitize_terms_list
+    _sanitize_terms_list,
+    DEFAULT_RESOLUTION_RULES
 )
 
 # --- COSTANTI ---
@@ -69,6 +70,7 @@ DEFAULT_CONFIG = {
     "MDBLIST_API_KEYS": [],
     "TARGET_LANGUAGES": ["ita", "italian"],
     "EXCLUDE_TAGS": ["md", "cam", "ts", "tc", "vmd", "sub", "subs", "forced", "screener"],
+    "RESOLUTION_RULES": copy.deepcopy(DEFAULT_RESOLUTION_RULES),
     "SEARCH_RULES": {
         "use_original_title": True,
         "use_alt_titles_original": True,
@@ -291,6 +293,55 @@ def _merge_justwatch_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
                     merged[normalized] = value or merged.get(normalized, "")
             else:
                 merged[key] = value
+    return merged
+
+
+def _canonical_resolution_key(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    if text in ("4k", "uhd", "2160", "2160p"):
+        return "2160p"
+    if text in ("qhd", "1440", "1440p"):
+        return "1440p"
+    if text in ("fhd", "1080", "1080p"):
+        return "1080p"
+    if text in ("hd", "720", "720p"):
+        return "720p"
+    if text in ("pal", "dvd", "576", "576p"):
+        return "576p"
+    if text in ("ntsc", "480", "480p"):
+        return "480p"
+    if text.endswith("p") and text[:-1].isdigit():
+        return text
+    return text
+
+
+def _merge_resolution_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
+    """Unisci le regole di risoluzione dell'utente con quelle di default."""
+    merged = copy.deepcopy(DEFAULT_RESOLUTION_RULES)
+    if not isinstance(user_settings, dict):
+        return merged
+    enabled_value = user_settings.get("enabled", user_settings.get("ENABLED"))
+    if enabled_value is not None:
+        merged["enabled"] = _coerce_request_bool(enabled_value, merged.get("enabled", True))
+    thresholds = user_settings.get("thresholds", user_settings.get("THRESHOLDS"))
+    if isinstance(thresholds, dict):
+        for res_key, rule_values in thresholds.items():
+            canonical = _canonical_resolution_key(res_key)
+            if not canonical:
+                continue
+            current = merged["thresholds"].get(canonical)
+            if not isinstance(current, dict):
+                current = {}
+                merged["thresholds"][canonical] = current
+            if not isinstance(rule_values, dict):
+                continue
+            for key, value in rule_values.items():
+                key_norm = str(key or "").strip().lower()
+                if key_norm not in current:
+                    continue
+                current[key_norm] = _coerce_request_int(value, current[key_norm], 0, None)
     return merged
 
 def _merge_rss_import_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:

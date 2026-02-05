@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """CLI helper to manage OctoHub users."""
 import argparse
-import os
-from typing import Optional
 
 from auth import (
     init_auth,

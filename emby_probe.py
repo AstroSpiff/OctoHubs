@@ -1194,7 +1194,7 @@ class EmbyProbeManager:
             # Wait for global processing worker to complete (recent scope only)
             self._wait_for_worker(worker, stop_flag)
 
-        except Exception as exc:
+        except Exception:
             # Errors are logged by individual workers
             pass
         finally:

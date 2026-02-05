@@ -14,12 +14,10 @@ from typing import Any, Dict, List, Tuple
 from api_clients import _call_emby_api, _emby_base_url, EMBY_REQUEST_TIMEOUT
 from app import _ensure_db_backend, _get_emby_servers_from_config
 from emby_collection_sources import (
-    SOURCE_TYPES,
     SOURCE_TYPE_MAP,
     PROVIDER_LABEL_MAP,
     build_source_link,
-    fetch_source_items,
-    list_trakt_lists
+    fetch_source_items
 )
 
 logger = logging.getLogger(__name__)

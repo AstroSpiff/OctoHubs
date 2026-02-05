@@ -480,7 +480,14 @@
                 </div>
             </div>
 
-            <div class="tab-panel" data-tab-panel="latest">
+            {% set latest_server_count = emby_servers|length if emby_servers else 1 %}
+            {% set latest_max_movies = latest_limits.max_movies if latest_limits else 50 %}
+            {% set latest_max_series = latest_limits.max_series if latest_limits else 25 %}
+            <div class="tab-panel" data-tab-panel="latest"
+                 data-latest-max-movies="{{ latest_max_movies }}"
+                 data-latest-max-series="{{ latest_max_series }}"
+                 data-latest-fetch-limit="{{ ([latest_max_movies, latest_max_series] | max) * latest_server_count }}"
+                 data-latest-fetch-per-server="100">
                 <div class="card">
                     <div class="latest-header">
                         <div>
@@ -507,20 +514,34 @@
                         </div>
                     </div>
                     {% if emby_servers %}
-                        <div class="server-tabs latest-server-tabs" data-latest-server-tabs>
-                            {% for server in emby_servers %}
-                                {% set server_label = server.alias or server.original_name or server.name or server.url or "Server Emby" %}
-                                {% set server_icon = server.icon or 'fa-server' %}
-                                {% set server_icon_style = 'fa-regular' if server.icon_style == 'regular' else 'fa-solid' %}
-                                {% set server_icon_color = server.icon_color or '#3b82f6' %}
-                                <button class="server-tab" type="button" data-latest-server="{{ server.id }}">
-                                    <span class="server-label">
-                                        <i class="server-icon {{ server_icon_style }} {{ server_icon }}" data-icon-color="{{ server_icon_color }}"></i>
-                                        <span>{{ server_label }}</span>
-                                    </span>
-                                </button>
-                            {% endfor %}
-                            <button class="server-tab active" type="button" data-latest-server="all">Tutti</button>
+                        <div class="latest-server-row">
+                            <div class="server-tabs latest-server-tabs" data-latest-server-tabs>
+                                {% for server in emby_servers %}
+                                    {% set server_label = server.alias or server.original_name or server.name or server.url or "Server Emby" %}
+                                    {% set server_icon = server.icon or 'fa-server' %}
+                                    {% set server_icon_style = 'fa-regular' if server.icon_style == 'regular' else 'fa-solid' %}
+                                    {% set server_icon_color = server.icon_color or '#3b82f6' %}
+                                    <button class="server-tab" type="button" data-latest-server="{{ server.id }}">
+                                        <span class="server-label">
+                                            <i class="server-icon {{ server_icon_style }} {{ server_icon }}" data-icon-color="{{ server_icon_color }}"></i>
+                                            <span>{{ server_label }}</span>
+                                        </span>
+                                    </button>
+                                {% endfor %}
+                                <button class="server-tab active" type="button" data-latest-server="all">Tutti</button>
+                            </div>
+                            <div class="latest-display-controls">
+                                <label for="latest_display_limit" class="tagline">Mostra</label>
+                                <select id="latest_display_limit" class="form-input compact" data-latest-display-limit>
+                                    <option value="10">10</option>
+                                    <option value="20">20</option>
+                                    <option value="50">50</option>
+                                    <option value="100">100</option>
+                                </select>
+                                <span class="tagline" data-latest-max-hint>
+                                    Max DB: {{ latest_max_movies }} film · {{ latest_max_series }} serie
+                                </span>
+                            </div>
                         </div>
                     {% endif %}
                     <div class="latest-grid">
@@ -704,6 +725,11 @@
                                 </div>
                                 <div class="latest-config-card">
                                     <h4>Manutenzione</h4>
+                                    <form action="{{ url_for('emby_latest_reset_all_route') }}" method="post" class="latest-config-form" onsubmit="return confirm('⚠️ Questa operazione azzera STATE + CACHE delle ultime pubblicazioni. I contenuti verranno ricalcolati dal server e risulteranno nuovi al prossimo fetch.\n\nContinuare?');">
+                                        <input type="hidden" name="next" value="{{ url_for('emby_dashboard') }}">
+                                        <p class="form-help">Reset completo delle pubblicazioni (STATE + CACHE + PREVIEW). Mantiene preset e regole.</p>
+                                        <button class="btn danger" type="submit">Reset Totale Pubblicazioni</button>
+                                    </form>
                                     <form action="{{ url_for('emby_latest_clear_state_route') }}" method="post" class="latest-config-form" onsubmit="return confirm('⚠️ Questa operazione azzererà lo stato di tracking delle ultime pubblicazioni. Tutti i contenuti verranno rilevati come nuovi al prossimo fetch.\n\nContinuare?');">
                                         <input type="hidden" name="next" value="{{ url_for('emby_dashboard') }}">
                                         <p class="form-help">Azzera lo stato di tracking (notified flag) mantenendo tutte le altre configurazioni.</p>
@@ -1764,6 +1790,6 @@
     <script src="{{ url_for('static', filename='actions.js') }}"></script>
     <script src="{{ url_for('static', filename='script.js') }}"></script>
     <script src="{{ url_for('static', filename='emby_users.js') }}?v=20260114-leader-fix"></script>
-    <script src="{{ url_for('static', filename='emby.js') }}?v=20260110-verify-fix"></script>
+    <script src="{{ url_for('static', filename='emby.js') }}?v=20260204-latest-ui2"></script>
 </body>
 </html>

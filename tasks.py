@@ -584,16 +584,16 @@ class WorkflowManager:
                     # Esegue la logica specifica dello step
                     if step["id"] == "scan":
                         self._execute_scan_step(i, context)
-                        print(f"[WORKFLOW] [DEBUG] _execute_scan_step returned successfully")
+                        print("[WORKFLOW] [DEBUG] _execute_scan_step returned successfully")
                     elif step["id"] == "probe":
                         self._execute_probe_step(i, context)
-                        print(f"[WORKFLOW] [DEBUG] _execute_probe_step returned successfully")
+                        print("[WORKFLOW] [DEBUG] _execute_probe_step returned successfully")
                     elif step["id"] == "cache":
                         self._execute_cache_step(i, context)
-                        print(f"[WORKFLOW] [DEBUG] _execute_cache_step returned successfully")
+                        print("[WORKFLOW] [DEBUG] _execute_cache_step returned successfully")
                     elif step["id"] == "notify":
                         self._execute_notify_step(i, context)
-                        print(f"[WORKFLOW] [DEBUG] _execute_notify_step returned successfully")
+                        print("[WORKFLOW] [DEBUG] _execute_notify_step returned successfully")
 
                     # Calcola la durata
                     print(f"[WORKFLOW] [DEBUG] Calculating duration for step {i} ({step['id']})")
@@ -628,15 +628,15 @@ class WorkflowManager:
                 if self._stop_event.is_set():
                     self._status["status"] = "completed"
                     self._status["error"] = "Workflow interrotto dall'utente"
-                    print(f"[WORKFLOW] Workflow interrotto dall'utente")
+                    print("[WORKFLOW] Workflow interrotto dall'utente")
                 else:
                     self._status["status"] = "completed"
-                    print(f"[WORKFLOW] ===== Workflow completato con successo =====")
-                    print(f"[WORKFLOW] Tutti i processi sono stati eseguiti correttamente:"
-                          f"\n  1. Scansione file librerie completata"
-                          f"\n  2. STRM Probe Ultimi Aggiunti completato"
-                          f"\n  3. Aggiornamento pubblicazioni completato"
-                          f"\n  4. Notifiche Telegram inviate")
+                    print("[WORKFLOW] ===== Workflow completato con successo =====")
+                    print("[WORKFLOW] Tutti i processi sono stati eseguiti correttamente:"
+                          "\n  1. Scansione file librerie completata"
+                          "\n  2. STRM Probe Ultimi Aggiunti completato"
+                          "\n  3. Aggiornamento pubblicazioni completato"
+                          "\n  4. Notifiche Telegram inviate")
 
                 # Aggiorna stato su database
                 if self._db_storage and self._status.get("workflow_id"):
@@ -646,7 +646,7 @@ class WorkflowManager:
                             status="completed",
                             error=self._status.get("error")
                         )
-                        print(f"[WORKFLOW] Stato workflow salvato su database")
+                        print("[WORKFLOW] Stato workflow salvato su database")
                     except Exception as db_exc:
                         print(f"[WORKFLOW] ⚠️ Errore aggiornamento workflow su DB: {db_exc}")
 
@@ -664,7 +664,7 @@ class WorkflowManager:
                             status="failed",
                             error=str(exc)
                         )
-                        print(f"[WORKFLOW] Stato workflow (failed) salvato su database")
+                        print("[WORKFLOW] Stato workflow (failed) salvato su database")
                     except Exception as db_exc:
                         print(f"[WORKFLOW] ⚠️ Errore aggiornamento workflow su DB: {db_exc}")
 
@@ -681,7 +681,7 @@ class WorkflowManager:
 
         # Avvia la scansione usando il sistema di scan gruppo esistente
         self._update_step_status(step_index, "running", "Avvio scansione file librerie...", 10)
-        print(f"[WORKFLOW] [SCAN] Avvio scansione file librerie...")
+        print("[WORKFLOW] [SCAN] Avvio scansione file librerie...")
         success = self._trigger_scan_func(context)
 
         if not success:
@@ -689,7 +689,7 @@ class WorkflowManager:
 
         # Il progress viene mostrato nelle barre individuali delle librerie nella dashboard
         self._update_step_status(step_index, "running", "Scansione file in corso...", 30)
-        print(f"[WORKFLOW] [SCAN] Scansione file avviata con successo, attesa completamento...")
+        print("[WORKFLOW] [SCAN] Scansione file avviata con successo, attesa completamento...")
 
         import time
         # FIX PROBLEMA #8: Timeout a livello workflow (2 ore max per step scan)
@@ -704,7 +704,7 @@ class WorkflowManager:
 
             if self._check_scan_func(context):
                 # Scansione completata
-                print(f"[WORKFLOW] [SCAN] Scansione file completata con successo")
+                print("[WORKFLOW] [SCAN] Scansione file completata con successo")
                 self._update_step_status(step_index, "running", "Scansione file completata", 90)
                 break
 
@@ -712,10 +712,10 @@ class WorkflowManager:
             self._stop_event.wait(timeout=10)
 
         if self._stop_event.is_set():
-            print(f"[WORKFLOW] [SCAN] Scansione interrotta dall'utente")
+            print("[WORKFLOW] [SCAN] Scansione interrotta dall'utente")
             raise Exception("Scansione interrotta")
 
-        print(f"[WORKFLOW] [SCAN] Step completato, passaggio al prossimo step")
+        print("[WORKFLOW] [SCAN] Step completato, passaggio al prossimo step")
 
     def _execute_probe_step(self, step_index, context):
         """
@@ -730,7 +730,7 @@ class WorkflowManager:
 
         # Avvia il probe
         self._update_step_status(step_index, "running", "Avvio STRM Probe Ultimi Aggiunti...", 10)
-        print(f"[WORKFLOW] [PROBE] Avvio STRM Probe su tutti i server coinvolti...")
+        print("[WORKFLOW] [PROBE] Avvio STRM Probe su tutti i server coinvolti...")
         success = self._trigger_probe_func(context)
 
         if not success:
@@ -738,11 +738,11 @@ class WorkflowManager:
 
         # Polling fino al completamento
         self._update_step_status(step_index, "running", "STRM Probe in corso...", 30)
-        print(f"[WORKFLOW] [PROBE] STRM Probe avviato con successo, attesa completamento...")
+        print("[WORKFLOW] [PROBE] STRM Probe avviato con successo, attesa completamento...")
 
         import time
         # Delay iniziale per dare tempo ai worker di avviarsi (evita race condition)
-        print(f"[WORKFLOW] [PROBE] Attesa 3 secondi per avvio worker...")
+        print("[WORKFLOW] [PROBE] Attesa 3 secondi per avvio worker...")
         time.sleep(3)
 
         # FIX PROBLEMA #8: Timeout a livello workflow (2 ore max per step probe)
@@ -757,7 +757,7 @@ class WorkflowManager:
 
             if self._check_probe_func(context):
                 # Probe completato
-                print(f"[WORKFLOW] [PROBE] STRM Probe completato con successo")
+                print("[WORKFLOW] [PROBE] STRM Probe completato con successo")
                 self._update_step_status(step_index, "running", "STRM Probe completato", 90)
                 break
 
@@ -765,10 +765,10 @@ class WorkflowManager:
             self._stop_event.wait(timeout=10)
 
         if self._stop_event.is_set():
-            print(f"[WORKFLOW] [PROBE] STRM Probe interrotto dall'utente")
+            print("[WORKFLOW] [PROBE] STRM Probe interrotto dall'utente")
             raise Exception("Probe interrotto")
 
-        print(f"[WORKFLOW] [PROBE] Step completato, passaggio al prossimo step")
+        print("[WORKFLOW] [PROBE] Step completato, passaggio al prossimo step")
 
     def _execute_cache_step(self, step_index, context):
         """
@@ -782,13 +782,13 @@ class WorkflowManager:
             raise Exception("Callback cache non configurata")
 
         self._update_step_status(step_index, "running", "Avvio aggiornamento Ultimi Aggiunti...", 10)
-        print(f"[WORKFLOW] [CACHE] Avvio aggiornamento pubblicazioni Ultimi Aggiunti...")
+        print("[WORKFLOW] [CACHE] Avvio aggiornamento pubblicazioni Ultimi Aggiunti...")
 
         # Chiama la funzione di refresh cache (include polling interno)
         self._update_step_status(step_index, "running", "Aggiornamento pubblicazioni in corso...", 50)
         self._refresh_cache_func(context)
 
-        print(f"[WORKFLOW] [CACHE] Pubblicazioni Ultimi Aggiunti aggiornate con successo")
+        print("[WORKFLOW] [CACHE] Pubblicazioni Ultimi Aggiunti aggiornate con successo")
         self._update_step_status(step_index, "running", "Pubblicazioni aggiornate", 90)
 
     def _execute_notify_step(self, step_index, context):
@@ -803,13 +803,13 @@ class WorkflowManager:
             raise Exception("Callback notifiche non configurata")
 
         self._update_step_status(step_index, "running", "Avvio invio notifiche Telegram...", 10)
-        print(f"[WORKFLOW] [NOTIFY] Avvio invio notifiche Telegram secondo configurazione...")
+        print("[WORKFLOW] [NOTIFY] Avvio invio notifiche Telegram secondo configurazione...")
 
         # Chiama la funzione di notifica
         self._update_step_status(step_index, "running", "Invio notifiche in corso...", 50)
         self._notify_func(context)
 
-        print(f"[WORKFLOW] [NOTIFY] Notifiche Telegram inviate con successo")
+        print("[WORKFLOW] [NOTIFY] Notifiche Telegram inviate con successo")
         self._update_step_status(step_index, "running", "Notifiche inviate", 90)
 
     def _get_steps(self):

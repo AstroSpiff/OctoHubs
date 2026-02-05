@@ -15,7 +15,7 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from queue import Queue, Empty
-from typing import Optional, Dict
+from typing import Optional, Dict, Mapping, Tuple
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, Form, Depends, UploadFile, File
 from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, HTMLResponse, Response
@@ -27,7 +27,7 @@ from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse, unquote
 
 import requests
 
-from app import _build_active_library_scans_snapshot, _build_scan_library_snapshot, _build_scan_library_tracked_snapshot, _build_scan_group_tracked_snapshot, _build_associations_get_snapshot, _build_associations_post_snapshot, _build_media_details_snapshot, _build_jellyseerr_request_snapshot, _build_tmdb_search_snapshot, _build_tmdb_tv_details_snapshot, _build_tmdb_check_availability_snapshot, _build_manual_search_snapshot, _build_rss_inspect_snapshot, _build_rss_inspect_json_snapshot, _build_rss_import_snapshot, _build_rss_import_json_snapshot, _build_rss_deduplicate_snapshot, _build_rss_items_snapshot, _build_rss_search_snapshot, _build_rss_delete_snapshot, _build_categories_snapshot, _build_blacklist_snapshot, _build_blacklist_add_snapshot, _build_blacklist_remove_snapshot, _build_hidden_snapshot, _build_hidden_add_snapshot, _build_hidden_remove_snapshot, _build_hidden_add_batch_snapshot, _build_hidden_remove_batch_snapshot, _build_blacklist_add_batch_snapshot, _build_blacklist_remove_batch_snapshot, _build_delete_by_categories_snapshot, _build_send_torrent_snapshot, _build_send_torrent_batch_snapshot, _build_scan_status_snapshot, _build_run_scan_snapshot, _build_update_request_rules_snapshot, _build_refresh_requests_snapshot, _build_test_connections_snapshot, _build_trakt_device_start_snapshot, _build_trakt_device_poll_snapshot, _build_trakt_clear_snapshot, _build_emby_stop_task_snapshot, _build_emby_server_status_snapshot, _build_emby_health_status_snapshot, _build_emby_activity_snapshot, _build_emby_tasks_snapshot, _build_emby_users_snapshot, _build_emby_plugins_snapshot, _build_emby_streams_snapshot, _build_emby_status_stream_payload, _build_emby_libraries_snapshot, _build_active_scans_snapshot, _build_debug_vf_query_snapshot, _build_strm_guard_status_snapshot, _build_grouped_libraries_snapshot, _build_movie_versions_snapshot, _build_series_seasons_snapshot, _build_season_episodes_snapshot, _build_lookup_snapshot, _build_item_details_snapshot, _build_availability_snapshot, _build_latest_snapshot, _build_latest_progress_payload, _build_latest_preview_snapshot, _build_latest_preview_cache_snapshot, _build_latest_enrich_snapshot, _build_latest_notify_snapshot, _build_emby_image_stream, _build_server_order_snapshot, _build_group_order_get_snapshot, _build_group_order_post_snapshot, _build_tab_order_get_snapshot, _build_tab_order_post_snapshot, _probe_discovery_start_snapshot, _probe_discovery_stop_snapshot, _probe_recent_start_snapshot, get_emby_user_manager, _probe_recent_start_all_snapshot, _probe_recent_stop_snapshot, _probe_recent_stop_all_snapshot, _probe_recent_config_get_snapshot, _probe_recent_config_save_snapshot, _probe_recent_processing_start_snapshot, _probe_recent_processing_start_all_snapshot, _probe_recent_processing_stop_snapshot, _probe_recent_processing_stop_all_snapshot, _probe_recent_combo_start_snapshot, _probe_recent_combo_start_all_snapshot, _probe_recent_combo_stop_snapshot, _probe_recent_combo_stop_all_snapshot, _probe_libraries_combo_start_snapshot, _probe_libraries_combo_stop_snapshot, _probe_processing_start_snapshot, _probe_processing_stop_snapshot, _probe_queue_get_snapshot, _probe_queue_delete_snapshot, _probe_history_get_snapshot, _probe_history_delete_snapshot, _probe_retry_snapshot, _probe_blacklist_get_snapshot, _probe_blacklist_delete_snapshot, _probe_debug_recent_items_snapshot, _coerce_request_bool, _coerce_request_int, _LIBRARY_SCAN_TRACKER, _ws_event_queues, _ws_queues_lock, _sse_event_queues, _sse_queues_lock, DateTimeEncoder, load_config, _default_emby_settings, _prepare_emby_servers_for_view, _get_total_blacklist_counts, _default_latest_settings, _load_latest_settings, _load_telegram_settings, _prepare_latest_notification_rules, EMBY_CATEGORY_OPTIONS, _resolve_next_url, _ensure_db_backend, _load_emby_settings_from_db, _build_emby_server_from_form, _fetch_emby_status, _save_emby_settings_to_db, _purge_emby_server_settings, _emby_display_name, _normalize_emby_server, _execute_emby_action, EMBY_ACTIONS, _db_enabled, _save_latest_settings, _get_emby_servers_from_config, _ensure_strm_guard_manager, _clear_latest_state, _update_app_settings_overrides, _register_app_event_loop, _active_trakt_settings, _trakt_enabled
+from app import _build_active_library_scans_snapshot, _build_scan_library_snapshot, _build_scan_library_tracked_snapshot, _build_scan_group_tracked_snapshot, _build_associations_get_snapshot, _build_associations_post_snapshot, _build_media_details_snapshot, _build_jellyseerr_request_snapshot, _build_tmdb_search_snapshot, _build_tmdb_tv_details_snapshot, _build_tmdb_check_availability_snapshot, _build_manual_search_snapshot, _build_rss_inspect_snapshot, _build_rss_inspect_json_snapshot, _build_rss_import_snapshot, _build_rss_import_json_snapshot, _build_rss_deduplicate_snapshot, _build_rss_items_snapshot, _build_rss_search_snapshot, _build_rss_delete_snapshot, _build_categories_snapshot, _build_blacklist_snapshot, _build_blacklist_add_snapshot, _build_blacklist_remove_snapshot, _build_hidden_snapshot, _build_hidden_add_snapshot, _build_hidden_remove_snapshot, _build_hidden_add_batch_snapshot, _build_hidden_remove_batch_snapshot, _build_blacklist_add_batch_snapshot, _build_blacklist_remove_batch_snapshot, _build_delete_by_categories_snapshot, _build_send_torrent_snapshot, _build_send_torrent_batch_snapshot, _build_scan_status_snapshot, _build_run_scan_snapshot, _build_update_request_rules_snapshot, _build_refresh_requests_snapshot, _build_test_connections_snapshot, _build_trakt_device_start_snapshot, _build_trakt_device_poll_snapshot, _build_trakt_clear_snapshot, _build_emby_stop_task_snapshot, _build_emby_server_status_snapshot, _build_emby_health_status_snapshot, _build_emby_activity_snapshot, _build_emby_tasks_snapshot, _build_emby_users_snapshot, _build_emby_plugins_snapshot, _build_emby_streams_snapshot, _build_emby_status_stream_payload, _build_emby_libraries_snapshot, _build_active_scans_snapshot, _build_debug_vf_query_snapshot, _build_strm_guard_status_snapshot, _build_grouped_libraries_snapshot, _build_movie_versions_snapshot, _build_series_seasons_snapshot, _build_season_episodes_snapshot, _build_lookup_snapshot, _build_item_details_snapshot, _build_availability_snapshot, _build_latest_snapshot, _build_latest_progress_payload, _build_latest_preview_snapshot, _build_latest_preview_cache_snapshot, _build_latest_enrich_snapshot, _build_latest_notify_snapshot, _build_emby_image_stream, _build_server_order_snapshot, _build_group_order_get_snapshot, _build_group_order_post_snapshot, _build_tab_order_get_snapshot, _build_tab_order_post_snapshot, _probe_discovery_start_snapshot, _probe_discovery_stop_snapshot, _probe_recent_start_snapshot, get_emby_user_manager, _probe_recent_start_all_snapshot, _probe_recent_stop_snapshot, _probe_recent_stop_all_snapshot, _probe_recent_config_get_snapshot, _probe_recent_config_save_snapshot, _probe_recent_processing_start_snapshot, _probe_recent_processing_start_all_snapshot, _probe_recent_processing_stop_snapshot, _probe_recent_processing_stop_all_snapshot, _probe_recent_combo_start_snapshot, _probe_recent_combo_start_all_snapshot, _probe_recent_combo_stop_snapshot, _probe_recent_combo_stop_all_snapshot, _probe_libraries_combo_start_snapshot, _probe_libraries_combo_stop_snapshot, _probe_processing_start_snapshot, _probe_processing_stop_snapshot, _probe_queue_get_snapshot, _probe_queue_delete_snapshot, _probe_history_get_snapshot, _probe_history_delete_snapshot, _probe_retry_snapshot, _probe_blacklist_get_snapshot, _probe_blacklist_delete_snapshot, _probe_debug_recent_items_snapshot, _coerce_request_bool, _coerce_request_int, _LIBRARY_SCAN_TRACKER, _ws_event_queues, _ws_queues_lock, _sse_event_queues, _sse_queues_lock, DateTimeEncoder, load_config, _get_total_blacklist_counts, _load_latest_settings, _load_telegram_settings, _prepare_latest_notification_rules, _resolve_next_url, _ensure_db_backend, _load_emby_settings_from_db, _build_emby_server_from_form, _fetch_emby_status, _save_emby_settings_to_db, _purge_emby_server_settings, _emby_display_name, _execute_emby_action, _db_enabled, _save_latest_settings, _get_emby_servers_from_config, _ensure_strm_guard_manager, _clear_latest_state, _update_app_settings_overrides, _register_app_event_loop, _active_trakt_settings, _trakt_enabled
 from storage import StorageError
 from emby_websocket_manager import get_websocket_manager
 from emby_collection_sources import SOURCE_TYPES, list_trakt_lists, list_mdblist_user_lists, is_mdblist_enabled
@@ -51,6 +51,9 @@ from emby_collections import (
 from tasks import workflow_manager
 from utils import _split_csv_field
 from scan_websocket_manager import get_scan_connection_manager
+from config import _default_auto_tasks, _default_emby_settings, _normalize_emby_server, _clean_sort_mode, read_raw_config
+from api_clients import EMBY_ACTIONS, _prepare_emby_servers_for_view
+from auth import init_auth
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +89,6 @@ _scan_locks: Dict[str, asyncio.Lock] = {}
 _scan_locks_lock = asyncio.Lock()
 
 # Initialize authentication system
-from auth import init_auth
 init_auth(create_default_admin=True)
 
 def _append_scan_reset_param(url: str) -> str:
@@ -182,10 +184,6 @@ def url_for_fastapi(endpoint: str, **kwargs) -> str:
         "emby_collections": "/emby/collections",
         "view_emby_users": "/emby/users",
         "emby_probe": "/emby/probe",
-        "dashboard": "/",
-        "configuration": "/configuration",
-        "auth_logout": "/logout",
-        "auth_login": "/login",
 
         # Action routes
         "emby_save_server": "/emby/save-server",
@@ -224,6 +222,7 @@ def url_for_fastapi(endpoint: str, **kwargs) -> str:
         "emby_latest_notification_settings": "/emby/latest/notification-settings",
         "emby_latest_state_clear": "/emby/latest/state/clear",
         "emby_latest_clear_state_route": "/emby/latest/state/clear",
+        "emby_latest_reset_all_route": "/emby/latest/reset",
         "emby_library_scan_state_clear_route": "/emby/library-scan-state/clear",
 
         # Static files
@@ -604,7 +603,7 @@ def _sanitize_download_url(raw_url: Optional[str]) -> Optional[str]:
     return f"{base}?{query}{frag}"
 
 
-def _guess_torrent_filename(url: str, headers: Dict[str, str]) -> str:
+def _guess_torrent_filename(url: str, headers: Mapping[str, str]) -> str:
     filename = ""
     content_disp = headers.get("content-disposition", "")
     if "filename=" in content_disp:
@@ -629,7 +628,7 @@ def _guess_torrent_filename(url: str, headers: Dict[str, str]) -> str:
     return filename
 
 
-def _download_torrent_file(url: str):
+def _download_torrent_file(url: str) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:
     safe_url = _sanitize_download_url(url)
     if not safe_url:
         return None, None, "URL non valido"
@@ -798,8 +797,6 @@ async def scan_library_tracked(request: Request):
     except Exception:
         payload = {}
 
-    server_id = payload.get("server_id")
-
     # Prova ad acquisire lock (opzionale: disabilitato per permettere scan multiple)
     # Se vuoi abilitare lock esclusivo, decomment:
     # if server_id and not await _acquire_scan_lock(server_id):
@@ -833,7 +830,7 @@ async def scan_group_tracked(request: Request):
         print(f"[API] ✗ Error parsing JSON: {e}", flush=True)
         payload = {}
 
-    print(f"[API] Calling _build_scan_group_tracked_snapshot...", flush=True)
+    print("[API] Calling _build_scan_group_tracked_snapshot...", flush=True)
     data, status_code = _build_scan_group_tracked_snapshot(payload)
     print(f"[API] Response status: {status_code}", flush=True)
     return JSONResponse(data, status_code=status_code)
@@ -1200,7 +1197,7 @@ async def rss_search_api(request: Request):
     keywords = request.query_params.get("keywords")
     limit = request.query_params.get("limit")
     offset = request.query_params.get("offset")
-    use_regex = request.query_params.get("use_regex")
+    use_regex = _coerce_request_bool(request.query_params.get("use_regex"), False)
     search_in = request.query_params.get("search_in")
     data, status_code = _build_rss_search_snapshot(keywords, limit, offset, use_regex, search_in)
     return JSONResponse(data, status_code=status_code)
@@ -1463,6 +1460,8 @@ async def torrent_proxy_api(request: Request, url: str = ""):
     content, filename, error = _download_torrent_file(url)
     if error:
         return JSONResponse({"success": False, "message": error}, status_code=502)
+    if not content or not filename:
+        return JSONResponse({"success": False, "message": "Download torrent non valido"}, status_code=502)
 
     headers = {
         "Content-Disposition": f"attachment; filename=\"{filename}\""
@@ -1477,10 +1476,12 @@ async def torrent_proxy_post_api(request: Request):
         payload = await request.json()
     except Exception:
         payload = {}
-    url = payload.get("url") if isinstance(payload, dict) else ""
+    url = str(payload.get("url") or "") if isinstance(payload, dict) else ""
     content, filename, error = _download_torrent_file(url)
     if error:
         return JSONResponse({"success": False, "message": error}, status_code=502)
+    if not content or not filename:
+        return JSONResponse({"success": False, "message": "Download torrent non valido"}, status_code=502)
 
     headers = {
         "Content-Disposition": f"attachment; filename=\"{filename}\""
@@ -1506,9 +1507,15 @@ async def torrent_zip_api(request: Request):
     used_names = set()
     with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for link in links:
+            if not isinstance(link, str) or not link:
+                errors.append({"link": link, "error": "Link non valido"})
+                continue
             content, filename, error = _download_torrent_file(link)
             if error:
                 errors.append({"link": link, "error": error})
+                continue
+            if not content or not filename:
+                errors.append({"link": link, "error": "Download torrent non valido"})
                 continue
             base, ext = os.path.splitext(filename)
             candidate = filename
@@ -1911,8 +1918,8 @@ async def emby_availability(request: Request):
 @fastapi_app.get("/api/emby/latest")
 async def emby_latest(request: Request):
     _require_auth(request)
-    limit = _coerce_request_int(request.query_params.get("limit"), 12, 1, 50)
-    per_server_limit = _coerce_request_int(request.query_params.get("per_server_limit"), limit, 1, 50)
+    limit = _coerce_request_int(request.query_params.get("limit"), 200, 1, 1000)
+    per_server_limit = _coerce_request_int(request.query_params.get("per_server_limit"), 10, 1, 100)
     force = _coerce_request_bool(request.query_params.get("force"), False)
     payload, status_code = _build_latest_snapshot(limit, per_server_limit, force)
     return JSONResponse(payload, status_code=status_code)
@@ -2348,6 +2355,7 @@ async def probe_export_csv(request: Request):
 
     # Load config to get server names
     config, _ = load_config()
+    config = config or {}
     emby_servers = config.get("EMBY", {}).get("SERVERS", [])
     server_name_map = {s.get("id"): s.get("name", s.get("id")) for s in emby_servers}
 
@@ -2396,7 +2404,7 @@ async def probe_export_csv(request: Request):
                 from datetime import datetime as dt
                 date_obj = dt.fromisoformat(failed_at.replace('Z', '+00:00'))
                 failed_at = date_obj.strftime("%Y-%m-%d %H:%M:%S")
-            except:
+            except Exception:
                 pass
 
         writer.writerow([
@@ -2519,6 +2527,7 @@ async def view_emby_dashboard(request: Request, user=Depends(get_current_user_op
     latest_settings = _load_latest_settings()
     latest_message_presets = latest_settings.get("PRESETS") or []
     latest_rules = latest_settings.get("NOTIFICATION_RULES") or []
+    latest_limits = latest_settings.get("SETTINGS") if isinstance(latest_settings.get("SETTINGS"), dict) else {}
     telegram_settings = _load_telegram_settings()
     telegram_presets = telegram_settings.get("PRESETS") or []
     latest_notification_rules = _prepare_latest_notification_rules(
@@ -2538,6 +2547,7 @@ async def view_emby_dashboard(request: Request, user=Depends(get_current_user_op
         "total_incomplete_count": total_incomplete_count,
         "latest_message_presets": latest_message_presets,
         "latest_notification_rules": latest_notification_rules,
+        "latest_limits": latest_limits,
         "telegram_presets": telegram_presets,
         "csrf_token": get_csrf_token(request)
     })
@@ -3335,9 +3345,9 @@ async def emby_save_group_settings(request: Request):
     _require_auth(request)
     try:
         data = await request.json()
-    except:
+    except Exception:
         return JSONResponse({"success": False, "message": "Invalid JSON"}, status_code=400)
-    
+
     group_id = data.get("group_id")
     # Handle boolean conversion safely
     auto_sync = data.get("auto_sync")
@@ -3942,6 +3952,43 @@ async def emby_latest_state_clear_post(
     return RedirectResponse(url=next_url, status_code=303)
 
 
+@fastapi_app.post("/emby/latest/reset")
+async def emby_latest_reset_post(
+    request: Request,
+    csrf_token: str = Form(None, alias="csrf_token"),
+    next_param: Optional[str] = Form(None, alias="next")
+):
+    """Reset latest STATE + CACHE (POST form handler)."""
+    _require_auth(request)
+
+    next_url = next_param or '/emby'
+
+    # Validate CSRF token
+    if not validate_csrf(request, csrf_token):
+        flash(request, "CSRF token non valido.")
+        return RedirectResponse(url=next_url, status_code=303)
+
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        flash(request, "Config non valida.")
+        return RedirectResponse(url=next_url, status_code=303)
+
+    try:
+        _ensure_db_backend()
+    except StorageError as exc:
+        flash(request, f"Errore DB: {exc}")
+        return RedirectResponse(url=next_url, status_code=303)
+
+    try:
+        from app import _reset_latest_cache_state
+        _reset_latest_cache_state()
+        flash(request, "Dati Pubblicazioni azzerati (STATE + CACHE).")
+    except Exception as e:
+        flash(request, f"Errore durante l'azzeramento: {str(e)}")
+
+    return RedirectResponse(url=next_url, status_code=303)
+
+
 @fastapi_app.post("/emby/library-scan-state/clear")
 async def emby_library_scan_state_clear_post(
     request: Request,
@@ -3952,7 +3999,6 @@ async def emby_library_scan_state_clear_post(
     _require_auth(request)
 
     next_url = next_param or '/emby'
-    redirect_url = next_url
 
     if not validate_csrf(request, csrf_token):
         flash(request, "CSRF token non valido.")
@@ -3976,7 +4022,6 @@ async def emby_library_scan_state_clear_post(
         _LIBRARY_SCAN_TRACKER.clear_jobs()
         _clear_latest_state()
         flash(request, "Stato scansioni e metadata aggiornato cancellato dal DB.")
-        redirect_url = _append_scan_reset_param(next_url)
     except Exception as e:
         flash(request, f"Errore durante la pulizia: {str(e)}")
 
@@ -4100,7 +4145,7 @@ async def dashboard_root(request: Request):
         return RedirectResponse(url="/login", status_code=303)
 
     # Import required functions from app.py
-    from app import scan_manager, load_results_file, _load_cached_requests_overview, _estimate_variant_summary, _default_auto_tasks, DEFAULT_CONFIG, TV_SORT_OPTIONS, MOVIE_SORT_OPTIONS
+    from app import scan_manager, load_results_file, _load_cached_requests_overview, _estimate_variant_summary, DEFAULT_CONFIG, TV_SORT_OPTIONS, MOVIE_SORT_OPTIONS
 
     config, is_valid = load_config()
     status = scan_manager.get_status()
@@ -4181,7 +4226,7 @@ async def configuration_page(request: Request):
     _require_auth(request)
 
     # Import required functions
-    from app import _default_telegram_settings, _load_telegram_settings, _build_telegram_alerts, _default_auto_tasks
+    from app import _default_telegram_settings, _load_telegram_settings, _build_telegram_alerts
 
     config, is_valid = load_config()
     emby_config = (config or {}).get("EMBY") if config else _default_emby_settings()
@@ -4258,7 +4303,7 @@ async def telegram_save_config_route(
         flash(request, "CSRF token non valido.", "error")
         return RedirectResponse(url="/configuration", status_code=303)
 
-    from app import load_config, _resolve_next_url, _ensure_db_backend, _load_telegram_settings, _save_telegram_settings, _telegram_check_bot_identity, _normalize_form_input
+    from app import load_config, _resolve_next_url, _ensure_db_backend, _load_telegram_settings, _save_telegram_settings, _telegram_check_bot_identity
     from storage import StorageError
     import uuid
 
@@ -5099,7 +5144,7 @@ async def update_scheduler_route(
         flash(request, "CSRF token non valido.", "error")
         return RedirectResponse(url="/dashboard", status_code=303)
 
-    from app import load_config, _resolve_next_url, _default_auto_tasks, _parse_auto_task_payload, _update_app_settings_overrides, _sync_auto_scheduler, _ACTIVE_CONFIG, _coerce_request_int
+    from app import load_config, _resolve_next_url, _parse_auto_task_payload, _update_app_settings_overrides, _sync_auto_scheduler, _coerce_request_int
     from config import DEFAULT_CONFIG as CONFIG_DEFAULTS, _normalize_time_list
     from storage import StorageError
     import copy
@@ -5243,14 +5288,13 @@ async def update_config_route(
         return RedirectResponse(url="/dashboard", status_code=303)
 
     from app import (
-        read_raw_config, _resolve_next_url, _normalize_form_input, _coerce_request_int,
+        _resolve_next_url, _coerce_request_int,
         _merge_database_settings, _apply_db_env_overrides, _seed_db_from_legacy_config,
         _write_database_config, load_config, _ensure_db_backend,
         _load_app_settings_snapshot, _save_app_settings_snapshot,
         _merge_trakt_settings, _merge_justwatch_settings
     )
     from storage import DatabaseStorage, StorageError
-    from config import DEFAULT_CONFIG
 
     legacy_config = read_raw_config() or {}
     next_url = _resolve_next_url(next_page, 'dashboard')
@@ -5477,10 +5521,9 @@ async def update_rules_route(
         return RedirectResponse(url="/dashboard", status_code=303)
 
     from app import (
-        load_config, _resolve_next_url, _split_csv_field, _coerce_request_int,
-        _default_search_rules, _update_app_settings_overrides, _clean_sort_mode,
-        _normalize_sort_settings, TV_SORT_KEYS, MOVIE_SORT_KEYS, DEFAULT_CONFIG,
-        _ACTIVE_CONFIG
+        load_config, _resolve_next_url, _coerce_request_int,
+        _default_search_rules, _update_app_settings_overrides,
+        _normalize_sort_settings, TV_SORT_KEYS, MOVIE_SORT_KEYS, DEFAULT_CONFIG
     )
     from storage import StorageError
     import copy
@@ -5629,7 +5672,7 @@ async def setup_user_post_route(
     email: Optional[str] = Form(None)
 ):
     """Setup user POST - create admin user."""
-    from app import _has_users, _normalize_form_input
+    from app import _has_users
     from auth import get_user_by_username, create_user
 
     if _has_users():
@@ -5664,7 +5707,7 @@ async def setup_user_post_route(
 @fastapi_app.get("/setup/db")
 async def setup_db_get_route(request: Request):
     """Setup database GET - show database configuration form."""
-    from app import _has_users, read_raw_config, _merge_database_settings
+    from app import _has_users, _merge_database_settings
 
     if not _has_users():
         return RedirectResponse(url="/setup/user", status_code=303)
@@ -5689,7 +5732,7 @@ async def setup_db_post_route(
 ):
     """Setup database POST - configure and test database connection."""
     from app import (
-        _has_users, read_raw_config, _merge_database_settings,
+        _has_users, _merge_database_settings,
         _apply_db_env_overrides, _coerce_request_int,
         _seed_db_from_legacy_config, _write_database_config
     )

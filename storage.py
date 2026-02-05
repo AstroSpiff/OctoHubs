@@ -895,7 +895,6 @@ class DatabaseStorage:
     # --- Emby Probe Queue ---
 
     def add_to_probe_queue(self, items: list[Dict[str, Any]]) -> None:
-        from typing import List
         session = self._get_session()
         try:
             for item_data in items:
