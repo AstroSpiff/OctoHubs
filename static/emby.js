@@ -1,51 +1,11 @@
 (() => {
-    // VERSION: 2026-01-09-23:50-GEMINI-SCAN-TRACKER
+    // VERSION: 2026-01-09-23:50-GEMINI-SCAN-TRACKER + shared-utils refactor
     console.log('[EMBY.JS] Loaded version 2026-01-09-23:50 with Gemini ScanTracker');
 
-    const getCsrfToken = () => {
-        const el = document.querySelector('meta[name="csrf-token"]');
-        return el ? el.getAttribute('content') : '';
-    };
-    const csrfFetch = (url, options = {}) => {
-        const opts = options || {};
-        const headers = new Headers(opts.headers || {});
-        const token = getCsrfToken();
-        if (token && !headers.has('X-CSRFToken')) {
-            headers.set('X-CSRFToken', token);
-        }
-        if (!headers.has('X-Requested-With')) {
-            headers.set('X-Requested-With', 'XMLHttpRequest');
-        }
-        return fetch(url, { ...opts, headers });
-    };
-    const ensureCsrfInForms = () => {
-        const token = getCsrfToken();
-        if (!token) {
-            return;
-        }
-        document.querySelectorAll('form[method="post"]').forEach(form => {
-            if (!form.querySelector('input[name="csrf_token"]')) {
-                const input = document.createElement('input');
-                input.type = 'hidden';
-                input.name = 'csrf_token';
-                input.value = token;
-                form.appendChild(input);
-            }
-        });
-    };
-    const ensureNextInForms = () => {
-        const nextValue = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-        document.querySelectorAll('form[method="post"]').forEach(form => {
-            let input = form.querySelector('input[name="next"]');
-            if (!input) {
-                input = document.createElement('input');
-                input.type = 'hidden';
-                input.name = 'next';
-                form.appendChild(input);
-            }
-            input.value = nextValue;
-        });
-    };
+    // Use shared utilities from shared-utils.js
+    const { getCsrfToken, csrfFetch, ensureCsrfInForms, ensureNextInForms } = window.octohubUtils;
+
+    // Initialize forms
     ensureCsrfInForms();
     ensureNextInForms();
 
@@ -2097,7 +2057,7 @@
     }
 
     const getLatestFetchLimits = () => {
-        const fallbackLimit = 200;
+        const fallbackLimit = 100;
         const fallbackPerServer = 100;
         const totalRaw = latestPanel?.dataset.latestFetchLimit;
         const perServerRaw = latestPanel?.dataset.latestFetchPerServer;
@@ -6015,112 +5975,6 @@
         }
     });
     consumeFlashMessages();
-
-    // === STRM Guard Status Updates ===
-    const updateStrmGuardStatus = async () => {
-        try {
-            const response = await csrfFetch('/api/emby/strm-guard/status');
-            if (!response.ok) return;
-            const data = await response.json();
-            if (!data.success || !data.status) return;
-
-            const statusMap = data.status;
-            Object.keys(statusMap).forEach(serverId => {
-                const state = statusMap[serverId];
-                const container = document.querySelector(`[data-strm-guard-status="${serverId}"]`);
-                if (!container) return;
-
-                const enabled = state.enabled || false;
-                const status = state.status || 'pending';
-                const progress = state.last_progress || 0;
-
-                // Show/hide container
-                container.style.display = enabled ? 'block' : 'none';
-                if (!enabled) return;
-
-                // Update state label
-                const stateLabels = {
-                    'pending': 'In attesa',
-                    'waiting_streams': 'In attesa (stream attivi)',
-                    'paused_streaming': 'In pausa (streaming)',
-                    'cooldown': 'Raffreddamento',
-                    'starting': 'Avvio...',
-                    'running': 'In esecuzione',
-                    'completed': 'Completato',
-                    'disabled': 'Disabilitato',
-                    'task_missing': 'Task non trovato',
-                    'tasks_error': 'Errore task',
-                    'streams_error': 'Errore stream',
-                    'stop_failed': 'Errore stop',
-                    'start_failed': 'Errore avvio'
-                };
-                const stateLabel = container.querySelector('[data-strm-guard-state]');
-                if (stateLabel) {
-                    stateLabel.textContent = stateLabels[status] || status;
-                }
-
-                // Update detail info
-                const detail = container.querySelector('[data-strm-guard-detail]');
-                if (detail) {
-                    let detailText = '';
-                    if (status === 'running' && progress > 0) {
-                        detailText = `Progresso: ${progress}%`;
-                    } else if (status === 'cooldown') {
-                        detailText = 'Attesa dopo streaming';
-                    } else if (state.last_error) {
-                        detailText = state.last_error;
-                    } else if (status === 'waiting_streams') {
-                        detailText = 'Attesa fine streaming';
-                    } else if (status === 'completed') {
-                        detailText = 'Scansione completata al 100%';
-                    }
-                    detail.textContent = detailText;
-                }
-
-                // Update status pill
-                const pill = container.querySelector('[data-strm-guard-pill]');
-                if (pill) {
-                    pill.className = 'status-pill';
-                    if (status === 'running') {
-                        pill.classList.add('status-ok');
-                        pill.textContent = 'Attivo';
-                    } else if (status === 'completed') {
-                        pill.classList.add('status-ok');
-                        pill.textContent = 'Completato';
-                    } else if (status === 'waiting_streams' || status === 'paused_streaming' || status === 'cooldown') {
-                        pill.classList.add('status-skip');
-                        pill.textContent = 'In attesa';
-                    } else if (status.includes('error') || status.includes('failed') || status === 'task_missing') {
-                        pill.classList.add('status-fail');
-                        pill.textContent = 'Errore';
-                    } else {
-                        pill.classList.add('status-skip');
-                        pill.textContent = 'Pending';
-                    }
-                }
-
-                // Update progress bar
-                const progressContainer = container.querySelector('[data-strm-guard-progress-container]');
-                const progressBar = container.querySelector('[data-strm-guard-progress]');
-                const progressText = container.querySelector('[data-strm-guard-progress-text]');
-                if (progressContainer && progressBar && progressText) {
-                    const showProgress = status === 'running' && progress > 0;
-                    progressContainer.style.display = showProgress ? 'flex' : 'none';
-                    if (showProgress) {
-                        progressBar.style.width = `${progress}%`;
-                        progressBar.setAttribute('data-strm-guard-progress', progress);
-                        progressText.textContent = `${progress}%`;
-                    }
-                }
-            });
-        } catch (err) {
-            console.error('Error updating STRM Guard status:', err);
-        }
-    };
-
-    // Poll STRM Guard status every 5 seconds
-    setInterval(updateStrmGuardStatus, 5000);
-    updateStrmGuardStatus(); // Initial call
 })();
 
 // === Latest Verify Data Modal ===

@@ -123,18 +123,6 @@
                                                     Note
                                                     <input type="text" name="server_notes" value="{{ server.notes }}">
                                                 </label>
-                                                <label>
-                                                    STRM Task ID
-                                                    <input type="text" name="server_strm_task_id" value="{{ server.strm_task_id }}"
-                                                           list="strm-tasks-{{ server.id }}">
-                                                    {% if server.scheduled_tasks %}
-                                                        <datalist id="strm-tasks-{{ server.id }}">
-                                                            {% for task in server.scheduled_tasks %}
-                                                                <option value="{{ task.id }}">{{ task.name or task.id }}</option>
-                                                            {% endfor %}
-                                                        </datalist>
-                                                    {% endif %}
-                                                </label>
                                             </div>
                                         </details>
                                         <div class="server-actions">
@@ -189,10 +177,6 @@
                         <details class="advanced-block">
                             <summary>Opzioni avanzate</summary>
                             <div class="field-grid">
-                                <label>
-                                    STRM Task ID
-                                    <input type="text" name="server_strm_task_id">
-                                </label>
                                 <label>
                                     Note
                                     <input type="text" name="server_notes">
@@ -1258,6 +1242,7 @@
         </div>
     </div>
     <div id="toast-container"></div>
+    <script src="{{ url_for('static', filename='shared-utils.js') }}"></script>
     <script src="{{ url_for('static', filename='actions.js') }}"></script>
     <script src="{{ url_for('static', filename='script.js') }}"></script>
     <script src="{{ url_for('static', filename='icon-picker.js') }}"></script>

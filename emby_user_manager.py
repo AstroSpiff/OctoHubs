@@ -21,6 +21,7 @@ from api_clients import (
     _emby_base_url
 )
 from storage import DatabaseStorage
+from utils import normalize_string, get_nested
 import requests
 
 logger = logging.getLogger(__name__)
@@ -268,7 +269,7 @@ class EmbyUserManager:
 
                 # Resolve Icon
                 # icon = matrix[profile_id][reference_server_id]
-                icon_path = rule_map.get(profile_id, {}).get(reference_server_id)
+                icon_path = get_nested(rule_map, profile_id, reference_server_id)
                 
                 # Debug Logging (Mandatory for Groups)
                 if is_group_application:
@@ -1157,12 +1158,12 @@ class EmbyUserManager:
             keys.append(f"tvdb:{pids['Tvdb']}")
         
         # 2. Fallback: Name matching
-        name = (item.get("Name") or "").lower().strip()
-        original_name = (item.get("OriginalTitle") or "").lower().strip()
+        name = normalize_string(item.get("Name") or "")
+        original_name = normalize_string(item.get("OriginalTitle") or "")
         year = item.get("ProductionYear")
-        
+
         # For Episodes: SeriesName + Season + Episode
-        series_name = (item.get("SeriesName") or "").lower().strip()
+        series_name = normalize_string(item.get("SeriesName") or "")
         season = item.get("ParentIndexNumber")
         episode = item.get("IndexNumber")
         

@@ -180,19 +180,6 @@ def _create_default_admin():
         db_session.rollback()
 
 
-def load_user(user_id: str) -> Optional[User]:
-    """
-    Load user by ID.
-    DEPRECATED: Use get_user_by_id() instead.
-    Kept for backward compatibility.
-    """
-    try:
-        assert db_session is not None
-        return db_session.query(User).get(int(user_id))
-    except (ValueError, SQLAlchemyError):
-        return None
-
-
 def get_user_by_username(username: str) -> Optional[User]:
     """Get user by username."""
     try:

@@ -27,7 +27,7 @@ from urllib.parse import urlencode, urlparse, parse_qsl, urlunparse, unquote
 
 import requests
 
-from app import _build_active_library_scans_snapshot, _build_scan_library_snapshot, _build_scan_library_tracked_snapshot, _build_scan_group_tracked_snapshot, _build_associations_get_snapshot, _build_associations_post_snapshot, _build_media_details_snapshot, _build_jellyseerr_request_snapshot, _build_tmdb_search_snapshot, _build_tmdb_tv_details_snapshot, _build_tmdb_check_availability_snapshot, _build_manual_search_snapshot, _build_rss_inspect_snapshot, _build_rss_inspect_json_snapshot, _build_rss_import_snapshot, _build_rss_import_json_snapshot, _build_rss_deduplicate_snapshot, _build_rss_items_snapshot, _build_rss_search_snapshot, _build_rss_delete_snapshot, _build_categories_snapshot, _build_blacklist_snapshot, _build_blacklist_add_snapshot, _build_blacklist_remove_snapshot, _build_hidden_snapshot, _build_hidden_add_snapshot, _build_hidden_remove_snapshot, _build_hidden_add_batch_snapshot, _build_hidden_remove_batch_snapshot, _build_blacklist_add_batch_snapshot, _build_blacklist_remove_batch_snapshot, _build_delete_by_categories_snapshot, _build_send_torrent_snapshot, _build_send_torrent_batch_snapshot, _build_scan_status_snapshot, _build_run_scan_snapshot, _build_update_request_rules_snapshot, _build_refresh_requests_snapshot, _build_test_connections_snapshot, _build_trakt_device_start_snapshot, _build_trakt_device_poll_snapshot, _build_trakt_clear_snapshot, _build_emby_stop_task_snapshot, _build_emby_server_status_snapshot, _build_emby_health_status_snapshot, _build_emby_activity_snapshot, _build_emby_tasks_snapshot, _build_emby_users_snapshot, _build_emby_plugins_snapshot, _build_emby_streams_snapshot, _build_emby_status_stream_payload, _build_emby_libraries_snapshot, _build_active_scans_snapshot, _build_debug_vf_query_snapshot, _build_strm_guard_status_snapshot, _build_grouped_libraries_snapshot, _build_movie_versions_snapshot, _build_series_seasons_snapshot, _build_season_episodes_snapshot, _build_lookup_snapshot, _build_item_details_snapshot, _build_availability_snapshot, _build_latest_snapshot, _build_latest_progress_payload, _build_latest_preview_snapshot, _build_latest_preview_cache_snapshot, _build_latest_enrich_snapshot, _build_latest_notify_snapshot, _build_emby_image_stream, _build_server_order_snapshot, _build_group_order_get_snapshot, _build_group_order_post_snapshot, _build_tab_order_get_snapshot, _build_tab_order_post_snapshot, _probe_discovery_start_snapshot, _probe_discovery_stop_snapshot, _probe_recent_start_snapshot, get_emby_user_manager, _probe_recent_start_all_snapshot, _probe_recent_stop_snapshot, _probe_recent_stop_all_snapshot, _probe_recent_config_get_snapshot, _probe_recent_config_save_snapshot, _probe_recent_processing_start_snapshot, _probe_recent_processing_start_all_snapshot, _probe_recent_processing_stop_snapshot, _probe_recent_processing_stop_all_snapshot, _probe_recent_combo_start_snapshot, _probe_recent_combo_start_all_snapshot, _probe_recent_combo_stop_snapshot, _probe_recent_combo_stop_all_snapshot, _probe_libraries_combo_start_snapshot, _probe_libraries_combo_stop_snapshot, _probe_processing_start_snapshot, _probe_processing_stop_snapshot, _probe_queue_get_snapshot, _probe_queue_delete_snapshot, _probe_history_get_snapshot, _probe_history_delete_snapshot, _probe_retry_snapshot, _probe_blacklist_get_snapshot, _probe_blacklist_delete_snapshot, _probe_debug_recent_items_snapshot, _coerce_request_bool, _coerce_request_int, _LIBRARY_SCAN_TRACKER, _ws_event_queues, _ws_queues_lock, _sse_event_queues, _sse_queues_lock, DateTimeEncoder, load_config, _get_total_blacklist_counts, _load_latest_settings, _load_telegram_settings, _prepare_latest_notification_rules, _resolve_next_url, _ensure_db_backend, _load_emby_settings_from_db, _build_emby_server_from_form, _fetch_emby_status, _save_emby_settings_to_db, _purge_emby_server_settings, _emby_display_name, _execute_emby_action, _db_enabled, _save_latest_settings, _get_emby_servers_from_config, _ensure_strm_guard_manager, _clear_latest_state, _update_app_settings_overrides, _register_app_event_loop, _active_trakt_settings, _trakt_enabled
+from app import _build_active_library_scans_snapshot, _build_scan_library_snapshot, _build_scan_library_tracked_snapshot, _build_scan_group_tracked_snapshot, _build_associations_get_snapshot, _build_associations_post_snapshot, _build_media_details_snapshot, _build_jellyseerr_request_snapshot, _build_tmdb_search_snapshot, _build_tmdb_tv_details_snapshot, _build_tmdb_check_availability_snapshot, _build_manual_search_snapshot, _build_rss_inspect_snapshot, _build_rss_inspect_json_snapshot, _build_rss_import_snapshot, _build_rss_import_json_snapshot, _build_rss_deduplicate_snapshot, _build_rss_items_snapshot, _build_rss_search_snapshot, _build_rss_delete_snapshot, _build_categories_snapshot, _build_blacklist_snapshot, _build_blacklist_add_snapshot, _build_blacklist_remove_snapshot, _build_hidden_snapshot, _build_hidden_add_snapshot, _build_hidden_remove_snapshot, _build_hidden_add_batch_snapshot, _build_hidden_remove_batch_snapshot, _build_blacklist_add_batch_snapshot, _build_blacklist_remove_batch_snapshot, _build_delete_by_categories_snapshot, _build_send_torrent_snapshot, _build_send_torrent_batch_snapshot, _build_scan_status_snapshot, _build_run_scan_snapshot, _build_update_request_rules_snapshot, _build_refresh_requests_snapshot, _build_test_connections_snapshot, _build_trakt_device_start_snapshot, _build_trakt_device_poll_snapshot, _build_trakt_clear_snapshot, _build_emby_stop_task_snapshot, _build_emby_server_status_snapshot, _build_emby_health_status_snapshot, _build_emby_activity_snapshot, _build_emby_tasks_snapshot, _build_emby_users_snapshot, _build_emby_plugins_snapshot, _build_emby_streams_snapshot, _build_emby_status_stream_payload, _build_emby_libraries_snapshot, _build_active_scans_snapshot, _build_debug_vf_query_snapshot, _build_grouped_libraries_snapshot, _build_movie_versions_snapshot, _build_series_seasons_snapshot, _build_season_episodes_snapshot, _build_lookup_snapshot, _build_item_details_snapshot, _build_availability_snapshot, _build_latest_snapshot, _build_latest_progress_payload, _build_latest_preview_snapshot, _build_latest_preview_cache_snapshot, _build_latest_enrich_snapshot, _build_latest_notify_snapshot, _build_emby_image_stream, _build_server_order_snapshot, _build_group_order_get_snapshot, _build_group_order_post_snapshot, _build_tab_order_get_snapshot, _build_tab_order_post_snapshot, _probe_discovery_start_snapshot, _probe_discovery_stop_snapshot, _probe_recent_start_snapshot, get_emby_user_manager, _probe_recent_start_all_snapshot, _probe_recent_stop_snapshot, _probe_recent_stop_all_snapshot, _probe_recent_config_get_snapshot, _probe_recent_config_save_snapshot, _probe_recent_processing_start_snapshot, _probe_recent_processing_start_all_snapshot, _probe_recent_processing_stop_snapshot, _probe_recent_processing_stop_all_snapshot, _probe_recent_combo_start_snapshot, _probe_recent_combo_start_all_snapshot, _probe_recent_combo_stop_snapshot, _probe_recent_combo_stop_all_snapshot, _probe_libraries_combo_start_snapshot, _probe_libraries_combo_stop_snapshot, _probe_processing_start_snapshot, _probe_processing_stop_snapshot, _probe_queue_get_snapshot, _probe_queue_delete_snapshot, _probe_history_get_snapshot, _probe_history_delete_snapshot, _probe_retry_snapshot, _probe_blacklist_get_snapshot, _probe_blacklist_delete_snapshot, _probe_debug_recent_items_snapshot, _coerce_request_bool, _coerce_request_int, _LIBRARY_SCAN_TRACKER, _ws_event_queues, _ws_queues_lock, _sse_event_queues, _sse_queues_lock, DateTimeEncoder, load_config, _get_total_blacklist_counts, _load_latest_settings, _load_telegram_settings, _prepare_latest_notification_rules, _resolve_next_url, _ensure_db_backend, _load_emby_settings_from_db, _build_emby_server_from_form, _fetch_emby_status, _save_emby_settings_to_db, _purge_emby_server_settings, _emby_display_name, _db_enabled, _save_latest_settings, _clear_latest_state, _update_app_settings_overrides, _register_app_event_loop, _active_trakt_settings, _trakt_enabled
 from storage import StorageError
 from emby_websocket_manager import get_websocket_manager
 from emby_collection_sources import SOURCE_TYPES, list_trakt_lists, list_mdblist_user_lists, is_mdblist_enabled
@@ -49,13 +49,28 @@ from emby_collections import (
     COLLECTION_POSTER_MAX_BYTES
 )
 from tasks import workflow_manager
-from utils import _split_csv_field
+from utils import _split_csv_field, get_nested, json_error, json_success
 from scan_websocket_manager import get_scan_connection_manager
 from config import _default_auto_tasks, _default_emby_settings, _normalize_emby_server, _clean_sort_mode, read_raw_config
-from api_clients import EMBY_ACTIONS, _prepare_emby_servers_for_view
+from api_clients import EMBY_ACTIONS, _prepare_emby_servers_for_view, _execute_emby_action
 from auth import init_auth
 
 logger = logging.getLogger(__name__)
+
+
+# --- HTTP RESPONSE HELPERS ---
+
+def error_response(message, status_code=400, **extra):
+    """Create JSONResponse for error using json_error from utils."""
+    data, code = json_error(message, status_code, **extra)
+    return JSONResponse(data, status_code=code)
+
+
+def success_response(message=None, status_code=200, **extra):
+    """Create JSONResponse for success using json_success from utils."""
+    data, code = json_success(message, status_code, **extra)
+    return JSONResponse(data, status_code=code)
+
 
 # Load .env file from config directory (if it exists) before any initialization
 # This is needed for Docker environments where the setup wizard saves the DB password to /config/.env
@@ -101,7 +116,6 @@ def _append_scan_reset_param(url: str) -> str:
 
 def _initialize_runtime_services() -> None:
     """Initialize background services."""
-    _ensure_strm_guard_manager()
     from emby_probe import get_probe_manager
     from app import _initialize_emby_websockets, _wf_trigger_scan, _wf_check_scan, _wf_trigger_probe, _wf_check_probe, _wf_refresh_cache, _wf_notify
 
@@ -189,10 +203,6 @@ def url_for_fastapi(endpoint: str, **kwargs) -> str:
         "emby_save_server": "/emby/save-server",
         "emby_action": "/emby/action",
         "emby_action_all": "/emby/action-all",
-
-        # STRM Guard routes
-        "emby_strm_guard_start": "/emby/strm-guard/start",
-        "emby_strm_guard_start_all": "/emby/strm-guard/start-all",
 
         # Telegram routes
         "telegram_add_preset": "/telegram/preset/add",
@@ -669,15 +679,15 @@ async def scan_job_status(job_id: str, request: Request):
     _require_auth(request)
     job = _LIBRARY_SCAN_TRACKER.get_job(job_id)
     if not job:
-        return JSONResponse({"success": False, "message": "Job non trovato"}, status_code=404)
-    return JSONResponse({"success": True, "job": job})
+        return error_response("Job non trovato", 404)
+    return success_response(job=job)
 
 
 @fastapi_app.get("/api/emby/scan-jobs")
 async def scan_jobs(request: Request):
     _require_auth(request)
     jobs = _LIBRARY_SCAN_TRACKER.get_all_jobs()
-    return JSONResponse({"success": True, "jobs": jobs})
+    return success_response(jobs=jobs)
 
 
 @fastapi_app.get("/api/emby/scan-jobs/history")
@@ -692,7 +702,7 @@ async def scan_jobs_history(request: Request):
         key=lambda j: j.get("completed_at") or j.get("updated_at") or "",
         reverse=True
     )
-    return JSONResponse({"success": True, "jobs": completed_jobs})
+    return success_response(jobs=completed_jobs)
 
 
 @fastapi_app.get("/api/emby/active-scan-jobs")
@@ -1210,7 +1220,7 @@ async def rss_delete_api(request: Request):
         payload = await request.json()
     except Exception as exc:
         print(f"   -> [API] Errore parsing JSON payload rss delete: {exc}")
-        return JSONResponse({"success": False, "message": "Payload JSON non valido"}, status_code=400)
+        return error_response("Payload JSON non valido", 400)
 
     item_ids = payload.get("item_ids", [])
     data, status_code = _build_rss_delete_snapshot(item_ids)
@@ -1238,7 +1248,7 @@ async def rss_blacklist_add_api(request: Request):
         payload = await request.json()
     except Exception as exc:
         print(f"   -> [API] Errore parsing JSON payload blacklist add: {exc}")
-        return JSONResponse({"success": False, "message": "Payload JSON non valido"}, status_code=400)
+        return error_response("Payload JSON non valido", 400)
 
     category_name = payload.get("category_name", "")
     data, status_code = _build_blacklist_add_snapshot(category_name)
@@ -1252,7 +1262,7 @@ async def rss_blacklist_remove_api(request: Request):
         payload = await request.json()
     except Exception as exc:
         print(f"   -> [API] Errore parsing JSON payload blacklist remove: {exc}")
-        return JSONResponse({"success": False, "message": "Payload JSON non valido"}, status_code=400)
+        return error_response("Payload JSON non valido", 400)
 
     category_name = payload.get("category_name", "")
     data, status_code = _build_blacklist_remove_snapshot(category_name)
@@ -1273,7 +1283,7 @@ async def rss_hidden_add_api(request: Request):
         payload = await request.json()
     except Exception as exc:
         print(f"   -> [API] Errore parsing JSON payload hidden add: {exc}")
-        return JSONResponse({"success": False, "message": "Payload JSON non valido"}, status_code=400)
+        return error_response("Payload JSON non valido", 400)
 
     category_name = payload.get("category_name", "")
     data, status_code = _build_hidden_add_snapshot(category_name)
@@ -1287,7 +1297,7 @@ async def rss_hidden_remove_api(request: Request):
         payload = await request.json()
     except Exception as exc:
         print(f"   -> [API] Errore parsing JSON payload hidden remove: {exc}")
-        return JSONResponse({"success": False, "message": "Payload JSON non valido"}, status_code=400)
+        return error_response("Payload JSON non valido", 400)
 
     category_name = payload.get("category_name", "")
     data, status_code = _build_hidden_remove_snapshot(category_name)
@@ -1301,7 +1311,7 @@ async def rss_hidden_add_batch_api(request: Request):
         payload = await request.json()
     except Exception as exc:
         print(f"   -> [API] Errore parsing JSON payload hidden add batch: {exc}")
-        return JSONResponse({"success": False, "message": "Payload JSON non valido"}, status_code=400)
+        return error_response("Payload JSON non valido", 400)
 
     category_names = payload.get("category_names", [])
     data, status_code = _build_hidden_add_batch_snapshot(category_names)
@@ -1315,7 +1325,7 @@ async def rss_hidden_remove_batch_api(request: Request):
         payload = await request.json()
     except Exception as exc:
         print(f"   -> [API] Errore parsing JSON payload hidden remove batch: {exc}")
-        return JSONResponse({"success": False, "message": "Payload JSON non valido"}, status_code=400)
+        return error_response("Payload JSON non valido", 400)
 
     category_names = payload.get("category_names", [])
     data, status_code = _build_hidden_remove_batch_snapshot(category_names)
@@ -1329,7 +1339,7 @@ async def rss_blacklist_add_batch_api(request: Request):
         payload = await request.json()
     except Exception as exc:
         print(f"   -> [API] Errore parsing JSON payload blacklist add batch: {exc}")
-        return JSONResponse({"success": False, "message": "Payload JSON non valido"}, status_code=400)
+        return error_response("Payload JSON non valido", 400)
 
     category_names = payload.get("category_names", [])
     data, status_code = _build_blacklist_add_batch_snapshot(category_names)
@@ -1343,7 +1353,7 @@ async def rss_blacklist_remove_batch_api(request: Request):
         payload = await request.json()
     except Exception as exc:
         print(f"   -> [API] Errore parsing JSON payload blacklist remove batch: {exc}")
-        return JSONResponse({"success": False, "message": "Payload JSON non valido"}, status_code=400)
+        return error_response("Payload JSON non valido", 400)
 
     category_names = payload.get("category_names", [])
     data, status_code = _build_blacklist_remove_batch_snapshot(category_names)
@@ -1357,7 +1367,7 @@ async def rss_delete_by_categories_api(request: Request):
         payload = await request.json()
     except Exception as exc:
         print(f"   -> [API] Errore parsing JSON payload delete by categories: {exc}")
-        return JSONResponse({"success": False, "message": "Payload JSON non valido"}, status_code=400)
+        return error_response("Payload JSON non valido", 400)
 
     category_names = payload.get("category_names", [])
     data, status_code = _build_delete_by_categories_snapshot(category_names)
@@ -1459,9 +1469,9 @@ async def torrent_proxy_api(request: Request, url: str = ""):
     _require_auth(request)
     content, filename, error = _download_torrent_file(url)
     if error:
-        return JSONResponse({"success": False, "message": error}, status_code=502)
+        return error_response(error, 502)
     if not content or not filename:
-        return JSONResponse({"success": False, "message": "Download torrent non valido"}, status_code=502)
+        return error_response("Download torrent non valido", 502)
 
     headers = {
         "Content-Disposition": f"attachment; filename=\"{filename}\""
@@ -1479,9 +1489,9 @@ async def torrent_proxy_post_api(request: Request):
     url = str(payload.get("url") or "") if isinstance(payload, dict) else ""
     content, filename, error = _download_torrent_file(url)
     if error:
-        return JSONResponse({"success": False, "message": error}, status_code=502)
+        return error_response(error, 502)
     if not content or not filename:
-        return JSONResponse({"success": False, "message": "Download torrent non valido"}, status_code=502)
+        return error_response("Download torrent non valido", 502)
 
     headers = {
         "Content-Disposition": f"attachment; filename=\"{filename}\""
@@ -1499,7 +1509,7 @@ async def torrent_zip_api(request: Request):
 
     links = payload.get("links") if isinstance(payload, dict) else None
     if not isinstance(links, list) or not links:
-        return JSONResponse({"success": False, "message": "Lista link mancante"}, status_code=400)
+        return error_response("Lista link mancante", 400)
 
     zip_buffer = io.BytesIO()
     added = 0
@@ -1531,7 +1541,7 @@ async def torrent_zip_api(request: Request):
         message = "Nessun torrent disponibile per il download"
         if errors:
             message = f"{message}. Errori: {errors[0].get('error')}"
-        return JSONResponse({"success": False, "message": message, "errors": errors[:5]}, status_code=400)
+        return error_response(message, 400, errors=errors[:5])
 
     zip_buffer.seek(0)
     headers = {
@@ -1828,7 +1838,7 @@ async def emby_server_status(server_id: str, request: Request):
 async def delete_scan_job(job_id: str, request: Request):
     _require_auth(request)
     _LIBRARY_SCAN_TRACKER.delete_job(job_id)
-    return JSONResponse({"success": True, "message": "Job eliminato"})
+    return success_response(message="Job eliminato")
 
 
 @fastapi_app.get("/api/emby/active-scans")
@@ -1842,13 +1852,6 @@ async def active_scans(request: Request):
 async def debug_vf_query(request: Request):
     _require_auth(request)
     payload, status_code = _build_debug_vf_query_snapshot()
-    return JSONResponse(payload, status_code=status_code)
-
-
-@fastapi_app.get("/api/emby/strm-guard/status")
-async def strm_guard_status(request: Request):
-    _require_auth(request)
-    payload, status_code = _build_strm_guard_status_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -2452,22 +2455,22 @@ async def workflow_start(request: Request):
     workflow_type = (payload or {}).get("type", "full")
     context = (payload or {}).get("context") or {}
     if workflow_type not in ("full", "smart", "library"):
-        return JSONResponse({"success": False, "message": "Tipo workflow non valido"}, status_code=400)
+        return error_response("Tipo workflow non valido", 400)
     if workflow_manager.is_running():
-        return JSONResponse({"success": False, "message": "Un workflow è già in esecuzione"}, status_code=409)
+        return error_response("Un workflow è già in esecuzione", 409)
     started = workflow_manager.start(workflow_type=workflow_type, context=context)
     if started:
-        return JSONResponse({"success": True, "message": "Workflow avviato"})
-    return JSONResponse({"success": False, "message": "Impossibile avviare il workflow"}, status_code=500)
+        return success_response(message="Workflow avviato")
+    return error_response("Impossibile avviare il workflow", 500)
 
 
 @fastapi_app.post("/api/workflow/stop")
 async def workflow_stop(request: Request):
     _require_auth(request)
     if not workflow_manager.is_running():
-        return JSONResponse({"success": False, "message": "Nessun workflow in esecuzione"}, status_code=400)
+        return error_response("Nessun workflow in esecuzione", 400)
     workflow_manager.stop()
-    return JSONResponse({"success": True, "message": "Richiesta di interruzione inviata"})
+    return success_response(message="Richiesta di interruzione inviata")
 
 
 @fastapi_app.get("/api/workflow/events")
@@ -3346,7 +3349,7 @@ async def emby_save_group_settings(request: Request):
     try:
         data = await request.json()
     except Exception:
-        return JSONResponse({"success": False, "message": "Invalid JSON"}, status_code=400)
+        return error_response("Invalid JSON", 400)
 
     group_id = data.get("group_id")
     # Handle boolean conversion safely
@@ -3359,17 +3362,17 @@ async def emby_save_group_settings(request: Request):
     sync_type = data.get("sync_type", "merge")
     
     if not group_id:
-        return JSONResponse({"success": False, "message": "Missing group_id"}, status_code=400)
+        return error_response("Missing group_id", 400)
         
     manager = get_emby_user_manager()
     if not manager:
-         return JSONResponse({"success": False, "message": "Manager not available"}, status_code=500)
+         return error_response("Manager not available", 500)
          
     success = manager.save_group_settings(group_id, auto_sync, sync_type)
     if success:
-        return JSONResponse({"success": True})
+        return success_response()
     else:
-        return JSONResponse({"success": False, "message": "Failed to save"}, status_code=500)
+        return error_response("Failed to save", 500)
 
 
 @fastapi_app.post("/emby/action")
@@ -3420,7 +3423,7 @@ async def emby_action_post(
     # Execute action
     success, response = _execute_emby_action(server_entry, action)
     timestamp = datetime.now(timezone.utc).astimezone().isoformat()
-    action_label = EMBY_ACTIONS.get(action, {}).get("label") or action
+    action_label = get_nested(EMBY_ACTIONS, action, "label") or action
 
     server_entry["last_action"] = {
         "name": action_label,
@@ -3467,7 +3470,7 @@ async def emby_action_all_post(
         flash(request, "Azione non valida per Emby.")
         return RedirectResponse(url="/emby", status_code=303)
 
-    action_label = EMBY_ACTIONS.get(action, {}).get("label") or action
+    action_label = get_nested(EMBY_ACTIONS, action, "label") or action
     success_count = 0
     failure_count = 0
 
@@ -3497,56 +3500,6 @@ async def emby_action_all_post(
     else:
         flash(request, f"{action_label} inviata a {success_count} server, fallita su {failure_count}.")
 
-    return RedirectResponse(url="/emby", status_code=303)
-
-
-@fastapi_app.post("/emby/strm-guard/start")
-async def emby_strm_guard_start_post(
-    request: Request,
-    server_id: str = Form(...),
-    csrf_token: str = Form(None, alias="csrf_token")
-):
-    """Start STRM Guard for a single server (POST form handler)."""
-    _require_auth(request)
-
-    # Validate CSRF token
-    if not validate_csrf(request, csrf_token):
-        flash(request, "CSRF token non valido.")
-        return RedirectResponse(url="/emby", status_code=303)
-
-    if not server_id:
-        flash(request, "Server non valido per STRM Extract automatico.")
-        return RedirectResponse(url="/emby", status_code=303)
-
-    guard = _ensure_strm_guard_manager()
-    guard.enable_for_servers([server_id])
-    flash(request, "STRM Extract verrà avviato quando il server sarà libero e senza stream attivi.")
-    return RedirectResponse(url="/emby", status_code=303)
-
-
-@fastapi_app.post("/emby/strm-guard/start-all")
-async def emby_strm_guard_start_all_post(
-    request: Request,
-    csrf_token: str = Form(None, alias="csrf_token")
-):
-    """Start STRM Guard for all enabled servers (POST form handler)."""
-    _require_auth(request)
-
-    # Validate CSRF token
-    if not validate_csrf(request, csrf_token):
-        flash(request, "CSRF token non valido.")
-        return RedirectResponse(url="/emby", status_code=303)
-
-    servers = _get_emby_servers_from_config()
-    server_ids = [server.get('id') for server in servers if server.get('id') and server.get('enabled', True)]
-
-    if not server_ids:
-        flash(request, "Nessun server Emby abilitato per STRM Extract automatico.")
-        return RedirectResponse(url="/emby", status_code=303)
-
-    guard = _ensure_strm_guard_manager()
-    guard.enable_for_servers(server_ids)
-    flash(request, "STRM Extract verrà avviato quando i server saranno liberi e senza stream attivi.")
     return RedirectResponse(url="/emby", status_code=303)
 
 

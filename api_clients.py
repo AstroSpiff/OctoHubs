@@ -27,11 +27,6 @@ EMBY_ACTIONS = {
         "path": "Items/Refresh",
         "params": {"Recursive": "true"}
     },
-    "strm_extract": {
-        "label": "Avvia STRM Extract",
-        "method": "POST",
-        "path": "Plugins/strm-extract/Scan"
-    },
     "restart_server": {
         "label": "Riavvia server",
         "method": "POST",
@@ -72,7 +67,6 @@ __all__ = [
     "_trigger_library_scan",
     "_stop_emby_task",
     "_run_emby_scheduled_task",
-    "_autodetect_emby_strm_task_id",
     "_autodetect_emby_task_id_by_key",
     "_execute_emby_action",
     "_prepare_emby_servers_for_view",
@@ -534,30 +528,6 @@ def _run_emby_scheduled_task(server, task_id):
     return False, "Scheduled Task non disponibile"
 
 
-def _autodetect_emby_strm_task_id(server):
-    success, payload = _call_emby_api(server, "ScheduledTasks")
-    if not success:
-        return None
-    items = payload if isinstance(payload, list) else (payload.get("Items") if isinstance(payload, dict) else [])
-    if not isinstance(items, list):
-        return None
-    # Priorità: Key esplicita del plugin
-    for entry in items:
-        if isinstance(entry, dict) and entry.get("Key") == "StrmExtractTask" and entry.get("Id"):
-            return str(entry["Id"])
-    # Fallback: nomi che contengono "strm" se ce n'è uno solo
-    strm_candidates = []
-    for entry in items:
-        if not isinstance(entry, dict):
-            continue
-        name = str(entry.get("Name") or entry.get("DisplayName") or "")
-        if "strm" in name.lower() and entry.get("Id"):
-            strm_candidates.append(str(entry["Id"]))
-    if len(strm_candidates) == 1:
-        return strm_candidates[0]
-    return None
-
-
 def _autodetect_emby_task_id_by_key(server, task_key):
     if not task_key:
         return None
@@ -577,13 +547,6 @@ def _execute_emby_action(server, action_key):
     action = EMBY_ACTIONS.get(action_key)
     if not action:
         return False, f"Azione '{action_key}' non supportata"
-    if action_key == "strm_extract":
-        task_id = (server.get("strm_task_id") or "").strip()
-        if not task_id:
-            task_id = _autodetect_emby_strm_task_id(server) or ""
-        if not task_id:
-            return False, "Task STRM non configurato (usa l'ID di 'Process Strm targets')"
-        return _run_emby_scheduled_task(server, task_id)
     if action_key == "refresh_metadata":
         task_id = _autodetect_emby_task_id_by_key(server, "ScanInternalMetadataFolderTask") or ""
         if not task_id:

@@ -1,61 +1,7 @@
-        const getCsrfToken = () => {
-            const el = document.querySelector('meta[name="csrf-token"]');
-            return el ? el.getAttribute('content') : '';
-        };
-        const csrfFetch = (url, options = {}) => {
-            const opts = options || {};
-            const headers = new Headers(opts.headers || {});
-            const token = getCsrfToken();
-            if (token && !headers.has('X-CSRFToken')) {
-                headers.set('X-CSRFToken', token);
-            }
-            if (!headers.has('X-Requested-With')) {
-                headers.set('X-Requested-With', 'XMLHttpRequest');
-            }
-            if (!headers.has('Accept')) {
-                headers.set('Accept', 'application/json');
-            }
-            return fetch(url, { credentials: 'same-origin', ...opts, headers });
-        };
-        const readJsonResponse = async (response) => {
-            const contentType = response.headers.get('content-type') || '';
-            if (!contentType.includes('application/json')) {
-                const text = await response.text();
-                const message = response.redirected
-                    ? 'Sessione scaduta. Ricarica la pagina.'
-                    : `Risposta non JSON (${response.status}).`;
-                throw new Error(message || text || 'Risposta non valida.');
-            }
-            return response.json();
-        };
-        const ensureCsrfInForms = () => {
-            const token = getCsrfToken();
-            if (!token) {
-                return;
-            }
-            document.querySelectorAll('form[method="post"]').forEach(form => {
-                if (!form.querySelector('input[name="csrf_token"]')) {
-                    const input = document.createElement('input');
-                    input.type = 'hidden';
-                    input.name = 'csrf_token';
-                    input.value = token;
-                    form.appendChild(input);
-                }
-            });
-        };
-        const ensureNextInForms = () => {
-            const nextValue = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-            document.querySelectorAll('form[method="post"]').forEach(form => {
-                let input = form.querySelector('input[name="next"]');
-                if (!input) {
-                    input = document.createElement('input');
-                    input.type = 'hidden';
-                    input.name = 'next';
-                    form.appendChild(input);
-                }
-                input.value = nextValue;
-            });
-        };
+        // Use shared utilities from shared-utils.js
+        const { getCsrfToken, csrfFetch, readJsonResponse, ensureCsrfInForms, ensureNextInForms } = window.octohubUtils;
+
+        // Initialize forms
         ensureCsrfInForms();
         ensureNextInForms();
 

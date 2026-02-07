@@ -3,46 +3,8 @@
         return;
     }
 
-    const getCsrfToken = () => {
-        const el = document.querySelector('meta[name="csrf-token"]');
-        return el ? el.getAttribute('content') : '';
-    };
-
-    const csrfFetch = (url, options = {}) => {
-        const opts = options || {};
-        const headers = new Headers(opts.headers || {});
-        const token = getCsrfToken();
-        if (token && !headers.has('X-CSRFToken')) {
-            headers.set('X-CSRFToken', token);
-        }
-        if (!headers.has('X-Requested-With')) {
-            headers.set('X-Requested-With', 'XMLHttpRequest');
-        }
-        if (!headers.has('Accept')) {
-            headers.set('Accept', 'application/json');
-        }
-        return fetch(url, { credentials: 'same-origin', ...opts, headers });
-    };
-
-    const readJsonResponse = async (response) => {
-        const contentType = response.headers.get('content-type') || '';
-        if (!contentType.includes('application/json')) {
-            const text = await response.text();
-            const message = response.redirected
-                ? 'Sessione scaduta. Ricarica la pagina.'
-                : `Risposta non JSON (${response.status}).`;
-            throw new Error(message || text || 'Risposta non valida.');
-        }
-        return response.json();
-    };
-
-    const showMessage = (message, type = 'info') => {
-        if (typeof window.showToast === 'function') {
-            window.showToast(message, type === 'error' ? 'error' : 'success');
-            return;
-        }
-        alert(message);
-    };
+    // Use shared utilities from shared-utils.js
+    const { getCsrfToken, csrfFetch, readJsonResponse, showMessage } = window.octohubUtils;
 
     const normalizeMagnet = (value) => {
         if (typeof value !== 'string') return '';

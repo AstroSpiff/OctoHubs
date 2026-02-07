@@ -76,8 +76,6 @@
                     <h2>Operazioni rapide</h2>
                     <p class="tagline">Avvia le azioni sui server Emby configurati (singoli o tutti insieme).</p>
                     <form class="action-grid" action="{{ url_for('emby_action_all') }}" method="post">
-                        <button class="btn secondary" type="submit" name="action" value="strm_extract" title="Avvia il task STRM Extract su tutti i server">Avvia STRM Extract</button>
-                        <button class="btn primary" type="submit" formaction="{{ url_for('emby_strm_guard_start_all') }}" title="Avvia STRM Extract solo se il server non sta riproducendo">STRM Extract solo se libero</button>
                         <button class="btn ghost" type="submit" name="action" value="restart_server" title="Riavvia tutti i server Emby configurati">Riavvia tutti</button>
                     </form>
                 </div>
@@ -119,26 +117,8 @@
                                     <div class="server-divider"></div>
                                     <form class="action-grid" action="{{ url_for('emby_action') }}" method="post">
                                         <input type="hidden" name="server_id" value="{{ server.id }}">
-                                        <button class="btn secondary" type="submit" name="action" value="strm_extract" title="Avvia STRM Extract su questo server">Avvia STRM Extract</button>
-                                        <button class="btn primary" type="submit" formaction="{{ url_for('emby_strm_guard_start') }}" title="Avvia STRM Extract solo se libero su questo server">STRM Extract solo se libero</button>
                                         <button class="btn ghost" type="submit" name="action" value="restart_server" title="Riavvia questo server Emby">Riavvia server</button>
                                     </form>
-                                    <div class="strm-guard-status" data-strm-guard-status="{{ server.id }}" style="display: none;">
-                                        <div class="strm-guard-indicator">
-                                            <span class="strm-guard-icon">🤖</span>
-                                            <div class="strm-guard-info">
-                                                <div class="strm-guard-label">STRM Guard: <strong data-strm-guard-state>-</strong></div>
-                                                <div class="strm-guard-detail tagline" data-strm-guard-detail>-</div>
-                                            </div>
-                                            <span class="status-pill" data-strm-guard-pill>-</span>
-                                        </div>
-                                        <div class="progress-row" data-strm-guard-progress-container style="display: none;">
-                                            <div class="progress-track">
-                                                <div class="progress-bar" data-strm-guard-progress="0"></div>
-                                            </div>
-                                            <span class="tagline" data-strm-guard-progress-text>0%</span>
-                                        </div>
-                                    </div>
                                     <div class="server-divider"></div>
                                     {% if server.last_action and server.last_action.name %}
                                         <div class="last-action">
@@ -481,8 +461,8 @@
             </div>
 
             {% set latest_server_count = emby_servers|length if emby_servers else 1 %}
-            {% set latest_max_movies = latest_limits.max_movies if latest_limits else 50 %}
-            {% set latest_max_series = latest_limits.max_series if latest_limits else 25 %}
+            {% set latest_max_movies = latest_limits.max_movies if latest_limits else 100 %}
+            {% set latest_max_series = latest_limits.max_series if latest_limits else 100 %}
             <div class="tab-panel" data-tab-panel="latest"
                  data-latest-max-movies="{{ latest_max_movies }}"
                  data-latest-max-series="{{ latest_max_series }}"
@@ -1787,9 +1767,10 @@
         </div>
     </template>
 
+    <script src="{{ url_for('static', filename='shared-utils.js') }}"></script>
     <script src="{{ url_for('static', filename='actions.js') }}"></script>
     <script src="{{ url_for('static', filename='script.js') }}"></script>
     <script src="{{ url_for('static', filename='emby_users.js') }}?v=20260114-leader-fix"></script>
-    <script src="{{ url_for('static', filename='emby.js') }}?v=20260204-latest-ui2"></script>
+    <script src="{{ url_for('static', filename='emby.js') }}?v=20260204-latest-ui3"></script>
 </body>
 </html>

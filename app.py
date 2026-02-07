@@ -42,7 +42,6 @@ from config import (
 from emby_websocket_manager import get_websocket_manager
 from emby_user_manager import EmbyUserManager
 from api_clients import (
-    _execute_emby_action,
     _fetch_emby_libraries,
     _fetch_emby_active_sessions,
     _fetch_emby_status,
@@ -74,8 +73,17 @@ from utils import (
     _sanitize_terms_list,
     _parse_date_value,
     _normalize_media_type,
+    normalize_string,
+    normalize_path,
+    normalize_url,
+    get_nested,
     DEFAULT_RESOLUTION_RULES,
-    _resolution_label_from_dims as _resolution_label_from_dims_utils
+    _resolution_label_from_dims as _resolution_label_from_dims_utils,
+    json_error,
+    json_success,
+    validate_jellyseerr_config,
+    find_server_by_id,
+    get_emby_servers
 )
 from scanner import (
     extract_title_and_year,
@@ -296,7 +304,6 @@ _LATEST_CACHE = {
 }
 _LATEST_CACHE_LOCK = threading.Lock()
 _AUTO_SCHEDULER = None
-_EMBY_STRM_GUARD = None
 _EMBY_USER_MANAGER = None
 
 
@@ -484,7 +491,7 @@ class LibraryScanTracker:
             _log_flush(f"[TRACKER] Checking broadcast conditions: status={status}, progress={progress}")
             if status in ("active", "completed", "error") and progress is not None:
                 should_broadcast_progress = True
-                lib_metadata = job["library_status"].get(library_id, {}).get("metadata")
+                lib_metadata = get_nested(job["library_status"], library_id, "metadata")
                 _log_flush(f"[TRACKER] ✓ Broadcast will be triggered! status={status}, overall_progress={overall_progress:.1%}")
             else:
                 _log_flush(f"[TRACKER] ✗ Broadcast NOT triggered (status={status}, progress={progress})")
@@ -1034,7 +1041,7 @@ def _build_emby_latest_item(item, server):
         if image_tags.get("Primary"):
             query["tag"] = image_tags.get("Primary")
         image_url = f"/api/emby/image?{urlencode(query)}"
-        base_url = (server.get("url") or "").strip().rstrip("/")
+        base_url = normalize_url(server.get("url"))
         token = (server.get("api_key") or "").strip()
         if base_url:
             if token:
@@ -1139,7 +1146,7 @@ def _fetch_emby_items_by_signature(server, signature, fields=None, limit=50):
     if not server or not signature or ":" not in signature:
         return []
     prefix, value = signature.split(":", 1)
-    prefix = prefix.strip().lower()
+    prefix = normalize_string(prefix)
     value = value.strip()
     provider_map = {"tmdb": "Tmdb", "imdb": "Imdb", "tvdb": "Tvdb"}
     provider_key = provider_map.get(prefix)
@@ -1190,7 +1197,7 @@ def _parse_resolution_height(value):
         return 0
     if isinstance(value, (int, float)):
         return int(value)
-    text = str(value).strip().lower()
+    text = normalize_string(value)
     if "x" in text:
         parts = text.split("x")
         try:
@@ -1260,7 +1267,7 @@ def _build_latest_movie_signature(item):
         return f"imdb:{imdb_id}"
     if tvdb_id:
         return f"tvdb:{tvdb_id}"
-    name = (item.get("Name") or item.get("OriginalTitle") or item.get("OriginalName") or "").strip().lower()
+    name = normalize_string(item.get("Name") or item.get("OriginalTitle") or item.get("OriginalName") or "")
     year = item.get("ProductionYear") or item.get("SeriesProductionYear")
     if name and year:
         return f"title:{name}:{year}"
@@ -1271,7 +1278,7 @@ def _build_latest_movie_signature(item):
 def _build_latest_movie_title_signature(item):
     if not isinstance(item, dict):
         return ""
-    name = (item.get("Name") or item.get("OriginalTitle") or item.get("OriginalName") or "").strip().lower()
+    name = normalize_string(item.get("Name") or item.get("OriginalTitle") or item.get("OriginalName") or "")
     year = item.get("ProductionYear") or item.get("SeriesProductionYear")
     if name and year:
         return f"title:{name}:{year}"
@@ -1332,7 +1339,7 @@ def _extract_latest_versions(item):
 
         # CHIAVE ROBUSTA: Usa hash del path normalizzato (case-insensitive, senza slash finali)
         if source_path:
-            normalized_path = source_path.lower().rstrip('/').rstrip('\\')
+            normalized_path = normalize_path(source_path)
             source_key = hashlib.md5(normalized_path.encode('utf-8')).hexdigest()[:16]
         elif source_id:
             source_key = source_id
@@ -1361,7 +1368,7 @@ def _extract_latest_versions(item):
         for stream in streams:
             if not isinstance(stream, dict):
                 continue
-            lang = (stream.get("language") or "").strip().lower()
+            lang = normalize_string(stream.get("language") or "")
             if not lang:
                 continue
 
@@ -1428,7 +1435,7 @@ def _extract_latest_versions(item):
     if not versions and isinstance(item, dict):
         path = (item.get("Path") or "").strip()
         if path:
-            normalized_path = path.lower().rstrip('/').rstrip('\\')
+            normalized_path = normalize_path(path)
             source_key = hashlib.md5(normalized_path.encode('utf-8')).hexdigest()[:16]
             versions.append({
                 "id": "",
@@ -1545,11 +1552,11 @@ def _group_items_by_date(items, gap_minutes, date_key="DateCreated"):
     return groups
 
 def _latest_debug_enabled(settings_cfg=None):
-    env_flag = os.getenv("OCTOHUB_LATEST_DEBUG", "").strip().lower()
+    env_flag = normalize_string(os.getenv("OCTOHUB_LATEST_DEBUG", ""))
     if env_flag in ("1", "true", "yes", "on"):
         return True
     if settings_cfg and isinstance(settings_cfg, dict):
-        cfg_flag = str(settings_cfg.get("debug_latest") or "").strip().lower()
+        cfg_flag = normalize_string(settings_cfg.get("debug_latest") or "")
         return cfg_flag in ("1", "true", "yes", "on")
     return False
 
@@ -3042,8 +3049,7 @@ def _collect_emby_latest_entries(
     if not is_valid or not config:
         _update_latest_progress(state="error", message="Config non valida")
         return None, "Config non valida"
-    emby_config = config.get("EMBY") or {}
-    servers = [server for server in (emby_config.get("SERVERS") or []) if server.get("enabled")]
+    servers = get_emby_servers(config, enabled_only=True)
     if not servers:
         _update_latest_progress(state="done", total=0, completed=0, message="Nessun server Emby attivo")
         return {"movies": [], "series": [], "errors": []}, None
@@ -4141,8 +4147,7 @@ def _refresh_latest_cache_background(limit, per_server_limit):
                 _LATEST_CACHE["is_refreshing"] = False
             return
 
-        emby_config = config.get("EMBY") or {}
-        servers = [server for server in (emby_config.get("SERVERS") or []) if server.get("enabled")]
+        servers = get_emby_servers(config, enabled_only=True)
         if not servers:
             with _LATEST_CACHE_LOCK:
                 _LATEST_CACHE["is_refreshing"] = False
@@ -4546,9 +4551,6 @@ def _internal_send_notifications(limit, per_server_limit, server_filter=None):
         "errors": errors
     }
 
-EMBY_STRM_GUARD_KEY = "EMBY_STRM_GUARD"
-EMBY_STRM_GUARD_COOLDOWN_SECONDS = 10
-EMBY_STRM_GUARD_POLL_SECONDS = 5
 TMDB_API_BASE = "https://api.themoviedb.org/3"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w342"
 TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p"
@@ -4761,7 +4763,7 @@ def load_config():
     merged["COLLECTIONS"] = collection_settings
 
     # Auto-sync RSS_IMPORT.ENABLED with AUTO_TASKS.rss.enabled if misaligned
-    rss_auto_enabled = auto_settings.get("rss", {}).get("enabled", False)
+    rss_auto_enabled = get_nested(auto_settings, "rss", "enabled", default=False)
     rss_import_enabled = rss_import_settings.get("ENABLED", False)
     if rss_auto_enabled != rss_import_enabled:
         print(f"   -> Auto-sync: RSS_IMPORT.ENABLED {rss_import_enabled} → {rss_auto_enabled}")
@@ -4969,7 +4971,7 @@ def _resolve_request_metadata_for_summary(req, config, details_cache, media_cach
         if detailed:
             base_data = detailed
             media_info = base_data.get("media") or media_info
-            media_type = detailed.get("type") or base_data.get("media", {}).get("mediaType") or media_type
+            media_type = detailed.get("type") or get_nested(base_data, "media", "mediaType") or media_type
             extra_sources.extend([detailed, detailed.get("media"), detailed.get("mediaInfo")])
             title, year = extract_title_and_year(base_data, extra_sources=extra_sources)
     if not title:
@@ -5025,7 +5027,7 @@ def _summarize_requests_for_dashboard(config):
     tv_detailed_failed = 0
 
     for req in requests_data:
-        media_type = _normalize_media_type(req.get("type") or req.get("media", {}).get("mediaType"))
+        media_type = _normalize_media_type(req.get("type") or get_nested(req, "media", "mediaType"))
         if media_type == "tv":
             tv_count += 1
             req_id = req.get("id")
@@ -5051,7 +5053,7 @@ def _summarize_requests_for_dashboard(config):
         req_id = req.get("id")
         if not req_id:
             continue
-        type_hint = _normalize_media_type(req.get("type") or req.get("media", {}).get("mediaType"))
+        type_hint = _normalize_media_type(req.get("type") or get_nested(req, "media", "mediaType"))
         force_details = bool(type_hint == "tv")
         base_req, title, year, media_type = _resolve_request_metadata_for_summary(
             req,
@@ -5065,7 +5067,7 @@ def _summarize_requests_for_dashboard(config):
         seasons = [entry["season"] for entry in season_status]
         release_dt = _request_release_date(base_req)
         release_label = release_dt.strftime("%Y-%m-%d") if release_dt else None
-        status_code = base_req.get("media", {}).get("status") or req.get("media", {}).get("status")
+        status_code = get_nested(base_req, "media", "status") or get_nested(req, "media", "status")
         request_rule = _get_request_rule(config, req_id)
         will_skip = False
         if skip_available and status_code == 5:
@@ -5717,7 +5719,6 @@ def _build_emby_server_from_form(form, existing):
     api_key = form.get("server_api_key") or form.get("emby_api_key")
     enabled = form.get("server_enabled") or form.get("emby_enabled")
     notes = form.get("server_notes")
-    strm_task_id = form.get("server_strm_task_id")
     icon = form.get("server_icon")
     icon_color = form.get("server_icon_color")
     icon_style = form.get("server_icon_style")
@@ -5734,8 +5735,6 @@ def _build_emby_server_from_form(form, existing):
         server["enabled"] = str(enabled) not in ("0", "false", "False", "")
     if notes is not None:
         server["notes"] = notes
-    if strm_task_id is not None:
-        server["strm_task_id"] = strm_task_id
     if icon is not None:
         server["icon"] = icon if icon.strip() else "fa-server"
     else:
@@ -5872,18 +5871,6 @@ def _save_app_settings_snapshot(settings):
         return
 
 
-def _load_emby_strm_guard_state():
-    settings = _load_app_settings_snapshot()
-    state = settings.get(EMBY_STRM_GUARD_KEY)
-    return state if isinstance(state, dict) else {}
-
-
-def _save_emby_strm_guard_state(state):
-    settings = _load_app_settings_snapshot()
-    settings[EMBY_STRM_GUARD_KEY] = state
-    _save_app_settings_snapshot(settings)
-
-
 def _load_emby_settings_from_db() -> Dict[str, Any]:
     settings = _load_app_settings_snapshot()
     return _merge_emby_settings(settings.get("EMBY"))
@@ -5936,18 +5923,10 @@ def _prune_emby_latest_settings_for_server(server_id: str) -> None:
     _save_latest_settings(latest_settings)
 
 
-def _prune_emby_strm_guard_state_for_server(server_id: str) -> None:
-    server_key = str(server_id)
-    state = _load_emby_strm_guard_state()
-    if isinstance(state, dict) and state.pop(server_key, None) is not None:
-        _save_emby_strm_guard_state(state)
-
-
 def _purge_emby_server_settings(server_id: str) -> None:
     if not server_id:
         return
     _prune_emby_latest_settings_for_server(server_id)
-    _prune_emby_strm_guard_state_for_server(server_id)
 
 
 def _default_telegram_settings() -> Dict[str, Any]:
@@ -6012,62 +5991,56 @@ def _build_active_library_scans_snapshot():
 def _build_scan_library_snapshot(payload):
     payload = payload or {}
     if not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     server_id = payload.get("server_id")
     library_id = payload.get("library_id")
     if not server_id or not library_id:
-        return {"success": False, "message": "server_id o library_id mancante"}, 400
+        return json_error("server_id o library_id mancante")
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
-    emby_config = config.get("EMBY") or {}
-    servers = emby_config.get("SERVERS") or []
-    target_server = None
-    for server in servers:
-        if server.get("id") == server_id:
-            target_server = server
-            break
+        return json_error("Config non valida")
+    servers = get_emby_servers(config)
+    target_server = find_server_by_id(servers, server_id)
     if target_server is None:
-        return {"success": False, "message": "Server non trovato"}, 404
+        return json_error("Server non trovato", 404)
     if not target_server.get("enabled"):
-        return {"success": False, "message": "Server disabilitato"}, 400
+        return json_error("Server disabilitato")
     success, response = _trigger_library_scan(target_server, str(library_id))
     if success:
-        return {"success": True, "message": "Scansione avviata."}, 200
-    return {"success": False, "message": f"Errore scansione: {response}"}, 500
+        return json_success("Scansione avviata.")
+    return json_error(f"Errore scansione: {response}", 500)
 
 
 def _build_scan_library_tracked_snapshot(payload):
     payload = payload or {}
     if not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
 
     server_id = payload.get("server_id")
     library_ids = payload.get("library_ids")
     group_name = payload.get("group_name")
-    scan_type = (payload.get("scan_type") or "content").strip().lower()
+    scan_type = normalize_string(payload.get("scan_type") or "content")
 
     print(f"[SCAN_TRACKED] Received: server_id={server_id}, library_ids={library_ids}, scan_type={scan_type}")
 
     if not server_id:
-        return {"success": False, "message": "server_id mancante"}, 400
+        return json_error("server_id mancante")
 
     server_key = str(server_id)
 
     if isinstance(library_ids, (str, int)):
         library_ids = [library_ids]
     elif not isinstance(library_ids, list):
-        return {"success": False, "message": "library_ids deve essere stringa o lista"}, 400
+        return json_error("library_ids deve essere stringa o lista")
 
     if not library_ids:
-        return {"success": False, "message": "Nessuna libreria specificata"}, 400
+        return json_error("Nessuna libreria specificata")
 
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
+        return json_error("Config non valida")
 
-    emby_config = config.get("EMBY") or {}
-    servers = emby_config.get("SERVERS") or []
+    servers = get_emby_servers(config)
     target_server = None
     for server in servers:
         if str(server.get("id")) == server_key:
@@ -6075,9 +6048,9 @@ def _build_scan_library_tracked_snapshot(payload):
             break
 
     if target_server is None:
-        return {"success": False, "message": "Server non trovato"}, 404
+        return json_error("Server non trovato", 404)
     if not target_server.get("enabled"):
-        return {"success": False, "message": "Server disabilitato"}, 400
+        return json_error("Server disabilitato")
 
     job_id = _LIBRARY_SCAN_TRACKER.create_job(server_key, library_ids, group_name, scan_type)
 
@@ -6129,14 +6102,14 @@ def _build_scan_library_tracked_snapshot(payload):
 def _build_scan_group_tracked_snapshot(payload):
     payload = payload or {}
     if not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     group_name = (payload.get("group_name") or "").strip()
-    scan_type = (payload.get("scan_type") or "content").strip().lower()
+    scan_type = normalize_string(payload.get("scan_type") or "content")
     libraries = payload.get("libraries") or []
     if not group_name:
-        return {"success": False, "message": "group_name mancante"}, 400
+        return json_error("group_name mancante")
     if not isinstance(libraries, list) or not libraries:
-        return {"success": False, "message": "libraries mancante"}, 400
+        return json_error("libraries mancante")
 
     server_map: Dict[str, list] = {}
     for entry in libraries:
@@ -6153,14 +6126,13 @@ def _build_scan_group_tracked_snapshot(payload):
             server_map[server_key].append(lib_value)
 
     if not server_map:
-        return {"success": False, "message": "libraries non valide"}, 400
+        return json_error("libraries non valide")
 
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
+        return json_error("Config non valida")
 
-    emby_config = config.get("EMBY") or {}
-    servers = emby_config.get("SERVERS") or []
+    servers = get_emby_servers(config)
     library_poller = None
     job_ids = []
     failed_servers = []
@@ -6211,7 +6183,7 @@ def _build_scan_group_tracked_snapshot(payload):
                 )
 
     if not job_ids:
-        return {"success": False, "message": "Nessun server valido per lo scan"}, 400
+        return json_error("Nessun server valido per lo scan")
 
     message = f"Scan di gruppo '{group_name}' avviato"
     if failed_servers:
@@ -6232,7 +6204,7 @@ def _build_associations_get_snapshot():
         backend = _ensure_db_backend()
         associations = backend.load_library_associations()
     except StorageError as exc:
-        return {"success": False, "message": f"Errore DB: {exc}"}, 500
+        return json_error(f"Errore DB: {exc}", 500)
     payload = [
         {
             "server_id": server_id,
@@ -6246,7 +6218,7 @@ def _build_associations_get_snapshot():
 
 def _build_associations_post_snapshot(payload):
     if not isinstance(payload, list):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     associations = {}
     for entry in payload:
         if not isinstance(entry, dict):
@@ -6261,7 +6233,7 @@ def _build_associations_post_snapshot(payload):
         backend = _ensure_db_backend()
         backend.save_library_associations(associations)
     except StorageError as exc:
-        return {"success": False, "message": f"Errore DB: {exc}"}, 500
+        return json_error(f"Errore DB: {exc}", 500)
     payload = [
         {
             "server_id": server_id,
@@ -6277,13 +6249,13 @@ def _build_media_details_snapshot(tmdb_id, media_type):
     tmdb_id = _try_parse_int(tmdb_id)
     media_type = _normalize_media_type(media_type)
     if not tmdb_id or not media_type:
-        return {"success": False, "message": "Parametri mancanti"}, 400
+        return json_error("Parametri mancanti")
 
     config, _ = load_config()
     if not config:
-        return {"success": False, "message": "Config mancante"}, 400
-    if not (config.get("JELLYSEERR_URL") and config.get("JELLYSEERR_API_KEY")):
-        return {"success": False, "message": "Jellyseerr non configurato"}, 400
+        return json_error("Config mancante")
+    if not validate_jellyseerr_config(config):
+        return json_error("Jellyseerr non configurato")
 
     cache = {}
     tmdb_payload, resolved_type = fetch_media_info(
@@ -6293,7 +6265,7 @@ def _build_media_details_snapshot(tmdb_id, media_type):
         fallback_media_type=media_type
     )
     if not tmdb_payload:
-        return {"success": False, "message": "Dettagli non disponibili"}, 404
+        return json_error("Dettagli non disponibili", 404)
 
     normalized_type = resolved_type or media_type
     if normalized_type == "movie":
@@ -6346,14 +6318,14 @@ def _build_media_details_snapshot(tmdb_id, media_type):
 
 def _build_jellyseerr_request_snapshot(payload):
     if not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
 
     media_id = _try_parse_int(
         payload.get("mediaId") or payload.get("media_id") or payload.get("tmdb_id")
     )
     media_type = _normalize_media_type(payload.get("mediaType") or payload.get("media_type"))
     if not media_id or not media_type:
-        return {"success": False, "message": "Parametri mancanti"}, 400
+        return json_error("Parametri mancanti")
 
     raw_seasons = payload.get("seasons")
     if not isinstance(raw_seasons, list):
@@ -6370,13 +6342,13 @@ def _build_jellyseerr_request_snapshot(payload):
 
     config, _ = load_config()
     if not config:
-        return {"success": False, "message": "Config mancante"}, 400
-    if not (config.get("JELLYSEERR_URL") and config.get("JELLYSEERR_API_KEY")):
-        return {"success": False, "message": "Jellyseerr non configurato"}, 400
+        return json_error("Config mancante")
+    if not validate_jellyseerr_config(config):
+        return json_error("Jellyseerr non configurato")
 
     success, message, data = submit_jellyseerr_request(request_payload, config)
     if not success:
-        return {"success": False, "message": message}, 502
+        return json_error(message, 502)
 
     return {"success": True, "message": message, "data": data}, 200
 
@@ -6384,11 +6356,11 @@ def _build_jellyseerr_request_snapshot(payload):
 def _build_tmdb_search_snapshot(query, page=1):
     query = (query or "").strip()
     if not query:
-        return {"success": False, "message": "Query mancante"}, 400
+        return json_error("Query mancante")
 
     config, is_valid = load_config()
     if not config:
-        return {"success": False, "message": "Configurazione mancante"}, 400
+        return json_error("Configurazione mancante")
 
     api_key = config.get("TMDB_API_KEY")
     if not api_key:
@@ -6406,7 +6378,7 @@ def _build_tmdb_search_snapshot(query, page=1):
 def _build_tmdb_tv_details_snapshot(tv_id):
     config, is_valid = load_config()
     if not config:
-        return {"success": False, "message": "Configurazione mancante"}, 400
+        return json_error("Configurazione mancante")
 
     api_key = config.get("TMDB_API_KEY")
     if not api_key:
@@ -6419,7 +6391,7 @@ def _build_tmdb_tv_details_snapshot(tv_id):
     details = get_tmdb_tv_details(api_key, tv_id, language)
 
     if not details:
-        return {"success": False, "message": "Impossibile ottenere i dettagli della serie TV"}, 404
+        return json_error("Impossibile ottenere i dettagli della serie TV", 404)
 
     return {"success": True, "details": details}, 200
 
@@ -6431,13 +6403,13 @@ def _build_tmdb_check_availability_snapshot(payload):
     media_type = payload.get("media_type")
 
     if not tmdb_id:
-        return {"success": False, "message": "TMDB ID mancante"}, 400
+        return json_error("TMDB ID mancante")
 
     config, is_valid = load_config()
     if not config:
-        return {"success": False, "message": "Configurazione mancante"}, 400
+        return json_error("Configurazione mancante")
 
-    if not (config.get("JELLYSEERR_URL") and config.get("JELLYSEERR_API_KEY")):
+    if not validate_jellyseerr_config(config):
         return {"success": True, "available_on": []}, 200
 
     found = check_jellyseerr_availability(tmdb_id, media_type, config)
@@ -6455,18 +6427,18 @@ def _build_manual_search_snapshot(payload, form_payload=None):
             if key not in payload or payload.get(key) in (None, "", [], {}):
                 payload[key] = value
     if not isinstance(payload, dict) or not payload:
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
 
     query = (payload.get("query") or "").strip()
     if not query:
-        return {"success": False, "message": "Query mancante"}, 400
+        return json_error("Query mancante")
 
     media_type = _normalize_media_type(payload.get("media_type"))
     indexers_value = payload.get("indexers")
     indexers = indexers_value if isinstance(indexers_value, list) else []
     selected_indexers = {entry for entry in indexers if entry in {"prowlarr", "jackett"}}
     if not selected_indexers:
-        return {"success": False, "message": "Indexer mancanti"}, 400
+        return json_error("Indexer mancanti")
 
     tmdb_id = _try_parse_int(payload.get("tmdb_id"))
     print(f"[manual_search] query={query!r} indexers={sorted(selected_indexers)} tmdb_id={tmdb_id}")
@@ -6481,7 +6453,7 @@ def _build_manual_search_snapshot(payload, form_payload=None):
 
     config, is_valid = load_config()
     if not config or not is_valid:
-        return {"success": False, "message": "Config non valida"}, 400
+        return json_error("Config non valida")
 
     effective_config = copy.deepcopy(config)
     effective_rules = copy.deepcopy(config.get("SEARCH_RULES", {}))
@@ -6489,14 +6461,14 @@ def _build_manual_search_snapshot(payload, form_payload=None):
     request_item = None
     request_details = None
     if use_jellyseerr_logic and tmdb_id and media_type:
-        if config.get("JELLYSEERR_URL") and config.get("JELLYSEERR_API_KEY"):
+        if validate_jellyseerr_config(config):
             try:
                 requests_data = get_jellyseerr_requests(config, silent=True)
             except Exception:
                 requests_data = []
             target_type = _normalize_media_type(media_type)
             for req in requests_data or []:
-                req_type = _normalize_media_type(req.get("type") or req.get("media", {}).get("mediaType"))
+                req_type = _normalize_media_type(req.get("type") or get_nested(req, "media", "mediaType"))
                 if target_type and req_type and req_type != target_type:
                     continue
                 req_tmdb = _extract_tmdb_id(req, req.get("media"), req.get("mediaInfo"))
@@ -6746,12 +6718,12 @@ def _build_manual_search_snapshot(payload, form_payload=None):
                 size_gb = result.get("size_gb", 0)
 
                 if include_filter:
-                    include_words = [w.strip().lower() for w in include_filter.split(",") if w.strip()]
+                    include_words = [normalize_string(w) for w in include_filter.split(",") if w.strip()]
                     if include_words and not any(word in title_lower for word in include_words):
                         continue
 
                 if exclude_filter:
-                    exclude_words = [w.strip().lower() for w in exclude_filter.split(",") if w.strip()]
+                    exclude_words = [normalize_string(w) for w in exclude_filter.split(",") if w.strip()]
                     if exclude_words and any(word in title_lower for word in exclude_words):
                         continue
 
@@ -6780,37 +6752,35 @@ def _build_manual_search_snapshot(payload, form_payload=None):
 def _build_emby_stop_task_snapshot(payload):
     payload = payload or {}
     if not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     server_id = payload.get("server_id")
     task_id = payload.get("task_id")
     print(f"[DEBUG] Stop task richiesto: server_id={server_id}, task_id={task_id}")
     if not server_id or not task_id:
-        return {"success": False, "message": "server_id o task_id mancante"}, 400
+        return json_error("server_id o task_id mancante")
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
-    emby_config = config.get("EMBY") or {}
-    servers = emby_config.get("SERVERS") or []
+        return json_error("Config non valida")
+    servers = get_emby_servers(config)
     target = next((s for s in servers if s.get("id") == server_id), None)
     if target is None:
-        return {"success": False, "message": "Server non trovato"}, 404
+        return json_error("Server non trovato", 404)
     print(f"[DEBUG] Chiamata _stop_emby_task con task_id={task_id}")
     success, response = _stop_emby_task(target, str(task_id))
     print(f"[DEBUG] _stop_emby_task ritornato: success={success}, response={response}")
     if success:
-        return {"success": True}, 200
-    return {"success": False, "message": f"Errore stop task: {response}"}, 500
+        return json_success()
+    return json_error(f"Errore stop task: {response}", 500)
 
 
 def _build_emby_server_status_snapshot(server_id):
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
-    emby_config = config.get("EMBY") or {}
-    servers = emby_config.get("SERVERS") or []
+        return json_error("Config non valida")
+    servers = get_emby_servers(config)
     target = next((s for s in servers if s.get("id") == server_id), None)
     if target is None:
-        return {"success": False, "message": "Server non trovato"}, 404
+        return json_error("Server non trovato", 404)
     status = _fetch_emby_status(target)
     tasks, error = _fetch_emby_scheduled_tasks(target)
     streams, streams_error = _fetch_emby_active_sessions(target)
@@ -6831,9 +6801,8 @@ def _build_emby_server_status_snapshot(server_id):
 def _build_emby_health_status_snapshot():
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
-    emby_config = config.get("EMBY") or {}
-    servers = emby_config.get("SERVERS") or []
+        return json_error("Config non valida")
+    servers = get_emby_servers(config)
     payload = []
     for server in servers:
         server_id = server.get("id")
@@ -6868,17 +6837,16 @@ def _build_emby_health_status_snapshot():
 def _build_emby_activity_snapshot(server_id: str):
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
-    emby_config = config.get("EMBY") or {}
-    servers = emby_config.get("SERVERS") or []
+        return json_error("Config non valida")
+    servers = get_emby_servers(config)
     target = next((s for s in servers if s.get("id") == server_id), None)
     if target is None:
-        return {"success": False, "message": "Server non trovato"}, 404
+        return json_error("Server non trovato", 404)
     if not target.get("enabled"):
-        return {"success": False, "message": "Server disabilitato"}, 400
+        return json_error("Server disabilitato")
     sessions, error = _fetch_emby_active_sessions(target)
     if error:
-        return {"success": False, "message": str(error)}, 500
+        return json_error(str(error), 500)
     payload = []
     for session in sessions:
         if not isinstance(session, dict):
@@ -6902,17 +6870,16 @@ def _build_emby_activity_snapshot(server_id: str):
 def _build_emby_tasks_snapshot(server_id: str):
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
-    emby_config = config.get("EMBY") or {}
-    servers = emby_config.get("SERVERS") or []
+        return json_error("Config non valida")
+    servers = get_emby_servers(config)
     target = next((s for s in servers if s.get("id") == server_id), None)
     if target is None:
-        return {"success": False, "message": "Server non trovato"}, 404
+        return json_error("Server non trovato", 404)
     if not target.get("enabled"):
-        return {"success": False, "message": "Server disabilitato"}, 400
+        return json_error("Server disabilitato")
     tasks, error = _fetch_emby_scheduled_tasks(target)
     if error:
-        return {"success": False, "message": str(error)}, 500
+        return json_error(str(error), 500)
     payload = []
     for task in tasks:
         if not isinstance(task, dict):
@@ -6940,20 +6907,19 @@ def _build_emby_tasks_snapshot(server_id: str):
 def _build_emby_users_snapshot(server_id: str):
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
-    emby_config = config.get("EMBY") or {}
-    servers = emby_config.get("SERVERS") or []
+        return json_error("Config non valida")
+    servers = get_emby_servers(config)
     target = next((s for s in servers if s.get("id") == server_id), None)
     if target is None:
-        return {"success": False, "message": "Server non trovato"}, 404
+        return json_error("Server non trovato", 404)
     if not target.get("enabled"):
-        return {"success": False, "message": "Server disabilitato"}, 400
+        return json_error("Server disabilitato")
     success, payload = _call_emby_api(target, "Users")
     if not success:
-        return {"success": False, "message": str(payload)}, 500
+        return json_error(str(payload), 500)
     items = payload if isinstance(payload, list) else (payload.get("Items") if isinstance(payload, dict) else [])
     if not isinstance(items, list):
-        return {"success": False, "message": "Risposta Users inattesa"}, 500
+        return json_error("Risposta Users inattesa", 500)
     users = []
     for entry in items:
         if not isinstance(entry, dict):
@@ -6974,20 +6940,19 @@ def _build_emby_users_snapshot(server_id: str):
 def _build_emby_plugins_snapshot(server_id: str):
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
-    emby_config = config.get("EMBY") or {}
-    servers = emby_config.get("SERVERS") or []
+        return json_error("Config non valida")
+    servers = get_emby_servers(config)
     target = next((s for s in servers if s.get("id") == server_id), None)
     if target is None:
-        return {"success": False, "message": "Server non trovato"}, 404
+        return json_error("Server non trovato", 404)
     if not target.get("enabled"):
-        return {"success": False, "message": "Server disabilitato"}, 400
+        return json_error("Server disabilitato")
     success, payload = _call_emby_api(target, "Plugins")
     if not success:
-        return {"success": False, "message": str(payload)}, 500
+        return json_error(str(payload), 500)
     items = payload if isinstance(payload, list) else (payload.get("Items") if isinstance(payload, dict) else [])
     if not isinstance(items, list):
-        return {"success": False, "message": "Risposta Plugins inattesa"}, 500
+        return json_error("Risposta Plugins inattesa", 500)
     plugins = []
     for entry in items:
         if not isinstance(entry, dict):
@@ -7008,9 +6973,8 @@ def _build_emby_plugins_snapshot(server_id: str):
 def _build_emby_streams_snapshot():
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
-    emby_config = config.get("EMBY") or {}
-    servers = emby_config.get("SERVERS") or []
+        return json_error("Config non valida")
+    servers = get_emby_servers(config)
     payload = {}
     for server in servers:
         server_id = server.get("id")
@@ -7031,9 +6995,8 @@ def _build_emby_streams_snapshot():
 def _build_emby_status_stream_payload():
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}
-    emby_config = config.get("EMBY") or {}
-    servers = emby_config.get("SERVERS") or []
+        return json_error("Config non valida")
+    servers = get_emby_servers(config)
     data = {}
     for server in servers:
         server_id = server.get("id")
@@ -7087,9 +7050,8 @@ def _build_emby_status_stream_payload():
 def _build_emby_libraries_snapshot():
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
-    emby_config = config.get("EMBY") or {}
-    servers = emby_config.get("SERVERS") or []
+        return json_error("Config non valida")
+    servers = get_emby_servers(config)
     all_libraries = {}
     for server in servers:
         if not server.get("enabled"):
@@ -7110,27 +7072,27 @@ def _build_rss_inspect_snapshot(payload):
         payload = {}
     url = (payload.get("url") or "").strip()
     if not url:
-        return {"success": False, "message": "URL mancante"}, 400
+        return json_error("URL mancante")
     try:
         response = requests.get(url, timeout=12)
         response.raise_for_status()
     except requests.RequestException as exc:
-        return {"success": False, "message": str(exc)}, 400
+        return json_error(str(exc), 400)
     try:
         inspect = _inspect_rss_content(response.content)
     except ET.ParseError as exc:
-        return {"success": False, "message": f"XML non valido: {exc}"}, 400
+        return json_error(f"XML non valido: {exc}", 400)
     return {"success": True, "data": inspect}, 200
 
 
 def _build_rss_inspect_json_snapshot(file_obj):
     if file_obj is None:
-        return {"success": False, "message": "File mancante"}, 400
+        return json_error("File mancante")
     stream = getattr(file_obj, "file", None) or getattr(file_obj, "stream", None) or file_obj
     try:
         payload = json.load(stream)
     except (ValueError, json.JSONDecodeError) as exc:
-        return {"success": False, "message": f"JSON non valido: {exc}"}, 400
+        return json_error(f"JSON non valido: {exc}", 400)
 
     root_keys = list(payload.keys()) if isinstance(payload, dict) else []
     items: list[Any] = []
@@ -7159,21 +7121,21 @@ def _build_rss_inspect_json_snapshot(file_obj):
 def _build_rss_import_snapshot():
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Configurazione non valida"}, 400
+        return json_error("Configurazione non valida")
     db_settings = config.get("DATABASE", {})
     if not _db_enabled(db_settings):
-        return {"success": False, "message": "Database non abilitato"}, 400
+        return json_error("Database non abilitato")
 
     rss_settings = config.get("RSS_IMPORT", {}) or {}
     sources = rss_settings.get("SOURCES") or []
     if not sources:
-        return {"success": False, "message": "Nessuna sorgente RSS configurata"}, 400
+        return json_error("Nessuna sorgente RSS configurata")
 
     dedup_keep = rss_settings.get("DEDUP_KEEP") or "newest"
     try:
         backend = _get_db_backend(db_settings)
     except StorageError as exc:
-        return {"success": False, "message": str(exc)}, 400
+        return json_error(str(exc), 400)
 
     totals = {"items": 0, "inserted": 0, "updated": 0, "skipped": 0, "removed": 0}
     source_results = []
@@ -7230,13 +7192,13 @@ def _build_rss_import_snapshot():
 
 def _build_rss_import_json_snapshot(file_obj):
     if file_obj is None:
-        return {"success": False, "message": "File mancante"}, 400
+        return json_error("File mancante")
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Configurazione non valida"}, 400
+        return json_error("Configurazione non valida")
     db_settings = config.get("DATABASE", {})
     if not _db_enabled(db_settings):
-        return {"success": False, "message": "Database non abilitato"}, 400
+        return json_error("Database non abilitato")
     rss_settings = config.get("RSS_IMPORT", {}) or {}
     dedup_keep = rss_settings.get("DEDUP_KEEP") or "newest"
 
@@ -7244,22 +7206,22 @@ def _build_rss_import_json_snapshot(file_obj):
     try:
         payload = json.load(stream)
     except (ValueError, json.JSONDecodeError) as exc:
-        return {"success": False, "message": f"JSON non valido: {exc}"}, 400
+        return json_error(f"JSON non valido: {exc}", 400)
 
     items = _parse_json_import(payload)
     if not items:
-        return {"success": False, "message": "Nessun item trovato"}, 400
+        return json_error("Nessun item trovato")
     for item in items:
         item["ingested_at"] = datetime.now(timezone.utc)
 
     try:
         backend = _get_db_backend(db_settings)
     except StorageError as exc:
-        return {"success": False, "message": str(exc)}, 400
+        return json_error(str(exc), 400)
     try:
         stats = backend.save_rss_items(items, dedup_keep=dedup_keep)
     except StorageError as exc:
-        return {"success": False, "message": str(exc)}, 400
+        return json_error(str(exc), 400)
     stats["items"] = len(items)
     return {"success": True, "data": {"summary": stats}}, 200
 
@@ -7267,17 +7229,17 @@ def _build_rss_import_json_snapshot(file_obj):
 def _build_rss_deduplicate_snapshot():
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Configurazione non valida"}, 400
+        return json_error("Configurazione non valida")
     db_settings = config.get("DATABASE", {})
     if not _db_enabled(db_settings):
-        return {"success": False, "message": "Database non abilitato"}, 400
+        return json_error("Database non abilitato")
     rss_settings = config.get("RSS_IMPORT", {}) or {}
     dedup_keep = rss_settings.get("DEDUP_KEEP") or "newest"
 
     try:
         backend = _get_db_backend(db_settings)
     except StorageError as exc:
-        return {"success": False, "message": str(exc)}, 400
+        return json_error(str(exc), 400)
     stats = backend.dedupe_rss_items(dedup_keep=dedup_keep)
     return {"success": True, "data": stats}, 200
 
@@ -7285,10 +7247,10 @@ def _build_rss_deduplicate_snapshot():
 def _build_rss_items_snapshot(limit, offset):
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Configurazione non valida"}, 400
+        return json_error("Configurazione non valida")
     db_settings = config.get("DATABASE", {})
     if not _db_enabled(db_settings):
-        return {"success": False, "message": "Database non abilitato"}, 400
+        return json_error("Database non abilitato")
 
     limit = _coerce_request_int(limit or 50, 50)
     offset = _coerce_request_int(offset or 0, 0)
@@ -7297,7 +7259,7 @@ def _build_rss_items_snapshot(limit, offset):
     try:
         backend = _get_db_backend(db_settings)
     except StorageError as exc:
-        return {"success": False, "message": str(exc)}, 400
+        return json_error(str(exc), 400)
     payload = backend.list_rss_items(limit=limit, offset=offset)
     payload["limit"] = limit
     payload["offset"] = offset
@@ -7307,13 +7269,13 @@ def _build_rss_items_snapshot(limit, offset):
 def _build_rss_search_snapshot(keywords, limit, offset, use_regex=False, search_in=None):
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Configurazione non valida"}, 400
+        return json_error("Configurazione non valida")
     db_settings = config.get("DATABASE", {})
     if not _db_enabled(db_settings):
-        return {"success": False, "message": "Database non abilitato"}, 400
+        return json_error("Database non abilitato")
 
     if not keywords or not keywords.strip():
-        return {"success": False, "message": "Keywords richieste per la ricerca"}, 400
+        return json_error("Keywords richieste per la ricerca")
 
     limit = _coerce_request_int(limit or 50, 50)
     offset = _coerce_request_int(offset or 0, 0)
@@ -7329,7 +7291,7 @@ def _build_rss_search_snapshot(keywords, limit, offset, use_regex=False, search_
     try:
         backend = _get_db_backend(db_settings)
     except StorageError as exc:
-        return {"success": False, "message": str(exc)}, 400
+        return json_error(str(exc), 400)
 
     try:
         payload = backend.search_rss_items(keywords=keywords.strip(), limit=limit, offset=offset, use_regex=use_regex, search_in=search_in)
@@ -7343,212 +7305,212 @@ def _build_rss_search_snapshot(keywords, limit, offset, use_regex=False, search_
         # Gestisci errori regex invalidi
         error_msg = str(exc)
         if "invalid regular expression" in error_msg.lower():
-            return {"success": False, "message": "Regex non valida"}, 400
-        return {"success": False, "message": f"Errore ricerca: {error_msg}"}, 500
+            return json_error("Regex non valida")
+        return json_error(f"Errore ricerca: {error_msg}", 500)
 
 
 def _build_rss_delete_snapshot(item_ids):
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Configurazione non valida"}, 400
+        return json_error("Configurazione non valida")
     db_settings = config.get("DATABASE", {})
     if not _db_enabled(db_settings):
-        return {"success": False, "message": "Database non abilitato"}, 400
+        return json_error("Database non abilitato")
 
     if not item_ids or not isinstance(item_ids, list):
-        return {"success": False, "message": "Lista di ID richiesta"}, 400
+        return json_error("Lista di ID richiesta")
 
     try:
         backend = _get_db_backend(db_settings)
     except StorageError as exc:
-        return {"success": False, "message": str(exc)}, 400
+        return json_error(str(exc), 400)
 
     try:
         deleted_count = backend.delete_rss_items(item_ids)
         return {"success": True, "deleted_count": deleted_count}, 200
     except Exception as exc:
-        return {"success": False, "message": str(exc)}, 500
+        return json_error(str(exc), 500)
 
 
 def _build_categories_snapshot():
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Configurazione non valida"}, 400
+        return json_error("Configurazione non valida")
     db_settings = config.get("DATABASE", {})
     if not _db_enabled(db_settings):
-        return {"success": False, "message": "Database non abilitato"}, 400
+        return json_error("Database non abilitato")
 
     try:
         backend = _get_db_backend(db_settings)
     except StorageError as exc:
-        return {"success": False, "message": str(exc)}, 400
+        return json_error(str(exc), 400)
 
     try:
         data = backend.get_all_categories_with_counts()
         return {"success": True, "data": data}, 200
     except Exception as exc:
-        return {"success": False, "message": str(exc)}, 500
+        return json_error(str(exc), 500)
 
 
 def _build_blacklist_snapshot():
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Configurazione non valida"}, 400
+        return json_error("Configurazione non valida")
     db_settings = config.get("DATABASE", {})
     if not _db_enabled(db_settings):
-        return {"success": False, "message": "Database non abilitato"}, 400
+        return json_error("Database non abilitato")
 
     try:
         backend = _get_db_backend(db_settings)
     except StorageError as exc:
-        return {"success": False, "message": str(exc)}, 400
+        return json_error(str(exc), 400)
 
     try:
         categories = backend.list_blacklisted_categories()
         return {"success": True, "categories": categories}, 200
     except Exception as exc:
-        return {"success": False, "message": str(exc)}, 500
+        return json_error(str(exc), 500)
 
 
 def _build_blacklist_add_snapshot(category_name):
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Configurazione non valida"}, 400
+        return json_error("Configurazione non valida")
     db_settings = config.get("DATABASE", {})
     if not _db_enabled(db_settings):
-        return {"success": False, "message": "Database non abilitato"}, 400
+        return json_error("Database non abilitato")
 
     if not category_name or not category_name.strip():
-        return {"success": False, "message": "Nome categoria richiesto"}, 400
+        return json_error("Nome categoria richiesto")
 
     try:
         backend = _get_db_backend(db_settings)
     except StorageError as exc:
-        return {"success": False, "message": str(exc)}, 400
+        return json_error(str(exc), 400)
 
     try:
         added = backend.add_category_to_blacklist(category_name.strip())
         if added:
             return {"success": True, "message": "Categoria aggiunta alla blacklist"}, 200
         else:
-            return {"success": False, "message": "Categoria già presente nella blacklist"}, 400
+            return json_error("Categoria già presente nella blacklist")
     except Exception as exc:
-        return {"success": False, "message": str(exc)}, 500
+        return json_error(str(exc), 500)
 
 
 def _build_blacklist_remove_snapshot(category_name):
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Configurazione non valida"}, 400
+        return json_error("Configurazione non valida")
     db_settings = config.get("DATABASE", {})
     if not _db_enabled(db_settings):
-        return {"success": False, "message": "Database non abilitato"}, 400
+        return json_error("Database non abilitato")
 
     if not category_name:
-        return {"success": False, "message": "Nome categoria richiesto"}, 400
+        return json_error("Nome categoria richiesto")
 
     try:
         backend = _get_db_backend(db_settings)
     except StorageError as exc:
-        return {"success": False, "message": str(exc)}, 400
+        return json_error(str(exc), 400)
 
     try:
         removed = backend.remove_category_from_blacklist(category_name)
         if removed:
             return {"success": True, "message": "Categoria rimossa dalla blacklist"}, 200
         else:
-            return {"success": False, "message": "Categoria non trovata nella blacklist"}, 404
+            return json_error("Categoria non trovata nella blacklist", 404)
     except Exception as exc:
-        return {"success": False, "message": str(exc)}, 500
+        return json_error(str(exc), 500)
 
 
 def _build_hidden_snapshot():
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Configurazione non valida"}, 400
+        return json_error("Configurazione non valida")
     db_settings = config.get("DATABASE", {})
     if not _db_enabled(db_settings):
-        return {"success": False, "message": "Database non abilitato"}, 400
+        return json_error("Database non abilitato")
 
     try:
         backend = _get_db_backend(db_settings)
     except StorageError as exc:
-        return {"success": False, "message": str(exc)}, 400
+        return json_error(str(exc), 400)
 
     try:
         categories = backend.list_hidden_categories()
         return {"success": True, "categories": categories}, 200
     except Exception as exc:
-        return {"success": False, "message": str(exc)}, 500
+        return json_error(str(exc), 500)
 
 
 def _build_hidden_add_snapshot(category_name):
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Configurazione non valida"}, 400
+        return json_error("Configurazione non valida")
     db_settings = config.get("DATABASE", {})
     if not _db_enabled(db_settings):
-        return {"success": False, "message": "Database non abilitato"}, 400
+        return json_error("Database non abilitato")
 
     if not category_name or not category_name.strip():
-        return {"success": False, "message": "Nome categoria richiesto"}, 400
+        return json_error("Nome categoria richiesto")
 
     try:
         backend = _get_db_backend(db_settings)
     except StorageError as exc:
-        return {"success": False, "message": str(exc)}, 400
+        return json_error(str(exc), 400)
 
     try:
         added = backend.add_category_to_hidden(category_name.strip())
         if added:
             return {"success": True, "message": "Categoria aggiunta a nascoste"}, 200
         else:
-            return {"success": False, "message": "Categoria già presente in nascoste"}, 400
+            return json_error("Categoria già presente in nascoste")
     except Exception as exc:
-        return {"success": False, "message": str(exc)}, 500
+        return json_error(str(exc), 500)
 
 
 def _build_hidden_remove_snapshot(category_name):
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Configurazione non valida"}, 400
+        return json_error("Configurazione non valida")
     db_settings = config.get("DATABASE", {})
     if not _db_enabled(db_settings):
-        return {"success": False, "message": "Database non abilitato"}, 400
+        return json_error("Database non abilitato")
 
     if not category_name:
-        return {"success": False, "message": "Nome categoria richiesto"}, 400
+        return json_error("Nome categoria richiesto")
 
     try:
         backend = _get_db_backend(db_settings)
     except StorageError as exc:
-        return {"success": False, "message": str(exc)}, 400
+        return json_error(str(exc), 400)
 
     try:
         removed = backend.remove_category_from_hidden(category_name)
         if removed:
             return {"success": True, "message": "Categoria rimossa da nascoste"}, 200
         else:
-            return {"success": False, "message": "Categoria non trovata in nascoste"}, 404
+            return json_error("Categoria non trovata in nascoste", 404)
     except Exception as exc:
-        return {"success": False, "message": str(exc)}, 500
+        return json_error(str(exc), 500)
 
 
 def _build_hidden_add_batch_snapshot(category_names):
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Configurazione non valida"}, 400
+        return json_error("Configurazione non valida")
     db_settings = config.get("DATABASE", {})
     if not _db_enabled(db_settings):
-        return {"success": False, "message": "Database non abilitato"}, 400
+        return json_error("Database non abilitato")
 
     if not category_names or not isinstance(category_names, list):
-        return {"success": False, "message": "Lista di categorie richiesta"}, 400
+        return json_error("Lista di categorie richiesta")
 
     try:
         backend = _get_db_backend(db_settings)
     except StorageError as exc:
-        return {"success": False, "message": str(exc)}, 400
+        return json_error(str(exc), 400)
 
     try:
         added_count = 0
@@ -7560,24 +7522,24 @@ def _build_hidden_add_batch_snapshot(category_names):
 
         return {"success": True, "message": f"{added_count} categorie aggiunte a nascoste", "count": added_count}, 200
     except Exception as exc:
-        return {"success": False, "message": str(exc)}, 500
+        return json_error(str(exc), 500)
 
 
 def _build_hidden_remove_batch_snapshot(category_names):
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Configurazione non valida"}, 400
+        return json_error("Configurazione non valida")
     db_settings = config.get("DATABASE", {})
     if not _db_enabled(db_settings):
-        return {"success": False, "message": "Database non abilitato"}, 400
+        return json_error("Database non abilitato")
 
     if not category_names or not isinstance(category_names, list):
-        return {"success": False, "message": "Lista di categorie richiesta"}, 400
+        return json_error("Lista di categorie richiesta")
 
     try:
         backend = _get_db_backend(db_settings)
     except StorageError as exc:
-        return {"success": False, "message": str(exc)}, 400
+        return json_error(str(exc), 400)
 
     try:
         removed_count = 0
@@ -7589,24 +7551,24 @@ def _build_hidden_remove_batch_snapshot(category_names):
 
         return {"success": True, "message": f"{removed_count} categorie rimosse da nascoste", "count": removed_count}, 200
     except Exception as exc:
-        return {"success": False, "message": str(exc)}, 500
+        return json_error(str(exc), 500)
 
 
 def _build_blacklist_add_batch_snapshot(category_names):
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Configurazione non valida"}, 400
+        return json_error("Configurazione non valida")
     db_settings = config.get("DATABASE", {})
     if not _db_enabled(db_settings):
-        return {"success": False, "message": "Database non abilitato"}, 400
+        return json_error("Database non abilitato")
 
     if not category_names or not isinstance(category_names, list):
-        return {"success": False, "message": "Lista di categorie richiesta"}, 400
+        return json_error("Lista di categorie richiesta")
 
     try:
         backend = _get_db_backend(db_settings)
     except StorageError as exc:
-        return {"success": False, "message": str(exc)}, 400
+        return json_error(str(exc), 400)
 
     try:
         added_count = 0
@@ -7618,24 +7580,24 @@ def _build_blacklist_add_batch_snapshot(category_names):
 
         return {"success": True, "message": f"{added_count} categorie aggiunte a blacklist", "count": added_count}, 200
     except Exception as exc:
-        return {"success": False, "message": str(exc)}, 500
+        return json_error(str(exc), 500)
 
 
 def _build_blacklist_remove_batch_snapshot(category_names):
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Configurazione non valida"}, 400
+        return json_error("Configurazione non valida")
     db_settings = config.get("DATABASE", {})
     if not _db_enabled(db_settings):
-        return {"success": False, "message": "Database non abilitato"}, 400
+        return json_error("Database non abilitato")
 
     if not category_names or not isinstance(category_names, list):
-        return {"success": False, "message": "Lista di categorie richiesta"}, 400
+        return json_error("Lista di categorie richiesta")
 
     try:
         backend = _get_db_backend(db_settings)
     except StorageError as exc:
-        return {"success": False, "message": str(exc)}, 400
+        return json_error(str(exc), 400)
 
     try:
         removed_count = 0
@@ -7647,42 +7609,42 @@ def _build_blacklist_remove_batch_snapshot(category_names):
 
         return {"success": True, "message": f"{removed_count} categorie rimosse da blacklist", "count": removed_count}, 200
     except Exception as exc:
-        return {"success": False, "message": str(exc)}, 500
+        return json_error(str(exc), 500)
 
 
 def _build_delete_by_categories_snapshot(category_names):
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Configurazione non valida"}, 400
+        return json_error("Configurazione non valida")
     db_settings = config.get("DATABASE", {})
     if not _db_enabled(db_settings):
-        return {"success": False, "message": "Database non abilitato"}, 400
+        return json_error("Database non abilitato")
 
     if not category_names or not isinstance(category_names, list):
-        return {"success": False, "message": "Lista di categorie richiesta"}, 400
+        return json_error("Lista di categorie richiesta")
 
     try:
         backend = _get_db_backend(db_settings)
     except StorageError as exc:
-        return {"success": False, "message": str(exc)}, 400
+        return json_error(str(exc), 400)
 
     try:
         deleted_count = backend.delete_items_by_categories(category_names)
         return {"success": True, "deleted_count": deleted_count}, 200
     except Exception as exc:
-        return {"success": False, "message": str(exc)}, 500
+        return json_error(str(exc), 500)
 
 
 def _build_send_torrent_snapshot(payload):
     config, is_valid = load_config()
     if not is_valid:
-        return {"success": False, "message": "Config non valida"}, 400
+        return json_error("Config non valida")
     payload = payload or {}
     if not isinstance(payload, dict):
         payload = {}
     link = payload.get("link")
     if not link:
-        return {"success": False, "message": "Link mancante"}, 400
+        return json_error("Link mancante")
     success, message = send_to_qbittorrent(link, config)
     status_code = 200 if success else 500
     return {"success": success, "message": message}, status_code
@@ -7691,13 +7653,13 @@ def _build_send_torrent_snapshot(payload):
 def _build_send_torrent_batch_snapshot(payload):
     config, is_valid = load_config()
     if not is_valid:
-        return {"success": False, "message": "Config non valida"}, 400
+        return json_error("Config non valida")
     payload = payload or {}
     if not isinstance(payload, dict):
         payload = {}
     links = payload.get("links")
     if not isinstance(links, list):
-        return {"success": False, "message": "Lista link mancante"}, 400
+        return json_error("Lista link mancante")
     success, message, details = send_to_qbittorrent_batch(links, config)
     status_code = 200 if success else 500
     response = {"success": success, "message": message}
@@ -7713,9 +7675,9 @@ def _build_scan_status_snapshot():
 def _build_run_scan_snapshot(payload):
     config, is_valid = load_config()
     if not is_valid:
-        return {"success": False, "message": "Config non valida. Completa la configurazione."}, 400
+        return json_error("Config non valida. Completa la configurazione.")
     if not validate_connections(config):
-        return {"success": False, "message": "Connessioni non valide. Controlla i log."}, 400
+        return json_error("Connessioni non valide. Controlla i log.")
     payload = payload or {}
     if not isinstance(payload, dict):
         payload = {}
@@ -7729,13 +7691,13 @@ def _build_run_scan_snapshot(payload):
 def _build_update_request_rules_snapshot(payload):
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
+        return json_error("Config non valida")
     payload = payload or {}
     if not isinstance(payload, dict):
         payload = {}
     rules_payload = payload.get("rules")
     if not isinstance(rules_payload, list):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     base_req_rules = config.get("REQUEST_RULES") or {}
     request_rules = base_req_rules.copy()
     base_search_rules = config.get("SEARCH_RULES") or _default_search_rules()
@@ -7792,7 +7754,7 @@ def _build_update_request_rules_snapshot(payload):
         backend = _ensure_db_backend()
         backend.save_request_rules(request_rules)
     except StorageError as exc:
-        return {"success": False, "message": f"Errore DB: {exc}"}, 500
+        return json_error(f"Errore DB: {exc}", 500)
     global _ACTIVE_CONFIG
     if _ACTIVE_CONFIG is None:
         _ACTIVE_CONFIG = copy.deepcopy(DEFAULT_CONFIG)
@@ -7804,7 +7766,7 @@ def _build_update_request_rules_snapshot(payload):
 def _build_refresh_requests_snapshot():
     config, is_valid = load_config()
     if not is_valid:
-        return {"success": False, "message": "Config non valida"}, 400
+        return json_error("Config non valida")
 
     print("   -> [REFRESH] Inizio aggiornamento lista richieste Jellyseerr...")
     overview = _summarize_requests_for_dashboard(config)
@@ -7817,7 +7779,7 @@ def _build_refresh_requests_snapshot():
         print(f"   -> [ERRORE] Impossibile salvare cache richieste: {exc}")
         import traceback
         traceback.print_exc()
-        return {"success": False, "message": f"Errore salvataggio cache: {exc}"}, 500
+        return json_error(f"Errore salvataggio cache: {exc}", 500)
 
     tv_list = [req for req in overview if (req.get("media_type") or "").lower() == "tv"]
     movies_list = [req for req in overview if (req.get("media_type") or "").lower() in ("movie", "movies", "film", "")]
@@ -7849,7 +7811,7 @@ def _build_refresh_requests_snapshot():
 def _build_test_connections_snapshot():
     config, is_valid = load_config()
     if not config:
-        return {"success": False, "message": "Config mancante"}, 400
+        return json_error("Config mancante")
 
     jelly_ok, jelly_msg = _ping_jellyseerr(config)
     prowlarr_ok, prowlarr_msg = _ping_prowlarr(config)
@@ -7889,7 +7851,7 @@ def _build_trakt_device_start_snapshot(payload):
     try:
         client_id = (payload.get("client_id") or "").strip()
         if not client_id:
-            return {"success": False, "message": "Client ID mancante"}, 400
+            return json_error("Client ID mancante")
 
         response = requests.post(
             "https://api.trakt.tv/oauth/device/code",
@@ -7899,7 +7861,7 @@ def _build_trakt_device_start_snapshot(payload):
         )
 
         if response.status_code != 200:
-            return {"success": False, "message": f"Errore Trakt: {response.status_code}"}, 400
+            return json_error(f"Errore Trakt: {response.status_code}", 400)
 
         result = response.json()
         return {
@@ -7912,7 +7874,7 @@ def _build_trakt_device_start_snapshot(payload):
         }, 200
     except Exception as exc:
         print(f"   -> Errore avvio device flow Trakt: {exc}")
-        return {"success": False, "message": str(exc)}, 500
+        return json_error(str(exc), 500)
 
 
 def _build_trakt_device_poll_snapshot(payload):
@@ -7923,7 +7885,7 @@ def _build_trakt_device_poll_snapshot(payload):
         client_id = (payload.get("client_id") or "").strip()
         device_code = (payload.get("device_code") or "").strip()
         if not client_id or not device_code:
-            return {"success": False, "message": "Parametri mancanti"}, 400
+            return json_error("Parametri mancanti")
 
         response = requests.post(
             "https://api.trakt.tv/oauth/device/token",
@@ -7935,17 +7897,17 @@ def _build_trakt_device_poll_snapshot(payload):
         if response.status_code == 400:
             return {"status": "pending"}, 200
         if response.status_code == 404:
-            return {"success": False, "message": "Codice device non valido o scaduto"}, 404
+            return json_error("Codice device non valido o scaduto", 404)
         if response.status_code == 410:
-            return {"success": False, "message": "Codice scaduto"}, 410
+            return json_error("Codice scaduto", 410)
         if response.status_code != 200:
-            return {"success": False, "message": f"Errore Trakt: {response.status_code}"}, 400
+            return json_error(f"Errore Trakt: {response.status_code}", 400)
 
         result = response.json()
         access_token = result.get("access_token")
         expires_in = result.get("expires_in", 7776000)
         if not access_token:
-            return {"success": False, "message": "Token non ricevuto"}, 500
+            return json_error("Token non ricevuto", 500)
 
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
         try:
@@ -7970,7 +7932,7 @@ def _build_trakt_device_poll_snapshot(payload):
         }, 200
     except Exception as exc:
         print(f"   -> Errore polling device flow Trakt: {exc}")
-        return {"success": False, "message": str(exc)}, 500
+        return json_error(str(exc), 500)
 
 
 def _build_trakt_clear_snapshot():
@@ -7988,7 +7950,7 @@ def _build_trakt_clear_snapshot():
         return {"success": True, "message": "Token Trakt rimosso"}, 200
     except Exception as exc:
         print(f"   -> Errore rimozione token Trakt: {exc}")
-        return {"success": False, "message": str(exc)}, 500
+        return json_error(str(exc), 500)
 
 
 def _get_task_value(task, *keys):
@@ -8009,7 +7971,7 @@ def _build_active_scans_snapshot():
     """Build active ScheduledTasks scan snapshot for API responses."""
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
+        return json_error("Config non valida")
 
     servers = config.get("EMBY_SERVERS", [])
     active_scans = []
@@ -8064,10 +8026,9 @@ def _build_debug_vf_query_snapshot():
     """Build debug VirtualFolders/Query snapshot for API responses."""
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
+        return json_error("Config non valida")
 
-    emby_config = config.get("EMBY") or {}
-    servers = emby_config.get("SERVERS") or []
+    servers = get_emby_servers(config)
     results = []
 
     for server in servers:
@@ -8104,20 +8065,11 @@ def _build_debug_vf_query_snapshot():
     return {"success": True, "results": results}, 200
 
 
-def _build_strm_guard_status_snapshot():
-    """Build STRM Guard status snapshot for API responses."""
-    guard = _ensure_strm_guard_manager()
-    with guard._lock:
-        status = copy.deepcopy(guard._state)
-    return {"success": True, "status": status}, 200
-
-
 def _build_grouped_libraries_snapshot():
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
-    emby_config = config.get("EMBY") or {}
-    servers = emby_config.get("SERVERS") or []
+        return json_error("Config non valida")
+    servers = get_emby_servers(config)
     all_libraries = {}
     for server in servers:
         if not server.get("enabled"):
@@ -8143,7 +8095,7 @@ def _build_grouped_libraries_snapshot():
         associations = backend.load_library_associations()
         order_map = backend.load_library_group_order()
     except StorageError as exc:
-        return {"success": False, "message": f"Errore DB: {exc}"}, 500
+        return json_error(f"Errore DB: {exc}", 500)
     grouped = group_libraries(all_libraries, associations)
     def _group_key(entry):
         ctype = entry.get("collection_type") or ""
@@ -8156,18 +8108,18 @@ def _build_grouped_libraries_snapshot():
 
 def _build_movie_versions_snapshot(server_id: str, tmdb_id: str):
     if not server_id or not tmdb_id:
-        return {"success": False, "message": "Parametri mancanti"}, 400
+        return json_error("Parametri mancanti")
     tmdb_value = _try_parse_int(tmdb_id)
     if not tmdb_value:
-        return {"success": False, "message": "TMDB ID non valido"}, 400
+        return json_error("TMDB ID non valido")
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
+        return json_error("Config non valida")
     server = _resolve_emby_server(config, server_id)
     if not server:
-        return {"success": False, "message": "Server non trovato"}, 404
+        return json_error("Server non trovato", 404)
     if not server.get("enabled"):
-        return {"success": False, "message": "Server disabilitato"}, 400
+        return json_error("Server disabilitato")
     params = {
         "AnyProviderIdEquals": f"Tmdb.{tmdb_value}",
         "IncludeItemTypes": "Movie",
@@ -8176,7 +8128,7 @@ def _build_movie_versions_snapshot(server_id: str, tmdb_id: str):
     }
     success, payload = _call_emby_api(server, "Items", params=params)
     if not success or not isinstance(payload, dict):
-        return {"success": False, "message": "Errore recupero versioni Emby"}, 502
+        return json_error("Errore recupero versioni Emby", 502)
     items_payload = payload.get("Items")
     items = items_payload if isinstance(items_payload, list) else []
     versions = []
@@ -8203,15 +8155,15 @@ def _build_movie_versions_snapshot(server_id: str, tmdb_id: str):
 
 def _build_series_seasons_snapshot(server_id: str, series_id: str):
     if not server_id or not series_id:
-        return {"success": False, "message": "Parametri mancanti"}, 400
+        return json_error("Parametri mancanti")
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
+        return json_error("Config non valida")
     server = _resolve_emby_server(config, server_id)
     if not server:
-        return {"success": False, "message": "Server non trovato"}, 404
+        return json_error("Server non trovato", 404)
     if not server.get("enabled"):
-        return {"success": False, "message": "Server disabilitato"}, 400
+        return json_error("Server disabilitato")
     params = {
         "ParentId": series_id,
         "IncludeItemTypes": "Season",
@@ -8220,7 +8172,7 @@ def _build_series_seasons_snapshot(server_id: str, series_id: str):
     }
     success, payload = _call_emby_api(server, "Items", params=params)
     if not success or not isinstance(payload, dict):
-        return {"success": False, "message": "Errore recupero stagioni Emby"}, 502
+        return json_error("Errore recupero stagioni Emby", 502)
     items_payload = payload.get("Items")
     items = items_payload if isinstance(items_payload, list) else []
     seasons = []
@@ -8239,15 +8191,15 @@ def _build_series_seasons_snapshot(server_id: str, series_id: str):
 
 def _build_season_episodes_snapshot(server_id: str, season_id: str):
     if not server_id or not season_id:
-        return {"success": False, "message": "Parametri mancanti"}, 400
+        return json_error("Parametri mancanti")
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
+        return json_error("Config non valida")
     server = _resolve_emby_server(config, server_id)
     if not server:
-        return {"success": False, "message": "Server non trovato"}, 404
+        return json_error("Server non trovato", 404)
     if not server.get("enabled"):
-        return {"success": False, "message": "Server disabilitato"}, 400
+        return json_error("Server disabilitato")
     params = {
         "ParentId": season_id,
         "IncludeItemTypes": "Episode",
@@ -8256,7 +8208,7 @@ def _build_season_episodes_snapshot(server_id: str, season_id: str):
     }
     success, payload = _call_emby_api(server, "Items", params=params)
     if not success or not isinstance(payload, dict):
-        return {"success": False, "message": "Errore recupero episodi Emby"}, 502
+        return json_error("Errore recupero episodi Emby", 502)
     items_payload = payload.get("Items")
     items = items_payload if isinstance(items_payload, list) else []
     details_map = {}
@@ -8325,15 +8277,14 @@ def _build_season_episodes_snapshot(server_id: str, season_id: str):
 def _build_lookup_snapshot(title: str, year_value):
     title = (title or "").strip()
     if not title:
-        return {"success": False, "message": "Titolo mancante"}, 400
+        return json_error("Titolo mancante")
     year = _try_parse_int(year_value)
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
-    emby_config = config.get("EMBY") or {}
-    servers = emby_config.get("SERVERS") or []
+        return json_error("Config non valida")
+    servers = get_emby_servers(config)
     if not servers:
-        return {"success": False, "message": "Server Emby non configurati"}, 400
+        return json_error("Server Emby non configurati")
 
     target_title = sanitize_title(title.lower())
     best_match = None
@@ -8380,7 +8331,7 @@ def _build_lookup_snapshot(title: str, year_value):
         return {"success": True, "found": False, "message": "Nessun elemento trovato in Emby"}, 200
 
     if best_server is None:
-        return {"success": False, "message": "Server non valido"}, 400
+        return json_error("Server non valido")
 
     details = _build_emby_item_details(best_match, best_server)
     if not details.get("title"):
@@ -8390,15 +8341,15 @@ def _build_lookup_snapshot(title: str, year_value):
 
 def _build_item_details_snapshot(server_id: str, item_id: str):
     if not server_id or not item_id:
-        return {"success": False, "message": "Parametri mancanti"}, 400
+        return json_error("Parametri mancanti")
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
+        return json_error("Config non valida")
     server = _resolve_emby_server(config, server_id)
     if not server:
-        return {"success": False, "message": "Server non trovato"}, 404
+        return json_error("Server non trovato", 404)
     if not server.get("enabled"):
-        return {"success": False, "message": "Server disabilitato"}, 400
+        return json_error("Server disabilitato")
     params = {
         "Fields": "MediaSources,MediaStreams,Path,ProductionYear,IndexNumber,ParentIndexNumber,SeriesName,SeasonName"
     }
@@ -8416,23 +8367,22 @@ def _build_item_details_snapshot(server_id: str, item_id: str):
                 item_payload = items[0]
                 success = True
     if not success or not isinstance(item_payload, dict):
-        return {"success": False, "message": "Errore recupero dettagli Emby"}, 502
+        return json_error("Errore recupero dettagli Emby", 502)
     details = _build_emby_item_details(item_payload, server)
     return {"success": True, "details": details}, 200
 
 
 def _build_availability_snapshot(payload):
     if not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     tmdb_id = _try_parse_int(payload.get("tmdb_id") or payload.get("tmdbId"))
     media_type = _normalize_media_type(payload.get("media_type") or payload.get("mediaType"))
     if not tmdb_id:
-        return {"success": False, "message": "TMDB ID mancante"}, 400
+        return json_error("TMDB ID mancante")
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
-    emby_config = config.get("EMBY") or {}
-    servers = [server for server in (emby_config.get("SERVERS") or []) if server.get("enabled")]
+        return json_error("Config non valida")
+    servers = get_emby_servers(config, enabled_only=True)
     if not servers:
         return {"success": True, "available_on": []}, 200
     found = check_emby_availability(servers, tmdb_id, media_type=media_type)
@@ -8509,11 +8459,11 @@ def _build_latest_enrich_snapshot(payload):
     payload = payload if isinstance(payload, dict) else {}
     item = payload.get("item")
     if not isinstance(item, dict):
-        return {"success": False, "message": "Item non valido"}, 400
+        return json_error("Item non valido")
 
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
+        return json_error("Config non valida")
 
     enriched = _enrich_latest_entry_with_tmdb(item, config, force_omdb=True, omdb_cache_hours=0)
     enriched["omdb_fetched_at"] = datetime.now(timezone.utc).isoformat()
@@ -8529,11 +8479,11 @@ def _build_latest_notify_snapshot(payload):
 
     notify_func = globals().get("_internal_send_notifications")
     if not callable(notify_func):
-        return {"success": False, "message": "Notifiche non disponibili"}, 500
+        return json_error("Notifiche non disponibili", 500)
 
     result = notify_func(limit, per_server_limit, server_filter)
     if not isinstance(result, dict):
-        return {"success": False, "message": "Risposta notifiche non valida"}, 500
+        return json_error("Risposta notifiche non valida", 500)
     status_code = 200 if result.get("success") or result.get("sent") == 0 else 400
     return result, status_code
 
@@ -8541,11 +8491,11 @@ def _build_latest_notify_snapshot(payload):
 def _build_latest_snapshot(limit: int, per_server_limit: int, force: bool):
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
+        return json_error("Config non valida")
 
     state_enabled = _db_enabled(config.get("DATABASE", {}))
     if not state_enabled:
-        return {"success": False, "message": "Database non abilitato"}, 400
+        return json_error("Database non abilitato")
 
     latest_settings = _load_latest_settings()
     cache_seconds = int(latest_settings.get("SETTINGS", {}).get("latest_cache_seconds") or 60)
@@ -8587,7 +8537,7 @@ def _build_latest_snapshot(limit: int, per_server_limit: int, force: bool):
             force_omdb=True
         )
         if error:
-            return {"success": False, "message": error}, 400
+            return json_error(error, 400)
         return {
             "success": True,
             "movies": payload.get("movies", []),
@@ -8638,7 +8588,7 @@ def _build_latest_snapshot(limit: int, per_server_limit: int, force: bool):
     else:
         payload, error = _collect_emby_latest_entries(limit, per_server_limit)
     if error:
-        return {"success": False, "message": error}, 400
+        return json_error(error, 400)
 
     if should_full_refresh_bg:
         with _LATEST_CACHE_LOCK:
@@ -8725,11 +8675,11 @@ def _build_emby_image_stream(server_id, item_id, image_type="Primary", max_width
 
 def _build_server_order_snapshot(payload):
     if not isinstance(payload, list):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     try:
         _ensure_db_backend()
     except StorageError as exc:
-        return {"success": False, "message": f"Errore DB: {exc}"}, 500
+        return json_error(f"Errore DB: {exc}", 500)
     emby_section = _load_emby_settings_from_db()
     servers = copy.deepcopy(emby_section.get("SERVERS") or [])
     server_map = {server.get("id"): server for server in servers if server.get("id")}
@@ -8744,7 +8694,7 @@ def _build_server_order_snapshot(payload):
     ordered.extend(remaining)
     _save_emby_settings_to_db({"SERVERS": ordered})
     load_config()
-    return {"success": True}, 200
+    return json_success()
 
 
 def _build_group_order_get_snapshot():
@@ -8752,7 +8702,7 @@ def _build_group_order_get_snapshot():
         backend = _ensure_db_backend()
         order_map = backend.load_library_group_order()
     except StorageError as exc:
-        return {"success": False, "message": f"Errore DB: {exc}"}, 500
+        return json_error(f"Errore DB: {exc}", 500)
     payload = [
         {
             "collection_type": collection_type,
@@ -8766,7 +8716,7 @@ def _build_group_order_get_snapshot():
 
 def _build_group_order_post_snapshot(payload):
     if not isinstance(payload, list):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     positions = {}
     for entry in payload:
         if not isinstance(entry, dict):
@@ -8781,18 +8731,18 @@ def _build_group_order_post_snapshot(payload):
         backend = _ensure_db_backend()
         backend.save_library_group_order(positions)
     except StorageError as exc:
-        return {"success": False, "message": f"Errore DB: {exc}"}, 500
+        return json_error(f"Errore DB: {exc}", 500)
     return {"success": True, "order": payload}, 200
 
 
 def _build_tab_order_get_snapshot(page):
     if not page:
-        return {"success": False, "message": "Pagina mancante"}, 400
+        return json_error("Pagina mancante")
     try:
         backend = _ensure_db_backend()
         order_map = backend.load_tab_order(page)
     except StorageError as exc:
-        return {"success": False, "message": f"Errore DB: {exc}"}, 500
+        return json_error(f"Errore DB: {exc}", 500)
     payload = [
         {"tab_key": tab_key, "position": position}
         for tab_key, position in order_map.items()
@@ -8803,11 +8753,11 @@ def _build_tab_order_get_snapshot(page):
 def _build_tab_order_post_snapshot(payload):
     payload = payload or {}
     if not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     page = payload.get("page")
     order = payload.get("order")
     if not page or not isinstance(order, list):
-        return {"success": False, "message": "Dati mancanti"}, 400
+        return json_error("Dati mancanti")
     positions = {}
     for entry in order:
         if not isinstance(entry, dict):
@@ -8821,7 +8771,7 @@ def _build_tab_order_post_snapshot(payload):
         backend = _ensure_db_backend()
         backend.save_tab_order(str(page), positions)
     except StorageError as exc:
-        return {"success": False, "message": f"Errore DB: {exc}"}, 500
+        return json_error(f"Errore DB: {exc}", 500)
     return {"success": True, "order": order}, 200
 
 
@@ -8829,8 +8779,7 @@ def _probe_load_config_servers():
     config, is_valid = load_config()
     if not is_valid or not config:
         return None, None, ({"success": False, "message": "Config non valida"}, 400)
-    emby_config = config.get("EMBY") or {}
-    servers = emby_config.get("SERVERS") or []
+    servers = get_emby_servers(config)
     return config, servers, None
 
 
@@ -8885,9 +8834,9 @@ def _normalize_recent_probe_config(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 def _probe_recent_config_get_snapshot(server_id: Optional[str]):
     if not server_id:
-        return {"success": False, "message": "server_id mancante"}, 400
+        return json_error("server_id mancante")
     if server_id == "all":
-        return {"success": False, "message": "server_id non valido"}, 400
+        return json_error("server_id non valido")
     _, servers, error = _probe_load_config_servers()
     if error:
         return error
@@ -8898,19 +8847,19 @@ def _probe_recent_config_get_snapshot(server_id: Optional[str]):
         backend = _ensure_db_backend()
         config = backend.get_recent_scan_config(server_id)
     except StorageError as exc:
-        return {"success": False, "message": f"Errore DB: {exc}"}, 500
+        return json_error(f"Errore DB: {exc}", 500)
     normalized = _normalize_recent_probe_config(config or {})
     return {"success": True, "config": normalized}, 200
 
 
 def _probe_recent_config_save_snapshot(payload: Dict[str, Any]):
     if not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     server_id = payload.get("server_id")
     if not server_id:
-        return {"success": False, "message": "server_id mancante"}, 400
+        return json_error("server_id mancante")
     if server_id == "all":
-        return {"success": False, "message": "server_id non valido"}, 400
+        return json_error("server_id non valido")
     _, servers, error = _probe_load_config_servers()
     if error:
         return error
@@ -8921,22 +8870,22 @@ def _probe_recent_config_save_snapshot(payload: Dict[str, Any]):
     if raw_config is None:
         raw_config = payload
     if not isinstance(raw_config, dict):
-        return {"success": False, "message": "Config non valida"}, 400
+        return json_error("Config non valida")
     normalized = _normalize_recent_probe_config(raw_config)
     try:
         backend = _ensure_db_backend()
         backend.save_recent_scan_config(server_id, normalized)
     except StorageError as exc:
-        return {"success": False, "message": f"Errore DB: {exc}"}, 500
+        return json_error(f"Errore DB: {exc}", 500)
     return {"success": True, "config": normalized}, 200
 
 
 def _probe_discovery_start_snapshot(payload):
     if not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     server_id = payload.get("server_id")
     if not server_id:
-        return {"success": False, "message": "server_id mancante"}, 400
+        return json_error("server_id mancante")
     _, servers, error = _probe_load_config_servers()
     if error:
         return error
@@ -8948,27 +8897,27 @@ def _probe_discovery_start_snapshot(payload):
     started = get_probe_manager().start_discovery(target_server, server_id, target_libraries=libraries)
     if started:
         return {"success": True, "message": "Discovery avviato"}, 200
-    return {"success": False, "message": "Discovery già in esecuzione"}, 400
+    return json_error("Discovery già in esecuzione")
 
 
 def _probe_discovery_stop_snapshot(payload):
     if not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     server_id = payload.get("server_id")
     if not server_id:
-        return {"success": False, "message": "server_id mancante"}, 400
+        return json_error("server_id mancante")
     stopped = get_probe_manager().stop_discovery(server_id)
     if stopped:
         return {"success": True, "message": "Discovery arrestato"}, 200
-    return {"success": False, "message": "Discovery non in esecuzione"}, 400
+    return json_error("Discovery non in esecuzione")
 
 
 def _probe_recent_start_snapshot(payload):
     if not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     server_id = payload.get("server_id")
     if not server_id:
-        return {"success": False, "message": "server_id mancante"}, 400
+        return json_error("server_id mancante")
     limit = _coerce_request_int(payload.get("limit"), 200, 1, 1000)
     _, servers, error = _probe_load_config_servers()
     if error:
@@ -8980,21 +8929,21 @@ def _probe_recent_start_snapshot(payload):
     started = get_probe_manager().start_recent_discovery(target_server, server_id, limit)
     if started:
         return {"success": True, "message": "Discovery ultimi aggiunti avviata"}, 200
-    return {"success": False, "message": "Discovery ultimi aggiunti già in esecuzione"}, 400
+    return json_error("Discovery ultimi aggiunti già in esecuzione")
 
 
 def _probe_recent_start_all_snapshot(payload):
     if payload is None:
         payload = {}
     if payload and not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     limit = _coerce_request_int((payload or {}).get("limit"), 200, 1, 1000)
     _, servers, error = _probe_load_config_servers()
     if error:
         return error
     servers = [server for server in (servers or []) if server.get("enabled")]
     if not servers:
-        return {"success": False, "message": "Nessun server Emby abilitato"}, 400
+        return json_error("Nessun server Emby abilitato")
     server_ids = [server.get("id") for server in servers if server.get("id")]
     started = get_probe_manager().start_recent_discovery_sequence(servers, limit)
     if not started:
@@ -9013,14 +8962,14 @@ def _probe_recent_start_all_snapshot(payload):
 
 def _probe_recent_stop_snapshot(payload):
     if not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     server_id = payload.get("server_id")
     if not server_id:
-        return {"success": False, "message": "server_id mancante"}, 400
+        return json_error("server_id mancante")
     stopped = get_probe_manager().stop_recent_discovery(server_id)
     if stopped:
         return {"success": True, "message": "Discovery ultimi aggiunti arrestata"}, 200
-    return {"success": False, "message": "Discovery ultimi aggiunti non in esecuzione"}, 400
+    return json_error("Discovery ultimi aggiunti non in esecuzione")
 
 
 def _probe_recent_stop_all_snapshot():
@@ -9044,13 +8993,13 @@ def _probe_recent_stop_all_snapshot():
 
 def _probe_recent_processing_start_snapshot(payload):
     if not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     server_id = payload.get("server_id")
     mode = payload.get("mode", "smart")
     if not server_id:
-        return {"success": False, "message": "server_id mancante"}, 400
+        return json_error("server_id mancante")
     if mode not in ("smart", "forced"):
-        return {"success": False, "message": "mode deve essere 'smart' o 'forced'"}, 400
+        return json_error("mode deve essere 'smart' o 'forced'")
     _, servers, error = _probe_load_config_servers()
     if error:
         return error
@@ -9061,26 +9010,26 @@ def _probe_recent_processing_start_snapshot(payload):
     started = get_probe_manager().start_recent_processing(target_server, server_id, mode)
     if started:
         return {"success": True, "message": f"Processing recenti avviato in modalità {mode}"}, 200
-    return {"success": False, "message": "Processing recenti già in esecuzione"}, 400
+    return json_error("Processing recenti già in esecuzione")
 
 
 def _probe_recent_processing_start_all_snapshot(payload):
     if payload is None:
         payload = {}
     if payload and not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     mode = (payload or {}).get("mode", "smart")
     if mode not in ("smart", "forced"):
-        return {"success": False, "message": "mode deve essere 'smart' o 'forced'"}, 400
+        return json_error("mode deve essere 'smart' o 'forced'")
     _, servers, error = _probe_load_config_servers()
     if error:
         return error
     servers = [server for server in (servers or []) if server.get("enabled")]
     if not servers:
-        return {"success": False, "message": "Nessun server Emby abilitato"}, 400
+        return json_error("Nessun server Emby abilitato")
     started = get_probe_manager().start_recent_processing_sequence(servers, mode)
     if not started:
-        return {"success": False, "message": "Processing recenti già in esecuzione"}, 400
+        return json_error("Processing recenti già in esecuzione")
     server_ids = [server.get("id") for server in servers if server.get("id")]
     return {
         "success": True,
@@ -9091,15 +9040,15 @@ def _probe_recent_processing_start_all_snapshot(payload):
 
 def _probe_recent_processing_stop_snapshot(payload):
     if not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     server_id = payload.get("server_id")
     if not server_id:
-        return {"success": False, "message": "server_id mancante"}, 400
+        return json_error("server_id mancante")
     get_probe_manager().stop_combo_workflow(server_id, scope="recent")
     stopped = get_probe_manager().stop_recent_processing(server_id)
     if stopped:
         return {"success": True, "message": "Processing recenti arrestato"}, 200
-    return {"success": False, "message": "Processing recenti non in esecuzione"}, 400
+    return json_error("Processing recenti non in esecuzione")
 
 
 def _probe_recent_processing_stop_all_snapshot():
@@ -9125,13 +9074,13 @@ def _probe_recent_processing_stop_all_snapshot():
 
 def _probe_recent_combo_start_snapshot(payload):
     if not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     server_id = payload.get("server_id")
     mode = payload.get("mode", "smart")
     if not server_id:
-        return {"success": False, "message": "server_id mancante"}, 400
+        return json_error("server_id mancante")
     if mode not in ("smart", "forced"):
-        return {"success": False, "message": "mode deve essere 'smart' o 'forced'"}, 400
+        return json_error("mode deve essere 'smart' o 'forced'")
     _, servers, error = _probe_load_config_servers()
     if error:
         return error
@@ -9142,21 +9091,21 @@ def _probe_recent_combo_start_snapshot(payload):
     started = get_probe_manager().start_combo_workflow(target_server, server_id, mode, scope="recent")
     if started:
         return {"success": True, "message": f"Combo workflow avviato in modalità {mode}"}, 200
-    return {"success": False, "message": "Combo workflow già in esecuzione"}, 400
+    return json_error("Combo workflow già in esecuzione")
 
 
 def _probe_recent_combo_start_all_snapshot(payload):
     if not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     mode = payload.get("mode", "smart")
     if mode not in ("smart", "forced"):
-        return {"success": False, "message": "mode deve essere 'smart' o 'forced'"}, 400
+        return json_error("mode deve essere 'smart' o 'forced'")
     _, servers, error = _probe_load_config_servers()
     if error:
         return error
     servers = [s for s in (servers or []) if s and s.get("enabled")]
     if not servers:
-        return {"success": False, "message": "Nessun server abilitato"}, 400
+        return json_error("Nessun server abilitato")
     started = get_probe_manager().start_combo_workflow_all_servers(servers, mode, scope="recent")
     if started:
         server_ids = [server.get("id") for server in servers if server.get("id")]
@@ -9165,21 +9114,21 @@ def _probe_recent_combo_start_all_snapshot(payload):
             "message": f"Combo workflow avviato su {len(server_ids)} server in modalità {mode}",
             "started": server_ids
         }, 200
-    return {"success": False, "message": "Combo workflow già in esecuzione"}, 400
+    return json_error("Combo workflow già in esecuzione")
 
 
 def _probe_recent_combo_stop_snapshot(payload):
     if not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     server_id = payload.get("server_id")
     if not server_id:
-        return {"success": False, "message": "server_id mancante"}, 400
+        return json_error("server_id mancante")
     stopped_combo = get_probe_manager().stop_combo_workflow(server_id, scope="recent")
     stopped_discovery = get_probe_manager().stop_recent_discovery(server_id)
     stopped_processing = get_probe_manager().stop_recent_processing(server_id)
     if stopped_combo or stopped_discovery or stopped_processing:
         return {"success": True, "message": "Workflow ultimi aggiunti arrestato"}, 200
-    return {"success": False, "message": "Workflow non in esecuzione"}, 400
+    return json_error("Workflow non in esecuzione")
 
 
 def _probe_recent_combo_stop_all_snapshot():
@@ -9206,19 +9155,19 @@ def _probe_recent_combo_stop_all_snapshot():
             "stopped_discovery": stopped_discovery,
             "stopped_processing": stopped_processing
         }, 200
-    return {"success": False, "message": "Workflow non in esecuzione"}, 400
+    return json_error("Workflow non in esecuzione")
 
 
 def _probe_libraries_combo_start_snapshot(payload):
     if not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     server_id = payload.get("server_id")
     mode = payload.get("mode", "smart")
     libraries = payload.get("libraries")
     if not server_id:
-        return {"success": False, "message": "server_id mancante"}, 400
+        return json_error("server_id mancante")
     if mode not in ("smart", "forced"):
-        return {"success": False, "message": "mode deve essere 'smart' o 'forced'"}, 400
+        return json_error("mode deve essere 'smart' o 'forced'")
     _, servers, error = _probe_load_config_servers()
     if error:
         return error
@@ -9235,32 +9184,32 @@ def _probe_libraries_combo_start_snapshot(payload):
     )
     if started:
         return {"success": True, "message": f"Combo workflow avviato in modalità {mode}"}, 200
-    return {"success": False, "message": "Combo workflow già in esecuzione"}, 400
+    return json_error("Combo workflow già in esecuzione")
 
 
 def _probe_libraries_combo_stop_snapshot(payload):
     if not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     server_id = payload.get("server_id")
     if not server_id:
-        return {"success": False, "message": "server_id mancante"}, 400
+        return json_error("server_id mancante")
     stopped_combo = get_probe_manager().stop_combo_workflow(server_id, scope="libraries")
     stopped_discovery = get_probe_manager().stop_discovery(server_id)
     stopped_processing = get_probe_manager().stop_processing(server_id)
     if stopped_combo or stopped_discovery or stopped_processing:
         return {"success": True, "message": "Combo workflow arrestato"}, 200
-    return {"success": False, "message": "Combo workflow non in esecuzione"}, 400
+    return json_error("Combo workflow non in esecuzione")
 
 
 def _probe_processing_start_snapshot(payload):
     if not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     server_id = payload.get("server_id")
     mode = payload.get("mode", "smart")
     if not server_id:
-        return {"success": False, "message": "server_id mancante"}, 400
+        return json_error("server_id mancante")
     if mode not in ("smart", "forced"):
-        return {"success": False, "message": "mode deve essere 'smart' o 'forced'"}, 400
+        return json_error("mode deve essere 'smart' o 'forced'")
     _, servers, error = _probe_load_config_servers()
     if error:
         return error
@@ -9272,19 +9221,19 @@ def _probe_processing_start_snapshot(payload):
     started = get_probe_manager().start_processing(target_server, server_id, mode, target_libraries=libraries)
     if started:
         return {"success": True, "message": f"Processing avviato in modalità {mode}"}, 200
-    return {"success": False, "message": "Processing già in esecuzione"}, 400
+    return json_error("Processing già in esecuzione")
 
 
 def _probe_processing_stop_snapshot(payload):
     if not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     server_id = payload.get("server_id")
     if not server_id:
-        return {"success": False, "message": "server_id mancante"}, 400
+        return json_error("server_id mancante")
     stopped = get_probe_manager().stop_processing(server_id)
     if stopped:
         return {"success": True, "message": "Processing arrestato"}, 200
-    return {"success": False, "message": "Processing non in esecuzione"}, 400
+    return json_error("Processing non in esecuzione")
 
 
 def _probe_queue_get_snapshot(server_id: Optional[str], scope: str):
@@ -9296,15 +9245,15 @@ def _probe_queue_get_snapshot(server_id: Optional[str], scope: str):
         library_totals = {}
         if server_id and scope == "libraries":
             probe_status = get_probe_manager().get_status(server_id)
-            library_totals = (probe_status.get("discovery") or {}).get("library_totals") or {}
+            library_totals = get_nested(probe_status, "discovery", "library_totals", default={})
     except StorageError as exc:
-        return {"success": False, "message": f"Errore DB: {exc}"}, 500
+        return json_error(f"Errore DB: {exc}", 500)
     return {"success": True, "queue": queue, "library_totals": library_totals}, 200
 
 
 def _probe_queue_delete_snapshot(server_id, item_id, media_source_id, scope):
     if not server_id:
-        return {"success": False, "message": "server_id mancante"}, 400
+        return json_error("server_id mancante")
     try:
         backend = _ensure_db_backend()
         if item_id:
@@ -9313,12 +9262,12 @@ def _probe_queue_delete_snapshot(server_id, item_id, media_source_id, scope):
         backend.clear_probe_queue(server_id, scope=scope)
         return {"success": True, "message": "Coda svuotata"}, 200
     except StorageError as exc:
-        return {"success": False, "message": f"Errore DB: {exc}"}, 500
+        return json_error(f"Errore DB: {exc}", 500)
 
 
 def _probe_history_get_snapshot(server_id, limit: str, scope: str):
     if not server_id:
-        return {"success": False, "message": "server_id mancante"}, 400
+        return json_error("server_id mancante")
     try:
         limit_int = int(limit)
     except ValueError:
@@ -9327,50 +9276,49 @@ def _probe_history_get_snapshot(server_id, limit: str, scope: str):
         backend = _ensure_db_backend()
         history = backend.get_probe_history(server_id, limit_int, scope=scope)
     except StorageError as exc:
-        return {"success": False, "message": f"Errore DB: {exc}"}, 500
+        return json_error(f"Errore DB: {exc}", 500)
     return {"success": True, "history": history}, 200
 
 
 def _probe_history_delete_snapshot(server_id, scope: str):
     if not server_id:
-        return {"success": False, "message": "server_id mancante"}, 400
+        return json_error("server_id mancante")
     try:
         backend = _ensure_db_backend()
         backend.clear_probe_history(server_id, scope=scope)
         return {"success": True, "message": "Storico svuotato"}, 200
     except StorageError as exc:
-        return {"success": False, "message": f"Errore DB: {exc}"}, 500
+        return json_error(f"Errore DB: {exc}", 500)
 
 
 def _probe_retry_snapshot(payload):
     if not isinstance(payload, dict):
-        return {"success": False, "message": "Formato non valido"}, 400
+        return json_error("Formato non valido")
     server_id = payload.get("server_id")
     item_id = payload.get("item_id")
     media_source_id = payload.get("media_source_id")
     scope = payload.get("scope") or "libraries"
     if not server_id or not item_id:
-        return {"success": False, "message": "server_id o item_id mancante"}, 400
+        return json_error("server_id o item_id mancante")
 
     config, is_valid = load_config()
     if not is_valid or not config:
-        return {"success": False, "message": "Config non valida"}, 400
+        return json_error("Config non valida")
 
-    emby_config = config.get("EMBY") or {}
-    servers = emby_config.get("SERVERS") or []
+    servers = get_emby_servers(config)
     target_server = next((s for s in servers if s.get("id") == server_id), None)
     if not target_server:
-        return {"success": False, "message": f"Server {server_id} non trovato"}, 404
+        return json_error(f"Server {server_id} non trovato", 404)
 
     success, message = get_probe_manager().retry_item(target_server, server_id, item_id, media_source_id, scope=scope)
     if success:
         return {"success": True, "message": message}, 200
-    return {"success": False, "message": message}, 500
+    return json_error(message, 500)
 
 
 def _probe_blacklist_get_snapshot(server_id, min_retry: str, error_type: Optional[str], scope: str):
     if not server_id:
-        return {"success": False, "message": "server_id mancante"}, 400
+        return json_error("server_id mancante")
     try:
         min_retry_int = int(min_retry)
     except ValueError:
@@ -9384,13 +9332,13 @@ def _probe_blacklist_get_snapshot(server_id, min_retry: str, error_type: Optiona
             scope=scope
         )
     except StorageError as exc:
-        return {"success": False, "message": f"Errore DB: {exc}"}, 500
+        return json_error(f"Errore DB: {exc}", 500)
     return {"success": True, "blacklist": blacklist}, 200
 
 
 def _probe_blacklist_delete_snapshot(server_id, item_id, media_source_id, error_type, scope):
     if not server_id:
-        return {"success": False, "message": "server_id mancante"}, 400
+        return json_error("server_id mancante")
     try:
         backend = _ensure_db_backend()
         if item_id:
@@ -9399,26 +9347,25 @@ def _probe_blacklist_delete_snapshot(server_id, item_id, media_source_id, error_
         backend.clear_probe_blacklist(server_id, error_type=error_type, scope=scope)
         return {"success": True, "message": "Blacklist svuotata"}, 200
     except StorageError as exc:
-        return {"success": False, "message": f"Errore DB: {exc}"}, 500
+        return json_error(f"Errore DB: {exc}", 500)
 
 
 def _probe_debug_recent_items_snapshot(server_id: Optional[str], limit: int):
     if not server_id:
-        return {"success": False, "message": "server_id richiesto"}, 400
+        return json_error("server_id richiesto")
     try:
         config, is_valid = load_config()
         if not is_valid or not config:
-            return {"success": False, "message": "Config non valida"}, 400
+            return json_error("Config non valida")
 
-        emby_config = config.get("EMBY") or {}
-        servers = emby_config.get("SERVERS") or []
+        servers = get_emby_servers(config)
         server = None
         for entry in servers:
             if entry.get("id") == server_id:
                 server = entry
                 break
         if not server:
-            return {"success": False, "message": f"Server non trovato. ID ricevuto: {server_id}"}, 404
+            return json_error(f"Server non trovato. ID ricevuto: {server_id}", 404)
 
         from api_clients import _call_emby_api
 
@@ -9436,7 +9383,7 @@ def _probe_debug_recent_items_snapshot(server_id: Optional[str], limit: int):
             }
         )
         if not success:
-            return {"success": False, "message": f"Errore API Emby: {payload}"}, 500
+            return json_error(f"Errore API Emby: {payload}", 500)
 
         items = payload.get("Items", []) if isinstance(payload, dict) else []
         debug_info = []
@@ -9486,12 +9433,11 @@ def _probe_debug_recent_items_snapshot(server_id: Optional[str], limit: int):
             "items": debug_info
         }, 200
     except Exception as exc:
-        return {"success": False, "message": f"Errore: {exc}"}, 500
+        return json_error(f"Errore: {exc}", 500)
 
 
 def _resolve_emby_server(config, server_id):
-    emby_config = config.get("EMBY") or {}
-    servers = emby_config.get("SERVERS") or []
+    servers = get_emby_servers(config)
     for server in servers:
         if server.get("id") == server_id:
             return server
@@ -9888,8 +9834,8 @@ def _default_latest_settings() -> Dict[str, Any]:
     return {
         "SETTINGS": {
             "batch_gap_minutes": 180,      # 3 ore (era 60 minuti)
-            "max_movies": 200,
-            "max_series": 150,
+            "max_movies": 100,
+            "max_series": 100,
             "retention_days": 90,           # 3 mesi (era 60 giorni)
             "max_versions": 6,              # Aumentato da 4
             "batch_fetch_limit": 1000,      # NUOVO: limite fetch per server (era hardcoded 500)
@@ -10416,8 +10362,7 @@ def _get_emby_servers_from_config():
     config, _ = load_config()
     if not config:
         return []
-    emby_config = config.get("EMBY") or {}
-    return emby_config.get("SERVERS") or []
+    return get_emby_servers(config)
 
 
 def _get_emby_server_by_id(server_id: str):
@@ -10759,296 +10704,6 @@ def _initialize_emby_websockets():
             print(f"[WS_INIT] ✗ Failed to initialize WebSocket for server {server_id}: {e}")
 
 
-class EmbyStrmGuardManager:
-    def __init__(self, cooldown_seconds=EMBY_STRM_GUARD_COOLDOWN_SECONDS, poll_seconds=EMBY_STRM_GUARD_POLL_SECONDS):
-        self._cooldown = cooldown_seconds
-        self._poll = poll_seconds
-        self._lock = threading.Lock()
-        self._state = {}
-        self._stop_event = threading.Event()
-        self._thread = None
-        self._get_servers = None
-
-    def configure(self, get_servers_func):
-        self._get_servers = get_servers_func
-
-    def load_state(self):
-        self._state = _load_emby_strm_guard_state()
-
-    def start(self):
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def enable_for_servers(self, server_ids):
-        now = self._iso(datetime.now(timezone.utc))
-        changed = False
-        with self._lock:
-            for server_id in server_ids:
-                if not server_id:
-                    continue
-                server_key = str(server_id)
-                # Reset state for a fresh start when manually enabled
-                entry = {
-                    "enabled": True,
-                    "status": "pending",
-                    "last_enabled_at": now,
-                    "last_progress": 0,
-                    "last_execution_result": None,
-                    "last_error": None,
-                    "idle_since": None,
-                    "last_stream_at": None,
-                    "last_stop_at": None,
-                    "last_start_attempt": None
-                }
-                self._state[server_key] = entry
-                changed = True
-        if changed:
-            self._persist_state()
-        return changed
-
-    def _persist_state(self):
-        with self._lock:
-            snapshot = copy.deepcopy(self._state)
-        _save_emby_strm_guard_state(snapshot)
-
-    def _run(self):
-        while not self._stop_event.is_set():
-            try:
-                self._tick()
-            except Exception as exc:
-                print(f"[EMBY_GUARD] Errore: {exc}")
-            self._stop_event.wait(self._poll)
-
-    def _tick(self):
-        if not self._get_servers:
-            return
-        servers = self._get_servers() or []
-        server_map = {
-            str(server.get("id")): server
-            for server in servers
-            if server.get("id")
-        }
-        with self._lock:
-            enabled_ids = [
-                server_id
-                for server_id, entry in self._state.items()
-                if entry.get("enabled")
-            ]
-        if not enabled_ids:
-            return
-        changed = False
-        for server_id in enabled_ids:
-            server = server_map.get(server_id)
-            with self._lock:
-                entry = copy.deepcopy(self._state.get(server_id, {}))
-            updated, entry_changed = self._evaluate_server(server_id, server, entry)
-            if entry_changed:
-                with self._lock:
-                    self._state[server_id] = updated
-                changed = True
-        if changed:
-            self._persist_state()
-
-    def _evaluate_server(self, server_id, server, entry):
-        now = datetime.now(timezone.utc)
-        changed = False
-
-        def set_value(key, value):
-            nonlocal changed
-            if entry.get(key) != value:
-                entry[key] = value
-                changed = True
-
-        print(f"[STRM_GUARD DEBUG] Server {server_id}: evaluating...")
-
-        if not server or not server.get("enabled", True):
-            set_value("status", "disabled")
-            print(f"[STRM_GUARD DEBUG] Server {server_id}: server disabled")
-            return entry, changed
-
-        tasks, tasks_error = _fetch_emby_scheduled_tasks(server)
-        if tasks_error:
-            set_value("status", "tasks_error")
-            set_value("last_error", str(tasks_error))
-            print(f"[STRM_GUARD DEBUG] Server {server_id}: tasks_error={tasks_error}")
-            return entry, changed
-
-        task_id, task = self._select_strm_task(server, tasks)
-        if not task_id:
-            set_value("status", "task_missing")
-            print(f"[STRM_GUARD DEBUG] Server {server_id}: task_missing")
-            return entry, changed
-
-        print(f"[STRM_GUARD DEBUG] Server {server_id}: task_id={task_id}, task={task}")
-
-        streams, streams_error = _fetch_emby_active_sessions(server)
-        if streams_error:
-            set_value("status", "streams_error")
-            set_value("last_error", str(streams_error))
-            print(f"[STRM_GUARD DEBUG] Server {server_id}: streams_error={streams_error}")
-            return entry, changed
-
-        print(f"[STRM_GUARD DEBUG] Server {server_id}: streams={len(streams) if streams else 0}")
-
-        progress_value = 0.0
-        if task:
-            raw_progress = task.get("progress")
-            try:
-                progress_value = float(raw_progress)
-            except (TypeError, ValueError):
-                progress_value = 0.0
-        is_running = bool(task and task.get("is_running"))
-        set_value("last_progress", round(progress_value, 2))
-
-        print(f"[STRM_GUARD DEBUG] Server {server_id}: is_running={is_running}, progress={progress_value}")
-
-        # Check LastExecutionResult to determine if task completed successfully
-        # Emby returns a dict: {'Status': 'Completed'|'Cancelled', 'EndTimeUtc': '...', ...}
-        last_execution_result = task.get("last_execution_result") if task else None
-        execution_status = None
-        end_time = task.get("end_time") if task else None
-
-        if isinstance(last_execution_result, dict):
-            execution_status = last_execution_result.get("Status")
-            if not end_time:
-                end_time = last_execution_result.get("EndTimeUtc")
-
-        is_cancelled = execution_status in ("Cancelled", "Canceled", "Aborted")
-        is_completed = execution_status == "Completed"
-
-        # Only consider completion if we have started the task at least once
-        # This prevents detecting old executions as our completion
-        has_started_task = bool(entry.get("last_start_attempt"))
-
-        # Task completed successfully if:
-        # 1. Not currently running
-        # 2. Has completed status
-        # 3. Was not cancelled
-        # 4. We started the task (not from a previous manual run)
-        task_completed = (
-            not is_running
-            and is_completed
-            and not is_cancelled
-            and has_started_task
-        )
-
-        if task_completed:
-            set_value("status", "completed")
-            set_value("enabled", False)
-            set_value("completed_at", self._iso(now))
-            set_value("last_execution_result", last_execution_result)
-            print(f"[STRM_GUARD DEBUG] Server {server_id}: COMPLETED - disabling guard")
-            return entry, changed
-
-        print(f"[STRM_GUARD DEBUG] Server {server_id}: task_completed={task_completed}, has_started={has_started_task}")
-
-        if streams:
-            set_value("last_stream_at", self._iso(now))
-            if entry.get("idle_since"):
-                set_value("idle_since", None)
-            if is_running:
-                success, response = _stop_emby_task(server, task_id)
-                if success:
-                    set_value("status", "paused_streaming")
-                    set_value("last_error", "")
-                else:
-                    set_value("status", "stop_failed")
-                    set_value("last_error", str(response))
-                set_value("last_stop_at", self._iso(now))
-            else:
-                set_value("status", "waiting_streams")
-            return entry, changed
-
-        idle_since = self._parse_ts(entry.get("idle_since"))
-        if idle_since is None:
-            set_value("idle_since", self._iso(now))
-            idle_since = now
-        idle_elapsed = (now - idle_since).total_seconds()
-        had_streams = bool(entry.get("last_stream_at") or entry.get("last_stop_at"))
-
-        if is_running:
-            set_value("status", "running")
-            return entry, changed
-
-        if had_streams and idle_elapsed < self._cooldown:
-            set_value("status", "cooldown")
-            return entry, changed
-
-        last_attempt = self._parse_ts(entry.get("last_start_attempt"))
-        print(f"[STRM_GUARD DEBUG] Server {server_id}: last_attempt={last_attempt}, should_start={last_attempt is None or (now - last_attempt).total_seconds() >= 30}")
-
-        if last_attempt is None or (now - last_attempt).total_seconds() >= 30:
-            print(f"[STRM_GUARD DEBUG] Server {server_id}: Attempting to start STRM Extract task...")
-            success, response = _execute_emby_action(server, "strm_extract")
-            set_value("last_start_attempt", self._iso(now))
-            if success:
-                set_value("status", "running")
-                set_value("last_error", "")
-                print(f"[STRM_GUARD DEBUG] Server {server_id}: Task started successfully")
-            else:
-                set_value("status", "start_failed")
-                set_value("last_error", str(response))
-                print(f"[STRM_GUARD DEBUG] Server {server_id}: Task start FAILED: {response}")
-        else:
-            set_value("status", "starting")
-            print(f"[STRM_GUARD DEBUG] Server {server_id}: Waiting 30s cooldown before retry")
-        return entry, changed
-
-    @staticmethod
-    def _parse_ts(value):
-        if not value:
-            return None
-        if isinstance(value, datetime):
-            return value
-        if isinstance(value, (int, float)):
-            return datetime.fromtimestamp(value, tz=timezone.utc)
-        if isinstance(value, str):
-            try:
-                return datetime.fromisoformat(value.replace("Z", "+00:00"))
-            except ValueError:
-                return None
-        return None
-
-    @staticmethod
-    def _iso(value):
-        if isinstance(value, datetime):
-            return value.astimezone(timezone.utc).isoformat()
-        return value
-
-    @staticmethod
-    def _select_strm_task(server, tasks):
-        if not tasks:
-            return None, None
-        server_task_id = str(server.get("strm_task_id") or "").strip()
-        if server_task_id:
-            for task in tasks:
-                if str(task.get("id")) == server_task_id:
-                    return server_task_id, task
-        for task in tasks:
-            if task.get("key") == "StrmExtractTask" and task.get("id"):
-                return str(task.get("id")), task
-        for task in tasks:
-            name = str(task.get("name") or "").lower()
-            if "strm" in name and task.get("id"):
-                return str(task.get("id")), task
-        return None, None
-
-
-def _ensure_strm_guard_manager():
-    global _EMBY_STRM_GUARD
-    if _EMBY_STRM_GUARD is None:
-        _EMBY_STRM_GUARD = EmbyStrmGuardManager()
-        _EMBY_STRM_GUARD.configure(_get_emby_servers_from_config)
-        _EMBY_STRM_GUARD.load_state()
-        _EMBY_STRM_GUARD.start()
-    else:
-        _EMBY_STRM_GUARD.configure(_get_emby_servers_from_config)
-    return _EMBY_STRM_GUARD
-
-
 def _sanitize_audit_payload(req: Any) -> str:
     """Return a sanitized payload string for audit logging."""
     try:
@@ -11160,8 +10815,7 @@ def _get_total_blacklist_counts() -> tuple[int, int]:
         if not is_valid or not config:
             return 0, 0
 
-        emby_config = config.get("EMBY") or {}
-        servers = emby_config.get("SERVERS") or []
+        servers = get_emby_servers(config)
         total_errors = 0
         total_incomplete = 0
 
@@ -11184,11 +10838,6 @@ def _get_total_blacklist_counts() -> tuple[int, int]:
         return total_errors, total_incomplete
     except (StorageError, Exception):
         return 0, 0
-
-
-def _get_total_blacklist_count() -> int:
-    """Backward-compatible helper for total error count only."""
-    return _get_total_blacklist_counts()[0]
 
 
 def _clear_latest_state() -> None:
@@ -11576,7 +11225,7 @@ def _coerce_truthy(value):
     if isinstance(value, (int, float)):
         return value != 0
     if isinstance(value, str):
-        normalized = value.strip().lower()
+        normalized = normalize_string(value)
         if normalized in {"true", "1", "yes", "y", "available", "completed", "done", "downloaded", "ready"}:
             return True
         if normalized in {"false", "0", "no", "n"}:
@@ -11684,7 +11333,7 @@ def _describe_trakt_episode_statuses(request_item, season_number):
         collection_map = {}
     collected = set()
     if collection_map:
-        collected = collection_map.get(tmdb_id, {}).get(season_number, set()) or set()
+        collected = get_nested(collection_map, tmdb_id, season_number, default=set())
     described = []
     now = datetime.now(timezone.utc)
     for ep in trakt_payload or []:
@@ -11734,9 +11383,9 @@ def _resolve_justwatch_show_metadata(request_item):
                 cached_title, cached_year = cached
                 return cached_title, cached_year
             config = _ACTIVE_CONFIG or {}
-            if config.get("JELLYSEERR_URL") and config.get("JELLYSEERR_API_KEY"):
+            if validate_jellyseerr_config(config):
                 media_type = _normalize_media_type(
-                    request_item.get("type") or request_item.get("media", {}).get("mediaType")
+                    request_item.get("type") or get_nested(request_item, "media", "mediaType")
                 )
                 media_payload, _resolved_type = fetch_media_info(
                     {"tmdbId": tmdb_id, "mediaType": media_type},
@@ -12079,7 +11728,7 @@ def extract_request_seasons(request_item, skip_available=False):
         seen.add(parsed)
     return season_numbers
 
-# Nota: _extract_tmdb_id, _try_parse_int sono ora importati da api_clients.py
+# Nota: _extract_tmdb_id è ora importata da api_clients.py
 # Nota: _normalize_media_type è ora importata da utils.py
 
 def _try_parse_int(value):
@@ -12088,45 +11737,6 @@ def _try_parse_int(value):
         return value
     if isinstance(value, str) and value.isdigit():
         return int(value)
-    return None
-
-def _extract_imdb_id(*sources):
-    for source in sources:
-        if not isinstance(source, dict):
-            continue
-        for key in ("imdbId", "imdb_id", "imdb"):
-            value = source.get(key)
-            normalized = _normalize_imdb_id(value)
-            if normalized:
-                return normalized
-    return None
-
-def _normalize_imdb_id(value):
-    if value is None:
-        return None
-    digits = re.sub(r"\D", "", str(value))
-    if not digits:
-        return None
-    return f"tt{digits}"
-
-def _extract_tvdb_id(*sources):
-    for source in sources:
-        if not isinstance(source, dict):
-            continue
-        for key in ("tvdbId", "tvdb_id", "tvdb"):
-            parsed = _try_parse_int(source.get(key))
-            if parsed:
-                return parsed
-    return None
-
-def _extract_tvrage_id(*sources):
-    for source in sources:
-        if not isinstance(source, dict):
-            continue
-        for key in ("tvRageId", "tvrageId", "tv_rage_id"):
-            parsed = _try_parse_int(source.get(key))
-            if parsed:
-                return parsed
     return None
 
 # Nota: _fetch_tmdb_payload è ora importata da api_clients.py
@@ -12270,12 +11880,12 @@ async def search_streaming_parallel(query_variants, search_types, selected_index
                 print(f"[STREAM] Uso direttive Jellyseerr per tmdb_id={tmdb_id_int}, media_type={media_type}")
 
                 # 1. Cerca request_rule da Jellyseerr se disponibile
-                if config.get("JELLYSEERR_URL") and config.get("JELLYSEERR_API_KEY"):
+                if validate_jellyseerr_config(config):
                     try:
                         requests_data = get_jellyseerr_requests(config, silent=True)
                         target_type = _normalize_media_type(media_type)
                         for req in requests_data or []:
-                            req_type = _normalize_media_type(req.get("type") or req.get("media", {}).get("mediaType"))
+                            req_type = _normalize_media_type(req.get("type") or get_nested(req, "media", "mediaType"))
                             if target_type and req_type and req_type != target_type:
                                 continue
                             req_tmdb = _extract_tmdb_id(req, req.get("media"), req.get("mediaInfo"))
@@ -12771,7 +12381,7 @@ def process_requests(config, status_callback=None, stop_event=None, target_map=N
     media_details_cache = {}
     prepared_requests = []
     for req in non_available_requests:
-        normalized_type = _normalize_media_type(req.get("type") or req.get("media", {}).get("mediaType"))
+        normalized_type = _normalize_media_type(req.get("type") or get_nested(req, "media", "mediaType"))
         resolved = req
         if normalized_type == "tv" and (skip_available or skip_unreleased):
             detailed = fetch_request_details(req.get("id"), config, details_cache)
@@ -12783,7 +12393,7 @@ def process_requests(config, status_callback=None, stop_event=None, target_map=N
     job_queue = []
     skipped_season_only = 0
     for req in non_available_requests:
-        media_type_value = req.get("type") or req.get("media", {}).get("mediaType")
+        media_type_value = req.get("type") or get_nested(req, "media", "mediaType")
         normalized_type = _normalize_media_type(media_type_value)
         req_key = str(req.get("id"))
         target_spec = target_map.get(req_key) if target_map else None
@@ -13331,8 +12941,7 @@ def _wf_trigger_scan(context):
         print("[WORKFLOW] [SCAN] Config non valida")
         return False
 
-    emby_config = config.get("EMBY") or {}
-    servers = emby_config.get("SERVERS") or []
+    servers = get_emby_servers(config)
     enabled_servers = [s for s in servers if isinstance(s, dict) and s.get("enabled")]
 
     if not enabled_servers:

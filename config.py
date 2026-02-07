@@ -15,7 +15,8 @@ from utils import (
     _coerce_request_int,
     _normalize_alt_language,
     _sanitize_terms_list,
-    DEFAULT_RESOLUTION_RULES
+    DEFAULT_RESOLUTION_RULES,
+    merge_nested_dict
 )
 
 # --- COSTANTI ---
@@ -245,55 +246,75 @@ def _normalize_time_list(values: Any) -> list[str]:
 # Funzioni di merge e normalizzazione
 def _merge_database_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
     """Unisci le impostazioni del database dell'utente con quelle di default."""
-    merged = copy.deepcopy(DEFAULT_CONFIG["DATABASE"])
-    if isinstance(user_settings, dict):
-        for key, value in user_settings.items():
-            if value in (None, "") and key in {"URL", "PASSWORD"}:
-                continue
-            normalized = key.upper()
-            if normalized in merged:
-                merged[normalized] = value
-            else:
-                merged[key] = value
-    return merged
+    base = copy.deepcopy(DEFAULT_CONFIG["DATABASE"])
+    if not isinstance(user_settings, dict):
+        return base
+
+    # Normalize keys to uppercase and skip sensitive empty fields
+    normalized_updates = {}
+    for key, value in user_settings.items():
+        if value in (None, "") and key.upper() in {"URL", "PASSWORD"}:
+            continue
+        normalized_key = key.upper()
+        if normalized_key in base:
+            normalized_updates[normalized_key] = value
+        else:
+            normalized_updates[key] = value
+
+    return merge_nested_dict(base, normalized_updates, skip_empty_strings=False)
 
 def _merge_trakt_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
     """Unisci le impostazioni Trakt dell'utente con quelle di default."""
-    merged = copy.deepcopy(DEFAULT_CONFIG["TRAKT"])
-    if isinstance(user_settings, dict):
-        for key, value in user_settings.items():
-            if isinstance(value, str):
-                value = value.strip()
-            normalized = key.upper()
-            if normalized in merged:
-                if normalized == "ENABLED":
-                    merged[normalized] = bool(value)
-                else:
-                    merged[normalized] = value or ""
+    base = copy.deepcopy(DEFAULT_CONFIG["TRAKT"])
+    if not isinstance(user_settings, dict):
+        return base
+
+    # Normalize keys to uppercase and clean string values
+    normalized_updates = {}
+    for key, value in user_settings.items():
+        if isinstance(value, str):
+            value = value.strip()
+        normalized_key = key.upper()
+        if normalized_key in base:
+            if normalized_key == "ENABLED":
+                normalized_updates[normalized_key] = bool(value)
             else:
-                merged[key] = value
+                normalized_updates[normalized_key] = value or ""
+        else:
+            normalized_updates[key] = value
+
+    merged = merge_nested_dict(base, normalized_updates, skip_empty_strings=False)
+
+    # Auto-disable if credentials are missing
     if merged.get("CLIENT_ID") and merged.get("ACCESS_TOKEN"):
         merged["ENABLED"] = bool(merged.get("ENABLED"))
     else:
         merged["ENABLED"] = False
+
     return merged
 
 def _merge_justwatch_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
     """Unisci le impostazioni JustWatch dell'utente con quelle di default."""
-    merged = copy.deepcopy(DEFAULT_CONFIG["JUSTWATCH"])
-    if isinstance(user_settings, dict):
-        for key, value in user_settings.items():
-            if isinstance(value, str):
-                value = value.strip()
-            normalized = key.upper()
-            if normalized in merged:
-                if normalized == "ENABLED":
-                    merged[normalized] = bool(value)
-                else:
-                    merged[normalized] = value or merged.get(normalized, "")
+    base = copy.deepcopy(DEFAULT_CONFIG["JUSTWATCH"])
+    if not isinstance(user_settings, dict):
+        return base
+
+    # Normalize keys to uppercase and clean string values
+    normalized_updates = {}
+    for key, value in user_settings.items():
+        if isinstance(value, str):
+            value = value.strip()
+        normalized_key = key.upper()
+        if normalized_key in base:
+            if normalized_key == "ENABLED":
+                normalized_updates[normalized_key] = bool(value)
             else:
-                merged[key] = value
-    return merged
+                # Only update if value is not empty, otherwise keep base default
+                normalized_updates[normalized_key] = value or base.get(normalized_key, "")
+        else:
+            normalized_updates[key] = value
+
+    return merge_nested_dict(base, normalized_updates, skip_empty_strings=False)
 
 
 def _canonical_resolution_key(value: Any) -> str:
@@ -319,46 +340,67 @@ def _canonical_resolution_key(value: Any) -> str:
 
 def _merge_resolution_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
     """Unisci le regole di risoluzione dell'utente con quelle di default."""
-    merged = copy.deepcopy(DEFAULT_RESOLUTION_RULES)
+    base = copy.deepcopy(DEFAULT_RESOLUTION_RULES)
     if not isinstance(user_settings, dict):
-        return merged
+        return base
+
+    # Handle enabled flag with normalization
     enabled_value = user_settings.get("enabled", user_settings.get("ENABLED"))
     if enabled_value is not None:
-        merged["enabled"] = _coerce_request_bool(enabled_value, merged.get("enabled", True))
+        base["enabled"] = _coerce_request_bool(enabled_value, base.get("enabled", True))
+
+    # Handle thresholds with custom normalization
     thresholds = user_settings.get("thresholds", user_settings.get("THRESHOLDS"))
     if isinstance(thresholds, dict):
+        normalized_thresholds = {}
         for res_key, rule_values in thresholds.items():
             canonical = _canonical_resolution_key(res_key)
-            if not canonical:
+            if not canonical or not isinstance(rule_values, dict):
                 continue
-            current = merged["thresholds"].get(canonical)
-            if not isinstance(current, dict):
-                current = {}
-                merged["thresholds"][canonical] = current
-            if not isinstance(rule_values, dict):
-                continue
+
+            # Get the current threshold or create a new one
+            current = base["thresholds"].get(canonical, {})
+            normalized_rules = {}
+
             for key, value in rule_values.items():
                 key_norm = str(key or "").strip().lower()
-                if key_norm not in current:
-                    continue
-                current[key_norm] = _coerce_request_int(value, current[key_norm], 0, None)
-    return merged
+                # Only update if the key exists in current threshold
+                if key_norm in current:
+                    normalized_rules[key_norm] = _coerce_request_int(
+                        value, current.get(key_norm, 0), 0, None
+                    )
+
+            if normalized_rules:
+                # Merge with existing threshold settings
+                normalized_thresholds[canonical] = merge_nested_dict(
+                    current, normalized_rules
+                )
+
+        # Merge the thresholds back into base
+        base["thresholds"] = merge_nested_dict(base["thresholds"], normalized_thresholds)
+
+    return base
 
 def _merge_rss_import_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
     """Unisci le impostazioni RSS/Import dell'utente con quelle di default."""
-    merged = copy.deepcopy(DEFAULT_CONFIG["RSS_IMPORT"])
+    base = copy.deepcopy(DEFAULT_CONFIG["RSS_IMPORT"])
     if not isinstance(user_settings, dict):
-        return merged
+        return base
+
+    normalized_updates = {}
     for key, value in user_settings.items():
-        normalized = key.upper()
-        if normalized == "ENABLED":
-            merged["ENABLED"] = bool(value)
-        elif normalized == "POLL_INTERVAL_MINUTES":
-            merged["POLL_INTERVAL_MINUTES"] = _coerce_request_int(value, merged.get("POLL_INTERVAL_MINUTES", 30), 5, 1440)
-        elif normalized == "DEDUP_KEEP":
+        normalized_key = key.upper()
+
+        if normalized_key == "ENABLED":
+            normalized_updates["ENABLED"] = bool(value)
+        elif normalized_key == "POLL_INTERVAL_MINUTES":
+            normalized_updates["POLL_INTERVAL_MINUTES"] = _coerce_request_int(
+                value, base.get("POLL_INTERVAL_MINUTES", 30), 5, 1440
+            )
+        elif normalized_key == "DEDUP_KEEP":
             keep = (str(value) or "").lower().strip()
-            merged["DEDUP_KEEP"] = "newest" if keep == "newest" else "oldest"
-        elif normalized == "SOURCES":
+            normalized_updates["DEDUP_KEEP"] = "newest" if keep == "newest" else "oldest"
+        elif normalized_key == "SOURCES":
             sources = []
             if isinstance(value, list):
                 for entry in value:
@@ -373,44 +415,56 @@ def _merge_rss_import_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
                         "tags": _split_csv_field(entry.get("tags")) if isinstance(entry.get("tags"), str) else (entry.get("tags") or []),
                         "enabled": _coerce_request_bool(entry.get("enabled"), True)
                     })
-            merged["SOURCES"] = sources
+            normalized_updates["SOURCES"] = sources
         else:
-            merged[key] = value
-    return merged
+            normalized_updates[key] = value
+
+    return merge_nested_dict(base, normalized_updates, skip_empty_strings=False)
 
 
 def _merge_collection_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
     """Merge user-defined collection settings with defaults."""
-    merged = copy.deepcopy(DEFAULT_CONFIG["COLLECTIONS"])
+    base = copy.deepcopy(DEFAULT_CONFIG["COLLECTIONS"])
     if not isinstance(user_settings, dict):
-        return merged
+        return base
+
+    # Check if minutes are explicitly provided (to handle hours conversion properly)
     has_minutes = any(
         str(key).upper() == "AUTO_REFRESH_INTERVAL_MINUTES"
         for key in user_settings.keys()
     )
+
+    normalized_updates = {}
     for key, value in user_settings.items():
-        normalized = key.upper()
-        if normalized == "AUTO_REFRESH_INTERVAL_HOURS":
-            if not has_minutes and value not in (None, "") and merged.get("AUTO_REFRESH_INTERVAL_MINUTES") is not None:
+        normalized_key = key.upper()
+
+        # Special handling for deprecated HOURS field (convert to minutes)
+        if normalized_key == "AUTO_REFRESH_INTERVAL_HOURS":
+            if not has_minutes and value not in (None, ""):
                 try:
-                    merged["AUTO_REFRESH_INTERVAL_MINUTES"] = int(value) * 60
+                    normalized_updates["AUTO_REFRESH_INTERVAL_MINUTES"] = int(value) * 60
                 except (TypeError, ValueError):
                     pass
             continue
-        if normalized not in merged:
-            merged[normalized] = value
+
+        # Skip keys not in base config
+        if normalized_key not in base:
+            normalized_updates[normalized_key] = value
             continue
-        current = merged[normalized]
+
+        # Type-aware value normalization
+        current = base[normalized_key]
         if isinstance(current, bool):
-            merged[normalized] = bool(value)
+            normalized_updates[normalized_key] = bool(value)
         elif isinstance(current, int):
             try:
-                merged[normalized] = int(value)
+                normalized_updates[normalized_key] = int(value)
             except (TypeError, ValueError):
                 pass
         else:
-            merged[normalized] = value
-    return merged
+            normalized_updates[normalized_key] = value
+
+    return merge_nested_dict(base, normalized_updates, skip_empty_strings=False)
 
 def _normalize_emby_server(entry: Optional[Dict]) -> Dict[str, Any]:
     """Normalizza una singola voce di configurazione di un server Emby."""
@@ -436,8 +490,7 @@ def _normalize_emby_server(entry: Optional[Dict]) -> Dict[str, Any]:
             "name": (entry.get("last_action") or {}).get("name", "").strip(),
             "timestamp": (entry.get("last_action") or {}).get("timestamp", "").strip(),
             "result": (entry.get("last_action") or {}).get("result", "").strip()
-        },
-        "strm_task_id": (entry.get("strm_task_id") or "").strip()
+        }
     }
     icon = (entry.get("icon") or "").strip()
     icon_color = (entry.get("icon_color") or "").strip()

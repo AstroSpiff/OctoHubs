@@ -2,12 +2,170 @@
 """Utility functions used across the application."""
 
 import re
-import copy
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Optional, Dict
+
+
+# --- DICTIONARY MERGE UTILITIES ---
+
+def merge_nested_dict(base: Dict[str, Any], updates: Optional[Dict[str, Any]], *,
+                      preserve_none: bool = False,
+                      skip_empty_strings: bool = False) -> Dict[str, Any]:
+    """
+    Recursively merge two nested dictionaries.
+
+    Args:
+        base: Base dictionary (will be deep copied to avoid mutations)
+        updates: Dictionary with updates to merge into base
+        preserve_none: If True, None values in updates will override base values
+        skip_empty_strings: If True, empty strings in updates won't override base values
+
+    Returns:
+        New dictionary with merged values
+
+    Examples:
+        >>> base = {"a": {"b": 1, "c": 2}, "d": 3}
+        >>> updates = {"a": {"b": 10}, "e": 4}
+        >>> merge_nested_dict(base, updates)
+        {"a": {"b": 10, "c": 2}, "d": 3, "e": 4}
+
+        >>> base = {"url": "http://example.com", "api_key": "secret"}
+        >>> updates = {"url": "", "enabled": True}
+        >>> merge_nested_dict(base, updates, skip_empty_strings=True)
+        {"url": "http://example.com", "api_key": "secret", "enabled": True}
+    """
+    import copy
+
+    if not isinstance(base, dict):
+        base = {}
+
+    result = copy.deepcopy(base)
+
+    if not isinstance(updates, dict):
+        return result
+
+    for key, value in updates.items():
+        # Skip None values unless explicitly allowed
+        if value is None and not preserve_none:
+            continue
+
+        # Skip empty strings if requested (useful for connection fields)
+        if skip_empty_strings and isinstance(value, str) and value == "":
+            continue
+
+        # If both base and update values are dicts, merge recursively
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = merge_nested_dict(
+                result[key],
+                value,
+                preserve_none=preserve_none,
+                skip_empty_strings=skip_empty_strings
+            )
+        else:
+            # Otherwise, override with the new value
+            result[key] = copy.deepcopy(value)
+
+    return result
 
 
 # --- STRING AND FORM UTILITIES ---
+
+def get_nested(obj, *keys, default=None):
+    """
+    Safely access nested dictionary values.
+
+    Args:
+        obj: Dictionary to navigate
+        *keys: Sequence of keys to traverse
+        default: Default value if path not found
+
+    Returns:
+        Value at nested path or default
+
+    Examples:
+        >>> get_nested(config, "EMBY", "SERVERS", default=[])
+        [...]
+        >>> get_nested(auto_settings, "rss", "enabled", default=False)
+        False
+        >>> get_nested(server, "status", "server_id")
+        'uuid-1234'
+    """
+    current = obj
+    for key in keys:
+        if isinstance(current, dict):
+            current = current.get(key)
+            if current is None:
+                return default
+        else:
+            return default
+    return current if current is not None else default
+
+
+def normalize_string(value, to_lower=True, default=""):
+    """
+    Normalize string: convert to str, strip whitespace, optionally lowercase.
+
+    Args:
+        value: Value to normalize (can be None, str, int, etc.)
+        to_lower: Convert to lowercase (default True)
+        default: Default value if input is None/empty (default "")
+
+    Returns:
+        Normalized string
+
+    Examples:
+        >>> normalize_string("  Hello  ")
+        'hello'
+        >>> normalize_string("  Hello  ", to_lower=False)
+        'Hello'
+        >>> normalize_string(None, default="default")
+        'default'
+    """
+    text = str(value or default).strip()
+    return text.lower() if to_lower else text
+
+
+def normalize_path(path, to_lower=True):
+    """
+    Normalize a file/directory path: strip whitespace and trailing slashes.
+
+    Args:
+        path: Path string to normalize
+        to_lower: Convert to lowercase (default True)
+
+    Returns:
+        Normalized path string
+
+    Examples:
+        >>> normalize_path("/path/to/dir/")
+        '/path/to/dir'
+        >>> normalize_path("C:\\Windows\\System\\")
+        'c:/windows/system'
+        >>> normalize_path("/PATH/", to_lower=False)
+        '/PATH'
+    """
+    normalized = str(path or "").strip().rstrip('/').rstrip('\\')
+    return normalized.lower() if to_lower else normalized
+
+
+def normalize_url(url):
+    """
+    Normalize a URL: strip whitespace and trailing slashes.
+
+    Args:
+        url: URL string to normalize
+
+    Returns:
+        Normalized URL string
+
+    Examples:
+        >>> normalize_url("  http://example.com/  ")
+        'http://example.com'
+        >>> normalize_url("http://example.com/path/")
+        'http://example.com/path'
+    """
+    return str(url or "").strip().rstrip("/")
+
 
 DEFAULT_RESOLUTION_RULES = {
     "enabled": True,
@@ -131,44 +289,8 @@ def _normalize_alt_language(value: Any, fallback: str) -> str:
     """Normalizes an alternative language code."""
     if value is None:
         return fallback
-    text = str(value).strip().lower()
+    text = normalize_string(value)
     return text or fallback
-
-
-def _safe_get_dict_value(obj, key, default=""):
-    """Safely get a string value from dict and strip it."""
-    if not isinstance(obj, dict):
-        return default
-    value = obj.get(key)
-    if value is None:
-        return default
-    return str(value).strip()
-
-
-def _normalize_form_input(form, key):
-    """Extract and normalize form input value."""
-    value = form.get(key)
-    if value is None:
-        return ""
-    return str(value).strip()
-
-
-def _form_input_value(form, key):
-    """Get form input value as stripped string."""
-    value = form.get(key)
-    if value is None:
-        return ""
-    return str(value).strip()
-
-
-def _apply_form_mapping(form, base_dict, mappings):
-    """Apply multiple form field mappings to a dict."""
-    result = copy.deepcopy(base_dict) if base_dict else {}
-    for form_key, target_key in mappings:
-        value = _normalize_form_input(form, form_key)
-        if value or target_key not in result:
-            result[target_key] = value
-    return result
 
 
 def _sanitize_terms_list(value):
@@ -315,9 +437,131 @@ def _normalize_media_type(value):
     """Normalize media type string to 'movie' or 'tv'."""
     if not value:
         return None
-    lowered = str(value).strip().lower()
+    lowered = normalize_string(value)
     if lowered in {"movie", "movies", "film"}:
         return "movie"
     if lowered in {"tv", "show", "series", "tvshow"}:
         return "tv"
     return None
+
+
+# --- HTTP RESPONSE UTILITIES ---
+
+def json_error(message, status_code=400, **extra):
+    """
+    Create a standard JSON error response.
+
+    Args:
+        message: Error message to return
+        status_code: HTTP status code (default 400)
+        **extra: Additional fields to include in response
+
+    Returns:
+        Tuple of (dict, status_code)
+
+    Examples:
+        >>> json_error("Invalid request")
+        ({"success": False, "message": "Invalid request"}, 400)
+        >>> json_error("Not found", 404)
+        ({"success": False, "message": "Not found"}, 404)
+        >>> json_error("Failed", 500, errors=["err1", "err2"])
+        ({"success": False, "message": "Failed", "errors": ["err1", "err2"]}, 500)
+    """
+    return {"success": False, "message": message, **extra}, status_code
+
+
+def json_success(message=None, status_code=200, **extra):
+    """
+    Create a standard JSON success response.
+
+    Args:
+        message: Optional success message
+        status_code: HTTP status code (default 200)
+        **extra: Additional fields to include in response
+
+    Returns:
+        Tuple of (dict, status_code)
+
+    Examples:
+        >>> json_success()
+        ({"success": True}, 200)
+        >>> json_success("Operation completed")
+        ({"success": True, "message": "Operation completed"}, 200)
+        >>> json_success(data={"id": 123}, status_code=201)
+        ({"success": True, "data": {"id": 123}}, 201)
+    """
+    response = {"success": True, **extra}
+    if message is not None:
+        response["message"] = message
+    return response, status_code
+
+
+# --- CONFIG VALIDATION UTILITIES ---
+
+def validate_jellyseerr_config(config):
+    """
+    Validate Jellyseerr configuration.
+
+    Args:
+        config: Configuration dictionary
+
+    Returns:
+        bool: True if Jellyseerr is properly configured
+
+    Examples:
+        >>> validate_jellyseerr_config({"JELLYSEERR_URL": "http://...", "JELLYSEERR_API_KEY": "key"})
+        True
+        >>> validate_jellyseerr_config({})
+        False
+    """
+    return bool(config.get("JELLYSEERR_URL") and config.get("JELLYSEERR_API_KEY"))
+
+
+def find_server_by_id(servers, server_id):
+    """
+    Find a server in a list by its ID.
+
+    Args:
+        servers: List of server dictionaries
+        server_id: Server ID to find
+
+    Returns:
+        dict or None: Server dictionary if found, None otherwise
+
+    Examples:
+        >>> servers = [{"id": "123", "name": "Server1"}, {"id": "456", "name": "Server2"}]
+        >>> find_server_by_id(servers, "123")
+        {"id": "123", "name": "Server1"}
+        >>> find_server_by_id(servers, "999")
+        None
+    """
+    if not servers or not server_id:
+        return None
+    for server in servers:
+        if server.get("id") == server_id:
+            return server
+    return None
+
+
+def get_emby_servers(config, enabled_only=False):
+    """
+    Get Emby servers from configuration.
+
+    Args:
+        config: Configuration dictionary
+        enabled_only: If True, return only enabled servers
+
+    Returns:
+        list: List of server dictionaries
+
+    Examples:
+        >>> config = {"EMBY": {"SERVERS": [{"id": "1", "enabled": True}, {"id": "2", "enabled": False}]}}
+        >>> get_emby_servers(config)
+        [{"id": "1", "enabled": True}, {"id": "2", "enabled": False}]
+        >>> get_emby_servers(config, enabled_only=True)
+        [{"id": "1", "enabled": True}]
+    """
+    servers = config.get("EMBY", {}).get("SERVERS", [])
+    if enabled_only:
+        return [s for s in servers if s.get("enabled")]
+    return servers
