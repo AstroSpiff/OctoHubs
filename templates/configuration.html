@@ -639,6 +639,11 @@
                                         <input type="text" name="refresh_times" placeholder="07:00, 19:00" value="{{ refresh_auto.times | join(', ') }}">
                                     </div>
                                     <p class="auto-note">L'aggiornamento ricarica elenco richieste e stati Trakt.</p>
+                                    {% if requests_refresh_warning %}
+                                        <p class="auto-note" style="color: #f59e0b;">
+                                            Avviso: {{ requests_refresh_warning }}{% if requests_refresh_warning_at %} ({{ requests_refresh_warning_at }}){% endif %}
+                                        </p>
+                                    {% endif %}
                                 </section>
                                 <section class="auto-section" data-task="workflow">
                                     <div class="auto-header">
@@ -880,6 +885,10 @@
                                     <div>
                                         <label for="trakt_client_id">Client ID</label>
                                         <input type="text" id="trakt_client_id" name="trakt_client_id" value="{{ trakt.CLIENT_ID if trakt else '' }}" placeholder="xxxxxxxxxxxxxxxxxxxx">
+                                    </div>
+                                    <div>
+                                        <label for="trakt_client_secret">Client Secret</label>
+                                        <input type="password" id="trakt_client_secret" name="trakt_client_secret" value="{{ trakt.CLIENT_SECRET if trakt else '' }}" placeholder="Client Secret (richiesto per refresh automatico)">
                                     </div>
                                     <div style="grid-column:1 / span 2;">
                                         <label for="trakt_access_token">Access Token</label>

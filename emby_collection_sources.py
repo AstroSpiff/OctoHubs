@@ -189,7 +189,7 @@ def _extract_year(value: Any) -> Optional[int]:
     return None
 
 
-def _ensure_trakt_client() -> Any:
+def _ensure_trakt_manager() -> Any:
     settings = _active_trakt_settings()
     if not _trakt_enabled(settings):
         raise RuntimeError("Trakt non configurato")
@@ -243,7 +243,7 @@ def _normalize_trakt_list_entry(entry: Any) -> Optional[Dict[str, Any]]:
 
 
 def list_trakt_lists() -> List[Dict[str, Any]]:
-    client = _ensure_trakt_client()
+    client = _ensure_trakt_manager()
     logger.info("Fetching Trakt lists for authenticated user")
     try:
         payload = client._request("GET", "/users/me/lists") or []
@@ -382,7 +382,7 @@ def _fetch_trakt_list_items(value: str) -> List[Dict[str, Any]]:
     reference = _parse_trakt_list_reference(value)
     if not reference:
         raise RuntimeError("Valore lista Trakt non valido")
-    client = _ensure_trakt_client()
+    client = _ensure_trakt_manager()
     logger.info("Caricando lista Trakt %s", reference.get("list_id"))
     path = reference["path"]
     sort_by = reference.get("sort_by")

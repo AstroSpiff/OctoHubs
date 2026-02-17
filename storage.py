@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from datetime import datetime, timezone, timedelta
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, cast
 
 try:
-    from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String, Text, LargeBinary, create_engine, func, or_, text
+    from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, BigInteger, String, Text, LargeBinary, ForeignKey, Index, create_engine, func, or_, text
     from sqlalchemy.dialects.postgresql import ARRAY
     from sqlalchemy.exc import SQLAlchemyError
     from sqlalchemy.orm import declarative_base, sessionmaker
@@ -26,6 +26,58 @@ Base = declarative_base() if SQLALCHEMY_AVAILABLE else None
 def _utcnow():
     return datetime.now(timezone.utc)
 
+def _parse_datetime_value(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        normalized = raw.replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    return None
+
+def _normalize_text_array(value: Any) -> Optional[List[str]]:
+    if isinstance(value, list):
+        cleaned = [str(item) for item in value if item is not None and str(item) != ""]
+        return cleaned
+    return None
+
+def _normalize_int_array(value: Any) -> Optional[List[int]]:
+    if isinstance(value, list):
+        cleaned: List[int] = []
+        for item in value:
+            try:
+                cleaned.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        return cleaned
+    return None
+
+def _parse_int(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+def _normalize_text_value(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value)
+    return text if text != "" else None
+
 
 class StorageError(RuntimeError):
     """Raised when a storage backend cannot be used."""
@@ -38,6 +90,251 @@ if SQLALCHEMY_AVAILABLE:
         id = Column(Integer, primary_key=True, default=1)  # type: ignore[assignment]
         data = Column(JSON, nullable=False)  # type: ignore[assignment]
         updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
+
+    class EmbyLatestCacheMeta(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "emby_latest_cache_meta"
+        cache_kind = Column(String(20), primary_key=True)  # type: ignore[assignment]
+        updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
+        limit = Column(Integer, nullable=False, default=0)  # type: ignore[assignment]
+        per_server_limit = Column(Integer, nullable=False, default=0)  # type: ignore[assignment]
+
+    class EmbyLatestCacheItem(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "emby_latest_cache_items"
+        id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
+        cache_kind = Column(String(20), nullable=False, index=True)  # type: ignore[assignment]
+        item_type = Column(String(20), index=True)  # type: ignore[assignment]
+        server_id = Column(String(36), index=True)  # type: ignore[assignment]
+        item_id = Column(String(36), index=True)  # type: ignore[assignment]
+        signature = Column(String(255), index=True)  # type: ignore[assignment]
+        batch_id = Column(String(255), index=True)  # type: ignore[assignment]
+        title = Column(String(500))  # type: ignore[assignment]
+        original_title = Column(String(500))  # type: ignore[assignment]
+        series_name = Column(String(500))  # type: ignore[assignment]
+        season_name = Column(String(500))  # type: ignore[assignment]
+        season_number = Column(Integer)  # type: ignore[assignment]
+        episode_number = Column(Integer)  # type: ignore[assignment]
+        episode_title = Column(String(500))  # type: ignore[assignment]
+        year = Column(Integer)  # type: ignore[assignment]
+        overview = Column(Text)  # type: ignore[assignment]
+        genres = Column(ARRAY(String))  # type: ignore[assignment]
+        community_rating = Column(String(50))  # type: ignore[assignment]
+        official_rating = Column(String(50))  # type: ignore[assignment]
+        runtime_minutes = Column(Integer)  # type: ignore[assignment]
+        added_at = Column(DateTime)  # type: ignore[assignment]
+        premiere_date = Column(DateTime)  # type: ignore[assignment]
+        child_count = Column(Integer)  # type: ignore[assignment]
+        season_count = Column(Integer)  # type: ignore[assignment]
+        episode_count = Column(Integer)  # type: ignore[assignment]
+        image_tag = Column(String(255))  # type: ignore[assignment]
+        image_url = Column(Text)  # type: ignore[assignment]
+        poster_url = Column(Text)  # type: ignore[assignment]
+        backdrop_url = Column(Text)  # type: ignore[assignment]
+        banner_url = Column(Text)  # type: ignore[assignment]
+        thumb_url = Column(Text)  # type: ignore[assignment]
+        logo_url = Column(Text)  # type: ignore[assignment]
+        emby_url = Column(Text)  # type: ignore[assignment]
+        tagline = Column(Text)  # type: ignore[assignment]
+        studios = Column(ARRAY(String))  # type: ignore[assignment]
+        cast_members = Column(ARRAY(String))  # type: ignore[assignment]
+        directors = Column(ARRAY(String))  # type: ignore[assignment]
+        creators = Column(ARRAY(String))  # type: ignore[assignment]
+        tmdb_id = Column(String(50))  # type: ignore[assignment]
+        imdb_id = Column(String(50))  # type: ignore[assignment]
+        tvdb_id = Column(String(50))  # type: ignore[assignment]
+        trakt_id = Column(String(100))  # type: ignore[assignment]
+        library_id = Column(String(36))  # type: ignore[assignment]
+        library_name = Column(String(500))  # type: ignore[assignment]
+        server_name = Column(String(255))  # type: ignore[assignment]
+        server_icon = Column(String(100))  # type: ignore[assignment]
+        server_icon_color = Column(String(50))  # type: ignore[assignment]
+        server_icon_style = Column(String(50))  # type: ignore[assignment]
+        update_type = Column(String(20))  # type: ignore[assignment]
+        update_label = Column(String(200))  # type: ignore[assignment]
+        tmdb_poster_url = Column(Text)  # type: ignore[assignment]
+        tmdb_backdrop_url = Column(Text)  # type: ignore[assignment]
+        tmdb_banner_url = Column(Text)  # type: ignore[assignment]
+        tmdb_thumb_url = Column(Text)  # type: ignore[assignment]
+        tmdb_rating = Column(String(50))  # type: ignore[assignment]
+        tmdb_votes = Column(String(50))  # type: ignore[assignment]
+        imdb_rating = Column(String(50))  # type: ignore[assignment]
+        imdb_votes = Column(String(50))  # type: ignore[assignment]
+        metacritic_rating = Column(String(50))  # type: ignore[assignment]
+        trakt_rating = Column(String(50))  # type: ignore[assignment]
+        trakt_votes = Column(String(50))  # type: ignore[assignment]
+        omdb_fetched_at = Column(DateTime)  # type: ignore[assignment]
+        sort_ts = Column(DateTime, index=True)  # type: ignore[assignment]
+        __table_args__ = (
+            Index("ix_latest_cache_kind_server_type", "cache_kind", "server_id", "item_type"),
+            Index("ix_latest_cache_kind_sort", "cache_kind", "sort_ts"),
+        )
+
+    class JellyseerrRequest(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "jellyseerr_requests"
+        request_id = Column(String(50), primary_key=True)  # type: ignore[assignment]
+        tmdb_id = Column(Integer, index=True)  # type: ignore[assignment]
+        media_type = Column(String(10), index=True)  # type: ignore[assignment]
+        status = Column(String(50))  # type: ignore[assignment]
+        status_label = Column(String(100))  # type: ignore[assignment]
+        requested_by = Column(String(255))  # type: ignore[assignment]
+        created_at = Column(DateTime)  # type: ignore[assignment]
+        updated_at = Column(DateTime, index=True)  # type: ignore[assignment]
+        payload = Column(JSON, nullable=False)  # type: ignore[assignment]
+        __table_args__ = (
+            Index("ix_jellyseerr_tmdb_type", "tmdb_id", "media_type"),
+        )
+
+    class EmbyLatestCacheChange(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "emby_latest_cache_changes"
+        id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
+        cache_kind = Column(String(20), nullable=False, index=True)  # type: ignore[assignment]
+        cache_item_id = Column(Integer, ForeignKey("emby_latest_cache_items.id"), nullable=False, index=True)  # type: ignore[assignment]
+        sort_index = Column(Integer, nullable=False, default=0)  # type: ignore[assignment]
+        kind = Column(String(50))  # type: ignore[assignment]
+        label = Column(String(200))  # type: ignore[assignment]
+        season_number = Column(Integer)  # type: ignore[assignment]
+        episode_number = Column(Integer)  # type: ignore[assignment]
+        episode_title = Column(String(500))  # type: ignore[assignment]
+        quality = Column(String(100))  # type: ignore[assignment]
+        resolution = Column(String(100))  # type: ignore[assignment]
+        video_codec = Column(String(100))  # type: ignore[assignment]
+        audio_codec = Column(String(100))  # type: ignore[assignment]
+        audio_channels = Column(String(50))  # type: ignore[assignment]
+        container = Column(String(50))  # type: ignore[assignment]
+        bitrate = Column(String(50))  # type: ignore[assignment]
+        source_name = Column(String(200))  # type: ignore[assignment]
+        path = Column(Text)  # type: ignore[assignment]
+        size = Column(BigInteger)  # type: ignore[assignment]
+        media_source_id = Column(String(100))  # type: ignore[assignment]
+        added_at = Column(DateTime)  # type: ignore[assignment]
+        video_details = Column(Text)  # type: ignore[assignment]
+        audio_details = Column(Text)  # type: ignore[assignment]
+        audio_ita = Column(Text)  # type: ignore[assignment]
+        audio_eng = Column(Text)  # type: ignore[assignment]
+        audio_fra = Column(Text)  # type: ignore[assignment]
+        audio_spa = Column(Text)  # type: ignore[assignment]
+        audio_ger = Column(Text)  # type: ignore[assignment]
+        audio_jpn = Column(Text)  # type: ignore[assignment]
+        audio_langs = Column(Text)  # type: ignore[assignment]
+        subtitle_langs = Column(Text)  # type: ignore[assignment]
+
+    class EmbyLatestCacheError(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "emby_latest_cache_errors"
+        id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
+        cache_kind = Column(String(20), nullable=False, index=True)  # type: ignore[assignment]
+        server_id = Column(String(36), index=True)  # type: ignore[assignment]
+        message = Column(Text)  # type: ignore[assignment]
+        created_at = Column(DateTime, default=_utcnow)  # type: ignore[assignment]
+
+    class EmbyImageCache(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "emby_image_cache"
+        cache_key = Column(String(255), primary_key=True)  # type: ignore[assignment]
+        server_id = Column(String(36), index=True)  # type: ignore[assignment]
+        item_id = Column(String(36), index=True)  # type: ignore[assignment]
+        image_type = Column(String(20))  # type: ignore[assignment]
+        max_width = Column(Integer)  # type: ignore[assignment]
+        max_height = Column(Integer)  # type: ignore[assignment]
+        tag = Column(String(255))  # type: ignore[assignment]
+        scope = Column(String(20))  # type: ignore[assignment]
+        content_type = Column(String(100))  # type: ignore[assignment]
+        data = Column(LargeBinary)  # type: ignore[assignment]
+        size = Column(Integer)  # type: ignore[assignment]
+        created_at = Column(DateTime, default=_utcnow)  # type: ignore[assignment]
+        expires_at = Column(DateTime, index=True)  # type: ignore[assignment]
+        __table_args__ = (
+            Index("ix_emby_image_cache_server_item", "server_id", "item_id"),
+        )
+
+    class EmbyLatestStateMovie(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "emby_latest_state_movies"
+        server_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
+        state_key = Column(String(255), primary_key=True)  # type: ignore[assignment]
+        item_id = Column(String(36), index=True)  # type: ignore[assignment]
+        signature = Column(String(255))  # type: ignore[assignment]
+        title = Column(String(500))  # type: ignore[assignment]
+        year = Column(Integer)  # type: ignore[assignment]
+        last_seen_at = Column(DateTime, index=True)  # type: ignore[assignment]
+        media_source_keys = Column(ARRAY(String))  # type: ignore[assignment]
+        notified = Column(Boolean, default=False, nullable=False)  # type: ignore[assignment]
+        notified_at = Column(DateTime)  # type: ignore[assignment]
+        __table_args__ = (
+            Index("ix_latest_state_movies_server_item", "server_id", "item_id"),
+        )
+
+    class EmbyLatestStateSeries(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "emby_latest_state_series"
+        server_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
+        series_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
+        title = Column(String(500))  # type: ignore[assignment]
+        year = Column(Integer)  # type: ignore[assignment]
+        last_seen_at = Column(DateTime, index=True)  # type: ignore[assignment]
+        seasons = Column(ARRAY(Integer))  # type: ignore[assignment]
+        notified = Column(Boolean, default=False, nullable=False)  # type: ignore[assignment]
+        notified_at = Column(DateTime)  # type: ignore[assignment]
+        __table_args__ = (
+            Index("ix_latest_state_series_server", "server_id"),
+        )
+
+    class EmbyLatestStateEpisode(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "emby_latest_state_episodes"
+        server_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
+        series_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
+        episode_key = Column(String(255), primary_key=True)  # type: ignore[assignment]
+        episode_id = Column(String(36), index=True)  # type: ignore[assignment]
+        season_number = Column(Integer)  # type: ignore[assignment]
+        episode_number = Column(Integer)  # type: ignore[assignment]
+        title = Column(String(500))  # type: ignore[assignment]
+        last_seen_at = Column(DateTime, index=True)  # type: ignore[assignment]
+        media_source_keys = Column(ARRAY(String))  # type: ignore[assignment]
+        __table_args__ = (
+            Index("ix_latest_state_episodes_server_series", "server_id", "series_id"),
+        )
+
+    class EmbyLatestStateSeriesGroup(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "emby_latest_state_series_groups"
+        id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
+        server_id = Column(String(36), index=True)  # type: ignore[assignment]
+        series_id = Column(String(36), index=True)  # type: ignore[assignment]
+        sort_index = Column(Integer, nullable=False, default=0)  # type: ignore[assignment]
+        update_type = Column(String(20))  # type: ignore[assignment]
+        update_label = Column(String(200))  # type: ignore[assignment]
+        batch_id = Column(String(255))  # type: ignore[assignment]
+        added_at = Column(DateTime)  # type: ignore[assignment]
+        __table_args__ = (
+            Index("ix_latest_state_series_groups_server_series", "server_id", "series_id"),
+        )
+
+    class EmbyLatestStateSeriesChange(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "emby_latest_state_series_changes"
+        id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
+        group_id = Column(Integer, ForeignKey("emby_latest_state_series_groups.id"), nullable=False, index=True)  # type: ignore[assignment]
+        sort_index = Column(Integer, nullable=False, default=0)  # type: ignore[assignment]
+        kind = Column(String(50))  # type: ignore[assignment]
+        label = Column(String(200))  # type: ignore[assignment]
+        season_number = Column(Integer)  # type: ignore[assignment]
+        episode_number = Column(Integer)  # type: ignore[assignment]
+        episode_title = Column(String(500))  # type: ignore[assignment]
+        quality = Column(String(100))  # type: ignore[assignment]
+        resolution = Column(String(100))  # type: ignore[assignment]
+        video_codec = Column(String(100))  # type: ignore[assignment]
+        audio_codec = Column(String(100))  # type: ignore[assignment]
+        audio_channels = Column(String(50))  # type: ignore[assignment]
+        container = Column(String(50))  # type: ignore[assignment]
+        bitrate = Column(String(50))  # type: ignore[assignment]
+        source_name = Column(String(200))  # type: ignore[assignment]
+        path = Column(Text)  # type: ignore[assignment]
+        size = Column(BigInteger)  # type: ignore[assignment]
+        media_source_id = Column(String(100))  # type: ignore[assignment]
+        added_at = Column(DateTime)  # type: ignore[assignment]
+        video_details = Column(Text)  # type: ignore[assignment]
+        audio_details = Column(Text)  # type: ignore[assignment]
+        audio_ita = Column(Text)  # type: ignore[assignment]
+        audio_eng = Column(Text)  # type: ignore[assignment]
+        audio_fra = Column(Text)  # type: ignore[assignment]
+        audio_spa = Column(Text)  # type: ignore[assignment]
+        audio_ger = Column(Text)  # type: ignore[assignment]
+        audio_jpn = Column(Text)  # type: ignore[assignment]
+        audio_langs = Column(Text)  # type: ignore[assignment]
+        subtitle_langs = Column(Text)  # type: ignore[assignment]
 
     class EmbyCollectionDefinition(Base):  # type: ignore[valid-type,misc]
         """Persist settings for Emby collection imports."""
@@ -78,6 +375,17 @@ if SQLALCHEMY_AVAILABLE:
         __tablename__ = "request_overview"
         id = Column(Integer, primary_key=True, default=1)  # type: ignore[assignment]
         payload = Column(JSON, nullable=False)  # type: ignore[assignment]
+        updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
+
+    class EmbyLatestProgress(Base):  # type: ignore[valid-type,misc]
+        """Persist progress tracking for Emby Latest refresh operations."""
+        __tablename__ = "emby_latest_progress"
+        id = Column(Integer, primary_key=True, default=1)  # type: ignore[assignment]
+        state = Column(String(20), nullable=False)  # type: ignore[assignment]  # "idle", "collecting", "enriching", "done", "error"
+        total = Column(Integer, default=0)  # type: ignore[assignment]
+        completed = Column(Integer, default=0)  # type: ignore[assignment]
+        message = Column(Text)  # type: ignore[assignment]
+        started_at = Column(DateTime)  # type: ignore[assignment]
         updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
 
     class LibraryAssociation(Base):  # type: ignore[valid-type,misc]
@@ -441,6 +749,128 @@ class DatabaseStorage:
                     conn.execute(text(
                         "CREATE INDEX IF NOT EXISTS ix_rss_items_categories_gin ON rss_items USING GIN(categories)"
                     ))
+                # Latest cache/state indexes
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_latest_cache_kind_server_type ON emby_latest_cache_items (cache_kind, server_id, item_type)"
+                ))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_latest_cache_kind_sort ON emby_latest_cache_items (cache_kind, sort_ts)"
+                ))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_latest_state_movies_server_last_seen ON emby_latest_state_movies (server_id, last_seen_at)"
+                ))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_latest_state_movies_server_item ON emby_latest_state_movies (server_id, item_id)"
+                ))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_latest_state_series_server_last_seen ON emby_latest_state_series (server_id, last_seen_at)"
+                ))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_latest_state_series_server ON emby_latest_state_series (server_id)"
+                ))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_latest_state_episodes_server_series ON emby_latest_state_episodes (server_id, series_id)"
+                ))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_latest_state_series_groups_server_series ON emby_latest_state_series_groups (server_id, series_id)"
+                ))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_latest_state_episodes_episode_id ON emby_latest_state_episodes (episode_id)"
+                ))
+                conn.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_emby_image_cache_expires ON emby_image_cache (expires_at)"
+                ))
+                # Ensure latest cache item columns exist (compat upgrade from older schemas)
+                latest_cache_columns = [
+                    "item_type VARCHAR(20)",
+                    "server_id VARCHAR(36)",
+                    "item_id VARCHAR(36)",
+                    "signature VARCHAR(255)",
+                    "batch_id VARCHAR(255)",
+                    "title VARCHAR(500)",
+                    "original_title VARCHAR(500)",
+                    "series_name VARCHAR(500)",
+                    "season_name VARCHAR(500)",
+                    "season_number INTEGER",
+                    "episode_number INTEGER",
+                    "episode_title VARCHAR(500)",
+                    "year INTEGER",
+                    "overview TEXT",
+                    "genres VARCHAR[]",
+                    "community_rating VARCHAR(50)",
+                    "official_rating VARCHAR(50)",
+                    "runtime_minutes INTEGER",
+                    "added_at TIMESTAMP WITH TIME ZONE",
+                    "premiere_date TIMESTAMP WITH TIME ZONE",
+                    "child_count INTEGER",
+                    "season_count INTEGER",
+                    "episode_count INTEGER",
+                    "image_tag VARCHAR(255)",
+                    "image_url TEXT",
+                    "poster_url TEXT",
+                    "backdrop_url TEXT",
+                    "banner_url TEXT",
+                    "thumb_url TEXT",
+                    "logo_url TEXT",
+                    "emby_url TEXT",
+                    "tagline TEXT",
+                    "studios VARCHAR[]",
+                    "cast_members VARCHAR[]",
+                    "directors VARCHAR[]",
+                    "creators VARCHAR[]",
+                    "tmdb_id VARCHAR(50)",
+                    "imdb_id VARCHAR(50)",
+                    "tvdb_id VARCHAR(50)",
+                    "trakt_id VARCHAR(100)",
+                    "library_id VARCHAR(36)",
+                    "library_name VARCHAR(500)",
+                    "server_name VARCHAR(255)",
+                    "server_icon VARCHAR(100)",
+                    "server_icon_color VARCHAR(50)",
+                    "server_icon_style VARCHAR(50)",
+                    "update_type VARCHAR(20)",
+                    "update_label VARCHAR(200)",
+                    "tmdb_poster_url TEXT",
+                    "tmdb_backdrop_url TEXT",
+                    "tmdb_banner_url TEXT",
+                    "tmdb_thumb_url TEXT",
+                    "tmdb_rating VARCHAR(50)",
+                    "tmdb_votes VARCHAR(50)",
+                    "imdb_rating VARCHAR(50)",
+                    "imdb_votes VARCHAR(50)",
+                    "metacritic_rating VARCHAR(50)",
+                    "trakt_rating VARCHAR(50)",
+                    "trakt_votes VARCHAR(50)",
+                    "omdb_fetched_at TIMESTAMP WITH TIME ZONE",
+                    "sort_ts TIMESTAMP WITH TIME ZONE"
+                ]
+                for column_def in latest_cache_columns:
+                    conn.execute(text(
+                        f"ALTER TABLE emby_latest_cache_items ADD COLUMN IF NOT EXISTS {column_def}"
+                    ))
+                # Drop deprecated latest cache columns (no longer used)
+                drop_latest_cache_columns = [
+                    "critic_rating",
+                    "tmdb_logo_url",
+                    "rt_tomatometer",
+                    "rt_audience",
+                    "letterboxd_rating",
+                    "jellyseerr_request_id",
+                    "jellyseerr_request_status",
+                    "jellyseerr_request_status_label",
+                    "jellyseerr_requested_by"
+                ]
+                for column_name in drop_latest_cache_columns:
+                    conn.execute(text(
+                        f"ALTER TABLE emby_latest_cache_items DROP COLUMN IF EXISTS {column_name}"
+                    ))
+                # Ensure BIGINT for size columns (avoid overflow on large files)
+                conn.execute(text(
+                    "ALTER TABLE emby_latest_cache_changes ALTER COLUMN size TYPE BIGINT"
+                ))
+                conn.execute(text(
+                    "ALTER TABLE emby_latest_state_series_changes ALTER COLUMN size TYPE BIGINT"
+                ))
         except SQLAlchemyError as exc:  # pragma: no cover
             raise StorageError(f"Errore migrazioni DB: {exc}") from exc
 
@@ -462,6 +892,14 @@ class DatabaseStorage:
         if normalized == "libraries":
             return query.filter(or_(model.scope == normalized, model.scope.is_(None)))  # type: ignore[attr-defined]
         return query.filter(model.scope == normalized)  # type: ignore[attr-defined]
+
+    def _normalize_latest_cache_kind(self, cache_kind: Optional[str]) -> str:
+        value = str(cache_kind or "").strip().lower()
+        if value in ("feed", "feed_cache", "cache_feed", "latest_feed"):
+            return "feed"
+        if value in ("batch", "cache", "latest", "latest_cache"):
+            return "batch"
+        return "feed"
 
     # --- Configuration ---
 
@@ -485,6 +923,1018 @@ class DatabaseStorage:
         except SQLAlchemyError as exc:  # pragma: no cover - runtime guard
             session.rollback()
             raise StorageError(f"Errore salvataggio configurazione: {exc}") from exc
+        finally:
+            session.close()
+
+    # --- Emby latest cache ---
+
+    def _latest_cache_item_to_dict(self, row: Any, changes: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        def _dt(value: Optional[datetime]) -> Optional[str]:
+            return value.isoformat() if isinstance(value, datetime) else None
+
+        item_type = str(row.item_type or "").lower()
+        directors = list(row.directors or [])
+        creators = list(row.creators or [])
+        if item_type in ("series", "episode"):
+            directors = []
+        else:
+            creators = []
+
+        return {
+            "item_id": row.item_id,
+            "title": row.title,
+            "original_title": row.original_title,
+            "series_name": row.series_name,
+            "season_name": row.season_name,
+            "season_number": row.season_number,
+            "episode_number": row.episode_number,
+            "episode_title": row.episode_title,
+            "year": row.year,
+            "overview": row.overview,
+            "genres": list(row.genres or []),
+            "community_rating": row.community_rating,
+            "official_rating": row.official_rating,
+            "runtime_minutes": row.runtime_minutes,
+            "added_at": _dt(row.added_at),
+            "premiere_date": _dt(row.premiere_date),
+            "child_count": row.child_count,
+            "season_count": row.season_count,
+            "episode_count": row.episode_count,
+            "image_tag": row.image_tag,
+            "image_url": row.image_url,
+            "poster_url": row.poster_url,
+            "backdrop_url": row.backdrop_url,
+            "banner_url": row.banner_url,
+            "thumb_url": row.thumb_url,
+            "logo_url": row.logo_url,
+            "emby_url": row.emby_url,
+            "tagline": row.tagline,
+            "studios": list(row.studios or []),
+            "cast": list(row.cast_members or []),
+            "directors": directors,
+            "creators": creators,
+            "tmdb_id": row.tmdb_id,
+            "imdb_id": row.imdb_id,
+            "tvdb_id": row.tvdb_id,
+            "trakt_id": row.trakt_id,
+            "library_id": row.library_id,
+            "library_name": row.library_name,
+            "server_id": row.server_id,
+            "server_name": row.server_name,
+            "server_icon": row.server_icon,
+            "server_icon_color": row.server_icon_color,
+            "server_icon_style": row.server_icon_style,
+            "item_type": row.item_type,
+            "signature": row.signature,
+            "batch_id": row.batch_id,
+            "update_type": row.update_type,
+            "update_label": row.update_label,
+            "tmdb_poster_url": row.tmdb_poster_url,
+            "tmdb_backdrop_url": row.tmdb_backdrop_url,
+            "tmdb_banner_url": row.tmdb_banner_url,
+            "tmdb_thumb_url": row.tmdb_thumb_url,
+            "tmdb_rating": row.tmdb_rating,
+            "tmdb_votes": row.tmdb_votes,
+            "imdb_rating": row.imdb_rating,
+            "imdb_votes": row.imdb_votes,
+            "metacritic_rating": row.metacritic_rating,
+            "trakt_rating": row.trakt_rating,
+            "trakt_votes": row.trakt_votes,
+            "omdb_fetched_at": _dt(row.omdb_fetched_at),
+            "changes": changes or []
+        }
+
+    def load_latest_cache(self, cache_kind: str) -> Dict[str, Any]:
+        session = self._get_session()
+        try:
+            kind = self._normalize_latest_cache_kind(cache_kind)
+            meta = session.get(EmbyLatestCacheMeta, kind)
+            if not meta:
+                return {}
+
+            items = (
+                session.query(EmbyLatestCacheItem)
+                .filter(EmbyLatestCacheItem.cache_kind == kind)  # type: ignore[attr-defined]
+                .order_by(EmbyLatestCacheItem.sort_ts.desc(), EmbyLatestCacheItem.id.desc())  # type: ignore[attr-defined]
+                .all()
+            )
+            item_ids = [row.id for row in items]
+            changes_map: Dict[int, List[Dict[str, Any]]] = {}
+            if item_ids:
+                change_rows = (
+                    session.query(EmbyLatestCacheChange)
+                    .filter(EmbyLatestCacheChange.cache_item_id.in_(item_ids))  # type: ignore[attr-defined]
+                    .order_by(EmbyLatestCacheChange.sort_index.asc(), EmbyLatestCacheChange.id.asc())  # type: ignore[attr-defined]
+                    .all()
+                )
+                for row in change_rows:
+                    entry = {
+                        "kind": row.kind,
+                        "label": row.label,
+                        "season_number": row.season_number,
+                        "episode_number": row.episode_number,
+                        "episode_title": row.episode_title,
+                        "quality": row.quality,
+                        "resolution": row.resolution,
+                        "video_codec": row.video_codec,
+                        "audio_codec": row.audio_codec,
+                        "audio_channels": row.audio_channels,
+                        "container": row.container,
+                        "bitrate": row.bitrate,
+                        "source_name": row.source_name,
+                        "path": row.path,
+                        "size": row.size,
+                        "media_source_id": row.media_source_id,
+                        "added_at": row.added_at.isoformat() if isinstance(row.added_at, datetime) else None,
+                        "video_details": row.video_details,
+                        "audio_details": row.audio_details,
+                        "audio_ita": row.audio_ita,
+                        "audio_eng": row.audio_eng,
+                        "audio_fra": row.audio_fra,
+                        "audio_spa": row.audio_spa,
+                        "audio_ger": row.audio_ger,
+                        "audio_jpn": row.audio_jpn,
+                        "audio_langs": row.audio_langs,
+                        "subtitle_langs": row.subtitle_langs
+                    }
+                    changes_map.setdefault(row.cache_item_id, []).append(entry)
+
+            movies: List[Dict[str, Any]] = []
+            series: List[Dict[str, Any]] = []
+            for row in items:
+                item_dict = self._latest_cache_item_to_dict(row, changes_map.get(row.id, []))
+                if str(row.item_type or "").lower() == "movie":
+                    movies.append(item_dict)
+                else:
+                    series.append(item_dict)
+
+            errors_rows = (
+                session.query(EmbyLatestCacheError)
+                .filter(EmbyLatestCacheError.cache_kind == kind)  # type: ignore[attr-defined]
+                .order_by(EmbyLatestCacheError.id.asc())  # type: ignore[attr-defined]
+                .all()
+            )
+            errors = [
+                {"server_id": row.server_id, "message": row.message}
+                for row in errors_rows
+            ]
+
+            updated_at = meta.updated_at.isoformat() if isinstance(meta.updated_at, datetime) else None
+            return {
+                "updated_at": updated_at,
+                "params": {
+                    "limit": int(meta.limit or 0),
+                    "per_server_limit": int(meta.per_server_limit or 0)
+                },
+                "payload": {
+                    "movies": movies,
+                    "series": series,
+                    "errors": errors
+                }
+            }
+        finally:
+            session.close()
+
+    def save_latest_cache(
+        self,
+        cache_kind: str,
+        payload: Dict[str, Any],
+        limit: int,
+        per_server_limit: int,
+        updated_at: Optional[datetime] = None
+    ) -> None:
+        session = self._get_session()
+        try:
+            kind = self._normalize_latest_cache_kind(cache_kind)
+            session.query(EmbyLatestCacheChange).filter(EmbyLatestCacheChange.cache_kind == kind).delete(synchronize_session=False)  # type: ignore[attr-defined]
+            session.query(EmbyLatestCacheItem).filter(EmbyLatestCacheItem.cache_kind == kind).delete(synchronize_session=False)  # type: ignore[attr-defined]
+            session.query(EmbyLatestCacheError).filter(EmbyLatestCacheError.cache_kind == kind).delete(synchronize_session=False)  # type: ignore[attr-defined]
+
+            movies = payload.get("movies") if isinstance(payload, dict) else []
+            series = payload.get("series") if isinstance(payload, dict) else []
+            errors = payload.get("errors") if isinstance(payload, dict) else []
+            items = []
+
+            def _parse_int(value: Any) -> Optional[int]:
+                try:
+                    return int(value) if value is not None else None
+                except (TypeError, ValueError):
+                    return None
+
+            def _string(value: Any) -> Optional[str]:
+                return _normalize_text_value(value)
+
+            for entry in (movies or []) + (series or []):
+                if not isinstance(entry, dict):
+                    continue
+                item_type = _string(entry.get("item_type"))
+                is_series = str(item_type or "").lower() in ("series", "episode")
+                directors = _normalize_text_array(entry.get("directors")) if not is_series else []
+                creators = _normalize_text_array(entry.get("creators")) if is_series else []
+                imdb_rating = _string(entry.get("imdb_rating"))
+                metacritic_rating = _string(entry.get("metacritic_rating"))
+                row = EmbyLatestCacheItem(
+                    cache_kind=kind,
+                    item_type=item_type,
+                    server_id=_string(entry.get("server_id")),
+                    item_id=_string(entry.get("item_id")),
+                    signature=_string(entry.get("signature")),
+                    batch_id=_string(entry.get("batch_id")),
+                    title=_string(entry.get("title")),
+                    original_title=_string(entry.get("original_title")),
+                    series_name=_string(entry.get("series_name")),
+                    season_name=_string(entry.get("season_name")),
+                    season_number=_parse_int(entry.get("season_number")),
+                    episode_number=_parse_int(entry.get("episode_number")),
+                    episode_title=_string(entry.get("episode_title")),
+                    year=_parse_int(entry.get("year")),
+                    overview=entry.get("overview"),
+                    genres=_normalize_text_array(entry.get("genres")),
+                    community_rating=_string(entry.get("community_rating")),
+                    official_rating=_string(entry.get("official_rating")),
+                    runtime_minutes=_parse_int(entry.get("runtime_minutes")),
+                    added_at=_parse_datetime_value(entry.get("added_at")),
+                    premiere_date=_parse_datetime_value(entry.get("premiere_date")),
+                    child_count=_parse_int(entry.get("child_count")),
+                    season_count=_parse_int(entry.get("season_count")),
+                    episode_count=_parse_int(entry.get("episode_count")),
+                    image_tag=_string(entry.get("image_tag")),
+                    image_url=_string(entry.get("image_url")),
+                    poster_url=_string(entry.get("poster_url")),
+                    backdrop_url=None,
+                    banner_url=None,
+                    thumb_url=None,
+                    logo_url=None,
+                    emby_url=_string(entry.get("emby_url")),
+                    tagline=_string(entry.get("tagline")),
+                    studios=_normalize_text_array(entry.get("studios")),
+                    cast_members=_normalize_text_array(entry.get("cast")),
+                    directors=directors,
+                    creators=creators,
+                    tmdb_id=_string(entry.get("tmdb_id")),
+                    imdb_id=_string(entry.get("imdb_id")),
+                    tvdb_id=_string(entry.get("tvdb_id")),
+                    trakt_id=_string(entry.get("trakt_id")),
+                    library_id=_string(entry.get("library_id")),
+                    library_name=_string(entry.get("library_name")),
+                    server_name=_string(entry.get("server_name")),
+                    server_icon=_string(entry.get("server_icon")),
+                    server_icon_color=_string(entry.get("server_icon_color")),
+                    server_icon_style=_string(entry.get("server_icon_style")),
+                    update_type=_string(entry.get("update_type")),
+                    update_label=_string(entry.get("update_label")),
+                    tmdb_poster_url=_string(entry.get("tmdb_poster_url")),
+                    tmdb_backdrop_url=None,
+                    tmdb_banner_url=None,
+                    tmdb_thumb_url=None,
+                    tmdb_rating=_string(entry.get("tmdb_rating")),
+                    tmdb_votes=_string(entry.get("tmdb_votes")),
+                    imdb_rating=imdb_rating,
+                    imdb_votes=_string(entry.get("imdb_votes")),
+                    metacritic_rating=metacritic_rating,
+                    trakt_rating=_string(entry.get("trakt_rating")),
+                    trakt_votes=_string(entry.get("trakt_votes")),
+                    omdb_fetched_at=_parse_datetime_value(entry.get("omdb_fetched_at"))
+                )
+                row.sort_ts = row.added_at or row.premiere_date or datetime(1970, 1, 1, tzinfo=timezone.utc)  # type: ignore[assignment]
+                session.add(row)
+                items.append((row, entry))
+
+            session.flush()
+
+            for row, entry in items:
+                changes = entry.get("changes")
+                if not isinstance(changes, list):
+                    continue
+                for idx, change in enumerate(changes):
+                    if not isinstance(change, dict):
+                        continue
+                    change_row = EmbyLatestCacheChange(
+                        cache_kind=kind,
+                        cache_item_id=row.id,
+                        sort_index=idx,
+                        kind=_string(change.get("kind")),
+                        label=_string(change.get("label")),
+                        season_number=_parse_int(change.get("season_number")),
+                        episode_number=_parse_int(change.get("episode_number")),
+                        episode_title=_string(change.get("episode_title")),
+                        quality=_string(change.get("quality")),
+                        resolution=_string(change.get("resolution")),
+                        video_codec=_string(change.get("video_codec")),
+                        audio_codec=_string(change.get("audio_codec")),
+                        audio_channels=_string(change.get("audio_channels")),
+                        container=_string(change.get("container")),
+                        bitrate=_string(change.get("bitrate")),
+                        source_name=_string(change.get("source_name")),
+                        path=_string(change.get("path")),
+                        size=_parse_int(change.get("size")),
+                        media_source_id=_string(change.get("media_source_id")),
+                        added_at=_parse_datetime_value(change.get("added_at")),
+                        video_details=_string(change.get("video_details")),
+                        audio_details=_string(change.get("audio_details")),
+                        audio_ita=_string(change.get("audio_ita")),
+                        audio_eng=_string(change.get("audio_eng")),
+                        audio_fra=_string(change.get("audio_fra")),
+                        audio_spa=_string(change.get("audio_spa")),
+                        audio_ger=_string(change.get("audio_ger")),
+                        audio_jpn=_string(change.get("audio_jpn")),
+                        audio_langs=_string(change.get("audio_langs")),
+                        subtitle_langs=_string(change.get("subtitle_langs"))
+                    )
+                    session.add(change_row)
+
+            stamp = updated_at or _utcnow()
+            if isinstance(errors, list):
+                for entry in errors:
+                    if not isinstance(entry, dict):
+                        continue
+                    error_row = EmbyLatestCacheError(
+                        cache_kind=kind,
+                        server_id=_string(entry.get("server_id")),
+                        message=_string(entry.get("message")),
+                        created_at=stamp
+                    )
+                    session.add(error_row)
+
+            meta = session.get(EmbyLatestCacheMeta, kind)
+            if not meta:
+                meta = EmbyLatestCacheMeta(cache_kind=kind)
+            meta.updated_at = stamp  # type: ignore[assignment]
+            meta.limit = int(limit or 0)  # type: ignore[assignment]
+            meta.per_server_limit = int(per_server_limit or 0)  # type: ignore[assignment]
+            session.add(meta)
+            session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore salvataggio latest cache: {exc}") from exc
+        finally:
+            session.close()
+
+    def clear_latest_cache(self, cache_kind: Optional[str] = None) -> None:
+        session = self._get_session()
+        try:
+            kind = self._normalize_latest_cache_kind(cache_kind) if cache_kind else None
+            if kind:
+                session.query(EmbyLatestCacheChange).filter(EmbyLatestCacheChange.cache_kind == kind).delete(synchronize_session=False)  # type: ignore[attr-defined]
+                session.query(EmbyLatestCacheItem).filter(EmbyLatestCacheItem.cache_kind == kind).delete(synchronize_session=False)  # type: ignore[attr-defined]
+                session.query(EmbyLatestCacheError).filter(EmbyLatestCacheError.cache_kind == kind).delete(synchronize_session=False)  # type: ignore[attr-defined]
+                session.query(EmbyLatestCacheMeta).filter(EmbyLatestCacheMeta.cache_kind == kind).delete(synchronize_session=False)  # type: ignore[attr-defined]
+            else:
+                session.query(EmbyLatestCacheChange).delete(synchronize_session=False)
+                session.query(EmbyLatestCacheItem).delete(synchronize_session=False)
+                session.query(EmbyLatestCacheError).delete(synchronize_session=False)
+                session.query(EmbyLatestCacheMeta).delete(synchronize_session=False)
+            session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore pulizia latest cache: {exc}") from exc
+        finally:
+            session.close()
+
+    def delete_latest_cache_for_server(self, server_id: str, cache_kind: Optional[str] = None) -> None:
+        if not server_id:
+            return
+        session = self._get_session()
+        try:
+            kind = self._normalize_latest_cache_kind(cache_kind) if cache_kind else None
+            query = session.query(EmbyLatestCacheItem)
+            if kind:
+                query = query.filter(EmbyLatestCacheItem.cache_kind == kind)  # type: ignore[attr-defined]
+            query = query.filter(EmbyLatestCacheItem.server_id == server_id)  # type: ignore[attr-defined]
+            rows = query.all()
+            item_ids = [row.id for row in rows]
+            if item_ids:
+                session.query(EmbyLatestCacheChange).filter(EmbyLatestCacheChange.cache_item_id.in_(item_ids)).delete(synchronize_session=False)  # type: ignore[attr-defined]
+            query.delete(synchronize_session=False)
+            error_query = session.query(EmbyLatestCacheError).filter(EmbyLatestCacheError.server_id == server_id)  # type: ignore[attr-defined]
+            if kind:
+                error_query = error_query.filter(EmbyLatestCacheError.cache_kind == kind)  # type: ignore[attr-defined]
+            error_query.delete(synchronize_session=False)
+            session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore rimozione latest cache per server: {exc}") from exc
+        finally:
+            session.close()
+
+    # --- Jellyseerr requests ---
+
+    def save_jellyseerr_requests(self, entries: List[Dict[str, Any]]) -> int:
+        session = self._get_session()
+        try:
+            incoming_ids = set()
+
+            def _string(value: Any) -> Optional[str]:
+                return _normalize_text_value(value)
+
+            def _int(value: Any) -> Optional[int]:
+                try:
+                    return int(value) if value is not None else None
+                except (TypeError, ValueError):
+                    return None
+
+            for entry in entries or []:
+                if not isinstance(entry, dict):
+                    continue
+                request_id = _string(entry.get("request_id"))
+                if not request_id:
+                    continue
+                incoming_ids.add(request_id)
+            existing = {}
+            if incoming_ids:
+                for row in session.query(JellyseerrRequest).filter(
+                    JellyseerrRequest.request_id.in_(list(incoming_ids))  # type: ignore[attr-defined]
+                ):
+                    existing[row.request_id] = row
+
+            for entry in entries or []:
+                if not isinstance(entry, dict):
+                    continue
+                request_id = _string(entry.get("request_id"))
+                if not request_id:
+                    continue
+                row = existing.get(request_id)
+                if not row:
+                    row = JellyseerrRequest(request_id=request_id)
+                row = cast(Any, row)
+
+                tmdb_id = _int(entry.get("tmdb_id"))
+                media_type = _string(entry.get("media_type"))
+                status = _string(entry.get("status"))
+                status_label = _string(entry.get("status_label"))
+                requested_by = _string(entry.get("requested_by"))
+                created_at = _parse_datetime_value(entry.get("created_at"))
+                updated_at = _parse_datetime_value(entry.get("updated_at"))
+                payload = entry.get("payload") or {}
+
+                if (
+                    row.tmdb_id == tmdb_id
+                    and row.media_type == media_type
+                    and row.status == status
+                    and row.status_label == status_label
+                    and row.requested_by == requested_by
+                    and row.created_at == created_at
+                    and row.updated_at == updated_at
+                    and (row.payload or {}) == payload
+                ):
+                    continue
+
+                row.tmdb_id = tmdb_id
+                row.media_type = media_type
+                row.status = status
+                row.status_label = status_label
+                row.requested_by = requested_by
+                row.created_at = created_at
+                row.updated_at = updated_at
+                row.payload = payload
+                session.add(row)
+
+            if incoming_ids:
+                session.query(JellyseerrRequest).filter(
+                    ~JellyseerrRequest.request_id.in_(list(incoming_ids))  # type: ignore[attr-defined]
+                ).delete(synchronize_session=False)
+            else:
+                session.query(JellyseerrRequest).delete()
+
+            session.commit()
+            return len(incoming_ids)
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore salvataggio Jellyseerr: {exc}") from exc
+        finally:
+            session.close()
+
+    def load_jellyseerr_request_state(self) -> Dict[str, Dict[str, Any]]:
+        session = self._get_session()
+        try:
+            rows = session.query(JellyseerrRequest).all()
+            state: Dict[str, Dict[str, Any]] = {}
+            for row in rows:
+                if not row.request_id:
+                    continue
+                state[str(row.request_id)] = {
+                    "tmdb_id": row.tmdb_id,
+                    "media_type": row.media_type,
+                    "status": row.status,
+                    "status_label": row.status_label,
+                    "requested_by": row.requested_by,
+                    "created_at": row.created_at,
+                    "updated_at": row.updated_at,
+                    "payload": row.payload or {}
+                }
+            return state
+        finally:
+            session.close()
+
+    def load_jellyseerr_requests(self) -> List[Dict[str, Any]]:
+        session = self._get_session()
+        try:
+            rows = session.query(JellyseerrRequest).order_by(JellyseerrRequest.updated_at.desc()).all()
+            payloads = []
+            for row in rows:
+                payload = row.payload or {}
+                if isinstance(payload, dict):
+                    payloads.append(payload)
+            return payloads
+        finally:
+            session.close()
+
+    def get_jellyseerr_requests_last_updated(self) -> Optional[datetime]:
+        session = self._get_session()
+        try:
+            return session.query(func.max(JellyseerrRequest.updated_at)).scalar()
+        finally:
+            session.close()
+
+    def load_jellyseerr_request_index(
+        self,
+        tmdb_ids: List[str],
+        media_types: Optional[set[str]] = None
+    ) -> Dict[tuple[str, str], Dict[str, Any]]:
+        session = self._get_session()
+        try:
+            ids = [int(val) for val in tmdb_ids if str(val).isdigit()]
+            if not ids:
+                return {}
+            query = session.query(JellyseerrRequest).filter(JellyseerrRequest.tmdb_id.in_(ids))  # type: ignore[attr-defined]
+            if media_types:
+                query = query.filter(JellyseerrRequest.media_type.in_(list(media_types)))  # type: ignore[attr-defined]
+            rows = query.all()
+            index: Dict[tuple[str, str], Dict[str, Any]] = {}
+            for row in rows:
+                if not row.tmdb_id or not row.media_type:
+                    continue
+                index[(row.media_type, str(row.tmdb_id))] = {
+                    "request_id": row.request_id,
+                    "status": row.status,
+                    "status_label": row.status_label,
+                    "requested_by": row.requested_by,
+                    "payload": row.payload or {}
+                }
+            return index
+        finally:
+            session.close()
+
+    # --- Emby latest state ---
+
+    # --- Emby image cache ---
+
+    def load_emby_image_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        if not cache_key:
+            return None
+        session = self._get_session()
+        try:
+            row = session.get(EmbyImageCache, cache_key)
+            if not row:
+                return None
+            if row.expires_at and row.expires_at < _utcnow():
+                session.delete(row)
+                session.commit()
+                return None
+            return {
+                "content_type": row.content_type,
+                "data": row.data
+            }
+        finally:
+            session.close()
+
+    def save_emby_image_cache(
+        self,
+        cache_key: str,
+        server_id: Optional[str],
+        item_id: Optional[str],
+        image_type: Optional[str],
+        max_width: Optional[int],
+        max_height: Optional[int],
+        tag: Optional[str],
+        scope: Optional[str],
+        content_type: str,
+        data: bytes,
+        ttl_seconds: int,
+        max_rows: int = 5000
+    ) -> None:
+        if not cache_key or not data:
+            return
+        session = self._get_session()
+        try:
+            expires_at = _utcnow() + timedelta(seconds=max(ttl_seconds, 0))
+            row = session.get(EmbyImageCache, cache_key)
+            if not row:
+                row = EmbyImageCache(cache_key=cache_key)
+            row.server_id = server_id  # type: ignore[assignment]
+            row.item_id = item_id  # type: ignore[assignment]
+            row.image_type = image_type  # type: ignore[assignment]
+            row.max_width = max_width  # type: ignore[assignment]
+            row.max_height = max_height  # type: ignore[assignment]
+            row.tag = tag  # type: ignore[assignment]
+            row.scope = scope  # type: ignore[assignment]
+            row.content_type = content_type  # type: ignore[assignment]
+            row.data = data  # type: ignore[assignment]
+            row.size = len(data)  # type: ignore[assignment]
+            row.created_at = _utcnow()  # type: ignore[assignment]
+            row.expires_at = expires_at  # type: ignore[assignment]
+            session.add(row)
+
+            # prune expired
+            session.query(EmbyImageCache).filter(EmbyImageCache.expires_at < _utcnow()).delete(synchronize_session=False)  # type: ignore[attr-defined]
+
+            if max_rows and max_rows > 0:
+                total = session.query(func.count(EmbyImageCache.cache_key)).scalar()  # type: ignore[attr-defined]
+                if total and total > max_rows:
+                    overflow = int(total - max_rows)
+                    old_rows = (
+                        session.query(EmbyImageCache.cache_key)
+                        .order_by(EmbyImageCache.created_at.asc())  # type: ignore[attr-defined]
+                        .limit(overflow)
+                        .all()
+                    )
+                    old_keys = [row_key for (row_key,) in old_rows]
+                    if old_keys:
+                        session.query(EmbyImageCache).filter(EmbyImageCache.cache_key.in_(old_keys)).delete(synchronize_session=False)  # type: ignore[attr-defined]
+
+            session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore salvataggio image cache: {exc}") from exc
+        finally:
+            session.close()
+
+    def load_latest_state(self) -> Dict[str, Any]:
+        session = self._get_session()
+        try:
+            state: Dict[str, Any] = {}
+
+            def _ensure_server(server_id: str) -> Dict[str, Any]:
+                server_state = state.setdefault(server_id, {})
+                if not isinstance(server_state.get("movies"), dict):
+                    server_state["movies"] = {"items": {}}
+                if not isinstance(server_state.get("series"), dict):
+                    server_state["series"] = {"items": {}}
+                return server_state
+
+            movie_rows = session.query(EmbyLatestStateMovie).all()
+            for row in movie_rows:
+                server_state = _ensure_server(row.server_id)
+                items = server_state["movies"].setdefault("items", {})
+                entry = {
+                    "title": row.title,
+                    "year": row.year,
+                    "last_seen_at": row.last_seen_at.isoformat() if isinstance(row.last_seen_at, datetime) else None,
+                    "media_source_keys": list(row.media_source_keys or []),
+                    "notified": bool(row.notified),
+                    "notified_at": row.notified_at.isoformat() if isinstance(row.notified_at, datetime) else "",
+                }
+                if row.item_id:
+                    entry["item_id"] = row.item_id
+                if row.signature:
+                    entry["signature"] = row.signature
+                items[row.state_key] = entry
+
+            series_rows = session.query(EmbyLatestStateSeries).all()
+            for row in series_rows:
+                server_state = _ensure_server(row.server_id)
+                series_items = server_state["series"].setdefault("items", {})
+                series_items[row.series_id] = {
+                    "series_id": row.series_id,
+                    "item_id": row.series_id,
+                    "title": row.title or "",
+                    "year": row.year,
+                    "last_seen_at": row.last_seen_at.isoformat() if isinstance(row.last_seen_at, datetime) else "",
+                    "episodes": {},
+                    "seasons": list(row.seasons or []),
+                    "last_changes": [],
+                    "notified": bool(row.notified),
+                    "notified_at": row.notified_at.isoformat() if isinstance(row.notified_at, datetime) else ""
+                }
+
+            episode_rows = session.query(EmbyLatestStateEpisode).all()
+            for row in episode_rows:
+                server_state = _ensure_server(row.server_id)
+                series_items = server_state["series"].setdefault("items", {})
+                series_entry = series_items.get(row.series_id)
+                if not isinstance(series_entry, dict):
+                    series_entry = {
+                        "series_id": row.series_id,
+                        "title": "",
+                        "year": None,
+                        "last_seen_at": "",
+                        "episodes": {},
+                        "seasons": [],
+                        "last_changes": [],
+                        "notified": False,
+                        "notified_at": ""
+                    }
+                    series_items[row.series_id] = series_entry
+                episodes = series_entry.setdefault("episodes", {})
+                episode_key = row.episode_key or row.episode_id or ""
+                if not episode_key:
+                    continue
+                episodes[episode_key] = {
+                    "season": row.season_number,
+                    "episode": row.episode_number,
+                    "title": row.title or "",
+                    "last_seen_at": row.last_seen_at.isoformat() if isinstance(row.last_seen_at, datetime) else "",
+                    "media_source_keys": list(row.media_source_keys or []),
+                    "key": row.episode_key,
+                    "episode_id": row.episode_id
+                }
+
+            group_rows = (
+                session.query(EmbyLatestStateSeriesGroup)
+                .order_by(EmbyLatestStateSeriesGroup.sort_index.asc(), EmbyLatestStateSeriesGroup.id.asc())  # type: ignore[attr-defined]
+                .all()
+            )
+            change_rows = (
+                session.query(EmbyLatestStateSeriesChange)
+                .order_by(EmbyLatestStateSeriesChange.sort_index.asc(), EmbyLatestStateSeriesChange.id.asc())  # type: ignore[attr-defined]
+                .all()
+            )
+
+            groups_by_id: Dict[int, Dict[str, Any]] = {}
+            groups_by_series: Dict[tuple[str, str], List[Dict[str, Any]]] = {}
+            for row in group_rows:
+                group = {
+                    "update_type": row.update_type,
+                    "update_label": row.update_label,
+                    "changes": [],
+                    "batch_id": row.batch_id,
+                    "added_at": row.added_at.isoformat() if isinstance(row.added_at, datetime) else ""
+                }
+                groups_by_id[row.id] = group
+                key = (row.server_id, row.series_id)
+                groups_by_series.setdefault(key, []).append(group)
+
+            for row in change_rows:
+                group = groups_by_id.get(row.group_id)
+                if not group:
+                    continue
+                group["changes"].append({
+                    "kind": row.kind,
+                    "label": row.label,
+                    "season_number": row.season_number,
+                    "episode_number": row.episode_number,
+                    "episode_title": row.episode_title,
+                    "quality": row.quality,
+                    "resolution": row.resolution,
+                    "video_codec": row.video_codec,
+                    "audio_codec": row.audio_codec,
+                    "audio_channels": row.audio_channels,
+                    "container": row.container,
+                    "bitrate": row.bitrate,
+                    "source_name": row.source_name,
+                    "path": row.path,
+                    "size": row.size,
+                    "media_source_id": row.media_source_id,
+                    "added_at": row.added_at.isoformat() if isinstance(row.added_at, datetime) else "",
+                    "video_details": row.video_details,
+                    "audio_details": row.audio_details,
+                    "audio_ita": row.audio_ita,
+                    "audio_eng": row.audio_eng,
+                    "audio_fra": row.audio_fra,
+                    "audio_spa": row.audio_spa,
+                    "audio_ger": row.audio_ger,
+                    "audio_jpn": row.audio_jpn,
+                    "audio_langs": row.audio_langs,
+                    "subtitle_langs": row.subtitle_langs
+                })
+
+            for (server_id, series_id), groups in groups_by_series.items():
+                server_state = _ensure_server(server_id)
+                series_items = server_state["series"].setdefault("items", {})
+                series_entry = series_items.get(series_id)
+                if isinstance(series_entry, dict):
+                    series_entry["last_changes"] = groups
+
+            return state
+        finally:
+            session.close()
+
+    def save_latest_state(self, state: Dict[str, Any]) -> None:
+        session = self._get_session()
+        try:
+            session.query(EmbyLatestStateSeriesChange).delete(synchronize_session=False)
+            session.query(EmbyLatestStateSeriesGroup).delete(synchronize_session=False)
+            session.query(EmbyLatestStateEpisode).delete(synchronize_session=False)
+            session.query(EmbyLatestStateMovie).delete(synchronize_session=False)
+            session.query(EmbyLatestStateSeries).delete(synchronize_session=False)
+
+            for server_id, server_state in (state or {}).items():
+                if not isinstance(server_state, dict):
+                    continue
+                movies_state = server_state.get("movies", {})
+                movie_items = movies_state.get("items") if isinstance(movies_state, dict) else {}
+                if isinstance(movie_items, dict):
+                    for state_key, entry in movie_items.items():
+                        if not state_key or not isinstance(entry, dict):
+                            continue
+                        row = EmbyLatestStateMovie(
+                            server_id=str(server_id),
+                            state_key=str(state_key),
+                            item_id=_normalize_text_value(entry.get("item_id")),
+                            signature=_normalize_text_value(entry.get("signature")),
+                            title=_normalize_text_value(entry.get("title")),
+                            year=_parse_int(entry.get("year")),
+                            last_seen_at=_parse_datetime_value(entry.get("last_seen_at")),
+                            media_source_keys=_normalize_text_array(entry.get("media_source_keys")),
+                            notified=bool(entry.get("notified")),
+                            notified_at=_parse_datetime_value(entry.get("notified_at"))
+                        )
+                        session.add(row)
+
+                series_state = server_state.get("series", {})
+                series_items = series_state.get("items") if isinstance(series_state, dict) else {}
+                if isinstance(series_items, dict):
+                    for series_id, entry in series_items.items():
+                        if not series_id or not isinstance(entry, dict):
+                            continue
+                        row = EmbyLatestStateSeries(
+                            server_id=str(server_id),
+                            series_id=str(series_id),
+                            title=_normalize_text_value(entry.get("title")),
+                            year=_parse_int(entry.get("year")),
+                            last_seen_at=_parse_datetime_value(entry.get("last_seen_at")),
+                            seasons=_normalize_int_array(entry.get("seasons")),
+                            notified=bool(entry.get("notified")),
+                            notified_at=_parse_datetime_value(entry.get("notified_at"))
+                        )
+                        session.add(row)
+
+                        episodes = entry.get("episodes")
+                        if isinstance(episodes, dict):
+                            for episode_key, ep_entry in episodes.items():
+                                if not episode_key or not isinstance(ep_entry, dict):
+                                    continue
+                                session.add(EmbyLatestStateEpisode(
+                                    server_id=str(server_id),
+                                    series_id=str(series_id),
+                                    episode_key=str(episode_key),
+                                    episode_id=_normalize_text_value(ep_entry.get("episode_id")),
+                                    season_number=_parse_int(ep_entry.get("season") or ep_entry.get("season_number")),
+                                    episode_number=_parse_int(ep_entry.get("episode") or ep_entry.get("episode_number")),
+                                    title=_normalize_text_value(ep_entry.get("title")),
+                                    last_seen_at=_parse_datetime_value(ep_entry.get("last_seen_at")),
+                                    media_source_keys=_normalize_text_array(ep_entry.get("media_source_keys"))
+                                ))
+
+                        last_changes = entry.get("last_changes")
+                        if isinstance(last_changes, list):
+                            for group_index, group in enumerate(last_changes):
+                                if not isinstance(group, dict):
+                                    continue
+                                group_row = EmbyLatestStateSeriesGroup(
+                                    server_id=str(server_id),
+                                    series_id=str(series_id),
+                                    sort_index=group_index,
+                                    update_type=_normalize_text_value(group.get("update_type")),
+                                    update_label=_normalize_text_value(group.get("update_label")),
+                                    batch_id=_normalize_text_value(group.get("batch_id")),
+                                    added_at=_parse_datetime_value(group.get("added_at"))
+                                )
+                                session.add(group_row)
+                                session.flush()
+                                changes = group.get("changes")
+                                if isinstance(changes, list):
+                                    for idx, change in enumerate(changes):
+                                        if not isinstance(change, dict):
+                                            continue
+                                        session.add(EmbyLatestStateSeriesChange(
+                                            group_id=group_row.id,
+                                            sort_index=idx,
+                                            kind=_normalize_text_value(change.get("kind")),
+                                            label=_normalize_text_value(change.get("label")),
+                                            season_number=_parse_int(change.get("season_number")),
+                                            episode_number=_parse_int(change.get("episode_number")),
+                                            episode_title=_normalize_text_value(change.get("episode_title")),
+                                            quality=_normalize_text_value(change.get("quality")),
+                                            resolution=_normalize_text_value(change.get("resolution")),
+                                            video_codec=_normalize_text_value(change.get("video_codec")),
+                                            audio_codec=_normalize_text_value(change.get("audio_codec")),
+                                            audio_channels=_normalize_text_value(change.get("audio_channels")),
+                                            container=_normalize_text_value(change.get("container")),
+                                            bitrate=_normalize_text_value(change.get("bitrate")),
+                                            source_name=_normalize_text_value(change.get("source_name")),
+                                            path=_normalize_text_value(change.get("path")),
+                                            size=_parse_int(change.get("size")),
+                                            media_source_id=_normalize_text_value(change.get("media_source_id")),
+                                            added_at=_parse_datetime_value(change.get("added_at")),
+                                            video_details=_normalize_text_value(change.get("video_details")),
+                                            audio_details=_normalize_text_value(change.get("audio_details")),
+                                            audio_ita=_normalize_text_value(change.get("audio_ita")),
+                                            audio_eng=_normalize_text_value(change.get("audio_eng")),
+                                            audio_fra=_normalize_text_value(change.get("audio_fra")),
+                                            audio_spa=_normalize_text_value(change.get("audio_spa")),
+                                            audio_ger=_normalize_text_value(change.get("audio_ger")),
+                                            audio_jpn=_normalize_text_value(change.get("audio_jpn")),
+                                            audio_langs=_normalize_text_value(change.get("audio_langs")),
+                                            subtitle_langs=_normalize_text_value(change.get("subtitle_langs"))
+                                        ))
+
+            session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore salvataggio latest state: {exc}") from exc
+        finally:
+            session.close()
+
+    def clear_latest_state(self) -> None:
+        session = self._get_session()
+        try:
+            session.query(EmbyLatestStateSeriesChange).delete(synchronize_session=False)
+            session.query(EmbyLatestStateSeriesGroup).delete(synchronize_session=False)
+            session.query(EmbyLatestStateEpisode).delete(synchronize_session=False)
+            session.query(EmbyLatestStateMovie).delete(synchronize_session=False)
+            session.query(EmbyLatestStateSeries).delete(synchronize_session=False)
+            session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore pulizia latest state: {exc}") from exc
+        finally:
+            session.close()
+
+    def delete_latest_state_for_server(self, server_id: str) -> None:
+        if not server_id:
+            return
+        session = self._get_session()
+        try:
+            groups = session.query(EmbyLatestStateSeriesGroup).filter(EmbyLatestStateSeriesGroup.server_id == server_id).all()  # type: ignore[attr-defined]
+            group_ids = [row.id for row in groups]
+            if group_ids:
+                session.query(EmbyLatestStateSeriesChange).filter(EmbyLatestStateSeriesChange.group_id.in_(group_ids)).delete(synchronize_session=False)  # type: ignore[attr-defined]
+            session.query(EmbyLatestStateSeriesGroup).filter(EmbyLatestStateSeriesGroup.server_id == server_id).delete(synchronize_session=False)  # type: ignore[attr-defined]
+            session.query(EmbyLatestStateEpisode).filter(EmbyLatestStateEpisode.server_id == server_id).delete(synchronize_session=False)  # type: ignore[attr-defined]
+            session.query(EmbyLatestStateMovie).filter(EmbyLatestStateMovie.server_id == server_id).delete(synchronize_session=False)  # type: ignore[attr-defined]
+            session.query(EmbyLatestStateSeries).filter(EmbyLatestStateSeries.server_id == server_id).delete(synchronize_session=False)  # type: ignore[attr-defined]
+            session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore rimozione latest state per server: {exc}") from exc
+        finally:
+            session.close()
+
+    # --- Latest progress tracking ---
+
+    def save_latest_progress(self, progress: Dict[str, Any]) -> None:
+        """
+        Save progress tracking data for Latest refresh operations.
+
+        Args:
+            progress: Dict with keys: state, total, completed, message, started_at
+        """
+        if not isinstance(progress, dict):
+            return
+        session = self._get_session()
+        try:
+            row = session.query(EmbyLatestProgress).filter(EmbyLatestProgress.id == 1).first()  # type: ignore[attr-defined]
+            if row:
+                row.state = str(progress.get("state", "idle"))
+                row.total = int(progress.get("total", 0))
+                row.completed = int(progress.get("completed", 0))
+                row.message = _normalize_text_value(progress.get("message"))
+                row.started_at = _parse_datetime_value(progress.get("started_at"))
+            else:
+                row = EmbyLatestProgress(
+                    id=1,
+                    state=str(progress.get("state", "idle")),
+                    total=int(progress.get("total", 0)),
+                    completed=int(progress.get("completed", 0)),
+                    message=_normalize_text_value(progress.get("message")),
+                    started_at=_parse_datetime_value(progress.get("started_at"))
+                )
+                session.add(row)
+            session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore salvataggio latest progress: {exc}") from exc
+        finally:
+            session.close()
+
+    def load_latest_progress(self) -> Dict[str, Any]:
+        """
+        Load progress tracking data from database.
+
+        Returns:
+            Dict with keys: state, total, completed, message, started_at, updated_at
+        """
+        session = self._get_session()
+        try:
+            row = session.query(EmbyLatestProgress).filter(EmbyLatestProgress.id == 1).first()  # type: ignore[attr-defined]
+            if not row:
+                return {
+                    "state": "idle",
+                    "total": 0,
+                    "completed": 0,
+                    "message": "",
+                    "started_at": None,
+                    "updated_at": None
+                }
+            return {
+                "state": str(row.state) if row.state else "idle",
+                "total": int(row.total) if row.total is not None else 0,
+                "completed": int(row.completed) if row.completed is not None else 0,
+                "message": str(row.message) if row.message else "",
+                "started_at": row.started_at.isoformat() if row.started_at else None,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None
+            }
         finally:
             session.close()
 

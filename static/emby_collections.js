@@ -39,6 +39,19 @@
         setTimeout(() => toast.remove(), 4500);
     };
 
+    const openConfirmDialog = (message, title = 'Conferma') => {
+        if (window.octohubUtils && typeof window.octohubUtils.openConfirmModal === 'function') {
+            return window.octohubUtils.openConfirmModal(title, message);
+        }
+        const fallbackMsg = message || 'Modale non disponibile: azione annullata.';
+        if (typeof showToast === 'function') {
+            showToast(fallbackMsg, 'warning');
+            return Promise.resolve(false);
+        }
+        console.warn(fallbackMsg);
+        return Promise.resolve(false);
+    };
+
     const form = document.getElementById('collection-form');
     const formStatus = document.getElementById('collection-form-status');
     const nameInput = document.getElementById('collection-name');
@@ -1573,7 +1586,7 @@
     };
 
     const handleSyncAll = async () => {
-        const confirmed = window.confirm(
+        const confirmed = await openConfirmDialog(
             'Vuoi sincronizzare tutte le collezioni? Le collezioni disabilitate o rimosse verranno eliminate da Emby.'
         );
         if (!confirmed) {
@@ -1626,7 +1639,9 @@
         }
         const entry = state.collections.find((item) => item.id === collectionId);
         const label = entry ? entry.name || 'la collezione' : 'la collezione';
-        const confirmed = window.confirm(`Confermi la cancellazione di ${label}? Questa operazione rimuoverà anche la collezione su Emby se esistente.`);
+        const confirmed = await openConfirmDialog(
+            `Confermi la cancellazione di ${label}? Questa operazione rimuoverà anche la collezione su Emby se esistente.`
+        );
         if (!confirmed) {
             return;
         }

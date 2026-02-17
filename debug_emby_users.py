@@ -3,7 +3,7 @@ import sys
 import json
 import copy
 from config import CONFIG_FILE, DEFAULT_CONFIG, _merge_emby_settings
-from api_clients import _fetch_emby_users_list
+from emby_users.api_client import _fetch_emby_users_list
 
 # Mock load_config
 def load_config():

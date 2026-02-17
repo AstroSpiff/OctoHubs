@@ -87,19 +87,7 @@ __all__ = [
     "search_tmdb",
     "get_tmdb_tv_details",
     "check_emby_availability",
-    "check_jellyseerr_availability",
-    "_fetch_emby_users_list",
-    "_fetch_emby_user_details",
-    "_update_emby_user_policy",
-    "_update_emby_user_configuration",
-    "_update_emby_user_password",
-    "_rename_emby_user",
-    "_create_emby_user",
-    "_fetch_emby_user_items_for_sync",
-    "_fetch_emby_user_last_playback",
-    "_mark_emby_item_played",
-    "_mark_emby_item_played",
-    "_mark_emby_item_unplayed"
+    "check_jellyseerr_availability"
 ]
 
 
@@ -590,29 +578,34 @@ def _prepare_emby_servers_for_view(servers, lazy=False):
 
 # --- FUNZIONI JELLYSEERR ---
 
-def get_jellyseerr_requests(config, silent=False):
+def get_jellyseerr_requests(config, silent=False, return_status=False):
     """Recupera le richieste in sospeso da Jellyseerr."""
     if not silent:
         print("1. Recupero le richieste da Jellyseerr...")
     headers = {"X-Api-Key": config["JELLYSEERR_API_KEY"]}
     try:
         all_results = []
-        # Recupera sia le richieste in attesa (pending) che quelle approvate (approved)
-        for status in ["pending", "approved"]:
+        # Recupera richieste in attesa, approvate e disponibili (soddisfatte)
+        for status in ["pending", "approved", "available"]:
             if not silent:
                 print(f"   - Stato interrogato: {status}")
             params = {"take": 100, "skip": 0, "filter": status, "sort": "added"}
-            response = requests.get(f"{config['JELLYSEERR_URL']}/api/v1/request", headers=headers, params=params, timeout=10)
+            response = requests.get(
+                f"{config['JELLYSEERR_URL']}/api/v1/request",
+                headers=headers,
+                params=params,
+                timeout=10
+            )
             response.raise_for_status()
             data = response.json()
             all_results.extend(data.get("results", []))
         if not silent:
-            print(f"   -> Recuperate {len(all_results)} richieste (pendenti + approvate).")
-        return all_results
-    except requests.exceptions.RequestException as e:
+            print(f"   -> Recuperate {len(all_results)} richieste (pendenti + approvate + disponibili).")
+        return (all_results, True) if return_status else all_results
+    except (requests.exceptions.RequestException, ValueError) as e:
         if not silent:
             print(f"   -> Impossibile contattare Jellyseerr: {e}")
-        return []
+        return ([], False) if return_status else []
 
 
 # --- FUNZIONI QBITTORRENT ---
@@ -1682,253 +1675,3 @@ def check_jellyseerr_availability(tmdb_id, media_type, config):
         "icon": icon,
         "media_type": resolved_type or _normalize_media_type(media_type)
     }
-
-
-# --- FUNZIONI GESTIONE UTENTI EMBY ---
-
-def _fetch_emby_users_list(server):
-    """
-    Recupera la lista di tutti gli utenti dal server Emby.
-    """
-    success, payload = _call_emby_api(server, "Users")
-    if not success:
-        return [], payload
-    # Emby restituisce una lista diretta di oggetti User
-    if isinstance(payload, list):
-        return payload, None
-    return [], "Formato risposta inatteso"
-
-
-def _fetch_emby_user_details(server, user_id):
-    """
-    Recupera i dettagli completi di un utente, incluse Policy e Configuration.
-    """
-    if not user_id:
-        return None, "User ID mancante"
-    success, payload = _call_emby_api(server, f"Users/{user_id}")
-    if success:
-        return payload, None
-    return None, payload
-
-
-def _update_emby_user_policy(server, user_id, policy):
-    """
-    Aggiorna la policy di un utente (es. permessi, accessi).
-    """
-    if not user_id or not isinstance(policy, dict):
-        return False, "Dati non validi"
-    
-    # Emby richiede una POST su /Users/{Id}/Policy
-    success, payload = _call_emby_api(
-        server, 
-        f"Users/{user_id}/Policy", 
-        method="POST", 
-        json_payload=policy
-    )
-    return success, payload
-
-
-def _update_emby_user_configuration(server, user_id, configuration):
-    """
-    Aggiorna la configurazione utente (es. preferenze UI, lingua).
-    """
-    if not user_id or not isinstance(configuration, dict):
-        return False, "Dati non validi"
-        
-    # Emby richiede una POST su /Users/{Id}/Configuration
-    success, payload = _call_emby_api(
-        server, 
-        f"Users/{user_id}/Configuration", 
-        method="POST", 
-        json_payload=configuration
-    )
-    return success, payload
-
-
-def _rename_emby_user(server, user_id, new_name):
-    """
-    Rinomina un utente sul server Emby.
-    """
-    if not user_id or not new_name:
-        return False, "Dati mancanti"
-    
-    # 1. Fetch current user details
-    user_dto, err = _fetch_emby_user_details(server, user_id)
-    if err or not user_dto:
-        return False, f"Impossibile recuperare utente: {err}"
-    
-    # 2. Update Name
-    user_dto["Name"] = new_name
-    
-    # CRITICAL: Remove Password fields to prevent accidental reset!
-    # Emby API /Users/{Id} POST update might clear password if these are present but empty/null.
-    # We strip them to be safe.
-    keys_to_remove = ["Password", "OriginalPassword", "EasyPassword", "Salt", "PasswordSalt", "ConnectPassword"]
-    for k in keys_to_remove:
-        user_dto.pop(k, None)
-    
-    # 3. Post update
-    # Endpoint: /Users/{Id}
-    success, payload = _call_emby_api(
-        server, 
-        f"Users/{user_id}", 
-        method="POST", 
-        json_payload=user_dto
-    )
-    return success, payload
-
-
-def _update_emby_user_password(server, user_id, new_password):
-    """
-    Aggiorna la password dell'utente.
-    Richiede privilegi amministrativi (API Key) per ignorare la password corrente.
-    """
-    if not user_id:
-        return False, "User ID mancante"
-    
-    # Endpoint: /Users/{Id}/Password
-    payload = {
-        "Id": user_id,
-        "NewPw": new_password
-        # "CurrentPassword": "" # Admin can typically omit this
-    }
-    
-    success, resp = _call_emby_api(
-        server, 
-        f"Users/{user_id}/Password", 
-        method="POST", 
-        json_payload=payload
-    )
-    return success, resp
-
-
-def _fetch_emby_user_last_playback(server, user_id):
-    """
-    Recupera l'ultimo elemento riprodotto dall'utente.
-    """
-    if not user_id:
-        return None
-        
-    params = {
-        "Recursive": "true",
-        "Limit": 1,
-        "SortBy": "DatePlayed",
-        "SortOrder": "Descending",
-        "Filters": "IsPlayed",
-        "IncludeItemTypes": "Movie,Episode",
-        "Fields": "DatePlayed,Name,SeriesName"
-    }
-    
-    success, payload = _call_emby_api(server, f"Users/{user_id}/Items", params=params)
-    if not success or not isinstance(payload, dict):
-        return None
-        
-    items = payload.get("Items", [])
-    if items:
-        return items[0]
-    return None
-
-
-def _create_emby_user(server, name, copy_from_user_id=None):
-    """
-    Creates a new user on the Emby server.
-    """
-    params = {"Name": name}
-    if copy_from_user_id:
-        params["CopyFromUserId"] = copy_from_user_id
-    
-    success, payload = _call_emby_api(
-        server, 
-        "Users/New", 
-        method="POST", 
-        json_payload=params
-    )
-    return success, payload
-
-
-def _fetch_emby_user_items_for_sync(server, user_id):
-    """
-    Scarica tutti gli elementi (Film/Episodi) visti o in corso per l'utente,
-    con ProviderIds per il matching.
-    """
-    if not user_id:
-        return [], "User ID mancante"
-
-    # Filtriamo per Items ricorsivi, solo Video (Movie, Episode),
-    # richiediamo ProviderIds e UserData.
-    # Utile filtrare anche "IsPlayed=true" o "IsResumable=true" per ridurre il carico,
-    # ma se vogliamo sincronizzare tutto lo storico (anche play count > 0), meglio prendere tutto
-    # ciò che ha UserData != null. Emby non ha un filtro "HasUserData", ma possiamo usare
-    # "Recursive=true" e poi filtrare lato client, oppure filtrare per "IsPlayed=true,IsResumable=true"
-    # in due chiamate o OR se supportato. 
-    # Per semplicità di sync (copiare esattamente lo stato), prendiamo tutto ciò che è Played o ha resume.
-    
-    params = {
-        "Recursive": "true",
-        "Fields": "ProviderIds,UserData,SeriesName,ParentIndexNumber,IndexNumber,ProductionYear,Name,OriginalTitle",
-        "IncludeItemTypes": "Movie,Episode",
-        "IsPlayed": "true" 
-    }
-    
-    # 1. Recupera elementi visti
-    success, payload = _call_emby_api(server, f"Users/{user_id}/Items", params=params)
-    if not success:
-        return [], payload
-        
-    items = payload.get("Items", []) if isinstance(payload, dict) else []
-    
-    # 2. Recupera elementi parzialmente visti (Resumable) se non già inclusi
-    # Nota: IsPlayed=true include spesso anche quelli parziali se PlayCount > 0, 
-    # ma controlliamo esplicitamente i Resumable.
-    params_resume = {
-        "Recursive": "true",
-        "Fields": "ProviderIds,UserData,SeriesName,ParentIndexNumber,IndexNumber,ProductionYear,Name,OriginalTitle",
-        "IncludeItemTypes": "Movie,Episode",
-        "IsResumable": "true"
-    }
-    
-    success_res, payload_res = _call_emby_api(server, f"Users/{user_id}/Items", params=params_resume)
-    if success_res:
-        items_res = payload_res.get("Items", []) if isinstance(payload_res, dict) else []
-        # Merge by Id to avoid duplicates
-        seen_ids = set(i["Id"] for i in items)
-        for it in items_res:
-            if it["Id"] not in seen_ids:
-                items.append(it)
-                
-    return items, None
-
-
-def _mark_emby_item_played(server, user_id, item_id, date_played=None):
-    """
-    Segna un elemento come visto (Played).
-    """
-    if not user_id or not item_id:
-        return False, "ID mancanti"
-    
-    params = {}
-    if date_played:
-        params["DatePlayed"] = date_played
-        
-    success, payload = _call_emby_api(
-        server, 
-        f"Users/{user_id}/PlayedItems/{item_id}", 
-        method="POST",
-        json_payload=params
-    )
-    return success, payload
-
-
-def _mark_emby_item_unplayed(server, user_id, item_id):
-    """
-    Rimuove lo stato 'visto' da un elemento.
-    """
-    if not user_id or not item_id:
-        return False, "ID mancanti"
-        
-    success, payload = _call_emby_api(
-        server, 
-        f"Users/{user_id}/PlayedItems/{item_id}", 
-        method="DELETE"
-    )
-    return success, payload

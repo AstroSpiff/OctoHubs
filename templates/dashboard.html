@@ -795,6 +795,11 @@
                         {% else %}
                             <p class="tagline">Non sono disponibili dati in cache. Usa "Aggiorna lista" per recuperare le richieste da Jellyseerr.</p>
                         {% endif %}
+                        {% if requests_refresh_warning %}
+                            <p class="tagline" style="color: #f59e0b;">
+                                Avviso: {{ requests_refresh_warning }}{% if requests_refresh_warning_at %} ({{ requests_refresh_warning_at }}){% endif %}
+                            </p>
+                        {% endif %}
                         {% if requests_overview %}
                             <div class="tabs requests-tabs">
                                 <button class="tab-btn active" data-tab="requests-movies">Film ({{ movie_requests|length }})</button>

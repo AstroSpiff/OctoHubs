@@ -5,6 +5,7 @@ Modulo per la gestione della configurazione statica e di default dell'applicazio
 
 import copy
 import json
+import logging
 import os
 import uuid
 from typing import Any, Dict, Optional
@@ -18,6 +19,8 @@ from utils import (
     DEFAULT_RESOLUTION_RULES,
     merge_nested_dict
 )
+
+logger = logging.getLogger(__name__)
 
 # --- COSTANTI ---
 CONFIG_FILE = os.environ.get("OCTOHUB_CONFIG_FILE", "config.json")
@@ -122,7 +125,10 @@ DEFAULT_CONFIG = {
     "TRAKT": {
         "ENABLED": False,
         "CLIENT_ID": "",
-        "ACCESS_TOKEN": ""
+        "CLIENT_SECRET": "",
+        "ACCESS_TOKEN": "",
+        "REFRESH_TOKEN": "",
+        "EXPIRES_AT": ""
     },
     "MDBLIST": {
         "API_KEY": ""
@@ -178,6 +184,21 @@ DEFAULT_CONFIG = {
         "AUTO_REFRESH_INTERVAL_MINUTES": 240,
         "AUTO_REFRESH_MODE": "interval",
         "AUTO_REFRESH_TIMES": []
+    },
+    "EMBY_LATEST": {
+        "ENABLED": True,
+        "VERSION": 2,
+        "CACHE_TTL_SECONDS": 60,
+        "MAX_ITEMS": 200,
+        "PER_SERVER_LIMIT": 50,
+        "RETENTION_DAYS": 30,
+        "BATCH_GAP_MINUTES": 180,
+        "BATCH_MIN_COUNT": 1,
+        "ENRICH_ENABLED": True,
+        "OMDB_CACHE_HOURS": 168,
+        "PRESETS": [],
+        "RULES": [],
+        "SETTINGS": {}
     }
 }
 
@@ -263,11 +284,44 @@ def _merge_database_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
 
     return merge_nested_dict(base, normalized_updates, skip_empty_strings=False)
 
+def _migrate_trakt_config_v1_to_v2(trakt_config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Migrate old Trakt config (missing REFRESH_TOKEN) to new format.
+
+    If REFRESH_TOKEN is missing but ACCESS_TOKEN exists, this indicates an old
+    configuration. Force re-authentication to enable automatic token refresh.
+
+    Args:
+        trakt_config: Trakt configuration dict
+
+    Returns:
+        Migrated configuration dict
+    """
+    if not isinstance(trakt_config, dict):
+        return trakt_config
+
+    has_access = bool(trakt_config.get("ACCESS_TOKEN"))
+    has_refresh = bool(trakt_config.get("REFRESH_TOKEN"))
+
+    if has_access and not has_refresh:
+        # Old config detected - force re-auth
+        logger.warning(
+            "Trakt configuration needs update for automatic token refresh. "
+            "Please re-authenticate via device flow in configuration page."
+        )
+        trakt_config["ENABLED"] = False
+        trakt_config["ACCESS_TOKEN"] = ""  # Clear old token
+
+    return trakt_config
+
 def _merge_trakt_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
     """Unisci le impostazioni Trakt dell'utente con quelle di default."""
     base = copy.deepcopy(DEFAULT_CONFIG["TRAKT"])
     if not isinstance(user_settings, dict):
         return base
+
+    # Migrate old configs before merging
+    user_settings = _migrate_trakt_config_v1_to_v2(user_settings)
 
     # Normalize keys to uppercase and clean string values
     normalized_updates = {}
@@ -286,7 +340,16 @@ def _merge_trakt_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
     merged = merge_nested_dict(base, normalized_updates, skip_empty_strings=False)
 
     # Auto-disable if credentials are missing
-    if merged.get("CLIENT_ID") and merged.get("ACCESS_TOKEN"):
+    # All fields required for automatic token refresh
+    required_fields = ["CLIENT_ID", "CLIENT_SECRET", "ACCESS_TOKEN", "REFRESH_TOKEN"]
+    has_all_credentials = all(merged.get(field) for field in required_fields)
+
+    # Debug logging
+    missing_fields = [field for field in required_fields if not merged.get(field)]
+    if missing_fields:
+        logger.warning(f"Trakt missing fields: {missing_fields}. Current merged config: {merged}")
+
+    if has_all_credentials:
         merged["ENABLED"] = bool(merged.get("ENABLED"))
     else:
         merged["ENABLED"] = False

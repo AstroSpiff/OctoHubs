@@ -1999,3 +1999,32 @@ select.form-input.compact[multiple] option {
     align-self: flex-start; /* Prevent stretching in flex container */
     padding: 0 0.5rem; /* Ensure padding fits height */
 }
+
+.wizard-source-sticky {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--bg-card);
+    padding: 0.5rem 0;
+    margin-bottom: 1rem;
+}
+
+.bulk-clone-rename-header {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 1rem;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin-bottom: 0.35rem;
+}
+
+.bulk-clone-source-list {
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.bulk-clone-target-list {
+    overflow-y: hidden;
+}

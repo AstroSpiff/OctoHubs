@@ -5,6 +5,155 @@ let currentIconData = null;
 
 // showToast is already defined globally in emby.js
 
+function getServerDisplayName(user) {
+    return (user.server_alias || user.server_name || user.server_id || '').trim();
+}
+
+function createServerIconElement(user) {
+    if (!user.server_icon) return null;
+    const icon = document.createElement('i');
+    const style = user.server_icon_style === 'regular' ? 'fa-regular' : 'fa-solid';
+    icon.className = `${style} ${user.server_icon}`;
+    icon.style.color = user.server_icon_color || 'inherit';
+    icon.style.marginRight = '0.35rem';
+    return icon;
+}
+
+function buildServerLabelElement(user) {
+    const wrapper = document.createElement('span');
+    wrapper.style.display = 'inline-flex';
+    wrapper.style.alignItems = 'center';
+    const icon = createServerIconElement(user);
+    if (icon) wrapper.appendChild(icon);
+    wrapper.appendChild(document.createTextNode(getServerDisplayName(user)));
+    return wrapper;
+}
+
+function buildUserLabelElement(user) {
+    const label = document.createElement('span');
+    label.style.display = 'inline-flex';
+    label.style.alignItems = 'center';
+    const username = user.username || user.name || 'Utente';
+    label.appendChild(document.createTextNode(username));
+    label.appendChild(document.createTextNode(' ('));
+    label.appendChild(buildServerLabelElement(user));
+    label.appendChild(document.createTextNode(')'));
+    return label;
+}
+
+function buildUserChipElement(user) {
+    const chip = document.createElement('span');
+    chip.style.display = 'inline-flex';
+    chip.style.alignItems = 'center';
+    chip.style.padding = '0.15rem 0.45rem';
+    chip.style.borderRadius = '999px';
+    chip.style.border = '1px solid var(--border-color)';
+    chip.style.background = 'var(--bg-main)';
+    chip.style.fontSize = '0.8rem';
+    chip.appendChild(buildUserLabelElement(user));
+    return chip;
+}
+
+function renderUserChips(container, users) {
+    if (!container) return;
+    container.innerHTML = '';
+    container.style.display = 'flex';
+    container.style.flexWrap = 'wrap';
+    container.style.gap = '0.4rem';
+    users.forEach(u => container.appendChild(buildUserChipElement(u)));
+}
+
+function getServerDisplayNameFromServer(server) {
+    return (server.alias || server.name || server.original_name || server.url || server.id || '').trim();
+}
+
+function buildServerChipElement(server) {
+    const chip = document.createElement('span');
+    chip.style.display = 'inline-flex';
+    chip.style.alignItems = 'center';
+    chip.style.padding = '0.15rem 0.45rem';
+    chip.style.borderRadius = '999px';
+    chip.style.border = '1px solid var(--border-color)';
+    chip.style.background = 'var(--bg-main)';
+    chip.style.fontSize = '0.8rem';
+
+    const iconClass = server.icon || 'fa-server';
+    const style = server.icon_style === 'regular' ? 'fa-regular' : 'fa-solid';
+    const icon = document.createElement('i');
+    icon.className = `${style} ${iconClass}`;
+    icon.style.color = server.icon_color || 'inherit';
+    icon.style.marginRight = '0.35rem';
+    chip.appendChild(icon);
+    chip.appendChild(document.createTextNode(getServerDisplayNameFromServer(server)));
+    return chip;
+}
+
+function renderServerChips(container, servers) {
+    if (!container) return;
+    container.innerHTML = '';
+    container.style.display = 'flex';
+    container.style.flexWrap = 'wrap';
+    container.style.gap = '0.4rem';
+    servers.forEach(s => container.appendChild(buildServerChipElement(s)));
+}
+
+function openConfirmModal(title, message, confirmText = 'Conferma', cancelText = 'Annulla') {
+    const utils = window.octohubUtils;
+    if (utils && typeof utils.openConfirmModal === 'function') {
+        return utils.openConfirmModal(title, message, confirmText, cancelText);
+    }
+    const fallbackMsg = message || title || 'Modale non disponibile: azione annullata.';
+    if (typeof window.showToast === 'function') {
+        window.showToast(fallbackMsg, 'warning');
+        return Promise.resolve(false);
+    }
+    console.warn(fallbackMsg);
+    return Promise.resolve(false);
+}
+
+function openAlertModal(title, message, confirmText = 'OK') {
+    const utils = window.octohubUtils;
+    if (utils && typeof utils.openAlertModal === 'function') {
+        return utils.openAlertModal(title, message, confirmText);
+    }
+    const fallbackMsg = message || title || 'Messaggio';
+    if (typeof window.showToast === 'function') {
+        window.showToast(fallbackMsg, 'error');
+        return Promise.resolve(null);
+    }
+    console.error(fallbackMsg);
+    return Promise.resolve(null);
+}
+
+function openPromptModal(title, message, defaultValue = '', options = {}) {
+    const utils = window.octohubUtils;
+    if (utils && typeof utils.openPromptModal === 'function') {
+        return utils.openPromptModal(title, message, defaultValue, options);
+    }
+    const fallbackMsg = message || title || 'Modale non disponibile: azione annullata.';
+    if (typeof window.showToast === 'function') {
+        window.showToast(fallbackMsg, 'warning');
+        return Promise.resolve(null);
+    }
+    console.warn(fallbackMsg);
+    return Promise.resolve(null);
+}
+
+function openConfirmModalRich(title, messageNode, confirmText = 'Conferma', cancelText = 'Annulla') {
+    const utils = window.octohubUtils;
+    if (utils && typeof utils.openConfirmModalRich === 'function') {
+        return utils.openConfirmModalRich(title, messageNode, confirmText, cancelText);
+    }
+    const fallbackText = messageNode ? messageNode.textContent : '';
+    const fallbackMsg = fallbackText || title || 'Modale non disponibile: azione annullata.';
+    if (typeof window.showToast === 'function') {
+        window.showToast(fallbackMsg, 'warning');
+        return Promise.resolve(false);
+    }
+    console.warn(fallbackMsg);
+    return Promise.resolve(false);
+}
+
 async function loadEmbyUsers(force = false) {
     if (!force && currentUsersData) return;
 
@@ -351,6 +500,10 @@ function renderEmbyUsers(data) {
     regularGroups.forEach(group => {
         const groupEl = document.getElementById('tpl-group-container').content.cloneNode(true);
         const nameContainer = groupEl.querySelector('.group-name');
+        const groupContainer = groupEl.querySelector('.group-container');
+        if (groupContainer) {
+            groupContainer.dataset.groupId = group.id;
+        }
         
         // Render name and edit button
         nameContainer.innerHTML = ''; // Clear text content
@@ -435,18 +588,48 @@ function renderEmbyUsers(data) {
              typeSelect.appendChild(optOneWay);
              
              chk.onclick = (e) => e.stopPropagation(); 
+             const resumeLabel = document.createElement('label');
+             resumeLabel.style.display = 'flex';
+             resumeLabel.style.flexDirection = 'row';
+             resumeLabel.style.alignItems = 'center';
+             resumeLabel.style.gap = '0.3rem';
+             resumeLabel.style.cursor = 'pointer';
+             resumeLabel.title = "Sincronizza anche la posizione di ripresa (resume)";
+             resumeLabel.style.whiteSpace = 'nowrap';
+
+             const resumeChk = document.createElement('input');
+             resumeChk.type = 'checkbox';
+             resumeChk.checked = group.sync_resume || false;
+             resumeChk.style.margin = '0';
+             resumeChk.disabled = !chk.checked;
+
+             resumeLabel.appendChild(resumeChk);
+             const resumeText = document.createElement('span');
+             resumeText.textContent = 'Resume';
+             resumeLabel.appendChild(resumeText);
+
              chk.onchange = () => {
                  typeSelect.disabled = !chk.checked;
-                 saveGroupSettings(group.id, chk.checked, typeSelect.value);
+                 resumeChk.disabled = !chk.checked;
+                 if (!chk.checked) {
+                     resumeChk.checked = false;
+                 }
+                 saveGroupSettings(group.id, chk.checked, typeSelect.value, resumeChk.checked);
              };
              
              typeSelect.onclick = (e) => e.stopPropagation();
              typeSelect.onchange = () => {
-                 saveGroupSettings(group.id, chk.checked, typeSelect.value);
+                 saveGroupSettings(group.id, chk.checked, typeSelect.value, resumeChk.checked);
+             };
+
+             resumeChk.onclick = (e) => e.stopPropagation();
+             resumeChk.onchange = () => {
+                 saveGroupSettings(group.id, chk.checked, typeSelect.value, resumeChk.checked);
              };
              
              syncControls.appendChild(chkLabel);
              syncControls.appendChild(typeSelect);
+             syncControls.appendChild(resumeLabel);
              
              // Insert BEFORE the select (or the profile container if already wrapped, but we haven't wrapped yet in this flow)
              // The wrapper logic is below. We insert syncControls into rightContainer first.
@@ -484,7 +667,16 @@ function renderEmbyUsers(data) {
              // Determine current binding
              let currentProfileId = '';
              
-             if (group.is_linked) {
+             if (group.is_owners) {
+                 // Owners: show selected only if all users share the same binding
+                 if (currentIconData.bindings) {
+                     const bound = group.users
+                         .map(u => currentIconData.bindings[`user:${u.server_id}:${u.user_id}`])
+                         .filter(Boolean);
+                     const unique = Array.from(new Set(bound));
+                     if (unique.length === 1) currentProfileId = unique[0];
+                 }
+             } else if (group.is_linked) {
                  // Group Binding
                  if (currentIconData.bindings && currentIconData.bindings[`group:${group.id}`]) {
                      currentProfileId = currentIconData.bindings[`group:${group.id}`];
@@ -503,6 +695,28 @@ function renderEmbyUsers(data) {
 
              select.onchange = async (e) => {
                  const newProfileId = e.target.value;
+                 if (!newProfileId) return;
+
+                 if (group.is_owners) {
+                     const promises = group.users.map(u => {
+                         const targetId = `${u.server_id}:${u.user_id}`;
+                         if (currentIconData && currentIconData.bindings) {
+                             currentIconData.bindings[`user:${targetId}`] = newProfileId;
+                         }
+                         return fetch('/api/emby/icons/binding', { 
+                             method: 'POST', 
+                             body: new URLSearchParams({
+                                 'target_type': 'user',
+                                 'target_id': targetId,
+                                 'profile_id': newProfileId
+                             })
+                         });
+                     });
+                     await Promise.all(promises);
+                     updateIconsInPlace();
+                     return;
+                 }
+
                  const type = group.is_linked ? 'group' : 'user';
                  const id = group.is_linked ? group.id : (group.users[0] ? `${group.users[0].server_id}:${group.users[0].user_id}` : null);
                  
@@ -633,10 +847,10 @@ function createUserCard(user, options = {}) {
     if (statusInd) {
         if (user.is_disabled) {
             statusInd.style.background = 'var(--color-danger)';
-            statusInd.title = 'Disabilitato';
+            statusInd.title = 'Connessione remota disabilitata';
         } else {
             statusInd.style.background = 'var(--color-success)';
-            statusInd.title = 'Attivo';
+            statusInd.title = 'Connessione remota attiva';
         }
     }
 
@@ -659,7 +873,7 @@ function createUserCard(user, options = {}) {
                 if (user.is_disabled) {
                     leaderIcon.style.opacity = '0.5';
                     leaderIcon.style.cursor = 'not-allowed';
-                    leaderIcon.title = 'Impossibile impostare: utente disabilitato';
+                    leaderIcon.title = 'Impossibile impostare: connessione remota disabilitata';
                 } else {
                     leaderIcon.onclick = (e) => {
                         e.stopPropagation();
@@ -686,6 +900,12 @@ function createUserCard(user, options = {}) {
         chk.dataset.username = user.name;
         chk.dataset.groupId = options.groupId || '';
         chk.dataset.isDisabled = user.is_disabled;
+        chk.dataset.isLeader = user.is_leader === true;
+        chk.dataset.serverName = user.server_name || '';
+        chk.dataset.serverAlias = user.server_alias || '';
+        chk.dataset.serverIcon = user.server_icon || '';
+        chk.dataset.serverIconColor = user.server_icon_color || '';
+        chk.dataset.serverIconStyle = user.server_icon_style || '';
         chk.onchange = updateUserSelectionUI;
     }
 
@@ -754,10 +974,11 @@ function createUserCard(user, options = {}) {
             const btn = document.createElement('button');
             btn.className = 'icon-button';
             btn.title = 'Clona su un altro server';
+            btn.dataset.action = 'clone-user';
+            btn.dataset.userId = user.user_id;
+            btn.dataset.serverId = user.server_id;
+            btn.dataset.username = user.name || '';
             btn.innerHTML = '<i class="fa-solid fa-copy"></i>';
-            btn.onclick = () => {
-                openCloneModalForUser(user);
-            };
             actionsContainer.appendChild(btn);
         }
     }
@@ -785,6 +1006,8 @@ async function toggleUserRemote(serverId, userId, btnElement) {
     
     // Optimistic Update
     user.enable_remote_access = newState;
+    user.is_disabled = !newState;
+    user.is_remote_disabled = !newState;
     if (btnElement) {
         if (newState) {
             btnElement.style.color = 'var(--color-success)';
@@ -793,6 +1016,21 @@ async function toggleUserRemote(serverId, userId, btnElement) {
             btnElement.style.color = 'var(--color-danger)';
             btnElement.title = 'Connessione remota disabilitata';
         }
+    }
+    const card = document.querySelector(`.user-card[data-user-id="${userId}"][data-server-id="${serverId}"]`);
+    if (card) {
+        const statusInd = card.querySelector('.status-indicator');
+        if (statusInd) {
+            if (user.is_disabled) {
+                statusInd.style.background = 'var(--color-danger)';
+                statusInd.title = 'Connessione remota disabilitata';
+            } else {
+                statusInd.style.background = 'var(--color-success)';
+                statusInd.title = 'Connessione remota attiva';
+            }
+        }
+        const chk = card.querySelector('.user-select-chk');
+        if (chk) chk.dataset.isDisabled = user.is_disabled;
     }
 
     const formData = new FormData();
@@ -806,6 +1044,8 @@ async function toggleUserRemote(serverId, userId, btnElement) {
     } catch (e) {
         // Revert UI
         user.enable_remote_access = oldState;
+        user.is_disabled = !oldState;
+        user.is_remote_disabled = !oldState;
         if (btnElement) {
             if (oldState) {
                 btnElement.style.color = 'var(--color-success)';
@@ -815,7 +1055,21 @@ async function toggleUserRemote(serverId, userId, btnElement) {
                 btnElement.title = 'Connessione remota disabilitata';
             }
         }
-        alert("Errore cambio permessi connessione remota");
+        if (card) {
+            const statusInd = card.querySelector('.status-indicator');
+            if (statusInd) {
+                if (user.is_disabled) {
+                    statusInd.style.background = 'var(--color-danger)';
+                    statusInd.title = 'Connessione remota disabilitata';
+                } else {
+                    statusInd.style.background = 'var(--color-success)';
+                    statusInd.title = 'Connessione remota attiva';
+                }
+            }
+            const chk = card.querySelector('.user-select-chk');
+            if (chk) chk.dataset.isDisabled = user.is_disabled;
+        }
+        await openAlertModal("Errore", "Errore cambio permessi connessione remota");
     }
 }
 
@@ -858,7 +1112,7 @@ async function toggleUserDownload(serverId, userId, btnElement) {
                 btnElement.title = 'Scaricamento disabilitato';
             }
         }
-        alert("Errore cambio permessi scaricamento");
+        await openAlertModal("Errore", "Errore cambio permessi scaricamento");
     }
 }
 
@@ -892,12 +1146,12 @@ function toggleSelectLeaders(checked) {
 // --- CLONE WIZARD (Custom Modal) ---
 
 class CloneWizard {
-    constructor(sourceUser) {
-        this.sourceUser = sourceUser;
+    constructor() {
+        this.sourceUser = null;
         this.modal = document.getElementById('clone-user-modal');
         this.currentStep = 1;
         this.targetServerIds = [];
-        this.newUsername = sourceUser.name;
+        this.newUsername = '';
         
         // UI Elements
         this.steps = {
@@ -914,6 +1168,9 @@ class CloneWizard {
         this.serverList = document.getElementById('clone-target-list');
         this.nameInput = document.getElementById('clone-new-username');
         this.nameError = document.getElementById('clone-name-error');
+        this.sourceList = document.getElementById('clone-source-list');
+        this.sourceList2 = document.getElementById('clone-source-list-2');
+        this.sourceList3 = document.getElementById('clone-source-list-3');
         
         this.optConfig = document.getElementById('clone-opt-config');
         this.optPlaystate = document.getElementById('clone-opt-playstate');
@@ -921,10 +1178,24 @@ class CloneWizard {
         this.subtitle = document.getElementById('clone-modal-subtitle');
         
         this.bindEvents();
+    }
+
+    open(sourceUser) {
+        if (!sourceUser || !sourceUser.user_id || !sourceUser.server_id) {
+            if (typeof showToast === 'function') {
+                showToast('Utente non valido per clonazione.', 'error');
+            }
+            return;
+        }
+        this.sourceUser = sourceUser;
+        this.newUsername = sourceUser.name || '';
         this.init();
     }
     
     init() {
+        if (!this.sourceUser) {
+            return;
+        }
         // Populate servers
         let servers = [];
         if (currentUsersData && currentUsersData.servers) {
@@ -970,6 +1241,17 @@ class CloneWizard {
             label.appendChild(span);
             this.serverList.appendChild(label);
         });
+
+        const sourceUsers = [this.sourceUser];
+        if (this.sourceList) {
+            renderUserChips(this.sourceList, sourceUsers);
+        }
+        if (this.sourceList2) {
+            renderUserChips(this.sourceList2, sourceUsers);
+        }
+        if (this.sourceList3) {
+            renderUserChips(this.sourceList3, sourceUsers);
+        }
         
         // Reset state
         this.currentStep = 1;
@@ -1020,7 +1302,7 @@ class CloneWizard {
             this.targetServerIds = Array.from(this.serverList.querySelectorAll('input:checked')).map(cb => cb.value);
             
             if (this.targetServerIds.length === 0) {
-                alert("Seleziona almeno un server.");
+                await openAlertModal("Selezione server", "Seleziona almeno un server.");
                 return;
             }
             
@@ -1156,16 +1438,31 @@ class CloneWizard {
 }
 
 function openCustomCloneModal(user) {
-    new CloneWizard(user);
+    if (!user) return;
+    openBulkCloneModalForUsers([user]);
 }
 
 // Redirect old function
 async function openCloneModalForUser(user) {
-    openCustomCloneModal(user);
+    if (!user || !user.user_id || !user.server_id) {
+        if (typeof showToast === 'function') {
+            showToast('Utente non valido per clonazione.', 'error');
+        }
+        return;
+    }
+    openBulkCloneModalForUsers([user]);
 }
 
 async function toggleUserStatus(serverId, userId, currentDisabled) {
-    if (!confirm(`Vuoi ${currentDisabled ? 'abilitare' : 'disabilitare'} questo utente?`)) return;
+    const user = findUserInCache(serverId, userId) || { username: 'Utente', server_id: serverId };
+    const msg = document.createElement('div');
+    const line1 = document.createElement('div');
+    line1.textContent = `Vuoi ${currentDisabled ? 'abilitare' : 'disabilitare'} questo utente?`;
+    line1.style.marginBottom = '0.5rem';
+    msg.appendChild(line1);
+    msg.appendChild(buildUserLabelElement(user));
+    const ok = await openConfirmModalRich("Conferma", msg);
+    if (!ok) return;
     const formData = new FormData();
     formData.append('server_id', serverId);
     formData.append('user_id', userId);
@@ -1173,18 +1470,26 @@ async function toggleUserStatus(serverId, userId, currentDisabled) {
     
     const res = await fetch('/api/emby/users/toggle', { method: 'POST', body: formData });
     if (res.ok) loadEmbyUsers(true);
-    else alert("Errore cambio stato");
+    else await openAlertModal("Errore", "Errore cambio stato");
 }
 
 async function unlinkUser(serverId, userId, username) {
-    if (!confirm(`Dissociare l'utente ${username} dal gruppo?`)) return;
+    const user = findUserInCache(serverId, userId) || { username, server_id: serverId };
+    const msg = document.createElement('div');
+    const line1 = document.createElement('div');
+    line1.textContent = "Dissociare l'utente dal gruppo?";
+    line1.style.marginBottom = '0.5rem';
+    msg.appendChild(line1);
+    msg.appendChild(buildUserLabelElement(user));
+    const ok = await openConfirmModalRich("Conferma", msg);
+    if (!ok) return;
     const formData = new FormData();
     formData.append('server_id', serverId);
     formData.append('user_id', userId);
     
     const res = await fetch('/api/emby/users/unlink', { method: 'POST', body: formData });
     if (res.ok) loadEmbyUsers(true);
-    else alert("Errore dissociazione");
+    else await openAlertModal("Errore", "Errore dissociazione");
 }
 
 // Implemented: Set Leader using re-link logic
@@ -1194,14 +1499,37 @@ async function setGroupLeader(groupId, serverId, userId) {
     // Find the group
     const group = currentUsersData.groups.find(g => g.id === groupId);
     if (!group) {
-        alert("Gruppo non trovato.");
+        await openAlertModal("Errore", "Gruppo non trovato.");
         return;
     }
     
     const userToPromote = group.users.find(u => u.server_id === serverId && u.user_id === userId);
     if (!userToPromote) return;
 
-    if (!confirm(`Impostare ${userToPromote.name} (${userToPromote.server_name}) come Utente Principale del gruppo?`)) return;
+    const message = document.createElement('div');
+    const line1 = document.createElement('div');
+    line1.textContent = 'Impostare come Utente Principale del gruppo?';
+    line1.style.marginBottom = '0.5rem';
+
+    const line2 = document.createElement('div');
+    line2.style.display = 'flex';
+    line2.style.alignItems = 'center';
+    line2.style.gap = '0.5rem';
+    line2.appendChild(buildUserLabelElement({
+        username: userToPromote.name,
+        server_alias: userToPromote.server_alias,
+        server_name: userToPromote.server_name,
+        server_id: userToPromote.server_id,
+        server_icon: userToPromote.server_icon,
+        server_icon_color: userToPromote.server_icon_color,
+        server_icon_style: userToPromote.server_icon_style
+    }));
+
+    message.appendChild(line1);
+    message.appendChild(line2);
+
+    const ok = await openConfirmModalRich("Conferma", message);
+    if (!ok) return;
 
     // Optimistic Update: Update local state immediately
     group.users.forEach(u => {
@@ -1231,7 +1559,7 @@ async function setGroupLeader(groupId, serverId, userId) {
                     if (u.is_disabled) {
                         icon.style.opacity = '0.5';
                         icon.style.cursor = 'not-allowed';
-                        icon.title = 'Impossibile impostare: utente disabilitato';
+                        icon.title = 'Impossibile impostare: connessione remota disabilitata';
                         icon.onclick = null;
                     } else {
                         icon.style.opacity = '1';
@@ -1244,6 +1572,9 @@ async function setGroupLeader(groupId, serverId, userId) {
             }
         }
     });
+
+    // Reorder users in the DOM immediately (leader first)
+    reorderGroupUsers(groupId);
     
     // Refresh icons as they might depend on the leader
     if (currentIconData) updateIconsInPlace();
@@ -1263,16 +1594,34 @@ async function setGroupLeader(groupId, serverId, userId) {
         const res = await fetch('/api/emby/users/link', { method: 'POST', body: formData });
         if (!res.ok) {
             // Revert on error
-            alert("Errore salvataggio leader. Ricarico...");
+            await openAlertModal("Errore", "Errore salvataggio leader. Ricarico...");
             loadEmbyUsers(true);
         } else {
             // Success - Check if we need to refresh icons if they depend on leader
             if (currentIconData) updateIconsInPlace();
         }
     } catch (e) {
-        alert("Errore di connessione: " + e.message);
+        await openAlertModal("Errore", "Errore di connessione: " + e.message);
         loadEmbyUsers(true);
     }
+}
+
+function reorderGroupUsers(groupId) {
+    if (!currentUsersData) return;
+    const group = currentUsersData.groups.find(g => g.id === groupId);
+    if (!group) return;
+
+    group.users.sort((a, b) => (b.is_leader === true) - (a.is_leader === true));
+
+    const groupContainer = document.querySelector(`.group-container[data-group-id="${groupId}"]`);
+    if (!groupContainer) return;
+    const grid = groupContainer.querySelector('.group-grid');
+    if (!grid) return;
+
+    group.users.forEach(u => {
+        const card = grid.querySelector(`.user-card[data-user-id="${u.user_id}"][data-server-id="${u.server_id}"]`);
+        if (card) grid.appendChild(card);
+    });
 }
 
 async function renameGroup(groupId, currentName, nameElement) {
@@ -1315,11 +1664,11 @@ async function renameGroup(groupId, currentName, nameElement) {
                 // Update UI (optimistic or reload)
                 loadEmbyUsers(true);
             } else {
-                alert("Errore durante la rinomina.");
+                await openAlertModal("Errore", "Errore durante la rinomina.");
                 nameElement.innerHTML = originalContent;
             }
         } catch (e) {
-            alert("Errore: " + e.message);
+            await openAlertModal("Errore", "Errore: " + e.message);
             nameElement.innerHTML = originalContent;
         }
     };
@@ -1335,7 +1684,7 @@ async function renameGroup(groupId, currentName, nameElement) {
     };
 }
 
-async function saveGroupSettings(groupId, autoSync, syncType) {
+async function saveGroupSettings(groupId, autoSync, syncType, syncResume) {
     const formData = new FormData();
     // Use JSON payload for better type handling if backend supports it, but backend uses json()
     // My backend implementation uses request.json()
@@ -1349,19 +1698,20 @@ async function saveGroupSettings(groupId, autoSync, syncType) {
             body: JSON.stringify({
                 group_id: groupId,
                 auto_sync: autoSync,
-                sync_type: syncType
+                sync_type: syncType,
+                sync_resume: syncResume
             })
         });
         
         if (!res.ok) {
-            alert("Errore salvataggio impostazioni gruppo.");
+            await openAlertModal("Errore", "Errore salvataggio impostazioni gruppo.");
         } else {
             // Optimistic update local data if needed, but not strictly required as UI is already updated
             // Reloading might flicker
         }
     } catch (e) {
         console.error(e);
-        alert("Errore di connessione.");
+        await openAlertModal("Errore", "Errore di connessione.");
     }
 }
 
@@ -1410,12 +1760,12 @@ async function renameUser(serverId, userId, currentName, nameElement) {
                 // Update UI (optimistic or reload)
                 loadEmbyUsers(true);
             } else {
-                alert("Errore durante la rinomina dell'utente.");
+                await openAlertModal("Errore", "Errore durante la rinomina dell'utente.");
                 input.remove();
                 nameElement.style.display = '';
             }
         } catch (e) {
-            alert("Errore: " + e.message);
+            await openAlertModal("Errore", "Errore: " + e.message);
             input.remove();
             nameElement.style.display = '';
         }
@@ -1482,8 +1832,13 @@ async function openUserDetailModal(user, groupId = null) {
     // Edit Name
     const editNameBtn = document.getElementById('modal-edit-name-btn');
     if (editNameBtn) {
-        editNameBtn.onclick = () => {
-            const newName = prompt("Nuovo nome utente:", user.name);
+        editNameBtn.onclick = async () => {
+            const newName = await openPromptModal(
+                "Rinomina utente",
+                "Nuovo nome utente",
+                user.name,
+                { label: "Nome utente" }
+            );
             if (newName && newName !== user.name) {
                 renameUserFromModal(user.server_id, user.user_id, newName);
             }
@@ -1493,8 +1848,13 @@ async function openUserDetailModal(user, groupId = null) {
     // Edit Password
     const editPwBtn = document.getElementById('modal-edit-password-btn');
     if (editPwBtn) {
-        editPwBtn.onclick = () => {
-            const newPw = prompt("Nuova password (lascia vuoto per rimuovere):");
+        editPwBtn.onclick = async () => {
+            const newPw = await openPromptModal(
+                "Aggiorna password",
+                "Nuova password (lascia vuoto per rimuovere)",
+                "",
+                { label: "Password", type: "password" }
+            );
             if (newPw !== null) {
                 updateUserPassword(user.server_id, user.user_id, newPw);
             }
@@ -1559,10 +1919,10 @@ async function renameUserFromModal(serverId, userId, newName) {
             document.getElementById('modal-user-name').textContent = newName;
             loadEmbyUsers(true); // Refresh background list
         } else {
-            alert("Errore rinomina");
+            await openAlertModal("Errore", "Errore rinomina");
         }
     } catch (e) {
-        alert("Errore: " + e.message);
+        await openAlertModal("Errore", "Errore: " + e.message);
     }
 }
 
@@ -1575,16 +1935,16 @@ async function updateUserPassword(serverId, userId, newPassword) {
     try {
         const res = await fetch('/api/emby/users/password', { method: 'POST', body: formData });
         if (res.ok) {
-            alert("Password aggiornata.");
+            showToast("Password aggiornata.", 'success');
             const pwStatus = document.getElementById('modal-password-status');
             pwStatus.textContent = newPassword ? '••••••••' : 'Nessuna';
             pwStatus.style.opacity = newPassword ? '1' : '0.5';
             loadEmbyUsers(true);
         } else {
-            alert("Errore aggiornamento password");
+            await openAlertModal("Errore", "Errore aggiornamento password");
         }
     } catch (e) {
-        alert("Errore: " + e.message);
+        await openAlertModal("Errore", "Errore: " + e.message);
     }
 }
 
@@ -1897,7 +2257,8 @@ async function deleteIconRule(profileId, serverId) {
 }
 
 async function deleteIconProfile(profileId) {
-    if(!confirm("Eliminare questo profilo?")) return;
+    const ok = await openConfirmModal("Conferma", "Eliminare questo profilo?");
+    if (!ok) return;
     const formData = new FormData();
     formData.append('profile_id', profileId);
     await fetch('/api/emby/icons/profile', { method: 'DELETE', body: formData });
@@ -1955,11 +2316,11 @@ async function renameIconProfile(profileId, currentName, nameElement) {
             if (res.ok) {
                 refreshIconConfigOnly();
             } else {
-                alert("Errore salvataggio nome.");
+                await openAlertModal("Errore", "Errore salvataggio nome.");
                 nameElement.innerHTML = originalContent;
             }
         } catch (e) {
-            alert("Errore: " + e.message);
+            await openAlertModal("Errore", "Errore: " + e.message);
             nameElement.innerHTML = originalContent;
         }
     };
@@ -1979,13 +2340,18 @@ async function renameIconProfile(profileId, currentName, nameElement) {
 window.loadIconConfig = refreshIconConfigOnly;
 
 window.addIconProfile = async function() {
-    const label = prompt("Nome del nuovo Profilo Icone:");
+    const label = await openPromptModal(
+        "Nuovo Profilo Icone",
+        "Nome del nuovo Profilo Icone:",
+        "",
+        { label: "Nome profilo" }
+    );
     if (label === null) return;
     if (!label.trim()) {
-        alert("Il nome è obbligatorio.");
+        await openAlertModal("Attenzione", "Il nome è obbligatorio.");
         return;
     }
-    await createIconProfile(label);
+    await createIconProfile(label.trim());
 };
 
 // --- SELECTION & BULK ACTIONS ---
@@ -2015,19 +2381,81 @@ function getSelectedUsers() {
         server_id: chk.dataset.serverId,
         user_id: chk.dataset.userId,
         username: chk.dataset.username,
+        server_name: chk.dataset.serverName,
+        server_alias: chk.dataset.serverAlias,
+        server_icon: chk.dataset.serverIcon,
+        server_icon_color: chk.dataset.serverIconColor,
+        server_icon_style: chk.dataset.serverIconStyle,
         group_id: chk.dataset.groupId,
-        is_disabled: chk.dataset.isDisabled === 'true' // Fix boolean conversion
+        is_disabled: chk.dataset.isDisabled === 'true', // Fix boolean conversion
+        is_leader: chk.dataset.isLeader === 'true'
     }));
+}
+
+function normalizeUserForBulkClone(user) {
+    return {
+        server_id: user.server_id,
+        user_id: user.user_id,
+        username: user.username || user.name || 'Utente',
+        server_name: user.server_name || '',
+        server_alias: user.server_alias || '',
+        server_icon: user.server_icon || '',
+        server_icon_color: user.server_icon_color || '',
+        server_icon_style: user.server_icon_style || '',
+        group_id: user.group_id || '',
+        is_disabled: user.is_disabled === true,
+        is_leader: user.is_leader === true
+    };
+}
+
+function getDuplicateGroupNamesForUsers(users) {
+    const groupCounts = {};
+    const groupNames = {};
+    
+    for (const u of users) {
+        if (u.group_id && !u.group_id.startsWith('unlinked_')) {
+            groupCounts[u.group_id] = (groupCounts[u.group_id] || 0) + 1;
+            if (!groupNames[u.group_id]) {
+                const chk = document.querySelector(`.user-select-chk[data-user-id="${u.user_id}"][data-server-id="${u.server_id}"]`);
+                if (chk) {
+                    const groupContainer = chk.closest('.group-container');
+                    const nameEl = groupContainer ? groupContainer.querySelector('.group-name span') : null;
+                    if (nameEl) groupNames[u.group_id] = nameEl.textContent;
+                }
+            }
+        }
+    }
+    
+    const duplicates = Object.keys(groupCounts).filter(gid => groupCounts[gid] > 1);
+    return duplicates.map(gid => groupNames[gid] || "Sconosciuto");
+}
+
+function openBulkCloneModalForUsers(sourceUsers) {
+    const normalized = sourceUsers.map(normalizeUserForBulkClone);
+    const duplicateNames = normalized.length > 1 ? getDuplicateGroupNamesForUsers(normalized) : [];
+    new BulkCloneWizard(normalized, duplicateNames);
 }
 
 async function linkSelectedUsers() {
     const selected = getSelectedUsers();
     if (selected.length < 2) {
-        alert("Seleziona almeno 2 utenti da associare.");
+        await openAlertModal("Selezione utenti", "Seleziona almeno 2 utenti da associare.");
         return;
     }
     
-    if (!confirm(`Associare ${selected.length} utenti in un unico gruppo?`)) return;
+    const msg = document.createElement('div');
+    const line1 = document.createElement('div');
+    line1.textContent = `Associare ${selected.length} utenti in un unico gruppo?`;
+    line1.style.marginBottom = '0.5rem';
+    msg.appendChild(line1);
+    const list = document.createElement('div');
+    list.style.display = 'flex';
+    list.style.flexWrap = 'wrap';
+    list.style.gap = '0.4rem';
+    selected.forEach(u => list.appendChild(buildUserChipElement(u)));
+    msg.appendChild(list);
+    const ok = await openConfirmModalRich("Conferma", msg);
+    if (!ok) return;
 
     // Auto-detect leader
     // 1. Master
@@ -2057,108 +2485,353 @@ async function linkSelectedUsers() {
         // Add a small delay to ensure DB commit is visible to the next fetch
         setTimeout(() => loadEmbyUsers(true), 200);
     } else {
-        alert("Errore associazione");
+        await openAlertModal("Errore", "Errore associazione");
     }
 }
 
-async function openSyncModal() {
+let syncModalState = null;
+
+function initSyncModal() {
+    if (syncModalState) return syncModalState;
+    const modal = document.getElementById('sync-modal');
+    if (!modal) return null;
+
+    const modeSelect = document.getElementById('sync-mode-select');
+    const sourceRow = document.getElementById('sync-source-row');
+    const sourceSelect = document.getElementById('sync-source-select');
+    const selectedList = document.getElementById('sync-selected-list');
+    const summary = document.getElementById('sync-summary');
+    const sourceChip = document.getElementById('sync-source-chip');
+    const targetsList = document.getElementById('sync-targets-list');
+    const targetsLabel = document.getElementById('sync-targets-label');
+    const sourceRowDisplay = document.getElementById('sync-source-row-display');
+    const optResume = document.getElementById('sync-opt-resume');
+    const error = document.getElementById('sync-error');
+    const btnCancel = document.getElementById('sync-btn-cancel');
+    const btnConfirm = document.getElementById('sync-btn-confirm');
+    const closeBtn = modal.querySelector('.close-modal-btn');
+
+    const close = () => {
+        modal.style.display = 'none';
+        if (error) {
+            error.style.display = 'none';
+            error.textContent = '';
+        }
+    };
+
+    if (btnCancel) btnCancel.onclick = close;
+    if (closeBtn) closeBtn.onclick = close;
+    modal.onclick = (e) => {
+        if (e.target === modal) close();
+    };
+
+    if (modeSelect) modeSelect.onchange = () => updateSyncModalUI();
+    if (sourceSelect) sourceSelect.onchange = () => updateSyncModalUI();
+    if (btnConfirm) btnConfirm.onclick = () => runSyncFromModal();
+
+    syncModalState = {
+        modal,
+        modeSelect,
+        sourceRow,
+        sourceSelect,
+        selectedList,
+        summary,
+        sourceChip,
+        targetsList,
+        targetsLabel,
+        sourceRowDisplay,
+        optResume,
+        error,
+        btnConfirm,
+        close,
+        selected: [],
+        defaultSourceIdx: 0
+    };
+
+    return syncModalState;
+}
+
+function openSyncModal() {
     const selected = getSelectedUsers();
     if (selected.length < 2) {
-        alert("Seleziona almeno 2 utenti (Sorgente e Destinazione).");
+        if (typeof showToast === 'function') {
+            showToast("Seleziona almeno 2 utenti (Sorgente e Destinazione).", 'warning');
+        } else {
+            openAlertModal("Selezione utenti", "Seleziona almeno 2 utenti (Sorgente e Destinazione).");
+        }
         return;
     }
 
-    // Determine source logic
-    let sourceIdx = selected.findIndex(u => u.username.toLowerCase() === 'master' || u.is_leader);
-    if (sourceIdx === -1) sourceIdx = 0; // Default to first if no Master/Leader
-    
-    let source = selected[sourceIdx];
-    
-    // Validation:
-    // If Source != Master, check if all selected users are in the same group
-    const isMasterSource = source.username.toLowerCase() === 'master';
-    
-    if (!isMasterSource) {
-        const firstGroupId = selected[0].group_id;
-        if (!firstGroupId) {
-             alert("Sincronizzazione non consentita tra utenti non associati. Associali prima in un gruppo.");
-             return;
+    const state = initSyncModal();
+    if (!state) {
+        if (typeof showToast === 'function') {
+            showToast("Modal di sincronizzazione non disponibile.", 'error');
         }
-        const allSameGroup = selected.every(u => u.group_id === firstGroupId);
-        if (!allSameGroup) {
-            alert("Sincronizzazione non consentita tra utenti di gruppi diversi. Seleziona utenti dello stesso gruppo.");
-            return;
+        return;
+    }
+
+    state.selected = selected;
+    state.defaultSourceIdx = getDefaultSyncSourceIdx(selected);
+
+    const hasPrimary = selected.some(u => (u.username || '').toLowerCase() === 'master' || u.is_leader);
+    if (state.modeSelect) {
+        const copyOption = state.modeSelect.querySelector('option[value="copy"]');
+        if (copyOption) {
+            copyOption.disabled = !hasPrimary;
+        }
+        if (hasPrimary) {
+            state.modeSelect.value = 'copy';
+        } else {
+            state.modeSelect.value = 'merge';
+        }
+    }
+    if (state.sourceSelect) {
+        state.sourceSelect.innerHTML = '';
+        selected.forEach((u, i) => {
+            const opt = document.createElement('option');
+            opt.value = String(i);
+            opt.textContent = `${u.username} (${getServerDisplayName(u)})`;
+            state.sourceSelect.appendChild(opt);
+        });
+        state.sourceSelect.value = String(state.defaultSourceIdx);
+    }
+
+    if (state.selectedList) {
+        renderUserChips(state.selectedList, selected);
+    }
+    if (state.optResume) {
+        state.optResume.checked = false;
+    }
+
+    updateSyncModalUI();
+    state.modal.style.display = 'flex';
+}
+
+function bindSyncActionButton() {
+    const btn = document.getElementById('sync-users-btn');
+    if (!btn) return;
+    btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        openSyncModal();
+    });
+}
+
+function bindCloneActionDelegation() {
+    document.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-action="clone-user"]');
+        if (!btn) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const serverId = btn.dataset.serverId;
+        const userId = btn.dataset.userId;
+        const fallbackName = btn.dataset.username;
+        const user = findUserInCache(serverId, userId) || {
+            server_id: serverId,
+            user_id: userId,
+            name: fallbackName || 'Utente'
+        };
+        openCloneModalForUser(user);
+    });
+}
+
+function getDefaultSyncSourceIdx(selected) {
+    let idx = selected.findIndex(u => (u.username || '').toLowerCase() === 'master' || u.is_leader);
+    if (idx === -1) idx = 0;
+    return idx;
+}
+
+function validateSyncSelection(selected, source, mode) {
+    if (!source) {
+        return { ok: false, reason: "Seleziona un utente sorgente valido." };
+    }
+    if (!selected || selected.length < 2) {
+        return { ok: false, reason: "Seleziona almeno 2 utenti dello stesso gruppo." };
+    }
+    const firstGroupId = selected[0].group_id || '';
+    if (!firstGroupId || firstGroupId.startsWith('unlinked_')) {
+        return { ok: false, reason: "Sincronizzazione consentita solo tra utenti dello stesso gruppo collegato." };
+    }
+    const allSameGroup = selected.every(u => u.group_id === firstGroupId);
+    if (!allSameGroup) {
+        return { ok: false, reason: "Sincronizzazione non consentita tra utenti di gruppi diversi. Seleziona utenti dello stesso gruppo." };
+    }
+    if (mode === 'copy') {
+        const hasPrimary = selected.some(u => (u.username || '').toLowerCase() === 'master' || u.is_leader);
+        if (!hasPrimary) {
+            return { ok: false, reason: "Per la modalità Principale/Master serve un utente principale selezionato." };
+        }
+    }
+    return { ok: true, reason: "" };
+}
+
+function updateSyncModalUI() {
+    if (!syncModalState) return;
+    const { modeSelect, sourceRow, sourceSelect, summary, error, btnConfirm, selected, defaultSourceIdx, sourceChip, targetsList, targetsLabel, sourceRowDisplay } = syncModalState;
+    const hasPrimary = selected.some(u => (u.username || '').toLowerCase() === 'master' || u.is_leader);
+    let mode = modeSelect ? modeSelect.value : 'copy';
+    if (modeSelect) {
+        const copyOption = modeSelect.querySelector('option[value="copy"]');
+        if (copyOption) {
+            copyOption.disabled = !hasPrimary;
+        }
+        if (!hasPrimary && mode === 'copy') {
+            modeSelect.value = 'merge';
+            mode = 'merge';
         }
     }
 
-    const mode = prompt("Tipo di sincronizzazione:\n1: Monodirezionale (Da Principale/Master agli altri)\n2: Bidirezionale (Merge Visti - Tutti contribuiscono)\n3: Monodirezionale Manuale (Seleziona sorgente ora)", "1");
-    if (!mode) return;
+    if (sourceRow) sourceRow.style.display = mode === 'manual' ? 'block' : 'none';
+
+    let sourceIdx = defaultSourceIdx;
+    if (mode === 'manual' && sourceSelect) {
+        const parsed = parseInt(sourceSelect.value, 10);
+        if (!isNaN(parsed)) sourceIdx = parsed;
+    }
+
+    const source = selected[sourceIdx];
+    const validation = validateSyncSelection(selected, source, mode);
+
+    if (error) {
+        if (validation.ok) {
+            error.style.display = 'none';
+            error.textContent = '';
+        } else {
+            error.style.display = 'block';
+            error.textContent = validation.reason;
+        }
+    }
+
+    if (btnConfirm) btnConfirm.disabled = !validation.ok;
+
+    if (sourceRowDisplay) {
+        sourceRowDisplay.style.display = mode === 'merge' ? 'none' : 'block';
+    }
+    if (sourceChip) {
+        if (mode === 'merge') {
+            sourceChip.innerHTML = '';
+        } else if (source) {
+            sourceChip.innerHTML = '';
+            sourceChip.appendChild(buildUserChipElement(source));
+        } else {
+            sourceChip.textContent = '-';
+        }
+    }
+
+    if (targetsLabel) {
+        targetsLabel.textContent = mode === 'merge' ? 'Partecipanti' : 'Destinazioni';
+    }
+    if (targetsList) {
+        const targets = mode === 'merge'
+            ? selected
+            : selected.filter((_, i) => i !== sourceIdx);
+        renderUserChips(targetsList, targets);
+    }
+
+    if (summary) {
+        summary.textContent = mode === 'merge'
+            ? `Merge visti tra ${selected.length} utenti.`
+            : `Sincronizzazione monodirezionale: ${Math.max(0, selected.length - 1)} destinazioni.`;
+    }
+}
+
+async function runSyncFromModal() {
+    if (!syncModalState) return;
+    const { modeSelect, sourceSelect, selected, defaultSourceIdx, close, error, btnConfirm, optResume } = syncModalState;
+    const mode = modeSelect ? modeSelect.value : 'copy';
+
+    let sourceIdx = defaultSourceIdx;
+    if (mode === 'manual' && sourceSelect) {
+        const parsed = parseInt(sourceSelect.value, 10);
+        if (!isNaN(parsed)) sourceIdx = parsed;
+    }
+
+    const source = selected[sourceIdx];
+    const validation = validateSyncSelection(selected, source, mode);
+    if (!validation.ok) {
+        if (error) {
+            error.style.display = 'block';
+            error.textContent = validation.reason;
+        }
+        if (typeof showToast === 'function') {
+            showToast(validation.reason, 'warning');
+        }
+        return;
+    }
+
+    const btnLabel = btnConfirm ? btnConfirm.textContent : null;
+    if (btnConfirm) {
+        btnConfirm.disabled = true;
+        btnConfirm.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Sincronizzo...';
+    }
 
     let targets = selected.filter((_, i) => i !== sourceIdx);
-    let syncConfig = false;
-    let syncPlaystate = false;
+    let syncConfig = true;
+    let syncPlaystate = true;
+    let syncResume = optResume ? optResume.checked : false;
     let modeStr = 'copy';
 
-    if (mode === '3') {
-        // Manual selection
-        const names = selected.map((u, i) => `${i+1}: ${u.username} (${u.server_id.substr(0,4)})`).join('\n');
-        const idxStr = prompt(`Seleziona la sorgente:\n${names}`, (sourceIdx+1).toString());
-        const idx = parseInt(idxStr) - 1;
-        if (isNaN(idx) || idx < 0 || idx >= selected.length) return;
-        
-        source = selected[idx];
-        
-        // Re-validate if manually selected source is not Master
-        const isManualMaster = source.username.toLowerCase() === 'master';
-        if (!isManualMaster) {
-             const firstGroupId = selected[0].group_id;
-             if (!firstGroupId || !selected.every(u => u.group_id === firstGroupId)) {
-                 alert("Sincronizzazione non consentita tra gruppi diversi o utenti non associati.");
-                 return;
-             }
-        }
-        
-        targets = selected.filter((_, i) => i !== idx);
-        syncConfig = true; // Manual implies full sync usually
-        syncPlaystate = true;
-    } else if (mode === '2') {
-        // Bidirectional (Merge)
-        // Source is irrelevant for merge, but we pass it as part of participants
-        syncConfig = false; // Usually don't want to merge configs blindly
+    if (mode === 'merge') {
+        syncConfig = false;
         syncPlaystate = true;
         modeStr = 'merge';
-        targets = selected; // All selected are targets AND sources
-    } else {
-        // Mode 1: Master -> Others
-        syncConfig = true; 
+        targets = selected;
+    } else if (mode === 'manual') {
+        syncConfig = true;
         syncPlaystate = true;
     }
-
-    let confirmMsg = mode === '2' 
-        ? `Unire i visti di ${targets.length} utenti?` 
-        : `Sorgente: ${source.username}\nDestinazioni: ${targets.length} utenti\nConfermi?`;
-
-    if (!confirm(confirmMsg)) return;
 
     const formData = new FormData();
     formData.append('source_server_id', source.server_id);
     formData.append('source_user_id', source.user_id);
     formData.append('targets_json', JSON.stringify(targets));
+    if (!syncPlaystate) {
+        syncResume = false;
+    }
     formData.append('sync_config', syncConfig);
     formData.append('sync_playstate', syncPlaystate);
+    formData.append('sync_resume', syncResume);
     formData.append('mode', modeStr);
 
-    const res = await fetch('/api/emby/users/sync', { method: 'POST', body: formData });
-    const json = await res.json();
-    
-    let msg = "Sincronizzazione completata.\n";
-    if (json.results.config) {
-        msg += `Config: ${json.results.config.success.length} OK, ${json.results.config.failed.length} Errori.\n`;
+    try {
+        const res = await fetch('/api/emby/users/sync', { method: 'POST', body: formData });
+        let json = {};
+        try {
+            json = await res.json();
+        } catch (e) {
+            json = {};
+        }
+
+        if (!res.ok || json.ok === false) {
+            const errMsg = json.error || `Errore sincronizzazione (HTTP ${res.status}).`;
+            throw new Error(errMsg);
+        }
+
+        let msg = "Sincronizzazione completata.";
+        if (json.results && json.results.config) {
+            msg += ` Config: ${json.results.config.success.length} OK, ${json.results.config.failed.length} errori.`;
+        }
+        if (json.results && json.results.playstate) {
+            msg += ` Playstate: ${json.results.playstate.success.length} server aggiornati.`;
+        }
+
+        if (typeof showToast === 'function') {
+            showToast(msg, 'success');
+        }
+        close();
+    } catch (e) {
+        if (error) {
+            error.style.display = 'block';
+            error.textContent = `Errore sincronizzazione: ${e.message}`;
+        }
+        if (typeof showToast === 'function') {
+            showToast(`Errore sincronizzazione: ${e.message}`, 'error');
+        }
+    } finally {
+        if (btnConfirm) {
+            btnConfirm.disabled = false;
+            btnConfirm.textContent = btnLabel || 'Sincronizza';
+        }
     }
-    if (json.results.playstate) {
-        msg += `Playstate: ${json.results.playstate.success.length} Server aggiornati.`;
-    }
-    alert(msg);
 }
 
 // --- BULK CLONE WIZARD ---
@@ -2168,6 +2841,7 @@ class BulkCloneWizard {
         this.sourceUsers = sourceUsers;
         this.duplicateGroupNames = duplicateGroupNames;
         this.modal = document.getElementById('bulk-clone-modal');
+        this.titleEl = document.getElementById('bulk-clone-modal-title');
         this.currentStep = 1;
         this.targetServerIds = [];
         this.userMap = []; // [{ source: userObj, newName: "name", inputEl: el }]
@@ -2186,56 +2860,106 @@ class BulkCloneWizard {
         this.btnConfirm = document.getElementById('bulk-clone-btn-confirm');
         
         this.serverList = document.getElementById('bulk-clone-target-list');
+        this.sourceList = document.getElementById('bulk-clone-source-list');
+        this.targetList2 = document.getElementById('bulk-clone-targets-list-2');
+        this.sourceList3 = document.getElementById('bulk-clone-source-list-3');
         this.renameList = document.getElementById('bulk-clone-rename-list');
+        this.linkGroupAll = document.getElementById('bulk-clone-link-group-all');
         this.errorMsg = document.getElementById('bulk-clone-error');
         this.countLabel = document.getElementById('bulk-clone-count-label');
+        this.countSuffix = document.getElementById('bulk-clone-count-suffix');
         this.warningGroups = document.getElementById('bulk-clone-warning-groups');
         
         this.optConfig = document.getElementById('bulk-clone-opt-config');
         this.optPlaystate = document.getElementById('bulk-clone-opt-playstate');
+        this.optResume = document.getElementById('bulk-clone-opt-resume');
         
         this.subtitle = document.getElementById('bulk-clone-modal-subtitle');
+        this.renamePrompt = document.getElementById('bulk-clone-rename-prompt');
+        this.availableServers = [];
         
         this.bindEvents();
         this.init();
     }
     
     init() {
+        this.isSingle = this.sourceUsers.length === 1;
+        if (this.titleEl) {
+            this.titleEl.textContent = this.isSingle ? 'Clonazione Utente' : 'Clonazione Multipla';
+        }
+        if (this.renamePrompt) {
+            this.renamePrompt.textContent = this.isSingle
+                ? "Vuoi rinominare l'utente durante la copia?"
+                : "Vuoi rinominare gli utenti durante la copia?";
+        }
+
         // Populate servers
-        const servers = Array.from(document.querySelectorAll('#filter-server option'))
-            .map(o => ({id: o.value, name: o.textContent}))
-            .filter(s => s.id !== 'all');
+        let servers = [];
+        if (currentUsersData && currentUsersData.servers) {
+            servers = currentUsersData.servers;
+        } else {
+            servers = Array.from(document.querySelectorAll('#filter-server option'))
+                .map(o => ({id: o.value, name: o.textContent}))
+                .filter(s => s.id !== 'all');
+        }
             
+        this.availableServers = servers;
         this.serverList.innerHTML = '';
         servers.forEach(s => {
             const label = document.createElement('label');
             label.className = 'checkbox-row';
             label.style.padding = '0.25rem 0';
             label.style.cursor = 'pointer';
+            label.style.display = 'flex';
+            label.style.alignItems = 'center';
             
             const checkbox = document.createElement('input');
             checkbox.type = 'checkbox';
             checkbox.value = s.id;
             
             const span = document.createElement('span');
-            span.textContent = s.name;
+            span.style.display = 'inline-flex';
+            span.style.alignItems = 'center';
+            span.style.marginLeft = '0.5rem';
+
+            if (s.icon) {
+                const i = document.createElement('i');
+                const style = s.icon_style === 'regular' ? 'fa-regular' : 'fa-solid';
+                i.className = `${style} ${s.icon}`;
+                i.style.color = s.icon_color || 'inherit';
+                i.style.marginRight = '0.4rem';
+                span.appendChild(i);
+            }
+            span.appendChild(document.createTextNode(s.name));
             
             label.appendChild(checkbox);
             label.appendChild(span);
             this.serverList.appendChild(label);
         });
+        if (this.serverList) {
+            requestAnimationFrame(() => this.lockServerListHeight());
+        }
+
+        if (this.sourceList) {
+            renderUserChips(this.sourceList, this.sourceUsers);
+        }
+        if (this.sourceList3) {
+            renderUserChips(this.sourceList3, this.sourceUsers);
+        }
+        if (this.targetList2) {
+            renderServerChips(this.targetList2, []);
+        }
         
         // Populate Rename List (Initial)
         this.renameList.innerHTML = '';
         this.userMap = this.sourceUsers.map(u => {
             const row = document.createElement('div');
             row.style.display = 'grid';
-            row.style.gridTemplateColumns = '1fr 1fr';
+            row.style.gridTemplateColumns = '1fr 1fr auto';
             row.style.gap = '1rem';
             row.style.alignItems = 'center';
             
-            const label = document.createElement('span');
-            label.textContent = `${u.username} (${u.server_id.substr(0,4)})`;
+            const label = buildUserLabelElement(u);
             label.style.fontSize = '0.9rem';
             
             const input = document.createElement('input');
@@ -2243,20 +2967,65 @@ class BulkCloneWizard {
             input.value = u.username; // Default to original
             input.className = 'form-input compact';
             input.dataset.sourceId = u.user_id;
+
+            const linkLabel = document.createElement('label');
+            linkLabel.style.display = 'inline-flex';
+            linkLabel.style.alignItems = 'center';
+            linkLabel.style.gap = '0.3rem';
+            linkLabel.style.cursor = 'pointer';
+            linkLabel.title = 'Aggiungi al gruppo sorgente';
+            const linkChk = document.createElement('input');
+            linkChk.type = 'checkbox';
+            linkChk.checked = false;
+            linkLabel.appendChild(linkChk);
+            const linkText = document.createElement('span');
+            linkText.textContent = 'Gruppo';
+            linkLabel.appendChild(linkText);
             
             row.appendChild(label);
             row.appendChild(input);
+            row.appendChild(linkLabel);
             this.renameList.appendChild(row);
             
-            return { source: u, inputEl: input };
+            return { source: u, inputEl: input, linkGroupEl: linkChk };
         });
+
+        if (this.linkGroupAll) {
+            this.linkGroupAll.checked = false;
+            this.linkGroupAll.onchange = () => {
+                const value = this.linkGroupAll.checked;
+                this.userMap.forEach(item => {
+                    if (item.linkGroupEl) item.linkGroupEl.checked = value;
+                });
+            };
+        }
         
         // Reset state
         this.targetServerIds = [];
         this.errorMsg.style.display = 'none';
         this.optConfig.checked = true;
         this.optPlaystate.checked = true;
-        this.countLabel.textContent = this.sourceUsers.length;
+        if (this.optResume) {
+            this.optResume.checked = false;
+        }
+        this.countLabel.textContent = this.isSingle ? '1' : String(this.sourceUsers.length);
+        if (this.countSuffix) {
+            this.countSuffix.textContent = this.isSingle ? 'utente' : 'utenti';
+        }
+        if (this.btnConfirm) {
+            this.btnConfirm.textContent = this.isSingle ? 'Clona' : 'Clona Tutto';
+        }
+
+        if (this.optPlaystate && this.optResume) {
+            const toggleResume = () => {
+                this.optResume.disabled = !this.optPlaystate.checked;
+                if (!this.optPlaystate.checked) {
+                    this.optResume.checked = false;
+                }
+            };
+            this.optPlaystate.onchange = toggleResume;
+            toggleResume();
+        }
         
         // Determine start step
         if (this.duplicateGroupNames.length > 0) {
@@ -2327,9 +3096,10 @@ class BulkCloneWizard {
             this.targetServerIds = Array.from(this.serverList.querySelectorAll('input:checked')).map(cb => cb.value);
             
             if (this.targetServerIds.length === 0) {
-                alert("Seleziona almeno un server.");
+                await openAlertModal("Selezione server", "Seleziona almeno un server.");
                 return;
             }
+            this.updateTargetSummary();
             this.showStep(2);
             
         } else if (this.currentStep === 2) {
@@ -2432,6 +3202,29 @@ class BulkCloneWizard {
         this.errorMsg.textContent = msg;
         this.errorMsg.style.display = 'block';
     }
+
+    lockServerListHeight() {
+        if (!this.serverList) return;
+        this.serverList.style.height = '';
+        this.serverList.style.maxHeight = '';
+        const height = this.serverList.scrollHeight;
+        if (height > 0) {
+            this.serverList.style.height = `${height}px`;
+            this.serverList.style.maxHeight = `${height}px`;
+        }
+    }
+
+    getSelectedTargetServers() {
+        const map = new Map(this.availableServers.map(s => [String(s.id), s]));
+        return this.targetServerIds
+            .map(id => map.get(String(id)))
+            .filter(Boolean);
+    }
+
+    updateTargetSummary() {
+        if (!this.targetList2) return;
+        renderServerChips(this.targetList2, this.getSelectedTargetServers());
+    }
     
     async confirm() {
         // 1. Close Modal Immediately
@@ -2439,7 +3232,10 @@ class BulkCloneWizard {
         
         // 2. Notify Start
         const total = this.userMap.length * this.targetServerIds.length;
-        showToast(`Clonazione di massa avviata (${total} operazioni)...`, 'info');
+        const startMsg = this.isSingle
+            ? `Clonazione avviata (${total} operazioni)...`
+            : `Clonazione di massa avviata (${total} operazioni)...`;
+        showToast(startMsg, 'info');
         
         // 3. Background Process
         this.runBackgroundCloning();
@@ -2461,6 +3257,8 @@ class BulkCloneWizard {
                 formData.append('new_username', newName);
                 formData.append('sync_config', this.optConfig.checked);
                 formData.append('sync_playstate', this.optPlaystate.checked);
+                formData.append('sync_resume', this.optPlaystate.checked && this.optResume ? this.optResume.checked : false);
+                formData.append('link_group', item.linkGroupEl ? item.linkGroupEl.checked : false);
                 
                 try {
                     const res = await fetch('/api/emby/users/clone', { method: 'POST', body: formData });
@@ -2480,7 +3278,10 @@ class BulkCloneWizard {
         }
         
         if (successCount === total) {
-            showToast(`Clonazione di massa completata con successo!`, 'success');
+            const okMsg = this.isSingle
+                ? 'Clonazione completata con successo!'
+                : 'Clonazione di massa completata con successo!';
+            showToast(okMsg, 'success');
         } else {
             showToast(`Clonazione: ${successCount}/${total} successi.`, 'warning');
             if (errors.length > 0) {
@@ -2493,41 +3294,46 @@ class BulkCloneWizard {
     }
 }
 
-function openCustomBulkCloneModal() {
+async function openCustomBulkCloneModal() {
     const selected = getSelectedUsers();
     if (selected.length === 0) {
-        alert("Seleziona almeno un utente.");
+        await openAlertModal("Selezione utenti", "Seleziona almeno un utente.");
         return;
     }
-    
-    // Check for Group Duplicates
-    const groupCounts = {};
-    const groupNames = {};
-    
-    for (const u of selected) {
-        // Check if user belongs to a linked group
-        if (u.group_id && !u.group_id.startsWith('unlinked_')) {
-            groupCounts[u.group_id] = (groupCounts[u.group_id] || 0) + 1;
-            
-            // Try to get group name from DOM
-            if (!groupNames[u.group_id]) {
-                const chk = document.querySelector(`.user-select-chk[data-user-id="${u.user_id}"][data-server-id="${u.server_id}"]`);
-                if (chk) {
-                    const groupContainer = chk.closest('.group-container');
-                    const nameEl = groupContainer ? groupContainer.querySelector('.group-name span') : null;
-                    if (nameEl) groupNames[u.group_id] = nameEl.textContent;
-                }
-            }
-        }
-    }
-    
-    const duplicates = Object.keys(groupCounts).filter(gid => groupCounts[gid] > 1);
-    const duplicateNames = duplicates.map(gid => groupNames[gid] || "Sconosciuto");
-    
-    new BulkCloneWizard(selected, duplicateNames);
+    openBulkCloneModalForUsers(selected);
 }
 
 // Redirect old function (Bound to the button)
 async function openCloneModal() {
-    openCustomBulkCloneModal();
+    await openCustomBulkCloneModal();
 }
+
+window.openSyncModal = openSyncModal;
+window.openCloneModal = openCloneModal;
+window.linkSelectedUsers = linkSelectedUsers;
+window.clearUserSelection = clearUserSelection;
+window.loadEmbyUsers = loadEmbyUsers;
+window.toggleSelectAllUsers = toggleSelectAllUsers;
+window.toggleSelectLeaders = toggleSelectLeaders;
+window.filterUsers = filterUsers;
+window.openCloneModalForUser = openCloneModalForUser;
+window.openUserDetailModal = openUserDetailModal;
+window.openCustomBulkCloneModal = openCustomBulkCloneModal;
+window.openCustomCloneModal = openCustomCloneModal;
+window.bindSyncActionButton = bindSyncActionButton;
+window.renderIconProfiles = renderIconProfiles;
+window.loadIconManagement = loadIconManagement;
+window.refreshIconConfigOnly = refreshIconConfigOnly;
+window.renameGroup = renameGroup;
+window.saveGroupSettings = saveGroupSettings;
+window.renameUser = renameUser;
+window.renameUserFromModal = renameUserFromModal;
+window.updateUserPassword = updateUserPassword;
+window.toggleUserRemote = toggleUserRemote;
+window.toggleUserDownload = toggleUserDownload;
+window.unlinkUser = unlinkUser;
+window.setGroupLeader = setGroupLeader;
+window.bindCloneActionDelegation = bindCloneActionDelegation;
+
+bindSyncActionButton();
+bindCloneActionDelegation();

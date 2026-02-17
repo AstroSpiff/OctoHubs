@@ -313,10 +313,32 @@ class EmbyProbeManager:
         self._global_stop_flags: Dict[str, threading.Event] = {}
         self._lock = threading.Lock()
         self._db_getter: Optional[Callable[[], Any]] = None
+        self._libraries_pause_flags: Dict[str, threading.Event] = {}
 
     def configure(self, db_getter: Callable[[], Any]) -> None:
         """Configure the database getter function."""
         self._db_getter = db_getter
+
+    def _get_libraries_pause_flag(self, server_id: str) -> threading.Event:
+        with self._lock:
+            flag = self._libraries_pause_flags.get(server_id)
+            if not flag:
+                flag = threading.Event()
+                self._libraries_pause_flags[server_id] = flag
+            return flag
+
+    def _set_libraries_pause(self, server_id: str, paused: bool) -> None:
+        if not server_id:
+            return
+        with self._lock:
+            flag = self._libraries_pause_flags.get(server_id)
+            if not flag:
+                flag = threading.Event()
+                self._libraries_pause_flags[server_id] = flag
+            if paused:
+                flag.set()
+            else:
+                flag.clear()
 
     def start_discovery(self, server: Dict[str, Any], server_id: str, target_libraries: Optional[list[str]] = None) -> bool:
         """
@@ -548,6 +570,7 @@ class EmbyProbeManager:
         mode: str = "smart"
     ) -> bool:
         """Start a processing worker for recent discovery items."""
+        self._set_libraries_pause(server_id, True)
         with self._lock:
             if server_id not in self._workers:
                 self._workers[server_id] = {}
@@ -1334,240 +1357,252 @@ class EmbyProbeManager:
         # If no servers have work, exit
         if not servers_with_work:
             return
+        paused_server_ids = []
+        if scope == PROBE_SCOPE_RECENT:
+            paused_server_ids = [server.get("id") for server in servers_with_work if server.get("id")]
+            for srv_id in paused_server_ids:
+                self._set_libraries_pause(srv_id, True)
 
-        # Initialize status ONLY for servers with work
-        for server in servers_with_work:
-            server_id = server.get("id")
-            if not server_id:
-                continue
-            with self._lock:
-                if server_id not in self._status:
-                    self._status[server_id] = {}
-                self._status[server_id][status_key] = {
-                    "running": True,
-                    "incomplete": 0,
-                    "processed": 0,
-                    "errors": 0,
-                    "processed_retry": 0,
-                    "errors_retry": 0,
-                    "incomplete_retry": 0,
-                    "total": initial_total,  # Set to global total
-                    "current_item": None,
-                    "last_log": "Modalità Smart multi-server: in attesa...",
-                    "mode": "smart",
-                    "started_at": datetime.now(timezone.utc).isoformat()
-                }
+        try:
 
-        # Use servers_with_work instead of all enabled_servers
-        enabled_servers = servers_with_work
-
-        if not enabled_servers:
-            return
-
-        server_index = 0
-        consecutive_skips = 0
-        max_consecutive_skips = len(enabled_servers) * 2  # Allow 2 full rounds of all servers being busy
-
-        while not stop_flag.is_set():
-            # Check if all servers are done (no items in queue)
-            total_remaining = 0
-            for server in enabled_servers:
+            # Initialize status ONLY for servers with work
+            for server in servers_with_work:
                 server_id = server.get("id")
                 if not server_id:
                     continue
+                with self._lock:
+                    if server_id not in self._status:
+                        self._status[server_id] = {}
+                    self._status[server_id][status_key] = {
+                        "running": True,
+                        "incomplete": 0,
+                        "processed": 0,
+                        "errors": 0,
+                        "processed_retry": 0,
+                        "errors_retry": 0,
+                        "incomplete_retry": 0,
+                        "total": initial_total,  # Set to global total
+                        "current_item": None,
+                        "last_log": "Modalità Smart multi-server: in attesa...",
+                        "mode": "smart",
+                        "started_at": datetime.now(timezone.utc).isoformat()
+                    }
+    
+            # Use servers_with_work instead of all enabled_servers
+            enabled_servers = servers_with_work
+    
+            if not enabled_servers:
+                return
+    
+            server_index = 0
+            consecutive_skips = 0
+            max_consecutive_skips = len(enabled_servers) * 2  # Allow 2 full rounds of all servers being busy
+    
+            while not stop_flag.is_set():
+                # Check if all servers are done (no items in queue)
+                total_remaining = 0
+                for server in enabled_servers:
+                    server_id = server.get("id")
+                    if not server_id:
+                        continue
+                    queue_items = db.get_probe_queue(server_id, scope=scope)
+                    # Filter out blacklisted items (3+ errors)
+                    blacklist = db.load_probe_blacklist(server_id, scope=scope)
+                    processable = [
+                        item for item in queue_items
+                        if self._get_retry_count(blacklist, item.get("item_id"), item.get("media_source_id")) < 3
+                    ]
+                    total_remaining += len(processable)
+    
+                if total_remaining == 0:
+                    # All servers done
+                    break
+    
+                # Get current server
+                server = enabled_servers[server_index]
+                server_id = server.get("id")
+                if not server_id:
+                    server_index = (server_index + 1) % len(enabled_servers)
+                    continue
+    
+                # Check if server has items to process
                 queue_items = db.get_probe_queue(server_id, scope=scope)
-                # Filter out blacklisted items (3+ errors)
                 blacklist = db.load_probe_blacklist(server_id, scope=scope)
                 processable = [
                     item for item in queue_items
                     if self._get_retry_count(blacklist, item.get("item_id"), item.get("media_source_id")) < 3
                 ]
-                total_remaining += len(processable)
-
-            if total_remaining == 0:
-                # All servers done
-                break
-
-            # Get current server
-            server = enabled_servers[server_index]
-            server_id = server.get("id")
-            if not server_id:
-                server_index = (server_index + 1) % len(enabled_servers)
-                continue
-
-            # Check if server has items to process
-            queue_items = db.get_probe_queue(server_id, scope=scope)
-            blacklist = db.load_probe_blacklist(server_id, scope=scope)
-            processable = [
-                item for item in queue_items
-                if self._get_retry_count(blacklist, item.get("item_id"), item.get("media_source_id")) < 3
-            ]
-
-            if len(processable) == 0:
-                # Server has no items, move to next
-                server_index = (server_index + 1) % len(enabled_servers)
-                continue
-
-            # Check if server has active streams
-            server_name = server.get("name") or server.get("url") or server_id
-            sessions, error = _fetch_emby_active_sessions(server)
-            if not error and sessions:
-                # Server is busy, skip to next
+    
+                if len(processable) == 0:
+                    # Server has no items, move to next
+                    server_index = (server_index + 1) % len(enabled_servers)
+                    continue
+    
+                # Check if server has active streams
+                server_name = server.get("name") or server.get("url") or server_id
+                sessions, error = _fetch_emby_active_sessions(server)
+                if not error and sessions:
+                    # Server is busy, skip to next
+                    self._update_status(
+                        server_id,
+                        status_key,
+                        last_log=f"[{server_index + 1}/{len(enabled_servers)}] {server_name}: occupato ({len(sessions)} stream), passaggio al successivo..."
+                    )
+                    consecutive_skips += 1
+                    server_index = (server_index + 1) % len(enabled_servers)
+    
+                    if consecutive_skips >= max_consecutive_skips:
+                        # All servers busy for too long, wait a bit
+                        for srv in enabled_servers:
+                            srv_id = srv.get("id")
+                            if srv_id:
+                                self._update_status(
+                                    srv_id,
+                                    status_key,
+                                    last_log="Tutti i server occupati, attesa..."
+                                )
+                        if stop_flag.wait(10):
+                            break
+                        consecutive_skips = 0
+                    continue
+    
+                # Server is free, process one item
+                consecutive_skips = 0
+                queue_item = processable[0]
+    
+                item_id = queue_item["item_id"]
+                item_display_name = _format_display_name_from_queue(queue_item)
+                media_source_id = queue_item.get("media_source_id")
+                library_name = queue_item.get("library_name")
+                library_id = queue_item.get("library_id")
+    
+                # Check if this is a retry
+                current_retry_count = self._get_retry_count(blacklist, item_id, media_source_id)
+                is_retry = current_retry_count > 0
+    
+                # Update status
+                retry_suffix = f" (retry {current_retry_count})" if is_retry else ""
                 self._update_status(
                     server_id,
                     status_key,
-                    last_log=f"[{server_index + 1}/{len(enabled_servers)}] {server_name}: occupato ({len(sessions)} stream), passaggio al successivo..."
+                    current_item=item_display_name,
+                    last_log=f"[{server_index + 1}/{len(enabled_servers)}] {server_name} - Analisi{retry_suffix}: {item_display_name}"
                 )
-                consecutive_skips += 1
-                server_index = (server_index + 1) % len(enabled_servers)
-
-                if consecutive_skips >= max_consecutive_skips:
-                    # All servers busy for too long, wait a bit
-                    for srv in enabled_servers:
-                        srv_id = srv.get("id")
-                        if srv_id:
-                            self._update_status(
-                                srv_id,
-                                status_key,
-                                last_log="Tutti i server occupati, attesa..."
-                            )
-                    if stop_flag.wait(10):
-                        break
-                    consecutive_skips = 0
-                continue
-
-            # Server is free, process one item
-            consecutive_skips = 0
-            queue_item = processable[0]
-
-            item_id = queue_item["item_id"]
-            item_display_name = _format_display_name_from_queue(queue_item)
-            media_source_id = queue_item.get("media_source_id")
-            library_name = queue_item.get("library_name")
-            library_id = queue_item.get("library_id")
-
-            # Check if this is a retry
-            current_retry_count = self._get_retry_count(blacklist, item_id, media_source_id)
-            is_retry = current_retry_count > 0
-
-            # Update status
-            retry_suffix = f" (retry {current_retry_count})" if is_retry else ""
-            self._update_status(
-                server_id,
-                status_key,
-                current_item=item_display_name,
-                last_log=f"[{server_index + 1}/{len(enabled_servers)}] {server_name} - Analisi{retry_suffix}: {item_display_name}"
-            )
-
-            # Probe the item
-            start_time = time.time()
-            probe_success = self._probe_item(server, item_id, item_display_name, media_source_id)
-            duration_ms = int((time.time() - start_time) * 1000)
-
-            if stop_flag.is_set():
-                break
-
-            # Remove from queue
-            db.remove_from_probe_queue(server_id, item_id, media_source_id, scope=scope)
-
-            # Handle result (same logic as _processing_worker)
-            status = "ERROR"
-            error_details = "Timeout o errore API"
-
-            if probe_success:
-                max_attempts = 15
-                attempt = 0
-                metadata_ok = False
-                metadata_error = None
-                time.sleep(1)
-
-                while attempt < max_attempts and not stop_flag.is_set():
-                    metadata_ok, metadata_error = self._verify_probe_metadata(server, item_id, media_source_id)
+    
+                # Probe the item
+                start_time = time.time()
+                probe_success = self._probe_item(server, item_id, item_display_name, media_source_id)
+                duration_ms = int((time.time() - start_time) * 1000)
+    
+                if stop_flag.is_set():
+                    break
+    
+                # Remove from queue
+                db.remove_from_probe_queue(server_id, item_id, media_source_id, scope=scope)
+    
+                # Handle result (same logic as _processing_worker)
+                status = "ERROR"
+                error_details = "Timeout o errore API"
+    
+                if probe_success:
+                    max_attempts = 15
+                    attempt = 0
+                    metadata_ok = False
+                    metadata_error = None
+                    time.sleep(1)
+    
+                    while attempt < max_attempts and not stop_flag.is_set():
+                        metadata_ok, metadata_error = self._verify_probe_metadata(server, item_id, media_source_id)
+                        if metadata_ok:
+                            break
+                        attempt += 1
+                        if attempt < max_attempts:
+                            time.sleep(1)
+    
                     if metadata_ok:
-                        break
-                    attempt += 1
-                    if attempt < max_attempts:
-                        time.sleep(1)
-
-                if metadata_ok:
-                    status = "SUCCESS"
-                    error_details = None
-                    db.remove_from_probe_blacklist(server_id, item_id, media_source_id, scope=scope)
-                else:
-                    status = "INCOMPLETE"
-                    error_details = metadata_error or "Mediainfo non scritto dopo polling"
-
-            if status != "SUCCESS":
-                error_type = "INCOMPLETE" if status == "INCOMPLETE" else "ERROR"
-                db.update_probe_blacklist(
-                    server_id,
-                    item_id,
-                    item_display_name,
-                    error_details or "Errore probe",
-                    media_source_id=media_source_id,
-                    increment_retry=True,
-                    error_type=error_type,
-                    scope=scope,
-                    library_id=library_id,
-                    library_name=library_name
-                )
-
-            # Add to history
-            db.add_probe_history({
-                "server_id": server_id,
-                "item_id": item_id,
-                "media_source_id": media_source_id,
-                "scope": scope,
-                "name": item_display_name,
-                "library_name": library_name,
-                "status": status,
-                "error_details": error_details,
-                "duration_ms": duration_ms
-            })
-
-            # Update counters
-            with self._lock:
-                if server_id in self._status and status_key in self._status[server_id]:
-                    if status == "SUCCESS":
-                        if is_retry:
-                            self._status[server_id][status_key]["processed_retry"] += 1
-                        else:
-                            self._status[server_id][status_key]["processed"] += 1
-                    elif status == "INCOMPLETE":
-                        if is_retry:
-                            self._status[server_id][status_key]["incomplete_retry"] += 1
-                        else:
-                            self._status[server_id][status_key]["incomplete"] += 1
+                        status = "SUCCESS"
+                        error_details = None
+                        db.remove_from_probe_blacklist(server_id, item_id, media_source_id, scope=scope)
                     else:
-                        if is_retry:
-                            self._status[server_id][status_key]["errors_retry"] += 1
+                        status = "INCOMPLETE"
+                        error_details = metadata_error or "Mediainfo non scritto dopo polling"
+    
+                if status != "SUCCESS":
+                    error_type = "INCOMPLETE" if status == "INCOMPLETE" else "ERROR"
+                    db.update_probe_blacklist(
+                        server_id,
+                        item_id,
+                        item_display_name,
+                        error_details or "Errore probe",
+                        media_source_id=media_source_id,
+                        increment_retry=True,
+                        error_type=error_type,
+                        scope=scope,
+                        library_id=library_id,
+                        library_name=library_name
+                    )
+    
+                # Add to history
+                db.add_probe_history({
+                    "server_id": server_id,
+                    "item_id": item_id,
+                    "media_source_id": media_source_id,
+                    "scope": scope,
+                    "name": item_display_name,
+                    "library_name": library_name,
+                    "status": status,
+                    "error_details": error_details,
+                    "duration_ms": duration_ms
+                })
+    
+                # Update counters
+                with self._lock:
+                    if server_id in self._status and status_key in self._status[server_id]:
+                        if status == "SUCCESS":
+                            if is_retry:
+                                self._status[server_id][status_key]["processed_retry"] += 1
+                            else:
+                                self._status[server_id][status_key]["processed"] += 1
+                        elif status == "INCOMPLETE":
+                            if is_retry:
+                                self._status[server_id][status_key]["incomplete_retry"] += 1
+                            else:
+                                self._status[server_id][status_key]["incomplete"] += 1
                         else:
-                            self._status[server_id][status_key]["errors"] += 1
-                    current_total = self._status[server_id][status_key].get("total") or 0
-                    if current_total == 0:
-                        self._status[server_id][status_key]["total"] = (
-                            self._status[server_id][status_key]["processed"] +
-                            self._status[server_id][status_key]["incomplete"] +
-                            self._status[server_id][status_key]["errors"]
-                        )
-
-            # Rate limiting
-            if stop_flag.wait(1):
-                break
-
-        # Cleanup: mark all servers as done
-        for server in enabled_servers:
-            srv_id = server.get("id")
-            if not srv_id:
-                continue
-            with self._lock:
-                if srv_id in self._status and status_key in self._status[srv_id]:
-                    self._status[srv_id][status_key]["running"] = False
-                    if stop_flag.is_set():
-                        self._status[srv_id][status_key]["last_log"] = "Interrotto dall'utente"
-                    else:
-                        self._status[srv_id][status_key]["last_log"] = "Processing completato"
-                    self._status[srv_id][status_key]["current_item"] = None
+                            if is_retry:
+                                self._status[server_id][status_key]["errors_retry"] += 1
+                            else:
+                                self._status[server_id][status_key]["errors"] += 1
+                        current_total = self._status[server_id][status_key].get("total") or 0
+                        if current_total == 0:
+                            self._status[server_id][status_key]["total"] = (
+                                self._status[server_id][status_key]["processed"] +
+                                self._status[server_id][status_key]["incomplete"] +
+                                self._status[server_id][status_key]["errors"]
+                            )
+    
+                # Rate limiting
+                if stop_flag.wait(1):
+                    break
+    
+            # Cleanup: mark all servers as done
+            for server in enabled_servers:
+                srv_id = server.get("id")
+                if not srv_id:
+                    continue
+                with self._lock:
+                    if srv_id in self._status and status_key in self._status[srv_id]:
+                        self._status[srv_id][status_key]["running"] = False
+                        if stop_flag.is_set():
+                            self._status[srv_id][status_key]["last_log"] = "Interrotto dall'utente"
+                        else:
+                            self._status[srv_id][status_key]["last_log"] = "Processing completato"
+                        self._status[srv_id][status_key]["current_item"] = None
+    
+        finally:
+            if paused_server_ids:
+                for srv_id in paused_server_ids:
+                    self._set_libraries_pause(srv_id, False)
 
     def _get_retry_count(self, blacklist: dict, item_id: str, media_source_id: str | None = None) -> int:
         """Get retry count from blacklist."""
@@ -2347,8 +2382,24 @@ class EmbyProbeManager:
                 return
 
             db = self._db_getter()
+            pause_flag = self._get_libraries_pause_flag(server_id) if scope == PROBE_SCOPE_LIBRARIES else None
+
+            def wait_if_paused() -> bool:
+                if not pause_flag or not pause_flag.is_set():
+                    return False
+                self._update_status(
+                    server_id,
+                    status_key,
+                    last_log="In pausa: priorità Ultimi aggiunti"
+                )
+                while pause_flag.is_set() and not stop_flag.is_set():
+                    if stop_flag.wait(1):
+                        break
+                return stop_flag.is_set()
 
             while not stop_flag.is_set():
+                if wait_if_paused():
+                    break
                 if scope == PROBE_SCOPE_RECENT:
                     while not stop_flag.is_set():
                         with self._lock:
@@ -2440,10 +2491,14 @@ class EmbyProbeManager:
                 def handle_queue_item(queue_item: Dict[str, Any]) -> bool:
                     if stop_flag.is_set():
                         return False
+                    if wait_if_paused():
+                        return False
 
                     # Smart mode: check if server is busy and wait if needed
                     if mode == "smart":
                         while not stop_flag.is_set():
+                            if wait_if_paused():
+                                return False
                             sessions, error = _fetch_emby_active_sessions(server)
                             if error or not sessions:
                                 # No streams or error checking - proceed with processing
@@ -2714,6 +2769,8 @@ class EmbyProbeManager:
                 last_log=f"Errore critico: {exc}"
             )
         finally:
+            if scope == PROBE_SCOPE_RECENT:
+                self._set_libraries_pause(server_id, False)
             with self._lock:
                 if server_id in self._status and status_key in self._status[server_id]:
                     self._status[server_id][status_key]["running"] = False

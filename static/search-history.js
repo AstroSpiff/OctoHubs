@@ -196,7 +196,8 @@ class SearchHistoryManager {
     }
 
     async deleteSearch(searchId) {
-        if (!confirm('Eliminare questa ricerca e tutti i suoi risultati?')) {
+        const confirmed = await openConfirmDialog('Eliminare questa ricerca e tutti i suoi risultati?');
+        if (!confirmed) {
             return;
         }
 
@@ -221,6 +222,19 @@ class SearchHistoryManager {
         this.loadSearches();
     }
 }
+
+const openConfirmDialog = (message, title = 'Conferma') => {
+    if (window.octohubUtils && typeof window.octohubUtils.openConfirmModal === 'function') {
+        return window.octohubUtils.openConfirmModal(title, message);
+    }
+    const fallbackMsg = message || 'Modale non disponibile: azione annullata.';
+    if (typeof window.showToast === 'function') {
+        window.showToast(fallbackMsg, 'warning');
+        return Promise.resolve(false);
+    }
+    console.warn(fallbackMsg);
+    return Promise.resolve(false);
+};
 
 // Inizializza quando il DOM è pronto
 const searchHistoryManager = new SearchHistoryManager();

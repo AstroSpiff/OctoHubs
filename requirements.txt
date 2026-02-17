@@ -3,6 +3,7 @@ SQLAlchemy
 psycopg2-binary
 bcrypt
 JustWatch
+git+https://github.com/glensc/python-pytrakt.git
 websocket-client
 fastapi
 uvicorn[standard]

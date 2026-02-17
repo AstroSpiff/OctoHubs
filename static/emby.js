@@ -1489,7 +1489,7 @@
                 });
                 localStorage.setItem('embyActiveTab', target);
                 if (target === 'latest') {
-                    loadLatestReleases();
+                    loadLatestReleases(false, false, true);
                 }
                 if (target === 'users') {
                     if (typeof window.loadEmbyUsers === 'function') {
@@ -1533,6 +1533,8 @@
     const latestProgressBar = document.querySelector('[data-latest-progress-bar]');
     const latestProgressText = document.querySelector('[data-latest-progress-text]');
     const latestProgressMeta = document.querySelector('[data-latest-progress-meta]');
+    const isLatestTabActive = () => !!latestPanel && latestPanel.classList.contains('active');
+    const canAutoRefreshLatest = () => isLatestTabActive() && document.visibilityState === 'visible';
 
     const escapeHtml = (value) => {
         return String(value || '')
@@ -1756,6 +1758,11 @@
             const title = change.episode_title ? ` - ${change.episode_title}` : '';
             return code ? `Nuovo episodio ${code}${title}` : 'Nuovo episodio';
         }
+        if (kind === 'existing_file') {
+            const code = formatEpisodeCode(change.season_number, change.episode_number);
+            const title = change.episode_title ? ` - ${change.episode_title}` : '';
+            return code ? `File ${code}${title}` : 'File';
+        }
         if (kind === 'new_version') {
             const code = formatEpisodeCode(change.season_number, change.episode_number);
             return code ? `Nuova versione ${code}` : 'Nuova versione';
@@ -1787,7 +1794,7 @@
         }).join('');
     };
 
-    const renderLatestItem = (item) => {
+    const renderLatestItem = (item, index = 0) => {
         const title = escapeHtml(item.title || 'Titolo');
         const year = item.year ? ` (${escapeHtml(item.year)})` : '';
         const serverIconHtml = buildServerIconHtml(
@@ -1806,8 +1813,14 @@
         const addedAt = formatDate(item.added_at || item.premiere_date);
         const episodes = item.child_count ? `Episodi ${item.child_count}` : '';
         const updateLabel = item.update_label || '';
+        const jellyLabel = item.jellyseerr_requested
+            ? (item.jellyseerr_request_status_label || 'Richiesto')
+            : '';
         const changes = Array.isArray(item.changes) ? item.changes : [];
-        const detailKey = item.batch_id ? `${item.item_id || 'item'}-${item.batch_id}` : (item.item_id || Math.random().toString(36).slice(2));
+        const detailKeyBase = item.batch_id
+            ? `${item.item_id || 'item'}-${item.batch_id}`
+            : (item.item_id || Math.random().toString(36).slice(2));
+        const detailKey = `${detailKeyBase}-${index}`;
         const detailsId = `latest-detail-${item.item_type || 'item'}-${detailKey}`;
         const detailsHtml = changes.length ? `
             <div class="latest-details" id="${detailsId}">
@@ -1820,6 +1833,7 @@
         const badges = [
             serverBadge,
             buildLatestBadge(updateLabel),
+            jellyLabel ? buildLatestBadge(jellyLabel) : '',
             buildLatestBadge(runtime),
             buildLatestBadge(episodes),
             buildLatestBadge(ratingLabel),
@@ -1830,7 +1844,9 @@
             ? escapeHtml(item.genres.join(' · '))
             : '';
         const overview = item.overview ? escapeHtml(item.overview) : '';
-        const poster = item.image_url ? `<img src="${item.image_url}" alt="${title}">` : '';
+        const poster = item.image_url
+            ? `<img src="${item.image_url}" alt="${title}" loading="lazy" decoding="async" fetchpriority="low">`
+            : '';
 
         return `
             <article class="latest-item">
@@ -1861,7 +1877,7 @@
             }
             return;
         }
-        container.innerHTML = list.map(renderLatestItem).join('');
+        container.innerHTML = list.map((item, idx) => renderLatestItem(item, idx)).join('');
         if (countEl) {
             countEl.textContent = formatCount(list.length, totalCount);
         }
@@ -1992,6 +2008,10 @@
         if (latestProgressInFlight) {
             return;
         }
+        if (!canAutoRefreshLatest()) {
+            stopLatestProgressPolling();
+            return;
+        }
         latestProgressInFlight = true;
         try {
             const response = await fetch('/api/emby/latest/progress');
@@ -2042,19 +2062,39 @@
         }
     }
 
+    // Auto refresh disabilitato: imposta a 0 per evitare refresh automatici.
+    const LATEST_AUTO_REFRESH_MS = 0;
     let autoRefreshTimer = null;
 
     function scheduleAutoRefresh() {
+        if (!LATEST_AUTO_REFRESH_MS || LATEST_AUTO_REFRESH_MS <= 0) {
+            return;
+        }
         if (autoRefreshTimer) {
             clearTimeout(autoRefreshTimer);
+            autoRefreshTimer = null;
         }
-        // Auto-refresh ogni 60 secondi per controllare se ci sono aggiornamenti
+        if (!canAutoRefreshLatest()) {
+            return;
+        }
+        // Auto-refresh ogni 5 minuti per controllare se ci sono aggiornamenti
         autoRefreshTimer = setTimeout(() => {
+            autoRefreshTimer = null;
+            if (!canAutoRefreshLatest()) {
+                return;
+            }
             if (latestState.loaded && !latestState.loading) {
                 loadLatestReleases(false, true);
             }
-        }, 60000);
+        }, LATEST_AUTO_REFRESH_MS);
     }
+
+    document.addEventListener('visibilitychange', () => {
+        if (!canAutoRefreshLatest()) {
+            stopLatestProgressPolling();
+        }
+        scheduleAutoRefresh();
+    });
 
     const getLatestFetchLimits = () => {
         const fallbackLimit = 100;
@@ -2081,17 +2121,20 @@
         return limit;
     };
 
-    function loadLatestReleases(force = false, allowRefresh = false) {
+    function loadLatestReleases(force = false, allowRefresh = false, cacheOnly = false) {
         if (!latestMoviesContainer || !latestSeriesContainer) {
             return;
         }
         if (latestState.loading) {
             return;
         }
-        if (latestState.loaded && !force && !allowRefresh) {
+        if (allowRefresh && !canAutoRefreshLatest()) {
             return;
         }
-        startLatestProgressPolling();
+        if (latestState.loaded && !force && !allowRefresh) {
+            scheduleAutoRefresh();
+            return;
+        }
 
         latestState.loading = true;
         const isFirstLoad = !latestState.loaded;
@@ -2103,10 +2146,14 @@
         const limits = getLatestFetchLimits();
         const params = new URLSearchParams({
             limit: String(limits.total),
-            per_server_limit: String(limits.perServer)
+            per_server_limit: String(limits.perServer),
+            view: 'history'
         });
         if (force) {
             params.set('force', '1');
+        }
+        if (cacheOnly) {
+            params.set('cache_only', '1');
         }
         csrfFetch(`/api/emby/latest?${params.toString()}`)
             .then(res => res.json())
@@ -2122,39 +2169,18 @@
                 latestState.movies = Array.isArray(data.movies) ? data.movies : [];
                 latestState.series = Array.isArray(data.series) ? data.series : [];
 
-                // Al primo caricamento, imposta filtro sull'ultimo server disponibile
+                // Al primo caricamento, mantieni il server selezionato (default "Tutti")
                 if (isFirstLoad) {
-                    const serverIds = new Set();
-                    latestState.movies.forEach(m => {
-                        if (m && m.server_id !== undefined && m.server_id !== null) {
-                            serverIds.add(String(m.server_id));
-                        }
-                    });
-                    latestState.series.forEach(s => {
-                        if (s && s.server_id !== undefined && s.server_id !== null) {
-                            serverIds.add(String(s.server_id));
-                        }
-                    });
-                    const uniqueServers = Array.from(serverIds);
-
-                    // Imposta l'ultimo server come default (o "all" se non ci sono server)
-                    if (uniqueServers.length > 0) {
-                        latestState.currentServerId = String(uniqueServers[uniqueServers.length - 1]);
-
-                        // Aggiorna classe active sui tab
-                        latestServerTabs.forEach(tab => {
-                            if (tab.dataset.latestServer === latestState.currentServerId) {
-                                tab.classList.add('active');
-                            } else {
-                                tab.classList.remove('active');
-                            }
-                        });
-                    }
+                    const activeTab = Array.from(latestServerTabs).find(tab => tab.classList.contains('active'));
+                    const defaultServer = activeTab ? String(activeTab.dataset.latestServer || 'all') : 'all';
+                    latestState.currentServerId = defaultServer;
                 }
 
                 updatePreviewImageFallback();
                 updatePreviewSelectionOptions();
-                updatePreview();
+                if (isFirstLoad || force || !allowRefresh) {
+                    updatePreview();
+                }
                 renderLatestView();
                 updateCacheStatus(data);
                 const progressActive = updateLatestProgressUI(data.progress || {}, !!data.refreshing);
@@ -2189,8 +2215,33 @@
             });
     }
 
+    async function triggerLatestBackgroundRefresh(fullRefresh = false) {
+        const limits = getLatestFetchLimits();
+        const params = new URLSearchParams({
+            limit: String(limits.total),
+            per_server_limit: String(limits.perServer),
+            full: fullRefresh ? '1' : '0'
+        });
+        try {
+            const response = await csrfFetch(`/api/emby/latest/refresh?${params.toString()}`, {
+                method: 'POST'
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.success) {
+                showToast(data.message || 'Errore aggiornamento.', 'error');
+                return;
+            }
+            loadLatestReleases(false, false, true);
+            if (data.refreshing) {
+                startLatestProgressPolling();
+            }
+        } catch (err) {
+            showToast('Errore aggiornamento.', 'error');
+        }
+    }
+
     if (latestRefreshBtn) {
-        latestRefreshBtn.addEventListener('click', () => loadLatestReleases(true));
+        latestRefreshBtn.addEventListener('click', () => triggerLatestBackgroundRefresh(false));
     }
     if (latestNotifyBtn) {
         latestNotifyBtn.addEventListener('click', async () => {
@@ -2228,7 +2279,7 @@
                 tab.classList.add('active');
                 latestState.currentServerId = String(tab.dataset.latestServer || 'all');
                 if (!latestState.loaded) {
-                    loadLatestReleases(true);
+                    loadLatestReleases(false, false, true);
                 } else {
                     renderLatestView();
                     updatePreviewSelectionOptions();
@@ -2354,7 +2405,6 @@
         { token: '{official_rating}', label: 'Classificazione', example: 'PG-13', description: 'Rating ufficiale (eta).', group: 'Info editoriali' },
         { token: '{runtime}', label: 'Durata', example: '2h 35m', description: 'Durata (film).', group: 'Info editoriali' },
         { token: '{premiere_date}', label: 'Data premiere', example: "24.12.'25", description: 'Data di uscita/premiere.', group: 'Info editoriali' },
-        { token: '{critic_rating}', label: 'Critic rating', example: '82', description: 'Critic rating Emby.', group: 'Info editoriali' },
         { token: '{tagline}', label: 'Tagline', example: 'Il destino ti chiama.', description: 'Tagline film/serie.', group: 'Info editoriali' },
         { token: '{studios}', label: 'Studios', example: 'Legendary · Warner', description: 'Studio di produzione.', group: 'Info editoriali' },
         { token: '{production}', label: 'Produzione', example: 'Legendary · Warner', description: 'Alias di studios.', group: 'Info editoriali' },
@@ -2369,21 +2419,17 @@
         { token: '{tmdb_rating}', label: 'Voto TMDB', example: '8.6', description: 'Rating TMDB (richiede API key).', group: 'Rating esterni' },
         { token: '{imdb_rating}', label: 'Voto IMDb', example: '8.4', description: 'Rating IMDb (MDBList/OMDB).', group: 'Rating esterni' },
         { token: '{trakt_rating}', label: 'Voto Trakt', example: '8.5', description: 'Rating Trakt (richiede client ID).', group: 'Rating esterni' },
-        { token: '{rt_tomatometer}', label: 'Rotten Tomatoes', example: '94%', description: 'Tomatometer (MDBList/OMDB).', group: 'Rating esterni' },
-        { token: '{rt_audience}', label: 'Audience Score', example: '92%', description: 'Audience Score (MDBList/OMDB).', group: 'Rating esterni' },
         { token: '{metacritic_rating}', label: 'Metacritic', example: '82/100', description: 'Metacritic (MDBList/OMDB).', group: 'Rating esterni' },
-        { token: '{letterboxd_rating}', label: 'Letterboxd', example: '4.2', description: 'Rating Letterboxd (se disponibile).', group: 'Rating esterni' },
 
+        { token: '{jellyseerr_request_status_label}', label: 'Jellyseerr stato', example: 'Richiesta', description: 'Stato richiesta Jellyseerr (Richiesta/Approvata).', group: 'Jellyseerr' },
+        { token: '{jellyseerr_request_status}', label: 'Jellyseerr stato (raw)', example: 'approved', description: 'Codice stato Jellyseerr.', group: 'Jellyseerr' },
+        { token: '{jellyseerr_request_id}', label: 'Jellyseerr ID richiesta', example: '123', description: 'ID richiesta Jellyseerr.', group: 'Jellyseerr' },
+        { token: '{jellyseerr_requested_by}', label: 'Jellyseerr richiesto da', example: 'Mario Rossi', description: 'Utente che ha richiesto.', group: 'Jellyseerr' },
+        { token: '{jellyseerr_requested}', label: 'Jellyseerr richiesto', example: 'true', description: 'True se presente una richiesta.', group: 'Jellyseerr' },
+
+        { token: '{image_url}', label: 'Poster (cache DB)', example: '/api/emby/image?server_id=...&item_id=...&type=Primary', description: 'Poster via cache DB OctoHub.', group: 'Immagini & Link' },
         { token: '{poster_url}', label: 'Poster URL', example: 'https://emby.local/Items/.../Images/Primary', description: 'Poster (Emby).', group: 'Immagini & Link' },
-        { token: '{backdrop_url}', label: 'Backdrop URL', example: 'https://emby.local/Items/.../Images/Backdrop', description: 'Backdrop (Emby).', group: 'Immagini & Link' },
-        { token: '{banner_url}', label: 'Banner URL', example: 'https://emby.local/Items/.../Images/Banner', description: 'Banner (Emby).', group: 'Immagini & Link' },
-        { token: '{thumb_url}', label: 'Thumb URL', example: 'https://emby.local/Items/.../Images/Thumb', description: 'Thumb (Emby).', group: 'Immagini & Link' },
-        { token: '{logo_url}', label: 'Logo URL', example: 'https://emby.local/Items/.../Images/Logo', description: 'Logo (Emby).', group: 'Immagini & Link' },
         { token: '{tmdb_poster_url}', label: 'TMDB Poster', example: 'https://image.tmdb.org/t/p/w780/abc.jpg', description: 'Poster (TMDB).', group: 'Immagini & Link' },
-        { token: '{tmdb_backdrop_url}', label: 'TMDB Backdrop', example: 'https://image.tmdb.org/t/p/w1280/def.jpg', description: 'Backdrop (TMDB).', group: 'Immagini & Link' },
-        { token: '{tmdb_logo_url}', label: 'TMDB Logo', example: 'https://image.tmdb.org/t/p/w500/logo.png', description: 'Logo (TMDB).', group: 'Immagini & Link' },
-        { token: '{tmdb_banner_url}', label: 'TMDB Banner', example: 'https://image.tmdb.org/t/p/w1280/def.jpg', description: 'Banner (TMDB).', group: 'Immagini & Link' },
-        { token: '{tmdb_thumb_url}', label: 'TMDB Thumb', example: 'https://image.tmdb.org/t/p/w1280/def.jpg', description: 'Thumb (TMDB).', group: 'Immagini & Link' },
         { token: '{emby_url}', label: 'Link Emby', example: 'https://emby.local/web/index.html#!/itemdetails.html?id=...', description: 'Scheda Emby.', group: 'Immagini & Link' },
         { token: '{tmdb_id}', label: 'TMDB ID', example: '123456', description: 'ID TMDB (se disponibile).', group: 'Immagini & Link' },
         { token: '{imdb_id}', label: 'IMDb ID', example: 'tt1234567', description: 'ID IMDb (se disponibile).', group: 'Immagini & Link' },
@@ -2404,15 +2450,7 @@
     const previewImageFields = [
         'image_url',
         'tmdb_poster_url',
-        'poster_url',
-        'tmdb_backdrop_url',
-        'backdrop_url',
-        'tmdb_banner_url',
-        'banner_url',
-        'tmdb_thumb_url',
-        'thumb_url',
-        'tmdb_logo_url',
-        'logo_url'
+        'poster_url'
     ];
     const latestPreviewFallbacks = {
         movie_new: {
@@ -2430,7 +2468,6 @@
             genres: 'Sci-Fi · Avventura',
             overview: 'Paul Atreides si unisce ai Fremen per guidarli alla vittoria.',
             rating: '8.6',
-            critic_rating: '82',
             official_rating: 'PG-13',
             runtime: '2h 46m',
             quality: '2160p',
@@ -2469,12 +2506,8 @@
             director: 'Denis Villeneuve',
             directors: 'Denis Villeneuve',
             tmdb_rating: '8.6',
-            imdb_rating: '8.4',
             trakt_rating: '8.5',
-            rt_tomatometer: '94%',
-            rt_audience: '92%',
-            metacritic_rating: '82/100',
-            letterboxd_rating: '4.2',
+            image_url: '',
             poster_url: '',
             backdrop_url: '',
             banner_url: '',
@@ -2482,7 +2515,6 @@
             logo_url: '',
             tmdb_poster_url: '',
             tmdb_backdrop_url: '',
-            tmdb_logo_url: '',
             tmdb_banner_url: '',
             tmdb_thumb_url: '',
             emby_url: 'https://emby.local/item/123',
@@ -2511,7 +2543,6 @@
             genres: 'Dramma · Storico',
             overview: 'La storia dell\'uomo dietro la bomba atomica.',
             rating: '8.4',
-            critic_rating: '88',
             official_rating: 'R',
             runtime: '3h 1m',
             quality: '1080p',
@@ -2550,12 +2581,8 @@
             director: 'Christopher Nolan',
             directors: 'Christopher Nolan',
             tmdb_rating: '8.5',
-            imdb_rating: '8.4',
             trakt_rating: '8.3',
-            rt_tomatometer: '93%',
-            rt_audience: '91%',
-            metacritic_rating: '88/100',
-            letterboxd_rating: '4.3',
+            image_url: '',
             poster_url: '',
             backdrop_url: '',
             banner_url: '',
@@ -2563,7 +2590,6 @@
             logo_url: '',
             tmdb_poster_url: '',
             tmdb_backdrop_url: '',
-            tmdb_logo_url: '',
             tmdb_banner_url: '',
             tmdb_thumb_url: '',
             emby_url: 'https://emby.local/item/456',
@@ -2592,7 +2618,6 @@
             genres: 'Dramma · Sci-Fi',
             overview: 'Un viaggio attraverso un mondo distrutto da un fungo letale.',
             rating: '8.8',
-            critic_rating: '90',
             official_rating: 'TV-MA',
             runtime: '',
             quality: '1080p',
@@ -2618,17 +2643,13 @@
             production_companies: 'HBO',
             cast: 'Pedro Pascal · Bella Ramsey · Anna Torv · Gabriel Luna',
             cast_all: 'Pedro Pascal · Bella Ramsey · Anna Torv · Gabriel Luna · Merle Dandridge',
-            director: 'Craig Mazin',
-            directors: 'Craig Mazin · Neil Druckmann',
             episodes: 'S01E01, S01E02',
             episodes_with_titles: 'S01E01 - Quando sei perso · S01E02 - Infetti',
             tmdb_rating: '8.8',
             imdb_rating: '8.7',
             trakt_rating: '8.6',
-            rt_tomatometer: '96%',
-            rt_audience: '90%',
             metacritic_rating: '84/100',
-            letterboxd_rating: '4.1',
+            image_url: '',
             poster_url: '',
             backdrop_url: '',
             banner_url: '',
@@ -2636,7 +2657,6 @@
             logo_url: '',
             tmdb_poster_url: '',
             tmdb_backdrop_url: '',
-            tmdb_logo_url: '',
             tmdb_banner_url: '',
             tmdb_thumb_url: '',
             emby_url: 'https://emby.local/item/789',
@@ -2675,7 +2695,6 @@
             genres: 'Sci-Fi · Mistero',
             overview: 'Il soprannaturale ritorna a Hawkins.',
             rating: '8.6',
-            critic_rating: '89',
             official_rating: 'TV-14',
             runtime: '',
             quality: '2160p',
@@ -2701,17 +2720,13 @@
             production_companies: 'Netflix',
             cast: 'Millie Bobby Brown · Finn Wolfhard · David Harbour',
             cast_all: 'Millie Bobby Brown · Finn Wolfhard · David Harbour · Winona Ryder',
-            director: 'The Duffer Brothers',
-            directors: 'The Duffer Brothers',
             episodes: 'S05E01',
             episodes_with_titles: 'S05E01 - Nuovi inizi',
             tmdb_rating: '8.6',
             imdb_rating: '8.7',
             trakt_rating: '8.5',
-            rt_tomatometer: '93%',
-            rt_audience: '91%',
             metacritic_rating: '74/100',
-            letterboxd_rating: '4.0',
+            image_url: '',
             poster_url: '',
             backdrop_url: '',
             banner_url: '',
@@ -2719,7 +2734,6 @@
             logo_url: '',
             tmdb_poster_url: '',
             tmdb_backdrop_url: '',
-            tmdb_logo_url: '',
             tmdb_banner_url: '',
             tmdb_thumb_url: '',
             emby_url: 'https://emby.local/item/321',
@@ -2758,7 +2772,6 @@
             genres: 'Sci-Fi · Mistero',
             overview: 'Nuovi misteri emergono nella cittadina.',
             rating: '8.6',
-            critic_rating: '89',
             official_rating: 'TV-14',
             runtime: '',
             quality: '1080p',
@@ -2784,17 +2797,13 @@
             production_companies: 'Netflix',
             cast: 'Millie Bobby Brown · Finn Wolfhard · David Harbour',
             cast_all: 'Millie Bobby Brown · Finn Wolfhard · David Harbour · Winona Ryder',
-            director: 'The Duffer Brothers',
-            directors: 'The Duffer Brothers',
             episodes: 'S05E05, S05E06',
             episodes_with_titles: 'S05E05 - Il corridoio · S05E06 - Le ombre',
             tmdb_rating: '8.6',
             imdb_rating: '8.7',
             trakt_rating: '8.5',
-            rt_tomatometer: '93%',
-            rt_audience: '91%',
             metacritic_rating: '74/100',
-            letterboxd_rating: '4.0',
+            image_url: '',
             poster_url: '',
             backdrop_url: '',
             banner_url: '',
@@ -2802,7 +2811,6 @@
             logo_url: '',
             tmdb_poster_url: '',
             tmdb_backdrop_url: '',
-            tmdb_logo_url: '',
             tmdb_banner_url: '',
             tmdb_thumb_url: '',
             emby_url: 'https://emby.local/item/321',
@@ -2841,7 +2849,6 @@
             genres: 'Sci-Fi · Mistero',
             overview: 'Versione alternativa con qualita superiore.',
             rating: '8.6',
-            critic_rating: '89',
             official_rating: 'TV-14',
             runtime: '',
             quality: '2160p',
@@ -2867,17 +2874,12 @@
             production_companies: 'Netflix',
             cast: 'Millie Bobby Brown · Finn Wolfhard · David Harbour',
             cast_all: 'Millie Bobby Brown · Finn Wolfhard · David Harbour · Winona Ryder',
-            director: 'The Duffer Brothers',
-            directors: 'The Duffer Brothers',
             episodes: 'S05E08',
             episodes_with_titles: 'S05E08 - La porta',
             tmdb_rating: '8.6',
             imdb_rating: '8.7',
             trakt_rating: '8.5',
-            rt_tomatometer: '93%',
-            rt_audience: '91%',
             metacritic_rating: '74/100',
-            letterboxd_rating: '4.0',
             poster_url: '',
             backdrop_url: '',
             banner_url: '',
@@ -2885,7 +2887,6 @@
             logo_url: '',
             tmdb_poster_url: '',
             tmdb_backdrop_url: '',
-            tmdb_logo_url: '',
             tmdb_banner_url: '',
             tmdb_thumb_url: '',
             emby_url: 'https://emby.local/item/321',
@@ -2913,16 +2914,9 @@
 
     const latestTemplateTokenRegex = /{{\s*([a-zA-Z0-9_]+)[^}]*}}|{([a-zA-Z0-9_]+)[^}]*}/g;
     const latestImageTokens = new Set([
+        'image_url',
         'tmdb_poster_url',
-        'poster_url',
-        'tmdb_backdrop_url',
-        'backdrop_url',
-        'tmdb_logo_url',
-        'logo_url',
-        'tmdb_banner_url',
-        'banner_url',
-        'tmdb_thumb_url',
-        'thumb_url'
+        'poster_url'
     ]);
 
     const latestPreviewIndex = {
@@ -3162,8 +3156,7 @@
         const studiosText = studiosList.join(' · ');
         const castRaw = Array.isArray(item.cast) ? item.cast : [];
         const directorRaw = Array.isArray(item.directors) ? item.directors : [];
-        const creatorRaw = Array.isArray(item.creators) ? item.creators : [];
-        const crewRaw = typeToken === 'series' || typeToken === 'episode' ? creatorRaw : directorRaw;
+        const crewRaw = directorRaw;
         const castList = [];
         castRaw.forEach(entry => {
             const name = safeString(entry);
@@ -3214,7 +3207,6 @@
             genres: Array.isArray(item.genres) ? item.genres.filter(Boolean).join(' · ') : '',
             overview: safeString(item.overview),
             rating: safeString(item.community_rating),
-            critic_rating: safeString(item.critic_rating),
             official_rating: safeString(item.official_rating),
             runtime: formatRuntime(item.runtime_minutes),
             quality: safeString(change.quality),
@@ -3265,6 +3257,7 @@
             directors: directorsText,
             episodes: episodeCodes.join(', '),
             episodes_with_titles: episodeTitles.join(' · '),
+            image_url: safeString(item.image_url),
             poster_url: safeString(item.poster_url),
             backdrop_url: safeString(item.backdrop_url),
             banner_url: safeString(item.banner_url),
@@ -3272,7 +3265,6 @@
             logo_url: safeString(item.logo_url),
             tmdb_poster_url: safeString(item.tmdb_poster_url),
             tmdb_backdrop_url: safeString(item.tmdb_backdrop_url),
-            tmdb_logo_url: safeString(item.tmdb_logo_url),
             tmdb_banner_url: safeString(item.tmdb_banner_url),
             tmdb_thumb_url: safeString(item.tmdb_thumb_url),
             emby_url: safeString(item.emby_url),
@@ -3288,10 +3280,12 @@
             tmdb_rating: safeString(item.tmdb_rating),
             imdb_rating: safeString(item.imdb_rating),
             trakt_rating: safeString(item.trakt_rating),
-            rt_tomatometer: safeString(item.rt_tomatometer),
-            rt_audience: safeString(item.rt_audience),
             metacritic_rating: safeString(item.metacritic_rating),
-            letterboxd_rating: safeString(item.letterboxd_rating)
+            jellyseerr_request_id: safeString(item.jellyseerr_request_id),
+            jellyseerr_request_status: safeString(item.jellyseerr_request_status),
+            jellyseerr_request_status_label: safeString(item.jellyseerr_request_status_label),
+            jellyseerr_requested_by: safeString(item.jellyseerr_requested_by),
+            jellyseerr_requested: safeString(item.jellyseerr_requested)
         };
     };
 
@@ -6081,8 +6075,10 @@
             const limits = typeof getLatestFetchLimits === 'function' ? getLatestFetchLimits() : { total: 50, perServer: 50 };
             const params = new URLSearchParams({
                 limit: String(limits.total || 50),
-                per_server_limit: String(limits.perServer || 10)
+                per_server_limit: String(limits.perServer || 10),
+                view: 'history'
             });
+            params.set('cache_only', '1');
             const response = await fetch(`/api/emby/latest?${params.toString()}`);
             const data = await response.json();
 
@@ -6095,7 +6091,13 @@
             loadingDiv.style.display = 'none';
         } catch (error) {
             console.error('Error loading latest data:', error);
-            alert('Errore nel caricamento dei dati: ' + error.message);
+            if (window.octohubUtils && typeof window.octohubUtils.openAlertModal === 'function') {
+                await window.octohubUtils.openAlertModal('Errore', 'Errore nel caricamento dei dati: ' + error.message);
+            } else if (typeof window.showToast === 'function') {
+                window.showToast('Errore nel caricamento dei dati: ' + error.message, 'error');
+            } else {
+                console.error('Errore nel caricamento dei dati: ' + error.message);
+            }
             closeModal();
         }
     }
@@ -6254,7 +6256,13 @@
             displayDiff(baseDiff);
         } catch (error) {
             console.error('Error enriching data:', error);
-            alert('Errore durante l\'aggiornamento dei dati: ' + error.message);
+            if (window.octohubUtils && typeof window.octohubUtils.openAlertModal === 'function') {
+                await window.octohubUtils.openAlertModal('Errore', 'Errore durante l\'aggiornamento dei dati: ' + error.message);
+            } else if (typeof window.showToast === 'function') {
+                window.showToast('Errore durante l\'aggiornamento dei dati: ' + error.message, 'error');
+            } else {
+                console.error('Errore durante l\'aggiornamento dei dati: ' + error.message);
+            }
         } finally {
             loadingDiv.style.display = 'none';
             btnEnrich.disabled = false;
@@ -6271,34 +6279,39 @@
 
         const commonFields = [
             'title', 'original_title', 'year', 'overview', 'genres',
-            'community_rating', 'critic_rating', 'official_rating', 'runtime_minutes',
+            'community_rating', 'official_rating', 'runtime_minutes',
             'premiere_date', 'tagline', 'studios', 'cast', 'directors', 'creators',
-            'poster_url', 'backdrop_url', 'banner_url', 'thumb_url', 'logo_url',
-            'emby_url', 'library_name', 'server_name'
+            'image_url', 'poster_url',
+            'emby_url', 'library_name', 'server_name',
+            'jellyseerr_request_status_label'
         ];
 
         const tmdbFields = [
             'tmdb_id', 'tmdb_rating', 'tmdb_votes',
-            'tmdb_poster_url', 'tmdb_backdrop_url', 'tmdb_logo_url',
-            'tmdb_banner_url', 'tmdb_thumb_url'
+            'tmdb_poster_url'
         ];
 
         const omdbFields = [
             'imdb_id', 'imdb_rating', 'imdb_votes',
-            'rt_tomatometer', 'rt_audience', 'metacritic_rating'
+            'metacritic_rating'
         ];
 
         const traktFields = [
             'trakt_id', 'trakt_rating', 'trakt_votes'
         ];
 
-        const letterboxdFields = [
-            'letterboxd_rating'
-        ];
-
         if (isSeries) {
             commonFields.push('series_name', 'season_count', 'episode_count');
             omdbFields.push('tvdb_id');
+            const directorIndex = commonFields.indexOf('directors');
+            if (directorIndex >= 0) {
+                commonFields.splice(directorIndex, 1);
+            }
+        } else {
+            const creatorIndex = commonFields.indexOf('creators');
+            if (creatorIndex >= 0) {
+                commonFields.splice(creatorIndex, 1);
+            }
         }
 
         const fileFields = [
@@ -6348,8 +6361,7 @@
                 ...commonFields,
                 ...tmdbFields,
                 ...omdbFields,
-                ...traktFields,
-                ...letterboxdFields
+                ...traktFields
             ],
             item
         );
@@ -6424,9 +6436,11 @@
     // Determina la fonte di un campo
     function getFieldSource(field, isSeries) {
         if (field.startsWith('tmdb_')) return 'TMDB';
-        if (field.startsWith('imdb_') || field === 'rt_tomatometer' || field === 'rt_audience' || field === 'metacritic_rating') return 'MDBList/OMDB';
+        if (field.startsWith('imdb_') || field === 'metacritic_rating') return 'MDBList/OMDB';
         if (field.startsWith('trakt_')) return 'Trakt';
-        if (field === 'letterboxd_rating') return 'Letterboxd';
+        if (field.startsWith('jellyseerr_')) return 'Jellyseerr';
+        if (field === 'image_url') return 'DB Cache';
+        if (field === 'creators' && isSeries) return 'TMDB';
         if (field.startsWith('audio_') || field.startsWith('video_') || field === 'subtitle_langs') return 'Emby (MediaStreams)';
         if (['quality', 'resolution', 'video_codec', 'audio_codec', 'audio_channels', 'container', 'bitrate', 'size', 'source_name', 'path', 'added_at'].includes(field)) return 'Emby (MediaSources)';
         if (field === 'tvdb_id' && isSeries) return 'OMDB';
@@ -6545,7 +6559,6 @@
             'overview': 'Trama',
             'genres': 'Generi',
             'community_rating': 'Rating Emby',
-            'critic_rating': 'Critic Rating',
             'official_rating': 'Classificazione',
             'runtime_minutes': 'Durata',
             'premiere_date': 'Data Uscita',
@@ -6554,11 +6567,13 @@
             'cast': 'Cast',
             'directors': 'Registi',
             'creators': 'Creatori',
+            'image_url': 'Poster (cache DB)',
             'poster_url': 'Poster Emby',
-            'backdrop_url': 'Backdrop Emby',
-            'banner_url': 'Banner Emby',
-            'thumb_url': 'Thumb Emby',
-            'logo_url': 'Logo Emby',
+            'jellyseerr_request_status_label': 'Jellyseerr Stato',
+            'jellyseerr_request_status': 'Jellyseerr Stato (raw)',
+            'jellyseerr_request_id': 'Jellyseerr ID richiesta',
+            'jellyseerr_requested_by': 'Jellyseerr richiesto da',
+            'jellyseerr_requested': 'Jellyseerr richiesto',
             'emby_url': 'Link Emby',
             'library_name': 'Libreria',
             'server_name': 'Server',
@@ -6575,24 +6590,16 @@
             'tmdb_rating': 'TMDB Rating',
             'tmdb_votes': 'TMDB Voti',
             'tmdb_poster_url': 'TMDB Poster',
-            'tmdb_backdrop_url': 'TMDB Backdrop',
-            'tmdb_logo_url': 'TMDB Logo',
-            'tmdb_banner_url': 'TMDB Banner',
-            'tmdb_thumb_url': 'TMDB Thumbnail',
             // OMDB
             'imdb_id': 'IMDb ID',
             'imdb_rating': 'IMDb Rating',
             'imdb_votes': 'IMDb Voti',
-            'rt_tomatometer': 'Rotten Tomatoes',
-            'rt_audience': 'RT Audience',
             'metacritic_rating': 'Metacritic',
             'tvdb_id': 'TVDB ID',
             // Trakt
             'trakt_id': 'Trakt ID',
             'trakt_rating': 'Trakt Rating',
             'trakt_votes': 'Trakt Voti',
-            // Letterboxd
-            'letterboxd_rating': 'Letterboxd Rating',
             // Tecnici
             'quality': 'Qualità',
             'resolution': 'Risoluzione',
@@ -6638,7 +6645,6 @@
         // Rating fields
         if (field.includes('rating') && !field.includes('official')) {
             if (field === 'metacritic_rating') return value;
-            if (field === 'rt_tomatometer' || field === 'rt_audience') return value;
             return value;
         }
 

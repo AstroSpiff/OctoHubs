@@ -30,6 +30,41 @@
             }, 4500);
         };
         window.showToast = showToast;
+        const openConfirmDialog = (message, title = 'Conferma') => {
+            if (window.octohubUtils && typeof window.octohubUtils.openConfirmModal === 'function') {
+                return window.octohubUtils.openConfirmModal(title, message);
+            }
+            const fallbackMsg = message || 'Modale non disponibile: azione annullata.';
+            if (typeof window.showToast === 'function') {
+                window.showToast(fallbackMsg, 'warning');
+                return Promise.resolve(false);
+            }
+            console.warn(fallbackMsg);
+            return Promise.resolve(false);
+        };
+        const openAlertDialog = (message, title = 'Messaggio') => {
+            if (window.octohubUtils && typeof window.octohubUtils.openAlertModal === 'function') {
+                return window.octohubUtils.openAlertModal(title, message);
+            }
+            if (typeof window.showToast === 'function') {
+                window.showToast(message, 'error');
+                return Promise.resolve(null);
+            }
+            console.error(message);
+            return Promise.resolve(null);
+        };
+        const openAlertDialogRich = (title, messageNode, fallbackMessage = '') => {
+            if (window.octohubUtils && typeof window.octohubUtils.openAlertModalRich === 'function') {
+                return window.octohubUtils.openAlertModalRich(title, messageNode);
+            }
+            const fallbackText = fallbackMessage || (messageNode ? messageNode.textContent : '') || title || 'Messaggio';
+            if (typeof window.showToast === 'function') {
+                window.showToast(fallbackText, 'error');
+                return Promise.resolve(null);
+            }
+            console.error(fallbackText);
+            return Promise.resolve(null);
+        };
         const consumeFlashMessages = () => {
             const alerts = document.querySelectorAll('.alert[data-toast]');
             alerts.forEach(alert => {
@@ -934,7 +969,8 @@
             if (rssSelectedIds.size === 0) {
                 return;
             }
-            if (!confirm(`Eliminare ${rssSelectedIds.size} articoli selezionati?`)) {
+            const confirmed = await openConfirmDialog(`Eliminare ${rssSelectedIds.size} articoli selezionati?`);
+            if (!confirmed) {
                 return;
             }
             if (!rssDeleteBtn) {
@@ -1213,7 +1249,8 @@
 
         const deleteCleanupItems = async () => {
             if (cleanupSelectedIds.size === 0) return;
-            if (!confirm(`Eliminare ${cleanupSelectedIds.size} articoli selezionati?`)) return;
+            const confirmed = await openConfirmDialog(`Eliminare ${cleanupSelectedIds.size} articoli selezionati?`);
+            if (!confirmed) return;
             if (!cleanupDeleteBtn) return;
 
             cleanupDeleteBtn.disabled = true;
@@ -1266,7 +1303,13 @@
             details += `SOMMARIO:\n${summary}\n\n`;
             details += `CONTENUTO:\n${content}`;
 
-            alert(details);
+            const detailsNode = document.createElement('pre');
+            detailsNode.textContent = details;
+            detailsNode.style.whiteSpace = 'pre-wrap';
+            detailsNode.style.margin = '0';
+            detailsNode.style.fontFamily = 'inherit';
+            detailsNode.style.fontSize = '0.85rem';
+            openAlertDialogRich('Dettagli articolo', detailsNode, details);
         };
 
         if (cleanupSearchBtn) {
@@ -1557,7 +1600,8 @@
             }
 
             const count = blacklistedCategories.length;
-            if (!confirm(`Eliminare tutti gli articoli delle ${count} categorie blacklistate?`)) return;
+            const confirmed = await openConfirmDialog(`Eliminare tutti gli articoli delle ${count} categorie blacklistate?`);
+            if (!confirmed) return;
 
             try {
                 const resp = await csrfFetch('/api/rss/items/by-categories', {
@@ -1685,7 +1729,7 @@
                 if (mapped && appendTermToRequest(mapped, term, requestId)) {
                     hideResultContextMenu();
                 } else {
-                    alert('Impossibile aggiornare la richiesta selezionata.');
+                    openAlertDialog('Impossibile aggiornare la richiesta selezionata.');
                 }
             });
         }
@@ -2158,6 +2202,7 @@
         const traktConnectBtn = document.getElementById('trakt-connect-btn');
         const traktDisconnectBtn = document.getElementById('trakt-disconnect-btn');
         const traktClientInput = document.getElementById('trakt_client_id');
+        const traktSecretInput = document.getElementById('trakt_client_secret');
         const traktAccessInput = document.getElementById('trakt_access_token');
         const traktEnabledToggle = document.querySelector('input[name="trakt_enabled"]');
         const traktStatusLabel = document.getElementById('trakt-device-status');
@@ -2170,13 +2215,27 @@
 
         const updateTraktAuthStatus = (overrideMessage, overrideClass) => {
             if (!traktAuthStatus) return;
-            const expiresAt = parseInt(traktAuthStatus.dataset.expiresAt || '', 10);
+            const expiresAtRaw = traktAuthStatus.dataset.expiresAt || '';
             const hasToken = traktAuthStatus.dataset.hasToken === 'true';
-            const nowSeconds = Math.floor(Date.now() / 1000);
+            const nowMs = Date.now();
             let label = 'Non collegato';
             let statusClass = 'status-skip';
             if (hasToken) {
-                if (Number.isFinite(expiresAt) && expiresAt > 0 && nowSeconds >= expiresAt) {
+                let expiresMs = null;
+                // Try parsing as ISO datetime first, then as Unix timestamp
+                if (expiresAtRaw) {
+                    const parsedDate = new Date(expiresAtRaw);
+                    if (!isNaN(parsedDate.getTime())) {
+                        expiresMs = parsedDate.getTime();
+                    } else {
+                        // Fallback: try parsing as Unix timestamp in seconds
+                        const expiresAt = parseInt(expiresAtRaw, 10);
+                        if (Number.isFinite(expiresAt) && expiresAt > 0) {
+                            expiresMs = expiresAt * 1000;
+                        }
+                    }
+                }
+                if (expiresMs && nowMs >= expiresMs) {
                     label = 'Scaduto';
                     statusClass = 'status-fail';
                 } else {
@@ -2266,8 +2325,13 @@
         if (traktConnectBtn) {
             traktConnectBtn.addEventListener('click', async () => {
                 const clientId = traktClientInput ? traktClientInput.value.trim() : '';
+                const clientSecret = traktSecretInput ? traktSecretInput.value.trim() : '';
                 if (!clientId) {
                     setTraktStatus('Inserisci il Client ID Trakt prima di collegare.');
+                    return;
+                }
+                if (!clientSecret) {
+                    setTraktStatus('Inserisci il Client Secret Trakt prima di collegare.');
                     return;
                 }
                 clearTraktTimer();
@@ -2277,7 +2341,7 @@
                     const resp = await csrfFetch('/api/trakt/device/start', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({client_id: clientId})
+                        body: JSON.stringify({client_id: clientId, client_secret: clientSecret})
                     });
                     const data = await resp.json();
                     if (!resp.ok || !data.success) {
@@ -2299,7 +2363,7 @@
                         const pollResp = await csrfFetch('/api/trakt/device/poll', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({client_id: clientId, device_code: deviceCode})
+                            body: JSON.stringify({client_id: clientId, client_secret: clientSecret, device_code: deviceCode})
                         });
                         const pollData = await pollResp.json();
                         if (pollData.status === 'authorized') {
@@ -2469,7 +2533,7 @@
         });
 
         document.querySelectorAll('.request-action').forEach(btn => {
-            btn.addEventListener('click', () => {
+            btn.addEventListener('click', async () => {
                 const action = btn.dataset.action;
                 const group = btn.closest('.list-actions')?.dataset.group;
                 if (!action) return;
@@ -2479,16 +2543,58 @@
                     if (statusLabel) statusLabel.textContent = 'Aggiornamento lista...';
                     if (refreshStatus) refreshStatus.textContent = 'Aggiornamento in corso...';
                     btn.disabled = true;
+                    const pollRefreshStatus = () => {
+                        let attempts = 0;
+                        const maxAttempts = 20;
+                        const timer = setInterval(() => {
+                            attempts += 1;
+                            csrfFetch('/api/refresh-requests/status')
+                                .then(resp => resp.json())
+                                .then(data => {
+                                    if (!data || data.running) {
+                                        return;
+                                    }
+                                    clearInterval(timer);
+                                    const lastStatus = data.last_status || '';
+                                    if (lastStatus === 'skipped' && data.last_warning) {
+                                        if (refreshStatus) refreshStatus.textContent = data.last_warning;
+                                        if (statusLabel) statusLabel.textContent = data.last_warning;
+                                        showToast(data.last_warning, 'warning');
+                                        return;
+                                    }
+                                    if (lastStatus === 'error') {
+                                        const errMsg = data.last_error || 'Errore aggiornamento richieste';
+                                        if (refreshStatus) refreshStatus.textContent = errMsg;
+                                        if (statusLabel) statusLabel.textContent = errMsg;
+                                        showToast(errMsg, 'error');
+                                        return;
+                                    }
+                                    if (refreshStatus) refreshStatus.textContent = 'Lista aggiornata';
+                                    if (statusLabel) statusLabel.textContent = 'Lista aggiornata';
+                                    showToast('Aggiornamento richieste completato', 'success');
+                                })
+                                .catch(() => {
+                                    if (attempts >= maxAttempts) {
+                                        clearInterval(timer);
+                                    }
+                                });
+                            if (attempts >= maxAttempts) {
+                                clearInterval(timer);
+                            }
+                        }, 1500);
+                    };
                     csrfFetch('/api/refresh-requests', {method: 'POST'})
                         .then(resp => resp.json())
                         .then(data => {
                             if (statusLabel) statusLabel.textContent = data.message || 'Lista aggiornata';
                             if (refreshStatus) refreshStatus.textContent = data.message || 'Lista aggiornata';
-                            window.location.reload();
+                            showToast(data.message || 'Aggiornamento richieste avviato', 'success');
+                            pollRefreshStatus();
                         })
                         .catch(() => {
                             if (statusLabel) statusLabel.textContent = 'Errore durante l\'aggiornamento';
                             if (refreshStatus) refreshStatus.textContent = 'Errore durante l\'aggiornamento';
+                            showToast('Errore durante l\'aggiornamento', 'error');
                         })
                         .finally(() => {
                             btn.disabled = false;
@@ -2506,7 +2612,8 @@
                     });
                     scheduleRequestRulesSave();
                 } else if (action === 'reset-fields') {
-                    if (!confirm('Vuoi davvero resettare tutti i campi di questo gruppo?')) {
+                    const confirmed = await openConfirmDialog('Vuoi davvero resettare tutti i campi di questo gruppo?');
+                    if (!confirmed) {
                         return;
                     }
                     rows.forEach(row => {
@@ -5412,7 +5519,16 @@
                     await navigator.clipboard.writeText(magnet);
                     showToast('Magnet copiato negli appunti', 'success');
                 } catch (err) {
-                    window.prompt('Copia il magnet:', magnet);
+                    if (window.octohubUtils && typeof window.octohubUtils.openPromptModal === 'function') {
+                        await window.octohubUtils.openPromptModal(
+                            'Copia magnet',
+                            'Copia il magnet:',
+                            magnet,
+                            { label: 'Magnet', confirmText: 'Chiudi', cancelText: 'Chiudi' }
+                        );
+                    } else {
+                        showToast('Copia manuale non disponibile: modale non pronto.', 'warning');
+                    }
                 }
             };
 

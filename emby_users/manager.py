@@ -5,9 +5,10 @@ import uuid
 import logging
 import os
 import copy
+import time
 from typing import List, Dict, Any, Optional, Tuple
 
-from api_clients import (
+from .api_client import (
     _fetch_emby_users_list,
     _fetch_emby_user_details,
     _update_emby_user_policy,
@@ -16,10 +17,13 @@ from api_clients import (
     _update_emby_user_password,
     _fetch_emby_user_last_playback,
     _fetch_emby_user_items_for_sync,
+    _fetch_emby_items_by_provider_ids,
     _mark_emby_item_played,
-    _create_emby_user,
-    _emby_base_url
+    _mark_emby_item_unplayed,
+    _set_emby_item_resume,
+    _create_emby_user
 )
+from api_clients import _emby_base_url
 from storage import DatabaseStorage
 from utils import normalize_string, get_nested
 import requests
@@ -483,6 +487,10 @@ class EmbyUserManager:
                 }
                 image_url = f"/api/emby/image?{urlencode(query)}"
 
+            is_user_disabled = policy.get("IsDisabled", False)
+            enable_remote_access = policy.get("EnableRemoteAccess", True)
+            is_remote_disabled = not enable_remote_access
+
             u_data = {
                 "server_id": sid,
                 "server_name": u["_server_name"],
@@ -494,8 +502,11 @@ class EmbyUserManager:
                 "name": name,
                 "image_url": image_url,
                 "has_password": u.get("HasPassword", False),
-                "is_disabled": policy.get("IsDisabled", False),
-                "enable_remote_access": policy.get("EnableRemoteAccess", True),
+                # NOTE: "is_disabled" is used by the UI to represent remote access disabled.
+                "is_disabled": is_remote_disabled,
+                "is_user_disabled": is_user_disabled,
+                "is_remote_disabled": is_remote_disabled,
+                "enable_remote_access": enable_remote_access,
                 "enable_audio_transcoding": policy.get("EnableAudioPlaybackTranscoding", True),
                 "enable_video_transcoding": policy.get("EnableVideoPlaybackTranscoding", True),
                 "enable_remuxing": policy.get("EnablePlaybackRemuxing", True),
@@ -527,7 +538,8 @@ class EmbyUserManager:
                     "is_linked": not gid.startswith("unlinked_"),
                     "has_custom_name": gid in custom_names,
                     "auto_sync": g_settings.get("auto_sync", False),
-                    "sync_type": g_settings.get("sync_type", "merge")
+                    "sync_type": g_settings.get("sync_type", "merge"),
+                    "sync_resume": g_settings.get("sync_resume", False)
                 }
             
             grouped_users[gid]["users"].append(u_data)
@@ -607,16 +619,17 @@ class EmbyUserManager:
         self.storage.set_key_value(f"group_name:{target_group_id}", new_name)
         return True
 
-    def save_group_settings(self, group_id: str, auto_sync: bool, sync_type: str) -> bool:
+    def save_group_settings(self, group_id: str, auto_sync: bool, sync_type: str, sync_resume: bool) -> bool:
         """
-        Saves group settings (auto_sync, sync_type).
+        Saves group settings (auto_sync, sync_type, sync_resume).
         """
         if group_id.startswith("unlinked_"):
             return False # Cannot save settings for unlinked groups yet
         
         settings = {
             "auto_sync": auto_sync,
-            "sync_type": sync_type
+            "sync_type": sync_type,
+            "sync_resume": sync_resume
         }
         self.storage.set_key_value(f"group_settings:{group_id}", settings)
         return True
@@ -638,6 +651,7 @@ class EmbyUserManager:
                 
             gid = group["id"]
             sync_type = group.get("sync_type", "merge")
+            sync_resume = group.get("sync_resume", False)
             users = group.get("users", [])
             
             if len(users) < 2:
@@ -651,7 +665,7 @@ class EmbyUserManager:
             try:
                 if sync_type == "merge":
                     # Bidirectional merge
-                    res = self.sync_merge_playstate(targets)
+                    res = self.sync_merge_playstate(targets, include_resume=sync_resume)
                     logger.info(f"[AUTO_SYNC] Merge result for {group['name']}: {res.get('counts')}")
                     
                 elif sync_type == "one_way":
@@ -668,7 +682,7 @@ class EmbyUserManager:
                     dest_targets = [(t[0], t[1]) for t in targets if not (t[0] == source_server_id and t[1] == source_user_id)]
                     
                     if dest_targets:
-                        res = self.sync_user_playstate(source_server_id, source_user_id, dest_targets)
+                        res = self.sync_user_playstate(source_server_id, source_user_id, dest_targets, include_resume=sync_resume)
                         logger.info(f"[AUTO_SYNC] One-way result for {group['name']}: {res.get('counts')}")
                 
                 count += 1
@@ -797,6 +811,62 @@ class EmbyUserManager:
             )
         return new_group_id
 
+    def _link_clone_to_source_group(
+        self,
+        source_server_id: str,
+        source_user_id: str,
+        source_username: Optional[str],
+        target_server_id: str,
+        target_user_id: str,
+        target_username: Optional[str]
+    ) -> str:
+        """
+        Links cloned target user to the same group as the source.
+        If the source has no group, create a new one with source + target.
+        Returns the group_id used/created.
+        """
+        links = self.storage.get_user_links(server_id=source_server_id, user_id=source_user_id)
+        if links:
+            group_id = links[0]["group_id"]
+            logger.info(
+                "[CLONE][2/4] Source already linked, adding target to group: %s",
+                group_id
+            )
+            self.storage.set_user_link(
+                target_server_id,
+                target_user_id,
+                group_id,
+                target_username,
+                is_leader=False
+            )
+            return group_id
+
+        # Source not linked: create a new group with source + target
+        logger.info(
+            "[CLONE][2/4] Source not linked, creating new group with source + target"
+        )
+        source_name = source_username or "User"
+        payload = [
+            {
+                "server_id": source_server_id,
+                "user_id": source_user_id,
+                "username": source_name,
+                "is_leader": True
+            },
+            {
+                "server_id": target_server_id,
+                "user_id": target_user_id,
+                "username": target_username or "User",
+                "is_leader": False
+            }
+        ]
+        group_id = self.link_users(payload)
+        logger.info(
+            "[CLONE][2/4] New group created for clone link: %s",
+            group_id
+        )
+        return group_id
+
     def unlink_user(self, server_id: str, user_id: str) -> None:
         """Removes a user from their link group. If only one user remains, dissolve group."""
         # 1. Find current group
@@ -911,7 +981,7 @@ class EmbyUserManager:
                 
         return results
 
-    def sync_user_playstate(self, source_server_id: str, source_user_id: str, target_tuples: List[tuple]) -> Dict[str, Any]:
+    def sync_user_playstate(self, source_server_id: str, source_user_id: str, target_tuples: List[tuple], include_resume: bool = False) -> Dict[str, Any]:
         """
         Syncs watched status (playstate) from source to targets.
         Matches items by ProviderIds (TMDB, IMDB, TVDB) or fallback key.
@@ -919,42 +989,205 @@ class EmbyUserManager:
         source_server = self._get_server_by_id(source_server_id)
         if not source_server:
             return {"error": "Source server not found"}
+        try:
+            src_user, _ = _fetch_emby_user_details(source_server, source_user_id)
+            src_name = src_user.get("Name") if isinstance(src_user, dict) else None
+            logger.info(
+                "[SYNC][PLAYSTATE][SRC] %s user=%s (%s)",
+                source_server.get("alias") or source_server.get("name") or source_server.get("id"),
+                src_name,
+                source_user_id
+            )
+        except Exception:
+            pass
 
         # 1. Get Source Items
-        src_items, err = _fetch_emby_user_items_for_sync(source_server, source_user_id)
+        src_items, err = _fetch_emby_user_items_for_sync(source_server, source_user_id, include_resume=include_resume)
         if err:
             return {"error": f"Failed to fetch source items: {err}"}
 
         # Index source items by Provider IDs or fallback keys
         src_map = {}
+        resume_map = {}
+        resume_source_items = 0
+        played_items = 0
+        provider_keys = set()
+        fallback_keys_no_provider = set()
+        fallback_items_no_provider = []
+
+        def _is_provider_key(key: str) -> bool:
+            return key.startswith(("tmdb:", "imdb:", "tvdb:"))
         for item in src_items:
             ud = item.get("UserData", {})
+            keys = self._get_item_sync_keys(item)
+            if not keys:
+                continue
+
+            provider_item_keys = [k for k in keys if _is_provider_key(k)]
+            if provider_item_keys:
+                provider_keys.update(provider_item_keys)
+            else:
+                for k in keys:
+                    fallback_keys_no_provider.add(k)
+                if len(fallback_items_no_provider) < 200:
+                    try:
+                        fallback_items_no_provider.append({
+                            "name": item.get("Name"),
+                            "series": item.get("SeriesName"),
+                            "season": item.get("ParentIndexNumber"),
+                            "episode": item.get("IndexNumber"),
+                            "year": item.get("ProductionYear"),
+                            "provider_ids": item.get("ProviderIds", {}),
+                            "keys": keys
+                        })
+                    except Exception:
+                        pass
+
+            # Track resume position even if item is not fully played
+            if include_resume and ud.get("PlaybackPositionTicks"):
+                resume_source_items += 1
+                for key in keys:
+                    resume_map[key] = {
+                        "position": ud.get("PlaybackPositionTicks"),
+                        "last_played": ud.get("LastPlayedDate")
+                    }
+
             if not ud.get("Played"):
                 continue
-                
-            keys = self._get_item_sync_keys(item)
+            played_items += 1
+
             for key in keys:
                 src_map[key] = {
                     "last_played": ud.get("LastPlayedDate")
                 }
-        
-        results = {"success": [], "failed": [], "counts": {}}
+
+        try:
+            logger.info(
+                "[SYNC][PLAYSTATE] source: items=%s played=%s resume_items=%s resume_keys=%s provider_keys=%s fallback_keys=%s include_resume=%s",
+                len(src_items),
+                played_items,
+                resume_source_items,
+                len(resume_map),
+                len(provider_keys),
+                len(fallback_keys_no_provider),
+                include_resume
+            )
+            if fallback_items_no_provider:
+                logger.info(
+                    "[SYNC][PLAYSTATE] fallback items (no provider ids): count=%s items=%s",
+                    len(fallback_items_no_provider),
+                    fallback_items_no_provider
+                )
+        except Exception:
+            pass
+
+        results = {"success": [], "failed": [], "counts": {}, "resume_counts": {}}
 
         # 2. Apply to targets
         for tgt_srv_id, tgt_uid in target_tuples:
             tgt_server = self._get_server_by_id(tgt_srv_id)
             if not tgt_server:
                 continue
+            try:
+                tgt_user, _ = _fetch_emby_user_details(tgt_server, tgt_uid)
+                tgt_name = tgt_user.get("Name") if isinstance(tgt_user, dict) else None
+                logger.info(
+                    "[SYNC][PLAYSTATE][TGT] %s user=%s (%s)",
+                    tgt_server.get("alias") or tgt_server.get("name") or tgt_server.get("id"),
+                    tgt_name,
+                    tgt_uid
+                )
+            except Exception:
+                pass
 
-            # We need to find the corresponding ItemIds on the target server.
-            # We fetch all generic items to match IDs
-            all_items, err = self._fetch_all_media_for_user(tgt_server, tgt_uid)
-            if err:
-                results["failed"].append(f"{tgt_server['name']}: Fetch error")
-                continue
-                
+            target_label = tgt_server.get("alias") or tgt_server.get("name") or tgt_server.get("id")
+
+            # Resolve target items by provider IDs (fast path)
+            provider_items = []
+            provider_err = None
+            if provider_keys:
+                provider_items, provider_err = _fetch_emby_items_by_provider_ids(
+                    tgt_server,
+                    tgt_uid,
+                    list(provider_keys),
+                    include_played=False
+                )
+                if provider_err:
+                    logger.warning(
+                        "[SYNC][PLAYSTATE] provider lookup failed on %s: %s",
+                        target_label,
+                        provider_err
+                    )
+                else:
+                    try:
+                        logger.info(
+                            "[SYNC][PLAYSTATE] target resolved by providers: keys=%s items=%s on %s",
+                            len(provider_keys),
+                            len(provider_items),
+                            target_label
+                        )
+                    except Exception:
+                        pass
+
+            items_to_process = []
+            provider_item_ids = {it.get("Id") for it in provider_items if it.get("Id")}
+            use_full_scan = bool(provider_err)
+
+            # Fallback scan only for items without provider IDs (or if provider lookup failed)
+            if use_full_scan or fallback_keys_no_provider:
+                all_items, err = self._fetch_all_media_for_user(tgt_server, tgt_uid)
+                if err:
+                    results["failed"].append(f"{tgt_server['name']}: Fetch error")
+                    continue
+                if use_full_scan:
+                    items_to_process = all_items
+                    try:
+                        logger.info(
+                            "[SYNC][PLAYSTATE] target items fetched: %s items on %s",
+                            len(all_items),
+                            target_label
+                        )
+                    except Exception:
+                        pass
+                else:
+                    fallback_items = []
+                    for item in all_items:
+                        it_id = item.get("Id")
+                        if it_id in provider_item_ids:
+                            continue
+                        keys = self._get_item_sync_keys(item)
+                        if not keys:
+                            continue
+                        if any(k in fallback_keys_no_provider for k in keys):
+                            fallback_items.append(item)
+                    items_to_process = provider_items + fallback_items
+                    try:
+                        logger.info(
+                            "[SYNC][PLAYSTATE] fallback scan: keys=%s matched=%s from %s items on %s",
+                            len(fallback_keys_no_provider),
+                            len(fallback_items),
+                            len(all_items),
+                            target_label
+                        )
+                    except Exception:
+                        pass
+            else:
+                items_to_process = provider_items
+
             updated_count = 0
-            for item in all_items:
+            resume_count = 0
+            processed = 0
+            apply_started = time.monotonic()
+            try:
+                logger.info(
+                    "[SYNC][PLAYSTATE] apply start: total=%s on %s",
+                    len(items_to_process),
+                    target_label
+                )
+            except Exception:
+                pass
+            for item in items_to_process:
+                processed += 1
                 ud = item.get("UserData", {})
                 if ud.get("Played"):
                     continue # Already played
@@ -978,18 +1211,66 @@ class EmbyUserManager:
                     )
                     if ok:
                         updated_count += 1
+
+                # Apply resume even if played (if resume info exists)
+                if include_resume:
+                    rmatch = None
+                    for key in keys:
+                        if key in resume_map:
+                            rmatch = resume_map[key]
+                            break
+                    if rmatch:
+                        ok, _ = _set_emby_item_resume(
+                            tgt_server,
+                            tgt_uid,
+                            item["Id"],
+                            rmatch["position"]
+                        )
+                        if ok:
+                            updated_count += 1
+                            resume_count += 1
+
+                if processed % 5000 == 0:
+                    try:
+                        elapsed = time.monotonic() - apply_started
+                        logger.info(
+                            "[SYNC][PLAYSTATE] progress: %s/%s processed, played=%s resume=%s, elapsed=%.1fs",
+                            processed,
+                            len(items_to_process),
+                            updated_count - resume_count,
+                            resume_count,
+                            elapsed
+                        )
+                    except Exception:
+                        pass
             
             results["success"].append(tgt_server['name'])
             results["counts"][tgt_server['name']] = updated_count
+            results["resume_counts"][tgt_server['name']] = resume_count
+            try:
+                logger.info(
+                    "[SYNC][PLAYSTATE] applied: played=%s resume=%s on %s",
+                    updated_count - resume_count,
+                    resume_count,
+                    tgt_server.get("alias") or tgt_server.get("name") or tgt_server.get("id")
+                )
+            except Exception:
+                pass
             
         return results
 
-    def sync_merge_playstate(self, targets: List[tuple]) -> Dict[str, Any]:
+    def sync_merge_playstate(self, targets: List[tuple], include_resume: bool = False) -> Dict[str, Any]:
         """
         Bidirectional sync: Merges played status from ALL targets and applies to ALL.
         targets: list of (server_id, user_id)
         """
         global_played_map = {} # Key -> {last_played: date}
+        global_resume_map = {} # Key -> {position: ticks, last_played: date}
+        provider_keys = set()
+        fallback_keys_no_provider = set()
+
+        def _is_provider_key(key: str) -> bool:
+            return key.startswith(("tmdb:", "imdb:", "tvdb:"))
         
         # 1. Gather phase
         for srv_id, uid in targets:
@@ -997,16 +1278,38 @@ class EmbyUserManager:
             if not server:
                 continue
             
-            items, err = _fetch_emby_user_items_for_sync(server, uid)
+            items, err = _fetch_emby_user_items_for_sync(server, uid, include_resume=include_resume)
             if err:
                 continue
             
             for item in items:
                 ud = item.get("UserData", {})
                 if not ud.get("Played"):
+                    # Still track resume if enabled
+                    if include_resume and ud.get("PlaybackPositionTicks"):
+                        for key in keys:
+                            existing = global_resume_map.get(key)
+                            current = {
+                                "position": ud.get("PlaybackPositionTicks"),
+                                "last_played": ud.get("LastPlayedDate")
+                            }
+                            if not existing:
+                                global_resume_map[key] = current
+                            else:
+                                if current["position"] and (not existing["position"] or current["position"] > existing["position"]):
+                                    global_resume_map[key] = current
                     continue
                 
                 keys = self._get_item_sync_keys(item)
+                if not keys:
+                    continue
+
+                provider_item_keys = [k for k in keys if _is_provider_key(k)]
+                if provider_item_keys:
+                    provider_keys.update(provider_item_keys)
+                else:
+                    for k in keys:
+                        fallback_keys_no_provider.add(k)
                 date_played = ud.get("LastPlayedDate")
                 
                 for key in keys:
@@ -1017,8 +1320,19 @@ class EmbyUserManager:
                         current = global_played_map[key]["last_played"]
                         if date_played and (not current or date_played > current):
                             global_played_map[key]["last_played"] = date_played
+                    if include_resume and ud.get("PlaybackPositionTicks"):
+                        existing = global_resume_map.get(key)
+                        current_resume = {
+                            "position": ud.get("PlaybackPositionTicks"),
+                            "last_played": ud.get("LastPlayedDate")
+                        }
+                        if not existing:
+                            global_resume_map[key] = current_resume
+                        else:
+                            if current_resume["position"] and (not existing["position"] or current_resume["position"] > existing["position"]):
+                                global_resume_map[key] = current_resume
 
-        results = {"success": [], "failed": [], "counts": {}}
+        results = {"success": [], "failed": [], "counts": {}, "resume_counts": {}}
 
         # 2. Apply phase
         for srv_id, uid in targets:
@@ -1026,15 +1340,82 @@ class EmbyUserManager:
             if not server:
                 continue
             
-            all_items, err = self._fetch_all_media_for_user(server, uid)
-            if err:
-                results["failed"].append(f"{server['name']}")
-                continue
+            target_label = server.get("alias") or server.get("name") or server.get("id")
+
+            provider_items = []
+            provider_err = None
+            if provider_keys:
+                provider_items, provider_err = _fetch_emby_items_by_provider_ids(
+                    server,
+                    uid,
+                    list(provider_keys),
+                    include_played=False
+                )
+                if provider_err:
+                    logger.warning(
+                        "[SYNC][MERGE] provider lookup failed on %s: %s",
+                        target_label,
+                        provider_err
+                    )
+                else:
+                    try:
+                        logger.info(
+                            "[SYNC][MERGE] target resolved by providers: keys=%s items=%s on %s",
+                            len(provider_keys),
+                            len(provider_items),
+                            target_label
+                        )
+                    except Exception:
+                        pass
+
+            provider_item_ids = {it.get("Id") for it in provider_items if it.get("Id")}
+            use_full_scan = bool(provider_err)
+
+            if use_full_scan or fallback_keys_no_provider:
+                all_items, err = self._fetch_all_media_for_user(server, uid)
+                if err:
+                    results["failed"].append(f"{server['name']}")
+                    continue
+                if use_full_scan:
+                    items_to_process = all_items
+                    try:
+                        logger.info(
+                            "[SYNC][MERGE] target items fetched: %s items on %s",
+                            len(all_items),
+                            target_label
+                        )
+                    except Exception:
+                        pass
+                else:
+                    fallback_items = []
+                    for item in all_items:
+                        it_id = item.get("Id")
+                        if it_id in provider_item_ids:
+                            continue
+                        keys = self._get_item_sync_keys(item)
+                        if not keys:
+                            continue
+                        if any(k in fallback_keys_no_provider for k in keys):
+                            fallback_items.append(item)
+                    items_to_process = provider_items + fallback_items
+                    try:
+                        logger.info(
+                            "[SYNC][MERGE] fallback scan: keys=%s matched=%s from %s items on %s",
+                            len(fallback_keys_no_provider),
+                            len(fallback_items),
+                            len(all_items),
+                            target_label
+                        )
+                    except Exception:
+                        pass
+            else:
+                items_to_process = provider_items
                 
             updated_count = 0
-            for item in all_items:
+            resume_count = 0
+            for item in items_to_process:
                 ud = item.get("UserData", {})
-                if ud.get("Played"):
+                if ud.get("Played") and not include_resume:
                     continue # Already played locally
                 
                 keys = self._get_item_sync_keys(item)
@@ -1054,9 +1435,27 @@ class EmbyUserManager:
                     )
                     if ok:
                         updated_count += 1
+
+                if include_resume:
+                    rmatch = None
+                    for key in keys:
+                        if key in global_resume_map:
+                            rmatch = global_resume_map[key]
+                            break
+                    if rmatch:
+                        ok, _ = _set_emby_item_resume(
+                            server,
+                            uid,
+                            item["Id"],
+                            rmatch["position"]
+                        )
+                        if ok:
+                            updated_count += 1
+                            resume_count += 1
             
             results["success"].append(server['name'])
             results["counts"][server['name']] = updated_count
+            results["resume_counts"][server['name']] = resume_count
             
         return results
 
@@ -1074,12 +1473,38 @@ class EmbyUserManager:
             
         return any(u["Name"].lower() == username.lower() for u in users)
 
-    def clone_user(self, source_server_id: str, source_user_id: str, target_server_id: str, new_username: Optional[str] = None, sync_config: bool = True, sync_playstate: bool = True) -> Dict[str, Any]:
+    def clone_user(
+        self,
+        source_server_id: str,
+        source_user_id: str,
+        target_server_id: str,
+        new_username: Optional[str] = None,
+        sync_config: bool = True,
+        sync_playstate: bool = True,
+        sync_resume: bool = False,
+        link_group: bool = False
+    ) -> Dict[str, Any]:
         """
         Clones a user from source to target server.
         Creates the user if missing (matching by Name).
         Syncs Config, Policy and Playstate based on flags.
         """
+        def _srv_label(srv: Optional[Dict[str, Any]]) -> str:
+            if not srv:
+                return "server:<?>"
+            name = srv.get("alias") or srv.get("name") or srv.get("id") or "server"
+            return f"{name} ({srv.get('id')})"
+
+        logger.info(
+            "[CLONE][1/4] Start: source_user_id=%s target_server_id=%s sync_config=%s sync_playstate=%s sync_resume=%s link_group=%s",
+            source_user_id,
+            target_server_id,
+            sync_config,
+            sync_playstate,
+            sync_resume,
+            link_group
+        )
+
         src_server = self._get_server_by_id(source_server_id)
         tgt_server = self._get_server_by_id(target_server_id)
         if not src_server or not tgt_server:
@@ -1089,44 +1514,140 @@ class EmbyUserManager:
         src_user, err = _fetch_emby_user_details(src_server, source_user_id)
         if not src_user:
             return {"error": "Source user not found"}
+        logger.info(
+            "[CLONE][2/4] Source resolved: %s -> user=%s (%s)",
+            _srv_label(src_server),
+            src_user.get("Name"),
+            source_user_id
+        )
             
         # Use provided username or fallback to source name
         target_username = new_username.strip() if new_username and new_username.strip() else src_user["Name"]
+        if new_username and new_username.strip() and new_username.strip() != src_user.get("Name"):
+            logger.info(
+                "[CLONE][2/4] Target username override: '%s' -> '%s'",
+                src_user.get("Name"),
+                target_username
+            )
         
         # 2. Check/Create Target
         # Fetch target user list
         tgt_users, _ = _fetch_emby_users_list(tgt_server)
-        target_user = next((u for u in tgt_users if u["Name"].lower() == target_username.lower()), None)
+        target_matches = [u for u in tgt_users if u.get("Name", "").lower() == target_username.lower()]
+        target_user = target_matches[0] if target_matches else None
+        if len(target_matches) > 1:
+            try:
+                ids = [u.get("Id") for u in target_matches]
+                logger.warning(
+                    "[CLONE][2/4] Multiple target users match name '%s' on %s: %s",
+                    target_username,
+                    _srv_label(tgt_server),
+                    ids
+                )
+            except Exception:
+                pass
         
         tgt_user_id = None
         if target_user:
             tgt_user_id = target_user["Id"]
-            logger.info(f"User {target_username} exists on target, syncing...")
+            logger.info(
+                "[CLONE][2/4] Target exists: %s -> user=%s (%s)",
+                _srv_label(tgt_server),
+                target_user.get("Name"),
+                tgt_user_id
+            )
         else:
-            logger.info(f"Creating user {target_username} on target...")
+            logger.info(
+                "[CLONE][2/4] Creating target user: %s -> user=%s",
+                _srv_label(tgt_server),
+                target_username
+            )
             ok, res = _create_emby_user(tgt_server, target_username)
             if not ok:
                 return {"error": f"Failed to create user: {res}"}
             tgt_user_id = res.get("Id")
+            logger.info(
+                "[CLONE][2/4] Target created: %s -> user=%s (%s)",
+                _srv_label(tgt_server),
+                target_username,
+                tgt_user_id
+            )
             
         if not tgt_user_id:
             return {"error": "Failed to resolve target user ID"}
+
+        if link_group:
+            try:
+                group_id = self._link_clone_to_source_group(
+                    source_server_id,
+                    source_user_id,
+                    src_user.get("Name"),
+                    target_server_id,
+                    tgt_user_id,
+                    target_username
+                )
+                logger.info(
+                    "[CLONE][2/4] Linked target to source group: %s",
+                    group_id
+                )
+            except Exception as e:
+                logger.error("[CLONE][2/4] Failed to link target to group: %s", e)
+        else:
+            logger.info("[CLONE][2/4] Group link skipped (link_group=False)")
             
         # 3. Sync Config & Policy (Safe)
         if sync_config:
+            logger.info(
+                "[CLONE][3/4] Sync config: %s user=%s (%s) -> %s user=%s (%s)",
+                _srv_label(src_server),
+                src_user.get("Name"),
+                source_user_id,
+                _srv_label(tgt_server),
+                target_username,
+                tgt_user_id
+            )
             self.sync_user_config(source_server_id, source_user_id, [(target_server_id, tgt_user_id)])
+        else:
+            logger.info("[CLONE][3/4] Sync config skipped")
         
         # 4. Sync Playstate (One-way Source -> Target)
         res_play = None
         if sync_playstate:
-            res_play = self.sync_user_playstate(source_server_id, source_user_id, [(target_server_id, tgt_user_id)])
+            logger.info(
+                "[CLONE][4/4] Sync playstate: %s user=%s (%s) -> %s user=%s (%s) resume=%s",
+                _srv_label(src_server),
+                src_user.get("Name"),
+                source_user_id,
+                _srv_label(tgt_server),
+                target_username,
+                tgt_user_id,
+                sync_resume
+            )
+            res_play = self.sync_user_playstate(
+                source_server_id,
+                source_user_id,
+                [(target_server_id, tgt_user_id)],
+                include_resume=sync_resume
+            )
+            try:
+                counts = res_play.get("counts", {}) if isinstance(res_play, dict) else {}
+                resume_counts = res_play.get("resume_counts", {}) if isinstance(res_play, dict) else {}
+                logger.info(
+                    "[CLONE][4/4] Sync playstate result: counts=%s resume=%s",
+                    counts,
+                    resume_counts
+                )
+            except Exception:
+                pass
+        else:
+            logger.info("[CLONE][4/4] Sync playstate skipped")
         
         return {"ok": True, "target_user_id": tgt_user_id, "playstate_stats": res_play}
 
     def _fetch_all_media_for_user(self, server, user_id):
         # Fetch ALL generic items (Movie, Episode) to match IDs
         # We need ProviderIds and UserData
-        from api_clients import _call_emby_api
+        from .api_client import _call_emby_api
         params = {
             "Recursive": "true",
             "Fields": "ProviderIds,UserData,SeriesName,ParentIndexNumber,IndexNumber,ProductionYear,Name,OriginalTitle",
@@ -1136,10 +1657,50 @@ class EmbyUserManager:
             # But for merge/sync we only need to act on unplayed items that SHOULD be played.
             # So fetching "IsPlayed=false" is enough for the target application phase!
         }
-        success, payload = _call_emby_api(server, f"Users/{user_id}/Items", params=params)
-        if not success:
-            return [], payload
-        return payload.get("Items", []), None
+        items = []
+        start_index = 0
+        page_size = 200
+
+        while True:
+            page_params = dict(params)
+            page_params["StartIndex"] = start_index
+            page_params["Limit"] = page_size
+
+            success, payload = _call_emby_api(server, f"Users/{user_id}/Items", params=page_params)
+            if not success:
+                return [], payload
+
+            if not isinstance(payload, dict):
+                return [], "Risposta Emby inattesa"
+
+            page_items = payload.get("Items", []) or []
+            items.extend(page_items)
+
+            total = payload.get("TotalRecordCount")
+            if total is None:
+                if len(page_items) < page_size:
+                    break
+            else:
+                if start_index + len(page_items) >= total:
+                    break
+
+            if len(page_items) == 0:
+                break
+
+            start_index += len(page_items)
+
+        try:
+            name = server.get("name") or server.get("alias") or server.get("id") or "server"
+            logger.info(
+                "[Emby Sync] unplayed: fetched %s items for user %s on %s",
+                len(items),
+                user_id,
+                name
+            )
+        except Exception:
+            pass
+
+        return items, None
 
     def _get_item_sync_keys(self, item: Dict[str, Any]) -> List[str]:
         """
@@ -1147,15 +1708,19 @@ class EmbyUserManager:
         Priority: TMDB, IMDB, TVDB, Name/Year/Index fallback.
         """
         keys = []
-        pids = item.get("ProviderIds", {})
+        pids = item.get("ProviderIds", {}) or {}
+        if isinstance(pids, dict):
+            pids = {str(k).lower(): v for k, v in pids.items() if v}
+        else:
+            pids = {}
 
         # 1. External IDs
-        if pids.get("Tmdb"):
-            keys.append(f"tmdb:{pids['Tmdb']}")
-        if pids.get("Imdb"):
-            keys.append(f"imdb:{pids['Imdb']}")
-        if pids.get("Tvdb"):
-            keys.append(f"tvdb:{pids['Tvdb']}")
+        if pids.get("tmdb"):
+            keys.append(f"tmdb:{pids['tmdb']}")
+        if pids.get("imdb"):
+            keys.append(f"imdb:{pids['imdb']}")
+        if pids.get("tvdb"):
+            keys.append(f"tvdb:{pids['tvdb']}")
         
         # 2. Fallback: Name matching
         name = normalize_string(item.get("Name") or "")
