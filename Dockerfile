@@ -7,7 +7,11 @@ RUN apk add --no-cache \
     gcc \
     musl-dev \
     postgresql-dev \
-    libffi-dev
+    libffi-dev \
+    openssl-dev \
+    pkgconf \
+    rust \
+    cargo
 
 # Create virtual environment
 RUN python -m venv /opt/venv
@@ -25,6 +29,7 @@ FROM python:3.11-alpine
 RUN apk add --no-cache \
     libpq \
     libffi \
+    openssl \
     ca-certificates \
     tzdata && \
     addgroup -g 1000 octohub && \
