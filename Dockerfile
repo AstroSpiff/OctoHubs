@@ -5,6 +5,7 @@ FROM python:3.11-alpine AS builder
 # Install build dependencies
 RUN apk add --no-cache \
     build-base \
+    git \
     postgresql-dev \
     libffi-dev \
     openssl-dev \
