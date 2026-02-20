@@ -4,14 +4,14 @@ FROM python:3.11-alpine AS builder
 
 # Install build dependencies
 RUN apk add --no-cache \
-    gcc \
-    musl-dev \
+    build-base \
     postgresql-dev \
     libffi-dev \
     openssl-dev \
     pkgconf \
     rust \
-    cargo
+    cargo \
+    linux-headers
 
 # Create virtual environment
 RUN python -m venv /opt/venv
