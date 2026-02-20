@@ -792,6 +792,39 @@
         </div>
     </div>
 
+    <!-- Password Manager Modal -->
+    <div id="password-manager-modal" class="modal-overlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 10005; align-items: center; justify-content: center;">
+        <div class="modal-content" style="background: var(--bg-card); padding: 2rem; border-radius: 12px; max-width: 520px; width: 90%; position: relative; box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
+            <button class="icon-button close-modal-btn" id="password-manager-close" style="position: absolute; top: 1rem; right: 1rem; font-size: 1.2rem;">&times;</button>
+            <div class="modal-header" style="margin-bottom: 1.5rem;">
+                <h3 id="password-manager-title" style="margin: 0;">Gestione Password</h3>
+                <p class="text-muted" style="margin: 0.5rem 0 0; font-size: 0.9rem;" id="password-manager-subtitle"></p>
+            </div>
+            <div class="modal-body">
+                <div class="detail-row" style="display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid var(--border-color);">
+                    <span class="text-muted">Stato</span>
+                    <span id="password-manager-status" style="font-weight: 600;"></span>
+                </div>
+                <div style="margin-top: 1rem;">
+                    <label for="password-manager-input" style="display: block; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.35rem;">Password</label>
+                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                        <input id="password-manager-input" type="password" class="form-input" style="flex: 1;" placeholder="Non salvata">
+                        <button class="icon-button" id="password-manager-toggle-visibility" title="Mostra/Nascondi"><i class="fa-solid fa-eye"></i></button>
+                    </div>
+                    <div class="tagline small text-muted" id="password-manager-updated" style="margin-top: 0.35rem;"></div>
+                </div>
+            </div>
+            <div class="modal-actions" style="margin-top: 1.5rem; display: flex; justify-content: space-between;">
+                <button class="btn secondary" id="password-manager-cancel">Chiudi</button>
+                <div style="display: flex; gap: 0.5rem;">
+                    <button class="btn danger" id="password-manager-reset">Reset</button>
+                    <button class="btn secondary" id="password-manager-apply">Applica a tutti</button>
+                    <button class="btn primary" id="password-manager-save">Salva</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Clone User Modal -->
     <div id="clone-user-modal" class="modal-overlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 10010; align-items: center; justify-content: center;">
         <div class="modal-content" style="background: var(--bg-card); padding: 2rem; border-radius: 12px; max-width: 500px; width: 90%; position: relative; box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
@@ -1806,6 +1839,7 @@
             <div class="user-actions-mini" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.25rem; margin-left: auto;">
                 <button class="icon-button toggle-playback-btn" title="Consenti riproduzione media" style="display: inline-block;"><i class="fa-solid fa-play"></i></button>
                 <button class="icon-button toggle-download-btn" title="Consenti scaricamento media" style="display: inline-block;"><i class="fa-solid fa-download"></i></button>
+                <button class="icon-button password-btn" title="Gestisci password" style="display: inline-block;"><i class="fa-solid fa-key"></i></button>
                 <button class="icon-button unlink-btn" title="Dissocia dal gruppo" style="display: none;"><i class="fa-solid fa-link-slash"></i></button>
             </div>
         </div>
@@ -1819,6 +1853,7 @@
                     <span class="badge" style="background: var(--color-primary); color: white; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.7rem;">Linked</span>
                 </div>
                 <div style="display: flex; align-items: center; gap: 1rem;">
+                    <button class="icon-button group-password-btn" title="Gestisci password gruppo"><i class="fa-solid fa-key"></i></button>
                     <select class="icon-profile-select" style="padding: 0.25rem 0.5rem; border-radius: 4px; border: 1px solid var(--border-color); background: var(--bg-input); color: var(--text-main); font-size: 0.85rem;">
                         <option value="">Seleziona Profilo Icona...</option>
                     </select>

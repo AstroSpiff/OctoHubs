@@ -391,6 +391,7 @@ class EmbyLibraryPoller:
                     current_progress_value = (old_state_data.get("progress", 0.0) or 0.0) * 100.0
                     new_state = old_state
                     progress_source = old_state_data.get("progress_source", "none")
+                    elapsed_since_request = 0.0
 
                     if refresh_progress is not None:
                         try:

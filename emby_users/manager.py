@@ -6,6 +6,8 @@ import logging
 import os
 import copy
 import time
+import base64
+import hashlib
 from typing import List, Dict, Any, Optional, Tuple
 
 from .api_client import (
@@ -19,7 +21,6 @@ from .api_client import (
     _fetch_emby_user_items_for_sync,
     _fetch_emby_items_by_provider_ids,
     _mark_emby_item_played,
-    _mark_emby_item_unplayed,
     _set_emby_item_resume,
     _create_emby_user
 )
@@ -27,6 +28,7 @@ from api_clients import _emby_base_url
 from storage import DatabaseStorage
 from utils import normalize_string, get_nested
 import requests
+from cryptography.fernet import Fernet, InvalidToken
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,7 @@ class EmbyUserManager:
     def __init__(self, storage: DatabaseStorage, config: Dict[str, Any]):
         self.storage = storage
         self.config = config
+        self._password_cipher: Optional[Fernet] = None
         self._ensure_icon_dir()
         self._migrate_icons_to_db()
 
@@ -237,7 +240,8 @@ class EmbyUserManager:
                 profile_id = None
                 reference_server_id = None
                 is_group_application = False
-                
+                user_binding_key = ""
+
                 if group_profile_id:
                     # Group Binding
                     if not group_ref_server_id:
@@ -438,6 +442,18 @@ class EmbyUserManager:
         # 3. Group users
         grouped_users = {} # group_id -> list of user entries
         owners_users = [] # Special list for admins/owners
+        password_map = {}
+        password_plain_map: Dict[str, Optional[str]] = {}
+
+        def _get_plain_password(group_id: str) -> Optional[str]:
+            if group_id in password_plain_map:
+                return password_plain_map[group_id]
+            entry = password_map.get(group_id)
+            if not entry or not entry.get("password_enc"):
+                password_plain_map[group_id] = None
+                return None
+            password_plain_map[group_id] = self._decrypt_password(entry["password_enc"])
+            return password_plain_map[group_id]
         
         # Load custom group names and settings
         custom_names = {}
@@ -458,6 +474,9 @@ class EmbyUserManager:
                 val = self.storage.get_key_value(k)
                 if val:
                     group_settings[gid] = val
+
+            for entry in self.storage.get_group_passwords():
+                password_map[entry["group_id"]] = entry
 
         except Exception as e:
             logger.error(f"Error loading group names/settings: {e}")
@@ -531,6 +550,8 @@ class EmbyUserManager:
                 
             if gid not in grouped_users:
                 g_settings = group_settings.get(gid) or {}
+                pw_entry = password_map.get(gid)
+                group_plain = _get_plain_password(gid)
                 grouped_users[gid] = {
                     "id": gid,
                     "name": custom_names.get(gid) or name, # Use custom name if exists, else user name
@@ -539,9 +560,40 @@ class EmbyUserManager:
                     "has_custom_name": gid in custom_names,
                     "auto_sync": g_settings.get("auto_sync", False),
                     "sync_type": g_settings.get("sync_type", "merge"),
-                    "sync_resume": g_settings.get("sync_resume", False)
+                    "sync_resume": g_settings.get("sync_resume", False),
+                    "password_saved": bool(group_plain),
+                    "password_updated_at": pw_entry.get("updated_at") if pw_entry else None,
+                    "password_status": "saved" if group_plain else "missing",
+                    "password_mismatch": False,
+                    "password_mismatch_count": 0
                 }
-            
+            user_plain = _get_plain_password(self._get_unlinked_group_id(sid, uid))
+            user_saved = bool(user_plain)
+            group_plain = _get_plain_password(gid)
+            group_mismatch = False
+            user_mismatch = False
+
+            if grouped_users[gid]["is_linked"]:
+                if user_plain:
+                    if group_plain:
+                        if user_plain != group_plain:
+                            group_mismatch = True
+                            user_mismatch = True
+                    else:
+                        user_mismatch = True
+                    status = "mismatch" if user_mismatch else "saved"
+                else:
+                    status = "missing"
+
+                if group_mismatch:
+                    grouped_users[gid]["password_mismatch"] = True
+                    grouped_users[gid]["password_mismatch_count"] += 1
+            else:
+                status = "saved" if user_saved else "missing"
+
+            u_data["password_saved"] = status == "saved"
+            u_data["password_status"] = status
+            u_data["password_mismatch"] = user_mismatch
             grouped_users[gid]["users"].append(u_data)
             
             # Update group name logic if NO custom name is set
@@ -560,6 +612,10 @@ class EmbyUserManager:
                 x["is_disabled"],
                 x["name"]
             ))
+            if group.get("password_saved") and group.get("password_mismatch"):
+                group["password_status"] = "mismatch"
+            else:
+                group["password_status"] = "saved" if group.get("password_saved") else "missing"
             
         # Prepare final list
         final_groups = list(grouped_users.values())
@@ -567,13 +623,23 @@ class EmbyUserManager:
         # Add Owners group at the end if any
         if owners_users:
             owners_users.sort(key=lambda x: x["server_name"]) # Sort by server name
+            owners_pw_plain = _get_plain_password("owners")
+            owners_pw_entry = password_map.get("owners")
+            for u in owners_users:
+                u["password_saved"] = bool(owners_pw_plain)
+                u["password_status"] = "saved" if owners_pw_plain else "missing"
             final_groups.append({
                 "id": "owners",
                 "name": "Proprietari",
                 "users": owners_users,
                 "is_linked": False, # Owners are just a visual group, not a sync group
                 "is_owners": True, # Flag for UI special handling if needed
-                "has_custom_name": True
+                "has_custom_name": True,
+                "password_saved": bool(owners_pw_plain),
+                "password_updated_at": owners_pw_entry.get("updated_at") if owners_pw_entry else None,
+                "password_status": "saved" if owners_pw_plain else "missing",
+                "password_mismatch": False,
+                "password_mismatch_count": 0
             })
 
         return {
@@ -702,13 +768,6 @@ class EmbyUserManager:
         success, _ = _rename_emby_user(server, user_id, new_name)
         return success
 
-    def update_user_password(self, server_id: str, user_id: str, new_password: str) -> bool:
-        server = self._get_server_by_id(server_id)
-        if not server:
-            return False
-        success, _ = _update_emby_user_password(server, user_id, new_password)
-        return success
-
     def get_user_extended_details(self, server_id: str, user_id: str) -> Dict[str, Any]:
         server = self._get_server_by_id(server_id)
         if not server:
@@ -784,12 +843,85 @@ class EmbyUserManager:
         success, _ = _update_emby_user_policy(server, user_id, policy)
         return success
 
-    def link_users(self, links: List[Dict[str, Any]]) -> str:
+    def link_users(self, links: List[Dict[str, Any]], group_id: Optional[str] = None) -> str:
         """
         Links multiple users into a single group.
         links: list of {"server_id": "...", "user_id": "...", "username": "...", "is_leader": bool}
         Returns the new group_id.
         """
+        if group_id:
+            reassign_groups: set[str] = set()
+            for link in links:
+                existing_links = self.storage.get_user_links(
+                    server_id=link["server_id"],
+                    user_id=link["user_id"]
+                )
+                if existing_links:
+                    old_group_id = existing_links[0]["group_id"]
+                    was_leader = existing_links[0].get("is_leader", False)
+                    if old_group_id != group_id and was_leader:
+                        reassign_groups.add(old_group_id)
+                self.storage.set_user_link(
+                    link["server_id"],
+                    link["user_id"],
+                    group_id,
+                    link.get("username"),
+                    is_leader=link.get("is_leader", False)
+                )
+                self._ensure_user_password_inherits_group(
+                    group_id,
+                    link["server_id"],
+                    link["user_id"]
+                )
+            group_entry = self.storage.get_group_password(group_id)
+            if not group_entry or not group_entry.get("password_enc"):
+                leader_link = next((link_item for link_item in links if link_item.get("is_leader")), None)
+                if leader_link:
+                    chosen_password = self._get_user_plain_password(
+                        leader_link["server_id"],
+                        leader_link["user_id"]
+                    )
+                    if chosen_password:
+                        enc = self._encrypt_password(chosen_password)
+                        self.storage.save_group_password(group_id, enc)
+                        logger.info(
+                            "[PASSWORD] Inherited group password from leader for group: %s",
+                            group_id
+                        )
+                        for link in links:
+                            self._ensure_user_password_inherits_group(
+                                group_id,
+                                link["server_id"],
+                                link["user_id"]
+                            )
+                    else:
+                        logger.info(
+                            "[PASSWORD] Group %s has no password; leader selected but no saved password.",
+                            group_id
+                        )
+                else:
+                    logger.info(
+                        "[PASSWORD] Group %s has no password; no leader selected, skipping inheritance.",
+                        group_id
+                    )
+
+            for old_group_id in reassign_groups:
+                self._promote_next_group_leader(old_group_id)
+            return group_id
+
+        existing_group_ids = set()
+        reassign_groups: set[str] = set()
+        for link in links:
+            current_links = self.storage.get_user_links(
+                server_id=link["server_id"],
+                user_id=link["user_id"]
+            )
+            if current_links:
+                existing_group_ids.add(current_links[0]["group_id"])
+                if current_links[0].get("is_leader", False):
+                    reassign_groups.add(current_links[0]["group_id"])
+        source_group_id = existing_group_ids.pop() if len(existing_group_ids) == 1 else None
+
         new_group_id = str(uuid.uuid4())
 
         # Check if any user is marked as leader in the request
@@ -809,6 +941,55 @@ class EmbyUserManager:
                 link.get("username"),
                 is_leader=is_leader
             )
+
+        group_password_enc = None
+        if source_group_id:
+            entry = self.storage.get_group_password(source_group_id)
+            if entry and entry.get("password_enc"):
+                group_password_enc = entry["password_enc"]
+                self.storage.save_group_password(new_group_id, group_password_enc)
+                logger.info(
+                    "[PASSWORD] Migrated group password: %s -> %s",
+                    source_group_id,
+                    new_group_id
+                )
+        else:
+            candidates = {}
+            for link in links:
+                candidate = self._get_user_plain_password(link["server_id"], link["user_id"])
+                if candidate:
+                    candidates[(link["server_id"], link["user_id"])] = candidate
+            unique_candidates = set(candidates.values())
+            chosen_password = None
+            if len(unique_candidates) == 1:
+                chosen_password = next(iter(unique_candidates))
+                logger.info(
+                    "[PASSWORD] Inherited group password from linked users: %s",
+                    new_group_id
+                )
+            elif len(unique_candidates) > 1:
+                leader_link = next((link_item for link_item in links if link_item.get("is_leader")), None)
+                if leader_link:
+                    chosen_password = candidates.get((leader_link["server_id"], leader_link["user_id"]))
+                if chosen_password:
+                    logger.info(
+                        "[PASSWORD] Inherited group password from leader: %s",
+                        new_group_id
+                    )
+            if chosen_password:
+                group_password_enc = self._encrypt_password(chosen_password)
+                self.storage.save_group_password(new_group_id, group_password_enc)
+
+        if group_password_enc:
+            for link in links:
+                self._ensure_user_password_inherits_group(
+                    new_group_id,
+                    link["server_id"],
+                    link["user_id"]
+                )
+        for old_group_id in reassign_groups:
+            if old_group_id != new_group_id:
+                self._promote_next_group_leader(old_group_id)
         return new_group_id
 
     def _link_clone_to_source_group(
@@ -838,6 +1019,11 @@ class EmbyUserManager:
                 group_id,
                 target_username,
                 is_leader=False
+            )
+            self._ensure_user_password_inherits_group(
+                group_id,
+                target_server_id,
+                target_user_id
             )
             return group_id
 
@@ -871,6 +1057,12 @@ class EmbyUserManager:
         """Removes a user from their link group. If only one user remains, dissolve group."""
         # 1. Find current group
         links = self.storage.get_user_links(server_id=server_id, user_id=user_id)
+
+        was_leader = False
+        if links:
+            group_id = links[0]["group_id"]
+            was_leader = bool(links[0].get("is_leader", False))
+            self._ensure_user_password_inherits_group(group_id, server_id, user_id)
         
         # 2. Remove the user
         self.storage.remove_user_link(server_id, user_id)
@@ -882,7 +1074,205 @@ class EmbyUserManager:
             if len(remaining) == 1:
                 # Dissolve: Remove the last user too
                 last_user = remaining[0]
+                self._ensure_user_password_inherits_group(
+                    group_id,
+                    last_user["server_id"],
+                    last_user["user_id"]
+                )
                 self.storage.remove_user_link(last_user["server_id"], last_user["user_id"])
+            elif remaining and was_leader:
+                self._promote_next_group_leader(group_id)
+
+    def _promote_next_group_leader(self, group_id: str) -> None:
+        if group_id.startswith("unlinked_") or group_id == "owners":
+            return
+        dashboard = self.get_users_dashboard_data()
+        group = next((g for g in dashboard.get("groups", []) if g.get("id") == group_id), None)
+        if not group:
+            return
+        users = group.get("users", [])
+        if not users:
+            return
+        new_leader = users[0]
+        leader_key = (new_leader["server_id"], new_leader["user_id"])
+        for user in users:
+            is_leader = (user["server_id"], user["user_id"]) == leader_key
+            self.storage.set_user_link(
+                user["server_id"],
+                user["user_id"],
+                group_id,
+                user.get("name"),
+                is_leader=is_leader
+            )
+        logger.info(
+            "[GROUP] Promoted new leader for group %s: %s/%s",
+            group_id,
+            new_leader["server_id"],
+            new_leader["user_id"]
+        )
+
+    def _get_password_cipher(self) -> Fernet:
+        if self._password_cipher is not None:
+            return self._password_cipher
+        secret = os.environ.get("PASSWORD_SECRET") or os.environ.get("SECRET_KEY") or "change-this-secret-key"
+        digest = hashlib.sha256(secret.encode("utf-8")).digest()
+        key = base64.urlsafe_b64encode(digest)
+        self._password_cipher = Fernet(key)
+        return self._password_cipher
+
+    def _encrypt_password(self, plaintext: str) -> str:
+        cipher = self._get_password_cipher()
+        token = cipher.encrypt(plaintext.encode("utf-8"))
+        return token.decode("utf-8")
+
+    def _decrypt_password(self, token: str) -> Optional[str]:
+        try:
+            cipher = self._get_password_cipher()
+            return cipher.decrypt(token.encode("utf-8")).decode("utf-8")
+        except (InvalidToken, ValueError) as exc:
+            logger.error("[PASSWORD] Decrypt failed: %s", exc)
+            return None
+
+    def _resolve_group_id_for_user(self, server_id: str, user_id: str) -> str:
+        links = self.storage.get_user_links(server_id=server_id, user_id=user_id)
+        if links:
+            return links[0]["group_id"]
+        return f"unlinked_{server_id}_{user_id}"
+
+    def _get_unlinked_group_id(self, server_id: str, user_id: str) -> str:
+        return f"unlinked_{server_id}_{user_id}"
+
+    def _get_user_password_entry(self, server_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+        return self.storage.get_group_password(self._get_unlinked_group_id(server_id, user_id))
+
+    def _get_user_plain_password(self, server_id: str, user_id: str) -> Optional[str]:
+        entry = self._get_user_password_entry(server_id, user_id)
+        if not entry or not entry.get("password_enc"):
+            return None
+        return self._decrypt_password(entry["password_enc"])
+
+    def _ensure_user_password_inherits_group(self, group_id: str, server_id: str, user_id: str) -> None:
+        group_entry = self.storage.get_group_password(group_id)
+        if not group_entry or not group_entry.get("password_enc"):
+            return
+        user_entry = self._get_user_password_entry(server_id, user_id)
+        if user_entry:
+            return
+        logger.info(
+            "[PASSWORD] Skip inherit: no automatic password inheritance for user %s/%s",
+            server_id,
+            user_id
+        )
+        return
+
+    def _get_group_users(self, group_id: str) -> List[Tuple[str, str, Optional[str]]]:
+        if group_id == "owners":
+            data = self.get_users_dashboard_data()
+            owners = next((g for g in data.get("groups", []) if g.get("id") == "owners"), None)
+            if not owners:
+                return []
+            return [(u["server_id"], u["user_id"], u.get("name")) for u in owners.get("users", [])]
+
+        if group_id.startswith("unlinked_"):
+            rest = group_id[len("unlinked_"):]
+            if "_" in rest:
+                server_id, user_id = rest.split("_", 1)
+                return [(server_id, user_id, None)]
+            return []
+
+        links = self.storage.get_user_links(group_id=group_id)
+        return [(link["server_id"], link["user_id"], link.get("username")) for link in links]
+
+    def get_group_password_info(self, group_id: str) -> Dict[str, Any]:
+        entry = self.storage.get_group_password(group_id)
+        if not entry:
+            logger.info("[PASSWORD] Read: group=%s saved=false", group_id)
+            return {"ok": True, "group_id": group_id, "saved": False, "password": None, "updated_at": None}
+        password = self._decrypt_password(entry["password_enc"]) if entry.get("password_enc") else None
+        logger.info("[PASSWORD] Read: group=%s saved=%s", group_id, bool(password))
+        return {
+            "ok": True,
+            "group_id": group_id,
+            "saved": bool(password),
+            "password": password,
+            "updated_at": entry.get("updated_at")
+        }
+
+    def get_password_info(self, group_id: Optional[str] = None, server_id: Optional[str] = None, user_id: Optional[str] = None) -> Dict[str, Any]:
+        if not group_id:
+            if not server_id or not user_id:
+                return {"ok": False, "error": "Missing target"}
+            group_id = self._get_unlinked_group_id(server_id, user_id)
+        return self.get_group_password_info(group_id)
+
+    def set_group_password(self, group_id: str, new_password: str) -> Dict[str, Any]:
+        new_password = new_password or ""
+        users = self._get_group_users(group_id)
+        if not users:
+            return {"ok": False, "error": "Group has no users", "group_id": group_id}
+
+        logger.info("[PASSWORD] Apply: group=%s users=%s", group_id, len(users))
+        failures = []
+        applied = 0
+        for server_id, user_id, username in users:
+            server = self._get_server_by_id(server_id)
+            if not server:
+                failures.append({"server_id": server_id, "user_id": user_id, "error": "Server not found"})
+                continue
+            ok, _ = _update_emby_user_password(server, user_id, new_password)
+            if ok:
+                applied += 1
+            else:
+                failures.append({"server_id": server_id, "user_id": user_id, "error": "Update failed"})
+
+        if failures:
+            logger.error("[PASSWORD] Group update failed for %s: %s", group_id, failures)
+            return {"ok": False, "group_id": group_id, "applied": applied, "failed": failures}
+
+        if new_password:
+            enc = self._encrypt_password(new_password)
+            self.storage.save_group_password(group_id, enc)
+            # Overwrite per-user saved passwords to match the group
+            for server_id, user_id, _ in users:
+                self.storage.save_group_password(
+                    self._get_unlinked_group_id(server_id, user_id),
+                    enc
+                )
+            logger.info("[PASSWORD] Saved group password: %s", group_id)
+        else:
+            self.storage.delete_group_password(group_id)
+            # Clear per-user saved passwords when group password is removed
+            for server_id, user_id, _ in users:
+                self.storage.delete_group_password(
+                    self._get_unlinked_group_id(server_id, user_id)
+                )
+            logger.info("[PASSWORD] Cleared group password: %s", group_id)
+
+        return {"ok": True, "group_id": group_id, "applied": applied, "failed": []}
+
+    def update_user_password(self, server_id: str, user_id: str, new_password: str) -> Dict[str, Any]:
+        server = self._get_server_by_id(server_id)
+        if not server:
+            return {"ok": False, "error": "Server not found"}
+        logger.info(
+            "[PASSWORD] Update requested: server=%s user=%s",
+            server_id,
+            user_id
+        )
+        ok, _ = _update_emby_user_password(server, user_id, new_password or "")
+        if not ok:
+            return {"ok": False, "error": "Update failed"}
+
+        user_password_id = self._get_unlinked_group_id(server_id, user_id)
+        if new_password:
+            enc = self._encrypt_password(new_password)
+            self.storage.save_group_password(user_password_id, enc)
+            logger.info("[PASSWORD] Saved user password: %s/%s", server_id, user_id)
+        else:
+            self.storage.delete_group_password(user_password_id)
+            logger.info("[PASSWORD] Cleared user password: %s/%s", server_id, user_id)
+
+        return {"ok": True, "server_id": server_id, "user_id": user_id}
 
     def toggle_user_active(self, server_id: str, user_id: str, active: bool) -> bool:
         """
@@ -1284,6 +1674,17 @@ class EmbyUserManager:
             
             for item in items:
                 ud = item.get("UserData", {})
+                keys = self._get_item_sync_keys(item)
+                if not keys:
+                    continue
+
+                provider_item_keys = [k for k in keys if _is_provider_key(k)]
+                if provider_item_keys:
+                    provider_keys.update(provider_item_keys)
+                else:
+                    for k in keys:
+                        fallback_keys_no_provider.add(k)
+
                 if not ud.get("Played"):
                     # Still track resume if enabled
                     if include_resume and ud.get("PlaybackPositionTicks"):
@@ -1299,17 +1700,7 @@ class EmbyUserManager:
                                 if current["position"] and (not existing["position"] or current["position"] > existing["position"]):
                                     global_resume_map[key] = current
                     continue
-                
-                keys = self._get_item_sync_keys(item)
-                if not keys:
-                    continue
 
-                provider_item_keys = [k for k in keys if _is_provider_key(k)]
-                if provider_item_keys:
-                    provider_keys.update(provider_item_keys)
-                else:
-                    for k in keys:
-                        fallback_keys_no_provider.add(k)
                 date_played = ud.get("LastPlayedDate")
                 
                 for key in keys:
@@ -1663,8 +2054,8 @@ class EmbyUserManager:
 
         while True:
             page_params = dict(params)
-            page_params["StartIndex"] = start_index
-            page_params["Limit"] = page_size
+            page_params["StartIndex"] = str(start_index)
+            page_params["Limit"] = str(page_size)
 
             success, payload = _call_emby_api(server, f"Users/{user_id}/Items", params=page_params)
             if not success:

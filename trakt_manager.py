@@ -4,7 +4,15 @@ import logging
 import time
 import threading
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Set, List
+from typing import TYPE_CHECKING, Any, Dict, Optional, Set, List
+
+if TYPE_CHECKING:
+    import trakt
+    import trakt.core
+    import trakt.sync
+    import trakt.tv
+    import trakt.movies
+    import trakt.users
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +76,7 @@ class TraktManager:
         self._collection_cache: Optional[Dict[int, Dict[int, Set[int]]]] = None
         self._collection_timestamp = 0.0
         self._rating_cache: Dict[str, Dict[str, str]] = {}
-        self._id_cache: Dict[str, str] = {}
+        self._id_cache: Dict[str, Any] = {}
 
         # Configure PyTrakt global settings
         trakt.core.BASE_URL = 'https://api.trakt.tv/'  # Use correct production URL (with trailing slash)
@@ -162,7 +170,7 @@ class TraktManager:
                 # Extract TMDB ID from show
                 show = show_item if isinstance(show_item, dict) else {}
                 if hasattr(show_item, 'ids'):
-                    tmdb_id = getattr(show_item.ids, 'tmdb', None)
+                    tmdb_id = getattr(getattr(show_item, 'ids'), 'tmdb', None)
                 else:
                     tmdb_id = show.get('ids', {}).get('tmdb')
 
@@ -175,7 +183,7 @@ class TraktManager:
                 # Extract seasons
                 seasons = []
                 if hasattr(show_item, 'seasons'):
-                    seasons = show_item.seasons
+                    seasons = getattr(show_item, 'seasons')
                 elif isinstance(show, dict):
                     seasons = show.get('seasons', [])
 

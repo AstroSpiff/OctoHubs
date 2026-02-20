@@ -1022,8 +1022,8 @@ class EmbyProbeManager:
         stop_flag: threading.Event
         ) -> None:
         """Orchestrate Discovery → Processing for a single server."""
+        worker_key = f"combo_{scope}"
         try:
-            worker_key = f"combo_{scope}"
 
             # Phase 1: Discovery
             with self._lock:
@@ -1100,6 +1100,7 @@ class EmbyProbeManager:
         stop_flag: threading.Event
     ) -> None:
         """Orchestrate Discovery (all servers sequential) → Processing (all servers sequential)."""
+        enabled_servers: list = []
         try:
             enabled_servers = [s for s in servers if s and s.get("enabled") and s.get("id")]
             total_servers = len(enabled_servers)
@@ -2005,8 +2006,8 @@ class EmbyProbeManager:
         Recent discovery worker: scans latest items and queues missing mediainfo.
         Uses hybrid algorithm: timestamp tracking + sliding window + inverted processing.
         """
+        server_name = server.get("name") or server.get("url") or server_id
         try:
-            server_name = server.get("name") or server.get("url") or server_id
 
             if not self._db_getter:
                 self._update_status(server_id, "recent_discovery", last_log=f"{server_name}: Errore - database non configurato", running=False)

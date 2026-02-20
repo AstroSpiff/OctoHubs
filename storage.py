@@ -6,6 +6,12 @@ import threading
 from datetime import datetime, timezone, timedelta
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, cast
 
+if TYPE_CHECKING:
+    from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, BigInteger, String, Text, LargeBinary, ForeignKey, Index, create_engine, func, or_, text
+    from sqlalchemy.dialects.postgresql import ARRAY
+    from sqlalchemy.exc import SQLAlchemyError
+    from sqlalchemy.orm import DeclarativeBase, declarative_base, sessionmaker
+
 try:
     from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, BigInteger, String, Text, LargeBinary, ForeignKey, Index, create_engine, func, or_, text
     from sqlalchemy.dialects.postgresql import ARRAY
@@ -15,9 +21,7 @@ try:
     SQLALCHEMY_AVAILABLE = True
 except ImportError:  # pragma: no cover - optional dependency
     SQLALCHEMY_AVAILABLE = False
-
-if TYPE_CHECKING:
-    from sqlalchemy.orm import DeclarativeBase
+    SQLAlchemyError = Exception
 else:
     DeclarativeBase = object
 
@@ -550,6 +554,12 @@ if SQLALCHEMY_AVAILABLE:
         profile_id = Column(String(36), nullable=False, index=True)  # type: ignore[assignment]
         updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
 
+    class EmbyGroupPassword(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "emby_group_passwords"
+        group_id = Column(String(255), primary_key=True)  # type: ignore[assignment]
+        password_enc = Column(Text, nullable=False)  # type: ignore[assignment]
+        updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
+
     class WorkflowExecution(Base):  # type: ignore[valid-type,misc]
         """Traccia le esecuzioni dei workflow completi."""
         __tablename__ = "workflow_executions"
@@ -679,6 +689,23 @@ class DatabaseStorage:
                 conn.execute(text(
                     "ALTER TABLE emby_icon_rules ADD COLUMN IF NOT EXISTS mime_type VARCHAR(50)"
                 ))
+                # Group password storage
+                if "postgresql" in self.url:
+                    conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS emby_group_passwords (
+                            group_id VARCHAR(255) PRIMARY KEY,
+                            password_enc TEXT NOT NULL,
+                            updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+                        )
+                    """))
+                else:
+                    conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS emby_group_passwords (
+                            group_id VARCHAR(255) PRIMARY KEY,
+                            password_enc TEXT NOT NULL,
+                            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """))
 
                 # RSS Category Management migrations
                 # Drop visibility_status column (no longer needed - visibility determined by categories)
@@ -3953,6 +3980,66 @@ class DatabaseStorage:
         except SQLAlchemyError as exc:
             session.rollback()
             raise StorageError(f"Error deleting icon binding: {exc}") from exc
+        finally:
+            session.close()
+
+    # --- Emby Group Passwords ---
+
+    def get_group_password(self, group_id: str) -> Optional[Dict[str, Any]]:
+        session = self._get_session()
+        try:
+            entry = session.get(EmbyGroupPassword, group_id)
+            if not entry:
+                return None
+            return {
+                "group_id": entry.group_id,
+                "password_enc": entry.password_enc,
+                "updated_at": entry.updated_at.isoformat() if entry.updated_at else None
+            }
+        finally:
+            session.close()
+
+    def get_group_passwords(self) -> list[Dict[str, Any]]:
+        session = self._get_session()
+        try:
+            entries = session.query(EmbyGroupPassword).all()
+            return [
+                {
+                    "group_id": entry.group_id,
+                    "password_enc": entry.password_enc,
+                    "updated_at": entry.updated_at.isoformat() if entry.updated_at else None
+                }
+                for entry in entries
+            ]
+        finally:
+            session.close()
+
+    def save_group_password(self, group_id: str, password_enc: str) -> None:
+        session = self._get_session()
+        try:
+            entry = session.get(EmbyGroupPassword, group_id)
+            if entry:
+                entry.password_enc = password_enc  # type: ignore[assignment]
+            else:
+                entry = EmbyGroupPassword(group_id=group_id, password_enc=password_enc)
+                session.add(entry)
+            session.commit()
+        except SQLAlchemyError as exc:
+            session.rollback()
+            raise StorageError(f"Error saving group password: {exc}") from exc
+        finally:
+            session.close()
+
+    def delete_group_password(self, group_id: str) -> None:
+        session = self._get_session()
+        try:
+            entry = session.get(EmbyGroupPassword, group_id)
+            if entry:
+                session.delete(entry)
+                session.commit()
+        except SQLAlchemyError as exc:
+            session.rollback()
+            raise StorageError(f"Error deleting group password: {exc}") from exc
         finally:
             session.close()
 

@@ -446,6 +446,7 @@ def _trigger_library_scan(server: Dict[str, Any], library_id: str, scan_type: st
     from urllib.parse import urlencode
     full_url = f"{base_url}/{endpoint}?{urlencode(test_params)}"
 
+    timestamp = ""
     try:
         with open(log_file, "a") as f:
             from datetime import datetime

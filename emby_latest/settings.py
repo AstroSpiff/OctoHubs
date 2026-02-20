@@ -2,7 +2,6 @@
 Settings helpers for Latest Publications.
 """
 
-from datetime import datetime, timezone
 import uuid
 from typing import Any, Dict, List
 
@@ -146,7 +145,8 @@ def _load_latest_settings() -> Dict[str, Any]:
     if not isinstance(latest, dict):
         latest = {}
     merged = _default_latest_settings()
-    merged_settings = latest.get("SETTINGS") if isinstance(latest.get("SETTINGS"), dict) else {}
+    _raw = latest.get("SETTINGS")
+    merged_settings = _raw if isinstance(_raw, dict) else {}
     default_cfg = merged["SETTINGS"]
     batch_gap_minutes = int(merged_settings.get("batch_gap_minutes") or default_cfg["batch_gap_minutes"])
     max_movies = int(merged_settings.get("max_movies") or default_cfg["max_movies"])

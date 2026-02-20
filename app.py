@@ -132,10 +132,10 @@ def _get_app_event_loop() -> Optional[asyncio.AbstractEventLoop]:
 
 class DateTimeEncoder(json.JSONEncoder):
     """JSON encoder that serializes datetime/date as ISO strings."""
-    def default(self, obj):
-        if isinstance(obj, (datetime, date)):
-            return obj.isoformat()
-        return super().default(obj)
+    def default(self, o):
+        if isinstance(o, (datetime, date)):
+            return o.isoformat()
+        return super().default(o)
 
 DEFAULT_SORT_MODE = "seeders_desc"
 
@@ -8406,6 +8406,7 @@ def describe_season_statuses(request_item):
         available_eps = len([ep for ep in episodes if ep["status"] == "available"])
         pending_eps = len([ep for ep in episodes if ep["status"] == "pending"])
         unreleased_eps = len([ep for ep in episodes if ep["status"] == "unreleased"])
+        pending_values: list = []
         if release_dt and release_dt > datetime.now(timezone.utc) and available_eps == 0 and pending_eps == 0:
             status = "unreleased"
         elif total_eps == 0:
@@ -9300,6 +9301,7 @@ def process_requests(config, status_callback=None, stop_event=None, target_map=N
                 title, year = extract_title_and_year(base_data, extra_sources=extra_sources)
 
         normalized_media_type = _normalize_media_type(media_type)
+        target_spec = target_map.get(str(req.get("id"))) if target_map else None
         force_search = bool(target_spec and target_spec.get("force"))
         need_availability_details = rules.get("skip_available_content", True) and normalized_media_type == "tv"
         if need_availability_details and base_data is req:

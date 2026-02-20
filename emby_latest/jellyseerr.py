@@ -2,7 +2,7 @@
 Jellyseerr integration for Latest Publications.
 """
 
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Set
 
 from api_clients import _extract_tmdb_id
 from utils import _normalize_media_type
@@ -73,6 +73,8 @@ def _extract_requested_seasons(payload: Dict[str, Any]) -> List[int]:
             number = entry.get("seasonNumber") or entry.get("season") or entry.get("number")
         else:
             number = entry
+        if number is None:
+            continue
         try:
             parsed = int(number)
         except (TypeError, ValueError):
@@ -92,6 +94,8 @@ def _extract_item_seasons(item: Dict[str, Any]) -> Set[int]:
             if not isinstance(entry, dict):
                 continue
             value = entry.get("season_number")
+            if value is None:
+                continue
             try:
                 parsed = int(value)
             except (TypeError, ValueError):
@@ -99,6 +103,8 @@ def _extract_item_seasons(item: Dict[str, Any]) -> Set[int]:
             seasons.add(parsed)
     if not seasons:
         value = item.get("season_number")
+        if value is None:
+            return seasons
         try:
             parsed = int(value)
         except (TypeError, ValueError):

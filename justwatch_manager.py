@@ -11,14 +11,15 @@ import urllib.parse
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
+if TYPE_CHECKING:
+    from justwatch import JustWatch
+    from storage import DatabaseStorage
+
 try:
     from justwatch import JustWatch
     JUSTWATCH_AVAILABLE = True
 except ImportError:  # pragma: no cover - optional dependency
     JUSTWATCH_AVAILABLE = False
-
-if TYPE_CHECKING:
-    from storage import DatabaseStorage
 
 logger = logging.getLogger(__name__)
 JW_HEADERS = {

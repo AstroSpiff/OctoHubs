@@ -109,6 +109,7 @@ async def api_emby_users_toggle_download(
 @router.post("/api/emby/users/link")
 async def api_emby_users_link(
     links_json: str = Form(...),
+    group_id: Optional[str] = Form(None),
     user=Depends(_require_user_dep)
 ):
     try:
@@ -118,7 +119,7 @@ async def api_emby_users_link(
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    group_id = manager.link_users(links)
+    group_id = manager.link_users(links, group_id=group_id)
     return {"ok": True, "group_id": group_id}
 
 
@@ -178,10 +179,43 @@ async def api_emby_users_password(
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
 
-    success = manager.update_user_password(server_id, user_id, new_password)
-    if not success:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Password update failed"})
-    return {"ok": True}
+    result = manager.update_user_password(server_id, user_id, new_password)
+    if not result.get("ok"):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Password update failed", "details": result})
+    return {"ok": True, "result": result}
+
+
+@router.post("/api/emby/users/password-group")
+async def api_emby_users_password_group(
+    group_id: str = Form(...),
+    new_password: str = Form(...),
+    user=Depends(_require_user_dep)
+):
+    manager = _get_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
+
+    result = manager.set_group_password(group_id, new_password)
+    if not result.get("ok"):
+        return JSONResponse(status_code=400, content={"ok": False, "error": "Password update failed", "details": result})
+    return {"ok": True, "result": result}
+
+
+@router.get("/api/emby/users/password")
+async def api_emby_users_password_get(
+    group_id: Optional[str] = None,
+    server_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    user=Depends(_require_user_dep)
+):
+    manager = _get_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
+
+    result = manager.get_password_info(group_id=group_id, server_id=server_id, user_id=user_id)
+    if not result.get("ok"):
+        return JSONResponse(status_code=400, content=result)
+    return result
 
 
 @router.get("/api/emby/users/{server_id}/{user_id}/details")

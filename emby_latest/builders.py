@@ -40,7 +40,8 @@ def _build_emby_latest_item(item: Dict[str, Any], server: Optional[Dict[str, Any
     if not isinstance(item, dict):
         return None
 
-    image_tags = item.get("ImageTags") if isinstance(item.get("ImageTags"), dict) else {}
+    _raw = item.get("ImageTags")
+    image_tags = _raw if isinstance(_raw, dict) else {}
     item_id = item.get("Id")
     image_url = None
     poster_url = ""
@@ -50,9 +51,11 @@ def _build_emby_latest_item(item: Dict[str, Any], server: Optional[Dict[str, Any
     logo_url = ""
     emby_url = ""
     original_title = item.get("OriginalTitle") or item.get("OriginalName") or ""
-    taglines = item.get("Taglines") if isinstance(item.get("Taglines"), list) else []
+    _raw = item.get("Taglines")
+    taglines = _raw if isinstance(_raw, list) else []
     tagline = taglines[0] if taglines else ""
-    studios_raw = item.get("Studios") if isinstance(item.get("Studios"), list) else []
+    _raw = item.get("Studios")
+    studios_raw = _raw if isinstance(_raw, list) else []
     studios = []
     for studio in studios_raw:
         if isinstance(studio, dict) and studio.get("Name"):

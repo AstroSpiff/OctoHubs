@@ -2,6 +2,30 @@
 
 let currentUsersData = null;
 let currentIconData = null;
+let passwordManagerState = null;
+
+function applyPasswordIndicator(button, status) {
+    if (!button) return;
+    let resolved = status;
+    if (typeof status === 'boolean') {
+        resolved = status ? 'saved' : 'missing';
+    }
+    if (!resolved) {
+        resolved = 'missing';
+    }
+    button.classList.remove('pw-indicator', 'pw-saved', 'pw-missing', 'pw-mismatch');
+    const dot = button.querySelector('.pw-status-dot');
+    if (dot) {
+        dot.remove();
+    }
+}
+
+function resolvePasswordStatus(obj) {
+    if (!obj) return 'missing';
+    if (obj.password_status) return obj.password_status;
+    if (obj.password_mismatch) return 'mismatch';
+    return obj.password_saved ? 'saved' : 'missing';
+}
 
 // showToast is already defined globally in emby.js
 
@@ -50,6 +74,13 @@ function buildUserChipElement(user) {
     chip.style.border = '1px solid var(--border-color)';
     chip.style.background = 'var(--bg-main)';
     chip.style.fontSize = '0.8rem';
+    const remoteIcon = document.createElement('i');
+    remoteIcon.className = 'fa-solid fa-network-wired';
+    const remoteDisabled = user.is_remote_disabled === true || user.is_disabled === true || user.enable_remote_access === false;
+    remoteIcon.style.color = remoteDisabled ? 'var(--color-danger)' : 'var(--color-success)';
+    remoteIcon.style.marginRight = '0.35rem';
+    remoteIcon.title = remoteDisabled ? 'Connessione remota disabilitata' : 'Connessione remota attiva';
+    chip.appendChild(remoteIcon);
     chip.appendChild(buildUserLabelElement(user));
     return chip;
 }
@@ -352,7 +383,7 @@ function renderEmbyUsers(data) {
         if (isMasterGroup) {
             visibleUsers.forEach(u => {
                 if (u.name.toLowerCase() === 'master') {
-                    masterGroup.users.push(u);
+                    masterGroup.users.push({ ...u, group_id: group.id, group_name: group.name });
                     serversWithMaster.add(u.server_id);
                 }
             });
@@ -479,7 +510,7 @@ function renderEmbyUsers(data) {
         }
 
         const userToRender = { ...user, image_url: iconUrl };
-        const card = createUserCard(userToRender, { isMaster: true });
+        const card = createUserCard(userToRender, { isMaster: true, groupId: user.group_id, groupName: user.group_name });
         containerMaster.appendChild(card);
     });
 
@@ -536,6 +567,28 @@ function renderEmbyUsers(data) {
         const select = groupEl.querySelector('.icon-profile-select');
         let rightContainer = null;
         if (select) rightContainer = select.parentNode;
+        const groupPwBtn = groupEl.querySelector('.group-password-btn');
+        if (groupPwBtn) {
+            const pwStatus = resolvePasswordStatus(group);
+            if (pwStatus === 'mismatch') {
+                groupPwBtn.style.color = 'var(--color-warning)';
+                const count = group.password_mismatch_count || 0;
+                groupPwBtn.title = count > 0
+                    ? `Password salvata ma ${count} utenti non allineati (clicca per gestire)`
+                    : 'Password salvata ma utenti non allineati (clicca per gestire)';
+            } else if (pwStatus === 'saved') {
+                groupPwBtn.style.color = 'var(--color-success)';
+                groupPwBtn.title = 'Password salvata nel tool (clicca per visualizzare/modificare)';
+            } else {
+                groupPwBtn.style.color = 'var(--color-danger)';
+                groupPwBtn.title = 'Password NON salvata nel tool (clicca per impostare)';
+            }
+            applyPasswordIndicator(groupPwBtn, pwStatus);
+            groupPwBtn.onclick = (e) => {
+                e.stopPropagation();
+                openPasswordManagerForGroup(group);
+            };
+        }
 
         // New: Auto Sync Controls (Moved to Right Side)
         if (!group.is_owners && group.is_linked && rightContainer) {
@@ -782,7 +835,7 @@ function renderEmbyUsers(data) {
             }
 
             const userToRender = { ...user, image_url: iconUrl };
-            const card = createUserCard(userToRender, { isLinked: group.is_linked, groupId: group.id });
+            const card = createUserCard(userToRender, { isLinked: group.is_linked, groupId: group.id, groupName: group.name });
             grid.appendChild(card);
         });
 
@@ -800,6 +853,8 @@ function createUserCard(user, options = {}) {
     
     const tpl = tplElement.content.cloneNode(true);
     const card = tpl.querySelector('.user-card');
+    user.group_name = user.group_name || options.groupName;
+    user.group_id = user.group_id || options.groupId;
     
     // Data attributes
     card.dataset.userId = user.user_id;
@@ -807,6 +862,7 @@ function createUserCard(user, options = {}) {
     card.dataset.username = user.name;
     card.dataset.isLeader = user.is_leader;
     card.dataset.isMaster = options.isMaster || false;
+    card.dataset.groupName = options.groupName || '';
 
     // Content
     const userNameRow = tpl.querySelector('.user-name-row');
@@ -954,6 +1010,27 @@ function createUserCard(user, options = {}) {
             }
             dlBtn.onclick = () => toggleUserDownload(user.server_id, user.user_id, dlBtn);
         }
+    }
+
+    const pwBtn = tpl.querySelector('.password-btn');
+    if (pwBtn) {
+        const pwStatus = resolvePasswordStatus(user);
+        const embySuffix = `\nEmby: ${user.has_password ? 'Presente' : 'Assente'}`;
+        if (pwStatus === 'mismatch') {
+            pwBtn.style.color = 'var(--color-warning)';
+            pwBtn.title = `Password non allineata al gruppo (clicca per gestire)${embySuffix}`;
+        } else if (pwStatus === 'saved') {
+            pwBtn.style.color = 'var(--color-success)';
+            pwBtn.title = `Password salvata nel tool (clicca per visualizzare/modificare)${embySuffix}`;
+        } else {
+            pwBtn.style.color = 'var(--color-danger)';
+            pwBtn.title = `Password NON salvata nel tool (clicca per impostare)${embySuffix}`;
+        }
+        applyPasswordIndicator(pwBtn, pwStatus);
+        pwBtn.onclick = (e) => {
+            e.stopPropagation();
+            openPasswordManagerForUser(user, options.groupId, options.groupName);
+        };
     }
 
     const unlinkBtn = tpl.querySelector('.unlink-btn');
@@ -1589,6 +1666,7 @@ async function setGroupLeader(groupId, serverId, userId) {
 
     const formData = new FormData();
     formData.append('links_json', JSON.stringify(links));
+    formData.append('group_id', groupId);
     
     try {
         const res = await fetch('/api/emby/users/link', { method: 'POST', body: formData });
@@ -1806,8 +1884,24 @@ async function openUserDetailModal(user, groupId = null) {
     document.getElementById('modal-server-name').textContent = user.server_name;
     
     const pwStatus = document.getElementById('modal-password-status');
-    pwStatus.textContent = user.has_password ? '••••••••' : 'Nessuna';
-    pwStatus.style.opacity = user.has_password ? '1' : '0.5';
+    const pwState = resolvePasswordStatus(user);
+    if (pwState === 'mismatch') {
+        pwStatus.textContent = 'Non allineata';
+        pwStatus.style.opacity = '1';
+        pwStatus.style.color = 'var(--color-warning)';
+        pwStatus.title = 'Password non allineata al gruppo';
+    } else if (pwState === 'saved') {
+        pwStatus.textContent = '••••••••';
+        pwStatus.style.opacity = '1';
+        pwStatus.style.color = '';
+        pwStatus.title = 'Password salvata';
+    } else {
+        const hasEmbyPassword = !!user.has_password;
+        pwStatus.textContent = hasEmbyPassword ? 'Presente su Emby' : 'Assente su Emby';
+        pwStatus.style.opacity = '0.6';
+        pwStatus.style.color = 'var(--text-muted)';
+        pwStatus.title = hasEmbyPassword ? 'Password presente su Emby' : 'Password assente su Emby';
+    }
 
     document.getElementById('modal-last-login').textContent = formatDate(user.last_login);
     
@@ -1848,16 +1942,8 @@ async function openUserDetailModal(user, groupId = null) {
     // Edit Password
     const editPwBtn = document.getElementById('modal-edit-password-btn');
     if (editPwBtn) {
-        editPwBtn.onclick = async () => {
-            const newPw = await openPromptModal(
-                "Aggiorna password",
-                "Nuova password (lascia vuoto per rimuovere)",
-                "",
-                { label: "Password", type: "password" }
-            );
-            if (newPw !== null) {
-                updateUserPassword(user.server_id, user.user_id, newPw);
-            }
+        editPwBtn.onclick = () => {
+            openPasswordManagerForUser(user, groupId, user.group_name);
         };
     }
     
@@ -1898,9 +1984,7 @@ async function openUserDetailModal(user, groupId = null) {
                 document.getElementById('modal-connect-user').textContent = details.connect_user_name;
             }
             
-            // Update password status if changed externally (though unlikely)
-            pwStatus.textContent = details.has_password ? '••••••••' : 'Nessuna';
-            pwStatus.style.opacity = details.has_password ? '1' : '0.5';
+            // Password status is handled by saved state from tool DB.
         }
     } catch (e) {
         console.error("Error fetching user details", e);
@@ -1937,8 +2021,17 @@ async function updateUserPassword(serverId, userId, newPassword) {
         if (res.ok) {
             showToast("Password aggiornata.", 'success');
             const pwStatus = document.getElementById('modal-password-status');
-            pwStatus.textContent = newPassword ? '••••••••' : 'Nessuna';
-            pwStatus.style.opacity = newPassword ? '1' : '0.5';
+            if (newPassword) {
+                pwStatus.textContent = '••••••••';
+                pwStatus.style.opacity = '1';
+                pwStatus.style.color = '';
+                pwStatus.title = 'Password salvata';
+            } else {
+                pwStatus.textContent = 'Assente su Emby';
+                pwStatus.style.opacity = '0.6';
+                pwStatus.style.color = 'var(--text-muted)';
+                pwStatus.title = 'Password assente su Emby';
+            }
             loadEmbyUsers(true);
         } else {
             await openAlertModal("Errore", "Errore aggiornamento password");
@@ -1946,6 +2039,237 @@ async function updateUserPassword(serverId, userId, newPassword) {
     } catch (e) {
         await openAlertModal("Errore", "Errore: " + e.message);
     }
+}
+
+function openPasswordManagerForGroup(group) {
+    if (!group || !group.id) return;
+    return openPasswordManager({
+        scope: 'group',
+        groupId: group.id,
+        groupName: group.name,
+        mismatchCount: group.password_mismatch_count || 0
+    });
+}
+
+function openPasswordManagerForUser(user, groupId, groupName) {
+    if (!user) return;
+    return openPasswordManager({
+        scope: 'user',
+        groupId: null,
+        groupName: groupName || user.group_name || null,
+        serverId: user.server_id,
+        userId: user.user_id,
+        userName: user.name,
+        mismatchCount: user.password_mismatch ? 1 : 0,
+        isUserMismatch: user.password_mismatch === true,
+        hasPassword: !!user.has_password
+    });
+}
+
+async function openPasswordManager(payload) {
+    const modal = document.getElementById('password-manager-modal');
+    if (!modal) return;
+
+    const titleEl = document.getElementById('password-manager-title');
+    const subtitleEl = document.getElementById('password-manager-subtitle');
+    const statusEl = document.getElementById('password-manager-status');
+    const inputEl = document.getElementById('password-manager-input');
+    const updatedEl = document.getElementById('password-manager-updated');
+    const toggleBtn = document.getElementById('password-manager-toggle-visibility');
+    const closeBtn = document.getElementById('password-manager-close');
+    const cancelBtn = document.getElementById('password-manager-cancel');
+    const saveBtn = document.getElementById('password-manager-save');
+    const resetBtn = document.getElementById('password-manager-reset');
+    const applyBtn = document.getElementById('password-manager-apply');
+
+    const targetGroupId = payload.groupId;
+    const isGroupScope = Boolean(targetGroupId);
+
+    titleEl.textContent = isGroupScope ? 'Password Gruppo' : 'Password Utente';
+    if (isGroupScope) {
+        if (payload.userName && payload.groupName) {
+            subtitleEl.textContent = `Utente: ${payload.userName} • Gruppo: ${payload.groupName}`;
+        } else {
+            subtitleEl.textContent = payload.groupName ? `Gruppo: ${payload.groupName}` : 'Gruppo selezionato';
+        }
+    } else {
+        subtitleEl.textContent = payload.userName ? `Utente: ${payload.userName}` : 'Utente selezionato';
+    }
+
+    statusEl.textContent = 'Caricamento...';
+    statusEl.style.color = 'var(--text-muted)';
+    inputEl.value = '';
+    inputEl.type = 'password';
+    inputEl.placeholder = 'Non salvata';
+    updatedEl.textContent = '';
+
+    passwordManagerState = {
+        scope: payload.scope || (isGroupScope ? 'group' : 'user'),
+        groupId: targetGroupId,
+        serverId: payload.serverId,
+        userId: payload.userId,
+        originalPassword: null,
+        mismatchCount: payload.mismatchCount || 0,
+        isUserMismatch: payload.isUserMismatch === true,
+        hasPassword: payload.hasPassword === true
+    };
+
+    if (applyBtn) {
+        const showApply = isGroupScope && passwordManagerState.mismatchCount > 0;
+        applyBtn.style.display = showApply ? 'inline-flex' : 'none';
+    }
+
+    const closeModal = () => { modal.style.display = 'none'; };
+    if (closeBtn) closeBtn.onclick = closeModal;
+    if (cancelBtn) cancelBtn.onclick = closeModal;
+    modal.onclick = (e) => { if (e.target === modal) closeModal(); };
+
+    if (toggleBtn) {
+        toggleBtn.onclick = () => {
+            inputEl.type = inputEl.type === 'password' ? 'text' : 'password';
+        };
+    }
+
+    try {
+        const params = new URLSearchParams();
+        if (targetGroupId) {
+            params.append('group_id', targetGroupId);
+        } else {
+            params.append('server_id', payload.serverId || '');
+            params.append('user_id', payload.userId || '');
+        }
+        const res = await fetch(`/api/emby/users/password?${params.toString()}`);
+        if (!res.ok) throw new Error('Errore recupero password');
+        const data = await res.json();
+        const saved = Boolean(data.saved);
+        const password = data.password || '';
+        passwordManagerState.originalPassword = password;
+        if (applyBtn) {
+            applyBtn.disabled = !saved;
+        }
+        if (saved && passwordManagerState.scope === 'user' && passwordManagerState.isUserMismatch) {
+            statusEl.textContent = 'Salvata [non allineata al gruppo]';
+            statusEl.style.color = 'var(--color-warning)';
+        } else if (saved && passwordManagerState.mismatchCount > 0) {
+            statusEl.textContent = `Salvata [non allineati: ${passwordManagerState.mismatchCount}]`;
+            statusEl.style.color = 'var(--color-warning)';
+        } else {
+            if (!saved && passwordManagerState.scope === 'user') {
+                statusEl.textContent = `Non salvata [Emby: ${passwordManagerState.hasPassword ? 'Presente' : 'Assente'}]`;
+                statusEl.style.color = 'var(--text-muted)';
+                inputEl.placeholder = passwordManagerState.hasPassword ? 'Presente su Emby' : 'Assente su Emby';
+            } else {
+                statusEl.textContent = saved ? 'Salvata' : 'Non salvata';
+                statusEl.style.color = saved ? 'var(--color-success)' : 'var(--text-muted)';
+            }
+        }
+        inputEl.value = password;
+        if (data.updated_at) {
+            updatedEl.textContent = `Ultimo aggiornamento: ${formatDate(data.updated_at)}`;
+        } else {
+            updatedEl.textContent = '';
+        }
+    } catch (e) {
+        statusEl.textContent = 'Errore';
+        statusEl.style.color = 'var(--color-danger)';
+        await openAlertModal('Errore', 'Impossibile recuperare la password.');
+    }
+
+    if (saveBtn) {
+        saveBtn.onclick = async () => {
+            const newPassword = inputEl.value || '';
+            const original = passwordManagerState.originalPassword || '';
+            if (newPassword === original) {
+                showToast('Nessuna modifica da salvare.', 'warning');
+                return;
+            }
+            const confirmMsg = newPassword
+                ? 'Confermi l\'aggiornamento della password? Verrà applicata a tutti gli utenti del gruppo.'
+                : 'Confermi la rimozione della password salvata?';
+            const ok = await openConfirmModal('Conferma', confirmMsg);
+            if (!ok) return;
+
+            const formData = new FormData();
+            let endpoint = '/api/emby/users/password';
+            if (targetGroupId) {
+                endpoint = '/api/emby/users/password-group';
+                formData.append('group_id', targetGroupId);
+            } else {
+                formData.append('server_id', payload.serverId || '');
+                formData.append('user_id', payload.userId || '');
+            }
+            formData.append('new_password', newPassword);
+
+            try {
+                const res = await fetch(endpoint, { method: 'POST', body: formData });
+                if (!res.ok) throw new Error('Errore salvataggio password');
+                showToast('Password aggiornata.', 'success');
+                closeModal();
+                loadEmbyUsers(true);
+            } catch (err) {
+                await openAlertModal('Errore', 'Errore aggiornamento password.');
+            }
+        };
+    }
+
+    if (applyBtn) {
+        applyBtn.onclick = async () => {
+            if (!isGroupScope) return;
+            const passwordToApply = inputEl.value || passwordManagerState.originalPassword || '';
+            if (!passwordToApply) {
+                showToast('Nessuna password salvata da applicare.', 'warning');
+                return;
+            }
+            const ok = await openConfirmModal(
+                'Conferma',
+                'Applicare la password salvata a tutti gli utenti del gruppo?'
+            );
+            if (!ok) return;
+            const formData = new FormData();
+            formData.append('group_id', targetGroupId);
+            formData.append('new_password', passwordToApply);
+            try {
+                const res = await fetch('/api/emby/users/password-group', { method: 'POST', body: formData });
+                if (!res.ok) throw new Error('Errore applicazione password');
+                showToast('Password applicata a tutti.', 'success');
+                closeModal();
+                loadEmbyUsers(true);
+            } catch (err) {
+                await openAlertModal('Errore', 'Errore applicazione password.');
+            }
+        };
+    }
+
+    if (resetBtn) {
+        resetBtn.onclick = async () => {
+            const ok = await openConfirmModal(
+                'Conferma',
+                'Confermi il reset della password? Verrà rimossa dal DB e azzerata su Emby per tutti gli utenti del gruppo.'
+            );
+            if (!ok) return;
+            const formData = new FormData();
+            let endpoint = '/api/emby/users/password';
+            if (targetGroupId) {
+                endpoint = '/api/emby/users/password-group';
+                formData.append('group_id', targetGroupId);
+            } else {
+                formData.append('server_id', payload.serverId || '');
+                formData.append('user_id', payload.userId || '');
+            }
+            formData.append('new_password', '');
+            try {
+                const res = await fetch(endpoint, { method: 'POST', body: formData });
+                if (!res.ok) throw new Error('Errore reset password');
+                showToast('Password resettata.', 'success');
+                closeModal();
+                loadEmbyUsers(true);
+            } catch (err) {
+                await openAlertModal('Errore', 'Errore reset password.');
+            }
+        };
+    }
+
+    modal.style.display = 'flex';
 }
 
 function formatDate(isoStr) {
@@ -2454,30 +2778,158 @@ async function linkSelectedUsers() {
     list.style.gap = '0.4rem';
     selected.forEach(u => list.appendChild(buildUserChipElement(u)));
     msg.appendChild(list);
-    const ok = await openConfirmModalRich("Conferma", msg);
-    if (!ok) return;
 
-    // Auto-detect leader
-    // 1. Master
+    const existingGroupIds = Array.from(
+        new Set(
+            selected
+                .map(u => u.group_id)
+                .filter(gid => gid && !gid.startsWith('unlinked_'))
+        )
+    );
+    const hasUnlinked = selected.some(u => !u.group_id || u.group_id.startsWith('unlinked_'));
+    const needsChoice = existingGroupIds.length > 1 || (existingGroupIds.length === 1 && hasUnlinked);
+    let targetGroupId = null;
+    let radioName = null;
+    let choiceWrap = null;
+
+    if (needsChoice) {
+        choiceWrap = document.createElement('div');
+        choiceWrap.style.marginTop = '0.75rem';
+        const choiceTitle = document.createElement('div');
+        choiceTitle.textContent = 'Scegli il gruppo di destinazione:';
+        choiceTitle.style.marginBottom = '0.4rem';
+        choiceWrap.appendChild(choiceTitle);
+
+        const listWrap = document.createElement('div');
+        listWrap.style.display = 'flex';
+        listWrap.style.flexDirection = 'column';
+        listWrap.style.gap = '0.35rem';
+        listWrap.style.alignItems = 'flex-start';
+
+        radioName = `group-merge-choice-${Date.now()}`;
+        let first = true;
+
+        const optionNew = document.createElement('label');
+        optionNew.className = 'checkbox-row';
+        optionNew.style.gap = '0.4rem';
+        const radioNew = document.createElement('input');
+        radioNew.type = 'radio';
+        radioNew.name = radioName;
+        radioNew.value = '__new__';
+        radioNew.style.margin = '0';
+        radioNew.checked = existingGroupIds.length === 0;
+        optionNew.appendChild(radioNew);
+        optionNew.appendChild(document.createTextNode('Crea nuovo gruppo'));
+        listWrap.appendChild(optionNew);
+
+        existingGroupIds.forEach(gid => {
+            const group = currentUsersData?.groups?.find(g => g.id === gid);
+            const label = group ? group.name : gid;
+            const option = document.createElement('label');
+            option.className = 'checkbox-row';
+            option.style.gap = '0.4rem';
+            const radio = document.createElement('input');
+            radio.type = 'radio';
+            radio.name = radioName;
+            radio.value = gid;
+            radio.style.margin = '0';
+            if (!radioNew.checked && first) {
+                radio.checked = true;
+                first = false;
+            }
+            option.appendChild(radio);
+            option.appendChild(document.createTextNode(`Usa gruppo: ${label}`));
+            listWrap.appendChild(option);
+        });
+
+        choiceWrap.appendChild(listWrap);
+        msg.appendChild(choiceWrap);
+    }
+
+    const leaderWrap = document.createElement('div');
+    leaderWrap.style.marginTop = '0.75rem';
+    const leaderTitle = document.createElement('div');
+    leaderTitle.textContent = 'Scegli utente principale (leader) per il nuovo gruppo:';
+    leaderTitle.style.marginBottom = '0.4rem';
+    leaderWrap.appendChild(leaderTitle);
+
+    const leaderList = document.createElement('div');
+    leaderList.style.display = 'flex';
+    leaderList.style.flexDirection = 'column';
+    leaderList.style.gap = '0.35rem';
+    leaderList.style.alignItems = 'flex-start';
+
+    const leaderRadioName = `group-leader-choice-${Date.now()}`;
     let leaderIdx = selected.findIndex(u => u.username.toLowerCase() === 'master');
-    // 2. First Active
     if (leaderIdx === -1) {
         leaderIdx = selected.findIndex(u => !u.is_disabled);
     }
-    // 3. First user fallback
     if (leaderIdx === -1) {
         leaderIdx = 0;
+    }
+
+    selected.forEach((u, idx) => {
+        const option = document.createElement('label');
+        option.className = 'checkbox-row';
+        option.style.gap = '0.4rem';
+        const radio = document.createElement('input');
+        radio.type = 'radio';
+        radio.name = leaderRadioName;
+        radio.value = `${u.server_id}:${u.user_id}`;
+        radio.style.margin = '0';
+        radio.checked = idx === leaderIdx;
+        option.appendChild(radio);
+        option.appendChild(buildUserChipElement(u));
+        leaderList.appendChild(option);
+    });
+
+    leaderWrap.appendChild(leaderList);
+    msg.appendChild(leaderWrap);
+
+    if (needsChoice) {
+        const updateLeaderVisibility = () => {
+            const selectedRadio = msg.querySelector(`input[name="${radioName}"]:checked`);
+            const value = selectedRadio ? selectedRadio.value : '__new__';
+            leaderWrap.style.display = value === '__new__' ? 'block' : 'none';
+        };
+        if (choiceWrap) {
+            choiceWrap.addEventListener('change', updateLeaderVisibility);
+        }
+        updateLeaderVisibility();
+    }
+
+    const ok = await openConfirmModalRich("Conferma", msg);
+    if (!ok) return;
+
+    if (needsChoice && radioName) {
+        const selectedRadio = msg.querySelector(`input[name="${radioName}"]:checked`);
+        const choice = selectedRadio ? selectedRadio.value : null;
+        if (!choice) return;
+        if (choice !== '__new__') {
+            targetGroupId = choice;
+        }
+    }
+
+    let selectedLeaderKey = null;
+    if (leaderRadioName) {
+        const selectedRadio = msg.querySelector(`input[name="${leaderRadioName}"]:checked`);
+        selectedLeaderKey = selectedRadio ? selectedRadio.value : null;
     }
 
     const links = selected.map((u, i) => ({
         server_id: u.server_id,
         user_id: u.user_id,
         username: u.username,
-        is_leader: (i === leaderIdx)
+        is_leader: targetGroupId
+            ? (u.group_id === targetGroupId ? u.is_leader : false)
+            : (selectedLeaderKey ? `${u.server_id}:${u.user_id}` === selectedLeaderKey : i === 0)
     }));
 
     const formData = new FormData();
     formData.append('links_json', JSON.stringify(links));
+    if (targetGroupId) {
+        formData.append('group_id', targetGroupId);
+    }
     
     const res = await fetch('/api/emby/users/link', { method: 'POST', body: formData });
     if (res.ok) {
