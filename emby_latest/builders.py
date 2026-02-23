@@ -9,6 +9,16 @@ from emby_latest.emby_api import _resolve_emby_library_for_item
 from emby_latest.utils import limit_by_server
 
 
+def _resolve_server_label(server: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(server, dict):
+        return ""
+    for key in ("alias", "name", "original_name", "url"):
+        value = server.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def _runtime_minutes_from_ticks(value: Any) -> Optional[int]:
     if not value:
         return None
@@ -164,7 +174,7 @@ def _build_emby_latest_item(item: Dict[str, Any], server: Optional[Dict[str, Any
         "library_id": library_id,
         "library_name": library_name,
         "server_id": server.get("id") if server else None,
-        "server_name": server.get("name") if server else None,
+        "server_name": _resolve_server_label(server),
         "server_icon": server.get("icon") if server else None,
         "server_icon_color": server.get("icon_color") if server else None,
         "server_icon_style": server.get("icon_style") if server else None,

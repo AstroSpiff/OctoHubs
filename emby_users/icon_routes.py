@@ -46,7 +46,7 @@ async def api_emby_icons_config(user=Depends(_require_user_dep)):
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
-    return manager.get_icon_dashboard_data()
+    return manager.icon_manager.get_icon_dashboard_data()
 
 
 @router.get("/api/emby/icons/image/{profile_id}/{column_key}")
@@ -63,7 +63,7 @@ async def api_emby_icons_image(
     if not manager:
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
 
-    data_tuple = manager.get_icon_image(profile_id, column_key)
+    data_tuple = manager.icon_manager.get_icon_image(profile_id, column_key)
     if not data_tuple:
         return JSONResponse(status_code=404, content={"error": "Icon not found"})
 
@@ -82,7 +82,7 @@ async def api_emby_icons_profile_save(
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
-    new_id = manager.save_icon_profile(label, is_group_profile, profile_id)
+    new_id = manager.icon_manager.save_icon_profile(label, is_group_profile, profile_id)
     return {"ok": True, "profile_id": new_id}
 
 
@@ -94,7 +94,7 @@ async def api_emby_icons_profile_delete(
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
-    manager.delete_icon_profile(profile_id)
+    manager.icon_manager.delete_icon_profile(profile_id)
     return {"ok": True}
 
 
@@ -108,7 +108,7 @@ async def api_emby_icons_binding_save(
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
-    manager.save_icon_binding(target_type, target_id, profile_id)
+    manager.icon_manager.save_icon_binding(target_type, target_id, profile_id)
     return {"ok": True}
 
 
@@ -123,7 +123,7 @@ async def api_emby_icons_rule_save(
     if not manager:
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
 
-    path = manager.save_icon_rule(profile_id, column_key, file)
+    path = manager.icon_manager.save_icon_rule(profile_id, column_key, file)
     return {"ok": True, "icon_path": path}
 
 
@@ -136,5 +136,5 @@ async def api_emby_icons_rule_delete(
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
-    manager.delete_icon_rule(profile_id, column_key)
+    manager.icon_manager.delete_icon_rule(profile_id, column_key)
     return {"ok": True}

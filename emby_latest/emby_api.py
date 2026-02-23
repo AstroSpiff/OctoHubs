@@ -7,8 +7,8 @@ coupling with app.py.
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from api_clients import _call_emby_api
-from utils import normalize_string, _parse_date_value
+from emby_runtime.api_clients import _call_emby_api
+from core.utils import normalize_string, _parse_date_value
 
 _EMBY_LIBRARY_CACHE: dict[str, list[dict]] = {}
 _EMBY_LIBRARY_ITEM_CACHE: dict[tuple[str, str], tuple[str, str]] = {}
@@ -257,6 +257,8 @@ def _fetch_emby_latest_series_from_episodes(
         # Merge episode data into series payload
         episode_payload = episode_payloads.get(series_id)
         if isinstance(item_payload, dict) and isinstance(episode_payload, dict):
+            if not item_payload.get("Path") and episode_payload.get("Path"):
+                item_payload["Path"] = episode_payload.get("Path")
             if not item_payload.get("Overview") and episode_payload.get("Overview"):
                 item_payload["Overview"] = episode_payload.get("Overview")
             if not item_payload.get("Genres") and episode_payload.get("Genres"):

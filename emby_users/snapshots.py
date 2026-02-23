@@ -2,8 +2,8 @@
 
 from typing import Any, Dict
 
-from api_clients import _call_emby_api
-from utils import get_emby_servers, json_error
+from emby_runtime.api_clients import _call_emby_api
+from core.utils import get_emby_servers, json_error
 
 
 def build_emby_users_snapshot(config: Dict[str, Any] | None, is_valid: bool, server_id: str):

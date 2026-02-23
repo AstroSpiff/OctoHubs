@@ -17,8 +17,8 @@ from email.utils import parsedate_to_datetime
 
 import requests
 from typing import Dict, Any, cast, Optional
-from storage import DatabaseStorage, StorageError
-from config import (
+from core.storage import DatabaseStorage, StorageError
+from core.config import (
     CONFIG_FILE,
     _merge_database_settings,
     _merge_trakt_settings,
@@ -34,17 +34,18 @@ from config import (
     _coerce_request_int,
     _normalize_alt_language
 )
-from emby_websocket_manager import get_websocket_manager
+from emby_runtime.websocket_manager import get_websocket_manager
 from emby_users.registry import (
     get_emby_user_manager as _get_emby_user_manager,
     refresh_emby_user_manager_config
 )
-from api_clients import (
+from emby_runtime.api_clients import (
     _fetch_emby_libraries,
     _fetch_emby_active_sessions,
     _fetch_emby_status,
     _fetch_emby_scheduled_tasks,
     _fetch_emby_virtual_folders,
+    _trigger_library_scan as _api_trigger_library_scan,
     _stop_emby_task,
     _call_emby_api,
     get_jellyseerr_requests,
@@ -65,11 +66,14 @@ from api_clients import (
     check_jellyseerr_availability,
     _extract_tmdb_id
 )
-from library_grouper import group_libraries
-from justwatch_manager import JustWatchManager, JustWatchError, is_justwatch_available
+from emby_libraries.manager import EmbyLibrariesManager
+from emby_libraries.scan_manager import EmbyLibraryScanManager
+from emby_libraries.client import EmbyApiClient
+from emby_libraries.tracker import LibraryScanTracker
+from core.justwatch_manager import JustWatchManager, JustWatchError, is_justwatch_available
 from emby_latest import get_manager as get_emby_latest_manager
 from emby_latest.utils import is_blank_value
-from utils import (
+from core.utils import (
     _sanitize_terms_list,
     _parse_date_value,
     _normalize_media_type,
@@ -80,10 +84,9 @@ from utils import (
     json_error,
     json_success,
     validate_jellyseerr_config,
-    find_server_by_id,
     get_emby_servers
 )
-from scanner import (
+from core.scanner import (
     extract_title_and_year,
     gather_title_candidates,
     build_search_queries,
@@ -92,12 +95,12 @@ from scanner import (
     _extract_episode_from_title,
     _detect_resolution_bucket
 )
-from search_normalizer import build_dedupe_key, dedupe_results
-from tasks import ScanManager, AutoScheduler
+from core.search_normalizer import build_dedupe_key, dedupe_results
+from core.tasks import ScanManager, AutoScheduler
 from emby_probe import get_probe_manager, _format_display_name_from_queue
-from emby_streams import get_streams_manager
+from emby_runtime.streams import get_streams_manager
 # from emby_latest import get_manager as get_emby_latest_manager  # DISABLED: circular import
-from auth import get_all_users
+from core.auth import get_all_users
 
 # Configure logging
 logging.basicConfig(
@@ -287,6 +290,8 @@ _REQUESTS_CACHE = {
 }
 _active_search_sessions = {}  # Sessioni di ricerca streaming attive
 _AUTO_SCHEDULER = None
+_EMBY_LIBRARIES_MANAGER = None
+_EMBY_LIBRARY_SCAN_MANAGER = None
 
 
 def get_emby_user_manager():
@@ -297,441 +302,41 @@ def get_emby_user_manager():
     )
 
 
-# --- EMBY API CLIENT WRAPPER ---
-
-class EmbyApiClient:
-    """Simple wrapper for Emby API calls, used by EmbyLibraryPoller."""
-
-    def __init__(self, server_config: dict):
-        self.server_config = server_config
-
-    def get(self, endpoint: str, params: Optional[dict] = None):
-        """Execute GET request to Emby API."""
-        success, response = _call_emby_api(
-            self.server_config,
-            endpoint,
-            method="GET",
-            params=params or {}
+def get_emby_libraries_manager():
+    global _EMBY_LIBRARIES_MANAGER
+    if _EMBY_LIBRARIES_MANAGER is None:
+        _EMBY_LIBRARIES_MANAGER = EmbyLibrariesManager(
+            load_config,
+            _ensure_db_backend,
+            json_error,
+            StorageError
         )
-        if not success:
-            raise Exception(f"Emby API call failed: {response}")
-        return response
+    return _EMBY_LIBRARIES_MANAGER
 
 
-# --- LIBRARY SCAN TRACKER ---
-
-class LibraryScanTracker:
-    """
-    Tracks library scan jobs for Emby servers.
-    Manages single library and group library scans with progress monitoring.
-    """
-    def __init__(self):
-        self._jobs = {}  # job_id -> job_data
-        self._lock = threading.RLock()  # Use RLock for reentrant locking (nested locks)
-        self._max_jobs_per_server = 100
-        self._job_retention_hours = 24
-
-    def create_job(self, server_id: str, library_ids: list, group_name: Optional[str] = None, scan_type: str = "content") -> str:
-        """
-        Create a new scan job for one or more libraries.
-        scan_type: "content" for file scan, "metadata" for metadata refresh
-        Returns job_id.
-        """
-        _log_flush("[TRACKER] >>> create_job CALLED <<<")
-        _log_flush(f"[TRACKER]   server_id: {server_id}")
-        _log_flush(f"[TRACKER]   library_ids: {library_ids}")
-        _log_flush(f"[TRACKER]   group_name: {group_name}")
-        _log_flush(f"[TRACKER]   scan_type: {scan_type}")
-
-        job_id = str(uuid.uuid4())
-        _log_flush(f"[TRACKER]   generated job_id: {job_id}")
-
-        _log_flush("[TRACKER]   acquiring lock...")
-        with self._lock:
-            _log_flush("[TRACKER]   lock acquired, creating job data...")
-            self._jobs[job_id] = {
-                "id": job_id,
-                "server_id": server_id,
-                "library_ids": library_ids,
-                "group_name": group_name,
-                "scan_type": scan_type,  # "content" or "metadata"
-                "status": "queued",  # queued, active, completed, error
-                "progress": 0.0,  # 0.0 to 1.0
-                "total_libraries": len(library_ids),
-                "completed_libraries": 0,
-                "library_status": {},  # library_id -> {status, progress, message}
-                "started_at": datetime.now(timezone.utc).isoformat(),
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-                "completed_at": None,
-                "error": None
-            }
-            self._jobs[job_id]["created_at"] = datetime.now(timezone.utc).isoformat()
-            _log_flush("[TRACKER]   calling _enforce_job_limits...")
-            self._enforce_job_limits(server_id)
-            _log_flush("[TRACKER]   lock releasing...")
-        _log_flush(f"[TRACKER] ✓ create_job completed, returning job_id: {job_id}")
-        return job_id
-
-    def get_job(self, job_id: str) -> Optional[dict]:
-        """Get job data by ID."""
-        with self._lock:
-            job = self._jobs.get(job_id)
-            return copy.deepcopy(job) if job is not None else None
-
-    def get_all_jobs(self) -> list:
-        """Get all jobs."""
-        with self._lock:
-            return [copy.deepcopy(job) for job in self._jobs.values()]
-
-    def update_job(self, job_id: str, **kwargs):
-        """Update job fields."""
-        with self._lock:
-            if job_id not in self._jobs:
-                return
-            job = self._jobs[job_id]
-            for key, value in kwargs.items():
-                if key in job:
-                    job[key] = value
-            job["updated_at"] = datetime.now(timezone.utc).isoformat()
-
-    def update_library_status(self, job_id: str, library_id: str, status: str,
-                            progress: Optional[float] = None, message: Optional[str] = None,
-                            metadata: Optional[dict] = None):
-        """Update status of a specific library within a job."""
-        _log_flush(f"\n{'='*80}")
-        _log_flush("[TRACKER] >>> update_library_status CALLED <<<")
-        _log_flush(f"[TRACKER]   job_id: {job_id}")
-        _log_flush(f"[TRACKER]   library_id: {library_id}")
-        _log_flush(f"[TRACKER]   status: {status}")
-        progress_str = f"{progress*100:.1f}%" if progress is not None else "N/A"
-        _log_flush(f"[TRACKER]   progress: {progress} ({progress_str})")
-        _log_flush(f"[TRACKER]   message: {message}")
-        _log_flush(f"[TRACKER]   metadata keys: {list(metadata.keys()) if metadata else 'None'}")
-        _log_flush(f"{'='*80}\n")
-
-        job_completed = False
-        job_data_copy = None
-        should_broadcast_progress = False
-        overall_progress = 0.0
-        lib_metadata = None
-
-        with self._lock:
-            _log_flush(f"[TRACKER] Lock acquired for job {job_id}")
-            if job_id not in self._jobs:
-                _log_flush(f"[TRACKER] ✗ Job {job_id} NOT FOUND in tracker!")
-                return
-            _log_flush(f"[TRACKER] ✓ Job {job_id} found in tracker")
-            job = self._jobs[job_id]
-            if "library_status" not in job:
-                job["library_status"] = {}
-
-            lib_status = job["library_status"].get(library_id, {})
-            lib_status["status"] = status
-            if progress is not None:
-                lib_status["progress"] = progress
-            if message is not None:
-                lib_status["message"] = message
-            if metadata and isinstance(metadata, dict):
-                lib_status.update(metadata)
-                lib_status["metadata"] = copy.deepcopy(metadata)
-            job["library_status"][library_id] = lib_status
-
-            # Update overall progress
-            total_progress = sum(
-                lib.get("progress", 0.0) for lib in job["library_status"].values()
-            )
-            job["progress"] = total_progress / job["total_libraries"] if job["total_libraries"] > 0 else 0.0
-            overall_progress = job["progress"]
-
-            # Count completed libraries
-            completed = sum(
-                1 for lib in job["library_status"].values()
-                if lib.get("status") in ("completed", "error")
-            )
-            job["completed_libraries"] = completed
-
-            # Update job status
-            if completed >= job["total_libraries"]:
-                job["status"] = "completed"
-                job["completed_at"] = datetime.now(timezone.utc).isoformat()
-                job_completed = True
-                job_data_copy = copy.deepcopy(job)
-            elif job["status"] == "queued":
-                job["status"] = "active"
-
-            # Broadcast progress per status active, completed, error
-            _log_flush(f"[TRACKER] Checking broadcast conditions: status={status}, progress={progress}")
-            if status in ("active", "completed", "error") and progress is not None:
-                should_broadcast_progress = True
-                lib_metadata = get_nested(job["library_status"], library_id, "metadata")
-                _log_flush(f"[TRACKER] ✓ Broadcast will be triggered! status={status}, overall_progress={overall_progress:.1%}")
-            else:
-                _log_flush(f"[TRACKER] ✗ Broadcast NOT triggered (status={status}, progress={progress})")
-
-            job["updated_at"] = datetime.now(timezone.utc).isoformat()
-            _log_flush("[TRACKER] Lock will be released now")
-
-        # Broadcast progress fuori dal lock
-        _log_flush(f"[TRACKER] Lock released. should_broadcast_progress={should_broadcast_progress}")
-        if should_broadcast_progress:
-            _log_flush("[TRACKER] Calling _broadcast_scan_progress...")
-            _broadcast_scan_progress(job_id, library_id, overall_progress, message, metadata=lib_metadata)
-        else:
-            _log_flush("[TRACKER] Skipping broadcast (should_broadcast_progress=False)")
-
-        # Broadcast completion fuori dal lock
-        if job_completed and job_data_copy:
-            _broadcast_scan_completion(job_id, job_data_copy)
-
-    def delete_job(self, job_id: str):
-        """Delete a job."""
-        with self._lock:
-            self._jobs.pop(job_id, None)
-
-    def cleanup_old_jobs(self, max_age_hours: int = 24):
-        """Remove jobs older than max_age_hours."""
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
-        with self._lock:
-            to_delete = []
-            for job_id, job in self._jobs.items():
-                if job.get("status") in ("completed", "error"):
-                    completed_at_str = job.get("completed_at")
-                    if completed_at_str:
-                        try:
-                            completed_at = datetime.fromisoformat(completed_at_str)
-                            if completed_at < cutoff:
-                                to_delete.append(job_id)
-                        except (ValueError, TypeError):
-                            pass
-            for job_id in to_delete:
-                self._jobs.pop(job_id, None)
-
-    def clear_jobs(self):
-        """Remove all tracked scan jobs (used when forcing a reset)."""
-        with self._lock:
-            self._jobs.clear()
-
-    def _parse_iso(self, iso_str: Optional[str]) -> Optional[datetime]:
-        if not iso_str:
-            return None
-        try:
-            return datetime.fromisoformat(iso_str)
-        except (TypeError, ValueError):
-            return None
-
-    def is_scan_complete(self, job_id: str) -> tuple[bool, dict]:
-        """Return True if the job is finished (completed/error/timeout)."""
-        job = self.get_job(job_id)
-        if not job:
-            return True, {"status": "missing"}
-        status = job.get("status")
-        summary = {
-            "job_id": job_id,
-            "status": status,
-            "progress": job.get("progress"),
-            "completed_at": job.get("completed_at"),
-            "error": job.get("error")
-        }
-        return status in ("completed", "error", "timeout"), summary
-
-    def prune_old_jobs(self, max_age_hours: int = 24):
-        """Remove jobs completed/error older than the configured retention."""
-        self.cleanup_old_jobs(max_age_hours)
-
-    def _enforce_job_limits(self, server_id: str):
-        """Remove oldest jobs for the server if we exceed limits."""
-        with self._lock:
-            server_jobs = [
-                (job_id, job)
-                for job_id, job in self._jobs.items()
-                if job.get("server_id") == server_id
-            ]
-            if len(server_jobs) <= self._max_jobs_per_server:
-                return
-            server_jobs.sort(key=lambda pair: self._parse_iso(pair[1].get("created_at")) or datetime.min)
-            excess = len(server_jobs) - self._max_jobs_per_server
-            for job_id, _ in server_jobs[:excess]:
-                self._jobs.pop(job_id, None)
-
-    def limit_jobs(self, max_per_server: int, max_age_hours: int = 24):
-        """Adjust job retention and per-server limits."""
-        self._max_jobs_per_server = max_per_server
-        self._job_retention_hours = max_age_hours
-        self.prune_old_jobs(max_age_hours)
-        servers = {job.get("server_id") for job in self._jobs.values() if job.get("server_id")}
-        for server_id in servers:
-            self._enforce_job_limits(server_id)
-
-    def get_queue_position(self, server_id: str, library_id: str) -> int:
-        """Estimate the queue position for a library in the given server."""
-        running_count = 0
-        earlier_waiting = 0
-        target_requested = None
-        with self._lock:
-            for job in self._jobs.values():
-                if job.get("server_id") != server_id:
-                    continue
-                for lid, state in job.get("library_status", {}).items():
-                    if lid == library_id:
-                        if state.get("status") == "running":
-                            return 0
-                        target_requested = state.get("scan_requested_at")
-                    if state.get("status") == "running":
-                        running_count += 1
-                    elif state.get("status") == "waiting":
-                        requested_ts = state.get("scan_requested_at")
-                        if requested_ts and target_requested and requested_ts < target_requested:
-                            earlier_waiting += 1
-                        elif requested_ts and not target_requested:
-                            earlier_waiting += 1
-        return running_count + earlier_waiting
-    def find_jobs_by_library(self, server_id: str, library_id: str) -> list:
-        """
-        Find all active job IDs that include the given server and library.
-
-        Args:
-            server_id: Emby server ID
-            library_id: Library ID to search for
-
-        Returns:
-            List of job_ids matching the criteria
-        """
-        with self._lock:
-            matching_jobs = []
-            for job_id, job in self._jobs.items():
-                # Solo job attivi o in coda
-                if job.get("status") not in ("queued", "active"):
-                    continue
-
-                # Verifica server match
-                if job.get("server_id") != server_id:
-                    continue
-
-                # Verifica library in library_ids
-                library_ids = job.get("library_ids", [])
-                if library_id in library_ids or str(library_id) in [str(lid) for lid in library_ids]:
-                    matching_jobs.append(job_id)
-
-            return matching_jobs
+def get_emby_library_scan_manager():
+    global _EMBY_LIBRARY_SCAN_MANAGER
+    if _EMBY_LIBRARY_SCAN_MANAGER is None:
+        _EMBY_LIBRARY_SCAN_MANAGER = EmbyLibraryScanManager(
+            load_config=load_config,
+            json_error=json_error,
+            json_success=json_success,
+            scan_tracker=_LIBRARY_SCAN_TRACKER,
+            trigger_library_scan=_api_trigger_library_scan,
+            get_app_event_loop=_get_app_event_loop,
+            emby_api_client_cls=EmbyApiClient,
+            log_flush=_log_flush
+        )
+    return _EMBY_LIBRARY_SCAN_MANAGER
 
 
-_LIBRARY_SCAN_TRACKER = LibraryScanTracker()
+_LIBRARY_SCAN_TRACKER = LibraryScanTracker(_get_app_event_loop, _log_flush)
 
 # Jellyseerr refresh state (for displaying warnings in UI)
 _JELLYSEERR_REFRESH_STATE: dict[str, Optional[str]] = {
     "last_warning": None,
     "last_warning_at": None
 }
-
-
-def _broadcast_scan_completion(job_id: str, job_data: dict):
-    """
-    Broadcast evento di completamento/errore scan via WebSocket.
-
-    Args:
-        job_id: ID del job completato
-        job_data: Dati completi del job
-    """
-    import asyncio
-    from scan_websocket_manager import get_scan_connection_manager
-
-    status = job_data.get("status")
-
-    if status == "completed":
-        message = {
-            "type": "completed",
-            "job_id": job_id,
-            "summary": {
-                "total_libraries": job_data.get("total_libraries"),
-                "completed_libraries": job_data.get("completed_libraries"),
-                "started_at": job_data.get("started_at"),
-                "completed_at": job_data.get("completed_at")
-            }
-        }
-    elif status == "error":
-        message = {
-            "type": "error",
-            "job_id": job_id,
-            "error": job_data.get("error", "Unknown error")
-        }
-    else:
-        # Non è un stato finale, non broadcast
-        return
-
-    # Broadcast async e ferma poller per le librerie completate
-    try:
-        from emby_library_poller import get_library_poller
-
-        manager = get_scan_connection_manager()
-        library_poller = get_library_poller()
-        loop = _get_app_event_loop()
-
-        if loop and loop.is_running():
-            # Broadcast completamento usando run_coroutine_threadsafe
-            asyncio.run_coroutine_threadsafe(
-                manager.broadcast_to_job(job_id, message),
-                loop
-            )
-
-            # Ferma tracking poller per tutte le librerie del job
-            server_id = job_data.get("server_id")
-            library_ids = job_data.get("library_ids", [])
-            if server_id:  # Verifica che server_id non sia None
-                for library_id in library_ids:
-                    asyncio.run_coroutine_threadsafe(
-                        library_poller.stop_tracking_library(str(server_id), str(library_id)),
-                        loop
-                    )
-        else:
-            # Fallback sync (non dovrebbe succedere con FastAPI)
-            print(f"[SCAN_BROADCAST] Warning: no event loop available for job {job_id}")
-    except Exception as e:
-        print(f"[SCAN_BROADCAST] Error broadcasting completion for job {job_id}: {e}")
-
-
-def _broadcast_scan_progress(job_id: str, library_id: str, progress: float, message: Optional[str] = None, metadata: Optional[dict] = None):
-    """
-    Broadcast evento di progress scan via WebSocket durante l'esecuzione.
-
-    Args:
-        job_id: ID del job
-        library_id: ID della libreria in progress
-        progress: Progress 0.0-1.0
-        message: Messaggio opzionale
-    """
-    import asyncio
-    from scan_websocket_manager import get_scan_connection_manager
-
-    try:
-        manager = get_scan_connection_manager()
-        loop = _get_app_event_loop()
-
-        if loop and loop.is_running():
-            ws_message = {
-                "type": "progress",
-                "job_id": job_id,
-                "library_id": str(library_id),
-                "progress": progress,
-                "message": message or f"Scanning library {library_id}...",
-                "source": "virtualfolders.RefreshProgress"
-            }
-            if metadata:
-                ws_message["metadata"] = metadata
-
-            # Schedule coroutine in the app event loop
-            _future = asyncio.run_coroutine_threadsafe(
-                manager.broadcast_to_job(job_id, ws_message),
-                loop
-            )
-            _log_flush(f"[SCAN_PROGRESS] ✓ Broadcast scheduled: job={job_id}, lib={library_id}, progress={progress:.1%}, msg='{message}'")
-        else:
-            _log_flush(f"[SCAN_PROGRESS] ✗ Warning: no event loop available for job {job_id}")
-    except Exception as e:
-        _log_flush(f"[SCAN_PROGRESS] Error broadcasting progress for job {job_id}: {e}")
-
-
-
-
 
 def _build_emby_item_details(item, server):
     sources = _extract_emby_media_sources(item)
@@ -1858,10 +1463,9 @@ TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p"
 TMDB_SEARCH_LIMIT = 15
 
 # --- UTILS CONFIG ---
-# Nota: _default_search_rules, _default_auto_tasks, _default_emby_settings sono ora importate da config.py
-# Nota: tutte le funzioni Emby sono ora importate da api_clients.py
-
-# Nota: _form_input_value, _safe_get_dict_value, _normalize_form_input, _apply_form_mapping sono ora importate da utils.py
+# Nota: _default_search_rules, _default_auto_tasks, _default_emby_settings sono ora importate da core/config.py
+# Nota: tutte le funzioni Emby sono ora importate da emby_runtime/api_clients.py
+# Nota: _form_input_value, _safe_get_dict_value, _normalize_form_input, _apply_form_mapping sono ora importate da core/utils.py
 
 def _merge_config_section(raw_config, new_data, section_key, merger_func):
     """Generic config section merge."""
@@ -2174,9 +1778,9 @@ def _seed_db_from_legacy_config(legacy_config: Dict[str, Any], backend: Database
         if not existing_rules:
             backend.save_request_rules(legacy_request_rules)
 
-# Nota: read_raw_config è ora importata da config.py
-# Nota: _split_csv_field, _coerce_request_bool, _coerce_request_int, _normalize_alt_language sono ora importate da config.py
-# Nota: _sanitize_terms_list è ora importata da utils.py
+# Nota: read_raw_config è ora importata da core/config.py
+# Nota: _split_csv_field, _coerce_request_bool, _coerce_request_int, _normalize_alt_language sono ora importate da core/config.py
+# Nota: _sanitize_terms_list è ora importata da core/utils.py
 
 def _compose_request_search_rules(base_rules, request_rule):
     merged = copy.deepcopy(base_rules or _default_search_rules())
@@ -3130,10 +2734,10 @@ def _merge_scan_summaries(previous, current):
     merged["previous_generated_at"] = previous.get("generated_at") if previous else None
     return merged
 
-# Nota: _normalize_season_spec, _normalize_scan_targets, _serialize_target_map sono ora importate da utils.py
+# Nota: _normalize_season_spec, _normalize_scan_targets, _serialize_target_map sono ora importate da core/utils.py
 
 
-# Nota: ScanManager e AutoScheduler sono ora importate da tasks.py
+# Nota: ScanManager e AutoScheduler sono ora importate da core/tasks.py
 
 # Crea l'istanza globale di ScanManager
 scan_manager = ScanManager()
@@ -3206,310 +2810,32 @@ EMBY_LATEST_KEY = "EMBY_LATEST"
 
 
 def _build_active_library_scans_snapshot():
-    """Return active library job data from the tracker."""
-    now_iso = datetime.now(timezone.utc).isoformat()
-    scans = []
-    sessions = []
-
-    for job in _LIBRARY_SCAN_TRACKER.get_all_jobs():
-        job_status = job.get('status', 'queued')
-        if job_status in ('completed', 'error'):
-            continue
-        server_id = job.get('server_id')
-        library_ids = job.get('library_ids') or []
-        library_states = job.get('library_status') or {}
-        for lib_id in library_ids:
-            lib_key = str(lib_id)
-            lib_state = library_states.get(lib_key, {})
-            state_status = lib_state.get('status') or job_status
-            progress = lib_state.get('progress')
-            if progress is None:
-                progress = job.get('progress', 0.0)
-            scans.append({
-                'job_id': job.get('id'),
-                'server_id': str(server_id) if server_id else None,
-                'library_id': lib_key,
-                'scan_type': job.get('scan_type'),
-                'status': state_status,
-                'progress': min(max(progress, 0.0), 1.0),
-                'message': lib_state.get('message') or '',
-                'updated_at': lib_state.get('updated_at') or job.get('updated_at') or now_iso,
-                'queue_position': lib_state.get('queue_position'),
-                'metadata': lib_state.get('metadata') or {}
-            })
-        if job.get('group_name'):
-            sessions.append({
-                'job_id': job.get('id'),
-                'group_name': job.get('group_name'),
-                'scan_type': job.get('scan_type'),
-                'status': job_status,
-                'server_id': str(server_id) if server_id else None,
-                'library_ids': library_ids,
-                'updated_at': job.get('updated_at') or now_iso,
-                'progress': min(max(job.get('progress', 0.0), 0.0), 1.0)
-            })
-    return {
-        'success': True,
-        'scans': scans,
-        'sessions': sessions,
-        'now': now_iso
-    }
+    manager = get_emby_library_scan_manager()
+    return manager.build_active_library_scans_snapshot()
 
 def _build_scan_library_snapshot(payload):
-    payload = payload or {}
-    if not isinstance(payload, dict):
-        return json_error("Formato non valido")
-    server_id = payload.get("server_id")
-    library_id = payload.get("library_id")
-    if not server_id or not library_id:
-        return json_error("server_id o library_id mancante")
-    config, is_valid = load_config()
-    if not is_valid or not config:
-        return json_error("Config non valida")
-    servers = get_emby_servers(config)
-    target_server = find_server_by_id(servers, server_id)
-    if target_server is None:
-        return json_error("Server non trovato", 404)
-    if not target_server.get("enabled"):
-        return json_error("Server disabilitato")
-    success, response = _trigger_library_scan(target_server, str(library_id))
-    if success:
-        return json_success("Scansione avviata.")
-    return json_error(f"Errore scansione: {response}", 500)
+    manager = get_emby_library_scan_manager()
+    return manager.build_scan_library_snapshot(payload)
 
 
 def _build_scan_library_tracked_snapshot(payload):
-    payload = payload or {}
-    if not isinstance(payload, dict):
-        return json_error("Formato non valido")
-
-    server_id = payload.get("server_id")
-    library_ids = payload.get("library_ids")
-    group_name = payload.get("group_name")
-    scan_type = normalize_string(payload.get("scan_type") or "content")
-
-    print(f"[SCAN_TRACKED] Received: server_id={server_id}, library_ids={library_ids}, scan_type={scan_type}")
-
-    if not server_id:
-        return json_error("server_id mancante")
-
-    server_key = str(server_id)
-
-    if isinstance(library_ids, (str, int)):
-        library_ids = [library_ids]
-    elif not isinstance(library_ids, list):
-        return json_error("library_ids deve essere stringa o lista")
-
-    if not library_ids:
-        return json_error("Nessuna libreria specificata")
-
-    config, is_valid = load_config()
-    if not is_valid or not config:
-        return json_error("Config non valida")
-
-    servers = get_emby_servers(config)
-    target_server = None
-    for server in servers:
-        if str(server.get("id")) == server_key:
-            target_server = server
-            break
-
-    if target_server is None:
-        return json_error("Server non trovato", 404)
-    if not target_server.get("enabled"):
-        return json_error("Server disabilitato")
-
-    job_id = _LIBRARY_SCAN_TRACKER.create_job(server_key, library_ids, group_name, scan_type)
-
-    # Avvia poller per tracking RefreshProgress in /Library/VirtualFolders
-    from emby_library_poller import get_library_poller
-    import asyncio
-
-    library_poller = get_library_poller()
-    emby_client = EmbyApiClient(target_server)
-    loop = _get_app_event_loop()
-    errors = []
-
-    for library_id in [str(lib_id) for lib_id in library_ids]:
-        print(f"[SCAN_TRACKED] Triggering {scan_type} scan for library {library_id}")
-        success, response = _trigger_library_scan(target_server, library_id, scan_type)
-        print(f"[SCAN_TRACKED] Trigger result: success={success}, response={response}")
-        if success:
-            print(f"[SCAN_TRACKED] Scan triggered for library {library_id}, starting poller tracking")
-            try:
-                if loop and loop.is_running():
-                    asyncio.run_coroutine_threadsafe(
-                        library_poller.start_tracking_library(
-                            server_key,
-                            library_id,
-                            job_id,
-                            emby_client,
-                            scan_type=scan_type,
-                            library_name=None
-                        ),
-                        loop
-                    )
-                else:
-                    _log_flush("[SCAN_TRACKED] ✗ No event loop running, polling not started")
-            except Exception as exc:
-                _log_flush(f"[SCAN_TRACKED] ✗ Error starting poller: {exc}")
-        else:
-            errors.append(f"{library_id}: {response}")
-            _LIBRARY_SCAN_TRACKER.update_library_status(
-                job_id, library_id, "error", 0.0, f"Errore avvio: {response}"
-            )
-
-    message = "Scansione file avviata" if scan_type == "content" else "Aggiornamento metadati avviato"
-    if errors:
-        message = f"{message} (errori: {'; '.join(errors)})"
-    print(f"[SCAN_TRACKED] Created job {job_id}, starting background polling thread")
-    return {"success": True, "job_id": job_id, "message": message}, 200
+    manager = get_emby_library_scan_manager()
+    return manager.build_scan_library_tracked_snapshot(payload)
 
 
 def _build_scan_group_tracked_snapshot(payload):
-    payload = payload or {}
-    if not isinstance(payload, dict):
-        return json_error("Formato non valido")
-    group_name = (payload.get("group_name") or "").strip()
-    scan_type = normalize_string(payload.get("scan_type") or "content")
-    libraries = payload.get("libraries") or []
-    if not group_name:
-        return json_error("group_name mancante")
-    if not isinstance(libraries, list) or not libraries:
-        return json_error("libraries mancante")
-
-    server_map: Dict[str, list] = {}
-    for entry in libraries:
-        if not isinstance(entry, dict):
-            continue
-        server_id = entry.get("server_id")
-        library_id = entry.get("library_id")
-        if not server_id or not library_id:
-            continue
-        server_key = str(server_id)
-        server_map.setdefault(server_key, [])
-        lib_value = str(library_id)
-        if lib_value not in server_map[server_key]:
-            server_map[server_key].append(lib_value)
-
-    if not server_map:
-        return json_error("libraries non valide")
-
-    config, is_valid = load_config()
-    if not is_valid or not config:
-        return json_error("Config non valida")
-
-    servers = get_emby_servers(config)
-    library_poller = None
-    job_ids = []
-    failed_servers = []
-    loop = _get_app_event_loop()
-    import asyncio
-
-    for server_key, library_ids in server_map.items():
-        target_server = next((entry for entry in servers if str(entry.get("id")) == server_key), None)
-        if not target_server or not target_server.get("enabled"):
-            failed_servers.append(server_key)
-            _log_flush(f"[SCAN_GROUP] ✗ Server {server_key} non trovato o disabilitato")
-            continue
-
-        if library_poller is None:
-            from emby_library_poller import get_library_poller
-            library_poller = get_library_poller()
-
-        job_id = _LIBRARY_SCAN_TRACKER.create_job(server_key, library_ids, group_name, scan_type)
-        job_ids.append(job_id)
-        emby_client = EmbyApiClient(target_server)
-        for library_id in library_ids:
-            print(f"[SCAN_GROUP] Triggering {scan_type} scan for library {library_id} on server {server_key}")
-            success, response = _trigger_library_scan(target_server, str(library_id), scan_type)
-            print(f"[SCAN_GROUP] Trigger result: success={success}, response={response}")
-            if success:
-                _log_flush(f"[SCAN_GROUP] ✓ Scan triggered for library {library_id} (job {job_id})")
-                try:
-                    if loop and loop.is_running():
-                        asyncio.run_coroutine_threadsafe(
-                            library_poller.start_tracking_library(
-                                server_key,
-                                str(library_id),
-                                job_id,
-                                emby_client,
-                                scan_type=scan_type,
-                                library_name=None
-                            ),
-                            loop
-                        )
-                    else:
-                        _log_flush("[SCAN_GROUP] ✗ Nessun event loop disponibile, poller non avviato")
-                except Exception as exc:
-                    _log_flush(f"[SCAN_GROUP] ✗ Errore avvio poller per {library_id}: {exc}")
-            else:
-                _log_flush(f"[SCAN_GROUP] ✗ Errore avvio scan {library_id}: {response}")
-                _LIBRARY_SCAN_TRACKER.update_library_status(
-                    job_id, library_id, "error", 0.0, f"Errore avvio: {response}"
-                )
-
-    if not job_ids:
-        return json_error("Nessun server valido per lo scan")
-
-    message = f"Scan di gruppo '{group_name}' avviato"
-    if failed_servers:
-        message = f"{message} (server scartati: {', '.join(sorted(set(failed_servers)))})"
-
-    return {
-        "success": True,
-        "group_name": group_name,
-        "scan_type": scan_type,
-        "job_ids": job_ids,
-        "failed_servers": sorted(set(failed_servers)),
-        "message": message
-    }, 200
+    manager = get_emby_library_scan_manager()
+    return manager.build_scan_group_tracked_snapshot(payload)
 
 
 def _build_associations_get_snapshot():
-    try:
-        backend = _ensure_db_backend()
-        associations = backend.load_library_associations()
-    except StorageError as exc:
-        return json_error(f"Errore DB: {exc}", 500)
-    payload = [
-        {
-            "server_id": server_id,
-            "library_id": library_id,
-            "group_name": group_name
-        }
-        for (server_id, library_id), group_name in associations.items()
-    ]
-    return {"success": True, "associations": payload}, 200
+    manager = get_emby_libraries_manager()
+    return manager.build_associations_get_snapshot()
 
 
 def _build_associations_post_snapshot(payload):
-    if not isinstance(payload, list):
-        return json_error("Formato non valido")
-    associations = {}
-    for entry in payload:
-        if not isinstance(entry, dict):
-            continue
-        server_id = entry.get("server_id")
-        library_id = entry.get("library_id")
-        group_name = entry.get("group_name")
-        if not (server_id and library_id and group_name):
-            continue
-        associations[(str(server_id), str(library_id))] = str(group_name)
-    try:
-        backend = _ensure_db_backend()
-        backend.save_library_associations(associations)
-    except StorageError as exc:
-        return json_error(f"Errore DB: {exc}", 500)
-    payload = [
-        {
-            "server_id": server_id,
-            "library_id": library_id,
-            "group_name": group_name
-        }
-        for (server_id, library_id), group_name in associations.items()
-    ]
-    return {"success": True, "associations": payload}, 200
+    manager = get_emby_libraries_manager()
+    return manager.build_associations_post_snapshot(payload)
 
 
 def _build_media_details_snapshot(tmdb_id, media_type):
@@ -5332,44 +4658,8 @@ def _build_debug_vf_query_snapshot():
 
 
 def _build_grouped_libraries_snapshot():
-    config, is_valid = load_config()
-    if not is_valid or not config:
-        return json_error("Config non valida")
-    servers = get_emby_servers(config)
-    all_libraries = {}
-    for server in servers:
-        if not server.get("enabled"):
-            continue
-        server_id = server.get("id")
-        server_icon = server.get("icon") or "fa-server"
-        server_icon_style = server.get("icon_style") or "solid"
-        server_icon_color = server.get("icon_color") or "#3b82f6"
-        libraries, error = _fetch_emby_libraries(server)
-        all_libraries[server_id] = {
-            "ok": error is None,
-            "libraries": libraries,
-            "error": error,
-            "name": server.get("name"),
-            "alias": server.get("alias"),
-            "original_name": server.get("original_name"),
-            "icon": server_icon,
-            "icon_style": server_icon_style,
-            "icon_color": server_icon_color
-        }
-    try:
-        backend = _ensure_db_backend()
-        associations = backend.load_library_associations()
-        order_map = backend.load_library_group_order()
-    except StorageError as exc:
-        return json_error(f"Errore DB: {exc}", 500)
-    grouped = group_libraries(all_libraries, associations)
-    def _group_key(entry):
-        ctype = entry.get("collection_type") or ""
-        gname = entry.get("group_name") or ""
-        pos = order_map.get((ctype, gname))
-        return (pos is None, pos or 0, gname)
-    grouped.sort(key=_group_key)
-    return {"success": True, "groups": grouped}, 200
+    manager = get_emby_libraries_manager()
+    return manager.build_grouped_libraries_snapshot()
 
 
 def _build_movie_versions_snapshot(server_id: str, tmdb_id: str):
@@ -6444,7 +5734,7 @@ def _probe_debug_recent_items_snapshot(server_id: Optional[str], limit: int):
         if not server:
             return json_error(f"Server non trovato. ID ricevuto: {server_id}", 404)
 
-        from api_clients import _call_emby_api
+        from emby_runtime.api_clients import _call_emby_api
 
         success, payload = _call_emby_api(
             server,
@@ -7546,7 +6836,7 @@ def _initialize_emby_websockets():
     
     # Configure Library Poller persistence
     if _DB_BACKEND:
-        from emby_library_poller import get_library_poller
+        from emby_runtime.library_poller import get_library_poller
         get_library_poller().configure(_DB_BACKEND)
 
     servers = _get_emby_servers_from_config()
@@ -7615,69 +6905,6 @@ def _resolve_next_url(next_url: str | None, fallback_endpoint: str) -> str:
 def _has_users() -> bool:
     """Return True if at least one user exists."""
     return bool(get_all_users())
-
-
-def _trigger_library_scan(server: dict, library_id: str, scan_type: str = "content"):
-    """
-    Trigger a library scan on Emby server.
-    scan_type: "content" for file scan, "metadata" for metadata refresh
-    Returns: (success, message)
-    """
-    server_name = server.get("name", "unknown")
-
-    if scan_type == "metadata":
-        # Metadata refresh: POST to Items/{ItemId}/Refresh
-        endpoint = f"Items/{library_id}/Refresh"
-        params = {"Recursive": "true", "MetadataRefreshMode": "FullRefresh", "ImageRefreshMode": "Default", "ReplaceAllMetadata": "false"}
-    else:
-        # Content scan: POST to Items/{ItemId}/Refresh with forced scan
-        endpoint = f"Items/{library_id}/Refresh"
-        params = {"Recursive": "true", "MetadataRefreshMode": "Default", "ImageRefreshMode": "Default", "ReplaceAllMetadata": "false"}
-
-    print(f"[_trigger_library_scan] POST {server_name}/{endpoint} con params={params}")
-    success, response = _call_emby_api(server, endpoint, method="POST", params=params)
-
-    if not success:
-        print(f"[_trigger_library_scan] ✗ Chiamata API fallita: {response}")
-        return False, response
-
-    print(f"[_trigger_library_scan] ✓ Chiamata API riuscita, response type: {type(response)}, content: {str(response)[:200]}")
-    return True, "Scan triggered"
-
-
-def _schedule_library_tracking(server: dict, job_id: str, library_id: str, scan_type: str = "content",
-                               library_name: Optional[str] = None) -> None:
-    """Schedule the async poller to start tracking a library scan on the App event loop."""
-    loop = _get_app_event_loop()
-    if loop is None:
-        logger.warning(f"[LibWorkflow] Nessun event loop registrato: impossibile avviare tracking per {library_id}")
-        return
-    from emby_library_poller import get_library_poller
-
-    poller = get_library_poller()
-    if not poller:
-        logger.warning(f"[LibWorkflow] Poller non disponibile per libreria {library_id}")
-        return
-
-    server_id = str(server.get("id"))
-    emby_client = EmbyApiClient(server)
-    coro = poller.start_tracking_library(
-        server_id,
-        str(library_id),
-        job_id,
-        emby_client,
-        scan_type=scan_type,
-        library_name=library_name
-    )
-
-    future = asyncio.run_coroutine_threadsafe(coro, loop)
-
-    def _tracking_done(task):
-        exc = task.exception()
-        if exc:
-            logger.error(f"[LibWorkflow] Tracking fallito per {library_id} (job: {job_id}): {exc}")
-
-    future.add_done_callback(_tracking_done)
 
 
 def _get_total_blacklist_counts() -> tuple[int, int]:
@@ -8022,8 +7249,8 @@ def _ping_database(config):
     except StorageError as exc:
         return False, str(exc), True
 
-# Nota: fetch_request_details, fetch_media_info, _extract_tmdb_id, _fetch_tmdb_payload sono ora importate da api_clients.py
-# Nota: extract_title_and_year, gather_title_candidates, build_search_queries, filter_results sono ora importate da scanner.py
+# Nota: fetch_request_details, fetch_media_info, _extract_tmdb_id, _fetch_tmdb_payload sono ora importate da emby_runtime/api_clients.py
+# Nota: extract_title_and_year, gather_title_candidates, build_search_queries, filter_results sono ora importate da core/scanner.py
 
 def _collect_metadata_sources(source):
     """Still used by other functions in checker.py that haven't been moved yet."""
@@ -8459,7 +7686,7 @@ def select_scan_seasons(season_statuses, skip_available, skip_unreleased):
         selected.append(entry.get("season"))
     return [season for season in selected if season is not None]
 
-# Nota: _parse_date_value è ora importata da utils.py
+# Nota: _parse_date_value è ora importata da core/utils.py
 
 def _find_release_date(*sources):
     date_keys = [
@@ -8564,8 +7791,8 @@ def extract_request_seasons(request_item, skip_available=False):
         seen.add(parsed)
     return season_numbers
 
-# Nota: _extract_tmdb_id è ora importata da api_clients.py
-# Nota: _normalize_media_type è ora importata da utils.py
+# Nota: _extract_tmdb_id è ora importata da emby_runtime/api_clients.py
+# Nota: _normalize_media_type è ora importata da core/utils.py
 
 def _try_parse_int(value):
     """Local copy for use in checker.py functions that haven't been moved yet."""
@@ -8575,10 +7802,10 @@ def _try_parse_int(value):
         return int(value)
     return None
 
-# Nota: _fetch_tmdb_payload è ora importata da api_clients.py
-# Nota: _detect_original_language, gather_title_candidates, build_search_queries, sanitize_title sono ora importate da scanner.py
+# Nota: _fetch_tmdb_payload è ora importata da emby_runtime/api_clients.py
+# Nota: _detect_original_language, gather_title_candidates, build_search_queries, sanitize_title sono ora importate da core/scanner.py
 
-# Nota: search_prowlarr e search_jackett sono ora importate da api_clients.py
+# Nota: search_prowlarr e search_jackett sono ora importate da emby_runtime/api_clients.py
 
 def search_indexers(query, media_type, config):
     """
@@ -8868,7 +8095,7 @@ async def search_streaming_parallel(query_variants, search_types, selected_index
 
             # Usa filter_results ESATTAMENTE come fa "Ricerche & Riepilogo"
             if results:
-                from scanner import filter_results
+                from core.scanner import filter_results
 
                 # Applica filter_results immediatamente (come in Ricerche & Riepilogo)
                 # Usa effective_config e request_rule dallo scope esterno se disponibili
@@ -9052,8 +8279,8 @@ async def search_streaming_parallel(query_variants, search_types, selected_index
     }
 
 
-# Nota: _detect_resolution_bucket, _extract_episode_from_title, _contains_isolated_tag sono ora importate da scanner.py
-# Nota: filter_results, sanitize_title, _contains_language_token, _has_audio_language sono ora importate da scanner.py
+# Nota: _detect_resolution_bucket, _extract_episode_from_title, _contains_isolated_tag sono ora importate da core/scanner.py
+# Nota: filter_results, sanitize_title, _contains_language_token, _has_audio_language sono ora importate da core/scanner.py
 
 def execute_search_with_variants(
     query_variants,
@@ -9638,7 +8865,7 @@ def _wf_trigger_sync():
     """Wrapper per avviare la sincronizzazione utenti."""
     manager = get_emby_user_manager()
     if manager:
-        manager.run_auto_sync()
+        manager.auto_sync_manager.run_auto_sync()
         return True
     return False
 

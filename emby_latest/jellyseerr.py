@@ -4,8 +4,8 @@ Jellyseerr integration for Latest Publications.
 
 from typing import Any, Dict, List, Set
 
-from api_clients import _extract_tmdb_id
-from utils import _normalize_media_type
+from emby_runtime.api_clients import _extract_tmdb_id
+from core.utils import _normalize_media_type
 
 
 def _normalize_status_label(value: Any) -> str:

@@ -22,7 +22,7 @@ def build_movie_signature(item: Dict[str, Any]) -> str:
         Signature string
     """
     from emby_latest.builders import _extract_provider_id
-    from utils import normalize_string
+    from core.utils import normalize_string
 
     if not isinstance(item, dict):
         return ""
@@ -60,7 +60,7 @@ def build_movie_title_signature(item: Dict[str, Any]) -> str:
     Returns:
         Title-based signature string
     """
-    from utils import normalize_string
+    from core.utils import normalize_string
 
     if not isinstance(item, dict):
         return ""
@@ -131,7 +131,7 @@ def extract_versions(
         _format_video_details,
         _format_audio_details,
     )
-    from utils import normalize_path, normalize_string
+    from core.utils import normalize_path, normalize_string
 
     versions = []
     seen_keys = set()
@@ -404,7 +404,7 @@ def build_version_changes(
     Returns:
         List of change dicts with version details
     """
-    from utils import _parse_date_value
+    from core.utils import _parse_date_value
 
     changes = []
     if not isinstance(versions, list):
@@ -460,7 +460,7 @@ def collect_version_times(versions: List[Dict[str, Any]]) -> List[Tuple[Dict, da
     Returns:
         List of (version, datetime) tuples
     """
-    from utils import _parse_date_value
+    from core.utils import _parse_date_value
 
     times = []
     if not versions:
@@ -586,7 +586,7 @@ def compute_batch(items: List[Dict[str, Any]], gap_minutes: int) -> List[Dict[st
     Returns:
         Most recent batch (list of items within gap of newest item)
     """
-    from utils import _parse_date_value
+    from core.utils import _parse_date_value
 
     if not items:
         return []
@@ -637,7 +637,7 @@ def ensure_batch(
     Returns:
         List of items (at least min_count if available)
     """
-    from utils import _parse_date_value
+    from core.utils import _parse_date_value
 
     batch = compute_batch(items, gap_minutes)
 
@@ -675,7 +675,7 @@ def build_batch_id(server_id: str, item_type: str, items: Sequence[Mapping[str, 
     Returns:
         Batch ID string
     """
-    from utils import _parse_date_value
+    from core.utils import _parse_date_value
 
     if not server_id or not items:
         return ""
@@ -716,7 +716,7 @@ def group_items_by_date(
     Returns:
         List of item groups (each group is list of (item, datetime) tuples)
     """
-    from utils import _parse_date_value
+    from core.utils import _parse_date_value
 
     if not items:
         return []

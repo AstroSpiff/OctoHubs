@@ -9,7 +9,7 @@ import html
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
-from utils import _parse_date_value
+from core.utils import _parse_date_value
 from emby_latest.templates import (
     render_template,
     strip_image_tokens,

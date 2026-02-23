@@ -2,7 +2,7 @@
 
 import logging
 
-from api_clients import _call_emby_api
+from emby_runtime.api_clients import _call_emby_api
 
 __all__ = [
     "_fetch_emby_users_list",

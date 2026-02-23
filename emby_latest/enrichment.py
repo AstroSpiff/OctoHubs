@@ -19,7 +19,7 @@ def omdb_recently_fetched(entry: Dict[str, Any], cache_hours: int) -> bool:
     Returns:
         True if data was fetched within cache_hours
     """
-    from utils import _parse_date_value
+    from core.utils import _parse_date_value
 
     if cache_hours <= 0:
         return False

@@ -3,6 +3,9 @@
 let currentUsersData = null;
 let currentIconData = null;
 let passwordManagerState = null;
+let settingsManagerState = null;
+let settingsSchemaCache = null;
+let settingsSchemaPromise = null;
 
 function applyPasswordIndicator(button, status) {
     if (!button) return;
@@ -25,6 +28,31 @@ function resolvePasswordStatus(obj) {
     if (obj.password_status) return obj.password_status;
     if (obj.password_mismatch) return 'mismatch';
     return obj.password_saved ? 'saved' : 'missing';
+}
+
+function resolveSettingsStatus(obj) {
+    if (!obj) return 'missing';
+    if (obj.settings_status) return obj.settings_status;
+    if (obj.settings_mismatch) return 'mismatch';
+    return obj.settings_saved ? 'saved' : 'missing';
+}
+
+async function ensureSettingsSchema() {
+    if (settingsSchemaCache) return settingsSchemaCache;
+    if (settingsSchemaPromise) return settingsSchemaPromise;
+    settingsSchemaPromise = fetch('/api/emby/users/settings-schema')
+        .then(res => {
+            if (!res.ok) throw new Error('Schema load failed');
+            return res.json();
+        })
+        .then(data => {
+            settingsSchemaCache = data || {};
+            return settingsSchemaCache;
+        })
+        .finally(() => {
+            settingsSchemaPromise = null;
+        });
+    return settingsSchemaPromise;
 }
 
 // showToast is already defined globally in emby.js
@@ -590,6 +618,28 @@ function renderEmbyUsers(data) {
             };
         }
 
+        const groupSettingsBtn = groupEl.querySelector('.group-settings-btn');
+        if (groupSettingsBtn) {
+            const settingsStatus = resolveSettingsStatus(group);
+            if (settingsStatus === 'mismatch') {
+                groupSettingsBtn.style.color = 'var(--color-warning)';
+                const count = group.settings_mismatch_count || 0;
+                groupSettingsBtn.title = count > 0
+                    ? `Impostazioni salvate ma ${count} utenti non allineati (clicca per gestire)`
+                    : 'Impostazioni salvate ma utenti non allineati (clicca per gestire)';
+            } else if (settingsStatus === 'saved') {
+                groupSettingsBtn.style.color = 'var(--color-success)';
+                groupSettingsBtn.title = 'Impostazioni salvate nel tool (clicca per gestire)';
+            } else {
+                groupSettingsBtn.style.color = 'var(--color-danger)';
+                groupSettingsBtn.title = 'Impostazioni NON salvate nel tool (clicca per gestire)';
+            }
+            groupSettingsBtn.onclick = (e) => {
+                e.stopPropagation();
+                openSettingsManagerForGroup(group);
+            };
+        }
+
         // New: Auto Sync Controls (Moved to Right Side)
         if (!group.is_owners && group.is_linked && rightContainer) {
              const syncControls = document.createElement('div');
@@ -1030,6 +1080,25 @@ function createUserCard(user, options = {}) {
         pwBtn.onclick = (e) => {
             e.stopPropagation();
             openPasswordManagerForUser(user, options.groupId, options.groupName);
+        };
+    }
+
+    const settingsBtn = tpl.querySelector('.settings-btn');
+    if (settingsBtn) {
+        const settingsStatus = resolveSettingsStatus(user);
+        if (settingsStatus === 'mismatch') {
+            settingsBtn.style.color = 'var(--color-warning)';
+            settingsBtn.title = 'Impostazioni non allineate al gruppo (clicca per gestire)';
+        } else if (settingsStatus === 'saved') {
+            settingsBtn.style.color = 'var(--color-success)';
+            settingsBtn.title = 'Impostazioni salvate nel tool (clicca per gestire)';
+        } else {
+            settingsBtn.style.color = 'var(--color-danger)';
+            settingsBtn.title = 'Impostazioni NON salvate nel tool (clicca per gestire)';
+        }
+        settingsBtn.onclick = (e) => {
+            e.stopPropagation();
+            openSettingsManagerForUser(user, options.groupId, options.groupName);
         };
     }
 
@@ -2270,6 +2339,861 @@ async function openPasswordManager(payload) {
     }
 
     modal.style.display = 'flex';
+}
+
+function openSettingsManagerForGroup(group) {
+    if (!group || !group.id) return;
+    return openSettingsManager({
+        scope: 'group',
+        groupId: group.id,
+        groupName: group.name,
+        mismatchCount: group.settings_mismatch_count || 0
+    });
+}
+
+function openSettingsManagerForUser(user, groupId, groupName) {
+    if (!user) return;
+    return openSettingsManager({
+        scope: 'user',
+        groupId: groupId || null,
+        groupName: groupName || user.group_name || null,
+        serverId: user.server_id,
+        userId: user.user_id,
+        userName: user.name,
+        mismatchCount: user.settings_mismatch ? 1 : 0,
+        isUserMismatch: user.settings_mismatch === true
+    });
+}
+
+function buildLibrarySyncHint() {
+    const hint = document.createElement('div');
+    hint.className = 'settings-library-hint';
+    hint.textContent = 'Le librerie con tag Gruppo si sincronizzano tra server. Le altre restano locali.';
+    return hint;
+}
+
+function buildSettingsFieldRow(field, value, meta = {}) {
+    const row = document.createElement('div');
+    row.className = 'settings-row';
+    const label = document.createElement('label');
+    label.textContent = field.label || field.key;
+    label.className = 'settings-label';
+    row.appendChild(label);
+
+    let input = null;
+    if (field.type === 'bool') {
+        const toggle = document.createElement('label');
+        toggle.className = 'feature-toggle';
+        input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = Boolean(value);
+        const slider = document.createElement('span');
+        slider.className = 'toggle-slider';
+        toggle.appendChild(input);
+        toggle.appendChild(slider);
+        row.appendChild(toggle);
+    } else if (field.type === 'library_multi') {
+        row.classList.add('settings-row-multiline');
+        const list = document.createElement('div');
+        list.className = 'settings-library-list';
+        const selected = Array.isArray(value) ? value.map(v => String(v)) : [];
+        const selectedSet = new Set(selected);
+        const matched = new Set();
+        const libraryItems = meta.libraryItems || [];
+        libraryItems.forEach(item => {
+            const rowEl = document.createElement('div');
+            rowEl.className = 'settings-library-item';
+            const labelEl = document.createElement('label');
+            labelEl.className = 'settings-library-label';
+            const name = item.name || 'Libreria';
+            const type = item.collection_type || 'folder';
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'settings-library-name';
+            nameSpan.textContent = `${name} (${type})`;
+            labelEl.appendChild(nameSpan);
+            if (item.group_key) {
+                const badge = document.createElement('span');
+                badge.className = 'library-group-tag';
+                badge.textContent = 'Gruppo';
+                badge.title = 'Questa libreria appartiene a un gruppo sincronizzabile.';
+                labelEl.appendChild(badge);
+            }
+            const inputWrapper = document.createElement('label');
+            inputWrapper.className = 'feature-toggle';
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.dataset.settingsScope = field.scope;
+            checkbox.dataset.settingsKey = field.key;
+            checkbox.dataset.settingsType = field.type;
+            const baseId = String(item.id);
+            let chosenId = baseId;
+            if (Array.isArray(item.alt_ids)) {
+                for (const altId of item.alt_ids) {
+                    const altStr = String(altId);
+                    if (selectedSet.has(altStr)) {
+                        chosenId = altStr;
+                        matched.add(altStr);
+                        break;
+                    }
+                }
+            }
+            if (selectedSet.has(baseId)) {
+                chosenId = baseId;
+                matched.add(baseId);
+            }
+            checkbox.value = chosenId;
+            checkbox.checked = selectedSet.has(chosenId);
+            const slider = document.createElement('span');
+            slider.className = 'toggle-slider';
+            inputWrapper.appendChild(checkbox);
+            inputWrapper.appendChild(slider);
+            rowEl.appendChild(labelEl);
+            rowEl.appendChild(inputWrapper);
+            list.appendChild(rowEl);
+        });
+
+        const unknown = selected.filter(id => !matched.has(id));
+        if (unknown.length) {
+            unknown.forEach(id => {
+                const rowEl = document.createElement('div');
+                rowEl.className = 'settings-library-item';
+                const labelEl = document.createElement('label');
+                labelEl.className = 'settings-library-label';
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'settings-library-name';
+                nameSpan.textContent = `ID: ${id}`;
+                labelEl.appendChild(nameSpan);
+                const inputWrapper = document.createElement('label');
+                inputWrapper.className = 'feature-toggle';
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.dataset.settingsScope = field.scope;
+                checkbox.dataset.settingsKey = field.key;
+                checkbox.dataset.settingsType = field.type;
+                checkbox.value = id;
+                checkbox.checked = true;
+                const slider = document.createElement('span');
+                slider.className = 'toggle-slider';
+                inputWrapper.appendChild(checkbox);
+                inputWrapper.appendChild(slider);
+                rowEl.appendChild(labelEl);
+                rowEl.appendChild(inputWrapper);
+                list.appendChild(rowEl);
+            });
+        }
+
+        row.appendChild(list);
+        row.appendChild(buildLibrarySyncHint());
+        return row;
+    } else if (field.type === 'library_order') {
+        row.classList.add('settings-row-multiline');
+        const wrapper = document.createElement('div');
+        wrapper.className = 'settings-library-order';
+        const list = document.createElement('div');
+        list.className = 'settings-library-order-list';
+        const hidden = document.createElement('input');
+        hidden.type = 'hidden';
+        hidden.dataset.settingsScope = field.scope;
+        hidden.dataset.settingsKey = field.key;
+        hidden.dataset.settingsType = field.type;
+
+        const libraryItems = meta.libraryItems || [];
+        const libraryMap = new Map();
+        libraryItems.forEach(item => {
+            const ids = new Set([String(item.id)]);
+            if (Array.isArray(item.alt_ids)) {
+                item.alt_ids.forEach(alt => ids.add(String(alt)));
+            }
+            ids.forEach(id => libraryMap.set(id, item));
+        });
+
+        const buildRow = (id) => {
+            const item = libraryMap.get(id);
+            const rowEl = document.createElement('div');
+            rowEl.className = 'settings-library-order-row';
+            rowEl.dataset.libraryId = id;
+            const labelEl = document.createElement('div');
+            labelEl.className = 'settings-library-order-label';
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'settings-library-name';
+            if (item) {
+                const name = item.name || 'Libreria';
+                const type = item.collection_type || 'folder';
+                nameSpan.textContent = `${name} (${type})`;
+            } else {
+                nameSpan.textContent = `ID: ${id}`;
+            }
+            labelEl.appendChild(nameSpan);
+            if (item && item.group_key) {
+                const badge = document.createElement('span');
+                badge.className = 'library-group-tag';
+                badge.textContent = 'Gruppo';
+                badge.title = 'Questa libreria appartiene a un gruppo sincronizzabile.';
+                labelEl.appendChild(badge);
+            }
+
+            const actions = document.createElement('div');
+            actions.className = 'settings-library-order-actions';
+            const upBtn = document.createElement('button');
+            upBtn.type = 'button';
+            upBtn.className = 'btn small ghost';
+            upBtn.textContent = 'Su';
+            const downBtn = document.createElement('button');
+            downBtn.type = 'button';
+            downBtn.className = 'btn small ghost';
+            downBtn.textContent = 'Giù';
+            const removeBtn = document.createElement('button');
+            removeBtn.type = 'button';
+            removeBtn.className = 'btn small ghost';
+            removeBtn.textContent = 'Rimuovi';
+
+            upBtn.addEventListener('click', () => {
+                const prev = rowEl.previousElementSibling;
+                if (prev) {
+                    list.insertBefore(rowEl, prev);
+                    syncOrder();
+                }
+            });
+            downBtn.addEventListener('click', () => {
+                const next = rowEl.nextElementSibling;
+                if (next) {
+                    list.insertBefore(next, rowEl);
+                    syncOrder();
+                }
+            });
+            removeBtn.addEventListener('click', () => {
+                rowEl.remove();
+                syncOrder();
+                refreshAddOptions();
+            });
+
+            actions.appendChild(upBtn);
+            actions.appendChild(downBtn);
+            actions.appendChild(removeBtn);
+            rowEl.appendChild(labelEl);
+            rowEl.appendChild(actions);
+            return rowEl;
+        };
+
+        const syncOrder = () => {
+            const ids = [];
+            list.querySelectorAll('.settings-library-order-row').forEach(rowEl => {
+                const id = rowEl.dataset.libraryId;
+                if (id) ids.push(id);
+            });
+            hidden.value = JSON.stringify(ids);
+        };
+
+        const currentIds = Array.isArray(value) ? value.map(v => String(v)) : [];
+        currentIds.forEach(id => list.appendChild(buildRow(id)));
+
+        const addRow = document.createElement('div');
+        addRow.className = 'settings-library-order-add';
+        const select = document.createElement('select');
+        select.className = 'form-select';
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.className = 'btn small';
+        addBtn.textContent = 'Aggiungi';
+
+        const refreshAddOptions = () => {
+            const existing = new Set();
+            list.querySelectorAll('.settings-library-order-row').forEach(rowEl => {
+                if (rowEl.dataset.libraryId) existing.add(rowEl.dataset.libraryId);
+            });
+            select.innerHTML = '';
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = 'Seleziona libreria...';
+            select.appendChild(placeholder);
+            libraryItems.forEach(item => {
+                const id = String(item.id);
+                if (existing.has(id)) return;
+                const opt = document.createElement('option');
+                opt.value = id;
+                opt.textContent = item.name || id;
+                select.appendChild(opt);
+            });
+        };
+
+        addBtn.addEventListener('click', () => {
+            const id = select.value;
+            if (!id) return;
+            list.appendChild(buildRow(id));
+            syncOrder();
+            refreshAddOptions();
+            select.value = '';
+        });
+
+        refreshAddOptions();
+        addRow.appendChild(select);
+        addRow.appendChild(addBtn);
+        wrapper.appendChild(list);
+        wrapper.appendChild(addRow);
+        wrapper.appendChild(buildLibrarySyncHint());
+        wrapper.appendChild(hidden);
+        row.appendChild(wrapper);
+        syncOrder();
+        return row;
+    } else if (field.type === 'multiselect') {
+        row.classList.add('settings-row-multiline');
+        const list = document.createElement('div');
+        list.className = 'settings-multi-list';
+        if (field.key === 'BlockUnratedItems') {
+            list.classList.add('settings-multi-list-ordered');
+        }
+        const selected = Array.isArray(value) ? value.map(v => String(v)) : [];
+        (field.options || []).forEach(option => {
+            const optionLabel = document.createElement('label');
+            optionLabel.className = 'settings-multi-option';
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.value = option.value;
+            checkbox.checked = selected.includes(String(option.value));
+            checkbox.dataset.settingsScope = field.scope;
+            checkbox.dataset.settingsKey = field.key;
+            checkbox.dataset.settingsType = field.type;
+            optionLabel.appendChild(checkbox);
+            const text = document.createElement('span');
+            text.textContent = option.label || option.value;
+            optionLabel.appendChild(text);
+            list.appendChild(optionLabel);
+        });
+        row.appendChild(list);
+        return row;
+    } else if (field.type === 'schedule') {
+        row.classList.add('settings-row-multiline');
+        const wrapper = document.createElement('div');
+        wrapper.className = 'settings-schedule';
+        const list = document.createElement('div');
+        list.className = 'settings-schedule-list';
+        const hidden = document.createElement('input');
+        hidden.type = 'hidden';
+        hidden.dataset.settingsScope = field.scope;
+        hidden.dataset.settingsKey = field.key;
+        hidden.dataset.settingsType = field.type;
+        wrapper.appendChild(hidden);
+
+        const buildRow = (entry = {}) => {
+            const rowEl = document.createElement('div');
+            rowEl.className = 'settings-schedule-row';
+            const daySelect = document.createElement('select');
+            daySelect.className = 'form-select';
+            (field.options || []).forEach(option => {
+                const opt = document.createElement('option');
+                opt.value = option.value;
+                opt.textContent = option.label || option.value;
+                daySelect.appendChild(opt);
+            });
+            daySelect.value = entry.DayOfWeek || (field.options?.[0]?.value || '');
+            const startInput = document.createElement('input');
+            startInput.type = 'number';
+            startInput.min = '0';
+            startInput.max = '23';
+            startInput.className = 'form-input';
+            startInput.value = entry.StartHour !== undefined ? String(entry.StartHour) : '0';
+            const endInput = document.createElement('input');
+            endInput.type = 'number';
+            endInput.min = '0';
+            endInput.max = '23';
+            endInput.className = 'form-input';
+            endInput.value = entry.EndHour !== undefined ? String(entry.EndHour) : '23';
+            const removeBtn = document.createElement('button');
+            removeBtn.type = 'button';
+            removeBtn.className = 'btn small ghost';
+            removeBtn.textContent = 'Rimuovi';
+            removeBtn.addEventListener('click', () => {
+                rowEl.remove();
+                syncSchedule();
+            });
+            [daySelect, startInput, endInput].forEach(control => {
+                control.addEventListener('change', syncSchedule);
+                control.addEventListener('input', syncSchedule);
+            });
+            rowEl.appendChild(daySelect);
+            rowEl.appendChild(startInput);
+            rowEl.appendChild(endInput);
+            rowEl.appendChild(removeBtn);
+            return rowEl;
+        };
+
+        const syncSchedule = () => {
+            const entries = [];
+            list.querySelectorAll('.settings-schedule-row').forEach(rowEl => {
+                const selects = rowEl.querySelectorAll('select');
+                const inputs = rowEl.querySelectorAll('input');
+                if (!selects.length || inputs.length < 2) return;
+                const day = selects[0].value;
+                const startHour = Number.parseInt(inputs[0].value, 10);
+                const endHour = Number.parseInt(inputs[1].value, 10);
+                if (!day) return;
+                entries.push({
+                    DayOfWeek: day,
+                    StartHour: Number.isNaN(startHour) ? 0 : startHour,
+                    EndHour: Number.isNaN(endHour) ? 23 : endHour
+                });
+            });
+            hidden.value = JSON.stringify(entries);
+        };
+
+        const addBtn = document.createElement('button');
+        addBtn.type = 'button';
+        addBtn.className = 'btn small';
+        addBtn.textContent = 'Aggiungi fascia';
+        addBtn.addEventListener('click', () => {
+            list.appendChild(buildRow());
+            syncSchedule();
+        });
+
+        if (Array.isArray(value)) {
+            value.forEach(entry => list.appendChild(buildRow(entry)));
+        }
+        wrapper.appendChild(list);
+        wrapper.appendChild(addBtn);
+        row.appendChild(wrapper);
+        syncSchedule();
+        return row;
+    } else if (field.type === 'list' || field.type === 'json') {
+        row.classList.add('settings-row-multiline');
+        input = document.createElement('textarea');
+        input.className = 'form-input form-textarea';
+        input.rows = 3;
+        if (field.type === 'json') {
+            if (value !== undefined && value !== null && value !== '') {
+                try {
+                    input.value = JSON.stringify(value, null, 2);
+                } catch (e) {
+                    input.value = String(value);
+                }
+            }
+        } else if (Array.isArray(value)) {
+            input.value = value.map(item => String(item)).join('\n');
+        } else if (value !== undefined && value !== null) {
+            input.value = String(value);
+        }
+    } else if (field.type === 'int') {
+        input = document.createElement('input');
+        input.type = 'number';
+        input.className = 'form-input';
+        input.value = value !== undefined && value !== null ? String(value) : '';
+    } else if (field.type === 'select') {
+        input = document.createElement('select');
+        input.className = 'form-select';
+        (field.options || []).forEach(option => {
+            const opt = document.createElement('option');
+            opt.value = option.value;
+            opt.textContent = option.label || option.value;
+            input.appendChild(opt);
+        });
+        if (value !== undefined && value !== null) {
+            input.value = String(value);
+        }
+    } else {
+        input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'form-input';
+        input.value = value !== undefined && value !== null ? String(value) : '';
+    }
+
+    if (input && field.placeholder) {
+        input.placeholder = field.placeholder;
+    }
+
+    input.dataset.settingsScope = field.scope;
+    input.dataset.settingsKey = field.key;
+    input.dataset.settingsType = field.type;
+    if (field.type !== 'bool') {
+        row.appendChild(input);
+    }
+    return row;
+}
+
+function buildLibrariesSection(items, settings) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'settings-libraries';
+    const modeRow = document.createElement('div');
+    modeRow.className = 'settings-row';
+    const modeLabel = document.createElement('label');
+    modeLabel.textContent = 'Tutte le librerie';
+    modeLabel.className = 'settings-label';
+    const modeToggleLabel = document.createElement('label');
+    modeToggleLabel.className = 'feature-toggle';
+    const modeToggle = document.createElement('input');
+    modeToggle.type = 'checkbox';
+    modeToggle.dataset.libraryMode = 'all';
+    modeToggle.checked = (settings?.libraries?.mode || 'all') === 'all';
+    const modeToggleSlider = document.createElement('span');
+    modeToggleSlider.className = 'toggle-slider';
+    modeToggleLabel.appendChild(modeToggle);
+    modeToggleLabel.appendChild(modeToggleSlider);
+    modeRow.appendChild(modeLabel);
+    modeRow.appendChild(modeToggleLabel);
+    wrapper.appendChild(modeRow);
+
+    const list = document.createElement('div');
+    list.className = 'settings-library-list';
+    const enabledIds = new Set(settings?.libraries?.items || []);
+    const isAllMode = (settings?.libraries?.mode || 'all') === 'all';
+    (items || []).forEach(item => {
+        const row = document.createElement('div');
+        row.className = 'settings-library-item';
+        const label = document.createElement('label');
+        label.className = 'settings-library-label';
+        const name = item.name || 'Libreria';
+        const type = item.collection_type || 'folder';
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'settings-library-name';
+        nameSpan.textContent = `${name} (${type})`;
+        label.appendChild(nameSpan);
+        if (item.group_key) {
+            const badge = document.createElement('span');
+            badge.className = 'library-group-tag';
+            badge.textContent = 'Gruppo';
+            badge.title = 'Questa libreria appartiene a un gruppo sincronizzabile.';
+            label.appendChild(badge);
+        }
+        const inputWrapper = document.createElement('label');
+        inputWrapper.className = 'feature-toggle';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.dataset.libraryId = item.id;
+        if (item.group_key) {
+            input.dataset.libraryGroupKey = item.group_key;
+        }
+        if (isAllMode) {
+            input.checked = true;
+        } else {
+            const baseId = String(item.id);
+            let matchId = enabledIds.has(baseId) ? baseId : null;
+            if (!matchId && Array.isArray(item.alt_ids)) {
+                for (const altId of item.alt_ids) {
+                    const altStr = String(altId);
+                    if (enabledIds.has(altStr)) {
+                        matchId = altStr;
+                        break;
+                    }
+                }
+            }
+            if (matchId) {
+                input.checked = true;
+                input.dataset.libraryId = matchId;
+            } else {
+                input.checked = false;
+            }
+        }
+        row.appendChild(label);
+        const slider = document.createElement('span');
+        slider.className = 'toggle-slider';
+        inputWrapper.appendChild(input);
+        inputWrapper.appendChild(slider);
+        row.appendChild(inputWrapper);
+        list.appendChild(row);
+    });
+    wrapper.appendChild(list);
+
+    const toggleList = () => {
+        const isAll = modeToggle.checked;
+        list.style.opacity = isAll ? '0.5' : '1';
+        list.querySelectorAll('input').forEach(el => {
+            el.disabled = isAll;
+        });
+    };
+    modeToggle.addEventListener('change', toggleList);
+    toggleList();
+    return wrapper;
+}
+
+function collectSettingsFromForm(form) {
+    const settings = { policy: {}, config: {}, libraries: { mode: 'all', groups: {}, items: [] } };
+    form.querySelectorAll('[data-settings-scope]').forEach(input => {
+        const scope = input.dataset.settingsScope;
+        const key = input.dataset.settingsKey;
+        const type = input.dataset.settingsType;
+        if (!scope || !key) return;
+        let value;
+        if (type === 'bool') {
+            value = input.checked;
+        } else if (type === 'multiselect') {
+            if (!settings[scope][key]) {
+                settings[scope][key] = [];
+            }
+            if (input.checked) {
+                settings[scope][key].push(input.value);
+            }
+            return;
+        } else if (type === 'library_multi') {
+            if (!settings[scope][key]) {
+                settings[scope][key] = [];
+            }
+            if (input.checked) {
+                settings[scope][key].push(input.value);
+            }
+            return;
+        } else if (type === 'schedule') {
+            const raw = input.value.trim();
+            if (!raw) {
+                value = [];
+            } else {
+                try {
+                    value = JSON.parse(raw);
+                } catch (err) {
+                    throw new Error(`JSON non valido per ${key}`);
+                }
+            }
+        } else if (type === 'library_order') {
+            const raw = input.value.trim();
+            if (!raw) {
+                value = [];
+            } else {
+                try {
+                    value = JSON.parse(raw);
+                } catch (err) {
+                    throw new Error(`JSON non valido per ${key}`);
+                }
+            }
+        } else if (type === 'list') {
+            const raw = input.value.trim();
+            if (!raw) {
+                value = [];
+            } else {
+                value = raw.split(/[\n,]/).map(item => item.trim()).filter(Boolean);
+            }
+        } else if (type === 'json') {
+            const raw = input.value.trim();
+            if (!raw) {
+                value = [];
+            } else {
+                try {
+                    value = JSON.parse(raw);
+                } catch (err) {
+                    throw new Error(`JSON non valido per ${key}`);
+                }
+            }
+        } else if (type === 'int') {
+            value = input.value === '' ? null : Number.parseInt(input.value, 10);
+            if (Number.isNaN(value)) {
+                value = null;
+            }
+        } else {
+            value = input.value;
+        }
+        if (value !== null && value !== undefined) {
+            settings[scope][key] = value;
+        }
+    });
+
+    const modeToggle = form.querySelector('[data-library-mode]');
+    settings.libraries.mode = modeToggle && modeToggle.checked ? 'all' : 'custom';
+    const groups = {};
+    const items = [];
+    form.querySelectorAll('[data-library-id]').forEach(input => {
+        if (input.checked) {
+            const libraryId = input.dataset.libraryId;
+            if (libraryId) {
+                items.push(libraryId);
+            }
+            const groupKey = input.dataset.libraryGroupKey;
+            if (groupKey) {
+                groups[groupKey] = true;
+            }
+        }
+    });
+    settings.libraries.groups = settings.libraries.mode === 'all' ? {} : groups;
+    settings.libraries.items = settings.libraries.mode === 'all' ? [] : items;
+    return settings;
+}
+
+async function openSettingsManager(payload) {
+    const modal = document.getElementById('settings-manager-modal');
+    if (!modal) return;
+
+    const titleEl = document.getElementById('settings-manager-title');
+    const subtitleEl = document.getElementById('settings-manager-subtitle');
+    const statusEl = document.getElementById('settings-manager-status');
+    const updatedEl = document.getElementById('settings-manager-updated');
+    const formEl = document.getElementById('settings-manager-form');
+    const closeBtn = document.getElementById('settings-manager-close');
+    const cancelBtn = document.getElementById('settings-manager-cancel');
+    const saveBtn = document.getElementById('settings-manager-save');
+    const applyBtn = document.getElementById('settings-manager-apply');
+
+    const isGroupScope = payload.scope === 'group';
+
+    titleEl.textContent = isGroupScope ? 'Impostazioni Gruppo' : 'Impostazioni Utente';
+    if (isGroupScope) {
+        subtitleEl.textContent = payload.groupName ? `Gruppo: ${payload.groupName}` : 'Gruppo selezionato';
+    } else {
+        subtitleEl.textContent = payload.userName ? `Utente: ${payload.userName}` : 'Utente selezionato';
+    }
+
+    statusEl.textContent = 'Caricamento...';
+    statusEl.style.color = 'var(--text-muted)';
+    updatedEl.textContent = '';
+    formEl.innerHTML = '';
+    modal.style.display = 'flex';
+
+    settingsManagerState = {
+        scope: payload.scope,
+        groupId: payload.groupId || null,
+        serverId: payload.serverId || null,
+        userId: payload.userId || null,
+        mismatchCount: payload.mismatchCount || 0,
+        isUserMismatch: payload.isUserMismatch === true,
+        originalSettings: null
+    };
+
+    if (applyBtn) {
+        const showApply = isGroupScope && settingsManagerState.mismatchCount > 0;
+        applyBtn.style.display = showApply ? 'inline-flex' : 'none';
+    }
+
+    const closeModal = () => { modal.style.display = 'none'; };
+    if (closeBtn) closeBtn.onclick = closeModal;
+    if (cancelBtn) cancelBtn.onclick = closeModal;
+    modal.onclick = (e) => { if (e.target === modal) closeModal(); };
+
+    try {
+        const schema = await ensureSettingsSchema();
+        const params = new URLSearchParams();
+        if (isGroupScope) {
+            params.append('group_id', payload.groupId);
+        } else {
+            params.append('server_id', payload.serverId);
+            params.append('user_id', payload.userId);
+        }
+        const res = await fetch(`/api/emby/users/settings?${params.toString()}`);
+        if (!res.ok) throw new Error('Errore recupero impostazioni');
+        const data = await res.json();
+        const saved = Boolean(data.saved);
+        const settings = data.settings || {};
+        settingsManagerState.originalSettings = settings;
+
+        if (saved && settingsManagerState.scope === 'user' && settingsManagerState.isUserMismatch) {
+            statusEl.textContent = 'Salvate [non allineata al gruppo]';
+            statusEl.style.color = 'var(--color-warning)';
+        } else if (saved && settingsManagerState.mismatchCount > 0) {
+            statusEl.textContent = `Salvate [non allineati: ${settingsManagerState.mismatchCount}]`;
+            statusEl.style.color = 'var(--color-warning)';
+        } else {
+            statusEl.textContent = saved ? 'Salvate' : 'Non salvate';
+            statusEl.style.color = saved ? 'var(--color-success)' : 'var(--text-muted)';
+        }
+        if (data.updated_at) {
+            updatedEl.textContent = `Ultimo aggiornamento: ${formatDate(data.updated_at)}`;
+        }
+
+        const categories = schema.categories || [];
+        const libraryItems = data.library_items || [];
+        const columns = document.createElement('div');
+        columns.className = 'settings-columns';
+        const leftCol = document.createElement('div');
+        leftCol.className = 'settings-column settings-column-left';
+        const rightCol = document.createElement('div');
+        rightCol.className = 'settings-column settings-column-right';
+
+        categories.forEach(section => {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'settings-section';
+            const header = document.createElement('h4');
+            header.textContent = section.label || section.id;
+            wrapper.appendChild(header);
+
+            if (section.libraries) {
+                wrapper.appendChild(buildLibrariesSection(libraryItems, settings));
+            } else {
+                (section.policy || []).forEach(field => {
+                    field.scope = 'policy';
+                    const value = settings.policy ? settings.policy[field.key] : undefined;
+                    wrapper.appendChild(buildSettingsFieldRow(field, value, { libraryItems }));
+                });
+                (section.config || []).forEach(field => {
+                    field.scope = 'config';
+                    const value = settings.config ? settings.config[field.key] : undefined;
+                    wrapper.appendChild(buildSettingsFieldRow(field, value, { libraryItems }));
+                });
+            }
+            if (section.column === 'right') {
+                rightCol.appendChild(wrapper);
+            } else {
+                leftCol.appendChild(wrapper);
+            }
+        });
+
+        columns.appendChild(leftCol);
+        columns.appendChild(rightCol);
+        formEl.appendChild(columns);
+    } catch (err) {
+        statusEl.textContent = 'Errore';
+        statusEl.style.color = 'var(--color-danger)';
+        await openAlertModal('Errore', 'Impossibile recuperare le impostazioni.');
+    }
+
+    if (saveBtn) {
+        saveBtn.onclick = async () => {
+            let settings;
+            try {
+                settings = collectSettingsFromForm(formEl);
+            } catch (err) {
+                await openAlertModal('Errore', err?.message || 'Formato impostazioni non valido.');
+                return;
+            }
+            const ok = await openConfirmModal(
+                'Conferma',
+                isGroupScope
+                    ? 'Confermi il salvataggio delle impostazioni di gruppo? Verranno applicate a tutti gli utenti del gruppo.'
+                    : 'Confermi il salvataggio delle impostazioni utente?'
+            );
+            if (!ok) return;
+            const payload = isGroupScope
+                ? { group_id: settingsManagerState.groupId, settings }
+                : { server_id: settingsManagerState.serverId, user_id: settingsManagerState.userId, settings };
+            const endpoint = isGroupScope ? '/api/emby/users/settings-group' : '/api/emby/users/settings';
+            try {
+                const res = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!res.ok) throw new Error('Errore salvataggio impostazioni');
+                showToast('Impostazioni aggiornate.', 'success');
+                closeModal();
+                loadEmbyUsers(true);
+            } catch (err) {
+                await openAlertModal('Errore', 'Errore aggiornamento impostazioni.');
+            }
+        };
+    }
+
+    if (applyBtn) {
+        applyBtn.onclick = async () => {
+            if (!isGroupScope) return;
+            let settings;
+            try {
+                settings = collectSettingsFromForm(formEl);
+            } catch (err) {
+                await openAlertModal('Errore', err?.message || 'Formato impostazioni non valido.');
+                return;
+            }
+            const ok = await openConfirmModal(
+                'Conferma',
+                'Applicare le impostazioni salvate a tutti gli utenti del gruppo?'
+            );
+            if (!ok) return;
+            try {
+                const res = await fetch('/api/emby/users/settings-group', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ group_id: settingsManagerState.groupId, settings })
+                });
+                if (!res.ok) throw new Error('Errore applicazione impostazioni');
+                showToast('Impostazioni applicate a tutti.', 'success');
+                closeModal();
+                loadEmbyUsers(true);
+            } catch (err) {
+                await openAlertModal('Errore', 'Errore applicazione impostazioni.');
+            }
+        };
+    }
 }
 
 function formatDate(isoStr) {

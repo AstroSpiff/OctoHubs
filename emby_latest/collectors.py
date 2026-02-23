@@ -26,7 +26,7 @@ from emby_latest.batch_processor import (
     select_recent_versions_by_time,
     group_version_times,
     _sort_versions_by_quality,
-    ensure_batch,
+    compute_batch,
     build_batch_id,
     group_items_by_date,
 )
@@ -36,7 +36,7 @@ from emby_latest.enrichment import (
 )
 from emby_latest.db_cache import merge_cached_entry
 from emby_latest.utils import (
-    prune_items,
+    prune_state_items_by_last_seen,
     debug_enabled,
     debug,
     _get_omdb_cache_hours,
@@ -57,7 +57,7 @@ from emby_latest.media import get_resolution_rules
 from emby_latest.settings import _default_latest_settings, _load_latest_settings
 
 # Import from utils (shared utilities)
-from utils import (
+from core.utils import (
     _parse_date_value,
     get_emby_servers,
 )
@@ -117,6 +117,81 @@ def collect_entries(
             return int(value) if value is not None else None
         except (TypeError, ValueError):
             return None
+
+    def _ensure_batch_with_unique(
+        items: List[Dict[str, Any]],
+        gap_minutes: int,
+        min_count: int,
+        target_unique: int,
+        key_fn
+    ) -> List[Dict[str, Any]]:
+        if not isinstance(items, list) or not items:
+            return []
+
+        batch = compute_batch(items, gap_minutes)
+
+        try:
+            min_target = int(min_count)
+        except (TypeError, ValueError):
+            min_target = 0
+
+        try:
+            unique_target = int(target_unique)
+        except (TypeError, ValueError):
+            unique_target = 0
+
+        def _count_unique(entries: List[Dict[str, Any]]) -> int:
+            if not callable(key_fn):
+                return 0
+            seen: Set[str] = set()
+            for entry in entries:
+                key = key_fn(entry)
+                if key:
+                    seen.add(str(key))
+            return len(seen)
+
+        if (
+            (min_target <= 0 or len(batch) >= min_target)
+            and (unique_target <= 0 or _count_unique(batch) >= unique_target)
+        ):
+            return batch
+
+        parsed = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            dt_value = _parse_date_value(item.get("DateCreated")) or datetime.min.replace(tzinfo=timezone.utc)
+            parsed.append((item, dt_value))
+
+        parsed.sort(key=lambda entry: entry[1], reverse=True)
+
+        output: List[Dict[str, Any]] = []
+        seen: Set[str] = set()
+        for item, _ in parsed:
+            output.append(item)
+            if callable(key_fn):
+                key = key_fn(item)
+                if key:
+                    seen.add(str(key))
+            if (min_target <= 0 or len(output) >= min_target) and (
+                unique_target <= 0 or len(seen) >= unique_target
+            ):
+                break
+
+        return output
+
+    def _series_id_from_episode(episode: Dict[str, Any]) -> Optional[str]:
+        if not isinstance(episode, dict):
+            return None
+        series_id = episode.get("SeriesId")
+        if series_id:
+            return str(series_id)
+        series_name = episode.get("SeriesName")
+        if series_name:
+            series_id = f"fallback_{hashlib.md5(series_name.encode('utf-8')).hexdigest()[:12]}"
+            episode["SeriesId"] = series_id
+            return series_id
+        return None
 
     # Load config and validate
     config, is_valid = load_config()
@@ -305,10 +380,40 @@ def collect_entries(
             else:
                 errors.append({"server_id": server_id, "message": str(movie_error)})
 
+        # Build title→signature mapping (used for unique batch sizing + grouping)
+        movie_title_by_id: Dict[str, str] = {}
+        movie_provider_signature_by_title: Dict[str, str] = {}
+        for item in movie_items:
+            item_id = item.get("Id") if isinstance(item, dict) else None
+            if not item_id:
+                continue
+            signature = build_movie_signature(item) or str(item_id)
+            title_signature = build_movie_title_signature(item)
+            if title_signature:
+                movie_title_by_id[str(item_id)] = title_signature
+                if signature.startswith(("tmdb:", "imdb:", "tvdb:")):
+                    movie_provider_signature_by_title.setdefault(title_signature, signature)
+
+        def _movie_signature_for_batch(item: Dict[str, Any]) -> Optional[str]:
+            item_id = item.get("Id")
+            if not item_id:
+                return None
+            signature = build_movie_signature(item) or str(item_id)
+            title_signature = movie_title_by_id.get(str(item_id)) or build_movie_title_signature(item)
+            if signature.startswith("title:") and title_signature:
+                signature = movie_provider_signature_by_title.get(title_signature, signature)
+            return signature
+
         # Apply batch filtering (or skip if feed mode)
         min_movie_count = max_movies if state_enabled else per_server_limit
         if apply_batch_gap:
-            movie_batch = ensure_batch(movie_items, gap_minutes, min_movie_count)
+            movie_batch = _ensure_batch_with_unique(
+                movie_items,
+                gap_minutes,
+                min_movie_count,
+                min_movie_count,
+                _movie_signature_for_batch
+            )
         else:
             # Feed mode: sort by date and take most recent items (no gap filtering)
             movie_batch = sorted(
@@ -324,20 +429,6 @@ def collect_entries(
         # Build signature mappings
         movie_signature_cache: Dict[str, List[Any]] = {}
         movie_all_by_signature: Dict[str, List[Any]] = {}
-        movie_title_by_id: Dict[str, str] = {}
-        movie_provider_signature_by_title: Dict[str, str] = {}
-
-        # First pass: build title→signature mapping
-        for item in movie_items:
-            item_id = item.get("Id") if isinstance(item, dict) else None
-            if not item_id:
-                continue
-            signature = build_movie_signature(item) or str(item_id)
-            title_signature = build_movie_title_signature(item)
-            if title_signature:
-                movie_title_by_id[str(item_id)] = title_signature
-                if signature.startswith(("tmdb:", "imdb:", "tvdb:")):
-                    movie_provider_signature_by_title.setdefault(title_signature, signature)
 
         # Second pass: group by resolved signature
         for item in movie_items:
@@ -367,7 +458,14 @@ def collect_entries(
             min_episode_count = max(per_server_limit, max_series * 4)
 
         if apply_batch_gap:
-            episode_batch = ensure_batch(episode_items, gap_minutes, min_episode_count)
+            target_series_count = max_series if state_enabled else per_server_limit
+            episode_batch = _ensure_batch_with_unique(
+                episode_items,
+                gap_minutes,
+                min_episode_count,
+                target_series_count,
+                _series_id_from_episode
+            )
         else:
             # Feed mode: sort by date and take most recent
             episode_batch = sorted(
@@ -578,34 +676,62 @@ def collect_entries(
                     if recent_versions:
                         target_versions = _sort_versions_by_quality(recent_versions)
 
-                for version in target_versions:
-                    version_dt = version_time_map.get(version.get("key")) or _parse_date_value(version.get("added_at"))
+                if not target_versions and update_type != "existing":
                     changes.append({
                         "kind": kind,
                         "label": update_label,
-                        "quality": version.get("quality"),
-                        "resolution": version.get("resolution"),
-                        "video_codec": version.get("video_codec"),
-                        "audio_codec": version.get("audio_codec"),
-                        "audio_channels": version.get("audio_channels"),
-                        "container": version.get("container"),
-                        "bitrate": version.get("bitrate"),
-                        "source_name": version.get("source_name"),
-                        "path": version.get("path"),
-                        "size": version.get("size"),
-                        "media_source_id": version.get("id") or "",
-                        "added_at": version_dt.isoformat() if version_dt else item_date,
-                        "video_details": version.get("video_details") or "",
-                        "audio_details": version.get("audio_details") or "",
-                        "audio_ita": version.get("audio_ita") or "",
-                        "audio_eng": version.get("audio_eng") or "",
-                        "audio_fra": version.get("audio_fra") or "",
-                        "audio_spa": version.get("audio_spa") or "",
-                        "audio_ger": version.get("audio_ger") or "",
-                        "audio_jpn": version.get("audio_jpn") or "",
-                        "audio_langs": version.get("audio_langs") or "",
-                        "subtitle_langs": version.get("subtitle_langs") or ""
+                        "quality": "",
+                        "resolution": "",
+                        "video_codec": "",
+                        "audio_codec": "",
+                        "audio_channels": "",
+                        "container": "",
+                        "bitrate": "",
+                        "source_name": "",
+                        "path": "",
+                        "size": "",
+                        "media_source_id": "",
+                        "added_at": item_date or "",
+                        "video_details": "",
+                        "audio_details": "",
+                        "audio_ita": "",
+                        "audio_eng": "",
+                        "audio_fra": "",
+                        "audio_spa": "",
+                        "audio_ger": "",
+                        "audio_jpn": "",
+                        "audio_langs": "",
+                        "subtitle_langs": ""
                     })
+                else:
+                    for version in target_versions:
+                        version_dt = version_time_map.get(version.get("key")) or _parse_date_value(version.get("added_at"))
+                        changes.append({
+                            "kind": kind,
+                            "label": update_label,
+                            "quality": version.get("quality"),
+                            "resolution": version.get("resolution"),
+                            "video_codec": version.get("video_codec"),
+                            "audio_codec": version.get("audio_codec"),
+                            "audio_channels": version.get("audio_channels"),
+                            "container": version.get("container"),
+                            "bitrate": version.get("bitrate"),
+                            "source_name": version.get("source_name"),
+                            "path": version.get("path"),
+                            "size": version.get("size"),
+                            "media_source_id": version.get("id") or "",
+                            "added_at": version_dt.isoformat() if version_dt else item_date,
+                            "video_details": version.get("video_details") or "",
+                            "audio_details": version.get("audio_details") or "",
+                            "audio_ita": version.get("audio_ita") or "",
+                            "audio_eng": version.get("audio_eng") or "",
+                            "audio_fra": version.get("audio_fra") or "",
+                            "audio_spa": version.get("audio_spa") or "",
+                            "audio_ger": version.get("audio_ger") or "",
+                            "audio_jpn": version.get("audio_jpn") or "",
+                            "audio_langs": version.get("audio_langs") or "",
+                            "subtitle_langs": version.get("subtitle_langs") or ""
+                        })
 
                 movie_changes[state_key] = {
                     "update_type": update_type,
@@ -652,18 +778,9 @@ def collect_entries(
         episodes_by_series: Dict[str, List[Any]] = {}
 
         for item in episode_batch:
-            series_id = item.get("SeriesId")
-
-            # Fallback: generate synthetic ID based on SeriesName if SeriesId missing
+            series_id = _series_id_from_episode(item)
             if not series_id:
-                series_name = item.get("SeriesName")
-                if series_name:
-                    # Generate stable ID based on series name
-                    series_id = f"fallback_{hashlib.md5(series_name.encode('utf-8')).hexdigest()[:12]}"
-                    item["SeriesId"] = series_id
-                else:
-                    continue  # Skip if no ID or name
-
+                continue
             episodes_by_series.setdefault(series_id, []).append(item)
 
         series_skipped_count = 0
@@ -1093,6 +1210,11 @@ def collect_entries(
         for entry in series_entries:
             if not entry:
                 continue
+            if isinstance(entry, dict) and not entry.get("Type"):
+                entry["Type"] = "Series"
+            entry = _build_emby_latest_item(entry, server)
+            if not entry:
+                continue
 
             # Merge with cached entry
             if state_enabled:
@@ -1141,8 +1263,8 @@ def collect_entries(
 
         # Prune state if enabled
         if state_enabled:
-            movies_state["items"] = prune_items(movie_items_state, max_movies, retention_days)
-            series_state["items"] = prune_items(series_items_state, max_series, retention_days)
+            movies_state["items"] = prune_state_items_by_last_seen(movie_items_state, max_movies, retention_days)
+            series_state["items"] = prune_state_items_by_last_seen(series_items_state, max_series, retention_days)
 
             # Prune old episodes
             for series_id, entry in list(series_state["items"].items()):
@@ -1289,6 +1411,14 @@ def collect_entries(
         "series": final_series,
         "errors": errors
     }
+
+    # Incremental mode: merge with existing DB cache so we don't drop older items
+    if skip_existing_complete and existing_db_payload and db_cache:
+        try:
+            final_payload = db_cache.merge_with_db(final_payload, existing_db_payload)
+        except Exception:
+            # Fallback to new payload if merge fails
+            pass
 
     # CRITICAL BUG FIX #1: Save cache to DB (not just volatile memory)
     # Save BOTH batch and feed caches as needed

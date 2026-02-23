@@ -29,9 +29,9 @@ import requests
 
 from app import _build_active_library_scans_snapshot, _build_scan_library_snapshot, _build_scan_library_tracked_snapshot, _build_scan_group_tracked_snapshot, _build_associations_get_snapshot, _build_associations_post_snapshot, _build_media_details_snapshot, _build_jellyseerr_request_snapshot, _build_tmdb_search_snapshot, _build_tmdb_tv_details_snapshot, _build_tmdb_check_availability_snapshot, _build_manual_search_snapshot, _build_rss_inspect_snapshot, _build_rss_inspect_json_snapshot, _build_rss_import_snapshot, _build_rss_import_json_snapshot, _build_rss_deduplicate_snapshot, _build_rss_items_snapshot, _build_rss_search_snapshot, _build_rss_delete_snapshot, _build_categories_snapshot, _build_blacklist_snapshot, _build_blacklist_add_snapshot, _build_blacklist_remove_snapshot, _build_hidden_snapshot, _build_hidden_add_snapshot, _build_hidden_remove_snapshot, _build_hidden_add_batch_snapshot, _build_hidden_remove_batch_snapshot, _build_blacklist_add_batch_snapshot, _build_blacklist_remove_batch_snapshot, _build_delete_by_categories_snapshot, _build_send_torrent_snapshot, _build_send_torrent_batch_snapshot, _build_scan_status_snapshot, _build_run_scan_snapshot, _build_update_request_rules_snapshot, _build_refresh_requests_snapshot, _build_refresh_requests_status_snapshot, _build_test_connections_snapshot, _build_trakt_device_start_snapshot, _build_trakt_device_poll_snapshot, _build_trakt_clear_snapshot, _build_emby_stop_task_snapshot, _build_emby_server_status_snapshot, _build_emby_health_status_snapshot, _build_emby_activity_snapshot, _build_emby_tasks_snapshot, _build_emby_users_snapshot, _build_emby_plugins_snapshot, _build_emby_streams_snapshot, _build_emby_status_stream_payload, _build_emby_libraries_snapshot, _build_active_scans_snapshot, _build_debug_vf_query_snapshot, _build_grouped_libraries_snapshot, _build_movie_versions_snapshot, _build_series_seasons_snapshot, _build_season_episodes_snapshot, _build_lookup_snapshot, _build_item_details_snapshot, _build_availability_snapshot, _build_emby_image_stream, _build_emby_image_cache_meta, _build_server_order_snapshot, _build_group_order_get_snapshot, _build_group_order_post_snapshot, _build_tab_order_get_snapshot, _build_tab_order_post_snapshot, _probe_discovery_start_snapshot, _probe_discovery_stop_snapshot, _probe_recent_start_snapshot, get_emby_user_manager, _probe_recent_start_all_snapshot, _probe_recent_stop_snapshot, _probe_recent_stop_all_snapshot, _probe_recent_config_get_snapshot, _probe_recent_config_save_snapshot, _probe_recent_processing_start_snapshot, _probe_recent_processing_start_all_snapshot, _probe_recent_processing_stop_snapshot, _probe_recent_processing_stop_all_snapshot, _probe_recent_combo_start_snapshot, _probe_recent_combo_start_all_snapshot, _probe_recent_combo_stop_snapshot, _probe_recent_combo_stop_all_snapshot, _probe_libraries_combo_start_snapshot, _probe_libraries_combo_stop_snapshot, _probe_processing_start_snapshot, _probe_processing_stop_snapshot, _probe_queue_get_snapshot, _probe_queue_delete_snapshot, _probe_history_get_snapshot, _probe_history_delete_snapshot, _probe_retry_snapshot, _probe_blacklist_get_snapshot, _probe_blacklist_delete_snapshot, _probe_debug_recent_items_snapshot, _coerce_request_bool, _coerce_request_int, _LIBRARY_SCAN_TRACKER, _ws_event_queues, _ws_queues_lock, _sse_event_queues, _sse_queues_lock, DateTimeEncoder, load_config, _get_total_blacklist_counts, _load_telegram_settings, _resolve_next_url, _ensure_db_backend, _load_emby_settings_from_db, _build_emby_server_from_form, _fetch_emby_status, _save_emby_settings_to_db, _purge_emby_server_settings, _emby_display_name, _db_enabled, _update_app_settings_overrides, _register_app_event_loop, _active_trakt_settings, _trakt_enabled, _JELLYSEERR_REFRESH_STATE
 from emby_latest import settings as latest_settings_api
-from storage import StorageError
-from emby_websocket_manager import get_websocket_manager
-from emby_collection_sources import SOURCE_TYPES, list_trakt_lists, list_mdblist_user_lists, is_mdblist_enabled
+from core.storage import StorageError
+from emby_runtime.websocket_manager import get_websocket_manager
+from emby_collections.sources import SOURCE_TYPES, list_trakt_lists, list_mdblist_user_lists, is_mdblist_enabled
 from emby_users.routes import init_emby_user_routes, router as emby_users_router
 from emby_users.icon_routes import init_emby_icon_routes, router as emby_icon_router
 from emby_collections import (
@@ -51,12 +51,12 @@ from emby_collections import (
     COLLECTION_POSTER_MIME_TYPES,
     COLLECTION_POSTER_MAX_BYTES
 )
-from tasks import workflow_manager
-from utils import _split_csv_field, get_nested, json_error, json_success
-from scan_websocket_manager import get_scan_connection_manager
-from config import _default_auto_tasks, _default_emby_settings, _normalize_emby_server, _clean_sort_mode, read_raw_config
-from api_clients import EMBY_ACTIONS, _prepare_emby_servers_for_view, _execute_emby_action
-from auth import init_auth
+from core.tasks import workflow_manager
+from core.utils import _split_csv_field, get_nested, json_error, json_success
+from emby_runtime.scan_websocket_manager import get_scan_connection_manager
+from core.config import _default_auto_tasks, _default_emby_settings, _normalize_emby_server, _clean_sort_mode, read_raw_config
+from emby_actions import EMBY_ACTIONS, _prepare_emby_servers_for_view, _execute_emby_action
+from core.auth import init_auth
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +167,7 @@ def _initialize_runtime_services() -> None:
                 print("[STARTUP] EmbyLatestManager non inizializzato: DB non disponibile.")
         else:
             print("[STARTUP] EmbyLatestManager non inizializzato: DB disabilitato o config non valida.")
-        from emby_collection_scheduler import start_collection_auto_refresher
+        from emby_collections.scheduler import start_collection_auto_refresher
         start_collection_auto_refresher()
     except Exception as exc:
         print(f"[STARTUP] Errore durante inizializzazione: {exc}")
@@ -593,7 +593,7 @@ def _get_current_user(request: Request):
     Get current authenticated User object from session.
     Returns User object if authenticated, None otherwise.
     """
-    from auth import get_user_by_id
+    from core.auth import get_user_by_id
 
     user_id = _get_current_user_id(request)
     if not user_id:
@@ -2676,7 +2676,7 @@ async def view_emby_collections(request: Request, user=Depends(get_current_user_
     emby_servers = _prepare_emby_servers_for_view(raw_servers, lazy=True)
     trakt_enabled = _trakt_enabled(_active_trakt_settings())
     total_blacklist_count, total_incomplete_count = _get_total_blacklist_counts()
-    from config import DEFAULT_CONFIG
+    from core.config import DEFAULT_CONFIG
     collections_config = (config or {}).get("COLLECTIONS") or DEFAULT_CONFIG["COLLECTIONS"]
     collection_settings = {
         "trakt_enabled": bool(trakt_enabled),
@@ -3157,7 +3157,7 @@ async def emby_save_group_settings(request: Request):
     if not manager:
          return error_response("Manager not available", 500)
          
-    success = manager.save_group_settings(group_id, auto_sync, sync_type, sync_resume)
+    success = manager.group_manager.save_group_settings(group_id, auto_sync, sync_type, sync_resume)
     if success:
         return success_response()
     else:
@@ -3756,7 +3756,7 @@ async def emby_library_scan_state_clear_post(
         return RedirectResponse(url=next_url, status_code=303)
 
     try:
-        from emby_library_poller import get_library_poller
+        from emby_runtime.library_poller import get_library_poller
 
         await get_library_poller().clear_states()
         _LIBRARY_SCAN_TRACKER.clear_jobs()
@@ -3823,7 +3823,7 @@ async def login_submit(
         return RedirectResponse(url="/login", status_code=303)
 
     # Import auth functions
-    from auth import get_user_by_username, log_audit_event
+    from core.auth import get_user_by_username, log_audit_event
 
     # Get user from database
     user = get_user_by_username(username)
@@ -3859,7 +3859,7 @@ async def logout(request: Request):
 
     # Log audit event
     if user:
-        from auth import log_audit_event
+        from core.auth import log_audit_event
         log_audit_event(user, "logout", "success", request)
 
     # Clear session
@@ -4054,7 +4054,7 @@ async def telegram_save_config_route(
         return RedirectResponse(url="/configuration", status_code=303)
 
     from app import load_config, _resolve_next_url, _ensure_db_backend, _load_telegram_settings, _save_telegram_settings, _telegram_check_bot_identity
-    from storage import StorageError
+    from core.storage import StorageError
     import uuid
 
     next_url = _resolve_next_url(next_page, 'configuration')
@@ -4160,7 +4160,7 @@ async def telegram_verify_bot_route(
         return RedirectResponse(url="/configuration", status_code=303)
 
     from app import load_config, _resolve_next_url, _ensure_db_backend, _load_telegram_settings, _save_telegram_settings, _telegram_check_bot_identity
-    from storage import StorageError
+    from core.storage import StorageError
 
     next_url = _resolve_next_url(next_page, 'configuration')
     config, is_valid = load_config()
@@ -4216,7 +4216,7 @@ async def telegram_remove_bot_route(
         return RedirectResponse(url="/configuration", status_code=303)
 
     from app import load_config, _resolve_next_url, _ensure_db_backend, _load_telegram_settings, _save_telegram_settings
-    from storage import StorageError
+    from core.storage import StorageError
 
     next_url = _resolve_next_url(next_page, 'configuration')
     config, is_valid = load_config()
@@ -4288,7 +4288,7 @@ async def telegram_update_bot_alias_route(
         return RedirectResponse(url="/configuration", status_code=303)
 
     from app import load_config, _resolve_next_url, _ensure_db_backend, _load_telegram_settings, _save_telegram_settings, _telegram_check_bot_identity
-    from storage import StorageError
+    from core.storage import StorageError
 
     next_url = _resolve_next_url(next_page, 'configuration')
     config, is_valid = load_config()
@@ -4348,7 +4348,7 @@ async def telegram_add_chat_route(
         return RedirectResponse(url="/configuration", status_code=303)
 
     from app import load_config, _resolve_next_url, _ensure_db_backend, _load_telegram_settings, _save_telegram_settings, _telegram_lookup_chat_with_type
-    from storage import StorageError
+    from core.storage import StorageError
     from datetime import datetime, timezone
     import uuid
 
@@ -4470,7 +4470,7 @@ async def telegram_verify_chat_route(
         return RedirectResponse(url="/configuration", status_code=303)
 
     from app import load_config, _resolve_next_url, _ensure_db_backend, _load_telegram_settings, _save_telegram_settings, _check_telegram_chat, _telegram_extract_chat_name
-    from storage import StorageError
+    from core.storage import StorageError
     from datetime import datetime, timezone
 
     next_url = _resolve_next_url(next_page, 'configuration')
@@ -4556,7 +4556,7 @@ async def telegram_remove_chat_route(
         return RedirectResponse(url="/configuration", status_code=303)
 
     from app import load_config, _resolve_next_url, _ensure_db_backend, _load_telegram_settings, _save_telegram_settings
-    from storage import StorageError
+    from core.storage import StorageError
 
     next_url = _resolve_next_url(next_page, 'configuration')
     config, is_valid = load_config()
@@ -4628,7 +4628,7 @@ async def telegram_update_chat_alias_route(
         return RedirectResponse(url="/configuration", status_code=303)
 
     from app import load_config, _resolve_next_url, _ensure_db_backend, _load_telegram_settings, _save_telegram_settings, _telegram_lookup_chat
-    from storage import StorageError
+    from core.storage import StorageError
     from datetime import datetime, timezone
 
     next_url = _resolve_next_url(next_page, 'configuration')
@@ -4704,7 +4704,7 @@ async def telegram_add_preset_route(
         return RedirectResponse(url="/configuration", status_code=303)
 
     from app import load_config, _resolve_next_url, _ensure_db_backend, _load_telegram_settings, _save_telegram_settings, _telegram_check_bot_identity, _telegram_check_bot_membership
-    from storage import StorageError
+    from core.storage import StorageError
     from datetime import datetime, timezone
     import uuid
 
@@ -4845,7 +4845,7 @@ async def telegram_remove_preset_route(
         return RedirectResponse(url="/configuration", status_code=303)
 
     from app import load_config, _resolve_next_url, _ensure_db_backend, _load_telegram_settings, _save_telegram_settings
-    from storage import StorageError
+    from core.storage import StorageError
 
     next_url = _resolve_next_url(next_page, 'configuration')
     config, is_valid = load_config()
@@ -4895,8 +4895,8 @@ async def update_scheduler_route(
         return RedirectResponse(url="/dashboard", status_code=303)
 
     from app import load_config, _resolve_next_url, _parse_auto_task_payload, _update_app_settings_overrides, _sync_auto_scheduler, _coerce_request_int
-    from config import DEFAULT_CONFIG as CONFIG_DEFAULTS, _normalize_time_list
-    from storage import StorageError
+    from core.config import DEFAULT_CONFIG as CONFIG_DEFAULTS, _normalize_time_list
+    from core.storage import StorageError
     import copy
 
     config, is_valid = load_config()
@@ -5045,7 +5045,7 @@ async def update_config_route(
         _load_app_settings_snapshot, _save_app_settings_snapshot,
         _merge_trakt_settings, _merge_justwatch_settings
     )
-    from storage import DatabaseStorage, StorageError
+    from core.storage import DatabaseStorage, StorageError
 
     legacy_config = read_raw_config() or {}
     next_url = _resolve_next_url(next_page, 'dashboard')
@@ -5301,7 +5301,7 @@ async def update_rules_route(
         _default_search_rules, _update_app_settings_overrides,
         _normalize_sort_settings, TV_SORT_KEYS, MOVIE_SORT_KEYS, DEFAULT_CONFIG
     )
-    from storage import StorageError
+    from core.storage import StorageError
     import copy
 
     config, is_valid = load_config()
@@ -5449,7 +5449,7 @@ async def setup_user_post_route(
 ):
     """Setup user POST - create admin user."""
     from app import _has_users
-    from auth import get_user_by_username, create_user
+    from core.auth import get_user_by_username, create_user
 
     if _has_users():
         return RedirectResponse(url="/setup/db", status_code=303)
@@ -5512,7 +5512,7 @@ async def setup_db_post_route(
         _apply_db_env_overrides, _coerce_request_int,
         _seed_db_from_legacy_config, _write_database_config
     )
-    from storage import DatabaseStorage, StorageError
+    from core.storage import DatabaseStorage, StorageError
 
     if not _has_users():
         return RedirectResponse(url="/setup/user", status_code=303)
@@ -5609,7 +5609,7 @@ async def setup_db_post_route(
 @fastapi_app.get("/logout")
 async def logout_route(request: Request):
     """Logout handler - clear session and redirect to login."""
-    from auth import log_audit_event
+    from core.auth import log_audit_event
 
     user = _get_current_user(request)
     if user:

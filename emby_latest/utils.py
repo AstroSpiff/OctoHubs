@@ -5,7 +5,7 @@ Provides formatting, validation, and helper functions.
 
 import os
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 def is_blank_value(value: Any) -> bool:
@@ -37,7 +37,7 @@ def format_date(value: Any) -> str:
     Returns:
         Formatted date string, or empty string if invalid
     """
-    from utils import _parse_date_value
+    from core.utils import _parse_date_value
 
     parsed = _parse_date_value(value)
     if not parsed:
@@ -163,7 +163,7 @@ def prune_items(
     Returns:
         Pruned items dict
     """
-    from utils import _parse_date_value
+    from core.utils import _parse_date_value
 
     if not isinstance(items, dict):
         return items
@@ -218,6 +218,54 @@ def prune_items(
     }
 
 
+def prune_state_items_by_last_seen(
+    items: Dict[str, Any],
+    max_count: int,
+    retention_days: int
+) -> Dict[str, Any]:
+    """
+    Prune state items dicts keyed by item id/signature using last_seen_at.
+
+    Args:
+        items: Mapping of item_id/signature -> state entry
+        max_count: Maximum items to keep (0 means no limit)
+        retention_days: Maximum age in days (0 means no limit)
+
+    Returns:
+        Pruned items dict with original structure preserved
+    """
+    from core.utils import _parse_date_value
+
+    if not isinstance(items, dict):
+        return items
+
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=retention_days) if retention_days > 0 else None
+
+    def _entry_dt(entry: Any) -> Optional[datetime]:
+        if not isinstance(entry, dict):
+            return None
+        return _parse_date_value(entry.get("last_seen_at") or entry.get("added_at"))
+
+    filtered: Dict[str, Any] = {}
+    for key, entry in items.items():
+        if not isinstance(entry, dict):
+            continue
+        entry_dt = _entry_dt(entry)
+        if cutoff_date and entry_dt and entry_dt < cutoff_date:
+            continue
+        filtered[key] = entry
+
+    if max_count > 0 and len(filtered) > max_count:
+        def _sort_key(kv: Tuple[str, Any]) -> datetime:
+            entry_dt = _entry_dt(kv[1])
+            return entry_dt or datetime.min.replace(tzinfo=timezone.utc)
+
+        trimmed = sorted(filtered.items(), key=_sort_key, reverse=True)[:max_count]
+        return {key: entry for key, entry in trimmed}
+
+    return filtered
+
+
 def _get_omdb_cache_hours(config: Optional[Dict[str, Any]]) -> int:
     default_hours = 12
     if not isinstance(config, dict):
@@ -245,7 +293,7 @@ def debug_enabled(settings_cfg: Optional[Dict] = None) -> bool:
     Returns:
         True if debug mode is enabled
     """
-    from utils import normalize_string
+    from core.utils import normalize_string
 
     env_flag = normalize_string(os.getenv("OCTOHUB_LATEST_DEBUG", ""))
     if env_flag in ("1", "true", "yes", "on"):

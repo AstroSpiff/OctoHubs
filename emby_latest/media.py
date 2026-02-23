@@ -4,8 +4,8 @@ Media source parsing utilities for Latest Publications.
 
 from typing import Any, Dict, List, Optional
 
-from config import _merge_resolution_settings
-from utils import DEFAULT_RESOLUTION_RULES, _resolution_label_from_dims
+from core.config import _merge_resolution_settings
+from core.utils import DEFAULT_RESOLUTION_RULES, _resolution_label_from_dims
 
 
 def get_resolution_rules(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

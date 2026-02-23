@@ -825,6 +825,32 @@
         </div>
     </div>
 
+    <!-- Settings Manager Modal -->
+    <div id="settings-manager-modal" class="modal-overlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 10006; align-items: center; justify-content: center;">
+        <div class="modal-content" style="background: var(--bg-card); padding: 2rem; border-radius: 12px; max-width: 720px; width: 94%; position: relative; box-shadow: 0 10px 25px rgba(0,0,0,0.5); max-height: 85vh; overflow-y: auto;">
+            <button class="icon-button close-modal-btn" id="settings-manager-close" style="position: absolute; top: 1rem; right: 1rem; font-size: 1.2rem;">&times;</button>
+            <div class="modal-header" style="margin-bottom: 1.5rem;">
+                <h3 id="settings-manager-title" style="margin: 0;">Impostazioni</h3>
+                <p class="text-muted" style="margin: 0.5rem 0 0; font-size: 0.9rem;" id="settings-manager-subtitle"></p>
+            </div>
+            <div class="modal-body">
+                <div class="detail-row" style="display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid var(--border-color);">
+                    <span class="text-muted">Stato</span>
+                    <span id="settings-manager-status" style="font-weight: 600;"></span>
+                </div>
+                <div class="tagline small text-muted" id="settings-manager-updated" style="margin-top: 0.35rem;"></div>
+                <div id="settings-manager-form" style="margin-top: 1rem; display: flex; flex-direction: column; gap: 1.5rem;"></div>
+            </div>
+            <div class="modal-actions" style="margin-top: 1.5rem; display: flex; justify-content: space-between;">
+                <button class="btn secondary" id="settings-manager-cancel">Chiudi</button>
+                <div style="display: flex; gap: 0.5rem;">
+                    <button class="btn secondary" id="settings-manager-apply">Applica a tutti</button>
+                    <button class="btn primary" id="settings-manager-save">Salva</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Clone User Modal -->
     <div id="clone-user-modal" class="modal-overlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 10010; align-items: center; justify-content: center;">
         <div class="modal-content" style="background: var(--bg-card); padding: 2rem; border-radius: 12px; max-width: 500px; width: 90%; position: relative; box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
@@ -1840,6 +1866,7 @@
                 <button class="icon-button toggle-playback-btn" title="Consenti riproduzione media" style="display: inline-block;"><i class="fa-solid fa-play"></i></button>
                 <button class="icon-button toggle-download-btn" title="Consenti scaricamento media" style="display: inline-block;"><i class="fa-solid fa-download"></i></button>
                 <button class="icon-button password-btn" title="Gestisci password" style="display: inline-block;"><i class="fa-solid fa-key"></i></button>
+                <button class="icon-button settings-btn" title="Gestisci impostazioni" style="display: inline-block;"><i class="fa-solid fa-sliders"></i></button>
                 <button class="icon-button unlink-btn" title="Dissocia dal gruppo" style="display: none;"><i class="fa-solid fa-link-slash"></i></button>
             </div>
         </div>
@@ -1854,6 +1881,7 @@
                 </div>
                 <div style="display: flex; align-items: center; gap: 1rem;">
                     <button class="icon-button group-password-btn" title="Gestisci password gruppo"><i class="fa-solid fa-key"></i></button>
+                    <button class="icon-button group-settings-btn" title="Gestisci impostazioni gruppo"><i class="fa-solid fa-sliders"></i></button>
                     <select class="icon-profile-select" style="padding: 0.25rem 0.5rem; border-radius: 4px; border: 1px solid var(--border-color); background: var(--bg-input); color: var(--text-main); font-size: 0.85rem;">
                         <option value="">Seleziona Profilo Icona...</option>
                     </select>
@@ -1879,7 +1907,8 @@
     <script src="{{ url_for('static', filename='shared-utils.js') }}"></script>
     <script src="{{ url_for('static', filename='actions.js') }}"></script>
     <script src="{{ url_for('static', filename='script.js') }}"></script>
-    <script src="{{ url_for('static', filename='emby_users.js') }}?v=20260215-sync-fix3"></script>
+    <script src="{{ url_for('static', filename='emby_users.js') }}?v=20260220-settings"></script>
+    <script src="{{ url_for('static', filename='emby_libraries.js') }}?v=20260225-libraries"></script>
     <script src="{{ url_for('static', filename='emby.js') }}?v=20260204-latest-ui3"></script>
 </body>
 </html>
