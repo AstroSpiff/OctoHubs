@@ -59,17 +59,19 @@ def _detect_hdr_type(streams: Any) -> str:
     return ""
 
 
-def _detect_audio_format(codec: Any, channels: Any, title: str = "") -> str:
+def _detect_audio_format(codec: Any, channels: Any, title: str = "", profile: str = "", display_title: str = "") -> str:
     """
     Detect advanced audio format (Atmos, DTS:X, etc).
     """
     codec_upper = (codec or "").upper()
-    title_upper = (title or "").upper()
+    combined_upper = " ".join([
+        (title or ""), (profile or ""), (display_title or "")
+    ]).upper()
 
-    if "ATMOS" in codec_upper or "ATMOS" in title_upper:
+    if "ATMOS" in codec_upper or "ATMOS" in combined_upper:
         return "Dolby Atmos"
 
-    if "DTS:X" in codec_upper or "DTS:X" in title_upper or "DTSX" in codec_upper:
+    if "DTS:X" in codec_upper or "DTS:X" in combined_upper or "DTSX" in codec_upper:
         return "DTS:X"
 
     if "DTS-HD MA" in codec_upper or "DTSHD MA" in codec_upper or "DTSHDMA" in codec_upper:
@@ -87,7 +89,7 @@ def _detect_audio_format(codec: Any, channels: Any, title: str = "") -> str:
             return f"Dolby Digital+ {channels-1}.1"
         return "Dolby Digital+"
 
-    if "AC3" in codec_upper or "AC-3" in codec_upper or "DOLBY DIGITAL" in title_upper:
+    if "AC3" in codec_upper or "AC-3" in codec_upper or "DOLBY DIGITAL" in combined_upper:
         if channels and channels >= 6:
             return f"Dolby Digital {channels-1}.1"
         return "Dolby Digital"
@@ -204,7 +206,9 @@ def _format_audio_details(streams: Any, language_filter: Optional[str] = None) -
         codec = stream.get("codec", "")
         channels = stream.get("channels")
         title = stream.get("title", "")
-        audio_format = _detect_audio_format(codec, channels, title)
+        profile = stream.get("profile", "")
+        display_title = stream.get("display_title", "") or stream.get("DisplayTitle", "")
+        audio_format = _detect_audio_format(codec, channels, title, profile, display_title)
 
         track_parts = []
         if lang_display:

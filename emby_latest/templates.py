@@ -2,7 +2,7 @@
 Template rendering for Latest Publications messages.
 
 This module handles Jinja2 template rendering for notification messages.
-Migrated from app.py template functions.
+Migrated from legacy monolith template functions.
 """
 
 import re

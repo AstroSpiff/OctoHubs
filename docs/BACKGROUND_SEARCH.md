@@ -22,15 +22,12 @@ Sistema completo di ricerca parallela con streaming real-time e persistenza dei 
    - Linee 2244-2265: `load_manual_searches()` - Recupera storico
    - Linee 2267-2279: `delete_manual_search()` - Elimina ricerca
 
-2. **app.py**
-   - Linee 11675-11676: Accumula risultati per salvataggio finale
-   - Linee 11787-11788: Aggiunge risultati a lista invece di salvare singolarmente
-   - Linee 11803-11810: Traccia query attempts
-   - Linee 11863-11894: Salva payload finale in formato scan_result
+2. **search/streaming.py**
+   - Accumulo risultati e tracking tentativi per il salvataggio finale
 
-3. **asgi.py**
-   - Linee 957-981: GET `/api/search/manual/history` - Recupera storico
-   - Linee 984-1008: DELETE `/api/search/manual/history/{id}` - Elimina ricerca
+3. **search/routes.py**
+   - GET `/api/search/manual/history` - Recupera storico
+   - DELETE `/api/search/manual/history/{id}` - Elimina ricerca
 
 ### Frontend
 

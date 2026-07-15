@@ -2,7 +2,7 @@
 import argparse
 import sys
 
-from app import _ensure_db_backend, load_config
+from core.config_manager import _ensure_db_backend, load_config
 from core.storage import StorageError
 
 

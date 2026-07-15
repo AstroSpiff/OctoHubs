@@ -1,5 +1,7 @@
 import logging
 import uuid
+import re
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple, Callable
 
 logger = logging.getLogger(__name__)
@@ -40,18 +42,78 @@ class GroupManager:
         self.storage.set_key_value(f"group_name:{target_group_id}", new_name)
         return True
 
-    def save_group_settings(self, group_id: str, auto_sync: bool, sync_type: str, sync_resume: bool) -> bool:
+    def save_group_settings(
+        self,
+        group_id: str,
+        auto_sync: bool,
+        sync_type: str,
+        sync_resume: bool,
+        sync_playstate: bool = True,
+        sync_config: bool = False,
+        sync_library_access: bool = False,
+        sync_favorites: bool = False,
+        sync_playlists: bool = False,
+        config_categories: Optional[List[str]] = None,
+        playstate_bootstrap_done: bool = False,
+        favorites_bootstrap_done: bool = False,
+        playlists_bootstrap_done: bool = False,
+    ) -> bool:
         """
-        Saves group settings (auto_sync, sync_type, sync_resume).
+        Saves group auto-sync settings.
         """
         if group_id.startswith("unlinked_"):
             return False
 
+        previous = self.storage.get_key_value(f"group_settings:{group_id}") or {}
+        if not isinstance(previous, dict):
+            previous = {}
+
         settings = {
             "auto_sync": auto_sync,
             "sync_type": sync_type,
-            "sync_resume": sync_resume
+            "sync_resume": sync_resume,
+            "sync_playstate": sync_playstate,
+            "sync_config": sync_config,
+            "sync_library_access": sync_library_access,
+            "sync_favorites": sync_favorites,
+            "sync_playlists": sync_playlists,
+            "config_categories": config_categories or [],
+            "playstate_bootstrap_done": playstate_bootstrap_done if auto_sync and sync_playstate else False,
+            "favorites_bootstrap_done": favorites_bootstrap_done if auto_sync and sync_favorites else False,
+            "playlists_bootstrap_done": playlists_bootstrap_done if auto_sync and sync_playlists else False,
+            "last_sync_at": previous.get("last_sync_at"),
+            "last_sync_status": previous.get("last_sync_status"),
+            "last_sync_message": previous.get("last_sync_message"),
+            "last_sync_results": previous.get("last_sync_results"),
         }
+        self.storage.set_key_value(f"group_settings:{group_id}", settings)
+        return True
+
+    def mark_group_bootstrap_done(self, group_id: str, domain: str) -> bool:
+        allowed_domains = {"playstate", "favorites", "playlists"}
+        if domain not in allowed_domains:
+            return False
+        settings = self.storage.get_key_value(f"group_settings:{group_id}") or {}
+        if not isinstance(settings, dict):
+            settings = {}
+        settings[f"{domain}_bootstrap_done"] = True
+        self.storage.set_key_value(f"group_settings:{group_id}", settings)
+        return True
+
+    def mark_group_sync_result(
+        self,
+        group_id: str,
+        status: str,
+        message: str = "",
+        results: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        settings = self.storage.get_key_value(f"group_settings:{group_id}") or {}
+        if not isinstance(settings, dict):
+            settings = {}
+        settings["last_sync_at"] = datetime.now(timezone.utc).isoformat()
+        settings["last_sync_status"] = status
+        settings["last_sync_message"] = message
+        settings["last_sync_results"] = results or {}
         self.storage.set_key_value(f"group_settings:{group_id}", settings)
         return True
 
@@ -63,6 +125,7 @@ class GroupManager:
         """
         if group_id:
             reassign_groups: set[str] = set()
+            incoming_leaders = [link for link in links if link.get("is_leader")]
             for link in links:
                 existing_links = self.storage.get_user_links(
                     server_id=link["server_id"],
@@ -85,6 +148,8 @@ class GroupManager:
                     link["server_id"],
                     link["user_id"]
                 )
+            preferred = incoming_leaders[0] if incoming_leaders else None
+            self._ensure_single_group_leader(group_id, preferred)
             group_entry = self.storage.get_group_password(group_id)
             if not group_entry or not group_entry.get("password_enc"):
                 leader_link = next((link_item for link_item in links if link_item.get("is_leader")), None)
@@ -202,7 +267,23 @@ class GroupManager:
         for old_group_id in reassign_groups:
             if old_group_id != new_group_id:
                 self._promote_next_group_leader(old_group_id)
+        self._ensure_single_group_leader(new_group_id)
         return new_group_id
+
+    def get_group_health(self, group_id: str) -> Dict[str, Any]:
+        links = self.storage.get_user_links(group_id=group_id)
+        leaders = [link for link in links if link.get("is_leader")]
+        names = [link.get("username") or "" for link in links]
+        normalized_names = {self._normalize_username(name) for name in names if name}
+        normalized_names.discard("")
+        return {
+            "ok": len(links) >= 2 and len(leaders) == 1,
+            "user_count": len(links),
+            "leader_count": len(leaders),
+            "has_single_leader": len(leaders) == 1,
+            "same_user_name": len(normalized_names) <= 1,
+            "normalized_names": sorted(normalized_names),
+        }
 
     def link_clone_to_source_group(
         self,
@@ -314,3 +395,44 @@ class GroupManager:
             new_leader["server_id"],
             new_leader["user_id"]
         )
+
+    def _ensure_single_group_leader(
+        self,
+        group_id: str,
+        preferred: Optional[Dict[str, Any]] = None
+    ) -> None:
+        if group_id.startswith("unlinked_") or group_id == "owners":
+            return
+        links = self.storage.get_user_links(group_id=group_id)
+        if not links:
+            return
+        preferred_key = None
+        if preferred:
+            preferred_key = (preferred.get("server_id"), preferred.get("user_id"))
+        if not preferred_key:
+            existing = next((link for link in links if link.get("is_leader")), None)
+            if existing:
+                preferred_key = (existing.get("server_id"), existing.get("user_id"))
+        if not preferred_key:
+            preferred_key = (links[0].get("server_id"), links[0].get("user_id"))
+
+        leader_count = 0
+        for link in links:
+            is_leader = (link.get("server_id"), link.get("user_id")) == preferred_key
+            if is_leader:
+                leader_count += 1
+            if bool(link.get("is_leader")) == is_leader:
+                continue
+            self.storage.set_user_link(
+                link["server_id"],
+                link["user_id"],
+                group_id,
+                link.get("username"),
+                is_leader=is_leader
+            )
+        if leader_count != 1:
+            logger.warning("[GROUP] Unable to normalize leader for group %s", group_id)
+
+    def _normalize_username(self, value: str) -> str:
+        text = (value or "").strip().lower()
+        return re.sub(r"[^a-z0-9]+", "", text)

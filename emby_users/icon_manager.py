@@ -23,10 +23,6 @@ class IconManager:
         self._get_users_dashboard_data = get_users_dashboard_data
         self._get_server_by_id = get_server_by_id
 
-    def ensure_icon_dir(self) -> None:
-        icon_dir = os.path.join(os.getcwd(), "static", "user_icons")
-        os.makedirs(icon_dir, exist_ok=True)
-
     def migrate_icons_to_db(self) -> None:
         """
         Migrates existing file-based icons to the database.
@@ -83,7 +79,7 @@ class IconManager:
     def save_icon_profile(self, label: str, is_group_profile: bool = False, profile_id: Optional[str] = None) -> str:
         if not profile_id:
             profile_id = str(uuid.uuid4())
-        self.storage.save_icon_profile(profile_id, label, False)
+        self.storage.save_icon_profile(profile_id, label, is_group_profile)
         return profile_id
 
     def delete_icon_profile(self, profile_id: str) -> None:
@@ -92,7 +88,11 @@ class IconManager:
     def save_icon_binding(self, target_type: str, target_id: str, profile_id: str) -> None:
         """
         Binds a User or Group to a Profile and triggers sync.
+        An empty profile removes the binding without changing the Emby image.
         """
+        if not (profile_id or "").strip():
+            self.storage.delete_icon_binding(target_type, target_id)
+            return
         self.storage.save_icon_binding(target_type, target_id, profile_id)
         self._sync_icons_for_binding(target_type, target_id)
 

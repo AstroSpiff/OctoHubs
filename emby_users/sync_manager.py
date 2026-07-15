@@ -1,6 +1,15 @@
 import logging
 from typing import Dict, Any, Optional, Tuple, List, Callable
 
+from emby_users.settings_manager import USER_SETTINGS_SCHEMA
+from emby_users.settings_scope import (
+    build_allowed_fields,
+    can_sync_config_field,
+    can_sync_display_field,
+    can_sync_policy_field,
+    normalize_config_categories,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -11,21 +20,33 @@ class SyncManager:
         get_server_by_id: Callable[[str], Optional[Dict[str, Any]]],
         fetch_user_details: Callable[[Dict[str, Any], str], Tuple[Optional[Dict[str, Any]], Optional[str]]],
         fetch_users_list: Callable[[Dict[str, Any]], Tuple[List[Dict[str, Any]], Optional[str]]],
-        update_user_policy: Callable[[Dict[str, Any], str, Dict[str, Any]], Tuple[bool, Optional[str]]],
-        update_user_config: Callable[[Dict[str, Any], str, Dict[str, Any]], Tuple[bool, Optional[str]]],
         create_user: Callable[[Dict[str, Any], str], Tuple[bool, Dict[str, Any]]],
         playstate_sync: Callable[[str, str, List[tuple], bool], Dict[str, Any]],
+        library_access_sync: Callable[[str, str, List[tuple]], Dict[str, Any]],
+        favorites_sync: Callable[[str, str, List[tuple]], Dict[str, Any]],
+        playlists_sync: Callable[[str, str, List[tuple]], Dict[str, Any]],
         link_clone_to_group: Callable[[str, str, Optional[str], str, str, Optional[str]], str],
+        apply_config_patch: Callable[[str, str, Dict[str, Any], Optional[str]], Dict[str, Any]],
+        fetch_user_display_preferences: Optional[
+            Callable[[Dict[str, Any], str], Tuple[Optional[Dict[str, Any]], Optional[str]]]
+        ] = None,
+        map_config_for_server: Optional[
+            Callable[[Dict[str, Any], str, Optional[str]], Dict[str, Any]]
+        ] = None,
     ):
         self.storage = storage
         self._get_server_by_id = get_server_by_id
         self._fetch_user_details = fetch_user_details
         self._fetch_users_list = fetch_users_list
-        self._update_user_policy = update_user_policy
-        self._update_user_config = update_user_config
+        self._fetch_user_display_preferences = fetch_user_display_preferences
         self._create_user = create_user
         self._playstate_sync = playstate_sync
+        self._library_access_sync = library_access_sync
+        self._favorites_sync = favorites_sync
+        self._playlists_sync = playlists_sync
         self._link_clone_to_group = link_clone_to_group
+        self._apply_config_patch = apply_config_patch
+        self._map_config_for_server = map_config_for_server
 
     def _backup_user(self, server: Dict[str, Any], user_id: str, reason: str) -> None:
         """
@@ -41,13 +62,19 @@ class SyncManager:
                 details
             )
 
-    def sync_user_config(self, source_server_id: str, source_user_id: str, target_tuples: List[tuple]) -> Dict[str, Any]:
+    def sync_user_config(
+        self,
+        source_server_id: str,
+        source_user_id: str,
+        target_tuples: List[tuple],
+        config_categories: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
         """
         Copies Configuration and Policy from source to targets.
         target_tuples: list of (server_id, user_id)
 
-        CRITICAL: Excludes server-specific ID fields (like EnabledFolders, MyMediaExcludes)
-        to prevent breaking access on the target server.
+        Server-specific library IDs are remapped through OctoHub associations;
+        unrelated protected fields remain excluded from the copy.
         """
         source_server = self._get_server_by_id(source_server_id)
         if not source_server:
@@ -59,21 +86,38 @@ class SyncManager:
 
         src_policy = src_details.get("Policy", {})
         src_config = src_details.get("Configuration", {})
-
-        POLICY_EXCLUDE = {
-            "IsAdministrator", "IsDisabled", "IsHidden", "IsHiddenFromUnusedDevices",
-            "EnableAllFolders", "EnabledFolders", "ExcludedSubFolders",
-            "BlockedTags", "BlockedMediaTags", "AccessSchedules",
-            "Authentication", "Password", "InvalidLoginAttemptCount", "LoginAttemptsBeforeLockout",
-            "MaxActiveSessions", "SyncPlayfield"
+        if not isinstance(src_policy, dict):
+            src_policy = {}
+        if not isinstance(src_config, dict):
+            src_config = {}
+        src_display = {}
+        if self._fetch_user_display_preferences:
+            src_display, display_err = self._fetch_user_display_preferences(source_server, source_user_id)
+            if display_err:
+                logger.warning("[SYNC_CONFIG] Source DisplayPreferences unavailable: %s", display_err)
+                src_display = {}
+        categories = normalize_config_categories(config_categories)
+        allowed_policy, allowed_config, allowed_display = build_allowed_fields(USER_SETTINGS_SCHEMA, categories)
+        policy_patch = {
+            key: value
+            for key, value in src_policy.items()
+            if can_sync_policy_field(key, allowed_policy)
         }
-
-        CONFIG_EXCLUDE = {
-            "MyMediaExcludes", "GroupedFolders", "DashboardLayout",
-            "HomePageSectionOrder", "LandingScreen", "LatestItemsExcludes"
+        base_config_patch = {
+            key: value
+            for key, value in src_config.items()
+            if can_sync_config_field(key, allowed_config)
         }
+        src_custom = src_display.get("CustomPrefs") if isinstance(src_display, dict) else {}
+        display_patch = {}
+        if isinstance(src_custom, dict):
+            display_patch = {
+                str(key): value
+                for key, value in src_custom.items()
+                if can_sync_display_field(str(key), allowed_display)
+            }
 
-        results = {"success": [], "failed": []}
+        results = {"success": [], "failed": [], "categories": sorted(categories)}
 
         for tgt_srv_id, tgt_uid in target_tuples:
             tgt_server = self._get_server_by_id(tgt_srv_id)
@@ -81,30 +125,34 @@ class SyncManager:
                 results["failed"].append(f"Server {tgt_srv_id} not found")
                 continue
 
-            tgt_details, err_t = self._fetch_user_details(tgt_server, tgt_uid)
-            if err_t or not tgt_details:
-                results["failed"].append(f"{tgt_server['name']}: Failed to fetch target")
-                continue
-
             self._backup_user(tgt_server, tgt_uid, "full_sync_pre")
+            config_patch = dict(base_config_patch)
+            if config_patch and self._map_config_for_server:
+                config_patch = self._map_config_for_server(
+                    config_patch,
+                    tgt_srv_id,
+                    source_server_id,
+                )
 
-            tgt_policy = tgt_details.get("Policy", {})
-            for k, v in src_policy.items():
-                if k not in POLICY_EXCLUDE:
-                    tgt_policy[k] = v
+            apply_result = self._apply_config_patch(
+                tgt_srv_id,
+                tgt_uid,
+                {
+                    "policy": policy_patch,
+                    "config": config_patch,
+                    "display_preferences": display_patch,
+                },
+                source_server_id,
+            )
 
-            tgt_config = tgt_details.get("Configuration", {})
-            for k, v in src_config.items():
-                if k not in CONFIG_EXCLUDE:
-                    tgt_config[k] = v
-
-            ok_p, _ = self._update_user_policy(tgt_server, tgt_uid, tgt_policy)
-            ok_c, _ = self._update_user_config(tgt_server, tgt_uid, tgt_config)
-
-            if ok_p and ok_c:
+            if apply_result.get("ok"):
                 results["success"].append(f"{tgt_server['name']} ({tgt_uid})")
             else:
-                results["failed"].append(f"{tgt_server['name']}: Policy={ok_p}, Config={ok_c}")
+                results["failed"].append(
+                    f"{tgt_server['name']}: Policy={apply_result.get('policy')}, "
+                    f"Config={apply_result.get('config')}, "
+                    f"Display={apply_result.get('display_preferences')}"
+                )
 
         return results
 
@@ -117,7 +165,11 @@ class SyncManager:
         sync_config: bool = True,
         sync_playstate: bool = True,
         sync_resume: bool = False,
-        link_group: bool = False
+        sync_library_access: bool = False,
+        sync_favorites: bool = False,
+        sync_playlists: bool = False,
+        link_group: bool = False,
+        config_categories: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Clones a user from source to target server.
@@ -131,12 +183,15 @@ class SyncManager:
             return f"{name} ({srv.get('id')})"
 
         logger.info(
-            "[CLONE][1/4] Start: source_user_id=%s target_server_id=%s sync_config=%s sync_playstate=%s sync_resume=%s link_group=%s",
+            "[CLONE][1/4] Start: source_user_id=%s target_server_id=%s sync_config=%s sync_playstate=%s sync_resume=%s sync_library_access=%s sync_favorites=%s sync_playlists=%s link_group=%s",
             source_user_id,
             target_server_id,
             sync_config,
             sync_playstate,
             sync_resume,
+            sync_library_access,
+            sync_favorites,
+            sync_playlists,
             link_group
         )
 
@@ -236,7 +291,12 @@ class SyncManager:
                 target_username,
                 tgt_user_id
             )
-            self.sync_user_config(source_server_id, source_user_id, [(target_server_id, tgt_user_id)])
+            self.sync_user_config(
+                source_server_id,
+                source_user_id,
+                [(target_server_id, tgt_user_id)],
+                config_categories=config_categories
+            )
         else:
             logger.info("[CLONE][3/4] Sync config skipped")
 
@@ -271,4 +331,44 @@ class SyncManager:
         else:
             logger.info("[CLONE][4/4] Sync playstate skipped")
 
-        return {"ok": True, "target_user_id": tgt_user_id, "playstate_stats": res_play}
+        res_library_access = None
+        if sync_library_access:
+            logger.info("[CLONE][4/4] Sync library access: source=%s target=%s", source_user_id, tgt_user_id)
+            res_library_access = self._library_access_sync(
+                source_server_id,
+                source_user_id,
+                [(target_server_id, tgt_user_id)]
+            )
+        else:
+            logger.info("[CLONE][4/4] Sync library access skipped")
+
+        res_favorites = None
+        if sync_favorites:
+            logger.info("[CLONE][4/4] Sync favorites: source=%s target=%s", source_user_id, tgt_user_id)
+            res_favorites = self._favorites_sync(
+                source_server_id,
+                source_user_id,
+                [(target_server_id, tgt_user_id)]
+            )
+        else:
+            logger.info("[CLONE][4/4] Sync favorites skipped")
+
+        res_playlists = None
+        if sync_playlists:
+            logger.info("[CLONE][4/4] Sync playlists: source=%s target=%s", source_user_id, tgt_user_id)
+            res_playlists = self._playlists_sync(
+                source_server_id,
+                source_user_id,
+                [(target_server_id, tgt_user_id)]
+            )
+        else:
+            logger.info("[CLONE][4/4] Sync playlists skipped")
+
+        return {
+            "ok": True,
+            "target_user_id": tgt_user_id,
+            "playstate_stats": res_play,
+            "library_access_stats": res_library_access,
+            "favorites_stats": res_favorites,
+            "playlists_stats": res_playlists
+        }

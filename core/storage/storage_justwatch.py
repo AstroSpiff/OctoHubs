@@ -1,0 +1,139 @@
+"""JustWatch cache storage operations."""
+
+from __future__ import annotations
+
+from typing import Any, Dict, Optional, Protocol
+
+from core.storage.storage_errors import StorageError
+from core.storage.storage_models import SQLAlchemyError, JustWatchCache, _utcnow
+
+
+class _SessionProvider(Protocol):
+    def _get_session(self) -> Any: ...
+
+
+class StorageJustWatchMixin(_SessionProvider):
+    def get_justwatch_cache(
+        self,
+        show_name: str,
+        season: int,
+        episode: int
+    ) -> Optional[Dict[str, Any]]:
+        """Get cached JustWatch availability data for a specific episode."""
+        session = self._get_session()
+        try:
+            entry = (
+                session.query(JustWatchCache)
+                .filter(
+                    JustWatchCache.show_name == show_name,  # type: ignore[attr-defined]
+                    JustWatchCache.season == season,  # type: ignore[attr-defined]
+                    JustWatchCache.episode == episode  # type: ignore[attr-defined]
+                )
+                .first()
+            )
+            if entry:
+                return {
+                    "show_name": entry.show_name,
+                    "season": entry.season,
+                    "episode": entry.episode,
+                    "is_available": entry.is_available,
+                    "providers": entry.providers,
+                    "last_checked": entry.last_checked
+                }
+            return None
+        finally:
+            session.close()
+
+    def save_justwatch_cache(
+        self,
+        show_name: str,
+        season: int,
+        episode: int,
+        is_available: bool,
+        providers: Optional[list] = None
+    ) -> None:
+        """Save or update JustWatch availability data for an episode."""
+        session = self._get_session()
+        try:
+            entry = (
+                session.query(JustWatchCache)
+                .filter(
+                    JustWatchCache.show_name == show_name,  # type: ignore[attr-defined]
+                    JustWatchCache.season == season,  # type: ignore[attr-defined]
+                    JustWatchCache.episode == episode  # type: ignore[attr-defined]
+                )
+                .first()
+            )
+
+            if entry:
+                entry.is_available = is_available  # type: ignore[assignment]
+                if providers is not None:
+                    entry.providers = providers  # type: ignore[assignment]
+                entry.last_checked = _utcnow()  # type: ignore[assignment]
+            else:
+                new_entry = JustWatchCache(
+                    show_name=show_name,
+                    season=season,
+                    episode=episode,
+                    is_available=is_available,
+                    providers=providers
+                )
+                session.add(new_entry)
+
+            session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore salvataggio cache JustWatch: {exc}") from exc
+        finally:
+            session.close()
+
+    def clear_justwatch_cache(self, show_name: Optional[str] = None) -> int:
+        """
+        Clear JustWatch cache entries.
+
+        Args:
+            show_name: If provided, clear only entries for this show.
+                      If None, clear all cache.
+
+        Returns:
+            Number of entries deleted
+        """
+        session = self._get_session()
+        try:
+            query = session.query(JustWatchCache)
+            if show_name:
+                query = query.filter(JustWatchCache.show_name == show_name)  # type: ignore[attr-defined]
+
+            count = query.count()
+            query.delete()
+            session.commit()
+            return count
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore svuotamento cache JustWatch: {exc}") from exc
+        finally:
+            session.close()
+
+    def get_justwatch_cache_stats(self) -> Dict[str, int]:
+        """Get statistics about JustWatch cache."""
+        session = self._get_session()
+        try:
+            total = session.query(JustWatchCache).count()
+            available = (
+                session.query(JustWatchCache)
+                .filter(JustWatchCache.is_available.is_(True))  # type: ignore[attr-defined]
+                .count()
+            )
+            unavailable = (
+                session.query(JustWatchCache)
+                .filter(JustWatchCache.is_available.is_(False))  # type: ignore[attr-defined]
+                .count()
+            )
+
+            return {
+                "total": total,
+                "available": available,
+                "unavailable": unavailable
+            }
+        finally:
+            session.close()

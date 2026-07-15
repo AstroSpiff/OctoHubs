@@ -90,6 +90,7 @@ class EmbyLatestManager:
             self._refreshing = True
 
         try:
+            print(f"[LATEST] Avvio refresh completo (limit={limit}, per_server={per_server_limit}, fast={fast_mode})")
             # Collect batch mode (with gap filtering)
             batch_payload, batch_error = collectors.collect_entries(
                 limit=limit,
@@ -129,6 +130,9 @@ class EmbyLatestManager:
             # BUG FIX #1: Both caches are already saved by collectors.collect_entries
             # No need to save again here - the fix is in collectors.py
 
+            movies_count = len(batch_payload.get("movies", [])) if batch_payload else 0
+            series_count = len(batch_payload.get("series", [])) if batch_payload else 0
+            print(f"[LATEST] Refresh completato: {movies_count} film, {series_count} serie")
             return batch_payload, None
 
         finally:
@@ -205,9 +209,47 @@ class EmbyLatestManager:
         Returns:
             Enriched item dict
         """
-        # This would need to import and use enrichment functions from app.py
-        # For now, return as-is (enrichment happens during collection)
-        return item
+        from emby_latest.enrichment import enrich_entry_with_tmdb
+        from emby_latest.jellyseerr import _apply_jellyseerr_request_info, _apply_jellyseerr_direct
+        from emby_latest.builders import _safe_int
+        from emby_runtime.api_clients import _call_emby_api
+        from core.utils import get_emby_servers
+
+        if not isinstance(item, dict):
+            return item
+
+        config = self.config
+        item_title = item.get("title") or item.get("series_name") or item.get("item_id") or "?"
+        print(f"[LATEST] Aggiorna dati: {item_title} (type={item.get('item_type')}, tmdb={item.get('tmdb_id')})")
+
+        # Re-fetch ChildCount/RecursiveItemCount from Emby for series items
+        item_type = str(item.get("item_type") or "").lower()
+        if item_type in ("series", "season"):
+            server_id = item.get("server_id")
+            item_id = item.get("item_id")
+            if server_id and item_id:
+                servers = get_emby_servers(config, enabled_only=True)
+                server = next((s for s in servers if str(s.get("id")) == str(server_id)), None)
+                if server:
+                    params = {"Fields": "ChildCount,RecursiveItemCount"}
+                    success, payload = _call_emby_api(server, f"Items/{item_id}", params=params)
+                    if success and isinstance(payload, dict):
+                        child_count = _safe_int(payload.get("ChildCount"))
+                        recursive_count = _safe_int(payload.get("RecursiveItemCount"))
+                        if item_type == "series":
+                            if child_count is not None:
+                                item["season_count"] = child_count
+                            if recursive_count is not None:
+                                item["episode_count"] = recursive_count
+                        elif item_type == "season":
+                            if child_count is not None:
+                                item["episode_count"] = child_count
+
+        enriched = enrich_entry_with_tmdb(item, config, force_omdb=force_omdb)
+        _apply_jellyseerr_request_info([enriched], config)
+        if not enriched.get("jellyseerr_requested"):
+            _apply_jellyseerr_direct(enriched, config)
+        return enriched
 
     def send_notifications(
         self,
@@ -250,6 +292,20 @@ _manager: Optional[EmbyLatestManager] = None
 _manager_lock = threading.Lock()
 
 
+def _resolve_default_dependencies() -> tuple[Optional[Dict[str, Any]], Any]:
+    """Load config and DB backend when the manager is requested lazily."""
+    try:
+        from core.config_manager import _ensure_db_backend, load_config
+
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            return None, None
+        return config, _ensure_db_backend()
+    except Exception as exc:
+        print(f"[LATEST] Manager lazy init unavailable: {exc}")
+        return None, None
+
+
 def get_manager(config: Optional[Dict[str, Any]] = None, db_storage=None) -> Optional[EmbyLatestManager]:
     """
     Get or create the global EmbyLatestManager instance.
@@ -265,6 +321,11 @@ def get_manager(config: Optional[Dict[str, Any]] = None, db_storage=None) -> Opt
 
     if _manager is not None:
         return _manager
+
+    if config is None or db_storage is None:
+        default_config, default_db_storage = _resolve_default_dependencies()
+        config = config or default_config
+        db_storage = db_storage or default_db_storage
 
     if config is None or db_storage is None:
         return None

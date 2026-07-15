@@ -28,9 +28,9 @@ def build_movie_signature(item: Dict[str, Any]) -> str:
         return ""
 
     provider_ids = item.get("ProviderIds") if isinstance(item.get("ProviderIds"), dict) else {}
-    tmdb_id = _extract_provider_id(provider_ids, "Tmdb", "TMDB")
+    tmdb_id = _extract_provider_id(provider_ids, "Tmdb", "TMDB", "TheMovieDb", "TheMovieDB")
     imdb_id = _extract_provider_id(provider_ids, "Imdb", "IMDB")
-    tvdb_id = _extract_provider_id(provider_ids, "Tvdb", "TVDB")
+    tvdb_id = _extract_provider_id(provider_ids, "Tvdb", "TVDB", "TheTvdb", "TheTVDB")
 
     if tmdb_id:
         return f"tmdb:{tmdb_id}"

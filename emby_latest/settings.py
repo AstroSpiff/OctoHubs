@@ -5,18 +5,14 @@ Settings helpers for Latest Publications.
 import uuid
 from typing import Any, Dict, List
 
+from core.emby_servers import _emby_display_name
+
 from emby_latest.messages import default_message_preset
 from emby_latest.db_cache import clear_cache, delete_cache_for_server
 from emby_latest.db_state import clear_state, delete_state_for_server
 
 
 EMBY_LATEST_KEY = "EMBY_LATEST"
-
-
-def _emby_display_name(server: Dict[str, Any]) -> str:
-    if not isinstance(server, dict):
-        return "Server Emby"
-    return server.get("alias") or server.get("original_name") or server.get("name") or server.get("url") or "Server Emby"
 
 
 def _normalize_latest_presets(entries: Any) -> List[Dict[str, Any]]:
@@ -138,7 +134,7 @@ def _prepare_latest_notification_rules(
 
 
 def _load_latest_settings() -> Dict[str, Any]:
-    from app import _load_app_settings_snapshot
+    from services.manager import _load_app_settings_snapshot
 
     settings = _load_app_settings_snapshot()
     latest = settings.get(EMBY_LATEST_KEY) if isinstance(settings, dict) else {}
@@ -203,7 +199,7 @@ def _load_latest_settings() -> Dict[str, Any]:
 
 
 def _save_latest_settings(latest_settings: Dict[str, Any]) -> None:
-    from app import _load_app_settings_snapshot, _save_app_settings_snapshot
+    from services.manager import _load_app_settings_snapshot, _save_app_settings_snapshot
 
     settings = _load_app_settings_snapshot()
     existing = settings.get(EMBY_LATEST_KEY) if isinstance(settings, dict) else {}
@@ -242,7 +238,7 @@ def _save_latest_settings(latest_settings: Dict[str, Any]) -> None:
 
 
 def _clear_latest_state() -> None:
-    from app import _load_app_settings_snapshot, _save_app_settings_snapshot
+    from services.manager import _load_app_settings_snapshot, _save_app_settings_snapshot
 
     settings = _load_app_settings_snapshot()
     latest = settings.get(EMBY_LATEST_KEY) if isinstance(settings, dict) else {}

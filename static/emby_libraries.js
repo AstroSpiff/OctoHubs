@@ -448,6 +448,73 @@
             this.fetchActiveScans();
         }
     };
+
+    const WorkflowScanBridge = {
+        eventSource: null,
+        pollIntervalId: null,
+        reconnectTimer: null,
+        connect() {
+            if (this.eventSource || typeof EventSource === 'undefined') {
+                return;
+            }
+            this.eventSource = new EventSource('/api/workflow/events');
+            this.eventSource.onmessage = (event) => {
+                try {
+                    const payload = JSON.parse(event.data || '{}');
+                    this.handleStatus(payload);
+                } catch {
+                    // ignore malformed payloads
+                }
+            };
+            this.eventSource.onerror = () => {
+                if (this.eventSource) {
+                    this.eventSource.close();
+                    this.eventSource = null;
+                }
+                this.scheduleReconnect();
+            };
+        },
+        scheduleReconnect() {
+            if (this.reconnectTimer) {
+                return;
+            }
+            this.reconnectTimer = setTimeout(() => {
+                this.reconnectTimer = null;
+                this.connect();
+            }, 10000);
+        },
+        handleStatus(status) {
+            const workflowState = status && status.status ? status.status : 'idle';
+            const jobIds = Array.isArray(status?.workflow_job_ids) ? status.workflow_job_ids : [];
+            if (workflowState === 'running' && jobIds.length > 0) {
+                this.startPolling();
+                PassiveScanMonitor.fetchActiveScans();
+                return;
+            }
+            if (workflowState === 'completed' || workflowState === 'failed' || workflowState === 'idle') {
+                this.stopPolling();
+                if (this.eventSource) {
+                    this.eventSource.close();
+                    this.eventSource = null;
+                }
+                this.scheduleReconnect();
+            }
+        },
+        startPolling() {
+            if (this.pollIntervalId) {
+                return;
+            }
+            this.pollIntervalId = setInterval(() => {
+                PassiveScanMonitor.fetchActiveScans();
+            }, 5000);
+        },
+        stopPolling() {
+            if (this.pollIntervalId) {
+                clearInterval(this.pollIntervalId);
+                this.pollIntervalId = null;
+            }
+        }
+    };
     let groupedListenerAttached = false;
     let groupedDragAttached = false;
     let serverDragAttached = false;
@@ -1287,7 +1354,8 @@
             loadAssociationManager,
             loadScanHistory,
             setupServerDragAndDrop,
-            PassiveScanMonitor
+            PassiveScanMonitor,
+            WorkflowScanBridge
         };
     };
 

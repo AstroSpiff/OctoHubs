@@ -57,6 +57,8 @@ class EmbyLibrariesManager:
             ctype = entry.get("collection_type") or ""
             gname = entry.get("group_name") or ""
             pos = order_map.get((ctype, gname))
+            if pos is None:
+                pos = order_map.get(("", gname)) or order_map.get((None, gname))
             return (pos is None, pos or 0, gname)
         grouped.sort(key=_group_key)
         return {"success": True, "groups": grouped}, 200

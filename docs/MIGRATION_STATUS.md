@@ -1,12 +1,12 @@
 # Stato Migrazione Flask → FastAPI
 
-**Data ultimo aggiornamento:** 2026-01-11
+**Data ultimo aggiornamento:** 2026-06-28
 
 ---
 
 ## Riepilogo Esecutivo
 
-**Stato attuale:** **MIGRAZIONE COMPLETATA AL 100% - APPLICAZIONE 100% FASTAPI** 🎉
+**Stato attuale:** **MIGRAZIONE COMPLETATA - APPLICAZIONE FASTAPI ATTIVA** 🎉
 
 Flask è stato completamente rimosso dall'applicazione. Tutte le route sono native FastAPI.
 
@@ -17,7 +17,8 @@ Flask è stato completamente rimosso dall'applicazione. Tutte le route sono nati
 * ✅ Authentication: core/auth.py (native, no Flask-Login)
 * ✅ Static Files: /static
 * ✅ Templates: Jinja2Templates (FastAPI native)
-* ✅ Nessuna dipendenza WSGI/Flask residua
+* ✅ Nessuna dipendenza runtime WSGI/Flask residua
+* ✅ Validazione CSRF session-based riattivata
 
 ---
 
@@ -33,11 +34,11 @@ Su richiesta, è stata eseguita un'analisi completa del codice sorgente per veri
 #### Risultati
 
 *   **Dipendenze**: La libreria `Flask` non è presente in `requirements.txt`.
-*   **Codice Sorgente**: Non è stato trovato alcun codice Python **attivo** che importi o utilizzi Flask. Le uniche corrispondenze rilevate si trovano all'interno di commenti (`#`) che documentano la migrazione già avvenuta (es. `Migrated from Flask-Login`) o in righe di codice deliberatamente commentate.
+*   **Codice Sorgente**: Non è stato trovato alcun codice Python **attivo** che importi o utilizzi Flask. Restano possibili riferimenti storici nei commenti o nella documentazione della migrazione, ma non fanno parte del runtime.
 
 #### Conclusione Audit
 
-**L'analisi conferma con certezza che l'applicazione è stata migrata completamente a FastAPI.** Non esistono endpoint, logiche o dipendenze basate su Flask. Lo stato di "MIGRAZIONE COMPLETATA AL 100%" è corretto e verificato.
+**L'analisi conferma che l'applicazione è migrata a FastAPI per il runtime corrente.** Non esistono endpoint o dipendenze applicative basate su Flask; eventuali riferimenti residui sono storici o documentali.
 
 ---
 
@@ -50,7 +51,7 @@ Su richiesta, è stata eseguita un'analisi completa del codice sorgente per veri
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                     FastAPI App (asgi.py)                    │
+│                     FastAPI App (asgi.py entrypoint)         │
 │                                                               │
 │  ✅ Tutte le route (GET/POST)                                │
 │  ✅ Session Management: Starlette SessionMiddleware          │
@@ -77,9 +78,9 @@ Su richiesta, è stata eseguita un'analisi completa del codice sorgente per veri
 
 ## ✅ Checklist Pulizia (Completata)
 
-- [x] Rimuovere `WSGIMiddleware` da `asgi.py`
+- [x] Rimuovere `WSGIMiddleware` dall'entrypoint ASGI
 - [x] Aggiornare import FastAPI/utility
-- [x] Ripulire `app.py` da codice Flask
+- [x] Rimuovere entrypoint legacy (monolite)
 - [x] Rimuovere Flask da `requirements.txt`
 - [x] Rimuovere `wsgi.py`
 - [x] Aggiornare stato migrazione
@@ -89,9 +90,9 @@ Su richiesta, è stata eseguita un'analisi completa del codice sorgente per veri
 ## Ordine di Esecuzione Raccomandato
 
 ✅ Prima: Backup del progetto
-✅ Task 1: Rimuovere WSGIMiddleware da asgi.py
+✅ Task 1: Rimuovere WSGIMiddleware dall'entrypoint ASGI
 ✅ Task 2: Aggiornare import (verificare che tutto compili)
-✅ Task 3: Ripulire app.py da Flask code
+✅ Task 3: Rimuovere entrypoint legacy (monolite)
 ✅ Verificare: Avviare l'app e testare le route principali:
 - / (dashboard)
 - /login e /logout
@@ -111,7 +112,6 @@ Dopo ogni task, eseguire:
 
 ```
 python3 -m py_compile asgi.py
-python3 -m py_compile app.py
 
 uvicorn asgi:app --reload --host 0.0.0.0 --port 8000
 
@@ -125,7 +125,7 @@ curl http://localhost:8000/api/emby/active-scans
 ## Note Importanti
 
 ⚠️ NON modificare:
-- Le funzioni helper in app.py che sono importate da asgi.py
+- Le funzioni helper nei moduli dedicati senza aggiornare gli import
 - La configurazione di SessionMiddleware
 - I template HTML (funzionano già con FastAPI)
 - Le route API esistenti

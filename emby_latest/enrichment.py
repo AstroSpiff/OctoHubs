@@ -99,13 +99,14 @@ def enrich_entry_with_tmdb(
     Returns:
         Enriched entry dict
     """
-    from app import (
+    from .enrichment_sources import (
         _fetch_tmdb_images,
+        _fetch_tmdb_id_from_external,
         _fetch_mdblist_ratings_by_imdb,
         _fetch_mdblist_tv_series_with_seasons,
         _fetch_omdb_ratings,
         _fetch_omdb_series_by_title,
-        _fetch_trakt_rating
+        _fetch_trakt_rating,
     )
     from emby_latest.utils import _get_omdb_cache_hours
     from emby_latest.utils import is_blank_value
@@ -115,7 +116,23 @@ def enrich_entry_with_tmdb(
 
     tmdb_id = entry.get("tmdb_id")
     media_type = "movie" if entry.get("item_type") == "Movie" else "tv"
+    _title = entry.get("title") or entry.get("series_name") or str(tmdb_id or "?")
+    print(f"[LATEST] Arricchimento {media_type}: {_title} (tmdb={tmdb_id})")
     api_key = config.get("TMDB_API_KEY") if isinstance(config, dict) else ""
+
+    # Se manca il TMDB ID, prova a risolverlo da IMDb ID o TVDb ID
+    if not tmdb_id and api_key:
+        language = config.get("TMDB_LANGUAGE") or "it-IT"
+        imdb_id_lookup = str(entry.get("imdb_id") or "")
+        tvdb_id_lookup = str(entry.get("tvdb_id") or "")
+        resolved = ""
+        if imdb_id_lookup:
+            resolved = _fetch_tmdb_id_from_external(imdb_id_lookup, media_type, api_key, language, "imdb_id")
+        if not resolved and tvdb_id_lookup and media_type == "tv":
+            resolved = _fetch_tmdb_id_from_external(tvdb_id_lookup, media_type, api_key, language, "tvdb_id")
+        if resolved:
+            tmdb_id = resolved
+            entry["tmdb_id"] = resolved
 
     # TMDB fields to fetch
     tmdb_fields = (
@@ -128,9 +145,18 @@ def enrich_entry_with_tmdb(
     if media_type == "tv":
         tmdb_fields = tmdb_fields + ("creators",)
 
+    def _has_non_latin_people() -> bool:
+        from emby_latest.enrichment_sources import _is_latin_text
+        for field in ("cast", "directors", "creators"):
+            for name in (entry.get(field) or []):
+                if isinstance(name, str) and not _is_latin_text(name):
+                    return True
+        return False
+
     tmdb_imdb_id = ""
-    should_fetch_tmdb = tmdb_id and api_key and any(
-        is_blank_value(entry.get(field)) for field in tmdb_fields
+    should_fetch_tmdb = tmdb_id and api_key and (
+        any(is_blank_value(entry.get(field)) for field in tmdb_fields)
+        or _has_non_latin_people()
     )
 
     if should_fetch_tmdb:
@@ -172,11 +198,14 @@ def enrich_entry_with_tmdb(
         if should_fetch_ratings and any(is_blank_value(entry.get(field)) for field in rating_fields):
             # Try MDBList first (with Metacritic averaging for TV series)
             if mdblist_keys and safe_imdb_id:
+                print(f"[MDBLIST] Trying MDBList for TV IMDb {safe_imdb_id}, keys available: {len(mdblist_keys)}")
                 ratings_payload = _fetch_mdblist_tv_series_with_seasons(safe_imdb_id, mdblist_keys)
+                print(f"[MDBLIST] TV result: {ratings_payload}")
 
             # Fallback to OMDb if MDBList didn't return data or keys not available
             if not ratings_payload and omdb_keys:
                 if safe_imdb_id:
+                    print(f"[MDBLIST] Falling back to OMDb for TV IMDb {safe_imdb_id}")
                     ratings_payload = _fetch_omdb_ratings(safe_imdb_id, omdb_keys, expected_type="series")
                 if not ratings_payload:
                     title = entry.get("title") or entry.get("series_name") or ""

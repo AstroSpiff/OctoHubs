@@ -17,4 +17,4 @@ echo "Starting OctoHub with MEGA LOGGING"
 echo "Database: ${OCTOHUB_DB_NAME}@${OCTOHUB_DB_HOST}:${OCTOHUB_DB_PORT}"
 echo "=========================================="
 
-./venv/bin/python -u -m uvicorn asgi:fastapi_app --reload --host 127.0.0.1 --port 5050
+./venv/bin/python -u -m uvicorn asgi:app --reload --host 127.0.0.1 --port 5050

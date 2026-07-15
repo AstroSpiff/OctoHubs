@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 
 def _get_db_backend():
     """Get database backend instance."""
-    from app import _ensure_db_backend
+    from core.config_manager import _ensure_db_backend
     return _ensure_db_backend()
 
 
@@ -83,7 +83,7 @@ def get_latest_date_from_state(
     Returns:
         Most recent datetime from state, or None if not found
     """
-    from app import _parse_date_value
+    from core.utils import _parse_date_value
 
     if not isinstance(latest_state, dict):
         return None

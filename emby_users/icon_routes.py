@@ -2,7 +2,7 @@
 
 from typing import Any, Callable, Optional
 
-from fastapi import APIRouter, File, Form, Request, UploadFile, Depends
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
 router = APIRouter()
@@ -10,17 +10,20 @@ router = APIRouter()
 _require_user: Optional[Callable[[Request], Any]] = None
 _get_current_user: Optional[Callable[[Request], Any]] = None
 _get_emby_user_manager: Optional[Callable[[], Any]] = None
+_validate_csrf: Optional[Callable[[Request, Optional[str]], bool]] = None
 
 
 def init_emby_icon_routes(
     get_current_user: Callable[[Request], Any],
     require_user: Callable[[Request], Any],
-    get_emby_user_manager: Callable[[], Any]
+    get_emby_user_manager: Callable[[], Any],
+    validate_csrf: Callable[[Request, Optional[str]], bool],
 ) -> None:
-    global _require_user, _get_current_user, _get_emby_user_manager
+    global _require_user, _get_current_user, _get_emby_user_manager, _validate_csrf
     _require_user = require_user
     _get_current_user = get_current_user
     _get_emby_user_manager = get_emby_user_manager
+    _validate_csrf = validate_csrf
 
 
 def _require_user_dep(request: Request):
@@ -39,6 +42,13 @@ def _get_manager():
     if _get_emby_user_manager is None:
         raise RuntimeError("Emby icon routes not initialized: get_emby_user_manager missing")
     return _get_emby_user_manager()
+
+
+def _validate_csrf_dep(request: Request) -> None:
+    if _validate_csrf is None:
+        raise RuntimeError("Emby icon routes not initialized: validate_csrf missing")
+    if not _validate_csrf(request, None):
+        raise HTTPException(status_code=403, detail="CSRF token non valido")
 
 
 @router.get("/api/emby/icons/config")
@@ -77,6 +87,7 @@ async def api_emby_icons_profile_save(
     profile_id: str = Form(""),
     label: str = Form(...),
     is_group_profile: bool = Form(False),
+    _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()
@@ -89,6 +100,7 @@ async def api_emby_icons_profile_save(
 @router.delete("/api/emby/icons/profile")
 async def api_emby_icons_profile_delete(
     profile_id: str = Form(...),
+    _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()
@@ -102,7 +114,8 @@ async def api_emby_icons_profile_delete(
 async def api_emby_icons_binding_save(
     target_type: str = Form(...),
     target_id: str = Form(...),
-    profile_id: str = Form(...),
+    profile_id: str = Form(""),
+    _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()
@@ -117,6 +130,7 @@ async def api_emby_icons_rule_save(
     profile_id: str = Form(...),
     column_key: str = Form(...),
     file: UploadFile = File(...),
+    _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()
@@ -131,6 +145,7 @@ async def api_emby_icons_rule_save(
 async def api_emby_icons_rule_delete(
     profile_id: str = Form(...),
     column_key: str = Form(...),
+    _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()

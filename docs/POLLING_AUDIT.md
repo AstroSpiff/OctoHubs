@@ -7,7 +7,7 @@ Report completo di tutti i sistemi che usano ancora polling dopo l'implementazio
 ## 🔴 POLLING DA RIMUOVERE (Ridondante con WebSocket)
 
 ### 1. **Scan Progress Polling - Backend** ❌ RIMUOVERE
-**File**: `app.py` linee 3136-3228, 9015-9019
+**File**: `legacy monolith` linee 3136-3228, 9015-9019
 **Funzione**: `_poll_library_scan_progress()`
 **Intervallo**: 3 secondi
 **Cosa fa**: Polling dello stato scan tramite `/Library/VirtualFolders/Query`
@@ -18,7 +18,7 @@ Report completo di tutti i sistemi che usano ancora polling dopo l'implementazio
 
 **Codice da rimuovere**:
 ```python
-# Linea 9015-9019 in app.py
+# Linea 9015-9019 in legacy monolith
 def _poll_scan_progress():
     _poll_library_scan_progress(job_id, target_server, library_ids)
 
@@ -27,7 +27,7 @@ threading.Thread(target=_poll_scan_progress, daemon=True).start()
 
 **Codice da rimuovere**:
 ```python
-# Linee 3136-3228 in app.py
+# Linee 3136-3228 in legacy monolith
 def _poll_library_scan_progress(job_id: str, server: dict, library_ids: list):
     # Tutta la funzione può essere rimossa
 ```
@@ -106,7 +106,7 @@ def _poll_library_scan_progress(job_id: str, server: dict, library_ids: list):
 ---
 
 ### 7. **Strm Guard Manager - Backend** ✅ MANTENERE
-**File**: `app.py` linea 2683 (classe `EmbyStrmGuardManager`)
+**File**: `legacy monolith` linea 2683 (classe `EmbyStrmGuardManager`)
 **Intervallo**: 5 secondi (`EMBY_STRM_GUARD_POLL_SECONDS`)
 **Cosa fa**: Monitora file .strm per protezione
 **Perché mantenere**:
@@ -119,7 +119,7 @@ def _poll_library_scan_progress(job_id: str, server: dict, library_ids: list):
 ---
 
 ### 8. **Trakt Device Polling - Backend** ✅ MANTENERE
-**File**: `app.py` linea 12287 (`trakt_device_poll`)
+**File**: `legacy monolith` linea 12287 (`trakt_device_poll`)
 **Cosa fa**: OAuth device flow per Trakt.tv
 **Perché mantenere**:
 - Standard OAuth device flow richiede polling
@@ -130,7 +130,7 @@ def _poll_library_scan_progress(job_id: str, server: dict, library_ids: list):
 ---
 
 ### 9. **RSS Import Polling - Backend** ✅ MANTENERE
-**File**: `app.py` linea 10861-10894
+**File**: `legacy monolith` linea 10861-10894
 **Intervallo**: Configurabile (default 30 minuti)
 **Cosa fa**: Poll RSS feed per nuovi contenuti
 **Perché mantenere**:
@@ -145,22 +145,22 @@ def _poll_library_scan_progress(job_id: str, server: dict, library_ids: list):
 
 | Sistema | File | Stato | Azione |
 |---------|------|-------|--------|
-| **Scan Progress Polling (Backend)** | app.py:3136-3228 | ❌ Ridondante | **RIMUOVERE** |
+| **Scan Progress Polling (Backend)** | legacy monolith:3136-3228 | ❌ Ridondante | **RIMUOVERE** |
 | **Scan Job Polling (Frontend)** | emby.js:458-563 | ❌ Ridondante | **SOSTITUIRE con WebSocket** |
 | **Active Scans Polling (Frontend)** | emby.js:4219 | ⚠️ Parzialmente | **CONVERTIRE a WebSocket + fetch iniziale** |
 | Latest Progress Fetch | emby.js:1486 | ✅ Necessario | Mantenere |
 | STRM Guard Status | emby.js:5464 | ✅ Necessario | Mantenere |
 | SSE Fallback | emby.js:5134-5235 | ✅ Fallback | Mantenere |
-| Strm Guard Manager | app.py:2683 | ✅ Necessario | Mantenere |
-| Trakt Device Poll | app.py:12287 | ✅ OAuth standard | Mantenere |
-| RSS Import Poll | app.py:10861 | ✅ RSS limitation | Mantenere |
+| Strm Guard Manager | legacy monolith:2683 | ✅ Necessario | Mantenere |
+| Trakt Device Poll | legacy monolith:12287 | ✅ OAuth standard | Mantenere |
+| RSS Import Poll | legacy monolith:10861 | ✅ RSS limitation | Mantenere |
 
 ---
 
 ## 🎯 Piano di Rimozione Polling
 
 ### Priority 1 (Rimuovere Subito)
-1. ✅ Rimuovere `_poll_library_scan_progress()` da app.py (linee 3136-3228)
+1. ✅ Rimuovere `_poll_library_scan_progress()` da legacy monolith (linee 3136-3228)
 2. ✅ Rimuovere chiamata in `scan_library_tracked()` (linee 9015-9019)
 
 ### Priority 2 (Sostituire con WebSocket)

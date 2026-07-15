@@ -19,6 +19,7 @@ data/
 logs/
 secrets/
 instance/
+docker-data/
 nginx/ssl/
 nginx/logs/
 certs/
@@ -34,9 +35,11 @@ docker-compose.override.yml
 .pytest_cache/
 .coverage
 htmlcov/
+*.bak
+static/test-*.txt
+static/test-cache.txt
 
 # AI Context
 CODEX.md
-CLAUDE.md
 .claude/
 .gemini/

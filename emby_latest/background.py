@@ -2,7 +2,7 @@
 Background tasks for Latest Publications system.
 
 This module handles background refresh operations with proper DB persistence.
-Migrated from app.py lines 4690-4919.
+Migrated from legacy monolith background tasks.
 
 CRITICAL BUG FIXES:
 - Bug #1: refresh_full now saves BOTH batch and feed caches to DB

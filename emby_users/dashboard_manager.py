@@ -1,10 +1,24 @@
 import copy
 import logging
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional, Tuple, Callable
 
 from .api_client import _fetch_emby_users_list
 
 logger = logging.getLogger(__name__)
+
+
+def _is_stale_running_sync(updated_at: Optional[str], max_age_minutes: int = 30) -> bool:
+    if not updated_at:
+        return False
+    try:
+        normalized = updated_at.replace("Z", "+00:00")
+        timestamp = datetime.fromisoformat(normalized)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - timestamp).total_seconds() > max_age_minutes * 60
+    except Exception:
+        return False
 
 
 class UsersDashboardManager:
@@ -202,6 +216,13 @@ class UsersDashboardManager:
                 group_plain = _get_plain_password(gid)
                 settings_entry = settings_group_map.get(gid)
                 group_settings_saved = bool(settings_entry and settings_entry.get("settings"))
+                last_sync_status = g_settings.get("last_sync_status")
+                last_sync_at = g_settings.get("last_sync_at")
+                last_sync_message = g_settings.get("last_sync_message")
+                if last_sync_status == "running" and _is_stale_running_sync(last_sync_at):
+                    last_sync_status = "interrupted"
+                    last_sync_message = "Sincronizzazione interrotta o processo riavviato"
+
                 grouped_users[gid] = {
                     "id": gid,
                     "name": custom_names.get(gid) or name,
@@ -211,6 +232,19 @@ class UsersDashboardManager:
                     "auto_sync": g_settings.get("auto_sync", False),
                     "sync_type": g_settings.get("sync_type", "merge"),
                     "sync_resume": g_settings.get("sync_resume", False),
+                    "sync_playstate": g_settings.get("sync_playstate", True),
+                    "sync_config": g_settings.get("sync_config", False),
+                    "sync_library_access": g_settings.get("sync_library_access", False),
+                    "sync_favorites": g_settings.get("sync_favorites", False),
+                    "sync_playlists": g_settings.get("sync_playlists", False),
+                    "config_categories": g_settings.get("config_categories", []),
+                    "playstate_bootstrap_done": g_settings.get("playstate_bootstrap_done", False),
+                    "favorites_bootstrap_done": g_settings.get("favorites_bootstrap_done", False),
+                    "playlists_bootstrap_done": g_settings.get("playlists_bootstrap_done", False),
+                    "last_sync_at": last_sync_at,
+                    "last_sync_status": last_sync_status,
+                    "last_sync_message": last_sync_message,
+                    "last_sync_results": g_settings.get("last_sync_results"),
                     "password_saved": bool(group_plain),
                     "password_updated_at": pw_entry.get("updated_at") if pw_entry else None,
                     "password_status": "saved" if group_plain else "missing",

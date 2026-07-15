@@ -383,9 +383,10 @@ class WorkflowManager:
             "start_time": None,
             "current_step_index": -1,
             "steps": [],
-            "error": None
+            "error": None,
+            "workflow_job_ids": []
         }
-        # Callbacks to be injected from app.py
+        # Callbacks injected from runtime setup
         self._trigger_scan_func = None
         self._check_scan_func = None
         self._trigger_probe_func = None
@@ -447,14 +448,21 @@ class WorkflowManager:
             # Inizializza gli step in base al workflow type
             steps = self._initialize_steps(workflow_type)
 
+            from datetime import timezone
+
+            job_ids = context.get("workflow_job_ids") if isinstance(context, dict) else []
+            if isinstance(job_ids, (str, int)):
+                job_ids = [job_ids]
+
             self._status = {
                 "status": "running",
                 "workflow_type": workflow_type,
                 "workflow_id": workflow_id,
-                "start_time": datetime.now().isoformat(),
+                "start_time": datetime.now(timezone.utc).isoformat(),
                 "current_step_index": -1,
                 "steps": steps,
-                "error": None
+                "error": None,
+                "workflow_job_ids": job_ids
             }
             self._stop_event.clear()
 
@@ -686,6 +694,14 @@ class WorkflowManager:
 
         if not success:
             raise Exception("Impossibile avviare la scansione")
+
+        # Espone eventuali job_id del workflow per la UI (SSE)
+        if isinstance(context, dict):
+            with self._lock:
+                job_ids = context.get("workflow_job_ids") or context.get("workflow_job_id") or []
+                if isinstance(job_ids, (str, int)):
+                    job_ids = [job_ids]
+                self._status["workflow_job_ids"] = job_ids
 
         # Il progress viene mostrato nelle barre individuali delle librerie nella dashboard
         self._update_step_status(step_index, "running", "Scansione file in corso...", 30)

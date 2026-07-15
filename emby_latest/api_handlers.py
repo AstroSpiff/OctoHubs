@@ -29,7 +29,7 @@ def build_latest_snapshot_payload(
         Tuple of (payload_dict, http_status_code)
     """
     from emby_latest import get_manager
-    from app import load_config, _db_enabled
+    from core.config_manager import load_config, _db_enabled
 
     # Get manager instance
     manager = get_manager()

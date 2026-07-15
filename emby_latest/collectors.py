@@ -52,7 +52,7 @@ from emby_latest.builders import (
     _determine_latest_status,
     _limit_latest_by_server,
 )
-from emby_latest.jellyseerr import _apply_jellyseerr_request_info
+from emby_latest.jellyseerr import _apply_jellyseerr_request_info, _sync_jellyseerr_to_db
 from emby_latest.media import get_resolution_rules
 from emby_latest.settings import _default_latest_settings, _load_latest_settings
 
@@ -62,7 +62,7 @@ from core.utils import (
     get_emby_servers,
 )
 
-# NOTE: Some config helpers still live in app.py; imports are lazy inside functions.
+# NOTE: Some config helpers are imported lazily inside functions to avoid circular dependencies.
 
 
 def collect_entries(
@@ -106,11 +106,8 @@ def collect_entries(
     CRITICAL: This function fixes Bug #3 by ensuring batch_id is generated
     consistently using the SAME logic regardless of apply_batch_gap setting.
     """
-    # Lazy imports to avoid circular dependency with app.py (config helpers)
-    from app import (
-        load_config,
-        _db_enabled,
-    )
+    # Lazy imports to avoid circular dependency with config helpers
+    from core.config_manager import load_config, _db_enabled
 
     def _coerce_int(value: Any) -> Optional[int]:
         try:
@@ -356,6 +353,9 @@ def collect_entries(
         server_id = server.get("id")
         if not server_id:
             continue
+
+        server_label = server.get("alias") or server.get("name") or str(server_id)
+        print(f"[LATEST] Raccolta da server: {server_label} (mode={'batch' if apply_batch_gap else 'feed'})")
 
         # Caches for series/season oldest dates
         series_oldest_cache: Dict[str, Optional[datetime]] = {}
@@ -1371,30 +1371,103 @@ def collect_entries(
                 message="Arricchimento rating esterni"
             )
 
+    # Campi di enrichment condivisibili tra entry con stesso tmdb_id (da fonti esterne)
+    _SHARED_ENRICHMENT_FIELDS = (
+        "tmdb_id",
+        "tmdb_poster_url", "tmdb_backdrop_url", "tmdb_logo_url",
+        "tmdb_banner_url", "tmdb_thumb_url",
+        "tmdb_rating", "tmdb_votes",
+        "imdb_id", "tvdb_id", "trakt_id",
+        "creators",
+        "imdb_rating", "imdb_votes", "metacritic_rating",
+        "rt_tomatometer", "rt_audience", "letterboxd_rating",
+        "trakt_rating", "trakt_votes",
+        "omdb_fetched_at",
+    )
+
     def _enrich_latest_entries(entries):
-        """Enrich entries with TMDB/OMDb/Trakt data"""
+        """Enrich entries with TMDB/OMDb/Trakt data, deduplicating by tmdb_id."""
         if not isinstance(entries, list) or not entries:
             return entries
         nonlocal progress_completed
+
+        def _title_cache_key(e: dict) -> str:
+            title = str(e.get("title") or e.get("series_name") or "").lower().strip()
+            year = str(e.get("year") or "")
+            return f"{title}:{year}" if title else ""
+
+        def _apply_cached(e: dict, cached: dict) -> None:
+            for field, value in cached.items():
+                if value is not None and not e.get(field):
+                    e[field] = value
+
+        # Pre-fill: propaga il tmdb_id alle copie che ne sono prive.
+        # Se lo stesso film esiste su più server e almeno uno ha il tmdb_id,
+        # lo assegniamo agli altri in anticipo per evitare chiamate API ridondanti.
+        title_to_tmdb: dict = {}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            tid = str(entry.get("tmdb_id") or "")
+            if not tid:
+                continue
+            tk = _title_cache_key(entry)
+            if tk and tk not in title_to_tmdb:
+                title_to_tmdb[tk] = tid
+
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("tmdb_id"):
+                continue
+            tk = _title_cache_key(entry)
+            if tk and tk in title_to_tmdb:
+                entry["tmdb_id"] = title_to_tmdb[tk]
+
+        # Cache dei dati enrichment per tmdb_id: evita chiamate API ridondanti
+        enriched_by_tmdb: dict = {}
+
         for idx, entry in enumerate(entries):
             if not isinstance(entry, dict):
                 continue
-            entries[idx] = enrich_entry_with_tmdb(
-                entry,
-                config,
-                force_omdb=force_omdb,
-                omdb_cache_hours=omdb_cache_hours
-            )
+
+            tmdb_id = str(entry.get("tmdb_id") or "")
+
+            if tmdb_id and tmdb_id in enriched_by_tmdb:
+                # Copia i dati già arricchiti senza ripetere le chiamate API
+                _apply_cached(entry, enriched_by_tmdb[tmdb_id])
+                entries[idx] = entry
+            else:
+                entries[idx] = enrich_entry_with_tmdb(
+                    entry,
+                    config,
+                    force_omdb=force_omdb,
+                    omdb_cache_hours=omdb_cache_hours
+                )
+                # Salva i dati arricchiti per riutilizzarli con entry duplicate
+                resolved_tmdb_id = str(entries[idx].get("tmdb_id") or tmdb_id)
+                if resolved_tmdb_id:
+                    enriched_snapshot = {
+                        f: entries[idx].get(f)
+                        for f in _SHARED_ENRICHMENT_FIELDS
+                        if entries[idx].get(f) is not None
+                    }
+                    enriched_by_tmdb[resolved_tmdb_id] = enriched_snapshot
+                    # Aggiorna la mappa title→tmdb_id per eventuali copie successive
+                    tk = _title_cache_key(entries[idx])
+                    if tk and tk not in title_to_tmdb:
+                        title_to_tmdb[tk] = resolved_tmdb_id
+
             if enrich and progress_total and progress_tracker:
                 progress_completed += 1
                 progress_tracker.update(completed=progress_completed)
         return entries
 
+    print(f"[LATEST] Arricchimento: {len(final_movies)} film, {len(final_series)} serie")
     if enrich:
         final_movies = _enrich_latest_entries(final_movies)
         final_series = _enrich_latest_entries(final_series)
 
-    # Apply Jellyseerr request info
+    # Apply Jellyseerr request info (auto-sync from API if DB is empty)
+    _sync_jellyseerr_to_db(config)
     _apply_jellyseerr_request_info(final_movies, config)
     _apply_jellyseerr_request_info(final_series, config)
 
@@ -1431,7 +1504,6 @@ def collect_entries(
         db_state.save_state(latest_state)
 
     return final_payload, None
-
 
 def _build_latest_cache_maps(payload: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """

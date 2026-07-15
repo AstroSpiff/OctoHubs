@@ -5,6 +5,24 @@
  * delle ricerche automatiche (scan results).
  */
 
+const __searchHistoryUtils = window.octohubUtils || {};
+const __searchHistoryCsrfFetch = __searchHistoryUtils.csrfFetch || ((url, options = {}) => {
+    const opts = options || {};
+    const headers = new Headers(opts.headers || {});
+    const tokenEl = document.querySelector('meta[name="csrf-token"]');
+    const token = tokenEl ? tokenEl.getAttribute('content') : '';
+    if (token && !headers.has('X-CSRFToken')) {
+        headers.set('X-CSRFToken', token);
+    }
+    if (!headers.has('X-Requested-With')) {
+        headers.set('X-Requested-With', 'XMLHttpRequest');
+    }
+    if (!headers.has('Accept')) {
+        headers.set('Accept', 'application/json');
+    }
+    return fetch(url, { credentials: 'same-origin', ...opts, headers });
+});
+
 class SearchHistoryManager {
     constructor() {
         this.container = null;
@@ -23,7 +41,7 @@ class SearchHistoryManager {
 
     async loadSearches() {
         try {
-            const response = await csrfFetch('/api/search/manual/history');
+            const response = await __searchHistoryCsrfFetch('/api/search/manual/history');
             if (!response.ok) {
                 throw new Error('Errore caricamento storico');
             }
@@ -196,13 +214,13 @@ class SearchHistoryManager {
     }
 
     async deleteSearch(searchId) {
-        const confirmed = await openConfirmDialog('Eliminare questa ricerca e tutti i suoi risultati?');
+        const confirmed = await this.confirmAction('Eliminare questa ricerca e tutti i suoi risultati?');
         if (!confirmed) {
             return;
         }
 
         try {
-            const response = await csrfFetch(`/api/search/manual/history/${searchId}`, {
+            const response = await __searchHistoryCsrfFetch(`/api/search/manual/history/${searchId}`, {
                 method: 'DELETE'
             });
 
@@ -221,20 +239,20 @@ class SearchHistoryManager {
     refresh() {
         this.loadSearches();
     }
-}
 
-const openConfirmDialog = (message, title = 'Conferma') => {
-    if (window.octohubUtils && typeof window.octohubUtils.openConfirmModal === 'function') {
-        return window.octohubUtils.openConfirmModal(title, message);
-    }
-    const fallbackMsg = message || 'Modale non disponibile: azione annullata.';
-    if (typeof window.showToast === 'function') {
-        window.showToast(fallbackMsg, 'warning');
+    confirmAction(message, title = 'Conferma') {
+        if (window.octohubUtils && typeof window.octohubUtils.openConfirmModal === 'function') {
+            return window.octohubUtils.openConfirmModal(title, message);
+        }
+        const fallbackMsg = message || 'Modale non disponibile: azione annullata.';
+        if (typeof window.showToast === 'function') {
+            window.showToast(fallbackMsg, 'warning');
+            return Promise.resolve(false);
+        }
+        console.warn(fallbackMsg);
         return Promise.resolve(false);
     }
-    console.warn(fallbackMsg);
-    return Promise.resolve(false);
-};
+}
 
 // Inizializza quando il DOM è pronto
 const searchHistoryManager = new SearchHistoryManager();

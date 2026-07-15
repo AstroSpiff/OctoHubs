@@ -2,7 +2,7 @@
 Message building for Latest Publications notifications.
 
 This module handles message template resolution and rendering.
-Migrated from app.py message functions.
+Migrated from legacy monolith message functions.
 """
 
 import html
@@ -89,6 +89,51 @@ def format_size(value: Optional[int]) -> str:
     return f"{mb:.0f} MB"
 
 
+def _format_episode_ranges(episode_codes: list) -> str:
+    """Format episode codes into compact range notation.
+
+    Groups by season, finds consecutive ranges within each season.
+    Examples:
+      ["S01E01", "S01E02", "S01E05"]  -> "S01E01-02 | S01E05"
+      ["S01E01", "S01E02", "S01E03"]  -> "S01E01-03"
+      ["S01E01", "S02E01", "S02E02"]  -> "S01E01 | S02E01-02"
+    """
+    import re
+    from itertools import groupby
+
+    parsed = []
+    for code in episode_codes:
+        m = re.match(r"S(\d+)E(\d+)", code)
+        if m:
+            parsed.append((int(m.group(1)), int(m.group(2))))
+        else:
+            return ", ".join(episode_codes)
+
+    if not parsed:
+        return ""
+
+    parsed.sort()
+    result_parts = []
+    for season, group in groupby(parsed, key=lambda x: x[0]):
+        ep_list = sorted(set(e for _, e in group))
+        start = end = ep_list[0]
+        for ep in ep_list[1:]:
+            if ep == end + 1:
+                end = ep
+            else:
+                if start == end:
+                    result_parts.append(f"S{season:02d} E{start:02d}")
+                else:
+                    result_parts.append(f"S{season:02d} E{start:02d}-{end:02d}")
+                start = end = ep
+        if start == end:
+            result_parts.append(f"S{season:02d} E{start:02d}")
+        else:
+            result_parts.append(f"S{season:02d} E{start:02d}-{end:02d}")
+
+    return " | ".join(result_parts)
+
+
 def build_message(
     item: Dict[str, Any],
     template: str,
@@ -151,14 +196,10 @@ def build_message(
     else:
         studios_text = str(studios or "")
 
-    # Format cast and directors
+    # Format cast, directors and creators
     cast_raw = list(item.get("cast") or []) if isinstance(item.get("cast"), list) else []
     director_raw = list(item.get("directors") or []) if isinstance(item.get("directors"), list) else []
     creator_raw = list(item.get("creators") or []) if isinstance(item.get("creators"), list) else []
-
-    # For series/episodes, use creators as directors
-    if type_token in ("series", "episode"):
-        director_raw = creator_raw
 
     cast_list = []
     for entry in cast_raw:
@@ -169,6 +210,12 @@ def build_message(
     for entry in director_raw:
         if entry and str(entry) not in director_list:
             director_list.append(str(entry))
+
+    creator_list = []
+    for entry in creator_raw:
+        if entry and str(entry) not in creator_list:
+            creator_list.append(str(entry))
+    creators_text = " · ".join(creator_list)
 
     cast_default_limit = 5
     cast_text = " · ".join(cast_list[:cast_default_limit])
@@ -300,7 +347,9 @@ def build_message(
         "cast_all": cast_full_text,
         "director": director_text,
         "directors": directors_text,
+        "creators": creators_text,
         "episodes": ", ".join(episode_codes),
+        "episodes_compact": _format_episode_ranges(episode_codes),
         "episodes_with_titles": " · ".join(episode_titles),
         "library": str(item.get("library_name") or ""),
         "library_name": str(item.get("library_name") or ""),

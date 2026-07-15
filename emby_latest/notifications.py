@@ -2,10 +2,11 @@
 Notification dispatch for Latest Publications.
 
 This module handles sending notifications via configured channels (Telegram).
-Migrated from app.py notification logic.
+Migrated from the legacy monolith notification logic.
 """
 
 import requests
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -31,13 +32,15 @@ def _telegram_api_request(bot_token: str, method: str, params: Dict[str, Any]) -
 
     try:
         response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        payload = response.json()
-    except (requests.RequestException, ValueError) as exc:
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+    except requests.RequestException as exc:
         return False, f"Errore richiesta Telegram: {exc}", {}
 
     if not payload.get("ok"):
-        return False, payload.get("description") or "Errore Telegram.", {}
+        return False, payload.get("description") or "Errore Telegram.", payload.get("parameters") or {}
 
     return True, "OK", payload.get("result") or {}
 
@@ -63,11 +66,8 @@ def send_notifications(
         Dict with keys: sent (int), failed (int), errors (list), success (bool), message (str)
     """
     # Import here to avoid circular dependencies
-    from app import (
-        load_config,
-        _db_enabled,
-        _load_telegram_settings
-    )
+    from core.config_manager import load_config, _db_enabled
+    from telegram import _load_telegram_settings
     from emby_latest.settings import _load_latest_settings
     from emby_latest import db_cache, db_state
     from emby_latest.messages import resolve_message_preset, default_message_template
@@ -111,6 +111,11 @@ def send_notifications(
     movies = latest_payload.get("movies") or []
     series = latest_payload.get("series") or []
     items = movies + series
+
+    # Apply Jellyseerr request info (not stored in DB cache, applied at runtime)
+    from emby_latest.jellyseerr import _apply_jellyseerr_request_info
+    _apply_jellyseerr_request_info(movies, config)
+    _apply_jellyseerr_request_info(series, config)
 
     # Load DB state for notified filtering
     latest_state = db_state.load_state()
@@ -199,11 +204,13 @@ def send_notifications(
 
     errors = []
     rule_runs: List[Dict[str, Any]] = []
+    disabled_rules_count = 0
 
     # Process notification rules
     if rules:
         for rule in rules:
             if not isinstance(rule, dict) or not rule.get("enabled"):
+                disabled_rules_count += 1
                 continue
 
             rule_name = rule.get("name") or "Regola"
@@ -276,6 +283,7 @@ def send_notifications(
                 rule_items = [item for item in items if item.get("server_id") in rule_server_ids]
 
             if not rule_items:
+                errors.append(f"Regola '{rule_name}': nessun contenuto da notificare per i server configurati.")
                 continue
 
             # Get template from preset
@@ -361,9 +369,14 @@ def send_notifications(
         })
 
     if not rule_runs:
-        message = "Nessuna regola attiva per le notifiche."
-        if errors:
-            message = f"{message} {', '.join(errors)}"
+        if disabled_rules_count and not errors:
+            message = f"Tutte le {disabled_rules_count} regole sono disabilitate."
+        elif disabled_rules_count:
+            message = f"{disabled_rules_count} regole disabilitate. {', '.join(errors)}"
+        elif errors:
+            message = f"Nessuna regola eseguibile. {', '.join(errors)}"
+        else:
+            message = "Nessuna regola attiva per le notifiche."
         return {
             "success": False,
             "message": message,
@@ -379,6 +392,16 @@ def send_notifications(
 
     # Deduplication: track already-sent items in this execution
     sent_item_signatures = set()
+
+    throttle_state = {"last_send": 0.0}
+    min_interval_sec = 1.1
+
+    def _throttle_send():
+        now = time.monotonic()
+        elapsed = now - throttle_state["last_send"]
+        if elapsed < min_interval_sec:
+            time.sleep(min_interval_sec - elapsed)
+        throttle_state["last_send"] = time.monotonic()
 
     for rule_run in rule_runs:
         template = rule_run.get("template") or default_message_template()
@@ -413,6 +436,9 @@ def send_notifications(
             # Send to all recipients
             item_success = False
             for token, chat_id in recipients:
+                _throttle_send()
+                payload: dict = {}
+                preview_enabled: bool = False
                 if image_url:
                     # Send as photo with caption
                     caption = message.strip()
@@ -420,16 +446,31 @@ def send_notifications(
                     if caption:
                         payload["caption"] = caption[:1024]
                         payload["parse_mode"] = "HTML"
-                    ok, err, _ = _telegram_api_request(token, "sendPhoto", payload)
+                    ok, err, params = _telegram_api_request(token, "sendPhoto", payload)
                 else:
                     # Send as text message
                     preview_enabled = "http://" in message or "https://" in message
-                    ok, err, _ = _telegram_api_request(token, "sendMessage", {
+                    ok, err, params = _telegram_api_request(token, "sendMessage", {
                         "chat_id": chat_id,
                         "text": message,
                         "parse_mode": "HTML",
                         "disable_web_page_preview": False if preview_enabled else True
                     })
+
+                if not ok and isinstance(params, dict):
+                    retry_after = params.get("retry_after")
+                    if isinstance(retry_after, (int, float)) and retry_after > 0:
+                        time.sleep(float(retry_after) + 0.2)
+                        _throttle_send()
+                        if image_url:
+                            ok, err, _ = _telegram_api_request(token, "sendPhoto", payload)
+                        else:
+                            ok, err, _ = _telegram_api_request(token, "sendMessage", {
+                                "chat_id": chat_id,
+                                "text": message,
+                                "parse_mode": "HTML",
+                                "disable_web_page_preview": False if preview_enabled else True
+                            })
 
                 if ok:
                     sent += 1

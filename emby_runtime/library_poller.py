@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 def _get_library_tracker():
     """Lazy load application-wide LibraryScanTracker to avoid circular imports."""
     try:
-        from app import _LIBRARY_SCAN_TRACKER
+        from app_state import _LIBRARY_SCAN_TRACKER
         return _LIBRARY_SCAN_TRACKER
     except ImportError:
         return None
@@ -562,7 +562,7 @@ class EmbyLibraryPoller:
         """
         try:
             # Import lazy per evitare circular dependency
-            from app import _LIBRARY_SCAN_TRACKER
+            from app_state import _LIBRARY_SCAN_TRACKER
 
             state_data = self._library_states[state_key]
             job_id = state_data["job_id"]

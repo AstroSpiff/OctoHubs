@@ -31,7 +31,7 @@ def get_emby_user_manager(
 
     active_config = get_active_config()
     if _EMBY_USER_MANAGER and active_config:
-        _EMBY_USER_MANAGER.config = active_config
+        _EMBY_USER_MANAGER.update_config(active_config)
 
     return _EMBY_USER_MANAGER
 
@@ -39,4 +39,4 @@ def get_emby_user_manager(
 def refresh_emby_user_manager_config(active_config: Dict[str, Any]) -> None:
     """Update config on the manager if it already exists."""
     if _EMBY_USER_MANAGER and active_config:
-        _EMBY_USER_MANAGER.config = active_config
+        _EMBY_USER_MANAGER.update_config(active_config)

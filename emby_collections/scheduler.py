@@ -4,7 +4,7 @@ import threading
 from datetime import datetime, timedelta
 from typing import Any, Dict
 
-from app import _ACTIVE_CONFIG
+from core import config_manager
 from core.config import DEFAULT_CONFIG
 from .manager import list_collection_definitions, run_collection_sync
 
@@ -44,7 +44,7 @@ class CollectionAutoRefresher(threading.Thread):
         self._stop_event.set()
 
     def _get_collection_settings(self) -> Dict[str, Any]:
-        config = _ACTIVE_CONFIG or {}
+        config = config_manager._ACTIVE_CONFIG or {}
         merged = dict(DEFAULT_CONFIG["COLLECTIONS"])
         merged.update((config.get("COLLECTIONS") or {}))
         return merged

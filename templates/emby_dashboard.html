@@ -6,7 +6,7 @@
     <meta name="csrf-token" content="{{ csrf_token }}">
     <title>Emby Toolkit</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <link rel="stylesheet" href="{{ url_for('static', filename='emby.css') }}?v=20260108-2215">
+    <link rel="stylesheet" href="{{ url_for('static', filename='emby.css') }}?v=20260715-users-rename-pencil">
 </head>
 <body>
     <div class="wrapper">
@@ -181,8 +181,8 @@
                             <button class="btn secondary compact" onclick="linkSelectedUsers()" title="Crea un nuovo gruppo con i selezionati">
                                 <i class="fa-solid fa-link"></i> Associa
                             </button>
-                            <button class="btn primary compact" id="sync-users-btn" onclick="openSyncModal()" title="Sincronizza visti o impostazioni">
-                                <i class="fa-solid fa-sync"></i> Sincronizza
+                            <button class="btn primary compact" id="sync-users-btn" onclick="openSyncModal()" title="Applica impostazioni agli utenti selezionati">
+                                <i class="fa-solid fa-sliders"></i> Applica impostazioni
                             </button>
                             <button class="btn primary compact" onclick="openCloneModal()" title="Crea copia su altro server">
                                 <i class="fa-solid fa-copy"></i> Clona
@@ -196,36 +196,40 @@
                     <div class="users-toolbar-container" style="background: var(--bg-card); border-bottom: 1px solid var(--border-color); padding: 0.75rem; margin-bottom: 1rem; border-radius: 6px; display: flex; flex-direction: column; gap: 0.5rem;">
                         
                         <!-- Row 1: Selection + Search + Refresh -->
-                        <div style="display: flex; gap: 0.5rem; align-items: center;">
-                            
-                            <!-- Selection Widget -->
-                            <div style="background: rgba(255,255,255,0.03); padding: 0 0.75rem; border-radius: 4px; display: flex; align-items: center; gap: 0.75rem; border: 1px solid var(--border-color); height: 38px; flex-shrink: 0;" title="Selezione rapida per azioni di massa">
-                                <label style="font-size: 0.85rem; cursor: pointer; display: flex; align-items: center; gap: 0.4rem; white-space: nowrap; font-weight: 500;">
-                                    <input type="checkbox" id="select-all-users" onchange="toggleSelectAllUsers(this.checked)"> Tutti
-                                </label>
-                                <div style="width: 1px; height: 18px; background: var(--border-color);"></div>
-                                <label style="font-size: 0.85rem; cursor: pointer; display: flex; align-items: center; gap: 0.4rem; white-space: nowrap; font-weight: 500;">
-                                    <input type="checkbox" id="select-leaders-users" onchange="toggleSelectLeaders(this.checked)"> Leader
-                                </label>
+                        <div class="users-toolbar-main">
+                            <div class="users-selection-actions" role="group" aria-label="Selezione rapida utenti">
+                                <button type="button" class="btn secondary compact users-selection-btn" id="select-all-users" onclick="selectVisibleUsers()" title="Seleziona tutti gli utenti visibili">
+                                    <i class="fa-solid fa-check-double"></i> <span>Seleziona tutti</span>
+                                </button>
+                                <button type="button" class="btn secondary compact users-selection-btn" id="select-leaders-users" onclick="selectLeaderUsers()" title="Seleziona solo leader e utenti singoli visibili">
+                                    <i class="fa-solid fa-star"></i> <span>Solo leader</span>
+                                </button>
+                                <button type="button" class="btn secondary compact users-selection-btn" id="clear-visible-users" onclick="clearVisibleUserSelection()" title="Deseleziona gli utenti visibili">
+                                    <i class="fa-solid fa-xmark"></i> <span>Deseleziona</span>
+                                </button>
                             </div>
 
                             <!-- Search -->
-                            <div style="position: relative; flex-grow: 1;">
-                                <i class="fa-solid fa-search" style="position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--text-muted);"></i>
-                                <input type="text" id="filter-search" class="form-input" style="width: 100%; padding-left: 2.2rem; height: 38px;" placeholder="Cerca utente, server o gruppo..." oninput="filterUsers()">
+                            <div class="users-search-field">
+                                <i class="fa-solid fa-search"></i>
+                                <input type="text" id="filter-search" class="form-input" placeholder="Cerca utente, server o gruppo..." oninput="filterUsers()">
                             </div>
 
-                            <!-- Refresh -->
-                            <button class="btn secondary" onclick="loadEmbyUsers(true)" style="height: 38px; width: 38px; padding: 0; display: flex; align-items: center; justify-content: center; flex-shrink: 0;" title="Aggiorna lista">
-                                <i class="fa-solid fa-rotate"></i>
-                            </button>
+                            <div class="users-toolbar-actions">
+                                <button class="btn primary compact users-create-btn" onclick="openCreateUserModal()" title="Crea utente">
+                                    <i class="fa-solid fa-user-plus"></i> <span>Crea utente</span>
+                                </button>
+                                <button class="btn secondary users-refresh-btn" onclick="loadEmbyUsers(true)" title="Aggiorna lista">
+                                    <i class="fa-solid fa-rotate"></i>
+                                </button>
+                            </div>
                         </div>
 
                         <!-- Row 2: Filters & Sort -->
-                        <div style="display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; justify-content: space-between;">
+                        <div class="users-filter-sort-row" style="display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; justify-content: space-between;">
                             
                             <!-- Filters (Left) -->
-                            <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; flex-grow: 1;">
+                            <div class="users-filter-controls" style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; flex-grow: 1;">
                                 <select id="filter-group-type" class="form-input compact" onchange="filterUsers()" title="Tipo Utente" style="max-width: 140px; flex-grow: 1;">
                                     <option value="all">Tutti gli utenti</option>
                                     <option value="single">Utenti Singoli</option>
@@ -248,8 +252,8 @@
                             </div>
 
                             <!-- Sort (Right) -->
-                            <div style="display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0;">
-                                <select id="sort-users" class="form-input compact" onchange="filterUsers()" title="Ordina per" style="min-width: 220px;">
+                            <div class="users-sort-controls" style="display: flex; align-items: center; gap: 0.5rem; flex-shrink: 1; min-width: 0;">
+                                <select id="sort-users" class="form-input compact" onchange="filterUsers()" title="Ordina per" style="min-width: 0; width: 100%; max-width: 100%;">
                                     <optgroup label="Per Utente + Server">
                                         <option value="name_asc_server_asc" selected>Utente (A-Z) + Server</option>
                                         <option value="name_asc_server_desc">Utente (A-Z) + Server (Desc)</option>
@@ -743,7 +747,7 @@
                 
                 <div style="display: flex; align-items: center; justify-content: center; gap: 0.5rem; margin-bottom: 0.5rem;">
                     <h2 id="modal-user-name" style="margin: 0;">Username</h2>
-                    <button class="icon-button" id="modal-edit-name-btn" title="Modifica Nome"><i class="fa-solid fa-pencil"></i></button>
+                    <button class="icon-button user-rename-btn" id="modal-edit-name-btn" title="Modifica Nome"><i class="fa-solid fa-pencil"></i></button>
                 </div>
                 <div id="modal-server-name" class="tagline">Server Name</div>
             </div>
@@ -786,9 +790,10 @@
                 </div>
             </div>
             
-            <div style="margin-top: 2rem; display: flex; justify-content: flex-end; gap: 1rem;">
-                 <button class="btn secondary" id="modal-clone-btn">Clona Utente</button>
-            </div>
+	            <div style="margin-top: 2rem; display: flex; justify-content: flex-end; gap: 1rem;">
+	                 <button class="btn danger" id="modal-delete-btn">Elimina Utente</button>
+	                 <button class="btn secondary" id="modal-clone-btn">Clona Utente</button>
+	            </div>
         </div>
     </div>
 
@@ -827,92 +832,26 @@
 
     <!-- Settings Manager Modal -->
     <div id="settings-manager-modal" class="modal-overlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 10006; align-items: center; justify-content: center;">
-        <div class="modal-content" style="background: var(--bg-card); padding: 2rem; border-radius: 12px; max-width: 720px; width: 94%; position: relative; box-shadow: 0 10px 25px rgba(0,0,0,0.5); max-height: 85vh; overflow-y: auto;">
-            <button class="icon-button close-modal-btn" id="settings-manager-close" style="position: absolute; top: 1rem; right: 1rem; font-size: 1.2rem;">&times;</button>
-            <div class="modal-header" style="margin-bottom: 1.5rem;">
+        <div class="modal-content settings-manager-content" style="background: var(--bg-card); padding: 0; border-radius: 18px; max-width: 900px; width: 94%; position: relative; box-shadow: 0 24px 70px rgba(15,23,42,0.35); max-height: 88vh; overflow: hidden; display: flex; flex-direction: column;">
+            <button class="icon-button close-modal-btn settings-manager-close" id="settings-manager-close" style="position: absolute; top: 1rem; right: 1rem; font-size: 1.2rem;">&times;</button>
+            <div class="modal-header settings-manager-header" style="margin-bottom: 0;">
                 <h3 id="settings-manager-title" style="margin: 0;">Impostazioni</h3>
                 <p class="text-muted" style="margin: 0.5rem 0 0; font-size: 0.9rem;" id="settings-manager-subtitle"></p>
             </div>
-            <div class="modal-body">
-                <div class="detail-row" style="display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid var(--border-color);">
+            <div class="modal-body settings-manager-body">
+                <div class="detail-row settings-manager-status-row" style="display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid var(--border-color);">
                     <span class="text-muted">Stato</span>
-                    <span id="settings-manager-status" style="font-weight: 600;"></span>
-                </div>
-                <div class="tagline small text-muted" id="settings-manager-updated" style="margin-top: 0.35rem;"></div>
-                <div id="settings-manager-form" style="margin-top: 1rem; display: flex; flex-direction: column; gap: 1.5rem;"></div>
-            </div>
-            <div class="modal-actions" style="margin-top: 1.5rem; display: flex; justify-content: space-between;">
+                    <span id="settings-manager-status" class="settings-status-pill" style="font-weight: 600;"></span>
+	                </div>
+	                <div class="tagline small text-muted" id="settings-manager-updated" style="margin-top: 0.35rem;"></div>
+	                <div id="settings-manager-presets" style="margin-top: 1rem;"></div>
+	                <div id="settings-manager-form" style="margin-top: 1rem; display: flex; flex-direction: column; gap: 1.5rem;"></div>
+	            </div>
+            <div class="modal-actions settings-manager-actions" style="margin-top: 0; display: flex; justify-content: space-between;">
                 <button class="btn secondary" id="settings-manager-cancel">Chiudi</button>
                 <div style="display: flex; gap: 0.5rem;">
                     <button class="btn secondary" id="settings-manager-apply">Applica a tutti</button>
                     <button class="btn primary" id="settings-manager-save">Salva</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Clone User Modal -->
-    <div id="clone-user-modal" class="modal-overlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 10010; align-items: center; justify-content: center;">
-        <div class="modal-content" style="background: var(--bg-card); padding: 2rem; border-radius: 12px; max-width: 500px; width: 90%; position: relative; box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
-            <div class="modal-header" style="margin-bottom: 1.5rem;">
-                <h3 style="margin: 0;">Clona Utente</h3>
-                <p class="text-muted" style="margin: 0.5rem 0 0; font-size: 0.9rem;" id="clone-modal-subtitle">Copia un utente su un altro server.</p>
-            </div>
-
-            <!-- Step 1: Server Selection -->
-            <div id="clone-step-1" class="clone-step">
-                <div class="wizard-source-sticky">
-                    <label class="form-label" style="display: block; margin-bottom: 0.5rem;">Utente sorgente</label>
-                    <div id="clone-source-list" class="text-muted small" style="display: flex; flex-wrap: wrap; gap: 0.4rem; padding: 0.5rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-card);">
-                        <!-- Populated via JS -->
-                    </div>
-                    <div class="form-help" style="margin: 0.5rem 0 0;">Utente selezionato per la clonazione.</div>
-                </div>
-                <label class="form-label" style="display: block; margin-bottom: 0.5rem;">Server di destinazione</label>
-                <div id="clone-target-list" class="checkbox-list" style="max-height: 200px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 4px; padding: 0.5rem;">
-                    <!-- Populated via JS -->
-                </div>
-                <div class="form-help" style="margin-top: 0.5rem;">Seleziona uno o più server.</div>
-            </div>
-
-            <!-- Step 2: Username -->
-            <div id="clone-step-2" class="clone-step" style="display: none;">
-                <div class="wizard-source-sticky">
-                    <label class="form-label" style="display: block; margin-bottom: 0.5rem;">Utente sorgente</label>
-                    <div id="clone-source-list-2" class="text-muted small" style="display: flex; flex-wrap: wrap; gap: 0.4rem; padding: 0.5rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-card);">
-                        <!-- Populated via JS -->
-                    </div>
-                </div>
-                <label for="clone-new-username" class="form-label" style="display: block; margin-bottom: 0.5rem;">Nome nuovo utente</label>
-                <input type="text" id="clone-new-username" class="form-input" style="width: 100%; margin-bottom: 0.5rem;" autocomplete="off">
-                <div id="clone-name-error" class="alert error" style="display: none; font-size: 0.85rem; padding: 0.5rem;"></div>
-            </div>
-
-            <!-- Step 3: Options -->
-            <div id="clone-step-3" class="clone-step" style="display: none;">
-                <div class="wizard-source-sticky">
-                    <label class="form-label" style="display: block; margin-bottom: 0.5rem;">Utente sorgente</label>
-                    <div id="clone-source-list-3" class="text-muted small" style="display: flex; flex-wrap: wrap; gap: 0.4rem; padding: 0.5rem; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg-card);">
-                        <!-- Populated via JS -->
-                    </div>
-                </div>
-                <p style="margin-bottom: 1rem;">Cosa vuoi copiare?</p>
-                <label class="checkbox-row" style="margin-bottom: 0.5rem; cursor: pointer;">
-                    <input type="checkbox" id="clone-opt-config" checked>
-                    <span>Impostazioni (Policy, UI, Preferenze)</span>
-                </label>
-                <label class="checkbox-row" style="margin-bottom: 1rem; cursor: pointer;">
-                    <input type="checkbox" id="clone-opt-playstate" checked>
-                    <span>Stato Visto (Watched Status)</span>
-                </label>
-            </div>
-
-            <div class="modal-actions" style="margin-top: 2rem; display: flex; justify-content: space-between;">
-                <button class="btn ghost" id="clone-btn-cancel">Annulla</button>
-                <div style="display: flex; gap: 0.5rem;">
-                    <button class="btn secondary" id="clone-btn-back" style="display: none;">Indietro</button>
-                    <button class="btn primary" id="clone-btn-next">Avanti</button>
-                    <button class="btn primary" id="clone-btn-confirm" style="display: none;">Clona</button>
                 </div>
             </div>
         </div>
@@ -991,6 +930,20 @@
                         <input type="checkbox" id="bulk-clone-opt-config" checked>
                         <span>Impostazioni (Policy, UI, Preferenze)</span>
                     </label>
+                    <div id="bulk-clone-config-categories" class="text-muted small" style="margin: -0.2rem 0 0.75rem 1.6rem; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.35rem;">
+                        <label class="checkbox-row"><input type="checkbox" data-config-category="profile" checked> <span>Profilo sicuro</span></label>
+                        <label class="checkbox-row"><input type="checkbox" data-config-category="access" checked> <span>Accesso sicuro</span></label>
+                        <label class="checkbox-row"><input type="checkbox" data-config-category="display" checked> <span>Schermo</span></label>
+                        <label class="checkbox-row"><input type="checkbox" data-config-category="home" checked> <span>Home</span></label>
+                        <label class="checkbox-row"><input type="checkbox" data-config-category="playback_prefs" checked> <span>Riproduzione</span></label>
+                        <label class="checkbox-row"><input type="checkbox" data-config-category="subtitles" checked> <span>Sottotitoli</span></label>
+                        <label class="checkbox-row"><input type="checkbox" data-config-category="parental"> <span>Parentale</span></label>
+                        <label class="checkbox-row"><input type="checkbox" data-config-category="profile_pin" checked> <span>PIN profilo</span></label>
+                    </div>
+                    <label class="checkbox-row" style="margin-bottom: 0.5rem; cursor: pointer;">
+                        <input type="checkbox" id="bulk-clone-opt-library-access" checked>
+                        <span>Accessi librerie (usa associazioni scan)</span>
+                    </label>
                     <label class="checkbox-row" style="margin-bottom: 1rem; cursor: pointer;">
                         <input type="checkbox" id="bulk-clone-opt-playstate" checked>
                         <span>Stato Visto (Watched Status)</span>
@@ -998,6 +951,14 @@
                     <label class="checkbox-row" style="margin-bottom: 1rem; cursor: pointer;">
                         <input type="checkbox" id="bulk-clone-opt-resume">
                         <span>Riprendi (Resume)</span>
+                    </label>
+                    <label class="checkbox-row" style="margin-bottom: 0.5rem; cursor: pointer;">
+                        <input type="checkbox" id="bulk-clone-opt-favorites" checked>
+                        <span>Preferiti</span>
+                    </label>
+                    <label class="checkbox-row" style="margin-bottom: 1rem; cursor: pointer;">
+                        <input type="checkbox" id="bulk-clone-opt-playlists" checked>
+                        <span>Playlist (merge ordinato, senza cancellare quelle esistenti)</span>
                     </label>
                 </div>
             </div>
@@ -1014,22 +975,41 @@
     </div>
 
     <div id="sync-modal" class="modal-overlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 10010; align-items: center; justify-content: center;">
-        <div class="modal-content" style="background: var(--bg-card); padding: 2rem; border-radius: 12px; max-width: 520px; width: 90%; position: relative; box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
-            <button class="icon-button close-modal-btn" style="position: absolute; top: 1rem; right: 1rem; font-size: 1.2rem;">&times;</button>
-            <div class="modal-header" style="margin-bottom: 1.5rem;">
-                <h2 style="margin: 0;">Sincronizza Utenti</h2>
-                <p class="text-muted" style="margin: 0.5rem 0 0; font-size: 0.9rem;" id="sync-modal-subtitle">Sincronizza configurazione e stato di visione.</p>
+        <div class="modal-content sync-settings-content" style="background: var(--bg-card); padding: 0; border-radius: 18px; max-width: 980px; width: 94%; position: relative; box-shadow: 0 24px 70px rgba(15,23,42,0.35); max-height: 90vh; overflow: hidden; display: flex; flex-direction: column;">
+            <button class="icon-button close-modal-btn sync-settings-close" style="position: absolute; top: 1rem; right: 1rem; font-size: 1.2rem;">&times;</button>
+            <div class="modal-header sync-settings-header" style="margin-bottom: 0;">
+                <h3 style="margin: 0;">Applica Impostazioni</h3>
+                <p class="text-muted" style="margin: 0.5rem 0 0; font-size: 0.9rem;" id="sync-modal-subtitle">Valori Emby sugli utenti selezionati.</p>
             </div>
-            <div class="modal-body">
-                <div class="form-group" style="margin-bottom: 1rem;">
-                    <label>Selezionati</label>
-                    <div id="sync-selected-list" class="text-muted small"></div>
+            <div class="modal-body sync-settings-body">
+                <div class="sync-settings-overview" aria-live="polite">
+                    <div class="sync-overview-item">
+                        <span>Utenti</span>
+                        <strong id="sync-selected-count">0</strong>
+                    </div>
+                    <div class="sync-overview-item">
+                        <span>Campi</span>
+                        <strong id="sync-fields-count">0</strong>
+                    </div>
+                    <div class="sync-overview-item">
+                        <span>Librerie</span>
+                        <strong id="sync-library-state">No</strong>
+                    </div>
                 </div>
-                <div class="form-group" style="margin-bottom: 1rem;">
+
+                <div class="sync-settings-card sync-selected-card">
+                    <div class="sync-card-header">
+                        <div>
+                            <label>Utenti da modificare</label>
+                            <div class="form-help">Solo gli utenti selezionati nella tabella.</div>
+                        </div>
+                    </div>
+                    <div id="sync-selected-list" class="text-muted small sync-chip-list"></div>
+                </div>
+
+                <div class="form-group" style="margin-bottom: 1rem; display: none;">
                     <label for="sync-mode-select">Modalità</label>
                     <select id="sync-mode-select" class="form-select">
-                        <option value="copy">Monodirezionale (Principale/Master → altri)</option>
-                        <option value="merge">Bidirezionale (Merge visti)</option>
                         <option value="manual">Monodirezionale Manuale (seleziona sorgente)</option>
                     </select>
                 </div>
@@ -1037,26 +1017,65 @@
                     <label for="sync-source-select">Sorgente</label>
                     <select id="sync-source-select" class="form-select"></select>
                 </div>
-                <div class="form-group" id="sync-source-row-display" style="margin-bottom: 0.5rem;">
+                <div class="form-group" id="sync-source-row-display" style="margin-bottom: 0.5rem; display: none;">
                     <label>Sorgente</label>
                     <div id="sync-source-chip" class="text-muted small"></div>
                 </div>
-                <div class="form-group" style="margin-bottom: 0.5rem;">
+                <div class="form-group" style="margin-bottom: 0.5rem; display: none;">
                     <label id="sync-targets-label">Destinazioni</label>
                     <div id="sync-targets-list" class="text-muted small"></div>
+	                </div>
+
+	                <div id="sync-preset-controls" style="margin-bottom: 1rem;"></div>
+
+	                <div class="sync-settings-card">
+	                    <div class="sync-card-header">
+                        <label class="checkbox-row sync-card-toggle" style="cursor: pointer;">
+                            <input type="checkbox" id="sync-opt-config" checked>
+                            <span>Campi impostazioni Emby</span>
+                        </label>
+                        <span class="settings-status-pill muted" id="sync-config-state">0 campi</span>
+                    </div>
+                    <div id="sync-config-categories" class="text-muted small sync-settings-categories">
+                        Carico pannello impostazioni...
+                    </div>
                 </div>
-                <div class="form-group" style="margin-bottom: 0.5rem;">
+
+                <div class="form-group" style="margin-bottom: 0.5rem; display: none;">
                     <label class="checkbox-row" style="cursor: pointer;">
                         <input type="checkbox" id="sync-opt-resume">
                         <span>Riprendi (Resume)</span>
                     </label>
                 </div>
-                <div id="sync-summary" class="text-muted small" style="margin-top: 0.5rem;"></div>
-                <div id="sync-error" class="text-muted small" style="margin-top: 0.5rem; color: var(--color-danger); display: none;"></div>
+                <div class="sync-settings-card">
+                    <div class="sync-card-header">
+                        <label class="checkbox-row sync-card-toggle" style="cursor: pointer;">
+                            <input type="checkbox" id="sync-opt-library-access">
+                            <span>Accessi librerie</span>
+                        </label>
+                        <span class="settings-status-pill muted" id="sync-library-state-inline">Non applicati</span>
+                    </div>
+                    <div id="sync-library-panel" class="text-muted small sync-library-panel" style="display: none;"></div>
+                </div>
+
+                <div class="form-group" style="margin-bottom: 0.5rem; display: none;">
+                    <label class="checkbox-row" style="cursor: pointer;">
+                        <input type="checkbox" id="sync-opt-favorites" checked>
+                        <span>Preferiti</span>
+                    </label>
+                </div>
+                <div class="form-group" style="margin-bottom: 0.5rem; display: none;">
+                    <label class="checkbox-row" style="cursor: pointer;">
+                        <input type="checkbox" id="sync-opt-playlists">
+                        <span>Playlist (mantiene l'ordine sorgente; in bidirezionale vince l'ultima modifica)</span>
+                    </label>
+                </div>
+                <div id="sync-summary" class="sync-settings-summary text-muted small"></div>
+                <div id="sync-error" class="sync-settings-error text-muted small" style="display: none;"></div>
             </div>
-            <div class="modal-actions" style="margin-top: 1.5rem; display: flex; justify-content: space-between;">
+            <div class="modal-actions sync-settings-actions" style="margin-top: 0; display: flex; justify-content: space-between;">
                 <button class="btn ghost" id="sync-btn-cancel">Annulla</button>
-                <button class="btn primary" id="sync-btn-confirm">Sincronizza</button>
+                <button class="btn primary" id="sync-btn-confirm">Applica impostazioni</button>
             </div>
         </div>
     </div>
@@ -1442,6 +1461,44 @@
             const navbarIndicator = document.getElementById('workflow-navbar-indicator');
             let eventSource = null;
             let lastStatus = null;
+            let lastWorkflowId = null;
+            let panelDismissed = false;
+            let lastCompletedDuration = null;
+            let lastCompletedAt = null;
+            const LAST_COMPLETED_STORAGE_KEY = 'octohub:workflow:lastCompleted';
+
+            const loadLastCompleted = () => {
+                try {
+                    const raw = localStorage.getItem(LAST_COMPLETED_STORAGE_KEY);
+                    if (!raw) {
+                        return null;
+                    }
+                    const parsed = JSON.parse(raw);
+                    if (parsed && typeof parsed.duration === 'string') {
+                        return parsed;
+                    }
+                } catch (err) {
+                    // ignore storage errors
+                }
+                return null;
+            };
+
+            const saveLastCompleted = (duration) => {
+                if (!duration) {
+                    return;
+                }
+                try {
+                    localStorage.setItem(
+                        LAST_COMPLETED_STORAGE_KEY,
+                        JSON.stringify({
+                            duration,
+                            at: new Date().toISOString()
+                        })
+                    );
+                } catch (err) {
+                    // ignore storage errors
+                }
+            };
             const workflowToggleControls = Array.from(document.querySelectorAll('[data-workflow-toggle]'));
             const getWorkflowToggleState = () => workflowToggleControls.length ? workflowToggleControls[0].checked : false;
             const setWorkflowToggleState = (checked) => {
@@ -1471,12 +1528,14 @@
             };
 
             const openPanel = () => {
+                panelDismissed = false;
                 offcanvas.classList.add('show');
                 offcanvas.setAttribute('aria-hidden', 'false');
             };
             const closePanel = () => {
                 offcanvas.classList.remove('show');
                 offcanvas.setAttribute('aria-hidden', 'true');
+                panelDismissed = true;
             };
 
             const formatDuration = (seconds) => {
@@ -1505,10 +1564,7 @@
                 const minutes = Math.floor((diff % 3600) / 60);
                 const seconds = diff % 60;
                 const pad = (value) => String(value).padStart(2, '0');
-                if (hours > 0) {
-                    return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
-                }
-                return `${pad(minutes)}:${pad(seconds)}`;
+                return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
             };
 
             const showToast = (message, type = 'info') => {
@@ -1589,19 +1645,40 @@
                 if (stopButton) {
                     stopButton.style.display = newStatus === 'running' ? 'inline-flex' : 'none';
                 }
-                if (newStatus && newStatus !== 'idle') {
+                const workflowId = workflow.workflow_id || null;
+                if (workflowId && workflowId !== lastWorkflowId) {
+                    lastWorkflowId = workflowId;
+                    panelDismissed = false;
+                }
+                const elapsed = formatElapsed(workflow.start_time);
+                if (newStatus === 'running' && lastStatus !== 'running') {
+                    panelDismissed = false;
+                    openPanel();
+                } else if (newStatus === 'completed' || newStatus === 'failed') {
+                    lastCompletedDuration = elapsed || lastCompletedDuration;
+                    lastCompletedAt = new Date().toISOString();
+                    if (lastCompletedDuration) {
+                        saveLastCompleted(lastCompletedDuration);
+                    }
+                    panelDismissed = false;
+                    openPanel();
+                } else if (!panelDismissed && newStatus !== 'idle' && lastStatus === null) {
                     openPanel();
                 }
                 if (navbarIndicator) {
-                    const showIndicator = newStatus === 'running' || newStatus === 'stopping';
+                    const showIndicator = newStatus === 'running' || newStatus === 'stopping' || !!lastCompletedDuration;
                     navbarIndicator.style.display = showIndicator ? 'inline-flex' : 'none';
                     if (showIndicator) {
-                        const elapsed = formatElapsed(workflow.start_time);
-                        const timer = elapsed ? ` (${elapsed})` : '';
                         if (newStatus === 'stopping') {
+                            const timer = elapsed ? ` (${elapsed})` : '';
                             navbarIndicator.innerHTML = `<i class="fa-solid fa-hourglass-half"></i> Arresto in corso${timer}`;
-                        } else {
+                        } else if (newStatus === 'running') {
+                            const timer = elapsed ? ` (${elapsed})` : '';
                             navbarIndicator.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i> Aggiornamento in corso${timer}`;
+                        } else if (lastCompletedDuration) {
+                            navbarIndicator.innerHTML = `<i class="fa-regular fa-circle-check"></i> Ultimo aggiornamento (${lastCompletedDuration})`;
+                        } else {
+                            navbarIndicator.innerHTML = `<i class="fa-regular fa-circle"></i> Ultimo aggiornamento`;
                         }
                     }
                 }
@@ -1640,6 +1717,7 @@
             };
 
             const startWorkflow = async (payload) => {
+                panelDismissed = false;
                 openPanel();
                 try {
                     const response = await csrfFetch('/api/workflow/start', {
@@ -1705,6 +1783,12 @@
                     openPanel();
                 }
             };
+
+            const persisted = loadLastCompleted();
+            if (persisted) {
+                lastCompletedDuration = persisted.duration;
+                lastCompletedAt = persisted.at || null;
+            }
 
             if (stopButton) {
                 stopButton.addEventListener('click', () => workflowUI.stop());
@@ -1874,19 +1958,29 @@
 
     <template id="tpl-group-container">
         <div class="group-container" style="background: var(--bg-main); border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 1rem; padding: 1rem;">
-            <div class="group-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem;">
-                <div style="display: flex; align-items: center; gap: 0.5rem;">
-                    <span class="group-name" style="font-weight: bold; font-size: 1.1rem;"></span>
-                    <span class="badge" style="background: var(--color-primary); color: white; padding: 0.1rem 0.4rem; border-radius: 4px; font-size: 0.7rem;">Linked</span>
+            <div class="group-header">
+                <div class="group-toolbar">
+                    <div class="group-title-block">
+                        <div class="group-name"></div>
+                        <div class="group-link-status" hidden title="Utenti associati nel gruppo">
+                            <i class="fa-solid fa-link" aria-hidden="true"></i>
+                            <span class="group-link-count"></span>
+                        </div>
+                    </div>
+                    <div class="group-sync-toggle-anchor"></div>
+                    <div class="group-utility-controls">
+                        <div class="group-icon-controls">
+                        <select class="icon-profile-select" style="padding: 0.25rem 0.5rem; border-radius: 4px; border: 1px solid var(--border-color); background: var(--bg-input); color: var(--text-main); font-size: 0.85rem;">
+                            <option value="">Profilo Icona...</option>
+                        </select>
+                        </div>
+                        <div class="group-management-actions">
+                        <button class="icon-button group-password-btn" title="Gestisci password gruppo"><i class="fa-solid fa-key"></i></button>
+                        <button class="icon-button group-settings-btn" title="Gestisci impostazioni gruppo"><i class="fa-solid fa-sliders"></i></button>
+                        </div>
+                    </div>
                 </div>
-                <div style="display: flex; align-items: center; gap: 1rem;">
-                    <button class="icon-button group-password-btn" title="Gestisci password gruppo"><i class="fa-solid fa-key"></i></button>
-                    <button class="icon-button group-settings-btn" title="Gestisci impostazioni gruppo"><i class="fa-solid fa-sliders"></i></button>
-                    <select class="icon-profile-select" style="padding: 0.25rem 0.5rem; border-radius: 4px; border: 1px solid var(--border-color); background: var(--bg-input); color: var(--text-main); font-size: 0.85rem;">
-                        <option value="">Seleziona Profilo Icona...</option>
-                    </select>
-                    <div class="group-meta text-muted small"></div>
-                </div>
+                <div class="group-sync-anchor"></div>
             </div>
             <div class="group-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem;"></div>
         </div>
@@ -1905,10 +1999,43 @@
     </template>
 
     <script src="{{ url_for('static', filename='shared-utils.js') }}"></script>
+    <script src="{{ url_for('static', filename='emby_users_api.js') }}"></script>
+    <script src="{{ url_for('static', filename='emby_users_core.js') }}?v=20260628-users-sync-now-bg"></script>
+    <script src="{{ url_for('static', filename='emby_users_render.js') }}?v=20260715-users-rename-pencil"></script>
+    <script src="{{ url_for('static', filename='emby_users_details.js') }}?v=20260628-users-live"></script>
+    <script src="{{ url_for('static', filename='emby_users_passwords.js') }}?v=20260628-users-live"></script>
+    <script src="{{ url_for('static', filename='emby_users_settings_builders.js') }}?v=20260629-user-feature-prefs"></script>
+    <script src="{{ url_for('static', filename='emby_users_presets.js') }}?v=20260714-settings-presets"></script>
+    <script src="{{ url_for('static', filename='emby_users_settings_modal.js') }}?v=20260714-settings-presets"></script>
+    <script src="{{ url_for('static', filename='emby_users_lifecycle.js') }}?v=20260714-users-lifecycle"></script>
+    <script src="{{ url_for('static', filename='emby_users_actions.js') }}?v=20260714-users-selection-actions"></script>
+    <script src="{{ url_for('static', filename='emby_users_link.js') }}?v=20260628-users-live"></script>
+    <script src="{{ url_for('static', filename='emby_users_sync.js') }}?v=20260714-settings-presets"></script>
+    <script src="{{ url_for('static', filename='emby_users_clone_wizard.js') }}?v=20260714-clone-errors"></script>
+    <script src="{{ url_for('static', filename='emby_users_clone.js') }}?v=20260628-bulk"></script>
+    <script src="{{ url_for('static', filename='emby_users_icons.js') }}?v=20260628-users-live"></script>
     <script src="{{ url_for('static', filename='actions.js') }}"></script>
+    <script src="{{ url_for('static', filename='script_shell.js') }}?v=20260628-shell"></script>
+    <script src="{{ url_for('static', filename='script_rss_tools.js') }}?v=20260628-rss"></script>
+    <script src="{{ url_for('static', filename='script_rss_view.js') }}?v=20260628-rss"></script>
+    <script src="{{ url_for('static', filename='script_rss_cleanup.js') }}?v=20260628-rss"></script>
+    <script src="{{ url_for('static', filename='script_rss_categories.js') }}?v=20260628-rss"></script>
+    <script src="{{ url_for('static', filename='script_results.js') }}?v=20260628-results"></script>
+    <script src="{{ url_for('static', filename='script_tmdb_emby.js') }}?v=20260628-tmdb"></script>
+    <script src="{{ url_for('static', filename='script_manual_search.js') }}?v=20260628-manual"></script>
+    <script src="{{ url_for('static', filename='script_telegram.js') }}?v=20260628-telegram"></script>
     <script src="{{ url_for('static', filename='script.js') }}"></script>
-    <script src="{{ url_for('static', filename='emby_users.js') }}?v=20260220-settings"></script>
+    <script src="{{ url_for('static', filename='emby_users.js') }}?v=20260628-actions"></script>
     <script src="{{ url_for('static', filename='emby_libraries.js') }}?v=20260225-libraries"></script>
-    <script src="{{ url_for('static', filename='emby.js') }}?v=20260204-latest-ui3"></script>
+    <script src="{{ url_for('static', filename='emby_events_client.js') }}?v=20260628"></script>
+    <script src="{{ url_for('static', filename='emby_users_realtime.js') }}?v=20260628-users-live"></script>
+    <script src="{{ url_for('static', filename='emby_scan_ws.js') }}?v=20260628"></script>
+    <script src="{{ url_for('static', filename='emby_scan_tracker.js') }}?v=20260628"></script>
+    <script src="{{ url_for('static', filename='emby_dialogs.js') }}?v=20260628"></script>
+    <script src="{{ url_for('static', filename='emby_latest.js') }}?v=20260628"></script>
+    <script src="{{ url_for('static', filename='emby_widgets.js') }}?v=20260628"></script>
+    <script src="{{ url_for('static', filename='emby_tabs.js') }}?v=20260714-users-hash"></script>
+    <script src="{{ url_for('static', filename='emby_verify.js') }}?v=20260628"></script>
+    <script src="{{ url_for('static', filename='emby_scan_resume.js') }}?v=20260628"></script>
 </body>
 </html>

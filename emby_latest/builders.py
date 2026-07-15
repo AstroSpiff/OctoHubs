@@ -31,6 +31,15 @@ def _runtime_minutes_from_ticks(value: Any) -> Optional[int]:
     return max(1, int(round(ticks / 600_000_000)))
 
 
+def _safe_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _extract_provider_id(provider_ids: Any, *keys: str) -> str:
     if not isinstance(provider_ids, dict):
         return ""
@@ -62,7 +71,15 @@ def _build_emby_latest_item(item: Dict[str, Any], server: Optional[Dict[str, Any
     emby_url = ""
     original_title = item.get("OriginalTitle") or item.get("OriginalName") or ""
     _raw = item.get("Taglines")
-    taglines = _raw if isinstance(_raw, list) else []
+    if isinstance(_raw, list):
+        taglines = _raw
+    elif isinstance(_raw, str) and _raw.strip():
+        taglines = [_raw]
+    else:
+        taglines = []
+        fallback_tagline = item.get("Tagline")
+        if isinstance(fallback_tagline, str) and fallback_tagline.strip():
+            taglines = [fallback_tagline]
     tagline = taglines[0] if taglines else ""
     _raw = item.get("Studios")
     studios_raw = _raw if isinstance(_raw, list) else []
@@ -93,10 +110,12 @@ def _build_emby_latest_item(item: Dict[str, Any], server: Optional[Dict[str, Any
             creators.append(str(name))
 
     provider_ids = item.get("ProviderIds") if isinstance(item.get("ProviderIds"), dict) else {}
-    tmdb_id = _extract_provider_id(provider_ids, "Tmdb", "TMDB")
+    tmdb_id = _extract_provider_id(provider_ids, "Tmdb", "TMDB", "TheMovieDb", "TheMovieDB")
     imdb_id = _extract_provider_id(provider_ids, "Imdb", "IMDB")
-    tvdb_id = _extract_provider_id(provider_ids, "Tvdb", "TVDB")
+    tvdb_id = _extract_provider_id(provider_ids, "Tvdb", "TVDB", "TheTvdb", "TheTVDB")
     trakt_id = _extract_provider_id(provider_ids, "Trakt", "TRAKT")
+    if not tmdb_id and provider_ids:
+        print(f"[LATEST] ProviderIds senza TMDB ({item.get('Name')!r}): {list(provider_ids.keys())}")
 
     library_id = ""
     library_name = "Libreria"
@@ -131,9 +150,22 @@ def _build_emby_latest_item(item: Dict[str, Any], server: Optional[Dict[str, Any
                 logo_url = f"{base_url}/Items/{item_id}/Images/Logo?maxWidth=720&quality=90"
             emby_url = f"{base_url}/web/index.html#!/itemdetails.html?id={item_id}"
 
+    item_type = str(item.get("Type") or "")
+    item_type_lower = item_type.lower()
+
     output_directors = directors
-    if str(item.get("Type") or "").lower() in ("series", "episode"):
+    if item_type_lower in ("series", "episode"):
         output_directors = creators
+
+    child_count = _safe_int(item.get("ChildCount"))
+    recursive_count = _safe_int(item.get("RecursiveItemCount"))
+    season_count = None
+    episode_count = None
+    if item_type_lower == "series":
+        season_count = child_count if child_count else None
+        episode_count = recursive_count if recursive_count else None
+    elif item_type_lower == "season":
+        episode_count = child_count if child_count else None
 
     return {
         "item_id": item_id,
@@ -153,7 +185,9 @@ def _build_emby_latest_item(item: Dict[str, Any], server: Optional[Dict[str, Any
         "runtime_minutes": _runtime_minutes_from_ticks(item.get("RunTimeTicks")),
         "added_at": item.get("DateCreated"),
         "premiere_date": item.get("PremiereDate"),
-        "child_count": item.get("ChildCount"),
+        "child_count": child_count,
+        "season_count": season_count,
+        "episode_count": episode_count,
         "image_tag": image_tags.get("Primary"),
         "image_url": image_url,
         "poster_url": poster_url,
@@ -178,7 +212,7 @@ def _build_emby_latest_item(item: Dict[str, Any], server: Optional[Dict[str, Any
         "server_icon": server.get("icon") if server else None,
         "server_icon_color": server.get("icon_color") if server else None,
         "server_icon_style": server.get("icon_style") if server else None,
-        "item_type": item.get("Type")
+        "item_type": item_type
     }
 
 

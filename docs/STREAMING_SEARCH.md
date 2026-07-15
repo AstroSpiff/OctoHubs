@@ -14,15 +14,17 @@ Implementazione completa di un sistema di ricerca parallelo con streaming dei ri
 
 ### Backend
 
-1. **asgi.py**
-   - Linee 394-480: WebSocket endpoint `/ws/search/{session_id}`
-   - Linee 899-925: POST endpoint `/api/search/stream` per ottenere session_id
+1. **realtime/routes.py**
+   - WebSocket endpoint `/ws/search/{session_id}`
 
-2. **app.py**
-   - Linea 299: Variabile globale `_active_search_sessions`
-   - Linee 11648-11819: Funzione `search_streaming_parallel()` - ricerca completamente parallelizzata
-   - Linee 11583-11621: Funzione `search_indexers()` modificata per ricerche parallele (usata da Jellyseerr automation)
-   - Linee 6582-6622: Ricerca manuale modificata per parallelizzazione
+2. **search/routes.py**
+   - POST endpoint `/api/search/stream` per ottenere session_id
+
+3. **search/state.py**
+   - Variabile globale `_active_search_sessions`
+
+4. **search/streaming.py**
+   - Funzione `search_streaming_parallel()` - ricerca completamente parallelizzata
 
 ### Frontend
 

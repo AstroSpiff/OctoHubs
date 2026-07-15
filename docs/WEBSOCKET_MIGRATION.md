@@ -36,7 +36,7 @@ Migrazione completa del sistema di monitoraggio scansioni librerie Emby da **pol
 │  └────────────┬───────────────────────────────────────────┘  │
 │               │                                               │
 │  ┌────────────▼───────────────────────────────────────────┐  │
-│  │  LibraryScanTracker (app.py)                          │  │
+│  │  LibraryScanTracker (app_state.py)                   │  │
 │  │  - find_jobs_by_library(server_id, library_id)       │  │
 │  │  - update_library_status() → _broadcast_completion() │  │
 │  └────────────┬───────────────────────────────────────────┘  │
@@ -67,8 +67,8 @@ Migrazione completa del sistema di monitoraggio scansioni librerie Emby da **pol
 
 | File | Modifiche | Descrizione |
 |------|-----------|-------------|
-| **asgi.py** | +115 righe | Endpoint `/ws/scan/{client_id}`, `/api/emby/active-scan-jobs`, asyncio.Lock |
-| **app.py** | +80 righe | `find_jobs_by_library()`, `_broadcast_scan_completion()`, cleanup polling |
+| **realtime/routes.py** | +115 righe | Endpoint `/ws/scan/{client_id}` |
+| **emby_libraries/routes.py** | - | Endpoint `/api/emby/active-scan-jobs`, `/api/emby/active-scans` |
 | **emby_runtime/websocket_manager.py** | +75 righe | `setup_scan_progress_forwarding()` |
 | **static/emby.js** | +300 righe | `ScanWebSocketClient`, refactor `ScanTracker`, resume logic |
 
@@ -215,7 +215,7 @@ GET /api/emby/active-scan-jobs
 
 ### asyncio.Lock per Server
 
-Implementato in `asgi.py` (righe 518-544) ma **commentato** per default.
+Implementato in `emby_libraries/routes.py` ma **commentato** per default.
 
 **Funzionalità:**
 - Lock per-server per prevenire scan concorrenti
@@ -223,7 +223,7 @@ Implementato in `asgi.py` (righe 518-544) ma **commentato** per default.
 
 **Attivazione** (opzionale):
 ```python
-# In asgi.py, decommentare righe 559-564
+# In emby_libraries/routes.py, decommentare il blocco di lock
 if server_id and not await _acquire_scan_lock(server_id):
     return JSONResponse({
         "success": False,
@@ -239,7 +239,7 @@ if server_id and not await _acquire_scan_lock(server_id):
 
 ```bash
 # 1. Avvia server
-uvicorn asgi:fastapi_app --reload --host 0.0.0.0 --port 8000
+uvicorn asgi:app --reload --host 0.0.0.0 --port 8000
 
 # 2. Apri browser → DevTools → Network → WS
 # Verifica connessione: ws://localhost:8000/ws/scan/client_xxxxx

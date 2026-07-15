@@ -40,17 +40,9 @@ Sistema di comunicazione real-time bidirezionale tra OctoHub e i server Emby, el
                                    │
                                    ▼
 ┌──────────────────────────────────────────────────────────────┐
-│ SSE Endpoint: /emby/events-stream                      │
-│ - Server-Sent Events (SSE) for frontend communication        │
-│ - Broadcasts events to all connected clients via queues      │
-│ - Automatic keepalive ping every 20s                         │
-│ - WSGI-compatible (works with Waitress)                      │
-└────────────────────┬─────────────────────────────────────────┘
-                     │ SSE (HTTP with text/event-stream)
-                     ▼
-┌──────────────────────────────────────────────────────────────┐
-│ Frontend: EmbyWebSocketClient (emby.js) - SSE-based          │
-│ - Uses EventSource API instead of WebSocket                  │
+│ Frontend: EmbyWebSocketClient (emby.js)                      │
+│ - Primary: WebSocket /ws/events                              │
+│ - Fallback: SSE /emby/events-stream                          │
 │ - Auto-connects on page load                                 │
 │ - Auto-reconnect with exponential backoff                    │
 │ - Event handler registration system                          │
@@ -152,70 +144,19 @@ await poller.start_tracking_library(
 await poller.stop_tracking_library("abc123", "456")
 ```
 
-### 3. SSE Endpoint (Backend)
-
-**File**: `app.py`
-
-**Endpoint**: `/emby/events-stream`
-
-**Features**:
-- ✅ Server-Sent Events (SSE) per comunicazione unidirezionale server→client
-- ✅ Broadcast automatico di tutti gli eventi Emby a client connessi
-- ✅ Gestione disconnessioni automatica tramite queue
-- ✅ Keepalive automatico ogni 20s
-- ✅ WSGI-compatible (funziona con Waitress)
-
-**Implementazione**:
-```python
-from queue import Queue, Empty
-
-_sse_event_queues = []
-_sse_queues_lock = threading.Lock()
-
-@app.route('/emby/events-stream')
-def emby_events_stream():
-    def event_stream():
-        client_queue = Queue(maxsize=50)
-
-        with _sse_queues_lock:
-            _sse_event_queues.append(client_queue)
-
-        try:
-            while True:
-                event_data = client_queue.get(timeout=20)
-                yield f"data: {json.dumps(event_data)}\n\n"
-        except Empty:
-            yield ": keepalive\n\n"
-        finally:
-            with _sse_queues_lock:
-                _sse_event_queues.remove(client_queue)
-
-    return Response(
-        stream_with_context(event_stream()),
-        mimetype='text/event-stream',
-        headers={'Cache-Control': 'no-cache'}
-    )
-
-def _broadcast_sse_event(event_data):
-    with _sse_queues_lock:
-        for queue in _sse_event_queues:
-            queue.put(event_data)
-```
-
-### 4. EmbyWebSocketClient (Frontend) - SSE-based
+### 3. EmbyWebSocketClient (Frontend)
 
 **File**: `static/emby.js`
 
-**Oggetto**: `EmbyWebSocketClient` (renamed for backward compatibility, but uses SSE)
+**Oggetto**: `EmbyWebSocketClient`
 
 **Features**:
-- ✅ Uses EventSource API for SSE instead of WebSocket
+- ✅ Uses WebSocket for real-time events
+- ✅ Fallback to SSE if WebSocket fails
 - ✅ Auto-connect su page load
 - ✅ Auto-reconnect con exponential backoff
 - ✅ Event handler registration system (`.on(messageType, handler)`)
-- ✅ Server sends keepalive ping ogni 20s
 - ✅ Gestione errori e timeout
-- ✅ Unidirectional server→client (no client→server messages needed)
 
 **Usage**:
 ```javascript
@@ -231,7 +172,8 @@ EmbyWebSocketClient.on('RefreshProgress', (serverId, data) => {
 });
 
 // Check connection status
-const isConnected = EmbyWebSocketClient.eventSource?.readyState === EventSource.OPEN;
+const isWsConnected = EmbyWebSocketClient.socket?.readyState === WebSocket.OPEN;
+const isSseConnected = EmbyWebSocketClient.eventSource?.readyState === EventSource.OPEN;
 ```
 
 ## Flusso Eventi
@@ -322,7 +264,7 @@ websocket-client
 
 ### Inizializzazione
 
-In `app.py`, funzione `create_dashboard_app()`:
+In `runtime/bootstrap.py`, funzione `initialize_runtime_services()`:
 
 ```python
 # Initialize Emby WebSocket connections

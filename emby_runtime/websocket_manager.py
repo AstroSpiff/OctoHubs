@@ -142,7 +142,7 @@ class EmbyWebSocketConnection:
             data = json.loads(message)
 
             message_type = data.get("MessageType")
-            logger.debug(f"[WS:{self.server_id}] Received: {message_type}")
+            logger.debug("[WS:%s] Received event: %s", self.server_id, message_type)
 
             # Add server_id to data for routing
             data["server_id"] = self.server_id
@@ -318,7 +318,7 @@ class EmbyWebSocketManager:
         """
         # Import lazy per evitare circular dependency
         from emby_runtime.scan_websocket_manager import get_scan_connection_manager
-        from app import _LIBRARY_SCAN_TRACKER
+        from app_state import _LIBRARY_SCAN_TRACKER
 
         async def forward_refresh_progress(server_id: str, event_data: Dict):
             """Forward evento RefreshProgress ai client sottoscritti."""

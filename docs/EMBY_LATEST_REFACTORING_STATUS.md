@@ -1,7 +1,9 @@
 # Emby Latest Refactoring - Completion Status
 
+> Update 2026-06-28: this document is a refactoring log, not a live source of truth for route wiring. `emby_latest/routes.py` and `emby_latest/ui_routes.py` are now present and wired into the FastAPI app. The remaining work is completeness hardening and end-to-end verification of preview, notification, and settings flows.
+
 ## Overview
-This document tracks the completion status of the emby_latest refactoring initiative, which aimed to modularize ~3000+ lines of code from app.py into a clean, maintainable module structure with critical bug fixes.
+This document tracks the completion status of the emby_latest refactoring initiative, which aimed to modularize ~3000+ lines of code from legacy monolith into a clean, maintainable module structure with critical bug fixes.
 
 ---
 
@@ -36,7 +38,7 @@ Files Created:
   - `False` = feed mode (no gap filtering)
 - **BUG #1 FIX**: Saves BOTH batch and feed caches to DB (not just memory)
 - **BUG #2 FIX**: Saves state to DB after collection
-- Imports from app.py temporarily to avoid massive migration (can be refactored later)
+- Imports from legacy monolith temporarily to avoid massive migration (can be refactored later)
 
 ---
 
@@ -78,8 +80,8 @@ These files provide minimal functionality to allow the system to run, but need f
 - Integration with notification system
 
 **Migration Required:**
-- Source: `app.py` lines 2734-2804 (templates)
-- Source: `app.py` lines 2830-3075, 11300-11326 (messages)
+- Source: `legacy monolith` lines 2734-2804 (templates)
+- Source: `legacy monolith` lines 2830-3075, 11300-11326 (messages)
 - Estimated: ~500 lines to migrate
 
 ---
@@ -99,7 +101,7 @@ Full notification dispatch logic including:
 - Error handling and retry logic
 
 **Migration Required:**
-- Source: `app.py` notification functions (scattered throughout)
+- Source: `legacy monolith` notification functions (scattered throughout)
 - Estimated: ~300 lines to migrate
 
 ---
@@ -119,27 +121,26 @@ However, full integration requires:
 - Async task execution framework
 
 **Migration Required:**
-- Source: `app.py` lines 4690-4919
+- Source: `legacy monolith` lines 4690-4919
 - Most logic now in manager/collectors, but scheduling needs work
 
 ---
 
 ### Phase 10: API Handlers
-**Status: ⚠️ STUB IMPLEMENTATION**
+**Status: ⚠️ PARTIAL IMPLEMENTATION**
 
 Files Created:
-- `emby_latest/api_handlers.py`: Basic handler stubs
+- `emby_latest/api_handlers.py`: Manager-backed handlers for snapshot, refresh, progress, preview, enrich, and notify flows
 
 **What's Missing:**
-Full API handler implementations for:
-- Preview/dry-run operations
-- Form submission handling
-- Settings persistence
-- Preset management
-- Rule configuration
+Additional hardening and behavioral verification for:
+- Preview/dry-run edge cases
+- Error handling consistency
+- Coverage around settings persistence side effects
+- End-to-end validation of preset/rule workflows
 
 **Migration Required:**
-- Source: `app.py` lines 9491-10313
+- Source: `legacy monolith` lines 9491-10313
 - Estimated: ~800 lines to migrate
 
 ---
@@ -147,45 +148,42 @@ Full API handler implementations for:
 ## 🚧 NOT STARTED PHASES
 
 ### Phase 12: Route Integration
-**Status: 🚧 NOT STARTED**
+**Status: ⚠️ WIRED, VERIFICATION PENDING**
 
 **What Needs to Be Done:**
-Update `asgi.py` to use the new manager instead of calling app.py functions directly.
+The ASGI routing layer is now split into `emby_latest/routes.py` and `emby_latest/ui_routes.py` and registered through the FastAPI app factory. Remaining work is verifying that every flow behaves correctly against the refactored manager/settings modules.
 
-Routes to update (~30 total):
-- `GET /api/emby/latest` - Use `manager.get_snapshot()`
-- `POST /api/emby/latest/refresh` - Use `background.refresh_full()`
-- `GET /api/emby/latest/progress` - Use `api_handlers.build_refresh_snapshot()`
-- `POST /api/emby/latest/preview` - Use `api_handlers` preview functions
-- `POST /api/emby/latest/enrich` - Use `manager.enrich_item()`
-- `POST /api/emby/latest/notify` - Use `manager.send_notifications()`
-- All form routes (`/emby/latest/*`)
+Routes currently present in `emby_latest/routes.py` and `emby_latest/ui_routes.py` include:
+- `GET /api/emby/latest`
+- `POST /api/emby/latest/refresh`
+- `GET /api/emby/latest/progress`
+- `POST /api/emby/latest/preview`
+- `GET /api/emby/latest/preview/cache`
+- `POST /api/emby/latest/enrich`
+- `POST /api/emby/latest/notify`
+- Form routes under `/emby/latest/*`
 
 **Example Pattern:**
 ```python
-# OLD (in asgi.py)
-from app import _get_latest_snapshot
-
-@fastapi_app.get("/api/emby/latest")
-async def emby_latest(request: Request):
-    data = _get_latest_snapshot("batch")
-    return JSONResponse(data)
-
-# NEW (after refactoring)
+# Routes live in emby_latest/routes.py (API) and emby_latest/ui_routes.py (UI)
+from fastapi import APIRouter
 from emby_latest import get_manager
 
-@fastapi_app.get("/api/emby/latest")
-async def emby_latest(request: Request):
+router = APIRouter()
+
+@router.get("/api/emby/latest")
+async def emby_latest():
     manager = get_manager()
     if not manager:
         return JSONResponse({"error": "Latest not enabled"}, status_code=404)
-    data = manager.get_snapshot(mode="batch")
-    return JSONResponse(data)
+    return JSONResponse(manager.get_snapshot(mode="batch"))
 ```
 
-**Files to Modify:**
-- `asgi.py`: Update all emby/latest routes
-- Estimated: ~300 lines to modify
+**Verification Focus:**
+- Refresh lifecycle and progress tracking
+- Preview and enrich payload compatibility
+- Notification rule persistence and dispatch behavior
+- Redirect/flash behavior for UI form routes
 
 ---
 
@@ -193,7 +191,7 @@ async def emby_latest(request: Request):
 **Status: 🚧 NOT STARTED**
 
 **What Needs to Be Done:**
-Remove legacy code from `app.py` once all routes are migrated.
+Remove legacy code from `legacy monolith` once all routes are migrated.
 
 **Functions to Remove (~3000 lines):**
 All functions starting with:
@@ -293,23 +291,23 @@ Only perform this cleanup AFTER Phase 12 is complete and all routes are verified
 
 **Total Created:** ~3,000 lines
 **Total to Migrate (remaining):** ~1,550 lines
-**Total to Remove from app.py:** ~3,000 lines
+**Total to Remove from legacy monolith:** ~3,000 lines
 
 ---
 
 ## 🎯 NEXT STEPS FOR COMPLETION
 
 ### Priority 1: Complete Stub Implementations
-1. **templates.py** - Migrate full template logic from app.py
-2. **messages.py** - Migrate message building logic from app.py
-3. **api_handlers.py** - Migrate API handler functions from app.py
+1. **templates.py** - Migrate full template logic from legacy monolith
+2. **messages.py** - Migrate message building logic from legacy monolith
+3. **api_handlers.py** - Migrate API handler functions from legacy monolith
 
 ### Priority 2: Route Integration
-4. **asgi.py** - Update all `/api/emby/latest/*` routes to use manager
+4. **emby_latest/routes.py** - Update all `/api/emby/latest/*` routes to use manager
 5. **Testing** - Verify all routes work with new architecture
 
 ### Priority 3: Cleanup
-6. **app.py** - Remove legacy functions (DO THIS LAST)
+6. **legacy monolith** - Remove legacy functions (DO THIS LAST)
 7. **Verification** - Ensure no remaining references to old functions
 
 ---
@@ -340,7 +338,7 @@ Before marking refactoring as complete:
 - ✅ Bug fixes are isolated and testable
 
 ### Temporary Compromises
-- ⚠️ `collectors.py` imports from `app.py` to avoid massive migration
+- ⚠️ `collectors.py` imports from `legacy monolith` to avoid massive migration
   - This is acceptable short-term
   - Future: move helper functions to `emby_latest/helpers.py`
 - ⚠️ Stub implementations allow system to run but need completion
@@ -356,7 +354,7 @@ Before marking refactoring as complete:
 
 ## 🔍 MIGRATION REFERENCE
 
-### Key Functions in app.py Still to Migrate:
+### Key Functions in legacy monolith Still to Migrate:
 
 **Templates (2734-2804):**
 - `_get_latest_template_env()`
@@ -389,7 +387,7 @@ Before marking refactoring as complete:
 
 ### How Other Modules Use Latest:
 
-**asgi.py Routes:**
+**emby_latest/routes.py Routes:**
 ```python
 from emby_latest import get_manager
 
@@ -426,8 +424,8 @@ The refactoring will be considered complete when:
 1. ✅ All critical bugs (#1, #2, #3) are fixed
 2. ✅ Core architecture (manager, collectors, DB) is complete
 3. ⚠️ All stub implementations are replaced with full logic
-4. ⚠️ All routes in asgi.py use the new manager
-5. ⚠️ Legacy code removed from app.py
+4. ⚠️ All routes in emby_latest/routes.py use the new manager
+5. ⚠️ Legacy code removed from legacy monolith
 6. ⚠️ All tests pass
 7. ⚠️ No degradation in functionality or performance
 
@@ -445,17 +443,17 @@ The refactoring will be considered complete when:
 ### For Developers Continuing This Work:
 
 1. **Start with stub implementations:**
-   - Copy functions from app.py lines 2734-3075 into `templates.py` and `messages.py`
+   - Copy functions from legacy monolith lines 2734-3075 into `templates.py` and `messages.py`
    - Test template rendering and message building independently
    - Update `notifications.py` to use the completed templates/messages
 
 2. **Then integrate routes:**
-   - Update one route at a time in `asgi.py`
+   - Update one route at a time in `emby_latest/routes.py`
    - Test each route after modification
    - Compare responses with old implementation
 
 3. **Finally cleanup:**
-   - Only after ALL routes work, remove functions from `app.py`
+   - Only after ALL routes work, remove functions from `legacy monolith`
    - Search for any remaining `_latest_` or `_collect_emby_latest_` references
    - Verify no import errors
 

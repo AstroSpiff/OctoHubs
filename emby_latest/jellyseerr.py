@@ -2,7 +2,7 @@
 Jellyseerr integration for Latest Publications.
 """
 
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
 from emby_runtime.api_clients import _extract_tmdb_id
 from core.utils import _normalize_media_type
@@ -148,16 +148,31 @@ def _apply_jellyseerr_request_info(items: List[Dict[str, Any]], config: Dict[str
     Apply Jellyseerr request information to items.
     Uses the persisted Jellyseerr requests table.
     """
-    if not items or not isinstance(items, list) or not config:
+    if not isinstance(items, list):
+        return
+
+    # Inizializza sempre i campi Jellyseerr con valori di default,
+    # indipendentemente dalla disponibilità del DB o della configurazione
+    for item in items:
+        if isinstance(item, dict):
+            item["jellyseerr_requested"] = False
+            item["jellyseerr_request_id"] = ""
+            item["jellyseerr_request_status"] = ""
+            item["jellyseerr_request_status_label"] = ""
+            item["jellyseerr_requested_by"] = ""
+
+    if not items or not config:
         return
     db_settings = config.get("DATABASE", {})
     if not isinstance(db_settings, dict) or not db_settings.get("ENABLED"):
+        print(f"[JELLYSEERR] DB non abilitato (ENABLED={db_settings.get('ENABLED') if isinstance(db_settings, dict) else 'n/a'}), skip")
         return
 
     try:
-        from app import _ensure_db_backend
+        from core.config_manager import _ensure_db_backend
         backend = _ensure_db_backend()
-    except Exception:
+    except Exception as exc:
+        print(f"[JELLYSEERR] Impossibile ottenere DB backend: {exc}")
         return
 
     tmdb_ids: List[str] = []
@@ -175,45 +190,168 @@ def _apply_jellyseerr_request_info(items: List[Dict[str, Any]], config: Dict[str
             media_types.add("movie")
 
     if not tmdb_ids:
+        print(f"[JELLYSEERR] Nessun tmdb_id negli item ({len(items)} item totali), skip")
         return
 
+    print(f"[JELLYSEERR] Lookup {len(tmdb_ids)} tmdb_id, media_types={media_types}")
     index = backend.load_jellyseerr_request_index(tmdb_ids, media_types or None)
     if not index:
+        print("[JELLYSEERR] Nessuna richiesta trovata nel DB per i tmdb_id forniti")
         return
+    print(f"[JELLYSEERR] Trovate {len(index)} voci nel DB, applico ai {len(items)} item")
 
     for item in items:
         if not isinstance(item, dict):
             continue
-        item["jellyseerr_requested"] = False
-        item["jellyseerr_request_id"] = ""
-        item["jellyseerr_request_status"] = ""
-        item["jellyseerr_request_status_label"] = ""
-        item["jellyseerr_requested_by"] = ""
 
         tmdb_id = item.get("tmdb_id")
         if not tmdb_id:
             continue
         item_type = str(item.get("item_type") or "").lower()
         media_type = "tv" if item_type in ("series", "episode", "season", "tv") else "movie"
-        request_info = index.get((media_type, str(tmdb_id)))
-        if not request_info:
+        request_list = index.get((media_type, str(tmdb_id)))
+        if not request_list:
             continue
 
-        request_payload = request_info.get("payload")
-        requested_seasons: List[int] = []
-        if media_type == "tv" and isinstance(request_payload, dict):
-            requested_seasons = _extract_requested_seasons(request_payload)
-
-        if requested_seasons:
+        # Find best matching request.
+        # For TV: prefer a request whose seasons overlap with published seasons,
+        # then a whole-series request, then any request (fallback).
+        # For movies: use the first (and typically only) request.
+        best_request_info: Optional[Dict[str, Any]] = None
+        if media_type == "tv":
             published_seasons = _extract_item_seasons(item)
-            if published_seasons and not (set(requested_seasons) & published_seasons):
-                continue
+            fallback_request_info: Optional[Dict[str, Any]] = None
+            for request_info in request_list:
+                request_payload = request_info.get("payload")
+                requested_seasons: List[int] = []
+                if isinstance(request_payload, dict):
+                    requested_seasons = _extract_requested_seasons(request_payload)
+                if not requested_seasons:
+                    # Whole-series request — always a good match
+                    if best_request_info is None:
+                        best_request_info = request_info
+                elif not published_seasons or (set(requested_seasons) & published_seasons):
+                    # Season-specific request that matches → prefer this
+                    best_request_info = request_info
+                    break
+                elif fallback_request_info is None:
+                    fallback_request_info = request_info
+            # If no season-matched or whole-series request, use any request as fallback
+            if best_request_info is None:
+                best_request_info = fallback_request_info or request_list[0]
+        else:
+            best_request_info = request_list[0]
 
-        status_raw = request_info.get("status")
-        status_label = "Richiesta"
+        status_raw = best_request_info.get("status")
+        status_label = best_request_info.get("status_label") or _normalize_status_label(status_raw)
 
         item["jellyseerr_requested"] = True
-        item["jellyseerr_request_id"] = str(request_info.get("request_id") or "")
+        item["jellyseerr_request_id"] = str(best_request_info.get("request_id") or "")
         item["jellyseerr_request_status"] = str(status_raw or "")
         item["jellyseerr_request_status_label"] = str(status_label or "")
-        item["jellyseerr_requested_by"] = str(request_info.get("requested_by") or "")
+        item["jellyseerr_requested_by"] = str(best_request_info.get("requested_by") or "")
+
+
+def _sync_jellyseerr_to_db(config: Dict[str, Any]) -> bool:
+    """
+    Sync Jellyseerr requests from API to DB if DB has no data yet.
+    Returns True if sync was performed.
+    """
+    if not isinstance(config, dict):
+        return False
+    if not (config.get("JELLYSEERR_URL") and config.get("JELLYSEERR_API_KEY")):
+        return False
+    db_settings = config.get("DATABASE", {})
+    if not isinstance(db_settings, dict) or not db_settings.get("ENABLED"):
+        return False
+
+    try:
+        from core.config_manager import _ensure_db_backend
+        backend = _ensure_db_backend()
+    except Exception:
+        return False
+
+    try:
+        last_updated = backend.get_jellyseerr_requests_last_updated()
+        if last_updated is not None:
+            return False  # Already has data
+    except Exception:
+        return False
+
+    try:
+        from emby_runtime.api_clients import get_jellyseerr_requests
+        print("[LATEST] Jellyseerr: DB vuoto, sincronizzazione richieste in corso...")
+        requests_data, ok = get_jellyseerr_requests(config, silent=True, return_status=True)
+        if not ok:
+            return False
+        entries = build_request_entries(requests_data)
+        backend.save_jellyseerr_requests(entries)
+        print(f"[LATEST] Jellyseerr: {len(entries)} richieste sincronizzate nel DB")
+        return True
+    except Exception as exc:
+        print(f"[LATEST] Jellyseerr: errore sincronizzazione DB: {exc}")
+        return False
+
+
+def _apply_jellyseerr_direct(item: Dict[str, Any], config: Dict[str, Any]) -> None:
+    """
+    Directly query Jellyseerr API for request info for a specific item.
+    Used as fallback when DB has no matching data for single-item enrichment.
+    """
+    if not isinstance(item, dict) or not isinstance(config, dict):
+        return
+    if not (config.get("JELLYSEERR_URL") and config.get("JELLYSEERR_API_KEY")):
+        return
+
+    tmdb_id = item.get("tmdb_id")
+    if not tmdb_id:
+        return
+
+    item_type = str(item.get("item_type") or "").lower()
+    media_type = "tv" if item_type in ("series", "episode", "season", "tv") else "movie"
+
+    try:
+        from emby_runtime.api_clients_tmdb import _fetch_tmdb_payload
+        cache: Dict[str, Any] = {}
+        data, _ = _fetch_tmdb_payload(str(tmdb_id), [media_type], config, cache)
+        if not isinstance(data, dict):
+            return
+
+        media_info = data.get("mediaInfo") or {}
+        if not isinstance(media_info, dict):
+            return
+
+        requests_list = media_info.get("requests")
+        best_request: Optional[Dict[str, Any]] = None
+
+        if isinstance(requests_list, list):
+            for req in requests_list:
+                if not isinstance(req, dict):
+                    continue
+                if best_request is None or (req.get("status") or 0) >= (best_request.get("status") or 0):
+                    best_request = req
+
+        media_status = media_info.get("status")
+        if best_request is None and not media_status:
+            return
+
+        request_id = str(best_request.get("id") or "") if best_request else ""
+
+        if best_request:
+            status_raw = best_request.get("status")
+            status_label = _normalize_status_label(status_raw)
+            requested_by = _extract_requested_by(best_request)
+        else:
+            status_raw = media_status
+            status_label = _normalize_status_label(media_status)
+            requested_by = ""
+
+        item["jellyseerr_requested"] = True
+        item["jellyseerr_request_id"] = request_id
+        item["jellyseerr_request_status"] = str(status_raw or "")
+        item["jellyseerr_request_status_label"] = status_label
+        item["jellyseerr_requested_by"] = requested_by
+
+        print(f"[LATEST] Jellyseerr diretta: TMDB {tmdb_id} → {status_label} (richiesta #{request_id})")
+    except Exception as exc:
+        print(f"[LATEST] Jellyseerr diretta: errore per TMDB {tmdb_id}: {exc}")

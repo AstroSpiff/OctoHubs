@@ -81,4 +81,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 # Run with Uvicorn ASGI server
 # Using single worker for SSE compatibility, relying on async for concurrency
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
-CMD ["uvicorn", "asgi:fastapi_app", "--host", "0.0.0.0", "--port", "5050", "--workers", "1", "--timeout-keep-alive", "300"]
+CMD ["uvicorn", "asgi:app", "--host", "0.0.0.0", "--port", "5050", "--workers", "1", "--timeout-keep-alive", "300"]

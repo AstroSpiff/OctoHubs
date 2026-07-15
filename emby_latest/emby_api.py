@@ -2,7 +2,7 @@
 Emby API helpers for Latest Publications.
 
 This module centralizes Emby fetches used by the Latest system to avoid
-coupling with app.py.
+legacy coupling.
 """
 
 from typing import Any, Dict, List, Optional, Tuple
@@ -232,7 +232,8 @@ def _fetch_emby_latest_series_from_episodes(
         params = {
             "Fields": (
                 "DateCreated,Overview,Genres,ProductionYear,RunTimeTicks,CommunityRating,CriticRating,"
-                "OfficialRating,PremiereDate,ChildCount,ImageTags,OriginalTitle,Taglines,Studios,ProviderIds,People"
+                "OfficialRating,PremiereDate,ChildCount,RecursiveItemCount,ImageTags,OriginalTitle,Taglines,Studios,"
+                "ProviderIds,People"
             )
         }
         success, payload = _call_emby_api(server, f"Items/{series_id}", params=params)
@@ -273,6 +274,14 @@ def _fetch_emby_latest_series_from_episodes(
                 item_payload["ImageTags"] = episode_payload.get("ImageTags")
             if not item_payload.get("ProductionYear") and episode_payload.get("SeriesProductionYear"):
                 item_payload["ProductionYear"] = episode_payload.get("SeriesProductionYear")
+            if not item_payload.get("ProviderIds") and episode_payload.get("ProviderIds"):
+                item_payload["ProviderIds"] = episode_payload.get("ProviderIds")
+            if not item_payload.get("Taglines") and episode_payload.get("Taglines"):
+                item_payload["Taglines"] = episode_payload.get("Taglines")
+            if not item_payload.get("Studios") and episode_payload.get("Studios"):
+                item_payload["Studios"] = episode_payload.get("Studios")
+            if not item_payload.get("OriginalTitle") and episode_payload.get("OriginalTitle"):
+                item_payload["OriginalTitle"] = episode_payload.get("OriginalTitle")
 
             # Merge people
             item_people_raw = item_payload.get("People")

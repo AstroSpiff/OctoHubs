@@ -4,6 +4,24 @@
  * Gestisce ricerche parallelizzate con aggiornamento risultati in tempo reale.
  */
 
+const __searchStreamingUtils = window.octohubUtils || {};
+const __searchStreamingCsrfFetch = __searchStreamingUtils.csrfFetch || ((url, options = {}) => {
+    const opts = options || {};
+    const headers = new Headers(opts.headers || {});
+    const tokenEl = document.querySelector('meta[name="csrf-token"]');
+    const token = tokenEl ? tokenEl.getAttribute('content') : '';
+    if (token && !headers.has('X-CSRFToken')) {
+        headers.set('X-CSRFToken', token);
+    }
+    if (!headers.has('X-Requested-With')) {
+        headers.set('X-Requested-With', 'XMLHttpRequest');
+    }
+    if (!headers.has('Accept')) {
+        headers.set('Accept', 'application/json');
+    }
+    return fetch(url, { credentials: 'same-origin', ...opts, headers });
+});
+
 class SearchStreamingClient {
     constructor() {
         this.websocket = null;
@@ -46,7 +64,7 @@ class SearchStreamingClient {
 
         try {
             // 1. Richiedi session_id al server
-            const response = await csrfFetch('/api/search/stream', {
+            const response = await __searchStreamingCsrfFetch('/api/search/stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' }
             });
