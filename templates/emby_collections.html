@@ -7,6 +7,7 @@
     <title>Emby Collezioni</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link rel="stylesheet" href="{{ url_for('static', filename='emby.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='operations_center.css') }}?v=20260715-global-operations">
     <style>
         .tagline.small {
             font-size: 0.75rem;
@@ -1259,6 +1260,7 @@
         });
     </script>
     <script src="{{ url_for('static', filename='shared-utils.js') }}"></script>
+    <script src="{{ url_for('static', filename='operations_center.js') }}?v=20260715-global-operations"></script>
     <script src="{{ url_for('static', filename='actions.js') }}"></script>
     <script src="{{ url_for('static', filename='script_shell.js') }}?v=20260628-shell"></script>
     <script src="{{ url_for('static', filename='script_rss_tools.js') }}?v=20260628-rss"></script>

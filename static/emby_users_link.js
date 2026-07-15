@@ -162,10 +162,7 @@ async function linkSelectedUsers() {
     leaderList.style.alignItems = 'flex-start';
 
     const leaderRadioName = `group-leader-choice-${Date.now()}`;
-    let leaderIdx = selected.findIndex(user => user.username.toLowerCase() === 'master');
-    if (leaderIdx === -1) {
-        leaderIdx = selected.findIndex(user => !user.is_disabled);
-    }
+    let leaderIdx = selected.findIndex(user => !user.is_disabled);
     if (leaderIdx === -1) {
         leaderIdx = 0;
     }

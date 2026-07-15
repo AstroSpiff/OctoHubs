@@ -27,6 +27,7 @@ class AutoSyncManager:
         mark_group_bootstrap_done: Callable[[str, str], bool],
         mark_group_sync_result: Callable[[str, str, str, Dict[str, Any]], bool],
         state_tracker,
+        operation_tracker=None,
     ):
         self._get_users_dashboard_data = get_users_dashboard_data
         self._sync_merge_playstate = sync_merge_playstate
@@ -46,6 +47,25 @@ class AutoSyncManager:
         self._mark_group_bootstrap_done = mark_group_bootstrap_done
         self._mark_group_sync_result = mark_group_sync_result
         self._state_tracker = state_tracker
+        self._operation_tracker = operation_tracker
+
+    def _update_operation(
+        self,
+        operation_id: str | None,
+        message: str,
+        current: int | None = None,
+        total: int | None = None,
+        details: Dict[str, Any] | None = None,
+    ) -> None:
+        if not operation_id or not self._operation_tracker:
+            return
+        self._operation_tracker.update(
+            operation_id,
+            message=message,
+            current=current,
+            total=total,
+            details=details,
+        )
 
     def _latest_source(self, domain: str, participants: List[tuple], progress_callback=None):
         state = self._state_tracker.choose_latest(domain, participants, progress_callback=progress_callback)
@@ -154,6 +174,27 @@ class AutoSyncManager:
         logger.warning("[USER_SYNC] Delta sync done domain=favorites result=%s", result)
         return result
 
+    def _should_replace_playstate_delta_op(
+        self,
+        existing: tuple | None,
+        updated_at: str,
+        op: str,
+        value: Dict[str, Any] | None,
+    ) -> bool:
+        if not existing:
+            return True
+        existing_updated_at, existing_op, existing_value = existing
+        if updated_at > existing_updated_at:
+            return True
+        if updated_at < existing_updated_at:
+            return False
+        if op == "set" and existing_op == "set":
+            candidate_hidden = bool((value or {}).get("hide_from_resume"))
+            existing_hidden = bool((existing_value or {}).get("hide_from_resume"))
+            if candidate_hidden != existing_hidden:
+                return candidate_hidden
+        return True
+
     def _run_playstate_delta_sync(
         self,
         participants: List[tuple],
@@ -192,13 +233,28 @@ class AutoSyncManager:
                 continue
 
             for key in diff.get("added") or []:
-                if key in current_items and updated_at >= latest_ops.get(key, ("", "", None))[0]:
+                if key in current_items and self._should_replace_playstate_delta_op(
+                    latest_ops.get(key),
+                    updated_at,
+                    "set",
+                    current_items[key],
+                ):
                     latest_ops[key] = (updated_at, "set", current_items[key])
             for key in diff.get("changed") or []:
-                if key in current_items and updated_at >= latest_ops.get(key, ("", "", None))[0]:
+                if key in current_items and self._should_replace_playstate_delta_op(
+                    latest_ops.get(key),
+                    updated_at,
+                    "set",
+                    current_items[key],
+                ):
                     latest_ops[key] = (updated_at, "set", current_items[key])
             for key in diff.get("removed") or []:
-                if updated_at >= latest_ops.get(key, ("", "", None))[0]:
+                if self._should_replace_playstate_delta_op(
+                    latest_ops.get(key),
+                    updated_at,
+                    "remove",
+                    None,
+                ):
                     latest_ops[key] = (updated_at, "remove", None)
 
         set_count = 0
@@ -381,9 +437,10 @@ class AutoSyncManager:
         results[result_key] = work()
         logger.warning("[USER_SYNC] Step done group %s (%s): %s -> %s", group_name, group_id, label, results[result_key])
 
-    def run_group_sync(self, group_id: str) -> Dict[str, Any]:
+    def run_group_sync(self, group_id: str, operation_id: str | None = None) -> Dict[str, Any]:
         logger.warning("[USER_SYNC] Requested manual sync for group %s", group_id)
         try:
+            self._update_operation(operation_id, "Carico gruppo utenti", 0, 1, {"group_id": group_id})
             dashboard_data = self._get_users_dashboard_data()
             groups = dashboard_data.get("groups", [])
             group = next((item for item in groups if item.get("id") == group_id), None)
@@ -391,13 +448,25 @@ class AutoSyncManager:
                 message = "Gruppo non trovato o utenti Emby non caricati"
                 logger.warning("[USER_SYNC] Cannot sync group %s: %s", group_id, message)
                 self._mark_group_sync_result(group_id, "error", message, {})
+                if operation_id and self._operation_tracker:
+                    self._operation_tracker.fail(operation_id, message)
                 return {"ok": False, "error": message}
 
-            result = self._sync_group(group)
-            return {"ok": result.get("status") == "success", "result": result}
+            result = self._sync_group(group, operation_id=operation_id)
+            ok = result.get("status") == "success"
+            if operation_id and self._operation_tracker:
+                if ok:
+                    self._operation_tracker.finish(operation_id, result.get("message") or "Sync completato", result=result)
+                elif result.get("status") == "skipped":
+                    self._operation_tracker.skip(operation_id, result.get("message") or "Sync saltato", result=result)
+                else:
+                    self._operation_tracker.fail(operation_id, result.get("message") or "Sync non riuscito", result=result)
+            return {"ok": ok, "result": result}
         except Exception as e:
             logger.exception("[USER_SYNC] Manual sync failed for group %s", group_id)
             self._mark_group_sync_result(group_id, "error", str(e), {})
+            if operation_id and self._operation_tracker:
+                self._operation_tracker.fail(operation_id, str(e))
             return {"ok": False, "error": str(e)}
 
     def run_auto_sync(self) -> None:
@@ -422,7 +491,7 @@ class AutoSyncManager:
 
         logger.info(f"[AUTO_SYNC] Completed. Processed {count} groups.")
 
-    def _sync_group(self, group: Dict[str, Any]) -> Dict[str, Any]:
+    def _sync_group(self, group: Dict[str, Any], operation_id: str | None = None) -> Dict[str, Any]:
         gid = group["id"]
         group_name = group.get("name") or gid
         sync_type = group.get("sync_type", "merge")
@@ -451,7 +520,26 @@ class AutoSyncManager:
             return {"status": "skipped", "message": message}
 
         logger.warning("[USER_SYNC] Start group %s (%s) type=%s", group_name, gid, sync_type)
+        enabled_domains = [
+            label for label, enabled in [
+                ("visti", sync_playstate),
+                ("impostazioni", sync_config),
+                ("librerie", sync_library_access),
+                ("preferiti", sync_favorites),
+                ("playlist", sync_playlists),
+            ]
+            if enabled
+        ]
+        total_steps = len(enabled_domains) + 2
+        current_step = 0
         self._mark_group_sync_result(gid, "running", f"Preparazione sync gruppo ({sync_type})", {})
+        self._update_operation(
+            operation_id,
+            f"Preparazione sync gruppo {group_name} ({sync_type})",
+            current_step,
+            total_steps,
+            {"group_id": gid, "group_name": group_name, "sync_type": sync_type},
+        )
         leaders = [u for u in users if u.get("is_leader")]
         if len(leaders) != 1:
             message = f"Leader non valido: trovati {len(leaders)} leader"
@@ -463,8 +551,12 @@ class AutoSyncManager:
 
         try:
             results = {}
+            current_step = 1
+            self._update_operation(operation_id, "Partecipanti sync verificati", current_step, total_steps)
             if sync_type == "merge":
                 if sync_playstate:
+                    current_step += 1
+                    self._update_operation(operation_id, "Sincronizzazione visti in corso", current_step - 1, total_steps)
                     def sync_playstate_work():
                         if playstate_bootstrap_done:
                             return self._run_playstate_delta_sync(
@@ -477,7 +569,10 @@ class AutoSyncManager:
                         result["bootstrap"] = "additive"
                         return result
                     self._run_sync_step(gid, group_name, results, "playstate", "visti", sync_playstate_work)
+                    self._update_operation(operation_id, "Sincronizzazione visti completata", current_step, total_steps)
                 if sync_config:
+                    current_step += 1
+                    self._update_operation(operation_id, "Sincronizzazione impostazioni in corso", current_step - 1, total_steps)
                     self._run_sync_step(
                         gid,
                         group_name,
@@ -492,7 +587,10 @@ class AutoSyncManager:
                             progress_callback=self._snapshot_progress_callback(gid, "impostazioni", results),
                         ),
                     )
+                    self._update_operation(operation_id, "Sincronizzazione impostazioni completata", current_step, total_steps)
                 if sync_library_access:
+                    current_step += 1
+                    self._update_operation(operation_id, "Sincronizzazione librerie in corso", current_step - 1, total_steps)
                     self._run_sync_step(
                         gid,
                         group_name,
@@ -506,7 +604,10 @@ class AutoSyncManager:
                             progress_callback=self._snapshot_progress_callback(gid, "librerie", results),
                         ),
                     )
+                    self._update_operation(operation_id, "Sincronizzazione librerie completata", current_step, total_steps)
                 if sync_favorites:
+                    current_step += 1
+                    self._update_operation(operation_id, "Sincronizzazione preferiti in corso", current_step - 1, total_steps)
                     def sync_favorites_work():
                         if favorites_bootstrap_done:
                             return self._run_favorites_delta_sync(
@@ -518,7 +619,10 @@ class AutoSyncManager:
                         result["bootstrap"] = "additive"
                         return result
                     self._run_sync_step(gid, group_name, results, "favorites", "preferiti", sync_favorites_work)
+                    self._update_operation(operation_id, "Sincronizzazione preferiti completata", current_step, total_steps)
                 if sync_playlists:
+                    current_step += 1
+                    self._update_operation(operation_id, "Sincronizzazione playlist in corso", current_step - 1, total_steps)
                     def sync_playlists_work():
                         if playlists_bootstrap_done:
                             return self._run_playlists_delta_sync(
@@ -530,6 +634,7 @@ class AutoSyncManager:
                         result["bootstrap"] = "additive"
                         return result
                     self._run_sync_step(gid, group_name, results, "playlists", "playlist", sync_playlists_work)
+                    self._update_operation(operation_id, "Sincronizzazione playlist completata", current_step, total_steps)
                 logger.info("[AUTO_SYNC] Merge result for %s: %s", group["name"], results)
 
             elif sync_type == "one_way":
@@ -543,6 +648,8 @@ class AutoSyncManager:
 
                 if dest_targets:
                     if sync_playstate:
+                        current_step += 1
+                        self._update_operation(operation_id, "Sincronizzazione visti in corso", current_step - 1, total_steps)
                         self._run_sync_step(
                             gid,
                             group_name,
@@ -551,7 +658,10 @@ class AutoSyncManager:
                             "visti",
                             lambda: self._sync_user_playstate_exact(source_server_id, source_user_id, dest_targets, sync_resume),
                         )
+                        self._update_operation(operation_id, "Sincronizzazione visti completata", current_step, total_steps)
                     if sync_config:
+                        current_step += 1
+                        self._update_operation(operation_id, "Sincronizzazione impostazioni in corso", current_step - 1, total_steps)
                         self._run_sync_step(
                             gid,
                             group_name,
@@ -560,7 +670,10 @@ class AutoSyncManager:
                             "impostazioni",
                             lambda: self._sync_user_config(source_server_id, source_user_id, dest_targets, config_categories),
                         )
+                        self._update_operation(operation_id, "Sincronizzazione impostazioni completata", current_step, total_steps)
                     if sync_library_access:
+                        current_step += 1
+                        self._update_operation(operation_id, "Sincronizzazione librerie in corso", current_step - 1, total_steps)
                         self._run_sync_step(
                             gid,
                             group_name,
@@ -569,7 +682,10 @@ class AutoSyncManager:
                             "librerie",
                             lambda: self._sync_library_access(source_server_id, source_user_id, dest_targets),
                         )
+                        self._update_operation(operation_id, "Sincronizzazione librerie completata", current_step, total_steps)
                     if sync_favorites:
+                        current_step += 1
+                        self._update_operation(operation_id, "Sincronizzazione preferiti in corso", current_step - 1, total_steps)
                         self._run_sync_step(
                             gid,
                             group_name,
@@ -578,7 +694,10 @@ class AutoSyncManager:
                             "preferiti",
                             lambda: self._sync_user_favorites_exact(source_server_id, source_user_id, dest_targets),
                         )
+                        self._update_operation(operation_id, "Sincronizzazione preferiti completata", current_step, total_steps)
                     if sync_playlists:
+                        current_step += 1
+                        self._update_operation(operation_id, "Sincronizzazione playlist in corso", current_step - 1, total_steps)
                         self._run_sync_step(
                             gid,
                             group_name,
@@ -587,10 +706,12 @@ class AutoSyncManager:
                             "playlist",
                             lambda: self._sync_user_playlists_exact(source_server_id, source_user_id, dest_targets),
                         )
+                        self._update_operation(operation_id, "Sincronizzazione playlist completata", current_step, total_steps)
                     logger.info("[AUTO_SYNC] One-way result for %s: %s", group["name"], results)
 
             logger.warning("[USER_SYNC] Step start group %s (%s): snapshot", group_name, gid)
             self._mark_group_sync_result(gid, "running", "Aggiornamento snapshot sync", results)
+            self._update_operation(operation_id, "Aggiornamento snapshot sync", total_steps - 1, total_steps)
             refresh_sync_states(
                 self._state_tracker,
                 targets,
@@ -602,17 +723,8 @@ class AutoSyncManager:
                 sync_playlists=sync_playlists,
             )
             logger.warning("[USER_SYNC] Step done group %s (%s): snapshot", group_name, gid)
+            self._update_operation(operation_id, "Snapshot sync aggiornato", total_steps, total_steps)
 
-            enabled_domains = [
-                label for label, enabled in [
-                    ("visti", sync_playstate),
-                    ("impostazioni", sync_config),
-                    ("librerie", sync_library_access),
-                    ("preferiti", sync_favorites),
-                    ("playlist", sync_playlists),
-                ]
-                if enabled
-            ]
             message = "Sincronizzati: " + ", ".join(enabled_domains) if enabled_domains else "Nessun dominio selezionato"
             self._mark_group_sync_result(gid, "success", message, results)
             logger.warning("[USER_SYNC] Completed group %s (%s): %s", group_name, gid, message)

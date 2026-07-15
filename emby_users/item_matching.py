@@ -6,6 +6,7 @@ from core.utils import normalize_string
 
 
 RUNTIME_TOLERANCE_TICKS = 3 * 60 * 10_000_000
+PROVIDER_PRIORITY = ("tmdb", "tvdb", "imdb")
 
 
 def _provider_ids(item: Dict[str, Any], key: str = "ProviderIds") -> Dict[str, Any]:
@@ -17,6 +18,8 @@ def _provider_ids(item: Dict[str, Any], key: str = "ProviderIds") -> Dict[str, A
         "themoviedb": "tmdb",
         "tmdb": "tmdb",
         "imdb": "imdb",
+        "thetvdb": "tvdb",
+        "tvdb": "tvdb",
     }
     for raw_key, value in provider_ids.items():
         if not value:
@@ -34,9 +37,16 @@ def _episode_position(item: Dict[str, Any]) -> tuple[str, str] | None:
     return str(season), str(episode)
 
 
+def _first_provider_id(provider_ids: Dict[str, Any]) -> tuple[str, Any] | None:
+    for provider in PROVIDER_PRIORITY:
+        provider_id = provider_ids.get(provider)
+        if provider_id:
+            return provider, provider_id
+    return None
+
+
 def get_item_sync_keys(item: Dict[str, Any]) -> List[str]:
     """Build stable provider-id keys for the same media item across Emby servers."""
-    keys = []
     item_type = item.get("Type") or item.get("ItemType")
 
     if item_type == "Episode":
@@ -44,25 +54,62 @@ def get_item_sync_keys(item: Dict[str, Any]) -> List[str]:
         series_provider_ids = _provider_ids(item, "SeriesProviderIds")
         if position and series_provider_ids:
             season, episode = position
-            if series_provider_ids.get("tmdb"):
-                keys.append(f"series-tmdb:{series_provider_ids['tmdb']}:s{season}:e{episode}")
-            if series_provider_ids.get("imdb"):
-                keys.append(f"series-imdb:{series_provider_ids['imdb']}:s{season}:e{episode}")
-            if keys:
-                return keys
+            provider = _first_provider_id(series_provider_ids)
+            if provider:
+                provider_name, provider_id = provider
+                return [f"series-{provider_name}:{provider_id}:s{season}:e{episode}"]
 
     provider_ids = _provider_ids(item)
+    provider = _first_provider_id(provider_ids)
+    if provider:
+        provider_name, provider_id = provider
+        return [f"{provider_name}:{provider_id}"]
 
-    if provider_ids.get("tmdb"):
-        keys.append(f"tmdb:{provider_ids['tmdb']}")
-    if provider_ids.get("imdb"):
-        keys.append(f"imdb:{provider_ids['imdb']}")
-
-    return keys
+    return get_safe_fallback_keys(item)
 
 
 def is_provider_key(key: str) -> bool:
-    return key.startswith(("tmdb:", "imdb:", "series-tmdb:", "series-imdb:"))
+    return key.startswith(("tmdb:", "imdb:", "tvdb:", "series-tmdb:", "series-imdb:", "series-tvdb:"))
+
+
+def _fallback_key_part(value: Any) -> str:
+    return normalize_string(value or "").replace("|", " ").strip()
+
+
+def get_safe_fallback_keys(item: Dict[str, Any]) -> List[str]:
+    """Build conservative cross-server keys for items without provider ids."""
+    item_type = item.get("Type") or item.get("ItemType")
+    if item_type == "Episode":
+        series = _fallback_key_part(item.get("SeriesName"))
+        season = _fallback_key_part(item.get("ParentIndexNumber"))
+        episode = _fallback_key_part(item.get("IndexNumber"))
+        if series and season and episode:
+            return [f"fallback-episode:{series}|s{season}|e{episode}"]
+        return []
+
+    signature = get_safe_fallback_signature(item)
+    if not signature:
+        return []
+
+    if signature.get("type") == "Movie":
+        year = _fallback_key_part(signature.get("year"))
+        titles = [
+            _fallback_key_part(signature.get("title")),
+            _fallback_key_part(signature.get("original_title")),
+        ]
+        output = []
+        seen = set()
+        for title in titles:
+            if not title or not year:
+                continue
+            key = f"fallback-movie:{title}|y{year}"
+            if key in seen:
+                continue
+            output.append(key)
+            seen.add(key)
+        return output
+
+    return []
 
 
 def _runtime_ticks(item: Dict[str, Any]) -> int:

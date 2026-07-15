@@ -215,15 +215,23 @@
                 state.input.type = input.type || 'text';
                 state.input.placeholder = input.placeholder || '';
                 state.input.value = input.value || '';
+                state.input.oninput = () => {
+                    if (error) {
+                        error.style.display = 'none';
+                        error.textContent = '';
+                    }
+                };
             }
         } else {
             inputRow.style.display = 'none';
             if (state.input) {
                 state.input.value = '';
+                state.input.oninput = null;
             }
         }
 
         btnConfirm.textContent = confirmText;
+        btnConfirm.disabled = false;
         btnCancel.textContent = cancelText;
         btnCancel.style.display = showCancel ? 'inline-flex' : 'none';
 
@@ -232,7 +240,33 @@
         return new Promise(resolve => {
             state.resolve = resolve;
 
-            const finalize = (confirmed) => {
+            const showValidationError = (messageText) => {
+                if (error) {
+                    error.textContent = messageText || 'Valore non valido.';
+                    error.style.display = 'block';
+                }
+                if (state.input) {
+                    state.input.focus();
+                    state.input.select();
+                }
+            };
+
+            const finalize = async (confirmed) => {
+                if (confirmed && state.mode === 'prompt' && input && typeof input.validate === 'function') {
+                    if (btnConfirm) btnConfirm.disabled = true;
+                    try {
+                        const validationResult = await input.validate(state.input ? state.input.value : '');
+                        if (validationResult) {
+                            showValidationError(typeof validationResult === 'string' ? validationResult : 'Valore non valido.');
+                            if (btnConfirm) btnConfirm.disabled = false;
+                            return;
+                        }
+                    } catch (validationError) {
+                        showValidationError(validationError?.message || 'Valore non valido.');
+                        if (btnConfirm) btnConfirm.disabled = false;
+                        return;
+                    }
+                }
                 modal.style.display = 'none';
                 if (state.mode === 'prompt') {
                     resolve(confirmed ? (state.input ? state.input.value : '') : null);
@@ -309,7 +343,8 @@
                 label: options.label || 'Valore',
                 type: options.type || 'text',
                 placeholder: options.placeholder || '',
-                value: defaultValue
+                value: defaultValue,
+                validate: options.validate
             }
         });
     };

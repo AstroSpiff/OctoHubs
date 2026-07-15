@@ -1,7 +1,7 @@
 """FastAPI routes for Emby user management."""
 
 import json
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -63,6 +63,49 @@ def _validate_csrf_dep(request: Request) -> None:
     _validate_csrf_request(request, None)
 
 
+def _get_operation_tracker(manager):
+    return getattr(manager, "operation_tracker", None)
+
+
+def _operation_callback(tracker, operation_id: Optional[str]):
+    if not tracker or not operation_id:
+        return None
+
+    def callback(event: Dict[str, Any]) -> None:
+        if not isinstance(event, dict):
+            return
+        details = dict(event.get("details") or {})
+        if event.get("stage"):
+            details["stage"] = event.get("stage")
+        tracker.update(
+            operation_id,
+            message=event.get("message"),
+            current=event.get("current"),
+            total=event.get("total"),
+            details=details,
+        )
+
+    return callback
+
+
+def _operation_finish_message(prefix: str, result: Dict[str, Any]) -> str:
+    success_count = len(result.get("success") or result.get("created") or result.get("deleted") or [])
+    failed_count = len(result.get("failed") or [])
+    if failed_count:
+        return f"{prefix}: {success_count} completati, {failed_count} errori"
+    return f"{prefix}: {success_count} completati"
+
+
+def _server_label(manager, server_id: str) -> str:
+    try:
+        server = manager._get_server_by_id(server_id)
+    except Exception:
+        server = None
+    if not server:
+        return server_id
+    return server.get("alias") or server.get("name") or server.get("id") or server_id
+
+
 @router.get("/emby/users", response_class=HTMLResponse)
 async def view_emby_users(request: Request, user=Depends(_get_current_user_optional_dep)):
     if not user:
@@ -77,6 +120,34 @@ async def api_emby_users_list(user=Depends(_require_user_dep)):
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
     data = await run_in_threadpool(manager.dashboard_manager.get_users_dashboard_data)
     return data
+
+
+@router.get("/api/emby/users/operations")
+async def api_emby_users_operations(user=Depends(_require_user_dep)):
+    manager = _get_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
+    tracker = _get_operation_tracker(manager)
+    if not tracker:
+        return {"ok": True, "operations": [], "active_count": 0}
+    operations = await run_in_threadpool(tracker.list_operations)
+    active_count = sum(1 for item in operations if item.get("status") in ("queued", "running"))
+    return {"ok": True, "operations": operations, "active_count": active_count}
+
+
+@router.post("/api/emby/users/operations/clear-completed")
+async def api_emby_users_operations_clear_completed(
+    _csrf=Depends(_validate_csrf_dep),
+    user=Depends(_require_user_dep)
+):
+    manager = _get_manager()
+    if not manager:
+        return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
+    tracker = _get_operation_tracker(manager)
+    if not tracker:
+        return {"ok": True, "removed": 0}
+    removed = await run_in_threadpool(tracker.clear_completed)
+    return {"ok": True, "removed": removed}
 
 
 @router.post("/api/emby/users/toggle")
@@ -416,7 +487,34 @@ async def api_emby_users_settings_apply(
         return JSONResponse(status_code=400, content={"ok": False, "error": "Missing targets"})
     if not isinstance(settings, dict):
         return JSONResponse(status_code=400, content={"ok": False, "error": "Missing settings"})
-    result = manager.settings_manager.apply_settings_to_users(targets, settings, apply_libraries=apply_libraries)
+    tracker = _get_operation_tracker(manager)
+    operation = None
+    if tracker:
+        operation = tracker.start(
+            "settings_apply",
+            "Applica impostazioni",
+            summary=f"{len(targets)} utenti",
+            details={"target_count": len(targets), "apply_libraries": apply_libraries},
+            total=len(targets),
+        )
+    callback = _operation_callback(tracker, operation.get("id") if operation else None)
+    try:
+        result = manager.settings_manager.apply_settings_to_users(
+            targets,
+            settings,
+            apply_libraries=apply_libraries,
+            progress_callback=callback,
+        )
+    except Exception as exc:
+        if tracker and operation:
+            tracker.fail(operation["id"], f"Errore applicazione impostazioni: {exc}")
+        raise
+    if tracker and operation:
+        message = _operation_finish_message("Impostazioni applicate", result)
+        if result.get("ok"):
+            tracker.finish(operation["id"], message, result=result)
+        else:
+            tracker.fail(operation["id"], message, result=result)
     status = 200 if result.get("success") else 400
     return JSONResponse(status_code=status, content={"ok": bool(result.get("success")), "result": result})
 
@@ -539,13 +637,27 @@ async def api_emby_users_group_sync_now(
     if not manager:
         return error_response("Manager not available", 500)
 
+    tracker = _get_operation_tracker(manager)
+    operation = None
+    if tracker:
+        operation = tracker.start(
+            "group_sync",
+            "Sync gruppo utenti",
+            summary=f"Gruppo {group_id}",
+            details={"group_id": group_id},
+            total=1,
+        )
     manager.group_manager.mark_group_sync_result(
         group_id,
         "running",
         "Sincronizzazione manuale avviata",
         {},
     )
-    background_tasks.add_task(manager.auto_sync_manager.run_group_sync, group_id)
+    background_tasks.add_task(
+        manager.auto_sync_manager.run_group_sync,
+        group_id,
+        operation.get("id") if operation else None,
+    )
     return {
         "ok": True,
         "result": {
@@ -634,7 +746,48 @@ async def api_emby_users_sync(
                 return group
         return None
 
+    enabled_labels = [
+        label for label, enabled in [
+            ("impostazioni", sync_config),
+            ("visti", sync_playstate),
+            ("librerie", sync_library_access),
+            ("preferiti", sync_favorites),
+            ("playlist", sync_playlists),
+        ]
+        if enabled
+    ]
+    total_steps = len(enabled_labels) + 1
+    tracker = _get_operation_tracker(manager)
+    operation = None
+    if tracker:
+        operation = tracker.start(
+            "user_sync",
+            "Sync utenti",
+            summary=", ".join(enabled_labels) if enabled_labels else "Nessun dominio",
+            details={
+                "source_server_id": source_server_id,
+                "source_user_id": source_user_id,
+                "mode": mode,
+                "target_count": len(targets),
+            },
+            total=total_steps,
+        )
+
+    def _mark_operation(stage: str, message: str, current: int) -> None:
+        if tracker and operation:
+            tracker.update(
+                operation["id"],
+                message=message,
+                current=current,
+                total=total_steps,
+                details={"stage": stage},
+            )
+
+    step_index = 0
+
     if sync_config:
+        step_index += 1
+        _mark_operation("config", "Sincronizzazione impostazioni in corso", step_index - 1)
         if mode == "merge":
             participants = _all_participants()
             state, latest_targets = await run_in_threadpool(_latest_source, "settings", participants)
@@ -659,12 +812,17 @@ async def api_emby_users_sync(
                 targets,
                 config_categories
             )
+        _mark_operation("config", "Sincronizzazione impostazioni completata", step_index)
 
     if sync_playstate:
+        step_index += 1
+        _mark_operation("playstate", "Sincronizzazione visti in corso", step_index - 1)
         if mode == "merge":
             participants = _all_participants()
             group = await run_in_threadpool(_find_selected_group, participants)
             if not group:
+                if tracker and operation:
+                    tracker.fail(operation["id"], "Merge consentito solo tra utenti dello stesso gruppo")
                 return JSONResponse(status_code=400, content={"ok": False, "error": "Merge consentito solo tra utenti dello stesso gruppo"})
             if group.get("playstate_bootstrap_done"):
                 results["playstate"] = await run_in_threadpool(
@@ -689,8 +847,11 @@ async def api_emby_users_sync(
                 targets,
                 sync_resume
             )
+        _mark_operation("playstate", "Sincronizzazione visti completata", step_index)
 
     if sync_library_access:
+        step_index += 1
+        _mark_operation("library_access", "Sincronizzazione librerie in corso", step_index - 1)
         if mode == "merge":
             participants = _all_participants()
             state, latest_targets = await run_in_threadpool(_latest_source, "settings", participants)
@@ -713,12 +874,17 @@ async def api_emby_users_sync(
                 source_user_id,
                 targets
             )
+        _mark_operation("library_access", "Sincronizzazione librerie completata", step_index)
 
     if sync_favorites:
+        step_index += 1
+        _mark_operation("favorites", "Sincronizzazione preferiti in corso", step_index - 1)
         if mode == "merge":
             participants = _all_participants()
             group = await run_in_threadpool(_find_selected_group, participants)
             if not group:
+                if tracker and operation:
+                    tracker.fail(operation["id"], "Merge consentito solo tra utenti dello stesso gruppo")
                 return JSONResponse(status_code=400, content={"ok": False, "error": "Merge consentito solo tra utenti dello stesso gruppo"})
             if group.get("favorites_bootstrap_done"):
                 results["favorites"] = await run_in_threadpool(
@@ -739,12 +905,17 @@ async def api_emby_users_sync(
                 source_user_id,
                 targets
             )
+        _mark_operation("favorites", "Sincronizzazione preferiti completata", step_index)
 
     if sync_playlists:
+        step_index += 1
+        _mark_operation("playlists", "Sincronizzazione playlist in corso", step_index - 1)
         if mode == "merge":
             participants = _all_participants()
             group = await run_in_threadpool(_find_selected_group, participants)
             if not group:
+                if tracker and operation:
+                    tracker.fail(operation["id"], "Merge consentito solo tra utenti dello stesso gruppo")
                 return JSONResponse(status_code=400, content={"ok": False, "error": "Merge consentito solo tra utenti dello stesso gruppo"})
             if group.get("playlists_bootstrap_done"):
                 results["playlists"] = await run_in_threadpool(
@@ -765,8 +936,10 @@ async def api_emby_users_sync(
                 source_user_id,
                 targets
             )
+        _mark_operation("playlists", "Sincronizzazione playlist completata", step_index)
 
     state_refresh_targets = _all_participants()
+    _mark_operation("snapshot", "Aggiornamento snapshot sync", total_steps - 1)
     await run_in_threadpool(
         refresh_sync_states,
         manager.state_tracker,
@@ -778,6 +951,8 @@ async def api_emby_users_sync(
         sync_favorites=sync_favorites,
         sync_playlists=sync_playlists,
     )
+    if tracker and operation:
+        tracker.finish(operation["id"], "Sync utenti completato", result=results)
 
     return {"ok": True, "results": results}
 
@@ -823,15 +998,39 @@ async def api_emby_users_create(
     if not isinstance(settings, dict):
         settings = {}
 
-    result = await run_in_threadpool(
-        manager.user_lifecycle_manager.create_users,
-        targets,
-        settings,
-        apply_libraries,
-        str(payload.get("password") or ""),
-        bool(payload.get("link_group")),
-        str(payload.get("group_name") or "")
-    )
+    tracker = _get_operation_tracker(manager)
+    operation = None
+    if tracker:
+        usernames = [str(item.get("username") or item.get("name") or "").strip() for item in targets if isinstance(item, dict)]
+        operation = tracker.start(
+            "create_user",
+            "Crea utente",
+            summary=", ".join([name for name in usernames if name][:2]) or f"{len(targets)} utenti",
+            details={"target_count": len(targets), "preset_id": preset_id},
+            total=len(targets),
+        )
+    callback = _operation_callback(tracker, operation.get("id") if operation else None)
+    try:
+        result = await run_in_threadpool(
+            manager.user_lifecycle_manager.create_users,
+            targets,
+            settings,
+            apply_libraries,
+            str(payload.get("password") or ""),
+            bool(payload.get("link_group")),
+            str(payload.get("group_name") or ""),
+            callback,
+        )
+    except Exception as exc:
+        if tracker and operation:
+            tracker.fail(operation["id"], f"Errore creazione utente: {exc}")
+        raise
+    if tracker and operation:
+        message = _operation_finish_message("Utenti creati", result)
+        if result.get("ok"):
+            tracker.finish(operation["id"], message, result=result)
+        else:
+            tracker.fail(operation["id"], message, result=result)
     status = 200 if result.get("created") else 400
     return JSONResponse(status_code=status, content={"ok": bool(result.get("ok")), "result": result})
 
@@ -922,28 +1121,60 @@ async def api_emby_users_clone(
         except json.JSONDecodeError:
             return JSONResponse(status_code=400, content={"ok": False, "error": "Invalid config categories JSON"})
 
-    result = await run_in_threadpool(
-        manager.sync_manager.clone_user,
-        source_server_id,
-        source_user_id,
-        target_server_id,
-        new_username,
-        sync_config,
-        sync_playstate,
-        sync_resume,
-        sync_library_access,
-        sync_favorites,
-        sync_playlists,
-        link_group,
-        config_categories
-    )
+    tracker = _get_operation_tracker(manager)
+    operation = None
+    if tracker:
+        target_label = _server_label(manager, target_server_id)
+        operation = tracker.start(
+            "clone",
+            "Clonazione utente",
+            summary=f"{source_user_id} -> {target_label}",
+            details={
+                "source_server_id": source_server_id,
+                "source_user_id": source_user_id,
+                "target_server_id": target_server_id,
+                "target_server": target_label,
+                "new_username": new_username,
+            },
+        )
+    callback = _operation_callback(tracker, operation.get("id") if operation else None)
+    try:
+        result = await run_in_threadpool(
+            manager.sync_manager.clone_user,
+            source_server_id,
+            source_user_id,
+            target_server_id,
+            new_username,
+            sync_config,
+            sync_playstate,
+            sync_resume,
+            sync_library_access,
+            sync_favorites,
+            sync_playlists,
+            link_group,
+            config_categories,
+            callback,
+        )
+    except Exception as exc:
+        if tracker and operation:
+            tracker.fail(operation["id"], f"Errore clonazione utente: {exc}")
+        raise
     if "error" in result:
+        if tracker and operation:
+            tracker.fail(operation["id"], result.get("error") or "Clonazione non riuscita", result=result)
         return JSONResponse(status_code=400, content=result)
 
     target_user_id = result.get("target_user_id")
     refresh_targets = [(source_server_id, source_user_id)]
     if target_user_id:
         refresh_targets.append((target_server_id, target_user_id))
+    if tracker and operation:
+        tracker.update(
+            operation["id"],
+            message="Aggiornamento snapshot clonazione",
+            progress=95,
+            details={"stage": "snapshot"},
+        )
     await run_in_threadpool(
         refresh_sync_states,
         manager.state_tracker,
@@ -955,5 +1186,7 @@ async def api_emby_users_clone(
         sync_favorites=sync_favorites,
         sync_playlists=sync_playlists,
     )
+    if tracker and operation:
+        tracker.finish(operation["id"], "Clonazione completata", result=result)
 
     return {"ok": True, "result": result}

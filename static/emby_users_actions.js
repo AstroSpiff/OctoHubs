@@ -487,6 +487,7 @@ async function syncGroupNow(groupId, buttonElement) {
         });
         const payload = await ensureEmbyUsersResponseOk(res, 'Sincronizzazione gruppo non riuscita.');
         const message = payload.result?.message || 'Sincronizzazione avviata.';
+        window.embyUsersOperations?.notifyStarted?.();
         await openAlertModal('Sincronizzazione gruppo', message);
         refreshEmbyUsersLive('group-sync-now');
         if (typeof window.updateEmbyUsersSyncStatusPolling === 'function') {

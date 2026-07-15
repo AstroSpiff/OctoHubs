@@ -5,6 +5,8 @@ import uuid
 from core.config_manager import load_config
 from core.utils import get_emby_servers
 
+EMBY_SERVER_DISABLED_MESSAGE = "Server disabilitato"
+
 
 def _build_emby_server_from_form(form, existing):
     """Build Emby server configuration from form data."""
@@ -70,6 +72,24 @@ def _emby_display_name(server: Dict[str, Any]) -> str:
     return server.get("alias") or server.get("original_name") or server.get("name") or server.get("url") or "Server Emby"
 
 
+def _find_emby_server_by_id(servers, server_id: str):
+    for server in servers or []:
+        if server.get("id") == server_id:
+            return server
+    return None
+
+
+def _find_emby_server_with_index(servers, server_id: str):
+    for index, server in enumerate(servers or []):
+        if server.get("id") == server_id:
+            return index, server
+    return None, None
+
+
+def _emby_server_is_enabled(server) -> bool:
+    return bool(server and server.get("enabled"))
+
+
 def _get_emby_servers_from_config():
     config, _ = load_config()
     if not config:
@@ -80,7 +100,4 @@ def _get_emby_servers_from_config():
 def _get_emby_server_by_id(server_id: str):
     """Get specific Emby server configuration by ID."""
     servers = _get_emby_servers_from_config()
-    for server in servers:
-        if server.get("id") == server_id:
-            return server
-    return None
+    return _find_emby_server_by_id(servers, server_id)

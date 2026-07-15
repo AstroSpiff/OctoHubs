@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 
-from app_state import register_app_event_loop
+from app_state import get_operation_tracker, register_app_event_loop
 from core.config_manager import _db_enabled, _ensure_db_backend, load_config
 from core.tasks import workflow_manager
 
@@ -61,9 +61,11 @@ def initialize_runtime_services() -> None:
     try:
         db_storage = _ensure_db_backend()
         workflow_manager.set_db_storage(db_storage)
+        workflow_manager.set_operation_tracker(get_operation_tracker())
     except Exception as exc:
         print(f"[STARTUP] ⚠️ DatabaseStorage non disponibile per workflow: {exc}")
         workflow_manager.set_db_storage(None)
+        workflow_manager.set_operation_tracker(None)
 
     # Initialize configuration and AutoScheduler at startup
     try:

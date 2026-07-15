@@ -5,6 +5,12 @@ from typing import List, Dict, Any, Optional, Tuple, Callable
 
 from emby_runtime.api_clients import _fetch_emby_libraries
 from emby_libraries.grouping import group_libraries
+from emby_users.operation_progress import emit_progress
+from emby_users.settings_library_ids import (
+    find_group_library_id,
+    iter_library_identity_ids,
+    library_access_id,
+)
 from emby_users.settings_library_mapping import remap_library_config_for_server
 from emby_users.settings_target_applier import SettingsApplyOptions, SettingsApplyResult, SettingsTargetApplier
 from emby_users.settings_scope import (
@@ -896,12 +902,16 @@ class SettingsManager:
             group_key = self._library_group_key(collection_type, group_name)
             for lib in group.get("libraries", []):
                 server_id = str(lib.get("server_id") or "")
-                library_id = lib.get("library_id")
-                if not server_id or not library_id:
+                access_id = library_access_id(lib)
+                if not server_id or not access_id:
                     continue
-                lib_id = str(library_id)
-                index.setdefault(group_key, {}).setdefault(server_id, []).append(lib_id)
-                membership.setdefault(server_id, {})[lib_id] = group_key
+                access_id_str = str(access_id)
+                server_ids = index.setdefault(group_key, {}).setdefault(server_id, [])
+                if access_id_str not in server_ids:
+                    server_ids.append(access_id_str)
+                server_membership = membership.setdefault(server_id, {})
+                for alias in iter_library_identity_ids(lib):
+                    server_membership[str(alias)] = group_key
         return grouped, index, all_libraries, membership
 
     def _normalize_settings_payload(
@@ -1237,6 +1247,7 @@ class SettingsManager:
         target_server_id: str,
         membership: Dict[str, Dict[str, str]],
         library_index: Dict[str, Dict[str, List[str]]],
+        libraries_by_server: Dict[str, Dict[str, Any]],
         source_server_id: Optional[str] = None
     ) -> Dict[str, Any]:
         if not isinstance(display_patch, dict) or not display_patch:
@@ -1275,8 +1286,14 @@ class SettingsManager:
                     )
                 continue
 
-            target_ids = library_index.get(group_key, {}).get(target_server_id) or []
-            if not target_ids:
+            target_id = find_group_library_id(
+                libraries_by_server,
+                membership,
+                target_server_id,
+                group_key,
+                "preference",
+            )
+            if not target_id:
                 logger.warning(
                     "[SETTINGS] Skip DisplayPreferences %s on %s: missing associated target library for %s",
                     key_str,
@@ -1285,7 +1302,7 @@ class SettingsManager:
                 )
                 continue
 
-            remapped[f"landing-{target_ids[0]}"] = value
+            remapped[f"landing-{target_id}"] = value
         return remapped
 
     def remap_display_preferences_for_server(
@@ -1294,12 +1311,13 @@ class SettingsManager:
         target_server_id: str,
         source_server_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        _, library_index, _, membership = self._build_library_group_index()
+        _, library_index, libraries_by_server, membership = self._build_library_group_index()
         return self._remap_display_preferences_for_server(
             display_patch,
             target_server_id,
             membership,
             library_index,
+            libraries_by_server,
             source_server_id=source_server_id
         )
 
@@ -1642,7 +1660,8 @@ class SettingsManager:
         self,
         targets: List[Dict[str, Any]],
         settings: Dict[str, Any],
-        apply_libraries: bool = False
+        apply_libraries: bool = False,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
     ) -> Dict[str, Any]:
         _, library_index, libraries_by_server, membership = self._build_library_group_index()
         normalized = self._normalize_settings_payload(settings, protect_fields=True)
@@ -1650,12 +1669,16 @@ class SettingsManager:
         config_patch = normalized.get("config") or {}
         display_patch = normalized.get("display_preferences") or {}
         results = {"success": [], "failed": [], "counts": {}}
+        target_list = list(targets or [])
+        total = len(target_list)
+        emit_progress(progress_callback, "start", "Preparazione applicazione impostazioni", 0, total)
 
-        for target in targets or []:
+        for index, target in enumerate(target_list, start=1):
             server_id = str(target.get("server_id") or "")
             user_id = str(target.get("user_id") or "")
             if not server_id or not user_id:
                 results["failed"].append("Target non valido")
+                emit_progress(progress_callback, "target", "Target non valido", index, total)
                 continue
 
             server = self._get_server_by_id(server_id)
@@ -1664,6 +1687,14 @@ class SettingsManager:
                 or target.get("name")
                 or (server.get("alias") or server.get("name") if server else None)
                 or f"{server_id}/{user_id}"
+            )
+            emit_progress(
+                progress_callback,
+                "target",
+                f"Applico impostazioni a {target_label}",
+                index - 1,
+                total,
+                {"server_id": server_id, "user_id": user_id, "target_label": target_label},
             )
             result = self._apply_normalized_settings_to_user(
                 server_id,
@@ -1677,11 +1708,13 @@ class SettingsManager:
             )
             if not result.server:
                 results["failed"].append(f"{target_label}: server non trovato")
+                emit_progress(progress_callback, "target", f"Server non trovato: {target_label}", index, total)
                 continue
             if not result.details:
                 results["failed"].append(
                     f"{target_label}: impossibile leggere utente ({result.fetch_error})"
                 )
+                emit_progress(progress_callback, "target", f"Utente non leggibile: {target_label}", index, total)
                 continue
 
             if result.ok:
@@ -1699,14 +1732,31 @@ class SettingsManager:
                     result.display_payload
                 )
                 self._save_settings_entry(self.settings_user_key(server_id, user_id), snapshot)
+                emit_progress(
+                    progress_callback,
+                    "target",
+                    f"Impostazioni applicate a {target_label}",
+                    index,
+                    total,
+                    {"server_id": server_id, "user_id": user_id, "target_label": target_label},
+                )
             else:
                 results["failed"].append(
                     f"{target_label}: policy={result.policy_ok} {result.policy_error or ''}, "
                     f"config={result.config_ok} {result.config_error or ''}, "
                     f"display={result.display_ok} {result.display_error or ''}"
                 )
+                emit_progress(progress_callback, "target", f"Errore impostazioni su {target_label}", index, total)
 
         results["ok"] = not results["failed"]
+        emit_progress(
+            progress_callback,
+            "complete",
+            f"Impostazioni applicate: {len(results['success'])}/{total}",
+            total,
+            total,
+            {"success": len(results["success"]), "failed": len(results["failed"])},
+        )
         return results
 
     def update_user_settings(self, server_id: str, user_id: str, settings: Dict[str, Any]) -> Dict[str, Any]:

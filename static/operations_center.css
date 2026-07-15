@@ -1,0 +1,308 @@
+.operations-center {
+    position: fixed;
+    right: 1.5rem;
+    bottom: 1.5rem;
+    z-index: 9998;
+    width: min(460px, calc(100vw - 2rem));
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+    pointer-events: none;
+}
+.operations-center[hidden] {
+    display: none;
+}
+.operations-toggle,
+.operations-panel {
+    pointer-events: auto;
+}
+.operations-toggle {
+    align-self: flex-end;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    border: 1px solid #bfdbfe;
+    border-radius: 8px;
+    padding: 0.55rem 0.75rem;
+    background: #eff6ff;
+    color: #1d4ed8;
+    box-shadow: 0 14px 30px rgba(15, 23, 42, 0.16);
+    font-weight: 700;
+    font-size: 0.9rem;
+    cursor: pointer;
+}
+.operations-center.has-active .operations-toggle {
+    border-color: rgba(37, 99, 235, 0.45);
+    background: #dbeafe;
+    color: #1e40af;
+}
+.operations-toggle strong {
+    min-width: 1.35rem;
+    height: 1.35rem;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #1d4ed8;
+    color: #fff;
+    font-size: 0.75rem;
+    line-height: 1;
+}
+.operations-panel {
+    border: 1px solid #dbe3ef;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.98);
+    box-shadow: 0 22px 60px rgba(15, 23, 42, 0.2);
+    overflow: hidden;
+}
+.operations-panel[hidden] {
+    display: none;
+}
+.operations-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.85rem 0.9rem;
+    border-bottom: 1px solid #e5eaf2;
+    background: #f8fafc;
+}
+.operations-header h3 {
+    margin: 0;
+    font-size: 1rem;
+}
+.operations-header p {
+    margin: 0.25rem 0 0;
+    color: #64748b;
+    font-size: 0.82rem;
+}
+.operations-actions,
+.operation-status-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-shrink: 0;
+}
+.operations-actions .icon-button,
+.operation-status-wrap .icon-button {
+    cursor: pointer;
+}
+.operations-list {
+    max-height: min(58vh, 540px);
+    overflow-y: auto;
+    padding: 0.75rem;
+    display: grid;
+    gap: 0.65rem;
+}
+.operation-item {
+    border: 1px solid #e2e8f0;
+    border-left: 4px solid #2563eb;
+    border-radius: 8px;
+    padding: 0.7rem;
+    background: #fff;
+    display: grid;
+    gap: 0.45rem;
+}
+.operation-item.is-success {
+    border-left-color: #16a34a;
+}
+.operation-item.is-error {
+    border-left-color: #dc2626;
+}
+.operation-item.is-muted {
+    border-left-color: #94a3b8;
+}
+.operation-item-header {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 0.55rem;
+    align-items: start;
+}
+.operation-kind {
+    width: 1.8rem;
+    height: 1.8rem;
+    border-radius: 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #eef2ff;
+    color: #3730a3;
+}
+.operation-title {
+    min-width: 0;
+    display: grid;
+    gap: 0.15rem;
+}
+.operation-title strong,
+.operation-title span,
+.operation-message,
+.operation-details span,
+.operation-workflow-text strong,
+.operation-workflow-text span {
+    overflow-wrap: anywhere;
+}
+.operation-title strong {
+    font-size: 0.9rem;
+    color: #0f172a;
+}
+.operation-title span {
+    font-size: 0.78rem;
+    color: #64748b;
+}
+.operation-status {
+    border-radius: 999px;
+    padding: 0.25rem 0.5rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+    white-space: nowrap;
+    background: #e0f2fe;
+    color: #0369a1;
+}
+.operation-status.is-success {
+    background: #dcfce7;
+    color: #166534;
+}
+.operation-status.is-error {
+    background: #fee2e2;
+    color: #991b1b;
+}
+.operation-status.is-muted {
+    background: #f1f5f9;
+    color: #475569;
+}
+.operation-stop {
+    width: 1.9rem;
+    height: 1.9rem;
+}
+.operation-message {
+    font-size: 0.82rem;
+    color: #334155;
+}
+.operation-progress {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 2.5rem;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.75rem;
+    color: #64748b;
+}
+.operation-progress .progress-track {
+    height: 7px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: #e2e8f0;
+}
+.operation-progress .progress-bar {
+    height: 100%;
+    background: #2563eb;
+    transition: width 0.25s ease;
+}
+.operation-item.is-success .progress-bar {
+    background: #16a34a;
+}
+.operation-item.is-error .progress-bar {
+    background: #dc2626;
+}
+.operation-workflow-steps {
+    display: grid;
+    gap: 0.35rem;
+    padding: 0.45rem 0.55rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    background: #f8fafc;
+}
+.operation-workflow-step {
+    display: grid;
+    grid-template-columns: 1.35rem minmax(0, 1fr);
+    gap: 0.45rem;
+    align-items: start;
+}
+.operation-workflow-icon {
+    width: 1.25rem;
+    height: 1.25rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #64748b;
+    font-size: 0.78rem;
+}
+.operation-workflow-step.status-running .operation-workflow-icon {
+    color: #2563eb;
+}
+.operation-workflow-step.status-done .operation-workflow-icon {
+    color: #16a34a;
+}
+.operation-workflow-step.status-failed .operation-workflow-icon {
+    color: #dc2626;
+}
+.operation-workflow-step.status-skipped .operation-workflow-icon {
+    color: #b45309;
+}
+.operation-workflow-text {
+    min-width: 0;
+    display: grid;
+    gap: 0.08rem;
+}
+.operation-workflow-text strong {
+    font-size: 0.78rem;
+    color: #0f172a;
+}
+.operation-workflow-text span {
+    font-size: 0.72rem;
+    color: #64748b;
+}
+.operation-workflow-progress {
+    grid-column: 2;
+    height: 5px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: #e2e8f0;
+}
+.operation-workflow-progress div {
+    height: 100%;
+    background: #2563eb;
+}
+.operation-details {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+.operation-details span {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    border: 1px solid #e2e8f0;
+    border-radius: 999px;
+    padding: 0.18rem 0.45rem;
+    background: #f8fafc;
+    color: #475569;
+    font-size: 0.72rem;
+}
+.operations-empty {
+    padding: 1rem;
+    color: #64748b;
+    font-size: 0.85rem;
+    text-align: center;
+}
+@media (max-width: 620px) {
+    .operations-center {
+        right: 0.75rem;
+        left: 0.75rem;
+        bottom: 0.75rem;
+        width: auto;
+    }
+    .operations-toggle {
+        max-width: 100%;
+    }
+    .operation-item-header {
+        grid-template-columns: auto minmax(0, 1fr);
+    }
+    .operation-status-wrap {
+        grid-column: 1 / -1;
+        justify-self: start;
+    }
+}

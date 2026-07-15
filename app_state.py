@@ -74,6 +74,7 @@ _JELLYSEERR_REFRESH_STATE: dict = {
 
 _EMBY_LIBRARIES_MANAGER = None
 _EMBY_LIBRARY_SCAN_MANAGER = None
+_OPERATION_TRACKER = None
 
 
 def get_emby_user_manager():
@@ -82,6 +83,16 @@ def get_emby_user_manager():
         lambda: config_manager._DB_BACKEND,
         lambda: config_manager._ACTIVE_CONFIG or {},
     )
+
+
+def get_operation_tracker():
+    """Return the global persistent operation tracker."""
+    global _OPERATION_TRACKER
+    if _OPERATION_TRACKER is None:
+        from core.operations import OperationTracker
+
+        _OPERATION_TRACKER = OperationTracker(_ensure_db_backend())
+    return _OPERATION_TRACKER
 
 
 def get_emby_libraries_manager():

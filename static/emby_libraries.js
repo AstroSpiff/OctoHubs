@@ -37,6 +37,15 @@
     const groupedLibrariesCache = deps.groupedLibrariesCache || [];
     const libraryToGroupMap = new Map();
 
+    const buildGroupKey = (groupName, collectionType = '') => `${collectionType || ''}::${groupName || ''}`;
+    const findCachedGroup = (groupName, collectionType = '') => {
+        const groupKey = buildGroupKey(groupName, collectionType);
+        return groupedLibrariesCache.find(item => (
+            item.group_key === groupKey
+            || (item.group_name === groupName && (item.collection_type || '') === (collectionType || ''))
+        ));
+    };
+
     const updateAssociationChevron = () => {
         if (!associationChevron || !associationPanelBody) {
             return;
@@ -61,13 +70,19 @@
             if (!groupName || !Array.isArray(group.libraries)) {
                 return;
             }
+            const groupKey = group.group_key || buildGroupKey(groupName, group.collection_type);
+            group.group_key = groupKey;
             group.libraries.forEach(library => {
                 if (library && library.library_id) {
-                    libraryToGroupMap.set(library.library_id, {
+                    const libraryKey = `${library.server_id || ''}::${library.library_id}`;
+                    const mapping = {
                         groupName,
+                        groupKey,
                         collectionType: group.collection_type,
                         library
-                    });
+                    };
+                    libraryToGroupMap.set(libraryKey, mapping);
+                    libraryToGroupMap.set(library.library_id, mapping);
                 }
             });
         });
@@ -85,6 +100,7 @@
             row.className = 'library-row';
             const libraryNameRaw = library.library_name || 'Libreria';
             const libraryName = escapeHtml(libraryNameRaw);
+            const libraryNameAttr = escapeHtml(libraryNameRaw);
             const serverLabelText = library.server_alias || library.server_name || library.server_id || '';
             const serverLabelHtml = buildServerLabelParts(
                 serverLabelText,
@@ -101,10 +117,10 @@
                 </div>
                 <div class="library-actions-container">
                     <div class="action-grid compact">
-                        <button class="btn primary" data-action="scan-single-content" data-server-id="${library.server_id}" data-library-id="${library.library_id}" data-library-name="${libraryNameRaw}">
+                        <button class="btn primary" data-action="scan-single-content" data-server-id="${escapeHtml(library.server_id)}" data-library-id="${escapeHtml(library.library_id)}" data-library-name="${libraryNameAttr}">
                             Scansione dei File
                         </button>
-                        <button class="btn secondary" data-action="scan-single-metadata" data-server-id="${library.server_id}" data-library-id="${library.library_id}" data-library-name="${libraryNameRaw}">
+                        <button class="btn secondary" data-action="scan-single-metadata" data-server-id="${escapeHtml(library.server_id)}" data-library-id="${escapeHtml(library.library_id)}" data-library-name="${libraryNameAttr}">
                             Aggiorna Metadati
                         </button>
                     </div>
@@ -130,19 +146,21 @@
         return String(value).replace(/(["\\])/g, '\\$1');
     };
 
-    const ensureLibraryRowRendered = (libraryId) => {
+    const ensureLibraryRowRendered = (libraryId, serverId = '') => {
         if (!libraryId) {
             return null;
         }
-        let row = document.querySelector(`[data-library-id="${libraryId}"]`);
+        const librarySelector = `[data-library-id="${escapeCssSelector(libraryId)}"]`;
+        const serverSelector = serverId ? `[data-server-id="${escapeCssSelector(serverId)}"]` : '';
+        let row = document.querySelector(`${serverSelector}${librarySelector}`);
         if (row) {
             return row;
         }
-        const mapping = libraryToGroupMap.get(libraryId);
+        const mapping = libraryToGroupMap.get(`${serverId}::${libraryId}`) || libraryToGroupMap.get(libraryId);
         if (!mapping) {
             return null;
         }
-        const article = document.querySelector(`article.library-group[data-group-name="${mapping.groupName}"]`);
+        const article = document.querySelector(`article.library-group[data-group-key="${escapeCssSelector(mapping.groupKey)}"]`);
         if (!article) {
             return null;
         }
@@ -150,10 +168,10 @@
         if (!body) {
             return null;
         }
-        const group = groupedLibrariesCache.find(item => item.group_name === mapping.groupName);
+        const group = findCachedGroup(mapping.groupName, mapping.collectionType);
         renderGroupLibraries(group, body);
         body.style.display = 'block';
-        row = body.querySelector(`[data-library-id="${libraryId}"]`);
+        row = body.querySelector(`${serverSelector}${librarySelector}`);
         return row;
     };
 
@@ -198,6 +216,7 @@
                     return;
                 }
                 const groupName = session.group_name;
+                const groupKey = session.group_key || buildGroupKey(groupName, session.collection_type || '');
                 const serverIds = Array.isArray(session.server_ids) ? session.server_ids : [];
                 if (!serverIds.length) {
                     return;
@@ -247,7 +266,7 @@
                             return;
                         }
                         const isTracked = ScanTracker.isLibraryTracked(libraryId);
-                        const libraryRow = ensureLibraryRowRendered(libraryId);
+                        const libraryRow = ensureLibraryRowRendered(libraryId, String(serverId));
                         if (libraryRow && !isTracked) {
                             const progressContainer = libraryRow.querySelector('[data-scan-progress]');
                             const phaseInfo = formatLibraryPhase(progress);
@@ -260,8 +279,8 @@
                     });
                 });
 
-                sessionStats.set(groupName, entry);
-                groupTotals.set(groupName, entry.total);
+                sessionStats.set(groupKey, entry);
+                groupTotals.set(groupKey, entry.total);
             });
 
             scans.forEach(scan => {
@@ -269,12 +288,13 @@
                 if (!libraryId) {
                     return;
                 }
+                const scanServerId = scan.server_id ? String(scan.server_id) : '';
                 if (sessionLibraries.has(libraryId)) {
                     return;
                 }
                 const percentage = normalizeRawPercent((scan.progress || 0) * 100);
                 const isTracked = ScanTracker.isLibraryTracked(libraryId);
-                const libraryRow = ensureLibraryRowRendered(libraryId);
+                const libraryRow = ensureLibraryRowRendered(libraryId, scanServerId);
                 if (libraryRow && !isTracked) {
                     const progressContainer = libraryRow.querySelector('[data-scan-progress]');
                     const phaseInfo = formatLibraryPhase(percentage);
@@ -283,21 +303,22 @@
                     ], '');
                 }
                 activeLibraries.add(libraryId);
-                const mapping = libraryToGroupMap.get(libraryId);
+                const mapping = libraryToGroupMap.get(`${scanServerId}::${libraryId}`) || libraryToGroupMap.get(libraryId);
                 if (mapping && mapping.groupName) {
-                    const totalServers = getGroupTotalServers(mapping.groupName);
+                    const groupKey = mapping.groupKey || buildGroupKey(mapping.groupName, mapping.collectionType);
+                    const totalServers = getGroupTotalServers(groupKey);
                     if (totalServers) {
-                        groupTotals.set(mapping.groupName, totalServers);
+                        groupTotals.set(groupKey, totalServers);
                     }
                     const serverId = mapping.library ? mapping.library.server_id : null;
                     if (serverId) {
-                        if (!activeServersByGroup.has(mapping.groupName)) {
-                            activeServersByGroup.set(mapping.groupName, new Set());
+                        if (!activeServersByGroup.has(groupKey)) {
+                            activeServersByGroup.set(groupKey, new Set());
                         }
-                        activeServersByGroup.get(mapping.groupName).add(serverId);
+                        activeServersByGroup.get(groupKey).add(serverId);
                     }
-                    if (!groupStats.has(mapping.groupName)) {
-                        groupStats.set(mapping.groupName, {
+                    if (!groupStats.has(groupKey)) {
+                        groupStats.set(groupKey, {
                             fileTotal: 0,
                             metaTotal: 0,
                             count: 0,
@@ -305,7 +326,7 @@
                             total: totalServers || 0
                         });
                     }
-                    const entry = groupStats.get(mapping.groupName);
+                    const entry = groupStats.get(groupKey);
                     const metrics = getPhaseMetrics(percentage);
                     entry.fileTotal += metrics.filePercent;
                     entry.metaTotal += metrics.metaPercent;
@@ -322,20 +343,22 @@
                 if (!groupName) {
                     return;
                 }
-                if (sessionStats.has(groupName)) {
-                    const sessionEntry = sessionStats.get(groupName);
+                const groupKey = group.group_key || buildGroupKey(groupName, group.collection_type);
+                group.group_key = groupKey;
+                if (sessionStats.has(groupKey)) {
+                    const sessionEntry = sessionStats.get(groupKey);
                     const state = {
                         total: sessionEntry.total,
                         active: new Set(sessionEntry.activeServers),
                         completed: new Set(sessionEntry.completedServers),
                         updatedAt: groupNow
                     };
-                    groupPassiveState.set(groupName, state);
+                    groupPassiveState.set(groupKey, state);
                     return;
                 }
-                const totalServers = getGroupTotalServers(groupName);
-                const activeSet = activeServersByGroup.get(groupName) || new Set();
-                let state = groupPassiveState.get(groupName);
+                const totalServers = getGroupTotalServers(groupKey);
+                const activeSet = activeServersByGroup.get(groupKey) || new Set();
+                let state = groupPassiveState.get(groupKey);
                 if (!state) {
                     state = {
                         total: totalServers,
@@ -343,7 +366,7 @@
                         completed: new Set(),
                         updatedAt: groupNow
                     };
-                    groupPassiveState.set(groupName, state);
+                    groupPassiveState.set(groupKey, state);
                 }
                 state.total = totalServers || state.total;
                 state.active.forEach(serverId => {
@@ -357,7 +380,7 @@
                 state.active = new Set(activeSet);
                 state.updatedAt = groupNow;
                 if (state.active.size === 0 && state.completed.size >= (state.total || 0)) {
-                    groupPassiveState.delete(groupName);
+                    groupPassiveState.delete(groupKey);
                 }
             });
             saveGroupPassiveState();
@@ -367,14 +390,14 @@
                 mergedGroupStats.set(groupName, entry);
             });
 
-            mergedGroupStats.forEach((entry, groupName) => {
-                const article = document.querySelector(`article.library-group[data-group-name="${escapeCssSelector(groupName)}"]`);
+            mergedGroupStats.forEach((entry, groupKey) => {
+                const article = document.querySelector(`article.library-group[data-group-key="${escapeCssSelector(groupKey)}"]`);
                 if (article && ScanTracker.hasActiveJobs(article)) {
                     return;
                 }
                 const progressEl = article?.querySelector('[data-scan-progress]');
-                const state = groupPassiveState.get(groupName);
-                const totalServers = state?.total || entry.total || getGroupTotalServers(groupName) || entry.count;
+                const state = groupPassiveState.get(groupKey);
+                const totalServers = state?.total || entry.total || getGroupTotalServers(groupKey) || entry.count;
                 const completedCount = !entry.fromSession && state?.completed ? state.completed.size : 0;
                 const fileTotal = entry.fileTotal + (completedCount * 100);
                 const metaTotal = entry.metaTotal + (completedCount * 100);
@@ -397,8 +420,8 @@
                 if (ScanTracker.hasActiveJobs(article)) {
                     return;
                 }
-                const groupName = article.dataset.groupName;
-                if (!groupName || mergedGroupStats.has(groupName)) {
+                const groupKey = article.dataset.groupKey;
+                if (!groupKey || mergedGroupStats.has(groupKey)) {
                     return;
                 }
                 const progressEl = article.querySelector('[data-scan-progress]');
@@ -714,6 +737,11 @@
             visibleGroups.forEach(group => {
                 const groupName = group.group_name || 'Gruppo';
                 const collectionType = group.collection_type || 'N/D';
+                const groupKey = buildGroupKey(groupName, collectionType);
+                group.group_key = groupKey;
+                const groupNameAttr = escapeHtml(groupName);
+                const groupKeyAttr = escapeHtml(groupKey);
+                const collectionTypeAttr = escapeHtml(collectionType);
                 const serverNames = Array.from(new Set(
                     (group.libraries || [])
                         .map(lib => lib && (lib.server_alias || lib.server_name || lib.server_id))
@@ -724,19 +752,20 @@
                 article.className = 'library-group';
                 article.dataset.groupName = groupName;
                 article.dataset.collectionType = collectionType;
+                article.dataset.groupKey = groupKey;
                 article.draggable = true;
                 const librariesJson = JSON.stringify(group.libraries || []);
                 article.innerHTML = `
                     <div class="library-group-header">
                         <div>
-                            <h3>${groupName} <span class="chevron" aria-hidden="true">▶</span></h3>
+                            <h3>${escapeHtml(groupName)} <span class="chevron" aria-hidden="true">▶</span></h3>
                             <p class="meta">${serverNamesHtml}</p>
                         </div>
                         <div class="action-grid compact">
-                            <button class="btn primary" data-action="scan-group-content" data-group="${groupName}" data-type="${collectionType}" data-libraries='${librariesJson.replace(/'/g, "&#39;")}'>
+                            <button class="btn primary" data-action="scan-group-content" data-group="${groupNameAttr}" data-group-key="${groupKeyAttr}" data-type="${collectionTypeAttr}" data-libraries='${librariesJson.replace(/'/g, "&#39;")}'>
                                 Scansione dei File
                             </button>
-                            <button class="btn secondary" data-action="scan-group-metadata" data-group="${groupName}" data-type="${collectionType}" data-libraries='${librariesJson.replace(/'/g, "&#39;")}'>
+                            <button class="btn secondary" data-action="scan-group-metadata" data-group="${groupNameAttr}" data-group-key="${groupKeyAttr}" data-type="${collectionTypeAttr}" data-libraries='${librariesJson.replace(/'/g, "&#39;")}'>
                                 Aggiorna Metadati
                             </button>
                         </div>
@@ -790,7 +819,8 @@
                             return;
                         }
                         const groupName = article.dataset.groupName;
-                        const group = groupedLibrariesCache.find(item => item.group_name === groupName);
+                        const groupType = article.dataset.collectionType || '';
+                        const group = findCachedGroup(groupName, groupType);
                         if (!group || !Array.isArray(group.libraries)) {
                             showToast('Errore nel caricamento delle librerie del gruppo.', 'error');
                             return;
@@ -809,6 +839,8 @@
                     }
                     const action = button.dataset.action;
                     const groupName = button.dataset.group;
+                    const groupType = button.dataset.type || '';
+                    const groupKey = button.dataset.groupKey || buildGroupKey(groupName, groupType);
                     if (!action) {
                         return;
                     }
@@ -876,7 +908,7 @@
                     if (!groupName) {
                         return;
                     }
-                    const group = groupedLibrariesCache.find(item => item.group_name === groupName);
+                    const group = findCachedGroup(groupName, groupType);
                     if (!group || !Array.isArray(group.libraries)) {
                         showToast('Errore durante la preparazione delle scansioni.', 'error');
                         return;
@@ -892,7 +924,7 @@
                     try {
                         const serverIds = new Set(group.libraries.map(library => library.server_id).filter(Boolean));
                         if (serverIds.size) {
-                            groupTotals.set(groupName, serverIds.size);
+                            groupTotals.set(groupKey, serverIds.size);
                         }
 
                         // Expand group to show individual library rows
@@ -943,11 +975,11 @@
 
                                 // Subscribe to job updates via WebSocket
                                 if (data.job_ids && Array.isArray(data.job_ids)) {
-                                    const groupContainer = document.querySelector(`[data-group-name="${groupName}"]`);
+                                    const groupContainer = document.querySelector(`[data-group-key="${escapeCssSelector(groupKey)}"]`);
                                     if (groupContainer) {
                                         data.job_ids.forEach(jobId => {
                                             console.log(`[SCAN_GROUP] Subscribing to job ${jobId} for group ${groupName}`);
-                                            ScanTracker.startTracking(jobId, groupContainer, groupName);
+                                            ScanTracker.startTracking(jobId, groupContainer, groupKey);
                                         });
                                     } else {
                                         console.warn(`[SCAN_GROUP] Group container not found for: ${groupName}`);

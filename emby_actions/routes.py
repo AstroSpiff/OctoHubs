@@ -9,7 +9,12 @@ from typing import Any, Callable, Optional
 from fastapi import APIRouter, Request, Form
 from fastapi.responses import RedirectResponse
 
-from core.emby_servers import _emby_display_name
+from core.emby_servers import (
+    EMBY_SERVER_DISABLED_MESSAGE,
+    _emby_display_name,
+    _emby_server_is_enabled,
+    _find_emby_server_with_index,
+)
 from core.storage import StorageError
 from core.config import _normalize_emby_server
 from emby_actions import EMBY_ACTIONS, _execute_emby_action
@@ -98,14 +103,7 @@ async def emby_action_post(
         _flash_dep(request, "Azione non valida per Emby.")
         return RedirectResponse(url="/emby", status_code=303)
 
-    # Find server
-    server_index = None
-    server_entry = None
-    for idx, server in enumerate(servers):
-        if server.get("id") == server_id:
-            server_index = idx
-            server_entry = server
-            break
+    server_index, server_entry = _find_emby_server_with_index(servers, server_id)
 
     if server_entry is None:
         _flash_dep(request, "Server Emby non trovato.")
@@ -113,6 +111,11 @@ async def emby_action_post(
 
     if server_index is None:
         _flash_dep(request, "Indice server Emby non valido.")
+        return RedirectResponse(url="/emby", status_code=303)
+
+    if not _emby_server_is_enabled(server_entry):
+        disabled_label = EMBY_SERVER_DISABLED_MESSAGE.removeprefix("Server ").lower()
+        _flash_dep(request, f"Server Emby {disabled_label}.")
         return RedirectResponse(url="/emby", status_code=303)
 
     # Execute action

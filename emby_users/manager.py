@@ -23,6 +23,7 @@ from .api_client import (
     _mark_emby_item_played,
     _mark_emby_item_unplayed,
     _set_emby_item_resume,
+    _set_emby_item_hide_from_resume,
     _set_emby_item_favorite,
     _fetch_emby_user_playlists,
     _fetch_emby_playlist_items,
@@ -49,11 +50,13 @@ from .settings_presets import SettingsPresetManager
 from .user_lifecycle_manager import UserLifecycleManager
 from .item_matching import get_item_sync_keys
 from .state_tracker import UserSyncStateTracker
+from .operation_tracker import OperationTracker
 
 class EmbyUserManager:
     def __init__(self, storage: DatabaseStorage, config: Dict[str, Any]):
         self.storage = storage
         self.config = config
+        self.operation_tracker = OperationTracker(self.storage)
         self.group_user_resolver = GroupUserResolver(self.storage)
         self.settings_manager = SettingsManager(
             storage=self.storage,
@@ -117,7 +120,8 @@ class EmbyUserManager:
             fetch_items_by_safe_fallback=_fetch_emby_items_by_safe_fallback,
             mark_item_played=_mark_emby_item_played,
             mark_item_unplayed=_mark_emby_item_unplayed,
-            set_item_resume=_set_emby_item_resume
+            set_item_resume=_set_emby_item_resume,
+            set_item_hide_from_resume=_set_emby_item_hide_from_resume
         )
         self.favorites_manager = FavoritesManager(
             get_server_by_id=self._get_server_by_id,
@@ -156,7 +160,7 @@ class EmbyUserManager:
             fetch_user_details=_fetch_emby_user_details,
             fetch_users_list=_fetch_emby_users_list,
             create_user=_create_emby_user,
-            playstate_sync=self.playstate_manager.sync_user_playstate,
+            playstate_sync=self.playstate_manager.sync_user_playstate_exact,
             library_access_sync=self.settings_manager.sync_library_access,
             favorites_sync=self.favorites_manager.sync_user_favorites,
             playlists_sync=self.playlists_manager.sync_user_playlists,
@@ -191,7 +195,8 @@ class EmbyUserManager:
             sync_merge_playlists=self.playlists_manager.sync_merge_playlists,
             mark_group_bootstrap_done=self.group_manager.mark_group_bootstrap_done,
             mark_group_sync_result=self.group_manager.mark_group_sync_result,
-            state_tracker=self.state_tracker
+            state_tracker=self.state_tracker,
+            operation_tracker=self.operation_tracker
         )
         self.icon_manager.migrate_icons_to_db()
 

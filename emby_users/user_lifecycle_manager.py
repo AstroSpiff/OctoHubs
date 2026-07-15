@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from emby_users.operation_progress import emit_progress
+
 logger = logging.getLogger(__name__)
 
 
@@ -44,33 +46,52 @@ class UserLifecycleManager:
         password: str = "",
         link_group: bool = False,
         group_name: str = "",
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         created: List[Dict[str, Any]] = []
         failed: List[Dict[str, Any]] = []
+        target_list = list(targets or [])
+        total = len(target_list)
+        last_username = ""
+        emit_progress(progress_callback, "start", "Preparazione creazione utenti", 0, total)
 
-        for target in targets or []:
+        for index, target in enumerate(target_list, start=1):
             server_id = str(target.get("server_id") or "").strip()
             username = str(target.get("username") or target.get("name") or "").strip()
+            last_username = username or last_username
+            emit_progress(
+                progress_callback,
+                "create",
+                f"Creo {username or 'utente'}",
+                index - 1,
+                total,
+                {"server_id": server_id, "username": username},
+            )
             if not server_id or not username:
                 failed.append({"server_id": server_id, "username": username, "error": "Target non valido"})
+                emit_progress(progress_callback, "create", f"Target non valido: {username}", index, total)
                 continue
 
             server = self._get_server_by_id(server_id)
             if not server:
                 failed.append({"server_id": server_id, "username": username, "error": "Server non trovato"})
+                emit_progress(progress_callback, "create", f"Server non trovato: {server_id}", index, total)
                 continue
 
             users, err = self._fetch_users_list(server)
             if err:
                 failed.append({"server_id": server_id, "username": username, "error": f"Lista utenti non disponibile: {err}"})
+                emit_progress(progress_callback, "create", f"Lista utenti non disponibile: {username}", index, total)
                 continue
             if any(str(user.get("Name") or "").lower() == username.lower() for user in users):
                 failed.append({"server_id": server_id, "username": username, "error": "Utente gia esistente"})
+                emit_progress(progress_callback, "create", f"Utente gia esistente: {username}", index, total)
                 continue
 
             ok, payload = self._create_user(server, username, None)
             if not ok:
                 failed.append({"server_id": server_id, "username": username, "error": payload or "Creazione fallita"})
+                emit_progress(progress_callback, "create", f"Creazione fallita: {username}", index, total)
                 continue
 
             user_id = self._created_user_id(payload)
@@ -80,6 +101,7 @@ class UserLifecycleManager:
                 user_id = self._created_user_id(match)
             if not user_id:
                 failed.append({"server_id": server_id, "username": username, "error": "ID nuovo utente non trovato"})
+                emit_progress(progress_callback, "create", f"ID nuovo utente non trovato: {username}", index, total)
                 continue
 
             created_item = {
@@ -89,8 +111,17 @@ class UserLifecycleManager:
                 "server_name": server.get("alias") or server.get("name") or server_id,
             }
             created.append(created_item)
+            emit_progress(
+                progress_callback,
+                "create",
+                f"Creato {username}",
+                index,
+                total,
+                {"server_id": server_id, "user_id": user_id, "username": username},
+            )
 
             if password:
+                emit_progress(progress_callback, "password", f"Applico password a {username}", index, total)
                 pass_result = self.password_manager.update_user_password(server_id, user_id, password)
                 if not pass_result.get("ok"):
                     failed.append({
@@ -101,6 +132,7 @@ class UserLifecycleManager:
                     })
 
         if created and self._has_settings(settings, apply_libraries):
+            emit_progress(progress_callback, "settings", "Applico impostazioni iniziali", total, total)
             apply_result = self.settings_manager.apply_settings_to_users(
                 created,
                 settings or {},
@@ -123,6 +155,14 @@ class UserLifecycleManager:
             if group_name:
                 self.group_manager.rename_group(group_id, group_name)
 
+        emit_progress(
+            progress_callback,
+            "complete",
+            f"Creazione completata: {last_username}" if last_username else "Creazione completata",
+            total,
+            total,
+            {"created": len(created), "failed": len(failed), "group_id": group_id},
+        )
         return {
             "ok": bool(created) and not failed,
             "created": created,
@@ -187,7 +227,7 @@ class UserLifecycleManager:
         if expected_name and expected_name.strip().lower() != name.lower():
             return {"ok": False, "error": "Nome conferma non corrisponde"}
         if self._is_protected_user(details):
-            return {"ok": False, "error": "Utente protetto: amministratori e Master non vengono eliminati"}
+            return {"ok": False, "error": "Utente protetto: gli amministratori non vengono eliminati"}
 
         ok, payload = self._delete_user(server, user_id)
         if not ok:
@@ -245,8 +285,7 @@ class UserLifecycleManager:
         return False
 
     def _is_protected_user(self, details: Dict[str, Any]) -> bool:
-        name = str(details.get("Name") or "").strip().lower()
         policy = details.get("Policy") if isinstance(details, dict) else {}
         if not isinstance(policy, dict):
             policy = {}
-        return bool(policy.get("IsAdministrator")) or name == "master"
+        return bool(policy.get("IsAdministrator"))

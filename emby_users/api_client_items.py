@@ -1,6 +1,7 @@
 """API client helpers for Emby user items and playback status."""
 
 import logging
+from datetime import datetime, timezone
 
 from emby_runtime.api_clients import _call_emby_api
 from emby_users.item_matching import get_safe_fallback_signature, matches_safe_fallback_signature
@@ -8,6 +9,42 @@ from emby_users.item_matching import get_safe_fallback_signature, matches_safe_f
 logger = logging.getLogger(__name__)
 
 USER_ITEM_FIELDS = "ProviderIds,SeriesProviderIds,SeriesId,UserData,SeriesName,ParentIndexNumber,IndexNumber,ProductionYear,Name,OriginalTitle,RunTimeTicks,Type"
+
+
+def _format_emby_date_played(value):
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit() and len(text) == 14:
+        return text
+    normalized = text
+    if normalized.endswith("Z"):
+        normalized = f"{normalized[:-1]}+00:00"
+    if "." in normalized:
+        prefix, suffix = normalized.split(".", 1)
+        timezone_pos = None
+        for marker in ("+", "-"):
+            pos = suffix.find(marker)
+            if pos > 0:
+                timezone_pos = pos
+                break
+        if timezone_pos is None:
+            fraction = suffix
+            tz_part = ""
+        else:
+            fraction = suffix[:timezone_pos]
+            tz_part = suffix[timezone_pos:]
+        normalized = f"{prefix}.{fraction[:6].ljust(6, '0')}{tz_part}"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        logger.warning("[Emby Sync] DatePlayed non valida, invio senza data: %s", value)
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed.strftime("%Y%m%d%H%M%S")
 
 
 def _fetch_emby_user_last_playback(server, user_id):
@@ -66,6 +103,7 @@ def _fetch_emby_user_items_for_sync(server, user_id, include_resume: bool = True
     items, err = _fetch_emby_items_paged(server, user_id, params, label="played")
     if err:
         return [], err
+    _attach_missing_playstate_last_played_dates(server, user_id, items)
 
     if include_resume:
         # 2. Recupera elementi parzialmente visti (Resumable) se non già inclusi
@@ -80,13 +118,92 @@ def _fetch_emby_user_items_for_sync(server, user_id, include_resume: bool = True
         }
         items_res, err_res = _fetch_emby_items_paged(server, user_id, params_resume, label="resumable")
         if not err_res:
-            # Merge by Id to avoid duplicates
-            seen_ids = set(i["Id"] for i in items)
+            visible_resume_ids, visible_err = _fetch_emby_visible_resume_item_ids(server, user_id)
+            if not visible_err:
+                _annotate_hide_from_resume(items_res, visible_resume_ids)
+            else:
+                logger.warning("[Emby Sync] resume visibility fetch failed for user %s: %s", user_id, visible_err)
+            _attach_missing_playstate_last_played_dates(server, user_id, items_res)
+
+            # Merge by Id to avoid duplicates, preserving resume-specific UserData.
+            items_by_id = {str(i.get("Id")): i for i in items if i.get("Id")}
             for it in items_res:
-                if it["Id"] not in seen_ids:
+                item_id = str(it.get("Id") or "")
+                if not item_id:
+                    continue
+                if item_id in items_by_id:
+                    _merge_user_item_data(items_by_id[item_id], it)
+                else:
                     items.append(it)
 
     return items, None
+
+
+def _fetch_emby_visible_resume_item_ids(server, user_id):
+    """Return item ids currently visible in Emby's Continue Watching list."""
+    params = {
+        "Recursive": "true",
+        "Fields": USER_ITEM_FIELDS,
+        "IncludeItemTypes": "Movie,Episode",
+    }
+    items, err = _fetch_emby_items_paged(
+        server,
+        user_id,
+        params,
+        label="resume-visible",
+        path=f"Users/{user_id}/Items/Resume",
+    )
+    if err:
+        return set(), err
+    return {str(item.get("Id")) for item in items if item.get("Id")}, None
+
+
+def _annotate_hide_from_resume(items, visible_resume_ids):
+    for item in items:
+        item_id = item.get("Id")
+        if not item_id:
+            continue
+        user_data = item.setdefault("UserData", {})
+        if not isinstance(user_data, dict):
+            user_data = {}
+            item["UserData"] = user_data
+        if int(user_data.get("PlaybackPositionTicks") or 0) <= 0:
+            continue
+        user_data["HideFromResume"] = str(item_id) not in visible_resume_ids
+
+
+def _merge_user_item_data(target, source):
+    source_user_data = source.get("UserData") or {}
+    if not source_user_data:
+        return
+    target_user_data = target.setdefault("UserData", {})
+    if not isinstance(target_user_data, dict):
+        target_user_data = {}
+        target["UserData"] = target_user_data
+    target_user_data.update(source_user_data)
+
+
+def _attach_missing_playstate_last_played_dates(server, user_id, items):
+    for item in items:
+        item_id = item.get("Id")
+        if not item_id:
+            continue
+        user_data = item.get("UserData") or {}
+        has_playstate = bool(user_data.get("Played")) or int(user_data.get("PlaybackPositionTicks") or 0) > 0
+        if not has_playstate:
+            continue
+        if user_data.get("LastPlayedDate"):
+            continue
+        success, payload = _call_emby_api(
+            server,
+            f"Users/{user_id}/Items/{item_id}",
+            params={"Fields": USER_ITEM_FIELDS},
+        )
+        if not success or not isinstance(payload, dict):
+            continue
+        detail_user_data = payload.get("UserData") or {}
+        if detail_user_data.get("LastPlayedDate"):
+            _merge_user_item_data(item, payload)
 
 
 def _fetch_emby_user_favorite_items(server, user_id):
@@ -120,7 +237,7 @@ def _fetch_emby_user_media_items(server, user_id):
     return _fetch_emby_items_paged(server, user_id, params, label="media")
 
 
-def _fetch_emby_items_paged(server, user_id, params, page_size=200, label=None):
+def _fetch_emby_items_paged(server, user_id, params, page_size=200, label=None, path=None):
     """
     Helper: fetch Emby items with pagination.
     """
@@ -135,7 +252,8 @@ def _fetch_emby_items_paged(server, user_id, params, page_size=200, label=None):
         page_params["StartIndex"] = start_index
         page_params["Limit"] = page_size
 
-        success, payload = _call_emby_api(server, f"Users/{user_id}/Items", params=page_params)
+        api_path = path or f"Users/{user_id}/Items"
+        success, payload = _call_emby_api(server, api_path, params=page_params)
         if not success:
             return [], payload
 
@@ -248,7 +366,7 @@ def _attach_series_provider_ids(server, user_id, items, label=None):
 def _format_provider_token(provider_key: str) -> str | None:
     if not provider_key:
         return None
-    if provider_key.startswith(("series-tmdb:", "series-imdb:")):
+    if provider_key.startswith(("series-tmdb:", "series-imdb:", "series-tvdb:")):
         return None
     if ":" not in provider_key:
         return provider_key if "." in provider_key else None
@@ -261,13 +379,19 @@ def _format_provider_token(provider_key: str) -> str | None:
 
 
 def _parse_series_provider_key(provider_key: str):
-    if provider_key.startswith("series-tmdb:"):
-        provider = "tmdb"
-        raw = provider_key[len("series-tmdb:"):]
-    elif provider_key.startswith("series-imdb:"):
-        provider = "imdb"
-        raw = provider_key[len("series-imdb:"):]
-    else:
+    provider_prefixes = {
+        "series-tmdb:": "tmdb",
+        "series-imdb:": "imdb",
+        "series-tvdb:": "tvdb",
+    }
+    provider = None
+    raw = None
+    for prefix, candidate in provider_prefixes.items():
+        if provider_key.startswith(prefix):
+            provider = candidate
+            raw = provider_key[len(prefix):]
+            break
+    if provider is None or raw is None:
         return None
 
     try:
@@ -381,7 +505,7 @@ def _fetch_emby_items_by_provider_ids(
     if not provider_keys:
         return [], None
 
-    series_keys = [key for key in provider_keys if str(key).startswith(("series-tmdb:", "series-imdb:"))]
+    series_keys = [key for key in provider_keys if _parse_series_provider_key(str(key))]
     tokens = []
     for key in provider_keys:
         token = _format_provider_token(key)
@@ -500,13 +624,15 @@ def _mark_emby_item_played(server, user_id, item_id, date_played=None):
 
     params = {}
     if date_played:
-        params["DatePlayed"] = date_played
+        formatted_date = _format_emby_date_played(date_played)
+        if formatted_date:
+            params["DatePlayed"] = formatted_date
 
     success, payload = _call_emby_api(
         server,
         f"Users/{user_id}/PlayedItems/{item_id}",
         method="POST",
-        json_payload=params
+        params=params
     )
     return success, payload
 
@@ -526,7 +652,7 @@ def _mark_emby_item_unplayed(server, user_id, item_id):
     return success, payload
 
 
-def _set_emby_item_resume(server, user_id, item_id, position_ticks):
+def _set_emby_item_resume(server, user_id, item_id, position_ticks, last_played_date=None, preserve_played=False):
     """
     Imposta la posizione di ripresa (resume) per un item.
     """
@@ -536,11 +662,31 @@ def _set_emby_item_resume(server, user_id, item_id, position_ticks):
         return False, "Resume position mancante"
 
     params = {"PlaybackPositionTicks": int(position_ticks)}
+    if last_played_date:
+        params["LastPlayedDate"] = last_played_date
+    if preserve_played:
+        params["Played"] = True
     success, payload = _call_emby_api(
         server,
         f"Users/{user_id}/Items/{item_id}/UserData",
         method="POST",
         json_payload=params
+    )
+    return success, payload
+
+
+def _set_emby_item_hide_from_resume(server, user_id, item_id, hide=True):
+    """
+    Imposta o rimuove lo stato nascosto dalla lista Continua a guardare.
+    """
+    if not user_id or not item_id:
+        return False, "ID mancanti"
+
+    success, payload = _call_emby_api(
+        server,
+        f"Users/{user_id}/Items/{item_id}/HideFromResume",
+        method="POST",
+        params={"Hide": "true" if hide else "false"}
     )
     return success, payload
 

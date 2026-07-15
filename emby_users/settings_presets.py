@@ -28,6 +28,29 @@ class SettingsPresetManager:
         suffix = uuid.uuid4().hex[:8]
         return f"{slug or 'preset'}-{suffix}"
 
+    def _normalize_label(self, label: str) -> str:
+        return re.sub(r"\s+", " ", (label or "").strip()).lower()
+
+    def _find_preset_by_label(
+        self,
+        label: str,
+        exclude_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        normalized = self._normalize_label(label)
+        if not normalized:
+            return None
+        for key in self.storage.get_keys_by_prefix(PRESET_KEY_PREFIX):
+            value = self.storage.get_key_value(key)
+            if not isinstance(value, dict):
+                continue
+            preset_id = str(value.get("id") or "")
+            if exclude_id and preset_id == exclude_id:
+                continue
+            existing_label = value.get("label") or value.get("name") or ""
+            if self._normalize_label(str(existing_label)) == normalized:
+                return value
+        return None
+
     def _sanitize_settings(self, settings: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         return self.settings_manager._normalize_settings_payload(settings or {}, protect_fields=True)
 
@@ -56,11 +79,15 @@ class SettingsPresetManager:
         description: str = "",
         apply_libraries: Optional[bool] = None,
     ) -> Dict[str, Any]:
-        label = (label or "").strip()
+        label = re.sub(r"\s+", " ", (label or "").strip())
         if not label:
             return {"ok": False, "error": "Nome preset mancante"}
 
         preset_id = (preset_id or "").strip() or self._make_id(label)
+        duplicate = self._find_preset_by_label(label, exclude_id=preset_id)
+        if duplicate:
+            return {"ok": False, "error": "Nome preset gia esistente"}
+
         existing = self.storage.get_key_value(self._key(preset_id))
         if not isinstance(existing, dict):
             existing = {}

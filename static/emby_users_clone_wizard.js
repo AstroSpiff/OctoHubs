@@ -410,6 +410,7 @@ class BulkCloneWizard {
             ? `Clonazione avviata (${total} operazioni)...`
             : `Clonazione di massa avviata (${total} operazioni)...`;
         showToast(startMsg, 'info');
+        window.embyUsersOperations?.notifyStarted?.();
 
         this.runBackgroundCloning();
     }
@@ -438,7 +439,9 @@ class BulkCloneWizard {
                 formData.append('link_group', item.linkGroupEl ? item.linkGroupEl.checked : false);
 
                 try {
-                    const res = await embyUsersBulkCloneWizardFetch('/api/emby/users/clone', { method: 'POST', body: formData });
+                    const request = embyUsersBulkCloneWizardFetch('/api/emby/users/clone', { method: 'POST', body: formData });
+                    window.embyUsersOperations?.refreshSoon?.(250);
+                    const res = await request;
                     const json = await res.json();
                     if (json.ok) {
                         successCount++;

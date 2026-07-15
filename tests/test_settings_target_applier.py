@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import unittest
+from unittest.mock import patch
 
 from emby_users.settings_manager import SettingsManager
 from emby_users.settings_target_applier import SettingsApplyOptions, SettingsTargetApplier
@@ -58,7 +59,7 @@ class SettingsTargetApplierTests(unittest.TestCase):
         return enabled
 
     @staticmethod
-    def _remap_display_preferences(patch, _server_id, _membership, _index, _source_server_id):
+    def _remap_display_preferences(patch, _server_id, _membership, _index, _libraries_by_server, _source_server_id):
         return dict(patch)
 
     @staticmethod
@@ -113,6 +114,35 @@ class SettingsTargetApplierTests(unittest.TestCase):
         self.assertFalse(self.policy_updates[-1]["EnableAllFolders"])
         self.assertEqual(set(self.policy_updates[-1]["EnabledFolders"]), {"group-new", "private"})
 
+    def test_custom_library_patch_maps_grouped_item_ids_to_access_view_ids(self):
+        result = self.applier.apply(
+            "server-a",
+            "user-a",
+            {
+                "policy": {},
+                "config": {},
+                "display_preferences": {},
+                "libraries": {
+                    "mode": "custom",
+                    "groups": {"movies::film": True},
+                    "items": ["folder-film"],
+                },
+            },
+            {"movies::film": {"server-a": ["view-film"]}},
+            {
+                "server-a": {
+                    "libraries": [
+                        {"id": "folder-film", "view_ids": ["folder-film", "view-film"]},
+                    ],
+                },
+            },
+            membership={"server-a": {"folder-film": "movies::film", "view-film": "movies::film"}},
+        )
+
+        self.assertTrue(result.ok)
+        self.assertFalse(self.policy_updates[-1]["EnableAllFolders"])
+        self.assertEqual(self.policy_updates[-1]["EnabledFolders"], ["view-film"])
+
     def test_missing_target_returns_a_structured_failure(self):
         result = self.applier.apply("missing", "user-a", {}, {}, {})
 
@@ -122,6 +152,88 @@ class SettingsTargetApplierTests(unittest.TestCase):
 
 
 class SettingsManagerIntegrationTests(unittest.TestCase):
+    @staticmethod
+    def _build_manager(storage=None):
+        server = {"id": "server-a", "name": "Server A"}
+        return SettingsManager(
+            storage=storage or type("Storage", (), {"load_library_associations": lambda self: {}})(),
+            config={},
+            get_server_by_id=lambda server_id: server if server_id == "server-a" else None,
+            get_group_users=lambda _group_id: [],
+            fetch_user_details=lambda _server, _user_id: (
+                {"Policy": {"Existing": True}, "Configuration": {"ExistingConfig": True}},
+                None,
+            ),
+            update_user_policy=lambda _server, _user_id, _payload: (True, None),
+            update_user_config=lambda _server, _user_id, _payload: (True, None),
+            fetch_user_display_preferences=lambda _server, _user_id: ({"CustomPrefs": {}}, None),
+            update_user_display_preferences=lambda _server, _user_id, _payload: (True, None),
+        )
+
+    def test_library_group_index_uses_view_id_for_emby_access_policy(self):
+        manager = self._build_manager()
+
+        with patch(
+            "emby_users.settings_manager.get_emby_servers",
+            return_value=[{"id": "server-a", "name": "Server A", "enabled": True}],
+        ), patch(
+            "emby_users.settings_manager._fetch_emby_libraries",
+            return_value=(
+                [
+                    {
+                        "id": "folder-film",
+                        "folder_id": "folder-film",
+                        "view_ids": ["folder-film", "view-film"],
+                        "name": "Film",
+                        "collection_type": "movies",
+                    }
+                ],
+                None,
+            ),
+        ):
+            _, library_index, _, membership = manager._build_library_group_index()
+
+        self.assertEqual(library_index["movies::film"]["server-a"], ["view-film"])
+        self.assertEqual(membership["server-a"]["folder-film"], "movies::film")
+        self.assertEqual(membership["server-a"]["view-film"], "movies::film")
+
+    def test_landing_display_preferences_use_target_library_preference_id(self):
+        manager = self._build_manager()
+        manager._build_library_group_index = lambda: (
+            [],
+            {"movies::film": {"target-server": ["target-access-view"]}},
+            {
+                "source-server": {
+                    "libraries": [
+                        {"id": "source-folder", "view_ids": ["source-folder", "source-access-view"]},
+                    ],
+                },
+                "target-server": {
+                    "libraries": [
+                        {"id": "target-folder", "view_ids": ["target-folder", "target-access-view"]},
+                    ],
+                },
+            },
+            {
+                "source-server": {
+                    "source-folder": "movies::film",
+                    "source-access-view": "movies::film",
+                },
+                "target-server": {
+                    "target-folder": "movies::film",
+                    "target-access-view": "movies::film",
+                },
+            },
+        )
+
+        remapped = manager.remap_display_preferences_for_server(
+            {"landing-source-folder": "suggestions"},
+            "target-server",
+            source_server_id="source-server",
+        )
+
+        self.assertEqual(remapped, {"landing-target-folder": "suggestions"})
+
     def test_bulk_apply_uses_shared_writer_and_persists_the_snapshot(self):
         server = {"id": "server-a", "name": "Server A"}
         stored = {}

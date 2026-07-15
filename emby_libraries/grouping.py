@@ -51,7 +51,8 @@ def group_libraries(
             if library_id:
                 manual_group_name = manual_associations.get((str(server_id), str(library_id)))
             if manual_group_name:
-                key = (f"manual_{manual_group_name}", collection_type)
+                normalized_manual_name = _normalize_name_for_grouping(str(manual_group_name))
+                key = (normalized_manual_name or f"manual_{manual_group_name}", collection_type)
             else:
                 normalized_name = _normalize_name_for_grouping(str(library_name or ""))
                 if not normalized_name:
@@ -67,6 +68,8 @@ def group_libraries(
                     "libraries": []
                 }
                 groups[key] = group
+            elif manual_group_name and not group.get("manual_name"):
+                group["manual_name"] = manual_group_name
             if isinstance(library_name, str) and library_name.strip():
                 group["name_counts"][library_name.strip()] += 1
             group["servers"].add(str(server_id))
@@ -77,7 +80,12 @@ def group_libraries(
                 "server_icon": server_icon,
                 "server_icon_color": server_icon_color,
                 "server_icon_style": server_icon_style,
+                "id": entry.get("id"),
                 "library_id": library_id,
+                "folder_id": entry.get("folder_id"),
+                "item_id": entry.get("item_id"),
+                "guid": entry.get("guid"),
+                "view_ids": entry.get("view_ids") or [],
                 "library_name": library_name
             })
 

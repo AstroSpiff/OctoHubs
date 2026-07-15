@@ -316,16 +316,13 @@ class UsersDashboardManager:
 
             if not grouped_users[gid].get("has_custom_name"):
                 current_name = grouped_users[gid]["name"]
-                if name.lower() == "master" and current_name.lower() != "master":
-                    grouped_users[gid]["name"] = name
-                elif len(name) > len(current_name) and current_name.lower() != "master":
+                if len(name) > len(current_name):
                     grouped_users[gid]["name"] = name
 
         # Sort users within regular groups
         for group in grouped_users.values():
             group["users"].sort(key=lambda x: (
                 not x["is_leader"],
-                x["name"].lower() != "master",
                 x["is_disabled"],
                 x["name"]
             ))

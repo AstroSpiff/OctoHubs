@@ -7,6 +7,7 @@
     <title>Emby Probe - Gestionale STRM</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link rel="stylesheet" href="{{ url_for('static', filename='emby.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='operations_center.css') }}?v=20260715-global-operations">
     <style>
         /* Server Selector */
         .server-selector {
@@ -4308,5 +4309,6 @@
             }
         });
     </script>
+    <script src="{{ url_for('static', filename='operations_center.js') }}?v=20260715-global-operations"></script>
 </body>
 </html>

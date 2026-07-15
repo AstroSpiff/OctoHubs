@@ -22,7 +22,6 @@ function createUserCard(user, options = {}) {
     card.dataset.serverId = user.server_id;
     card.dataset.username = user.name;
     card.dataset.isLeader = user.is_leader;
-    card.dataset.isMaster = options.isMaster || false;
     card.dataset.groupName = options.groupName || '';
 
     // Content
@@ -74,7 +73,7 @@ function createUserCard(user, options = {}) {
     // Leader Icon (Interactive)
     const leaderIcon = tpl.querySelector('.leader-icon');
     if (leaderIcon) {
-        if (options.isLinked && !options.isMaster) {
+        if (options.isLinked) {
             leaderIcon.style.display = 'inline-block';
             if (user.is_leader) {
                 leaderIcon.className = 'fa-solid fa-star leader-icon';
@@ -142,7 +141,7 @@ function createUserCard(user, options = {}) {
     
     const remoteBtn = tpl.querySelector('.toggle-playback-btn');
     if (remoteBtn) {
-        if (isOwner || options.isMaster) {
+        if (isOwner) {
             remoteBtn.style.display = 'none';
         } else {
             if (user.enable_remote_access) {
@@ -159,7 +158,7 @@ function createUserCard(user, options = {}) {
 
     const dlBtn = tpl.querySelector('.toggle-download-btn');
     if (dlBtn) {
-        if (isOwner || options.isMaster) {
+        if (isOwner) {
             dlBtn.style.display = 'none';
         } else {
             if (user.enable_downloading) {
@@ -224,7 +223,7 @@ function createUserCard(user, options = {}) {
     }
 
     // 5. Clone (Always available except for Owners)
-    // Masters CAN be cloned (as templates), Owners cannot.
+    // Owners cannot be cloned.
     if (!isOwner) {
         const actionsContainer = tpl.querySelector('.user-actions-mini');
         if (actionsContainer) {

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from emby_users.settings_library_ids import iter_library_identity_ids, library_access_id
+
 
 @dataclass(frozen=True)
 class SettingsApplyOptions:
@@ -52,7 +54,14 @@ class SettingsTargetApplier:
         ],
         derive_enabled_ids: Callable[[Dict[str, bool], Dict[str, Dict[str, List[str]]], str], List[str]],
         remap_display_preferences: Callable[
-            [Dict[str, Any], str, Dict[str, Dict[str, str]], Dict[str, Dict[str, List[str]]], Optional[str]],
+            [
+                Dict[str, Any],
+                str,
+                Dict[str, Dict[str, str]],
+                Dict[str, Dict[str, List[str]]],
+                Dict[str, Dict[str, Any]],
+                Optional[str],
+            ],
             Dict[str, Any],
         ],
         build_display_payload: Callable[[Optional[Dict[str, Any]], Dict[str, Any]], Dict[str, Any]],
@@ -122,6 +131,7 @@ class SettingsTargetApplier:
                     server_id,
                     membership or {},
                     library_index,
+                    libraries_by_server,
                     options.display_source_server_id,
                 )
                 current_display, display_fetch_error = self._fetch_display_preferences(server, user_id)
@@ -163,7 +173,7 @@ class SettingsTargetApplier:
         if mode != "custom":
             return
 
-        enabled_ids = [str(item) for item in items if item]
+        enabled_ids = self._resolve_library_access_ids(items, server_id, libraries_by_server)
         if not enabled_ids:
             enabled_ids = self._derive_enabled_ids(groups, library_index, server_id)
         if preserve_non_group_libraries:
@@ -177,6 +187,37 @@ class SettingsTargetApplier:
         policy["EnableAllFolders"] = False
         policy["EnabledFolders"] = enabled_ids
 
+    def _resolve_library_access_ids(
+        self,
+        items: List[Any],
+        server_id: str,
+        libraries_by_server: Dict[str, Dict[str, Any]],
+    ) -> List[str]:
+        access_by_alias: Dict[str, str] = {}
+        server_payload = libraries_by_server.get(server_id) or {}
+        for library in server_payload.get("libraries") or []:
+            if not isinstance(library, dict):
+                continue
+            access_id = library_access_id(library)
+            if not access_id:
+                continue
+            access_id_str = str(access_id)
+            for alias in iter_library_identity_ids(library):
+                access_by_alias[str(alias)] = access_id_str
+
+        resolved: List[str] = []
+        seen = set()
+        for item in items or []:
+            if not item:
+                continue
+            item_str = str(item)
+            resolved_id = access_by_alias.get(item_str, item_str)
+            if resolved_id in seen:
+                continue
+            seen.add(resolved_id)
+            resolved.append(resolved_id)
+        return resolved
+
     def _preserve_non_group_ids(
         self,
         policy: Dict[str, Any],
@@ -188,9 +229,10 @@ class SettingsTargetApplier:
         server_payload = libraries_by_server.get(server_id) or {}
         libraries = server_payload.get("libraries") or []
         server_library_ids = {
-            str(library.get("id") or library.get("library_id"))
+            str(access_id)
             for library in libraries
-            if library.get("id") or library.get("library_id")
+            for access_id in [library_access_id(library)]
+            if access_id
         }
         grouped_ids = set()
         for group_key in library_index:

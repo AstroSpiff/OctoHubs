@@ -3,21 +3,16 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Optional
+
+from emby_users.settings_library_ids import (
+    iter_library_identity_ids,
+    library_id_for_settings_kind,
+    library_preference_id,
+)
 
 
 logger = logging.getLogger(__name__)
-
-
-def _library_ids(library: Dict[str, Any]) -> Iterable[str]:
-    for key in ("id", "library_id", "folder_id", "item_id", "guid"):
-        value = library.get(key)
-        if value:
-            yield str(value)
-    for value in library.get("view_ids") or []:
-        if value:
-            yield str(value)
-
 
 def remap_library_config_for_server(
     config_patch: Dict[str, Any],
@@ -48,11 +43,11 @@ def remap_library_config_for_server(
     for library in source_libraries:
         if not isinstance(library, dict):
             continue
-        library_id = library.get("id") or library.get("library_id")
+        library_id = library_preference_id(library)
         group_key = source_membership.get(str(library_id)) if library_id else None
         if not group_key:
             continue
-        for library_id in _library_ids(library):
+        for library_id in iter_library_identity_ids(library):
             source_aliases[library_id] = group_key
 
     target_ids: Dict[str, Dict[str, str]] = {}
@@ -61,14 +56,13 @@ def remap_library_config_for_server(
     for library in target_libraries:
         if not isinstance(library, dict):
             continue
-        library_id = library.get("id") or library.get("library_id")
+        library_id = library_preference_id(library)
         group_key = target_membership.get(str(library_id)) if library_id else None
         if not group_key or group_key in target_ids:
             continue
-        view_ids = [str(value) for value in library.get("view_ids") or [] if value]
         target_ids[group_key] = {
-            "library": str(library_id),
-            "view": view_ids[0] if view_ids else str(library_id),
+            "library": library_id_for_settings_kind(library, "library") or str(library_id),
+            "view": library_id_for_settings_kind(library, "view") or str(library_id),
         }
 
     for field, target_kind in library_fields.items():

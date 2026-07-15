@@ -269,6 +269,8 @@ class UserSyncStateTracker:
                 "last_played": user_data.get("LastPlayedDate"),
                 "position": int(user_data.get("PlaybackPositionTicks") or 0),
             }
+            if "HideFromResume" in user_data:
+                state["hide_from_resume"] = bool(user_data.get("HideFromResume"))
             for key in keys:
                 states[key] = state
         return {"items": states}

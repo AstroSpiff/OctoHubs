@@ -1,6 +1,7 @@
 import logging
 from typing import Dict, Any, Optional, Tuple, List, Callable
 
+from emby_users.operation_progress import emit_progress
 from emby_users.settings_manager import USER_SETTINGS_SCHEMA
 from emby_users.settings_scope import (
     build_allowed_fields,
@@ -169,7 +170,8 @@ class SyncManager:
         sync_favorites: bool = False,
         sync_playlists: bool = False,
         link_group: bool = False,
-        config_categories: Optional[List[str]] = None
+        config_categories: Optional[List[str]] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
     ) -> Dict[str, Any]:
         """
         Clones a user from source to target server.
@@ -194,15 +196,46 @@ class SyncManager:
             sync_playlists,
             link_group
         )
+        enabled_domains = [
+            enabled for enabled in [
+                sync_config,
+                sync_playstate,
+                sync_library_access,
+                sync_favorites,
+                sync_playlists,
+            ]
+            if enabled
+        ]
+        total_steps = 3 + len(enabled_domains)
+        current_step = 0
+        emit_progress(
+            progress_callback,
+            "start",
+            "Preparazione clonazione",
+            current_step,
+            total_steps,
+            {"source_server_id": source_server_id, "source_user_id": source_user_id, "target_server_id": target_server_id},
+        )
 
         src_server = self._get_server_by_id(source_server_id)
         tgt_server = self._get_server_by_id(target_server_id)
         if not src_server or not tgt_server:
+            emit_progress(progress_callback, "error", "Server non trovato", total_steps, total_steps)
             return {"error": "Server not found"}
 
         src_user, err = self._fetch_user_details(src_server, source_user_id)
         if not src_user:
+            emit_progress(progress_callback, "error", "Utente sorgente non trovato", total_steps, total_steps)
             return {"error": "Source user not found"}
+        current_step += 1
+        emit_progress(
+            progress_callback,
+            "source",
+            f"Sorgente risolta: {src_user.get('Name') or source_user_id}",
+            current_step,
+            total_steps,
+            {"source_username": src_user.get("Name")},
+        )
         logger.info(
             "[CLONE][2/4] Source resolved: %s -> user=%s (%s)",
             _srv_label(src_server),
@@ -242,6 +275,15 @@ class SyncManager:
                 target_user.get("Name"),
                 tgt_user_id
             )
+            current_step += 1
+            emit_progress(
+                progress_callback,
+                "target",
+                f"Utente destinazione esistente: {target_username}",
+                current_step,
+                total_steps,
+                {"target_server_id": target_server_id, "target_user_id": tgt_user_id, "target_username": target_username},
+            )
         else:
             logger.info(
                 "[CLONE][2/4] Creating target user: %s -> user=%s",
@@ -250,6 +292,7 @@ class SyncManager:
             )
             ok, res = self._create_user(tgt_server, target_username)
             if not ok:
+                emit_progress(progress_callback, "error", f"Creazione utente fallita: {target_username}", total_steps, total_steps)
                 return {"error": f"Failed to create user: {res}"}
             tgt_user_id = res.get("Id")
             logger.info(
@@ -258,8 +301,18 @@ class SyncManager:
                 target_username,
                 tgt_user_id
             )
+            current_step += 1
+            emit_progress(
+                progress_callback,
+                "target",
+                f"Creato utente destinazione: {target_username}",
+                current_step,
+                total_steps,
+                {"target_server_id": target_server_id, "target_user_id": tgt_user_id, "target_username": target_username},
+            )
 
         if not tgt_user_id:
+            emit_progress(progress_callback, "error", "ID utente destinazione non risolto", total_steps, total_steps)
             return {"error": "Failed to resolve target user ID"}
 
         if link_group:
@@ -280,6 +333,8 @@ class SyncManager:
                 logger.error("[CLONE][2/4] Failed to link target to group: %s", exc)
         else:
             logger.info("[CLONE][2/4] Group link skipped (link_group=False)")
+        current_step += 1
+        emit_progress(progress_callback, "group", "Associazione gruppo verificata", current_step, total_steps)
 
         if sync_config:
             logger.info(
@@ -297,6 +352,8 @@ class SyncManager:
                 [(target_server_id, tgt_user_id)],
                 config_categories=config_categories
             )
+            current_step += 1
+            emit_progress(progress_callback, "config", "Impostazioni copiate", current_step, total_steps)
         else:
             logger.info("[CLONE][3/4] Sync config skipped")
 
@@ -318,6 +375,8 @@ class SyncManager:
                 [(target_server_id, tgt_user_id)],
                 sync_resume
             )
+            current_step += 1
+            emit_progress(progress_callback, "playstate", "Visti e resume copiati", current_step, total_steps)
             try:
                 counts = res_play.get("counts", {}) if isinstance(res_play, dict) else {}
                 resume_counts = res_play.get("resume_counts", {}) if isinstance(res_play, dict) else {}
@@ -339,6 +398,8 @@ class SyncManager:
                 source_user_id,
                 [(target_server_id, tgt_user_id)]
             )
+            current_step += 1
+            emit_progress(progress_callback, "library_access", "Accessi librerie copiati", current_step, total_steps)
         else:
             logger.info("[CLONE][4/4] Sync library access skipped")
 
@@ -350,6 +411,8 @@ class SyncManager:
                 source_user_id,
                 [(target_server_id, tgt_user_id)]
             )
+            current_step += 1
+            emit_progress(progress_callback, "favorites", "Preferiti copiati", current_step, total_steps)
         else:
             logger.info("[CLONE][4/4] Sync favorites skipped")
 
@@ -361,9 +424,19 @@ class SyncManager:
                 source_user_id,
                 [(target_server_id, tgt_user_id)]
             )
+            current_step += 1
+            emit_progress(progress_callback, "playlists", "Playlist copiate", current_step, total_steps)
         else:
             logger.info("[CLONE][4/4] Sync playlists skipped")
 
+        emit_progress(
+            progress_callback,
+            "complete",
+            f"Clonazione completata: {target_username}",
+            total_steps,
+            total_steps,
+            {"target_server_id": target_server_id, "target_user_id": tgt_user_id, "target_username": target_username},
+        )
         return {
             "ok": True,
             "target_user_id": tgt_user_id,

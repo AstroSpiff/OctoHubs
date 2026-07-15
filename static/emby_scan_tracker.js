@@ -6,6 +6,8 @@
     const groupPassiveState = new Map();
     const GROUP_PASSIVE_STORAGE_KEY = 'octohub_group_scan_state_v1';
 
+    const buildGroupKey = (groupName, collectionType = '') => `${collectionType || ''}::${groupName || ''}`;
+
     const loadGroupPassiveState = () => {
         try {
             const raw = window.localStorage ? window.localStorage.getItem(GROUP_PASSIVE_STORAGE_KEY) : null;
@@ -62,15 +64,19 @@
         }
     };
 
-    const getGroupTotalServers = (groupName) => {
-        if (!groupName) {
+    const getGroupTotalServers = (groupKeyOrName) => {
+        if (!groupKeyOrName) {
             return 0;
         }
-        const cached = groupTotals.get(groupName);
+        const cached = groupTotals.get(groupKeyOrName);
         if (cached) {
             return cached;
         }
-        const group = groupedLibrariesCache.find(item => item.group_name === groupName);
+        const group = groupedLibrariesCache.find(item => (
+            item.group_key === groupKeyOrName
+            || item.group_name === groupKeyOrName
+            || buildGroupKey(item.group_name, item.collection_type) === groupKeyOrName
+        ));
         if (!group || !Array.isArray(group.libraries)) {
             return 0;
         }
@@ -81,7 +87,9 @@
         );
         const total = serverIds.size;
         if (total) {
-            groupTotals.set(groupName, total);
+            const groupKey = group.group_key || buildGroupKey(group.group_name, group.collection_type);
+            groupTotals.set(groupKeyOrName, total);
+            groupTotals.set(groupKey, total);
         }
         return total;
     };

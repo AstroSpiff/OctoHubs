@@ -1,8 +1,10 @@
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional, Tuple, List, Callable
 
 from emby_runtime.api_clients import _call_emby_api
+from core.utils import normalize_string
 from emby_users.api_client_items import USER_ITEM_FIELDS
 from emby_users.item_matching import get_item_sync_keys, is_provider_key
 
@@ -22,7 +24,8 @@ class PlaystateManager:
         fetch_items_by_safe_fallback: Callable[[Dict[str, Any], str, Dict[str, Any]], Tuple[List[Dict[str, Any]], Optional[str]]],
         mark_item_played: Callable[[Dict[str, Any], str, str, Optional[str]], Tuple[bool, Optional[str]]],
         mark_item_unplayed: Callable[[Dict[str, Any], str, str], Tuple[bool, Optional[str]]],
-        set_item_resume: Callable[[Dict[str, Any], str, str, int], Tuple[bool, Optional[str]]],
+        set_item_resume: Callable[..., Tuple[bool, Optional[str]]],
+        set_item_hide_from_resume: Optional[Callable[[Dict[str, Any], str, str, bool], Tuple[bool, Optional[str]]]] = None,
     ):
         self._get_server_by_id = get_server_by_id
         self._fetch_user_details = fetch_user_details
@@ -33,6 +36,7 @@ class PlaystateManager:
         self._mark_item_played = mark_item_played
         self._mark_item_unplayed = mark_item_unplayed
         self._set_item_resume = set_item_resume
+        self._set_item_hide_from_resume = set_item_hide_from_resume or (lambda *_args: (True, None))
 
     def _fetch_all_media_for_user(self, server, user_id: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
         params = {
@@ -100,6 +104,357 @@ class PlaystateManager:
         )
         return items[:MAX_PLAYSTATE_FALLBACK_LOOKUPS]
 
+    def _hide_from_resume_from_user_data(self, user_data: Dict[str, Any]) -> Optional[bool]:
+        if "HideFromResume" not in user_data:
+            return None
+        return bool(user_data.get("HideFromResume"))
+
+    def _resume_state_from_user_data(self, user_data: Dict[str, Any]) -> Dict[str, Any]:
+        state = {
+            "position": user_data.get("PlaybackPositionTicks"),
+            "last_played": user_data.get("LastPlayedDate")
+        }
+        hidden = self._hide_from_resume_from_user_data(user_data)
+        if hidden is not None:
+            state["hide_from_resume"] = hidden
+        return state
+
+    def _playstate_state_from_user_data(self, user_data: Dict[str, Any]) -> Dict[str, Any]:
+        state = {
+            "played": bool(user_data.get("Played")),
+            "last_played": user_data.get("LastPlayedDate"),
+            "position": int(user_data.get("PlaybackPositionTicks") or 0),
+        }
+        hidden = self._hide_from_resume_from_user_data(user_data)
+        if hidden is not None:
+            state["hide_from_resume"] = hidden
+        return state
+
+    def _upsert_preserving_user_data(
+        self,
+        items_by_id: Dict[str, Dict[str, Any]],
+        item: Dict[str, Any],
+    ) -> None:
+        item_id = item.get("Id")
+        if not item_id:
+            return
+        existing = items_by_id.get(item_id)
+        if existing:
+            existing_user_data = existing.get("UserData") or {}
+            item_user_data = item.setdefault("UserData", {})
+            if isinstance(existing_user_data, dict) and isinstance(item_user_data, dict):
+                for key, value in existing_user_data.items():
+                    if item_user_data.get(key) in (None, ""):
+                        item_user_data[key] = value
+        items_by_id[item_id] = item
+
+    def _parse_emby_datetime(self, value: Any) -> Optional[datetime]:
+        if not value:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        if "." in text:
+            prefix, suffix = text.split(".", 1)
+            timezone_pos = None
+            for marker in ("+", "-"):
+                pos = suffix.find(marker)
+                if pos > 0:
+                    timezone_pos = pos
+                    break
+            if timezone_pos is None:
+                fraction = suffix
+                tz_part = ""
+            else:
+                fraction = suffix[:timezone_pos]
+                tz_part = suffix[timezone_pos:]
+            text = f"{prefix}.{fraction[:6].ljust(6, '0')}{tz_part}"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _last_played_differs(self, source_date: Any, target_date: Any) -> bool:
+        if not source_date:
+            return False
+        if not target_date:
+            return True
+        source_dt = self._parse_emby_datetime(source_date)
+        target_dt = self._parse_emby_datetime(target_date)
+        if source_dt and target_dt:
+            return source_dt != target_dt
+        return str(source_date).strip() != str(target_date).strip()
+
+    def _last_played_is_older(self, candidate_date: Any, current_date: Any) -> bool:
+        if not candidate_date:
+            return False
+        if not current_date:
+            return True
+        candidate_dt = self._parse_emby_datetime(candidate_date)
+        current_dt = self._parse_emby_datetime(current_date)
+        if candidate_dt and current_dt:
+            return candidate_dt < current_dt
+        return str(candidate_date).strip() < str(current_date).strip()
+
+    def _should_replace_resume_state(self, existing: Optional[Dict[str, Any]], current: Dict[str, Any]) -> bool:
+        if not existing:
+            return True
+        current_position = int(current.get("position") or 0)
+        existing_position = int(existing.get("position") or 0)
+        if current_position and (not existing_position or current_position > existing_position):
+            return True
+        if current_position == existing_position and current.get("hide_from_resume") and not existing.get("hide_from_resume"):
+            return True
+        return False
+
+    def _merge_bootstrap_resume_state(
+        self,
+        existing: Optional[Dict[str, Any]],
+        current: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if not existing:
+            return dict(current)
+
+        existing_position = int(existing.get("position") or 0)
+        current_position = int(current.get("position") or 0)
+        if current_position > existing_position:
+            merged = dict(current)
+        else:
+            merged = dict(existing)
+            if current_position == existing_position and self._last_played_differs(
+                current.get("last_played"),
+                existing.get("last_played"),
+            ):
+                current_dt = self._parse_emby_datetime(current.get("last_played"))
+                existing_dt = self._parse_emby_datetime(existing.get("last_played"))
+                if current_dt and existing_dt and current_dt > existing_dt:
+                    merged["last_played"] = current.get("last_played")
+
+        if existing.get("hide_from_resume") or current.get("hide_from_resume"):
+            merged["hide_from_resume"] = True
+        elif "hide_from_resume" in existing or "hide_from_resume" in current:
+            merged["hide_from_resume"] = False
+
+        return merged
+
+    def _apply_hide_from_resume(
+        self,
+        server: Dict[str, Any],
+        user_id: str,
+        item_id: str,
+        desired_state: Dict[str, Any],
+        current_user_data: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        if "hide_from_resume" not in desired_state:
+            return False
+        desired_hidden = bool(desired_state.get("hide_from_resume"))
+        current_hidden = self._hide_from_resume_from_user_data(current_user_data or {})
+        if current_hidden is not None and current_hidden == desired_hidden:
+            return False
+        ok, err = self._set_item_hide_from_resume(server, user_id, item_id, desired_hidden)
+        if not ok:
+            logger.warning(
+                "[SYNC][PLAYSTATE] HideFromResume update failed server=%s user=%s item=%s hidden=%s error=%s",
+                server.get("name") or server.get("id"),
+                user_id,
+                item_id,
+                desired_hidden,
+                err,
+            )
+        return bool(ok)
+
+    def _add_items_matching_fallback_keys(
+        self,
+        target_server: Dict[str, Any],
+        target_user_id: str,
+        items_by_id: Dict[str, Dict[str, Any]],
+        fallback_keys: set,
+        target_label: str,
+        context: str,
+    ) -> Optional[str]:
+        if not fallback_keys:
+            return None
+        added = 0
+        checked = 0
+        series_cache = {}
+        season_cache = {}
+        for key in fallback_keys:
+            matches, err = self._fetch_items_by_fallback_key(
+                target_server,
+                target_user_id,
+                key,
+                series_cache=series_cache,
+                season_cache=season_cache,
+            )
+            if err:
+                return err
+            checked += len(matches)
+            for item in matches:
+                item_id = item.get("Id")
+                if not item_id or item_id in items_by_id:
+                    continue
+                items_by_id[item_id] = item
+                added += 1
+        logger.warning(
+            "[SYNC][PLAYSTATE][%s] target %s fallback lookup keys=%s added=%s checked=%s",
+            context,
+            target_label,
+            len(fallback_keys),
+            added,
+            checked,
+        )
+        return None
+
+    def _parse_fallback_episode_key(self, key: str) -> Optional[Dict[str, str]]:
+        prefix = "fallback-episode:"
+        if not str(key).startswith(prefix):
+            return None
+        raw = str(key)[len(prefix):]
+        try:
+            series, rest = raw.rsplit("|s", 1)
+            season, episode = rest.split("|e", 1)
+        except ValueError:
+            return None
+        if not series or not season or not episode:
+            return None
+        return {"series": series, "season": season, "episode": episode}
+
+    def _parse_fallback_movie_key(self, key: str) -> Optional[Dict[str, str]]:
+        prefix = "fallback-movie:"
+        if not str(key).startswith(prefix):
+            return None
+        raw = str(key)[len(prefix):]
+        try:
+            title, year = raw.rsplit("|y", 1)
+        except ValueError:
+            return None
+        if not title or not year:
+            return None
+        return {"title": title, "year": year}
+
+    def _fetch_items_by_fallback_key(
+        self,
+        server: Dict[str, Any],
+        user_id: str,
+        key: str,
+        *,
+        series_cache: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+        season_cache: Optional[Dict[tuple, List[Dict[str, Any]]]] = None,
+    ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        parsed_episode = self._parse_fallback_episode_key(key)
+        if parsed_episode:
+            return self._fetch_episode_items_by_fallback_key(
+                server,
+                user_id,
+                key,
+                parsed_episode,
+                series_cache if series_cache is not None else {},
+                season_cache if season_cache is not None else {},
+            )
+
+        parsed_movie = self._parse_fallback_movie_key(key)
+        if parsed_movie:
+            return self._fetch_movie_items_by_fallback_key(server, user_id, key, parsed_movie)
+
+        return [], None
+
+    def _fetch_episode_items_by_fallback_key(
+        self,
+        server: Dict[str, Any],
+        user_id: str,
+        key: str,
+        parsed: Dict[str, str],
+        series_cache: Dict[str, List[Dict[str, Any]]],
+        season_cache: Dict[tuple, List[Dict[str, Any]]],
+    ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        series_name = parsed["series"]
+        if series_name not in series_cache:
+            success, payload = _call_emby_api(
+                server,
+                f"Users/{user_id}/Items",
+                params={
+                    "Recursive": "true",
+                    "IncludeItemTypes": "Series",
+                    "SearchTerm": series_name,
+                    "Fields": "ProviderIds,UserData,Name,SortName,OriginalTitle",
+                    "Limit": 100,
+                },
+            )
+            if not success:
+                return [], payload
+            if not isinstance(payload, dict):
+                return [], "Risposta Series inattesa"
+            candidates = payload.get("Items") or []
+            series_cache[series_name] = [
+                item for item in candidates
+                if normalize_string(item.get("Name") or item.get("SortName") or "") == series_name
+                or normalize_string(item.get("OriginalTitle") or "") == series_name
+            ]
+
+        matches = []
+        for series in series_cache.get(series_name, []):
+            series_id = series.get("Id")
+            if not series_id:
+                continue
+            season_key = (series_id, parsed["season"])
+            if season_key not in season_cache:
+                success, payload = _call_emby_api(
+                    server,
+                    f"Shows/{series_id}/Episodes",
+                    params={
+                        "UserId": user_id,
+                        "Season": parsed["season"],
+                        "Fields": USER_ITEM_FIELDS,
+                    },
+                )
+                if not success:
+                    return [], payload
+                if not isinstance(payload, dict):
+                    return [], "Risposta Episodes inattesa"
+                season_cache[season_key] = payload.get("Items") or []
+
+            for episode in season_cache.get(season_key, []):
+                if str(episode.get("ParentIndexNumber") or "") != parsed["season"]:
+                    continue
+                if str(episode.get("IndexNumber") or "") != parsed["episode"]:
+                    continue
+                if key in self._get_item_sync_keys(episode):
+                    matches.append(episode)
+
+        return matches, None
+
+    def _fetch_movie_items_by_fallback_key(
+        self,
+        server: Dict[str, Any],
+        user_id: str,
+        key: str,
+        parsed: Dict[str, str],
+    ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        success, payload = _call_emby_api(
+            server,
+            f"Users/{user_id}/Items",
+            params={
+                "Recursive": "true",
+                "IncludeItemTypes": "Movie",
+                "SearchTerm": parsed["title"],
+                "Fields": USER_ITEM_FIELDS,
+                "Limit": 50,
+            },
+        )
+        if not success:
+            return [], payload
+        if not isinstance(payload, dict):
+            return [], "Risposta Movie inattesa"
+        return [
+            item for item in (payload.get("Items") or [])
+            if key in self._get_item_sync_keys(item)
+        ], None
+
     def sync_user_playstate(
         self,
         source_server_id: str,
@@ -150,10 +505,7 @@ class PlaystateManager:
                 if ud.get("Played"):
                     fallback_played_items.append((item, {"last_played": ud.get("LastPlayedDate")}))
                 if include_resume and ud.get("PlaybackPositionTicks"):
-                    fallback_resume_items.append((item, {
-                        "position": ud.get("PlaybackPositionTicks"),
-                        "last_played": ud.get("LastPlayedDate")
-                    }))
+                    fallback_resume_items.append((item, self._resume_state_from_user_data(ud)))
                 continue
 
             provider_item_keys = [k for k in keys if is_provider_key(k)]
@@ -179,10 +531,7 @@ class PlaystateManager:
             if include_resume and ud.get("PlaybackPositionTicks"):
                 resume_source_items += 1
                 for key in keys:
-                    resume_map[key] = {
-                        "position": ud.get("PlaybackPositionTicks"),
-                        "last_played": ud.get("LastPlayedDate")
-                    }
+                    resume_map[key] = self._resume_state_from_user_data(ud)
 
             if not ud.get("Played"):
                 continue
@@ -347,8 +696,7 @@ class PlaystateManager:
             for item in items_to_process:
                 processed += 1
                 ud = item.get("UserData", {})
-                if ud.get("Played"):
-                    continue
+                target_played = bool(ud.get("Played"))
 
                 keys = self._get_item_sync_keys(item)
                 item_id = item.get("Id")
@@ -359,7 +707,10 @@ class PlaystateManager:
                         match = src_map[key]
                         break
 
-                if match:
+                if match and (
+                    not target_played
+                    or self._last_played_differs(match.get("last_played"), ud.get("LastPlayedDate"))
+                ):
                     ok, _ = self._mark_item_played(
                         tgt_server,
                         tgt_uid,
@@ -375,14 +726,22 @@ class PlaystateManager:
                         if key in resume_map:
                             rmatch = resume_map[key]
                             break
-                    if rmatch:
+                    preserve_played = bool(match)
+                    if rmatch and (not preserve_played or int(rmatch.get("position") or 0) > 0):
+                        resume_changed = False
                         ok, _ = self._set_item_resume(
                             tgt_server,
                             tgt_uid,
                             item["Id"],
-                            rmatch["position"]
+                            rmatch["position"],
+                            rmatch.get("last_played"),
+                            preserve_played
                         )
                         if ok:
+                            resume_changed = True
+                        if self._apply_hide_from_resume(tgt_server, tgt_uid, item["Id"], rmatch, ud):
+                            resume_changed = True
+                        if resume_changed:
                             updated_count += 1
                             resume_count += 1
 
@@ -438,15 +797,12 @@ class PlaystateManager:
 
         source_state = {}
         source_provider_keys = set()
+        source_fallback_keys = set()
         fallback_source_state = []
         for item in source_items:
             keys = self._get_item_sync_keys(item)
             user_data = item.get("UserData") or {}
-            state = {
-                "played": bool(user_data.get("Played")),
-                "last_played": user_data.get("LastPlayedDate"),
-                "position": int(user_data.get("PlaybackPositionTicks") or 0),
-            }
+            state = self._playstate_state_from_user_data(user_data)
             if not keys:
                 item_type = item.get("Type") or item.get("ItemType")
                 if item_type == "Episode":
@@ -458,6 +814,8 @@ class PlaystateManager:
                 source_state[key] = state
                 if is_provider_key(key):
                     source_provider_keys.add(key)
+                else:
+                    source_fallback_keys.add(key)
 
         results = {"success": [], "failed": [], "counts": {}, "resume_counts": {}, "cleared_counts": {}}
         fallback_type_counts = {}
@@ -477,10 +835,11 @@ class PlaystateManager:
                     "provider_ids": item.get("ProviderIds"),
                 })
         logger.warning(
-            "[SYNC][PLAYSTATE][EXACT] source items=%s keys=%s provider_keys=%s fallback_items=%s fallback_types=%s include_resume=%s",
+            "[SYNC][PLAYSTATE][EXACT] source items=%s keys=%s provider_keys=%s fallback_keys=%s fallback_items=%s fallback_types=%s include_resume=%s",
             len(source_items),
             len(source_state),
             len(source_provider_keys),
+            len(source_fallback_keys),
             len(fallback_source_state),
             fallback_type_counts,
             include_resume,
@@ -532,9 +891,20 @@ class PlaystateManager:
                         len(provider_items),
                     )
                     for item in provider_items:
-                        item_id = item.get("Id")
-                        if item_id:
-                            items_by_id[item_id] = item
+                        self._upsert_preserving_user_data(items_by_id, item)
+
+            fallback_scan_err = self._add_items_matching_fallback_keys(
+                target_server,
+                target_user_id,
+                items_by_id,
+                source_fallback_keys,
+                target_label,
+                "EXACT",
+            )
+            if fallback_scan_err:
+                logger.warning("[SYNC][PLAYSTATE][EXACT] fallback scan failed on %s: %s", target_label, fallback_scan_err)
+                results["failed"].append(f"{target_label}: Fallback scan error")
+                continue
 
             for source_item, state in self._limit_fallback_items(fallback_source_state, "exact"):
                 fallback_items, fallback_err = self._fetch_items_by_safe_fallback(
@@ -574,20 +944,36 @@ class PlaystateManager:
                 user_data = item.get("UserData") or {}
                 target_played = bool(user_data.get("Played"))
                 current_position = int(user_data.get("PlaybackPositionTicks") or 0)
+                target_last_played = user_data.get("LastPlayedDate")
                 if not match:
                     if target_played and keys:
                         ok, _ = self._mark_item_unplayed(target_server, target_user_id, item_id)
                         if ok:
                             updated_count += 1
                             cleared_count += 1
-                    if include_resume and current_position:
-                        ok, _ = self._set_item_resume(target_server, target_user_id, item_id, 0)
-                        if ok:
+                    if include_resume:
+                        resume_changed = False
+                        if current_position:
+                            ok, _ = self._set_item_resume(target_server, target_user_id, item_id, 0)
+                            if ok:
+                                resume_changed = True
+                        if self._apply_hide_from_resume(
+                            target_server,
+                            target_user_id,
+                            item_id,
+                            {"hide_from_resume": True},
+                            user_data,
+                        ):
+                            resume_changed = True
+                        if resume_changed:
                             updated_count += 1
                             resume_count += 1
                     continue
 
-                if match["played"] and not target_played:
+                if match["played"] and (
+                    not target_played
+                    or self._last_played_differs(match.get("last_played"), target_last_played)
+                ):
                     ok, _ = self._mark_item_played(target_server, target_user_id, item_id, match.get("last_played"))
                     if ok:
                         updated_count += 1
@@ -599,11 +985,33 @@ class PlaystateManager:
 
                 if include_resume:
                     desired_position = int(match.get("position") or 0)
-                    if current_position != desired_position:
-                        ok, _ = self._set_item_resume(target_server, target_user_id, item_id, desired_position)
+                    preserve_played = bool(match.get("played"))
+                    resume_changed = False
+                    resume_date_changed = self._last_played_differs(match.get("last_played"), target_last_played)
+                    should_write_resume = current_position != desired_position
+                    if preserve_played:
+                        should_write_resume = should_write_resume or (desired_position > 0 and resume_date_changed)
+                    else:
+                        should_write_resume = should_write_resume or resume_date_changed
+                    if should_write_resume:
+                        ok, _ = self._set_item_resume(
+                            target_server,
+                            target_user_id,
+                            item_id,
+                            desired_position,
+                            match.get("last_played"),
+                            preserve_played,
+                        )
                         if ok:
-                            updated_count += 1
-                            resume_count += 1
+                            resume_changed = True
+                    if (
+                        (not preserve_played or desired_position > 0 or current_position > 0)
+                        and self._apply_hide_from_resume(target_server, target_user_id, item_id, match, user_data)
+                    ):
+                        resume_changed = True
+                    if resume_changed:
+                        updated_count += 1
+                        resume_count += 1
 
             results["success"].append(target_label)
             results["counts"][target_label] = updated_count
@@ -627,11 +1035,13 @@ class PlaystateManager:
     ) -> Dict[str, Any]:
         """Apply an already-resolved playstate map to all targets, including removals."""
         source_provider_keys = {key for key in desired_state if is_provider_key(key)}
+        source_fallback_keys = {key for key in desired_state if not is_provider_key(key)}
         results = {"success": [], "failed": [], "counts": {}, "resume_counts": {}, "cleared_counts": {}}
         logger.warning(
-            "[SYNC][PLAYSTATE][STATE] desired keys=%s provider_keys=%s include_resume=%s targets=%s",
+            "[SYNC][PLAYSTATE][STATE] desired keys=%s provider_keys=%s fallback_keys=%s include_resume=%s targets=%s",
             len(desired_state),
             len(source_provider_keys),
+            len(source_fallback_keys),
             include_resume,
             len(target_tuples),
         )
@@ -676,9 +1086,20 @@ class PlaystateManager:
                         len(provider_items),
                     )
                     for item in provider_items:
-                        item_id = item.get("Id")
-                        if item_id:
-                            items_by_id[item_id] = item
+                        self._upsert_preserving_user_data(items_by_id, item)
+
+            fallback_scan_err = self._add_items_matching_fallback_keys(
+                target_server,
+                target_user_id,
+                items_by_id,
+                source_fallback_keys,
+                target_label,
+                "STATE",
+            )
+            if fallback_scan_err:
+                logger.warning("[SYNC][PLAYSTATE][STATE] fallback scan failed on %s: %s", target_label, fallback_scan_err)
+                results["failed"].append(f"{target_label}: Fallback scan error")
+                continue
 
             updated_count = 0
             resume_count = 0
@@ -697,21 +1118,37 @@ class PlaystateManager:
                 user_data = item.get("UserData") or {}
                 target_played = bool(user_data.get("Played"))
                 current_position = int(user_data.get("PlaybackPositionTicks") or 0)
+                target_last_played = user_data.get("LastPlayedDate")
                 if not match:
                     if target_played and keys:
                         ok, _ = self._mark_item_unplayed(target_server, target_user_id, item_id)
                         if ok:
                             updated_count += 1
                             cleared_count += 1
-                    if include_resume and current_position:
-                        ok, _ = self._set_item_resume(target_server, target_user_id, item_id, 0)
-                        if ok:
+                    if include_resume:
+                        resume_changed = False
+                        if current_position:
+                            ok, _ = self._set_item_resume(target_server, target_user_id, item_id, 0)
+                            if ok:
+                                resume_changed = True
+                        if self._apply_hide_from_resume(
+                            target_server,
+                            target_user_id,
+                            item_id,
+                            {"hide_from_resume": True},
+                            user_data,
+                        ):
+                            resume_changed = True
+                        if resume_changed:
                             updated_count += 1
                             resume_count += 1
                     continue
 
                 should_played = bool(match.get("played"))
-                if should_played and not target_played:
+                if should_played and (
+                    not target_played
+                    or self._last_played_differs(match.get("last_played"), target_last_played)
+                ):
                     ok, _ = self._mark_item_played(target_server, target_user_id, item_id, match.get("last_played"))
                     if ok:
                         updated_count += 1
@@ -723,11 +1160,33 @@ class PlaystateManager:
 
                 if include_resume:
                     desired_position = int(match.get("position") or 0)
-                    if current_position != desired_position:
-                        ok, _ = self._set_item_resume(target_server, target_user_id, item_id, desired_position)
+                    preserve_played = bool(match.get("played"))
+                    resume_changed = False
+                    resume_date_changed = self._last_played_differs(match.get("last_played"), target_last_played)
+                    should_write_resume = current_position != desired_position
+                    if preserve_played:
+                        should_write_resume = should_write_resume or (desired_position > 0 and resume_date_changed)
+                    else:
+                        should_write_resume = should_write_resume or resume_date_changed
+                    if should_write_resume:
+                        ok, _ = self._set_item_resume(
+                            target_server,
+                            target_user_id,
+                            item_id,
+                            desired_position,
+                            match.get("last_played"),
+                            preserve_played,
+                        )
                         if ok:
-                            updated_count += 1
-                            resume_count += 1
+                            resume_changed = True
+                    if (
+                        (not preserve_played or desired_position > 0 or current_position > 0)
+                        and self._apply_hide_from_resume(target_server, target_user_id, item_id, match, user_data)
+                    ):
+                        resume_changed = True
+                    if resume_changed:
+                        updated_count += 1
+                        resume_count += 1
 
             results["success"].append(target_label)
             results["counts"][target_label] = updated_count
@@ -804,10 +1263,7 @@ class PlaystateManager:
                     if ud.get("Played"):
                         fallback_global_played_items.append((item, {"last_played": ud.get("LastPlayedDate")}))
                     if include_resume and ud.get("PlaybackPositionTicks"):
-                        fallback_global_resume_items.append((item, {
-                            "position": ud.get("PlaybackPositionTicks"),
-                            "last_played": ud.get("LastPlayedDate")
-                        }))
+                        fallback_global_resume_items.append((item, self._resume_state_from_user_data(ud)))
                     continue
 
                 provider_item_keys = [k for k in keys if is_provider_key(k)]
@@ -821,15 +1277,8 @@ class PlaystateManager:
                     if include_resume and ud.get("PlaybackPositionTicks"):
                         for key in keys:
                             existing = global_resume_map.get(key)
-                            current = {
-                                "position": ud.get("PlaybackPositionTicks"),
-                                "last_played": ud.get("LastPlayedDate")
-                            }
-                            if not existing:
-                                global_resume_map[key] = current
-                            else:
-                                if current["position"] and (not existing["position"] or current["position"] > existing["position"]):
-                                    global_resume_map[key] = current
+                            current = self._resume_state_from_user_data(ud)
+                            global_resume_map[key] = self._merge_bootstrap_resume_state(existing, current)
                     continue
 
                 date_played = ud.get("LastPlayedDate")
@@ -839,19 +1288,12 @@ class PlaystateManager:
                         global_played_map[key] = {"last_played": date_played}
                     else:
                         current = global_played_map[key]["last_played"]
-                        if date_played and (not current or date_played > current):
+                        if self._last_played_is_older(date_played, current):
                             global_played_map[key]["last_played"] = date_played
                     if include_resume and ud.get("PlaybackPositionTicks"):
                         existing = global_resume_map.get(key)
-                        current_resume = {
-                            "position": ud.get("PlaybackPositionTicks"),
-                            "last_played": ud.get("LastPlayedDate")
-                        }
-                        if not existing:
-                            global_resume_map[key] = current_resume
-                        else:
-                            if current_resume["position"] and (not existing["position"] or current_resume["position"] > existing["position"]):
-                                global_resume_map[key] = current_resume
+                        current_resume = self._resume_state_from_user_data(ud)
+                        global_resume_map[key] = self._merge_bootstrap_resume_state(existing, current_resume)
 
         logger.warning(
             "[SYNC][MERGE] source aggregation done: played_keys=%s resume_keys=%s provider_keys=%s fallback_keys=%s elapsed=%.1fs",
@@ -1020,8 +1462,7 @@ class PlaystateManager:
             )
             for processed, item in enumerate(items_to_process, start=1):
                 ud = item.get("UserData", {})
-                if ud.get("Played") and not include_resume:
-                    continue
+                target_played = bool(ud.get("Played"))
 
                 keys = self._get_item_sync_keys(item)
                 item_id = item.get("Id")
@@ -1032,7 +1473,10 @@ class PlaystateManager:
                         match = global_played_map[key]
                         break
 
-                if match:
+                if match and (
+                    not target_played
+                    or self._last_played_differs(match.get("last_played"), ud.get("LastPlayedDate"))
+                ):
                     ok, _ = self._mark_item_played(
                         server, uid, item["Id"],
                         match["last_played"]
@@ -1046,14 +1490,22 @@ class PlaystateManager:
                         if key in global_resume_map:
                             rmatch = global_resume_map[key]
                             break
-                    if rmatch:
+                    preserve_played = bool(match)
+                    if rmatch and (not preserve_played or int(rmatch.get("position") or 0) > 0):
+                        resume_changed = False
                         ok, _ = self._set_item_resume(
                             server,
                             uid,
                             item["Id"],
-                            rmatch["position"]
+                            rmatch["position"],
+                            rmatch.get("last_played"),
+                            preserve_played
                         )
                         if ok:
+                            resume_changed = True
+                        if self._apply_hide_from_resume(server, uid, item["Id"], rmatch, ud):
+                            resume_changed = True
+                        if resume_changed:
                             updated_count += 1
                             resume_count += 1
 

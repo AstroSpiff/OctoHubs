@@ -75,6 +75,23 @@ function normalizePresetSettingsResult(result) {
     return { settings: result, applyLibraries: result.libraries !== undefined };
 }
 
+function normalizeSettingsPresetLabel(label) {
+    return String(label || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+async function validateSettingsPresetLabel(label, excludeId = null) {
+    const normalized = normalizeSettingsPresetLabel(label);
+    if (!normalized) {
+        return 'Nome preset mancante';
+    }
+    const presets = await loadEmbyUsersSettingsPresets(true);
+    const duplicate = presets.find(preset => {
+        if (excludeId && preset.id === excludeId) return false;
+        return normalizeSettingsPresetLabel(preset.label || preset.id) === normalized;
+    });
+    return duplicate ? 'Nome preset gia esistente' : '';
+}
+
 function renderSettingsPresetControls(container, options = {}) {
     if (!container) return null;
     container.innerHTML = '';
@@ -198,7 +215,10 @@ function renderSettingsPresetControls(container, options = {}) {
     });
 
     saveNewBtn.addEventListener('click', async () => {
-        const label = await openPromptModal('Salva preset', 'Nome preset', '', { label: 'Nome preset' });
+        const label = await openPromptModal('Salva preset', 'Nome preset', '', {
+            label: 'Nome preset',
+            validate: (value) => validateSettingsPresetLabel(value)
+        });
         if (!label) return;
         try {
             const current = normalizePresetSettingsResult(await options.getSettings?.());
@@ -219,9 +239,20 @@ function renderSettingsPresetControls(container, options = {}) {
         const presetId = getSelectedPresetId();
         if (!presetId) return;
         const preset = await getEmbyUsersSettingsPreset(presetId);
+        const label = await openPromptModal(
+            'Aggiorna preset',
+            'Nome preset',
+            preset?.label || presetId,
+            {
+                label: 'Nome preset',
+                confirmText: 'Aggiorna',
+                validate: (value) => validateSettingsPresetLabel(value, presetId)
+            }
+        );
+        if (!label) return;
         const ok = await openConfirmModal(
             'Aggiorna preset',
-            `Aggiornare "${preset?.label || presetId}" con le impostazioni correnti?`,
+            `Aggiornare "${label}" con le impostazioni correnti?`,
             'Aggiorna'
         );
         if (!ok) return;
@@ -229,7 +260,7 @@ function renderSettingsPresetControls(container, options = {}) {
             const current = normalizePresetSettingsResult(await options.getSettings?.());
             const saved = await saveEmbyUsersSettingsPreset({
                 id: presetId,
-                label: preset?.label || presetId,
+                label,
                 settings: current.settings,
                 applyLibraries: current.applyLibraries
             });
@@ -249,7 +280,10 @@ function renderSettingsPresetControls(container, options = {}) {
             'Duplica preset',
             'Nome nuovo preset',
             `${currentPreset?.label || 'Preset'} copia`,
-            { label: 'Nome preset' }
+            {
+                label: 'Nome preset',
+                validate: (value) => validateSettingsPresetLabel(value)
+            }
         );
         if (!label) return;
         try {

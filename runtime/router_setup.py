@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.templating import Jinja2Templates
 
 from app_helpers import _resolve_next_url, _has_users
-from app_state import get_emby_user_manager
+from app_state import get_emby_user_manager, get_operation_tracker
 from core.config_manager import load_config, _ensure_db_backend
 from emby_actions.routes import init_emby_action_routes, router as emby_action_router
 from emby_collections.routes import init_emby_collections_routes, router as emby_collections_router
@@ -25,6 +25,7 @@ from realtime.routes import init_realtime_routes, router as realtime_router
 from rss.routes import init_rss_routes, router as rss_router
 from search.routes import init_search_routes, router as search_router
 from services.app_settings import _update_app_settings_overrides
+from services.operations_routes import init_operations_routes, router as operations_router
 from services.requests_routes import init_requests_routes, router as requests_router
 from services.routes import init_service_routes, router as services_router
 from services.scan_routes import init_scan_routes, router as scan_router
@@ -155,6 +156,12 @@ def register_routes(app: FastAPI, templates: Jinja2Templates, logger: logging.Lo
         success_response,
     )
     app.include_router(workflow_router)
+    init_operations_routes(
+        _require_auth,
+        validate_csrf,
+        get_operation_tracker,
+    )
+    app.include_router(operations_router)
     init_requests_routes(
         _require_auth,
     )

@@ -7,6 +7,7 @@
     <title>Configurazione</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='emby.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='operations_center.css') }}?v=20260715-global-operations">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css" integrity="sha512-Evv84Mr4kqVGRNSgIGL/F/aIDqQb7xQ2vcrdIwxfjThSH8CSR7PBEakCr51Ck+w+/U6swU2Im1vVX0SVk9ABhg==" crossorigin="anonymous" referrerpolicy="no-referrer">
     <link rel="stylesheet" href="{{ url_for('static', filename='icon-picker.css') }}">
 </head>
@@ -1252,6 +1253,7 @@
     </div>
     <div id="toast-container"></div>
     <script src="{{ url_for('static', filename='shared-utils.js') }}"></script>
+    <script src="{{ url_for('static', filename='operations_center.js') }}?v=20260715-global-operations"></script>
     <script src="{{ url_for('static', filename='actions.js') }}"></script>
     <script src="{{ url_for('static', filename='script_shell.js') }}?v=20260628-shell"></script>
     <script src="{{ url_for('static', filename='script_rss_tools.js') }}?v=20260628-rss"></script>

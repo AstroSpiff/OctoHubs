@@ -190,7 +190,7 @@ function bindSyncActionButton() {
 }
 
 function getDefaultSyncSourceIdx(selected) {
-    let idx = selected.findIndex(user => (user.username || '').toLowerCase() === 'master' || user.is_leader);
+    let idx = selected.findIndex(user => user.is_leader);
     if (idx === -1) idx = 0;
     return idx;
 }
@@ -568,7 +568,7 @@ async function runSyncFromModal() {
     }
 
     try {
-        const res = await embyUsersBulkSyncFetch('/api/emby/users/settings-apply', {
+        const request = embyUsersBulkSyncFetch('/api/emby/users/settings-apply', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -577,6 +577,8 @@ async function runSyncFromModal() {
                 apply_libraries: syncLibraryAccess
             })
         });
+        window.embyUsersOperations?.notifyStarted?.();
+        const res = await request;
         let json = {};
         try {
             json = await res.json();

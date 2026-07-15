@@ -162,7 +162,7 @@ async function createUsersFromModal() {
     state.error.textContent = '';
 
     try {
-        const res = await embyUsersLifecycleFetch('/api/emby/users/create', {
+        const request = embyUsersLifecycleFetch('/api/emby/users/create', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -173,6 +173,8 @@ async function createUsersFromModal() {
                 group_name: username
             })
         });
+        window.embyUsersOperations?.notifyStarted?.();
+        const res = await request;
         const payload = await ensureEmbyUsersResponseOk(res, 'Errore creazione utente');
         const result = payload.result || {};
         showToast(`Utenti creati: ${(result.created || []).length}.`, 'success');

@@ -16,12 +16,10 @@ async function loadEmbyUsers(force = false) {
     if (!shouldForce && currentUsersData) return;
 
     const containerGroups = document.getElementById('user-groups-container');
-    const containerMaster = document.getElementById('master-users-container');
     const isInitialLoad = !currentUsersData;
 
     if (!silent || isInitialLoad) {
         containerGroups.innerHTML = '<div class="loading-state"><i class="fa-solid fa-circle-notch fa-spin"></i> Caricamento utenti...</div>';
-        containerMaster.innerHTML = '<div class="loading-state"><i class="fa-solid fa-circle-notch fa-spin"></i> Caricamento Master...</div>';
     }
 
     try {
@@ -50,7 +48,6 @@ async function loadEmbyUsers(force = false) {
         }
         const errMsg = `<div class="alert error">Errore caricamento utenti: ${e.message}</div>`;
         containerGroups.innerHTML = errMsg;
-        containerMaster.innerHTML = errMsg;
     }
 }
 
@@ -230,10 +227,8 @@ function filterUsers() {
 
 function renderEmbyUsers(data) {
     const containerGroups = document.getElementById('user-groups-container');
-    const containerMaster = document.getElementById('master-users-container');
 
     containerGroups.innerHTML = '';
-    containerMaster.innerHTML = '';
 
     const getSelectedValues = (id) => {
         const el = document.getElementById(id);
@@ -256,12 +251,9 @@ function renderEmbyUsers(data) {
     const sortMode = document.getElementById('sort-users') ? document.getElementById('sort-users').value : 'name_asc_server_asc';
     const groupTypeFilter = document.getElementById('filter-group-type') ? document.getElementById('filter-group-type').value : 'all';
 
-    const masterGroup = { users: [] };
     const regularGroups = [];
-    const serversWithMaster = new Set();
 
     const groups = Array.isArray(data.groups) ? data.groups : [];
-    const servers = Array.isArray(data.servers) ? data.servers : [];
 
     groups.forEach(group => {
         if (groupTypeFilter === 'single' && group.is_linked) return;
@@ -301,16 +293,7 @@ function renderEmbyUsers(data) {
             return true;
         });
 
-        const isMasterGroup = group.users.some(u => u.name.toLowerCase() === 'master');
-
-        if (isMasterGroup) {
-            visibleUsers.forEach(u => {
-                if (u.name.toLowerCase() === 'master') {
-                    masterGroup.users.push({ ...u, group_id: group.id, group_name: group.name });
-                    serversWithMaster.add(u.server_id);
-                }
-            });
-        } else if (visibleUsers.length > 0) {
+        if (visibleUsers.length > 0) {
             regularGroups.push({ ...group, users: visibleUsers });
         }
     });
@@ -363,81 +346,6 @@ function renderEmbyUsers(data) {
 
     if (ownersGroup) {
         regularGroups.push(ownersGroup);
-    }
-
-    const masterSelect = document.getElementById('master-icon-profile-select');
-
-    if (masterSelect && currentIconData && currentIconData.profiles) {
-        masterSelect.innerHTML = '<option value="">Seleziona Profilo Icona...</option>';
-        currentIconData.profiles.forEach(p => {
-            const opt = document.createElement('option');
-            opt.value = p.id;
-            opt.textContent = p.label;
-            masterSelect.appendChild(opt);
-        });
-
-        if (masterGroup.users.length > 0) {
-            const u = masterGroup.users[0];
-            const bindingKey = `user:${u.server_id}:${u.user_id}`;
-            if (currentIconData.bindings && currentIconData.bindings[bindingKey]) {
-                masterSelect.value = currentIconData.bindings[bindingKey];
-            }
-        }
-
-        masterSelect.onchange = async (e) => {
-            const newProfileId = e.target.value;
-
-            const promises = masterGroup.users.map(u => {
-                const targetId = `${u.server_id}:${u.user_id}`;
-                if (currentIconData && currentIconData.bindings) {
-                    if (newProfileId) {
-                        currentIconData.bindings[`user:${targetId}`] = newProfileId;
-                    } else {
-                        delete currentIconData.bindings[`user:${targetId}`];
-                    }
-                }
-                return embyUsersRenderFetch('/api/emby/icons/binding', {
-                    method: 'POST',
-                    body: new URLSearchParams({
-                        target_type: 'user',
-                        target_id: targetId,
-                        profile_id: newProfileId
-                    })
-                });
-            });
-
-            await Promise.all(promises);
-            updateIconsInPlace();
-        };
-    }
-
-    masterGroup.users.forEach(user => {
-        let iconUrl = user.image_url;
-        if (currentIconData && currentIconData.bindings && currentIconData.matrix) {
-            const profileId = currentIconData.bindings[`user:${user.server_id}:${user.user_id}`];
-
-            if (profileId && currentIconData.matrix[profileId] && currentIconData.matrix[profileId][user.server_id]) {
-                const path = currentIconData.matrix[profileId][user.server_id];
-                iconUrl = path.startsWith('/') ? path : `/static/${path}`;
-            }
-        }
-
-        const userToRender = { ...user, image_url: iconUrl };
-        const card = createUserCard(userToRender, { isMaster: true, groupId: user.group_id, groupName: user.group_name });
-        containerMaster.appendChild(card);
-    });
-
-    servers.forEach(server => {
-        if (!isAllServers && !serverFilter.has(server.id)) return;
-        if (!serversWithMaster.has(server.id)) {
-            const tpl = document.getElementById('tpl-master-placeholder').content.cloneNode(true);
-            tpl.querySelector('.server-name').textContent = server.name;
-            containerMaster.appendChild(tpl);
-        }
-    });
-
-    if (containerMaster.children.length === 0) {
-        containerMaster.innerHTML = '<p class="text-muted">Nessun utente Master trovato.</p>';
     }
 
     regularGroups.forEach(group => {

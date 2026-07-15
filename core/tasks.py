@@ -384,7 +384,8 @@ class WorkflowManager:
             "current_step_index": -1,
             "steps": [],
             "error": None,
-            "workflow_job_ids": []
+            "workflow_job_ids": [],
+            "operation_id": None
         }
         # Callbacks injected from runtime setup
         self._trigger_scan_func = None
@@ -394,6 +395,7 @@ class WorkflowManager:
         self._refresh_cache_func = None
         self._notify_func = None
         self._db_storage = None  # DatabaseStorage instance
+        self._operation_tracker = None
 
     def set_callbacks(self, trigger_scan_func, check_scan_func,
                      trigger_probe_func, check_probe_func,
@@ -425,6 +427,117 @@ class WorkflowManager:
         """
         self._db_storage = db_storage
         print(f"[WORKFLOW] DatabaseStorage {'abilitato' if db_storage else 'disabilitato'}")
+
+    def set_operation_tracker(self, operation_tracker):
+        """Imposta il tracker globale usato dal centro operazioni."""
+        self._operation_tracker = operation_tracker
+
+    def _start_operation_tracking_locked(self, context=None):
+        """Crea lo snapshot persistente del workflow nel centro operazioni."""
+        if not self._operation_tracker:
+            return None
+        try:
+            operation = self._operation_tracker.start(
+                "workflow",
+                "Workflow aggiornamento",
+                summary=self._status.get("workflow_type") or "full",
+                details=self._workflow_operation_details_locked(context or {}),
+                total=len(self._status.get("steps") or []),
+            )
+            operation_id = operation.get("id")
+            self._status["operation_id"] = operation_id
+            return operation_id
+        except Exception as exc:
+            print(f"[WORKFLOW] ⚠️ Errore creazione operazione workflow: {exc}")
+            return None
+
+    def _workflow_operation_details_locked(self, context=None):
+        steps = copy.deepcopy(self._status.get("steps") or [])
+        current_step_index = self._status.get("current_step_index", -1)
+        current_step = None
+        if 0 <= current_step_index < len(steps):
+            current_step = steps[current_step_index]
+        job_ids = self._status.get("workflow_job_ids") or []
+        if isinstance(job_ids, (str, int)):
+            job_ids = [job_ids]
+        return {
+            "workflow_id": self._status.get("workflow_id"),
+            "workflow_type": self._status.get("workflow_type"),
+            "workflow_status": self._status.get("status"),
+            "context": copy.deepcopy(context or {}),
+            "workflow_steps": steps,
+            "current_step_index": current_step_index,
+            "current_step_id": current_step.get("id") if current_step else None,
+            "current_step_label": current_step.get("label") if current_step else None,
+            "workflow_job_ids": list(job_ids),
+            "can_stop": self._status.get("status") in ("running", "stopping"),
+        }
+
+    def _workflow_operation_result_locked(self):
+        return {
+            "workflow_id": self._status.get("workflow_id"),
+            "workflow_type": self._status.get("workflow_type"),
+            "workflow_status": self._status.get("status"),
+            "error": self._status.get("error"),
+            "workflow_steps": copy.deepcopy(self._status.get("steps") or []),
+        }
+
+    def _workflow_operation_progress_locked(self):
+        steps = self._status.get("steps") or []
+        if not steps:
+            return 0
+        total_units = 0.0
+        for step in steps:
+            status = step.get("status")
+            if status == "done":
+                total_units += 1.0
+            elif status == "running":
+                try:
+                    total_units += max(0.0, min(100.0, float(step.get("progress", 0)))) / 100.0
+                except (TypeError, ValueError):
+                    total_units += 0.0
+        return int(round((total_units / len(steps)) * 100))
+
+    def _update_workflow_operation_locked(self, message):
+        operation_id = self._status.get("operation_id")
+        if not self._operation_tracker or not operation_id:
+            return
+        try:
+            self._operation_tracker.update(
+                operation_id,
+                message=message,
+                progress=self._workflow_operation_progress_locked(),
+                current=max(0, min(len(self._status.get("steps") or []), self._status.get("current_step_index", -1) + 1)),
+                total=len(self._status.get("steps") or []),
+                details=self._workflow_operation_details_locked(),
+            )
+        except Exception as exc:
+            print(f"[WORKFLOW] ⚠️ Errore aggiornamento operazione workflow: {exc}")
+
+    def _complete_workflow_operation(self, completion_status, message):
+        with self._lock:
+            operation_id = self._status.get("operation_id")
+            operation_tracker = self._operation_tracker
+            details = self._workflow_operation_details_locked()
+            progress = 100 if completion_status == "success" else self._workflow_operation_progress_locked()
+            result = self._workflow_operation_result_locked()
+        if not operation_tracker or not operation_id:
+            return
+        try:
+            operation_tracker.update(
+                operation_id,
+                message=message,
+                progress=progress,
+                details=details,
+            )
+            if completion_status == "success":
+                operation_tracker.finish(operation_id, message=message, result=result)
+            elif completion_status == "interrupted":
+                operation_tracker.interrupt(operation_id, message=message, result=result)
+            else:
+                operation_tracker.fail(operation_id, message=message, result=result)
+        except Exception as exc:
+            print(f"[WORKFLOW] ⚠️ Errore chiusura operazione workflow: {exc}")
 
     def start(self, workflow_type="full", context=None):
         """
@@ -462,7 +575,8 @@ class WorkflowManager:
                 "current_step_index": -1,
                 "steps": steps,
                 "error": None,
-                "workflow_job_ids": job_ids
+                "workflow_job_ids": job_ids,
+                "operation_id": None
             }
             self._stop_event.clear()
 
@@ -485,6 +599,8 @@ class WorkflowManager:
                 except Exception as exc:
                     print(f"[WORKFLOW] ⚠️ Errore salvataggio workflow su DB: {exc}")
 
+            self._start_operation_tracking_locked(context or {})
+
         self._thread = threading.Thread(
             target=self._run_workflow,
             args=(context or {},),
@@ -496,9 +612,24 @@ class WorkflowManager:
     def stop(self):
         """Richiede l'interruzione del workflow corrente."""
         self._stop_event.set()
+        operation_id = None
+        operation_tracker = None
+        operation_details = None
         with self._lock:
-            if self._status["status"] == "running":
+            if self._status["status"] in ("running", "stopping"):
                 self._status["status"] = "stopping"
+                operation_id = self._status.get("operation_id")
+                operation_tracker = self._operation_tracker
+                operation_details = self._workflow_operation_details_locked()
+        if operation_tracker and operation_id:
+            try:
+                operation_tracker.update(
+                    operation_id,
+                    message="Interruzione workflow richiesta",
+                    details=operation_details,
+                )
+            except Exception as exc:
+                print(f"[WORKFLOW] ⚠️ Errore aggiornamento operazione workflow: {exc}")
 
     def get_status(self):
         """Restituisce lo stato corrente del workflow in formato JSON per l'UI."""
@@ -508,7 +639,7 @@ class WorkflowManager:
     def is_running(self):
         """Verifica se un workflow è in esecuzione."""
         with self._lock:
-            return self._status["status"] == "running"
+            return self._status["status"] in ("running", "stopping")
 
     def _initialize_steps(self, workflow_type):
         """
@@ -629,16 +760,22 @@ class WorkflowManager:
                     for j in range(i + 1, len(steps)):
                         self._update_step_status(j, "skipped", "Saltato per errore precedente", 0)
 
+                    self._complete_workflow_operation("error", error_msg)
                     return
 
             # Workflow completato con successo
+            completion_status = "success"
+            completion_message = "Workflow completato"
             with self._lock:
                 if self._stop_event.is_set():
                     self._status["status"] = "completed"
                     self._status["error"] = "Workflow interrotto dall'utente"
+                    completion_status = "interrupted"
+                    completion_message = "Workflow interrotto dall'utente"
                     print("[WORKFLOW] Workflow interrotto dall'utente")
                 else:
                     self._status["status"] = "completed"
+                    completion_message = "Workflow completato"
                     print("[WORKFLOW] ===== Workflow completato con successo =====")
                     print("[WORKFLOW] Tutti i processi sono stati eseguiti correttamente:"
                           "\n  1. Scansione file librerie completata"
@@ -657,12 +794,14 @@ class WorkflowManager:
                         print("[WORKFLOW] Stato workflow salvato su database")
                     except Exception as db_exc:
                         print(f"[WORKFLOW] ⚠️ Errore aggiornamento workflow su DB: {db_exc}")
+            self._complete_workflow_operation(completion_status, completion_message)
 
         except Exception as exc:
             # Errore inaspettato nel loop principale
+            critical_error = f"Errore critico: {str(exc)}"
             with self._lock:
                 self._status["status"] = "failed"
-                self._status["error"] = f"Errore critico: {str(exc)}"
+                self._status["error"] = critical_error
 
                 # Aggiorna stato su database
                 if self._db_storage and self._status.get("workflow_id"):
@@ -675,6 +814,7 @@ class WorkflowManager:
                         print("[WORKFLOW] Stato workflow (failed) salvato su database")
                     except Exception as db_exc:
                         print(f"[WORKFLOW] ⚠️ Errore aggiornamento workflow su DB: {db_exc}")
+            self._complete_workflow_operation("error", critical_error)
 
     def _execute_scan_step(self, step_index, context):
         """
@@ -865,6 +1005,8 @@ class WorkflowManager:
                         )
                     except Exception as exc:
                         print(f"[WORKFLOW] ⚠️ Errore aggiornamento step su DB: {exc}")
+                step_label = step.get("label") or step.get("id") or "Workflow"
+                self._update_workflow_operation_locked(f"{step_label}: {details}")
 
 
 # Istanza globale singleton

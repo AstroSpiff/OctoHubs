@@ -1,0 +1,97 @@
+<div class="tab-panel active" data-tab-panel="actions">
+    <div class="card">
+        <h2>Operazioni rapide</h2>
+        <p class="tagline">Avvia le azioni sui server Emby configurati (singoli o tutti insieme).</p>
+        <form class="action-grid" action="{{ url_for('emby_action_all') }}" method="post">
+            <button class="btn ghost" type="submit" name="action" value="restart_server" title="Riavvia tutti i server Emby configurati">Riavvia tutti</button>
+        </form>
+    </div>
+    <div class="card">
+        <h2>Server Emby</h2>
+        {% if emby_servers %}
+            <div class="server-grid">
+                {% for server in emby_servers %}
+                    <article class="server-card" data-server-id="{{ server.id }}">
+                        <div class="server-card-header">
+                            <div>
+                                <h3 class="server-label">
+                                    {% if server.icon %}
+                                        <i class="server-icon {{ 'fa-regular' if server.icon_style == 'regular' else 'fa-solid' }} {{ server.icon }}" data-icon-color="{{ server.icon_color or '#3b82f6' }}"></i>
+                                    {% endif %}
+                                    <span>{{ server.alias or server.original_name or server.name or "Server Emby" }}</span>
+                                </h3>
+                                <p class="meta">{{ server.url }}</p>
+                            </div>
+                            {% if not server.enabled %}
+                                <span class="status-pill disabled" data-status-pill>Disabilitato</span>
+                            {% elif server.status and server.status.ok %}
+                                <span class="status-pill online" data-status-pill>Connesso</span>
+                            {% else %}
+                                <span class="status-pill offline" data-status-pill>Errore</span>
+                            {% endif %}
+                        </div>
+                        <div class="server-status">
+                            <div class="status-row">
+                                <span>Versione:</span>
+                                <span data-version>{{ server.status.version if server.status else 'N/D' }}</span>
+                            </div>
+                            <div class="status-row">
+                                <span>Ultimo check:</span>
+                                <span data-last-check data-datetime="{{ server.status.last_check if server.status else '' }}">
+                                    {{ server.status.last_check if server.status else 'N/D' }}
+                                </span>
+                                <button class="icon-button" type="button" data-action="refresh-server-status" data-server-id="{{ server.id }}" title="Aggiorna informazioni">↻</button>
+                            </div>
+                        </div>
+                        <div class="server-divider"></div>
+                        <form class="action-grid" action="{{ url_for('emby_action') }}" method="post">
+                            <input type="hidden" name="server_id" value="{{ server.id }}">
+                            <button class="btn ghost" type="submit" name="action" value="restart_server" title="{{ 'Server disabilitato in configurazione' if not server.enabled else 'Riavvia questo server Emby' }}" {% if not server.enabled %}disabled aria-disabled="true"{% endif %}>Riavvia server</button>
+                        </form>
+                        <div class="server-divider"></div>
+                        {% if server.last_action and server.last_action.name %}
+                            <div class="last-action">
+                                <div><strong>Ultima operazione:</strong> {{ server.last_action.name }}</div>
+                                <div class="tagline"><span data-datetime="{{ server.last_action.timestamp }}">{{ server.last_action.timestamp }}</span> – {{ server.last_action.result }}</div>
+                            </div>
+                        {% endif %}
+                        <div class="server-divider"></div>
+                        <div class="server-tasks">
+                            <strong>Operazioni in corso</strong>
+                            {% set running_tasks = server.scheduled_tasks | selectattr('is_running') | list %}
+                            <ul class="task-list" data-tasks-list>
+                                {% for task in running_tasks %}
+                                    <li>
+                                        <div class="task-row">
+                                            <span>{{ task.name }}</span>
+                                            <span class="tagline">{{ task.state }} - {{ (task.progress or 0) | int }}%</span>
+                                        </div>
+                                        <div class="progress-row">
+                                            <div class="progress-track">
+                                                <div class="progress-bar" data-progress="{{ task.progress or 0 }}"></div>
+                                            </div>
+                                            <button class="icon-button danger" type="button" data-action="stop-task" data-server-id="{{ server.id }}" data-task-id="{{ task.id }}" title="Ferma operazione">■</button>
+                                        </div>
+                                    </li>
+                                {% endfor %}
+                            </ul>
+                            <p class="tagline {% if running_tasks %}is-hidden{% endif %}" data-tasks-empty>Nessuna operazione in corso.</p>
+                        </div>
+                        <div class="server-divider"></div>
+                        <div class="stream-section" data-stream-panel>
+                            <div class="stream-header">
+                                <strong>Stream attivi</strong>
+                                <span class="tagline stream-status" data-stream-status>Caricamento...</span>
+                            </div>
+                            <ul class="stream-list" data-stream-list>
+                                <li class="tagline">Caricamento stream...</li>
+                            </ul>
+                        </div>
+                    </article>
+                {% endfor %}
+            </div>
+        {% else %}
+            <p class="tagline">Nessun server Emby configurato. Aggiungine uno nella pagina Configurazione.</p>
+        {% endif %}
+    </div>
+</div>

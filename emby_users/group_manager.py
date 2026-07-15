@@ -201,22 +201,13 @@ class GroupManager:
 
         new_group_id = str(uuid.uuid4())
 
-        # Check if any user is marked as leader in the request
-        has_leader = any(link.get("is_leader") for link in links)
-
         for link in links:
-            # If no explicit leader, try to auto-detect "Master"
-            is_leader = link.get("is_leader", False)
-            if not has_leader and (link.get("username") or "").lower() == "master":
-                is_leader = True
-                has_leader = True
-
             self.storage.set_user_link(
                 link["server_id"],
                 link["user_id"],
                 new_group_id,
                 link.get("username"),
-                is_leader=is_leader
+                is_leader=link.get("is_leader", False)
             )
 
         group_password_enc = None

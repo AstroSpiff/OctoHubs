@@ -5,7 +5,12 @@ from __future__ import annotations
 import os
 
 from core.config_manager import load_config
-from core.emby_servers import _emby_display_name
+from core.emby_servers import (
+    EMBY_SERVER_DISABLED_MESSAGE,
+    _emby_display_name,
+    _emby_server_is_enabled,
+    _find_emby_server_by_id,
+)
 from core.utils import get_emby_servers, json_error, json_success
 from emby_probe import get_probe_manager
 from emby_runtime.api_clients import (
@@ -32,9 +37,11 @@ def _build_emby_stop_task_snapshot(payload):
     if not is_valid or not config:
         return json_error("Config non valida")
     servers = get_emby_servers(config)
-    target = next((s for s in servers if s.get("id") == server_id), None)
+    target = _find_emby_server_by_id(servers, server_id)
     if target is None:
         return json_error("Server non trovato", 404)
+    if not _emby_server_is_enabled(target):
+        return json_error(EMBY_SERVER_DISABLED_MESSAGE)
     print(f"[DEBUG] Chiamata _stop_emby_task con task_id={task_id}")
     success, response = _stop_emby_task(target, str(task_id))
     print(f"[DEBUG] _stop_emby_task ritornato: success={success}, response={response}")
@@ -48,9 +55,18 @@ def _build_emby_server_status_snapshot(server_id):
     if not is_valid or not config:
         return json_error("Config non valida")
     servers = get_emby_servers(config)
-    target = next((s for s in servers if s.get("id") == server_id), None)
+    target = _find_emby_server_by_id(servers, server_id)
     if target is None:
         return json_error("Server non trovato", 404)
+    if not _emby_server_is_enabled(target):
+        return {
+            "success": True,
+            "status": {"ok": False, "error": EMBY_SERVER_DISABLED_MESSAGE},
+            "running_tasks": [],
+            "tasks_error": None,
+            "streams": [],
+            "streams_error": None,
+        }, 200
     status = _fetch_emby_status(target)
     tasks, error = _fetch_emby_scheduled_tasks(target)
     streams, streams_error = _fetch_emby_active_sessions(target)
