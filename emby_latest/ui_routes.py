@@ -76,6 +76,27 @@ def _ensure_db_backend_dep() -> Any:
     _ensure_db_backend()
 
 
+def _find_duplicate_preset_name(
+    presets: List[dict],
+    preset_name: str,
+    current_preset_id: str = "",
+) -> Optional[dict]:
+    normalized_name = str(preset_name or "").strip().casefold()
+    if not normalized_name:
+        return None
+    current_id = str(current_preset_id or "").strip()
+    for preset in presets or []:
+        if not isinstance(preset, dict):
+            continue
+        preset_id = str(preset.get("id") or "")
+        if current_id and preset_id == current_id:
+            continue
+        name = str(preset.get("name") or "").strip().casefold()
+        if name == normalized_name:
+            return preset
+    return None
+
+
 @router.post("/emby/latest/preset/add")
 async def emby_latest_preset_add_post(
     request: Request,
@@ -118,6 +139,10 @@ async def emby_latest_preset_add_post(
     now_stamp = datetime.now(timezone.utc).astimezone().isoformat()
     preset_id = (latest_preset_id or "").strip()
 
+    if _find_duplicate_preset_name(presets, preset_name, preset_id):
+        _flash_dep(request, "Nome preset già esistente.")
+        return RedirectResponse(url=next_url, status_code=303)
+
     existing = next((preset for preset in presets if preset.get("id") == preset_id), None)
     if existing:
         existing["name"] = preset_name
@@ -125,6 +150,9 @@ async def emby_latest_preset_add_post(
         existing["updated_at"] = now_stamp
         latest_settings["ACTIVE_PRESET_ID"] = preset_id
         _flash_dep(request, "Preset notifica aggiornato.")
+    elif preset_id:
+        _flash_dep(request, "Preset non trovato.")
+        return RedirectResponse(url=next_url, status_code=303)
     else:
         preset_id = str(uuid.uuid4())
         presets.append({
@@ -183,9 +211,24 @@ async def emby_latest_preset_remove_post(
         _flash_dep(request, "Preset non trovato.")
         return RedirectResponse(url=next_url, status_code=303)
 
+    rules = latest_settings.get("NOTIFICATION_RULES") or []
+    linked_rules = [
+        rule for rule in rules
+        if isinstance(rule, dict) and str(rule.get("preset_id") or "") == preset_id
+    ]
+    if linked_rules:
+        rule_count = len(linked_rules)
+        rule_label = "regola" if rule_count == 1 else "regole"
+        action_label = "la regola collegata" if rule_count == 1 else "le regole collegate"
+        _flash_dep(
+            request,
+            f"Preset usato da {rule_count} {rule_label}. Modifica o elimina prima {action_label}.",
+        )
+        return RedirectResponse(url=next_url, status_code=303)
+
     latest_settings["PRESETS"] = updated
-    if latest_settings.get("ACTIVE_PRESET_ID") == preset_id and updated:
-        latest_settings["ACTIVE_PRESET_ID"] = updated[0]["id"]
+    if latest_settings.get("ACTIVE_PRESET_ID") == preset_id:
+        latest_settings["ACTIVE_PRESET_ID"] = updated[0]["id"] if updated else ""
 
     latest_settings_api._save_latest_settings(latest_settings)
     _flash_dep(request, "Preset notifica rimosso.")
@@ -225,7 +268,7 @@ async def emby_latest_rule_save_post(
         return RedirectResponse(url=next_url, status_code=303)
 
     rule_name = (latest_rule_name or "").strip()
-    server_ids = [value for value in (latest_rule_servers or []) if value]
+    server_ids = latest_settings_api._normalize_server_id_list(latest_rule_servers or [])
     preset_id = (latest_rule_preset or "").strip()
     telegram_id = (latest_rule_telegram or "").strip()
 
@@ -273,6 +316,9 @@ async def emby_latest_rule_save_post(
         existing["telegram_config_id"] = telegram_id
         existing["updated_at"] = now_stamp
         _flash_dep(request, "Regola aggiornata.")
+    elif rule_id:
+        _flash_dep(request, "Regola non trovata.")
+        return RedirectResponse(url=next_url, status_code=303)
     else:
         rules.append({
             "id": str(uuid.uuid4()),
@@ -425,14 +471,25 @@ async def emby_latest_notification_settings_post(
         return RedirectResponse(url=next_url, status_code=303)
 
     latest_settings = latest_settings_api._load_latest_settings()
+    presets = latest_settings.get("PRESETS") or []
+    valid_preset_ids = {str(preset.get("id")) for preset in presets if preset.get("id")}
 
     if latest_active_preset_id:
         preset_id = (latest_active_preset_id or "").strip()
-        if preset_id:
+        if preset_id in valid_preset_ids:
             latest_settings["ACTIVE_PRESET_ID"] = preset_id
 
     if latest_telegram_presets is not None:
-        telegram_presets = [value for value in latest_telegram_presets if value]
+        valid_telegram_ids = {
+            str(preset.get("id"))
+            for preset in (_load_telegram_settings().get("PRESETS") or [])
+            if preset.get("id")
+        }
+        telegram_presets = [
+            preset_id
+            for preset_id in latest_settings_api._normalize_server_id_list(latest_telegram_presets)
+            if preset_id in valid_telegram_ids
+        ]
         latest_settings["TELEGRAM_PRESET_IDS"] = telegram_presets
 
     latest_settings_api._save_latest_settings(latest_settings)
@@ -449,7 +506,7 @@ async def emby_latest_state_clear_post(
     """Clear latest notification state (POST form handler)."""
     _require_auth_dep(request)
 
-    next_url = next_param or "/emby"
+    next_url = _resolve_next_url_dep(next_param, "emby_dashboard")
 
     # Validate CSRF token
     if not _validate_csrf_dep(request, csrf_token):
@@ -488,7 +545,7 @@ async def emby_latest_reset_post(
     """Reset latest STATE + CACHE (POST form handler)."""
     _require_auth_dep(request)
 
-    next_url = next_param or "/emby"
+    next_url = _resolve_next_url_dep(next_param, "emby_dashboard")
 
     # Validate CSRF token
     if not _validate_csrf_dep(request, csrf_token):

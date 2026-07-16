@@ -4,6 +4,7 @@
     const latestState = {
         loaded: false,
         loading: false,
+        refreshing: false,
         currentServerId: 'all',
         movies: [],
         series: []
@@ -36,6 +37,17 @@
 
     const safeString = (value) => {
         return value === null || value === undefined ? '' : String(value);
+    };
+
+    const normalizeLatestLoadMessage = (message, refreshing = false) => {
+        if (refreshing) {
+            return 'Aggiornamento Pubblicazioni in corso...';
+        }
+        const text = safeString(message).trim();
+        if (text.toLowerCase().includes('no cached data')) {
+            return 'Nessun dato Pubblicazioni salvato nel DB. Avvia un aggiornamento.';
+        }
+        return text || 'Errore caricamento';
     };
 
     const sanitizePreviewHtml = (value) => {
@@ -89,22 +101,6 @@
             return `${count} / ${totalCount} ${totalCount === 1 ? 'elemento' : 'elementi'}`;
         }
         return `${count} ${count === 1 ? 'elemento' : 'elementi'}`;
-    };
-
-    const updatePreviewImageFallback = () => {
-        const candidates = [...latestState.movies, ...latestState.series];
-        for (const item of candidates) {
-            if (!item || typeof item !== 'object') {
-                continue;
-            }
-            for (const field of previewImageFields) {
-                const value = item[field];
-                if (value !== undefined && value !== null && String(value).trim()) {
-                    previewImageFallback = String(value).trim();
-                    return;
-                }
-            }
-        }
     };
 
     const formatRuntime = (minutes) => {
@@ -222,10 +218,25 @@
         applyServerIconColors();
     }
 
+    const normalizeEpisodeIndex = (value, { allowZero = false } = {}) => {
+        if (value === null || value === undefined) {
+            return null;
+        }
+        const text = String(value).trim();
+        if (!text) {
+            return null;
+        }
+        const number = Number(text);
+        if (!Number.isInteger(number) || (allowZero ? number < 0 : number <= 0)) {
+            return null;
+        }
+        return number;
+    };
+
     const formatEpisodeCode = (seasonNumber, episodeNumber) => {
-        const season = Number(seasonNumber);
-        const episode = Number(episodeNumber);
-        if (!Number.isFinite(season) || !Number.isFinite(episode)) {
+        const season = normalizeEpisodeIndex(seasonNumber, { allowZero: true });
+        const episode = normalizeEpisodeIndex(episodeNumber);
+        if (season === null || episode === null) {
             return '';
         }
         return `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`;
@@ -243,8 +254,8 @@
             return 'Nuova serie';
         }
         if (kind === 'new_season') {
-            const season = Number(change.season_number);
-            return Number.isFinite(season) ? `Nuova stagione ${season}` : 'Nuova stagione';
+            const season = normalizeEpisodeIndex(change.season_number, { allowZero: true });
+            return season !== null ? `Nuova stagione ${season}` : 'Nuova stagione';
         }
         if (kind === 'new_episode') {
             const code = formatEpisodeCode(change.season_number, change.episode_number);
@@ -341,7 +352,7 @@
             : '';
         const overview = item.overview ? escapeHtml(item.overview) : '';
         const poster = item.image_url
-            ? `<img src="${item.image_url}" alt="${title}" loading="lazy" decoding="async" fetchpriority="low">`
+            ? `<img src="${escapeHtml(item.image_url)}" alt="${title}" loading="lazy" decoding="async" fetchpriority="low">`
             : '';
 
         return `
@@ -521,6 +532,7 @@
             const active = updateLatestProgressUI(data.progress || {}, !!data.refreshing);
             if (!active) {
                 stopLatestProgressPolling();
+                loadLatestReleases(false, false, true);
             }
         } catch (err) {
             // Ignore transient errors
@@ -627,7 +639,7 @@
         if (allowRefresh && !canAutoRefreshLatest()) {
             return;
         }
-        if (latestState.loaded && !force && !allowRefresh) {
+        if (latestState.loaded && !force && !allowRefresh && !cacheOnly) {
             scheduleAutoRefresh();
             return;
         }
@@ -655,10 +667,15 @@
             .then(res => res.json())
             .then(data => {
                 if (!data || data.success === false) {
-                    const message = data && data.message ? data.message : 'Errore caricamento';
+                    const refreshing = !!(data && data.refreshing);
+                    const displayMessage = normalizeLatestLoadMessage(data && data.message, refreshing);
+                    if (refreshing) {
+                        updateLatestProgressUI(data.progress || {}, true);
+                        startLatestProgressPolling();
+                    }
                     if (isFirstLoad) {
-                        renderLatestList([], latestMoviesContainer, latestMoviesCount, message);
-                        renderLatestList([], latestSeriesContainer, latestSeriesCount, message);
+                        renderLatestList([], latestMoviesContainer, latestMoviesCount, displayMessage);
+                        renderLatestList([], latestSeriesContainer, latestSeriesCount, displayMessage);
                     }
                     return;
                 }
@@ -672,7 +689,6 @@
                     latestState.currentServerId = defaultServer;
                 }
 
-                updatePreviewImageFallback();
                 updatePreviewSelectionOptions();
                 if (isFirstLoad || force || !allowRefresh) {
                     updatePreview();
@@ -712,6 +728,13 @@
     }
 
     async function triggerLatestBackgroundRefresh(fullRefresh = false) {
+        if (latestState.refreshing) {
+            return;
+        }
+        latestState.refreshing = true;
+        if (latestRefreshBtn) {
+            latestRefreshBtn.disabled = true;
+        }
         const limits = getLatestFetchLimits();
         const params = new URLSearchParams({
             limit: String(limits.total),
@@ -727,12 +750,20 @@
                 window.showToast?.(data.message || 'Errore aggiornamento.', 'error');
                 return;
             }
-            loadLatestReleases(false, false, true);
+            if (latestState.loaded) {
+                loadLatestReleases(false, false, true);
+            }
             if (data.refreshing) {
+                window.octohubOperations?.notifyStarted?.();
                 startLatestProgressPolling();
             }
         } catch (err) {
             window.showToast?.('Errore aggiornamento.', 'error');
+        } finally {
+            latestState.refreshing = false;
+            if (latestRefreshBtn) {
+                latestRefreshBtn.disabled = false;
+            }
         }
     }
 
@@ -745,8 +776,10 @@
                 return;
             }
             latestNotifyBtn.disabled = true;
+            const limits = getLatestFetchLimits();
             const payload = {
-                server_id: latestState.currentServerId || 'all'
+                server_id: 'all',
+                per_server_limit: limits.perServer
             };
             try {
                 const response = await csrfFetch('/api/emby/latest/notify', {
@@ -809,7 +842,6 @@
     const latestPresetSubmit = document.querySelector('[data-latest-preset-submit]');
     const latestPresetCancel = document.querySelector('[data-latest-preset-cancel]');
     const latestPresetRows = document.querySelectorAll('[data-latest-preset-row]');
-    const latestPresetActiveSelect = document.querySelector('[data-latest-active-preset]');
     const latestRuleOverlay = document.querySelector('[data-latest-rule-overlay]');
     const latestRuleForm = document.querySelector('[data-latest-rule-form]');
     const latestRuleIdInput = document.querySelector('[data-latest-rule-id]');
@@ -927,6 +959,14 @@
         { token: '{image_url}', label: 'Poster (cache DB)', example: '/api/emby/image?server_id=...&item_id=...&type=Primary', description: 'Poster via cache DB OctoHub.', group: 'Immagini & Link' },
         { token: '{poster_url}', label: 'Poster URL', example: 'https://emby.local/Items/.../Images/Primary', description: 'Poster (Emby).', group: 'Immagini & Link' },
         { token: '{tmdb_poster_url}', label: 'TMDB Poster', example: 'https://image.tmdb.org/t/p/w780/abc.jpg', description: 'Poster (TMDB).', group: 'Immagini & Link' },
+        { token: '{backdrop_url}', label: 'Backdrop URL', example: 'https://emby.local/Items/.../Images/Backdrop', description: 'Backdrop (Emby).', group: 'Immagini & Link' },
+        { token: '{tmdb_backdrop_url}', label: 'TMDB Backdrop', example: 'https://image.tmdb.org/t/p/w1280/abc.jpg', description: 'Backdrop (TMDB).', group: 'Immagini & Link' },
+        { token: '{logo_url}', label: 'Logo URL', example: 'https://emby.local/Items/.../Images/Logo', description: 'Logo (Emby).', group: 'Immagini & Link' },
+        { token: '{tmdb_logo_url}', label: 'TMDB Logo', example: 'https://image.tmdb.org/t/p/w500/abc.png', description: 'Logo (TMDB).', group: 'Immagini & Link' },
+        { token: '{banner_url}', label: 'Banner URL', example: 'https://emby.local/Items/.../Images/Banner', description: 'Banner (Emby).', group: 'Immagini & Link' },
+        { token: '{tmdb_banner_url}', label: 'TMDB Banner', example: 'https://image.tmdb.org/t/p/w1280/abc.jpg', description: 'Banner (TMDB).', group: 'Immagini & Link' },
+        { token: '{thumb_url}', label: 'Thumb URL', example: 'https://emby.local/Items/.../Images/Thumb', description: 'Thumbnail (Emby).', group: 'Immagini & Link' },
+        { token: '{tmdb_thumb_url}', label: 'TMDB Thumb', example: 'https://image.tmdb.org/t/p/w1280/abc.jpg', description: 'Thumbnail (TMDB).', group: 'Immagini & Link' },
         { token: '{emby_url}', label: 'Link Emby', example: 'https://emby.local/web/index.html#!/itemdetails.html?id=...', description: 'Scheda Emby.', group: 'Immagini & Link' },
         { token: '{tmdb_id}', label: 'TMDB ID', example: '123456', description: 'ID TMDB (se disponibile).', group: 'Immagini & Link' },
         { token: '{imdb_id}', label: 'IMDb ID', example: 'tt1234567', description: 'ID IMDb (se disponibile).', group: 'Immagini & Link' },
@@ -941,13 +981,20 @@
         { token: '{% endfor %}', label: 'Loop versioni (fine)', example: '{% endfor %}', description: 'Jinja2: chiude il ciclo versioni.', group: 'Jinja2 avanzato' }
     ];
 
-    let previewImageFallback = 'https://image.tmdb.org/t/p/w780/8uO0gUM8aNqYLs1OsTBQiXu0fEv.jpg';
     let previewRenderTimer = null;
     let previewRequestId = 0;
-    const previewImageFields = [
+    const latestImageTokenNames = [
         'image_url',
         'tmdb_poster_url',
-        'poster_url'
+        'poster_url',
+        'tmdb_backdrop_url',
+        'backdrop_url',
+        'tmdb_logo_url',
+        'logo_url',
+        'tmdb_banner_url',
+        'banner_url',
+        'tmdb_thumb_url',
+        'thumb_url'
     ];
     const latestPreviewFallbacks = {
         movie_new: {
@@ -1410,11 +1457,7 @@
     };
 
     const latestTemplateTokenRegex = /{{\s*([a-zA-Z0-9_]+)[^}]*}}|{([a-zA-Z0-9_]+)[^}]*}/g;
-    const latestImageTokens = new Set([
-        'image_url',
-        'tmdb_poster_url',
-        'poster_url'
-    ]);
+    const latestImageTokens = new Set(latestImageTokenNames);
 
     const latestPreviewIndex = {
         movie: new Map(),
@@ -1762,6 +1805,7 @@
             logo_url: safeString(item.logo_url),
             tmdb_poster_url: safeString(item.tmdb_poster_url),
             tmdb_backdrop_url: safeString(item.tmdb_backdrop_url),
+            tmdb_logo_url: safeString(item.tmdb_logo_url),
             tmdb_banner_url: safeString(item.tmdb_banner_url),
             tmdb_thumb_url: safeString(item.tmdb_thumb_url),
             emby_url: safeString(item.emby_url),
@@ -1872,16 +1916,6 @@
         if (latestPresetTemplateInput && latestPresetTemplateInput.value.trim()) {
             return latestPresetTemplateInput.value;
         }
-        if (latestPresetActiveSelect) {
-            const option = latestPresetActiveSelect.selectedOptions[0];
-            if (option && option.dataset.template) {
-                try {
-                    return JSON.parse(option.dataset.template);
-                } catch {
-                    return option.dataset.template;
-                }
-            }
-        }
         return '';
     };
 
@@ -1965,9 +1999,6 @@
             if (value !== undefined && value !== null && String(value).trim()) {
                 return String(value).trim();
             }
-            if (previewImageFallback) {
-                return previewImageFallback;
-            }
         }
         return '';
     };
@@ -2007,10 +2038,6 @@
                 restoreScrollSnapshot(scrollSnapshot);
             };
             img.onerror = () => {
-                if (imageUrl !== previewImageFallback && previewImageFallback) {
-                    img.src = previewImageFallback;
-                    return;
-                }
                 imageEl.style.display = 'none';
                 imageEl.innerHTML = '';
                 restoreScrollSnapshot(scrollSnapshot);
@@ -2079,12 +2106,8 @@
                     renderPreviewItem(item, message, '', scrollSnapshot);
                     return;
                 }
-                const imageEnabled = result.image_enabled === true;
                 let imageUrl = typeof result.image_url === 'string' ? result.image_url.trim() : '';
-                if (imageEnabled && !imageUrl && previewImageFallback) {
-                    imageUrl = previewImageFallback;
-                }
-                if (!imageEnabled) {
+                if (result.image_enabled !== true) {
                     imageUrl = '';
                 }
                 renderPreviewItem(item, message, imageUrl, scrollSnapshot);
@@ -2281,9 +2304,9 @@
             if (latestPresetSubmit) {
                 latestPresetSubmit.textContent = 'Salva preset';
             }
-        latestPresetCancel.hidden = true;
-        updatePreview();
-    });
+            latestPresetCancel.hidden = true;
+            updatePreview();
+        });
     }
 
     const openRuleModal = () => {
@@ -2423,9 +2446,6 @@
     if (latestPresetTemplateInput) {
         latestPresetTemplateInput.addEventListener('input', updatePreview);
     }
-    if (latestPresetActiveSelect) {
-        latestPresetActiveSelect.addEventListener('change', updatePreview);
-    }
     if (latestPreviewMovieSelect) {
         latestPreviewMovieSelect.addEventListener('change', () => {
             previewSelectionState.movie = latestPreviewMovieSelect.value || '';
@@ -2452,6 +2472,7 @@
         formatDate,
         formatRuntime,
         formatEpisodeCode,
+        getLatestFetchLimits,
         loadLatestReleases
     };
 })();

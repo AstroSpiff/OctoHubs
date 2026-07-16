@@ -40,7 +40,7 @@ def _sanitize_audit_payload(payload: Any) -> str:
 
 def _resolve_next_url(next_url: str | None, fallback_endpoint: str) -> str:
     """Return a safe local redirect path."""
-    if next_url and next_url.startswith("/"):
+    if next_url and next_url.startswith("/") and not next_url.startswith("//"):
         return next_url
     if fallback_endpoint.startswith("/"):
         return fallback_endpoint

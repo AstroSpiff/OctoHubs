@@ -61,6 +61,7 @@
         settings_apply: 'fa-sliders',
         group_sync: 'fa-rotate',
         user_sync: 'fa-arrows-rotate',
+        latest_refresh: 'fa-newspaper',
         delete_user: 'fa-trash',
     };
 
@@ -363,6 +364,7 @@
     function renderDetails(operation) {
         const chips = [];
         const details = operation.details || {};
+        appendTimeChips(chips, operation);
         if (details.current_step_label) chips.push(`Step: ${details.current_step_label}`);
         if (details.source_username) chips.push(`Da: ${details.source_username}`);
         if (details.target_username) chips.push(`A: ${details.target_username}`);
@@ -371,17 +373,26 @@
         if (details.target_count) chips.push(`Target: ${details.target_count}`);
         if (details.mode) chips.push(`Modo: ${details.mode}`);
         if (details.workflow_type) chips.push(`Workflow: ${details.workflow_type}`);
-        if (!chips.length && operation.started_at) chips.push(`Avvio: ${formatTime(operation.started_at)}`);
         if (!chips.length) return null;
 
         const wrap = document.createElement('div');
         wrap.className = 'operation-details';
-        chips.slice(0, 5).forEach((text) => {
+        chips.slice(0, 7).forEach((text) => {
             const chip = document.createElement('span');
             chip.textContent = text;
             wrap.appendChild(chip);
         });
         return wrap;
+    }
+
+    function appendTimeChips(chips, operation) {
+        const startedAt = operation.started_at || operation.updated_at || '';
+        if (startedAt) chips.push(`Avvio: ${formatDateTime(startedAt)}`);
+        if (operation.finished_at) {
+            chips.push(`Fine: ${formatDateTime(operation.finished_at)}`);
+        } else if (operation.updated_at && operation.updated_at !== startedAt) {
+            chips.push(`Agg.: ${formatDateTime(operation.updated_at)}`);
+        }
     }
 
     function buildDetailsSummary(details = {}) {
@@ -404,10 +415,15 @@
         return Math.max(0, Math.min(100, Math.round(number)));
     }
 
-    function formatTime(value) {
+    function formatDateTime(value) {
         const date = new Date(value);
         if (Number.isNaN(date.getTime())) return String(value || '');
-        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        return date.toLocaleString([], {
+            day: '2-digit',
+            month: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+        });
     }
 
     window.octohubOperations = {

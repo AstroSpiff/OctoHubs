@@ -14,6 +14,7 @@ from markupsafe import Markup
 
 # Image token constants - tokens that represent image URLs
 LATEST_IMAGE_TOKENS = (
+    "image_url",
     "tmdb_poster_url",
     "poster_url",
     "tmdb_backdrop_url",

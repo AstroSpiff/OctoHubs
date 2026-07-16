@@ -354,7 +354,7 @@
                  data-latest-max-movies="{{ latest_max_movies }}"
                  data-latest-max-series="{{ latest_max_series }}"
                  data-latest-fetch-limit="{{ ([latest_max_movies, latest_max_series] | max) * latest_server_count }}"
-                 data-latest-fetch-per-server="100">
+                 data-latest-fetch-per-server="{{ [latest_max_movies, latest_max_series] | max }}">
                 <div class="card">
                     <div class="latest-header">
                         <div>
@@ -594,7 +594,7 @@
                                     <h4>Manutenzione</h4>
                                     <form action="{{ url_for('emby_latest_reset_all_route') }}" method="post" class="latest-config-form" onsubmit="return confirm('⚠️ Questa operazione azzera STATE + CACHE delle ultime pubblicazioni. I contenuti verranno ricalcolati dal server e risulteranno nuovi al prossimo fetch.\n\nContinuare?');">
                                         <input type="hidden" name="next" value="{{ url_for('emby_dashboard') }}">
-                                        <p class="form-help">Reset completo delle pubblicazioni (STATE + CACHE + PREVIEW). Mantiene preset e regole.</p>
+                                        <p class="form-help">Reset completo delle pubblicazioni (STATE + CACHE). Mantiene preset e regole.</p>
                                         <button class="btn danger" type="submit">Reset Totale Pubblicazioni</button>
                                     </form>
                                     <form action="{{ url_for('emby_latest_clear_state_route') }}" method="post" class="latest-config-form" onsubmit="return confirm('⚠️ Questa operazione azzererà lo stato di tracking delle ultime pubblicazioni. Tutti i contenuti verranno rilevati come nuovi al prossimo fetch.\n\nContinuare?');">
@@ -1206,7 +1206,7 @@
     <script src="{{ url_for('static', filename='shared-utils.js') }}?v=20260715-preset-inline-validation"></script>
     <script src="{{ url_for('static', filename='emby_users_api.js') }}"></script>
     <script src="{{ url_for('static', filename='emby_users_core.js') }}?v=20260628-users-sync-now-bg"></script>
-    <script src="{{ url_for('static', filename='operations_center.js') }}?v=20260715-global-operations"></script>
+    <script src="{{ url_for('static', filename='operations_center.js') }}?v=20260716-operation-timestamps"></script>
     <script src="{{ url_for('static', filename='emby_users_render.js') }}?v=20260715-users-master-normal"></script>
     <script src="{{ url_for('static', filename='emby_users_details.js') }}?v=20260628-users-live"></script>
     <script src="{{ url_for('static', filename='emby_users_passwords.js') }}?v=20260628-users-live"></script>
@@ -1239,11 +1239,11 @@
     <script src="{{ url_for('static', filename='emby_scan_ws.js') }}?v=20260628"></script>
     <script src="{{ url_for('static', filename='emby_scan_tracker.js') }}?v=20260628"></script>
     <script src="{{ url_for('static', filename='emby_dialogs.js') }}?v=20260628"></script>
-    <script src="{{ url_for('static', filename='emby_latest.js') }}?v=20260628"></script>
+    <script src="{{ url_for('static', filename='emby_latest.js') }}?v=20260716-latest-episode-null"></script>
     <script src="{{ url_for('static', filename='emby_operations.js') }}?v=20260715-operations-refactor"></script>
     <script src="{{ url_for('static', filename='emby_widgets.js') }}?v=20260628"></script>
     <script src="{{ url_for('static', filename='emby_tabs.js') }}?v=20260714-users-hash"></script>
-    <script src="{{ url_for('static', filename='emby_verify.js') }}?v=20260628"></script>
+    <script src="{{ url_for('static', filename='emby_verify.js') }}?v=20260716-verify-mediainfo-state"></script>
     <script src="{{ url_for('static', filename='emby_scan_resume.js') }}?v=20260628"></script>
 </body>
 </html>

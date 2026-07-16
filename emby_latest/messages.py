@@ -353,6 +353,7 @@ def build_message(
         "episodes_with_titles": " · ".join(episode_titles),
         "library": str(item.get("library_name") or ""),
         "library_name": str(item.get("library_name") or ""),
+        "image_url": str(item.get("image_url") or ""),
         "poster_url": str(item.get("poster_url") or ""),
         "backdrop_url": str(item.get("backdrop_url") or ""),
         "banner_url": str(item.get("banner_url") or ""),

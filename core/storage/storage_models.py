@@ -120,6 +120,7 @@ if SQLALCHEMY_AVAILABLE:
         trakt_rating = Column(String(50))  # type: ignore[assignment]
         trakt_votes = Column(String(50))  # type: ignore[assignment]
         omdb_fetched_at = Column(DateTime)  # type: ignore[assignment]
+        trakt_fetched_at = Column(DateTime)  # type: ignore[assignment]
         sort_ts = Column(DateTime, index=True)  # type: ignore[assignment]
         __table_args__ = (
             Index("ix_latest_cache_kind_server_type", "cache_kind", "server_id", "item_type"),  # type: ignore

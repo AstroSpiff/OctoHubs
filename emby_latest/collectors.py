@@ -31,6 +31,7 @@ from emby_latest.batch_processor import (
     group_items_by_date,
 )
 from emby_latest.enrichment import (
+    entry_needs_enrichment,
     enrich_entry_with_tmdb,
     has_missing_data,
 )
@@ -43,6 +44,7 @@ from emby_latest.utils import (
 )
 from emby_latest.emby_api import (
     _fetch_emby_items_by_signature,
+    _fetch_emby_episode_items,
     _fetch_emby_oldest_episode_date,
     _fetch_emby_latest_items,
     _fetch_emby_latest_series_from_episodes,
@@ -54,6 +56,16 @@ from emby_latest.builders import (
 )
 from emby_latest.jellyseerr import _apply_jellyseerr_request_info, _sync_jellyseerr_to_db
 from emby_latest.media import get_resolution_rules
+from emby_latest.publication_history import (
+    ensure_history,
+    get_history_entry,
+    is_notified,
+    media_source_key_set,
+    merge_key_lists,
+    notification_snapshot,
+    update_history_entry,
+)
+from emby_latest.scan_cursor import incremental_stop_at_from_state
 from emby_latest.settings import _default_latest_settings, _load_latest_settings
 
 # Import from utils (shared utilities)
@@ -63,6 +75,24 @@ from core.utils import (
 )
 
 # NOTE: Some config helpers are imported lazily inside functions to avoid circular dependencies.
+
+
+def _preserve_notification_state(existing: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(existing, dict):
+        return {"notified": False, "notified_at": ""}
+    from copy import deepcopy
+
+    preserved = {
+        "notified": bool(existing.get("notified")),
+        "notified_at": existing.get("notified_at") or "",
+    }
+    destinations = existing.get("notified_destinations")
+    if isinstance(destinations, dict):
+        preserved["notified_destinations"] = dict(destinations)
+    publications = existing.get("notified_publications")
+    if isinstance(publications, dict):
+        preserved["notified_publications"] = deepcopy(publications)
+    return preserved
 
 
 def collect_entries(
@@ -114,6 +144,28 @@ def collect_entries(
             return int(value) if value is not None else None
         except (TypeError, ValueError):
             return None
+
+    def _matches_episode_numbers(item: Dict[str, Any], season_number: int, episode_number: int) -> bool:
+        if not isinstance(item, dict):
+            return False
+        return (
+            _coerce_int(item.get("ParentIndexNumber")) == season_number
+            and _coerce_int(item.get("IndexNumber")) == episode_number
+        )
+
+    def _episode_version_group_key(logical_key: str, versions: List[Dict[str, Any]]) -> Tuple[str, Tuple[str, ...]]:
+        version_keys = []
+        for version in versions:
+            if not isinstance(version, dict):
+                continue
+            version_key = (
+                version.get("key")
+                or version.get("id")
+                or version.get("path")
+                or f"{version.get('resolution') or ''}:{version.get('video_codec') or ''}:{version.get('audio_codec') or ''}:{version.get('size') or ''}"
+            )
+            version_keys.append(str(version_key))
+        return str(logical_key or ""), tuple(sorted(version_keys))
 
     def _ensure_batch_with_unique(
         items: List[Dict[str, Any]],
@@ -242,7 +294,7 @@ def collect_entries(
                     skip_series_ids.add(item_id)
 
         if skip_movie_signatures or skip_series_ids:
-            print(f"[SKIP_EXISTING] Skipperò {len(skip_movie_signatures)} movies e {len(skip_series_ids)} series già completi")
+            print(f"[SKIP_EXISTING] Metadata completi in cache: {len(skip_movie_signatures)} movies e {len(skip_series_ids)} series")
 
     # Initialize output arrays
     movies: List[Dict[str, Any]] = []
@@ -367,13 +419,38 @@ def collect_entries(
         else:
             batch_limit = max(per_server_limit * 8, 200)
         batch_limit = min(batch_limit, batch_fetch_limit)
+        movie_stop_at = (
+            incremental_stop_at_from_state(latest_state, server_id, "Movie")
+            if skip_existing_complete and state_enabled else None
+        )
+        episode_stop_at = (
+            incremental_stop_at_from_state(latest_state, server_id, "Episode")
+            if skip_existing_complete and state_enabled else None
+        )
 
         # --- MOVIES COLLECTION ---
 
-        movie_items, movie_error = _fetch_emby_latest_items(server, "Movie", batch_limit, fields=batch_fields)
+        if movie_stop_at:
+            movie_items, movie_error = _fetch_emby_latest_items(
+                server,
+                "Movie",
+                batch_limit,
+                fields=batch_fields,
+                stop_at=movie_stop_at,
+            )
+        else:
+            movie_items, movie_error = _fetch_emby_latest_items(server, "Movie", batch_limit, fields=batch_fields)
         if movie_error:
             # Fallback without fields parameter
-            fallback_items, fallback_error = _fetch_emby_latest_items(server, "Movie", batch_limit)
+            if movie_stop_at:
+                fallback_items, fallback_error = _fetch_emby_latest_items(
+                    server,
+                    "Movie",
+                    batch_limit,
+                    stop_at=movie_stop_at,
+                )
+            else:
+                fallback_items, fallback_error = _fetch_emby_latest_items(server, "Movie", batch_limit)
             if not fallback_error:
                 movie_items = fallback_items
                 movie_error = None
@@ -443,9 +520,26 @@ def collect_entries(
 
         # --- EPISODES COLLECTION ---
 
-        episode_items, episode_error = _fetch_emby_latest_items(server, "Episode", batch_limit, fields=batch_fields)
+        if episode_stop_at:
+            episode_items, episode_error = _fetch_emby_latest_items(
+                server,
+                "Episode",
+                batch_limit,
+                fields=batch_fields,
+                stop_at=episode_stop_at,
+            )
+        else:
+            episode_items, episode_error = _fetch_emby_latest_items(server, "Episode", batch_limit, fields=batch_fields)
         if episode_error:
-            fallback_items, fallback_error = _fetch_emby_latest_items(server, "Episode", batch_limit)
+            if episode_stop_at:
+                fallback_items, fallback_error = _fetch_emby_latest_items(
+                    server,
+                    "Episode",
+                    batch_limit,
+                    stop_at=episode_stop_at,
+                )
+            else:
+                fallback_items, fallback_error = _fetch_emby_latest_items(server, "Episode", batch_limit)
             if not fallback_error:
                 episode_items = fallback_items
                 episode_error = None
@@ -483,6 +577,7 @@ def collect_entries(
         series_state = server_state.setdefault("series", {}) if state_enabled else {}
         movie_items_state = movies_state.setdefault("items", {}) if state_enabled else {}
         series_items_state = series_state.setdefault("items", {}) if state_enabled else {}
+        history_state = ensure_history(server_state) if state_enabled else {"movies": {}, "series": {}, "episodes": {}}
 
         # --- MOVIE PROCESSING ---
 
@@ -507,14 +602,7 @@ def collect_entries(
 
         # Process each movie group
         movie_changes: Dict[str, Any] = {}
-        skipped_count = 0
-
         for signature, group_items in movie_groups.items():
-            # Skip if already complete in DB
-            if skip_existing_complete and signature in skip_movie_signatures:
-                skipped_count += 1
-                continue
-
             rep_entry = movie_rep_items.get(signature)
             if not rep_entry:
                 continue
@@ -527,10 +615,27 @@ def collect_entries(
             merged_versions: List[Dict[str, Any]] = []
             latest_seen_dt: Optional[datetime] = None
             items_for_signature = group_items
+            catalog_expanded = False
+            state_key = signature or str(item_id or "")
+            legacy_key = item_id if item_id and item_id != state_key else None
+            existing = movie_items_state.get(state_key) if state_enabled else None
+            if existing is None and legacy_key:
+                existing = movie_items_state.get(legacy_key)
+            movie_history = get_history_entry(history_state, "movies", state_key) if state_enabled else None
+            if movie_history is None and legacy_key:
+                movie_history = get_history_entry(history_state, "movies", legacy_key)
+            skip_signature_expansion = (
+                skip_existing_complete
+                and (
+                    (isinstance(existing, dict) and bool(existing.get("mediainfo_complete")))
+                    or (isinstance(movie_history, dict) and bool(movie_history.get("mediainfo_complete")))
+                )
+            )
 
             # Expand to all items with same signature if available
             all_items = movie_all_by_signature.get(signature)
             if all_items and len(all_items) > len(group_items):
+                catalog_expanded = True
                 items_for_signature = []
                 seen_ids: Set[str] = set()
                 for candidate in all_items:
@@ -541,7 +646,11 @@ def collect_entries(
                     items_for_signature.append(candidate)
 
             # Fetch additional items by provider ID if only one item found
-            if len(items_for_signature) == 1 and signature.startswith(("tmdb:", "imdb:", "tvdb:")):
+            if (
+                len(items_for_signature) == 1
+                and signature.startswith(("tmdb:", "imdb:", "tvdb:"))
+                and not skip_signature_expansion
+            ):
                 extra_items = movie_signature_cache.get(signature)
                 if extra_items is None:
                     extra_items = _fetch_emby_items_by_signature(server, signature, fields=batch_fields)
@@ -559,6 +668,7 @@ def collect_entries(
                             continue
                         items_for_signature.append(candidate)
                         seen_ids.add(str(candidate_id))
+                        catalog_expanded = True
 
             # Extract and merge versions
             for grouped_item in items_for_signature:
@@ -574,18 +684,16 @@ def collect_entries(
             versions = merge_versions(merged_versions)
             version_times = collect_version_times(versions)
             version_gap = has_version_time_gap(version_times, gap_minutes)
-
-            # State key management
-            state_key = signature or str(item_id or "")
-            legacy_key = item_id if item_id and item_id != state_key else None
-            existing = movie_items_state.get(state_key) if state_enabled else None
-            if existing is None and legacy_key:
-                existing = movie_items_state.get(legacy_key)
+            mediainfo_source_keys = [
+                v.get("key")
+                for v in versions
+                if v.get("key") and v.get("mediainfo_available")
+            ]
+            version_key_count = len([v for v in versions if v.get("key")])
+            mediainfo_complete = bool(version_key_count) and len(mediainfo_source_keys) == version_key_count
 
             # Determine new versions
-            existing_keys: Set[str] = set()
-            if existing and isinstance(existing.get("media_source_keys"), list):
-                existing_keys = set(existing.get("media_source_keys") or [])
+            existing_keys = media_source_key_set(existing, movie_history)
 
             new_versions = [v for v in versions if v.get("key") and v.get("key") not in existing_keys]
             version_time_map = {v.get("key"): dt_value for v, dt_value in version_times if v.get("key")}
@@ -599,6 +707,12 @@ def collect_entries(
 
             # Group versions by time for split batches
             version_groups = group_version_times(version_times, gap_minutes)
+            catalog_baseline_detected = (
+                existing is None
+                and movie_history is None
+                and catalog_expanded
+                and len(version_groups) > 1
+            )
             if debug_latest and version_groups:
                 group_summaries = []
                 for group in version_groups:
@@ -607,9 +721,9 @@ def collect_entries(
                 debug(debug_latest, f"Movie groups: {', '.join(group_summaries)}")
 
             # Determine if we should split into multiple batch groups
-            existing_notified = bool(existing.get("notified")) if existing else False
+            existing_notified = is_notified(existing, movie_history)
 
-            if len(version_groups) > 1 and (existing is None or not existing_notified):
+            if len(version_groups) > 1 and existing is None and movie_history is None and not catalog_baseline_detected:
                 # Multiple version groups detected - split into separate updates
                 grouped_changes = []
                 for idx, group in enumerate(version_groups):
@@ -647,7 +761,8 @@ def collect_entries(
                             "audio_ger": version.get("audio_ger") or "",
                             "audio_jpn": version.get("audio_jpn") or "",
                             "audio_langs": version.get("audio_langs") or "",
-                            "subtitle_langs": version.get("subtitle_langs") or ""
+                            "subtitle_langs": version.get("subtitle_langs") or "",
+                            "mediainfo_available": bool(version.get("mediainfo_available"))
                         })
 
                     stamp = group_dt.astimezone().strftime("%Y%m%d%H%M")
@@ -663,15 +778,24 @@ def collect_entries(
                 movie_changes[state_key] = grouped_changes
             else:
                 # Single batch logic
-                update_type, update_label, kind = _determine_latest_status(
-                    item, state_key, movie_items_state, gap_minutes, state_enabled, version_gap=version_gap
-                )
+                existing_notified = is_notified(existing, movie_history)
+                if catalog_baseline_detected and new_versions:
+                    update_type, update_label, kind = "update", "Nuova versione", "new_version"
+                elif (existing is not None or movie_history is not None) and existing_notified and new_versions:
+                    update_type, update_label, kind = "update", "Nuova versione", "new_version"
+                else:
+                    status_state = movie_items_state
+                    if movie_history is not None and state_key not in movie_items_state:
+                        status_state = {**movie_items_state, state_key: movie_history}
+                    update_type, update_label, kind = _determine_latest_status(
+                        item, state_key, status_state, gap_minutes, state_enabled, version_gap=version_gap
+                    )
 
                 changes = []
                 target_versions = _sort_versions_by_quality(new_versions or versions)
 
                 # If new item with gap, only include recent versions
-                if existing is None and version_gap:
+                if (catalog_baseline_detected or (existing is None and movie_history is None)) and version_gap:
                     recent_versions = select_recent_versions_by_time(version_times, gap_minutes)
                     if recent_versions:
                         target_versions = _sort_versions_by_quality(recent_versions)
@@ -701,7 +825,8 @@ def collect_entries(
                         "audio_ger": "",
                         "audio_jpn": "",
                         "audio_langs": "",
-                        "subtitle_langs": ""
+                        "subtitle_langs": "",
+                        "mediainfo_available": False
                     })
                 else:
                     for version in target_versions:
@@ -730,7 +855,8 @@ def collect_entries(
                             "audio_ger": version.get("audio_ger") or "",
                             "audio_jpn": version.get("audio_jpn") or "",
                             "audio_langs": version.get("audio_langs") or "",
-                            "subtitle_langs": version.get("subtitle_langs") or ""
+                            "subtitle_langs": version.get("subtitle_langs") or "",
+                            "mediainfo_available": bool(version.get("mediainfo_available"))
                         })
 
                 movie_changes[state_key] = {
@@ -741,15 +867,32 @@ def collect_entries(
 
             # Update state if enabled
             if state_enabled:
-                merged_keys = [v.get("key") for v in new_versions if v.get("key")]
-                merged_keys += [key for key in existing_keys if key not in merged_keys]
-                if not merged_keys and versions:
-                    merged_keys = [v.get("key") for v in versions if v.get("key")]
-                if max_versions > 0:
-                    merged_keys = merged_keys[:max_versions]
+                merged_keys = merge_key_lists(
+                    [v.get("key") for v in new_versions if v.get("key")],
+                    existing_keys,
+                    [v.get("key") for v in versions if v.get("key")],
+                    max_versions,
+                )
 
-                movie_title = item.get("Name") or (existing.get("title") if existing else "")
-                movie_year = item.get("ProductionYear") or (existing.get("year") if existing else None)
+                movie_title = item.get("Name") or (
+                    existing.get("title") if isinstance(existing, dict) else movie_history.get("title") if isinstance(movie_history, dict) else ""
+                )
+                movie_year = item.get("ProductionYear") or (
+                    existing.get("year") if isinstance(existing, dict) else movie_history.get("year") if isinstance(movie_history, dict) else None
+                )
+                existing_mediainfo_keys = set()
+                if isinstance(existing, dict):
+                    existing_mediainfo_keys.update(existing.get("mediainfo_source_keys") or [])
+                if isinstance(movie_history, dict):
+                    existing_mediainfo_keys.update(movie_history.get("mediainfo_source_keys") or [])
+                current_mediainfo_keys = set(mediainfo_source_keys)
+                merged_mediainfo_keys = [
+                    key for key in merged_keys
+                    if key in current_mediainfo_keys or key in existing_mediainfo_keys
+                ]
+                merged_mediainfo_complete = bool(merged_keys) and len(merged_mediainfo_keys) == len(merged_keys)
+                notification_state = notification_snapshot(existing, movie_history)
+
                 movie_items_state[state_key] = {
                     "item_id": item_id,
                     "signature": signature,
@@ -757,19 +900,27 @@ def collect_entries(
                     "year": movie_year,
                     "last_seen_at": latest_seen_dt.isoformat() if latest_seen_dt else item_date,
                     "media_source_keys": merged_keys,
-                    "notified": bool(existing.get("notified")) if existing else False,
-                    "notified_at": existing.get("notified_at") if existing else ""
+                    "mediainfo_complete": merged_mediainfo_complete,
+                    "mediainfo_source_keys": merged_mediainfo_keys,
+                    **notification_state,
                 }
+                update_history_entry(history_state, "movies", state_key, {
+                    "item_id": item_id,
+                    "signature": signature,
+                    "title": movie_title,
+                    "year": movie_year,
+                    "last_seen_at": latest_seen_dt.isoformat() if latest_seen_dt else item_date,
+                    "media_source_keys": merged_keys,
+                    "mediainfo_complete": merged_mediainfo_complete,
+                    "mediainfo_source_keys": merged_mediainfo_keys,
+                    **notification_state,
+                })
 
                 # Clean up legacy key
                 if legacy_key and legacy_key in movie_items_state and legacy_key != state_key:
                     movie_items_state.pop(legacy_key, None)
 
                 state_changed = True
-
-        # Log skipped movies
-        if skip_existing_complete and skipped_count > 0:
-            print(f"[SKIP_EXISTING] Skippati {skipped_count} movies già completi in DB")
 
         # --- SERIES PROCESSING ---
 
@@ -783,19 +934,16 @@ def collect_entries(
                 continue
             episodes_by_series.setdefault(series_id, []).append(item)
 
-        series_skipped_count = 0
-
         for series_id, episodes in episodes_by_series.items():
-            # Skip if already complete in DB
-            if skip_existing_complete and series_id in skip_series_ids:
-                series_skipped_count += 1
-                continue
-
             existing_series = series_items_state.get(series_id) if state_enabled else None
+            series_history = get_history_entry(history_state, "series", series_id) if state_enabled else None
             seasons_seen = set(existing_series.get("seasons") or []) if existing_series else set()
+            if isinstance(series_history, dict):
+                seasons_seen.update(series_history.get("seasons") or [])
             episode_state = existing_series.get("episodes") if existing_series else {}
             if not isinstance(episode_state, dict):
                 episode_state = {}
+            initial_episode_state = dict(episode_state)
 
             series_is_new = False
             season_recent_map: Dict[int, bool] = {}
@@ -818,8 +966,10 @@ def collect_entries(
                 if not current_latest or episode_dt > current_latest:
                     season_latest_dt_map[season_number] = episode_dt
 
-            # Determine if series/seasons are new (only for new series)
-            if existing_series is None:
+            series_known = existing_series is not None or series_history is not None
+
+            # Determine if series/seasons are new (only for unknown series)
+            if not series_known:
                 series_oldest_dt = series_oldest_cache.get(series_id)
                 if series_oldest_dt is None:
                     series_oldest_dt = _fetch_emby_oldest_episode_date(server, series_id)
@@ -849,6 +999,8 @@ def collect_entries(
 
             # Build episode entries with version groups
             episode_entries: List[Dict[str, Any]] = []
+            episode_entry_seen: Set[Tuple[str, Tuple[str, ...]]] = set()
+            episode_catalog_cache: Dict[str, List[Dict[str, Any]]] = {}
 
             # First, collect already-seen episodes
             if episode_state:
@@ -881,36 +1033,95 @@ def collect_entries(
                     episode_name=episode.get("Name") or ""
                 )
 
-                existing_episode = episode_state.get(episode_key) if state_enabled else None
+                existing_episode = initial_episode_state.get(episode_key) if state_enabled else None
                 if existing_episode is None and state_enabled and episode_id:
-                    existing_episode = episode_state.get(episode_id)
+                    existing_episode = initial_episode_state.get(episode_id)
+                episode_history = get_history_entry(history_state, "episodes", episode_key) if state_enabled else None
+                if episode_history is None and state_enabled and episode_id:
+                    episode_history = get_history_entry(history_state, "episodes", episode_id)
 
                 versions = extract_versions(episode, resolution_rules=resolution_rules)
                 apply_version_added_at(versions, episode.get("DateCreated"))
+                catalog_baseline_detected = False
+                season_number = _coerce_int(episode.get("ParentIndexNumber"))
+                episode_number = _coerce_int(episode.get("IndexNumber"))
+                if (
+                    state_enabled
+                    and existing_episode is None
+                    and episode_history is None
+                    and episode_key
+                    and season_number is not None
+                    and episode_number is not None
+                ):
+                    catalog_items = episode_catalog_cache.get(episode_key)
+                    if catalog_items is None:
+                        catalog_items = _fetch_emby_episode_items(
+                            server,
+                            series_id,
+                            season_number,
+                            episode_number,
+                            fields=batch_fields,
+                        )
+                        episode_catalog_cache[episode_key] = catalog_items
+                    if catalog_items:
+                        catalog_versions: List[Dict[str, Any]] = []
+                        seen_item_ids = {str(episode_id)}
+                        for catalog_item in catalog_items:
+                            if not _matches_episode_numbers(catalog_item, season_number, episode_number):
+                                continue
+                            catalog_item_id = str(catalog_item.get("Id") or "")
+                            item_versions = extract_versions(catalog_item, resolution_rules=resolution_rules)
+                            apply_version_added_at(item_versions, catalog_item.get("DateCreated"))
+                            catalog_versions.extend(item_versions)
+                            if catalog_item_id:
+                                seen_item_ids.add(catalog_item_id)
+                        merged_catalog_versions = merge_versions(versions + catalog_versions)
+                        if len(merged_catalog_versions) > len(versions) or len(seen_item_ids) > 1:
+                            versions = merged_catalog_versions
                 version_times = collect_version_times(versions)
                 version_groups = group_version_times(version_times, gap_minutes)
+                if existing_episode is None and episode_history is None and len(version_groups) > 1:
+                    catalog_baseline_detected = True
                 version_time_map = {v.get("key"): dt_value for v, dt_value in version_times if v.get("key")}
+                mediainfo_source_keys = [
+                    v.get("key")
+                    for v in versions
+                    if v.get("key") and v.get("mediainfo_available")
+                ]
+                version_key_count = len([v for v in versions if v.get("key")])
+                mediainfo_complete = bool(version_key_count) and len(mediainfo_source_keys) == version_key_count
 
                 # Split into version groups if new episode with multiple groups
                 can_split_versions = existing_episode is None and len(version_groups) > 1
+                logical_episode_key = str(episode_key or episode_id or "")
 
                 if can_split_versions:
                     for idx, group in enumerate(version_groups):
                         group_versions = [version for version, _ in group]
+                        entry_key = _episode_version_group_key(logical_episode_key, group_versions)
+                        if entry_key in episode_entry_seen:
+                            continue
+                        episode_entry_seen.add(entry_key)
                         group_dt = max(dt_value for _, dt_value in group)
                         entry = dict(episode)
                         entry["_version_group_dt"] = group_dt.isoformat()
                         entry["_version_group_versions"] = group_versions
                         entry["_version_group_is_latest"] = idx == 0
                         entry["_version_group_has_split"] = True
+                        entry["_catalog_baseline_detected"] = catalog_baseline_detected
                         entry["_version_time_map"] = version_time_map
                         episode_entries.append(entry)
                 else:
+                    entry_key = _episode_version_group_key(logical_episode_key, versions)
+                    if entry_key in episode_entry_seen:
+                        continue
+                    episode_entry_seen.add(entry_key)
                     entry = dict(episode)
                     entry["_version_group_dt"] = episode.get("DateCreated") or ""
                     entry["_version_group_versions"] = versions
                     entry["_version_group_is_latest"] = True
                     entry["_version_group_has_split"] = False
+                    entry["_catalog_baseline_detected"] = catalog_baseline_detected
                     entry["_version_time_map"] = version_time_map
                     episode_entries.append(entry)
 
@@ -968,30 +1179,39 @@ def collect_entries(
                     versions = episode.get("_version_group_versions") or extract_versions(episode, resolution_rules=resolution_rules)
                     version_time_map = episode.get("_version_time_map") or {}
                     version_gap = bool(episode.get("_version_group_has_split"))
+                    catalog_baseline = bool(episode.get("_catalog_baseline_detected"))
+                    is_latest_version_group = bool(episode.get("_version_group_is_latest", True))
 
-                    existing_episode = episode_state.get(episode_key) if state_enabled else None
+                    existing_episode = initial_episode_state.get(episode_key) if state_enabled else None
                     existing_key = episode_key
 
                     if existing_episode is None and state_enabled and episode_id:
-                        legacy_episode = episode_state.get(episode_id)
+                        legacy_episode = initial_episode_state.get(episode_id)
                         if legacy_episode is not None:
                             existing_episode = legacy_episode
                             existing_key = episode_id
 
-                    existing_keys: Set[str] = set()
-                    if existing_episode and isinstance(existing_episode.get("media_source_keys"), list):
-                        existing_keys = {
-                            str(value)
-                            for value in (existing_episode.get("media_source_keys") or [])
-                            if value is not None
-                        }
+                    episode_history = get_history_entry(history_state, "episodes", episode_key) if state_enabled else None
+                    if episode_history is None and existing_key and existing_key != episode_key:
+                        episode_history = get_history_entry(history_state, "episodes", existing_key)
+
+                    existing_keys = media_source_key_set(existing_episode, episode_history)
 
                     new_versions = [v for v in versions if v.get("key") and v.get("key") not in existing_keys]
 
                     # Determine kind
-                    if existing_episode is None:
+                    episode_known = existing_episode is not None or episode_history is not None
+                    episode_notified = is_notified(existing_episode, episode_history)
+                    if catalog_baseline:
+                        if is_latest_version_group:
+                            kind = "new_version"
+                            new_version = True
+                        else:
+                            kind = "new_episode"
+                            new_episode = True
+                    elif not episode_known:
                         season_recent = season_recent_map.get(season_number, False) if season_number is not None else False
-                        if existing_series is None and series_is_new and group_index == 0:
+                        if not series_known and series_is_new and group_index == 0:
                             kind = "new_episode"
                             new_season = True
                         elif season_number is not None and season_number not in local_seasons_seen and season_recent:
@@ -1001,8 +1221,12 @@ def collect_entries(
                             kind = "new_episode"
                             new_episode = True
                     elif new_versions:
-                        kind = "new_version"
-                        new_version = True
+                        if episode_notified:
+                            kind = "new_version"
+                            new_version = True
+                        else:
+                            kind = "new_episode"
+                            new_episode = True
                     else:
                         continue
 
@@ -1036,17 +1260,31 @@ def collect_entries(
                             "audio_ger": version.get("audio_ger") or "",
                             "audio_jpn": version.get("audio_jpn") or "",
                             "audio_langs": version.get("audio_langs") or "",
-                            "subtitle_langs": version.get("subtitle_langs") or ""
+                            "subtitle_langs": version.get("subtitle_langs") or "",
+                            "mediainfo_available": bool(version.get("mediainfo_available"))
                         })
 
                     # Update episode state
                     if state_enabled:
-                        merged_keys = [v.get("key") for v in new_versions if v.get("key")]
-                        merged_keys += [key for key in existing_keys if key not in merged_keys]
-                        if not merged_keys and versions:
-                            merged_keys = [v.get("key") for v in versions if v.get("key")]
-                        if max_versions > 0:
-                            merged_keys = merged_keys[:max_versions]
+                        merged_keys = merge_key_lists(
+                            [v.get("key") for v in new_versions if v.get("key")],
+                            existing_keys,
+                            [v.get("key") for v in versions if v.get("key")],
+                            max_versions,
+                        )
+
+                        existing_mediainfo_keys = set()
+                        if isinstance(existing_episode, dict):
+                            existing_mediainfo_keys.update(existing_episode.get("mediainfo_source_keys") or [])
+                        if isinstance(episode_history, dict):
+                            existing_mediainfo_keys.update(episode_history.get("mediainfo_source_keys") or [])
+                        current_mediainfo_keys = set(mediainfo_source_keys)
+                        merged_mediainfo_keys = [
+                            key for key in merged_keys
+                            if key in current_mediainfo_keys or key in existing_mediainfo_keys
+                        ]
+                        merged_mediainfo_complete = bool(merged_keys) and len(merged_mediainfo_keys) == len(merged_keys)
+                        episode_notification_state = notification_snapshot(existing_episode, episode_history)
 
                         if episode_key:
                             episode_state[episode_key] = {
@@ -1055,9 +1293,25 @@ def collect_entries(
                                 "title": episode_name,
                                 "last_seen_at": item_date,
                                 "media_source_keys": merged_keys,
+                                "mediainfo_complete": merged_mediainfo_complete,
+                                "mediainfo_source_keys": merged_mediainfo_keys,
                                 "key": episode_key,
-                                "episode_id": episode_id
+                                "episode_id": episode_id,
+                                **episode_notification_state,
                             }
+                            update_history_entry(history_state, "episodes", episode_key, {
+                                "series_id": series_id,
+                                "season": season_number,
+                                "episode": episode_number,
+                                "title": episode_name,
+                                "last_seen_at": item_date,
+                                "media_source_keys": merged_keys,
+                                "mediainfo_complete": merged_mediainfo_complete,
+                                "mediainfo_source_keys": merged_mediainfo_keys,
+                                "key": episode_key,
+                                "episode_id": episode_id,
+                                **episode_notification_state,
+                            })
                             if existing_key and existing_key != episode_key:
                                 episode_state.pop(existing_key, None)
                         else:
@@ -1067,8 +1321,23 @@ def collect_entries(
                                 "title": episode_name,
                                 "last_seen_at": item_date,
                                 "media_source_keys": merged_keys,
-                                "episode_id": episode_id
+                                "mediainfo_complete": merged_mediainfo_complete,
+                                "mediainfo_source_keys": merged_mediainfo_keys,
+                                "episode_id": episode_id,
+                                **episode_notification_state,
                             }
+                            update_history_entry(history_state, "episodes", episode_id, {
+                                "series_id": series_id,
+                                "season": season_number,
+                                "episode": episode_number,
+                                "title": episode_name,
+                                "last_seen_at": item_date,
+                                "media_source_keys": merged_keys,
+                                "mediainfo_complete": merged_mediainfo_complete,
+                                "mediainfo_source_keys": merged_mediainfo_keys,
+                                "episode_id": episode_id,
+                                **episode_notification_state,
+                            })
 
                         state_changed = True
 
@@ -1081,7 +1350,7 @@ def collect_entries(
                     continue
 
                 # Determine update type for this group
-                if existing_series is None and series_is_new and group_index == 0:
+                if not series_known and series_is_new and group_index == 0:
                     update_type = "new"
                     update_label = "Nuova serie"
                 elif new_season:
@@ -1131,21 +1400,34 @@ def collect_entries(
                 series_items_state[series_id] = {
                     "series_id": series_id,
                     "item_id": series_id,
-                    "title": existing_series.get("title") if existing_series else (fallback_title or ""),
-                    "year": existing_series.get("year") if existing_series else fallback_year,
+                    "title": (
+                        existing_series.get("title")
+                        if isinstance(existing_series, dict)
+                        else series_history.get("title") if isinstance(series_history, dict) else (fallback_title or "")
+                    ),
+                    "year": (
+                        existing_series.get("year")
+                        if isinstance(existing_series, dict)
+                        else series_history.get("year") if isinstance(series_history, dict) else fallback_year
+                    ),
                     "last_seen_at": max((item.get("DateCreated") for item in episodes if item.get("DateCreated")), default=""),
                     "episodes": episode_state,
                     "seasons": sorted(list(local_seasons_seen)),
                     "last_changes": series_last_changes,
-                    "notified": bool(existing_series.get("notified")) if existing_series else False,
-                    "notified_at": existing_series.get("notified_at") if existing_series else ""
+                    **notification_snapshot(existing_series, series_history),
                 }
+                update_history_entry(history_state, "series", series_id, {
+                    "series_id": series_id,
+                    "item_id": series_id,
+                    "title": series_items_state[series_id].get("title") or "",
+                    "year": series_items_state[series_id].get("year"),
+                    "last_seen_at": series_items_state[series_id].get("last_seen_at") or "",
+                    "seasons": sorted(list(local_seasons_seen)),
+                    "last_changes": series_last_changes,
+                    **notification_snapshot(existing_series, series_history),
+                })
 
                 state_changed = True
-
-        # Log skipped series
-        if skip_existing_complete and series_skipped_count > 0:
-            print(f"[SKIP_EXISTING] Skippate {series_skipped_count} series già complete in DB")
 
         # --- BUILD FINAL ENTRIES ---
 
@@ -1362,13 +1644,22 @@ def collect_entries(
     progress_completed = 0
 
     if enrich:
-        progress_total = len(final_movies) + len(final_series)
+        progress_total = sum(
+            1
+            for entry in (final_movies + final_series)
+            if entry_needs_enrichment(
+                entry,
+                config,
+                force_omdb=force_omdb,
+                omdb_cache_hours=omdb_cache_hours,
+            )
+        )
         if progress_tracker:
             progress_tracker.update(
                 state="enriching",
                 total=progress_total,
                 completed=0,
-                message="Arricchimento rating esterni"
+                message="Arricchimento dati esterni" if progress_total else "Nessun arricchimento esterno necessario"
             )
 
     # Campi di enrichment condivisibili tra entry con stesso tmdb_id (da fonti esterne)
@@ -1382,7 +1673,7 @@ def collect_entries(
         "imdb_rating", "imdb_votes", "metacritic_rating",
         "rt_tomatometer", "rt_audience", "letterboxd_rating",
         "trakt_rating", "trakt_votes",
-        "omdb_fetched_at",
+        "omdb_fetched_at", "trakt_fetched_at",
     )
 
     def _enrich_latest_entries(entries):
@@ -1428,6 +1719,13 @@ def collect_entries(
         for idx, entry in enumerate(entries):
             if not isinstance(entry, dict):
                 continue
+            if not entry_needs_enrichment(
+                entry,
+                config,
+                force_omdb=force_omdb,
+                omdb_cache_hours=omdb_cache_hours,
+            ):
+                continue
 
             tmdb_id = str(entry.get("tmdb_id") or "")
 
@@ -1461,7 +1759,10 @@ def collect_entries(
                 progress_tracker.update(completed=progress_completed)
         return entries
 
-    print(f"[LATEST] Arricchimento: {len(final_movies)} film, {len(final_series)} serie")
+    if enrich:
+        print(f"[LATEST] Arricchimento: {progress_total} elementi da aggiornare su {len(final_movies) + len(final_series)} totali")
+    else:
+        print(f"[LATEST] Arricchimento disabilitato: {len(final_movies) + len(final_series)} elementi totali")
     if enrich:
         final_movies = _enrich_latest_entries(final_movies)
         final_series = _enrich_latest_entries(final_series)

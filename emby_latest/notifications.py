@@ -46,7 +46,6 @@ def _telegram_api_request(bot_token: str, method: str, params: Dict[str, Any]) -
 
 
 def send_notifications(
-    limit: int,
     per_server_limit: int,
     server_filter: Optional[str] = None,
     config: Optional[Dict[str, Any]] = None,
@@ -56,8 +55,7 @@ def send_notifications(
     Send notifications for latest publications.
 
     Args:
-        limit: Maximum items to process
-        per_server_limit: Maximum items per server
+        per_server_limit: Maximum pending items per server
         server_filter: Optional server ID to filter
         config: Application configuration
         db_storage: Database storage instance
@@ -70,7 +68,9 @@ def send_notifications(
     from telegram import _load_telegram_settings
     from emby_latest.settings import _load_latest_settings
     from emby_latest import db_cache, db_state
-    from emby_latest.messages import resolve_message_preset, default_message_template
+    from emby_latest.messages import default_message_template
+    from emby_latest.batch_processor import build_episode_signature
+    from emby_latest.publication_history import ensure_history, notification_snapshot, update_history_entry
 
     # Load configuration if not provided
     if config is None:
@@ -122,13 +122,13 @@ def send_notifications(
     if not isinstance(latest_state, dict):
         latest_state = {}
 
-    def _is_notified(item: Dict[str, Any]) -> bool:
+    def _get_item_state_entry(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         server_id = str(item.get("server_id") or "")
         if not server_id:
-            return False
+            return None
         server_state = latest_state.get(server_id)
         if not isinstance(server_state, dict):
-            return False
+            return None
 
         item_type = str(item.get("item_type") or "").lower()
         if item_type == "movie":
@@ -138,14 +138,14 @@ def send_notifications(
                 else None
             )
             if not isinstance(movie_items, dict):
-                return False
+                return None
             signature = str(item.get("signature") or "")
             if signature and isinstance(movie_items.get(signature), dict):
-                return bool(movie_items[signature].get("notified"))
+                return movie_items[signature]
             item_id = str(item.get("item_id") or "")
             if item_id and isinstance(movie_items.get(item_id), dict):
-                return bool(movie_items[item_id].get("notified"))
-            return False
+                return movie_items[item_id]
+            return None
 
         if item_type in ("series", "episode"):
             series_items = (
@@ -154,20 +154,119 @@ def send_notifications(
                 else None
             )
             if not isinstance(series_items, dict):
-                return False
+                return None
             series_id = str(item.get("item_id") or item.get("series_id") or "")
             if series_id and isinstance(series_items.get(series_id), dict):
-                return bool(series_items[series_id].get("notified"))
+                return series_items[series_id]
+            return None
+
+        return None
+
+    def _destination_key(bot_id: Any, chat_id: Any) -> str:
+        return f"{str(bot_id or '').strip()}:{str(chat_id or '').strip()}"
+
+    def _item_signature(item: Dict[str, Any]) -> str:
+        server_id = str(item.get("server_id") or "")
+        item_id = str(item.get("item_id") or "")
+        if not server_id or not item_id:
+            return ""
+        return f"{server_id}:{item_id}"
+
+    def _publication_state_key(item: Dict[str, Any]) -> str:
+        batch_id = str(item.get("batch_id") or "").strip()
+        if batch_id:
+            return batch_id
+
+        added_at = str(item.get("added_at") or "").strip()
+        update_type = str(item.get("update_type") or "").strip()
+        update_label = str(item.get("update_label") or "").strip()
+        if added_at or update_type or update_label:
+            return f"{update_type}:{update_label}:{added_at}"
+
+        return _item_signature(item)
+
+    def _publication_signature(item: Dict[str, Any]) -> str:
+        item_signature = _item_signature(item)
+        publication_key = _publication_state_key(item)
+        if not item_signature:
+            return ""
+        if not publication_key:
+            return item_signature
+        return f"{item_signature}:{publication_key}"
+
+    def _has_destination_state(entry: Optional[Dict[str, Any]]) -> bool:
+        return isinstance(entry, dict) and isinstance(entry.get("notified_destinations"), dict)
+
+    def _get_publication_state(entry: Optional[Dict[str, Any]], item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not isinstance(entry, dict):
+            return None
+        publications = entry.get("notified_publications")
+        if not isinstance(publications, dict):
+            return None
+        publication_key = _publication_state_key(item)
+        publication_state = publications.get(publication_key)
+        return publication_state if isinstance(publication_state, dict) else None
+
+    def _is_item_newer_than_legacy_state(item: Dict[str, Any], entry: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        item_added_at = item.get("added_at")
+        notified_at = entry.get("notified_at")
+        if not item_added_at or not notified_at:
+            return False
+        try:
+            from core.utils import _parse_date_value
+            item_dt = _parse_date_value(item_added_at)
+            notified_dt = _parse_date_value(notified_at)
+        except Exception:
+            return False
+        return bool(item_dt and notified_dt and item_dt > notified_dt)
+
+    def _legacy_state_applies(item: Dict[str, Any], entry: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        if _get_publication_state(entry, item) is not None:
+            return False
+        return not _is_item_newer_than_legacy_state(item, entry)
+
+    def _is_legacy_notified(item: Dict[str, Any]) -> bool:
+        entry = _get_item_state_entry(item)
+        if _has_destination_state(entry):
+            return False
+        return bool(entry and entry.get("notified") and _legacy_state_applies(item, entry))
+
+    def _is_destination_notified(entry: Optional[Dict[str, Any]], item: Dict[str, Any], destination_key: str) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        publication_state = _get_publication_state(entry, item)
+        if isinstance(publication_state, dict):
+            destinations = publication_state.get("notified_destinations")
+            if isinstance(destinations, dict):
+                return destination_key in destinations
+            return bool(publication_state.get("notified"))
+
+        if not _legacy_state_applies(item, entry):
             return False
 
-        return False
+        destinations = entry.get("notified_destinations")
+        if isinstance(destinations, dict):
+            return destination_key in destinations
+        return bool(entry.get("notified"))
 
     # Apply server filter if specified
+    selected_server_filter = ""
     if server_filter and server_filter != "all":
-        items = [item for item in items if item.get("server_id") == server_filter]
+        selected_server_filter = str(server_filter)
+        items = [item for item in items if str(item.get("server_id") or "") == selected_server_filter]
 
-    # Filter out already-notified items using DB state
-    items = [item for item in items if not _is_notified(item)]
+    # Keep legacy global-notified entries quiet, but allow destination-aware entries
+    # to retry only the Telegram destinations that failed earlier.
+    items = [item for item in items if not _is_legacy_notified(item)]
+
+    try:
+        effective_per_server_limit = int(per_server_limit or 0)
+    except (TypeError, ValueError):
+        effective_per_server_limit = 0
 
     if not items:
         return {
@@ -207,164 +306,105 @@ def send_notifications(
     disabled_rules_count = 0
 
     # Process notification rules
-    if rules:
-        for rule in rules:
-            if not isinstance(rule, dict) or not rule.get("enabled"):
-                disabled_rules_count += 1
-                continue
+    for rule in rules:
+        if not isinstance(rule, dict):
+            disabled_rules_count += 1
+            continue
 
-            rule_name = rule.get("name") or "Regola"
-            rule_server_ids = [str(value) for value in (rule.get("server_ids") or []) if str(value)]
-            missing_servers = [srv_id for srv_id in rule_server_ids if srv_id not in server_ids_configured]
+        rule_server_ids = [str(value) for value in (rule.get("server_ids") or []) if str(value)]
+        if selected_server_filter and rule_server_ids and selected_server_filter not in rule_server_ids:
+            continue
 
-            preset_entry = latest_presets_by_id.get(str(rule.get("preset_id") or ""))
-            telegram_entry = telegram_presets_by_id.get(str(rule.get("telegram_config_id") or ""))
+        if not rule.get("enabled"):
+            disabled_rules_count += 1
+            continue
 
-            # Validate rule configuration
-            missing_parts = []
-            if missing_servers:
-                missing_parts.append("server")
-            if not preset_entry:
-                missing_parts.append("preset")
-            if not telegram_entry:
-                missing_parts.append("telegram")
+        rule_name = rule.get("name") or "Regola"
+        missing_servers = [srv_id for srv_id in rule_server_ids if srv_id not in server_ids_configured]
 
-            if missing_parts:
-                errors.append(f"Regola '{rule_name}' non valida ({', '.join(missing_parts)}).")
-                continue
+        preset_entry = latest_presets_by_id.get(str(rule.get("preset_id") or ""))
+        telegram_entry = telegram_presets_by_id.get(str(rule.get("telegram_config_id") or ""))
 
-            if not telegram_entry:
-                continue
+        # Validate rule configuration
+        missing_parts = []
+        if missing_servers:
+            missing_parts.append("server")
+        if not preset_entry:
+            missing_parts.append("preset")
+        if not telegram_entry:
+            missing_parts.append("telegram")
 
-            # Extract bot and chat IDs
-            bot_ids = telegram_entry.get("bot_ids") or []
-            group_ids = telegram_entry.get("group_ids") or []
-            channel_ids = telegram_entry.get("channel_ids") or []
+        if missing_parts:
+            errors.append(f"Regola '{rule_name}' non valida ({', '.join(missing_parts)}).")
+            continue
 
-            if not bot_ids:
-                errors.append(f"Regola '{rule_name}' senza bot.")
-                continue
+        if not telegram_entry:
+            continue
 
-            # Collect chat IDs
-            chat_ids = []
-            for group_id in group_ids:
-                entry = groups_by_id.get(str(group_id))
-                if entry and entry.get("chat_id"):
-                    chat_ids.append(str(entry.get("chat_id")))
+        # Extract bot and chat IDs
+        bot_ids = telegram_entry.get("bot_ids") or []
+        group_ids = telegram_entry.get("group_ids") or []
+        channel_ids = telegram_entry.get("channel_ids") or []
 
-            for channel_id in channel_ids:
-                entry = channels_by_id.get(str(channel_id))
-                if entry and entry.get("chat_id"):
-                    chat_ids.append(str(entry.get("chat_id")))
+        if not bot_ids:
+            errors.append(f"Regola '{rule_name}' senza bot.")
+            continue
 
-            if not chat_ids:
-                errors.append(f"Regola '{rule_name}' senza gruppi o canali.")
-                continue
+        # Collect chat IDs
+        chat_ids = []
+        for group_id in group_ids:
+            entry = groups_by_id.get(str(group_id))
+            if entry and entry.get("chat_id"):
+                chat_ids.append(str(entry.get("chat_id")))
 
-            # Build recipient pairs (bot_token, chat_id)
-            recipient_pairs = []
-            for bot_id in bot_ids:
-                bot = bots_by_id.get(str(bot_id))
-                if not bot or not bot.get("token"):
-                    errors.append(f"Bot non trovato per regola '{rule_name}'.")
-                    continue
+        for channel_id in channel_ids:
+            entry = channels_by_id.get(str(channel_id))
+            if entry and entry.get("chat_id"):
+                chat_ids.append(str(entry.get("chat_id")))
 
-                token = bot.get("token")
-                for chat_id in chat_ids:
-                    recipient_pairs.append((token, chat_id))
+        if not chat_ids:
+            errors.append(f"Regola '{rule_name}' senza gruppi o canali.")
+            continue
 
-            if not recipient_pairs:
-                errors.append(f"Regola '{rule_name}' senza destinatari validi.")
-                continue
-
-            # Filter items by server IDs
-            rule_items = items
-            if rule_server_ids:
-                rule_items = [item for item in items if item.get("server_id") in rule_server_ids]
-
-            if not rule_items:
-                errors.append(f"Regola '{rule_name}': nessun contenuto da notificare per i server configurati.")
-                continue
-
-            # Get template from preset
-            template = preset_entry.get("template") if isinstance(preset_entry, dict) else default_message_template()
-
-            rule_runs.append({
-                "name": rule_name,
-                "template": template,
-                "items": rule_items,
-                "recipients": recipient_pairs
-            })
-    else:
-        # No rules defined - use global preset
-        preset = resolve_message_preset(latest_settings)
-        template = preset.get("template") if isinstance(preset, dict) else default_message_template()
-
-        selected_preset_ids = latest_settings.get("TELEGRAM_PRESET_IDS") or []
-        selected_presets = [
-            preset_entry for preset_entry in telegram_presets
-            if preset_entry.get("id") in selected_preset_ids
-        ]
-
-        if not selected_presets:
-            return {
-                "success": False,
-                "message": "Seleziona almeno una preconfigurazione Telegram.",
-                "sent": 0,
-                "failed": 0,
-                "errors": []
-            }
-
-        # Build recipient pairs
+        # Build recipient pairs (bot_token, chat_id)
         recipient_pairs = []
-        for preset_entry in selected_presets:
-            bot_ids = preset_entry.get("bot_ids") or []
-            group_ids = preset_entry.get("group_ids") or []
-            channel_ids = preset_entry.get("channel_ids") or []
-
-            if not bot_ids:
-                errors.append(f"Preset '{preset_entry.get('name')}' senza bot.")
+        for bot_id in bot_ids:
+            bot = bots_by_id.get(str(bot_id))
+            if not bot or not bot.get("token"):
+                errors.append(f"Bot non trovato per regola '{rule_name}'.")
                 continue
 
-            # Collect chat IDs
-            chat_ids = []
-            for group_id in group_ids:
-                entry = groups_by_id.get(str(group_id))
-                if entry and entry.get("chat_id"):
-                    chat_ids.append(str(entry.get("chat_id")))
-
-            for channel_id in channel_ids:
-                entry = channels_by_id.get(str(channel_id))
-                if entry and entry.get("chat_id"):
-                    chat_ids.append(str(entry.get("chat_id")))
-
-            if not chat_ids:
-                errors.append(f"Preset '{preset_entry.get('name')}' senza gruppi o canali.")
-                continue
-
-            for bot_id in bot_ids:
-                bot = bots_by_id.get(str(bot_id))
-                if not bot or not bot.get("token"):
-                    errors.append(f"Bot non trovato per preset '{preset_entry.get('name')}'.")
-                    continue
-
-                token = bot.get("token")
-                for chat_id in chat_ids:
-                    recipient_pairs.append((token, chat_id))
+            bot_id_text = str(bot_id)
+            token = bot.get("token")
+            for chat_id in chat_ids:
+                chat_id_text = str(chat_id)
+                recipient_pairs.append({
+                    "bot_id": bot_id_text,
+                    "token": token,
+                    "chat_id": chat_id_text,
+                    "destination_key": _destination_key(bot_id_text, chat_id_text),
+                })
 
         if not recipient_pairs:
-            return {
-                "success": False,
-                "message": "Nessun destinatario valido per le notifiche.",
-                "sent": 0,
-                "failed": 0,
-                "errors": []
-            }
+            errors.append(f"Regola '{rule_name}' senza destinatari validi.")
+            continue
+
+        # Filter items by server IDs
+        rule_items = items
+        if rule_server_ids:
+            rule_items = [item for item in items if item.get("server_id") in rule_server_ids]
+
+        if not rule_items:
+            errors.append(f"Regola '{rule_name}': nessun contenuto da notificare per i server configurati.")
+            continue
+
+        # Get template from preset
+        template = preset_entry.get("template") if isinstance(preset_entry, dict) else default_message_template()
 
         rule_runs.append({
-            "name": "Preset globale",
+            "name": rule_name,
             "template": template,
-            "items": items,
+            "items": rule_items,
             "recipients": recipient_pairs
         })
 
@@ -376,7 +416,7 @@ def send_notifications(
         elif errors:
             message = f"Nessuna regola eseguibile. {', '.join(errors)}"
         else:
-            message = "Nessuna regola attiva per le notifiche."
+            message = "Crea o attiva almeno una regola di notifica."
         return {
             "success": False,
             "message": message,
@@ -385,13 +425,82 @@ def send_notifications(
             "errors": errors
         }
 
+    def _has_pending_destination(item: Dict[str, Any], recipients: List[Dict[str, Any]]) -> bool:
+        state_entry = _get_item_state_entry(item)
+        for recipient in recipients:
+            if not isinstance(recipient, dict):
+                continue
+            destination_key = recipient.get("destination_key") or _destination_key(
+                recipient.get("bot_id"),
+                recipient.get("chat_id"),
+            )
+            if destination_key and not _is_destination_notified(state_entry, item, destination_key):
+                return True
+        return False
+
+    pending_item_signatures = set()
+    for rule_run in rule_runs:
+        recipients = rule_run.get("recipients") or []
+        for item in rule_run.get("items") or []:
+            item_signature = _publication_signature(item)
+            if item_signature and _has_pending_destination(item, recipients):
+                pending_item_signatures.add(item_signature)
+
+    if not pending_item_signatures:
+        return {
+            "success": False,
+            "message": "Nessuna pubblicazione da notificare.",
+            "sent": 0,
+            "failed": 0,
+            "errors": errors
+        }
+
+    pending_items = [
+        item for item in items
+        if isinstance(item, dict) and _publication_signature(item) in pending_item_signatures
+    ]
+    if effective_per_server_limit > 0:
+        from emby_latest.utils import limit_by_server
+        # Notification totals are intentionally the sum of each server limit,
+        # after excluding destinations already delivered.
+        pending_items = limit_by_server(pending_items, effective_per_server_limit)
+    allowed_item_signatures = {
+        _publication_signature(item)
+        for item in pending_items
+        if isinstance(item, dict) and _publication_signature(item)
+    }
+
+    filtered_rule_runs = []
+    for rule_run in rule_runs:
+        recipients = rule_run.get("recipients") or []
+        rule_items = [
+            item for item in (rule_run.get("items") or [])
+            if _publication_signature(item) in allowed_item_signatures
+            and _has_pending_destination(item, recipients)
+        ]
+        if not rule_items:
+            continue
+        filtered = dict(rule_run)
+        filtered["items"] = rule_items
+        filtered_rule_runs.append(filtered)
+    rule_runs = filtered_rule_runs
+
+    if not rule_runs:
+        return {
+            "success": False,
+            "message": "Nessuna pubblicazione da notificare.",
+            "sent": 0,
+            "failed": 0,
+            "errors": errors
+        }
+
     # Send notifications
     sent = 0
     failed = 0
-    notified_items = []
+    notification_state_updates: Dict[str, Dict[str, Any]] = {}
 
-    # Deduplication: track already-sent items in this execution
-    sent_item_signatures = set()
+    # Deduplicate deliveries by item and Telegram destination, not by item only.
+    sent_delivery_signatures = set()
 
     throttle_state = {"last_send": 0.0}
     min_interval_sec = 1.1
@@ -405,37 +514,63 @@ def send_notifications(
 
     for rule_run in rule_runs:
         template = rule_run.get("template") or default_message_template()
+        rule_name = str(rule_run.get("name") or rule_run.get("id") or "Regola")
         rule_items = rule_run.get("items") or []
         recipients = rule_run.get("recipients") or []
 
         for item in rule_items:
-            # Create unique signature for item (server_id + item_id)
-            server_id = item.get("server_id")
-            item_id = item.get("item_id")
-
-            if not server_id or not item_id:
+            # Create unique signature for this publication of the item.
+            item_signature = _publication_signature(item)
+            if not item_signature:
                 continue
 
-            item_signature = f"{server_id}:{item_id}"
-
-            # Skip if already sent in this execution
-            if item_signature in sent_item_signatures:
-                print(f"   -> [NOTIFY] Skip duplicato: {item.get('title', 'Unknown')} (già notificato)")
-                continue
-
-            # Build message
-            message_result = build_message(item, template)
-            if isinstance(message_result, tuple) and len(message_result) == 2:
+            # Build message with the same template validation used by preview.
+            message_result = build_message(item, template, return_error=True)
+            template_error = None
+            if isinstance(message_result, tuple) and len(message_result) == 3:
+                message, image_url, template_error = message_result
+            elif isinstance(message_result, tuple) and len(message_result) == 2:
                 message, image_url = message_result
             else:
+                continue
+
+            if template_error:
+                title = item.get("title") or item.get("series_name") or item.get("item_id") or "contenuto"
+                errors.append(f"Errore template regola '{rule_name}' per '{title}': {template_error}")
+                failed += 1
                 continue
 
             if not message and not image_url:
                 continue
 
+            update_entry = notification_state_updates.setdefault(item_signature, {
+                "item": item,
+                "publication_key": _publication_state_key(item),
+                "delivered": {},
+                "required": set(),
+            })
+            state_entry = _get_item_state_entry(item)
+
             # Send to all recipients
-            item_success = False
-            for token, chat_id in recipients:
+            for recipient in recipients:
+                if not isinstance(recipient, dict):
+                    continue
+                token = recipient.get("token")
+                bot_id = recipient.get("bot_id")
+                chat_id = recipient.get("chat_id")
+                destination_key = recipient.get("destination_key") or _destination_key(bot_id, chat_id)
+                if not token or not chat_id or not destination_key:
+                    continue
+                update_entry["required"].add(destination_key)
+
+                if _is_destination_notified(state_entry, item, destination_key):
+                    continue
+
+                delivery_signature = (item_signature, str(bot_id), str(chat_id))
+                if delivery_signature in sent_delivery_signatures:
+                    print(f"   -> [NOTIFY] Skip duplicato: {item.get('title', 'Unknown')} (già notificato al destinatario)")
+                    continue
+
                 _throttle_send()
                 payload: dict = {}
                 preview_enabled: bool = False
@@ -474,28 +609,78 @@ def send_notifications(
 
                 if ok:
                     sent += 1
-                    item_success = True
+                    update_entry["delivered"][destination_key] = {
+                        "bot_id": str(bot_id),
+                        "chat_id": str(chat_id),
+                    }
+                    sent_delivery_signatures.add(delivery_signature)
                 else:
                     failed += 1
                     if err:
                         errors.append(err)
 
-            if item_success:
-                notified_items.append(item)
-                sent_item_signatures.add(item_signature)
-
     # Update notified status in DB state
-    if notified_items:
+    state_updates_to_save = {
+        key: value
+        for key, value in notification_state_updates.items()
+        if value.get("delivered")
+    }
+    if state_updates_to_save:
         latest_state = db_state.load_state()
         if not isinstance(latest_state, dict):
             latest_state = {}
 
         notified_at = datetime.now(timezone.utc).isoformat()
 
-        for item in notified_items:
+        def _apply_destination_state(
+            entry: Dict[str, Any],
+            publication_key: str,
+            delivered_destinations: Dict[str, Dict[str, str]],
+            required_destinations: set,
+        ) -> None:
+            publications = entry.get("notified_publications")
+            if not isinstance(publications, dict):
+                publications = {}
+            publication_entry = publications.setdefault(publication_key, {})
+            if not isinstance(publication_entry, dict):
+                publication_entry = {}
+                publications[publication_key] = publication_entry
+
+            destinations = publication_entry.get("notified_destinations")
+            if not isinstance(destinations, dict):
+                destinations = {}
+            for destination_key, destination in delivered_destinations.items():
+                destinations[destination_key] = {
+                    "bot_id": destination.get("bot_id") or "",
+                    "chat_id": destination.get("chat_id") or "",
+                    "notified_at": notified_at,
+                }
+            publication_entry["notified_destinations"] = destinations
+            publication_entry["notified"] = bool(
+                required_destinations and required_destinations.issubset(destinations.keys())
+            )
+            if publication_entry["notified"]:
+                publication_entry["notified_at"] = notified_at
+
+            entry["notified_publications"] = publications
+
+            summary_destinations = entry.get("notified_destinations")
+            if not isinstance(summary_destinations, dict):
+                summary_destinations = {}
+            summary_destinations.update(destinations)
+            entry["notified_destinations"] = summary_destinations
+            entry["notified"] = bool(entry.get("notified") or publication_entry.get("notified"))
+            if publication_entry["notified"]:
+                entry["notified_at"] = notified_at
+
+        for update in state_updates_to_save.values():
+            item = update.get("item") or {}
             server_id = str(item.get("server_id") or "")
             item_id = str(item.get("item_id") or "")
-            item_type = str(item.get("item_type") or "")
+            item_type = str(item.get("item_type") or "").lower()
+            delivered_destinations = update.get("delivered") or {}
+            required_destinations = update.get("required") or set()
+            publication_key = str(update.get("publication_key") or "").strip() or _publication_state_key(item)
 
             if not server_id:
                 continue
@@ -505,8 +690,9 @@ def send_notifications(
                 server_state["movies"] = {"items": {}}
             if not isinstance(server_state.get("series"), dict):
                 server_state["series"] = {"items": {}}
+            history_state = ensure_history(server_state)
 
-            if item_type == "Movie":
+            if item_type == "movie":
                 movie_items = server_state["movies"].setdefault("items", {})
                 signature = str(item.get("signature") or "")
                 state_key = signature or item_id
@@ -529,10 +715,18 @@ def send_notifications(
                     }
                     movie_items[state_key] = entry
                 if isinstance(entry, dict):
-                    entry["notified"] = True
-                    entry["notified_at"] = notified_at
+                    _apply_destination_state(entry, publication_key, delivered_destinations, required_destinations)
+                    update_history_entry(history_state, "movies", state_key, {
+                        "item_id": item_id or None,
+                        "signature": signature or None,
+                        "title": item.get("title") or "",
+                        "year": item.get("year"),
+                        "last_seen_at": item.get("added_at") or "",
+                        "media_source_keys": entry.get("media_source_keys") or [],
+                        **notification_snapshot(entry),
+                    })
 
-            elif item_type == "Series":
+            elif item_type in ("series", "episode"):
                 series_items = server_state["series"].setdefault("items", {})
                 series_key = item_id or str(item.get("series_id") or "")
                 entry = series_items.get(series_key) if series_key else None
@@ -551,8 +745,40 @@ def send_notifications(
                     }
                     series_items[series_key] = entry
                 if isinstance(entry, dict):
-                    entry["notified"] = True
-                    entry["notified_at"] = notified_at
+                    _apply_destination_state(entry, publication_key, delivered_destinations, required_destinations)
+                    series_notification = notification_snapshot(entry)
+                    update_history_entry(history_state, "series", series_key, {
+                        "series_id": series_key,
+                        "item_id": series_key,
+                        "title": item.get("title") or "",
+                        "year": item.get("year"),
+                        "last_seen_at": item.get("added_at") or "",
+                        "seasons": entry.get("seasons") or [],
+                        "last_changes": entry.get("last_changes") or item.get("changes") or [],
+                        **series_notification,
+                    })
+                    for change in item.get("changes") or []:
+                        if not isinstance(change, dict):
+                            continue
+                        season_number = change.get("season_number")
+                        episode_number = change.get("episode_number")
+                        episode_key = build_episode_signature(
+                            series_key,
+                            season_number,
+                            episode_number,
+                            episode_id=None,
+                            episode_name=change.get("episode_title") or "",
+                        )
+                        if not episode_key:
+                            continue
+                        update_history_entry(history_state, "episodes", episode_key, {
+                            "series_id": series_key,
+                            "season": season_number,
+                            "episode": episode_number,
+                            "title": change.get("episode_title") or "",
+                            "last_seen_at": change.get("added_at") or item.get("added_at") or "",
+                            **series_notification,
+                        })
 
         try:
             db_state.save_state(latest_state)

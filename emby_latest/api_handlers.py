@@ -5,7 +5,46 @@ This module provides handler functions for API routes using the manager.
 """
 
 from datetime import datetime, timezone
+import threading
 from typing import Any, Dict, Tuple
+
+
+_latest_refresh_request_lock = threading.Lock()
+_latest_refresh_request_reserved = False
+
+
+def _reserve_latest_refresh_request(manager) -> bool:
+    """Atomically reserve a background Latest refresh request."""
+    global _latest_refresh_request_reserved
+    with _latest_refresh_request_lock:
+        if _latest_refresh_request_reserved or manager.is_refreshing():
+            return False
+        _latest_refresh_request_reserved = True
+        return True
+
+
+def _release_latest_refresh_request() -> None:
+    """Release the background Latest refresh request reservation."""
+    global _latest_refresh_request_reserved
+    with _latest_refresh_request_lock:
+        _latest_refresh_request_reserved = False
+
+
+def _latest_manager_unavailable_payload() -> Tuple[Dict[str, Any], int]:
+    from emby_latest import get_manager_unavailable_reason
+
+    reason = get_manager_unavailable_reason()
+    message = "Latest manager not available"
+    if reason:
+        message = f"{message}: {reason}"
+    return {"success": False, "message": message}, 404
+
+
+def _normalize_latest_view(view: Any) -> str:
+    normalized = str(view or "").strip().lower()
+    if normalized == "batch":
+        return "batch"
+    return "feed"
 
 
 def build_latest_snapshot_payload(
@@ -34,7 +73,7 @@ def build_latest_snapshot_payload(
     # Get manager instance
     manager = get_manager()
     if not manager:
-        return {"success": False, "message": "Latest publications not enabled"}, 404
+        return _latest_manager_unavailable_payload()
 
     # Check database is enabled
     config, is_valid = load_config()
@@ -45,7 +84,8 @@ def build_latest_snapshot_payload(
         return {"success": False, "message": "Database non abilitato"}, 400
 
     # Get snapshot from manager
-    snapshot = manager.get_snapshot(mode=view)
+    normalized_view = _normalize_latest_view(view)
+    snapshot = manager.get_snapshot(mode=normalized_view)
 
     payload_data = snapshot.get("payload")
     timestamp = snapshot.get("timestamp")
@@ -64,6 +104,10 @@ def build_latest_snapshot_payload(
         if error:
             return {"success": False, "message": error}, 400
 
+        fresh_snapshot = manager.get_snapshot(mode=normalized_view)
+        progress = fresh_snapshot.get("progress", progress)
+        refreshing = fresh_snapshot.get("refreshing", False)
+
         return {
             "success": True,
             "movies": payload.get("movies", []) if payload else [],
@@ -71,7 +115,7 @@ def build_latest_snapshot_payload(
             "errors": payload.get("errors", []) if payload else [],
             "cached": False,
             "cached_at": datetime.now(timezone.utc).isoformat(),
-            "refreshing": False,
+            "refreshing": refreshing,
             "progress": progress
         }, 200
 
@@ -103,6 +147,10 @@ def build_latest_snapshot_payload(
         if error:
             return {"success": False, "message": error}, 400
 
+        fresh_snapshot = manager.get_snapshot(mode=normalized_view)
+        progress = fresh_snapshot.get("progress", progress)
+        refreshing = fresh_snapshot.get("refreshing", refreshing)
+
         return {
             "success": True,
             "movies": payload.get("movies", []) if payload else [],
@@ -117,7 +165,7 @@ def build_latest_snapshot_payload(
     # Cache only but no data
     return {
         "success": False,
-        "message": "No cached data available",
+        "message": "Nessun dato Pubblicazioni salvato nel DB",
         "refreshing": refreshing,
         "progress": progress
     }, 404
@@ -140,29 +188,69 @@ def build_latest_refresh_payload(
         Tuple of (payload_dict, http_status_code)
     """
     from emby_latest import get_manager
-    import threading
-
+    from emby_latest.operations import (
+        fail_latest_refresh_operation,
+        finish_latest_refresh_operation,
+        make_latest_operation_progress_tracker,
+        start_latest_refresh_operation,
+    )
     manager = get_manager()
     if not manager:
-        return {"success": False, "message": "Latest publications not enabled"}, 404
+        return _latest_manager_unavailable_payload()
 
-    # Check if already refreshing
-    if manager.is_refreshing():
+    # Reserve the background refresh before the thread starts. Without this,
+    # two near-simultaneous POSTs can both pass before manager._refreshing flips.
+    if not _reserve_latest_refresh_request(manager):
         return {
             "success": False,
             "message": "Refresh già in corso",
             "refreshing": True
         }, 409
 
+    operation_tracker, operation_id = start_latest_refresh_operation(
+        full_refresh=full_refresh,
+        limit=limit,
+        per_server_limit=per_server_limit,
+    )
+
     # Start background refresh
     def _do_refresh():
-        if full_refresh:
-            manager.refresh_full(limit, per_server_limit)
-        else:
-            manager.refresh_incremental(limit, per_server_limit)
+        progress_tracker = make_latest_operation_progress_tracker(
+            manager.progress_tracker,
+            operation_tracker,
+            operation_id,
+            full_refresh=full_refresh,
+            limit=limit,
+            per_server_limit=per_server_limit,
+        )
+        try:
+            if full_refresh:
+                payload, error = manager.refresh_full(
+                    limit,
+                    per_server_limit,
+                    progress_tracker=progress_tracker,
+                )
+            else:
+                payload, error = manager.refresh_incremental(
+                    limit,
+                    per_server_limit,
+                    progress_tracker=progress_tracker,
+                )
+            finish_latest_refresh_operation(operation_tracker, operation_id, payload, error)
+        except Exception as exc:
+            fail_latest_refresh_operation(operation_tracker, operation_id, exc)
+            import traceback
+
+            traceback.print_exc()
+        finally:
+            _release_latest_refresh_request()
 
     thread = threading.Thread(target=_do_refresh, daemon=True)
-    thread.start()
+    try:
+        thread.start()
+    except Exception:
+        _release_latest_refresh_request()
+        raise
 
     return {
         "success": True,
@@ -182,7 +270,7 @@ def build_latest_progress_payload() -> Tuple[Dict[str, Any], int]:
 
     manager = get_manager()
     if not manager:
-        return {"success": False, "message": "Latest publications not enabled"}, 404
+        return _latest_manager_unavailable_payload()
 
     progress = manager.progress_tracker.get_snapshot()
 
@@ -204,21 +292,29 @@ def build_preview_snapshot(body: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
         Tuple of (payload_dict, http_status_code)
     """
     from emby_latest.messages import build_message
+    from emby_latest.templates import template_has_image_token
 
     if not isinstance(body, dict):
         return {"success": False, "message": "Body non valido"}, 400
 
     template = body.get("template", "")
+    if not isinstance(template, str):
+        return {"success": False, "message": "Template mancante"}, 400
+    template = template.strip()
     if not template:
         return {"success": False, "message": "Template mancante"}, 400
 
     payload = body.get("payload", {})
+    if not isinstance(payload, dict):
+        payload = {}
     items = payload.get("items", {})
     if not isinstance(items, dict) or not items:
         items = body.get("items", {})
+    if not isinstance(items, dict):
+        items = {}
 
     previews = {}
-    image_enabled = "poster_url" in template or "backdrop_url" in template
+    image_enabled = template_has_image_token(template)
 
     for key in ("movie", "series"):
         item = items.get(key)
@@ -285,6 +381,7 @@ def build_enrich_snapshot(body: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
         Tuple of (payload_dict, http_status_code)
     """
     from emby_latest import get_manager
+    from core.utils import _coerce_request_bool
 
     if not isinstance(body, dict):
         return {"success": False, "message": "Body non valido"}, 400
@@ -293,13 +390,16 @@ def build_enrich_snapshot(body: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
     if not isinstance(item, dict):
         return {"success": False, "message": "Item mancante"}, 400
 
-    force_omdb = body.get("force_omdb", False)
+    force_omdb = _coerce_request_bool(body.get("force_omdb"), False)
 
     manager = get_manager()
     if not manager:
-        return {"success": False, "message": "Latest publications not enabled"}, 404
+        return _latest_manager_unavailable_payload()
 
-    enriched = manager.enrich_item(item, force_omdb=force_omdb)
+    try:
+        enriched = manager.enrich_item(item, force_omdb=force_omdb)
+    except Exception as exc:
+        return {"success": False, "message": f"Errore enrichment: {exc}"}, 500
 
     return {
         "success": True,
@@ -318,20 +418,19 @@ def build_notify_snapshot(body: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
         Tuple of (payload_dict, http_status_code)
     """
     from emby_latest import get_manager
+    from core.utils import _coerce_request_int
 
     if not isinstance(body, dict):
         return {"success": False, "message": "Body non valido"}, 400
 
-    limit = body.get("limit", 200)
-    per_server_limit = body.get("per_server_limit", 50)
+    per_server_limit = _coerce_request_int(body.get("per_server_limit"), 50, 1, 100)
     server_filter = body.get("server_filter") or body.get("server_id")
 
     manager = get_manager()
     if not manager:
-        return {"success": False, "message": "Latest publications not enabled"}, 404
+        return _latest_manager_unavailable_payload()
 
     result = manager.send_notifications(
-        limit=limit,
         per_server_limit=per_server_limit,
         server_filter=server_filter
     )

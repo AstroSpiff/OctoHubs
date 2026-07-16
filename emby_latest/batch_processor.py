@@ -231,7 +231,8 @@ def extract_versions(
             "audio_ger": audio_ger,
             "audio_jpn": audio_jpn,
             "audio_langs": audio_langs,
-            "subtitle_langs": subtitle_langs
+            "subtitle_langs": subtitle_langs,
+            "mediainfo_available": bool(source.get("mediainfo_available"))
         })
 
     # Fallback: if no MediaSources, use item Path
@@ -263,7 +264,8 @@ def extract_versions(
                 "audio_ger": "",
                 "audio_jpn": "",
                 "audio_langs": "",
-                "subtitle_langs": ""
+                "subtitle_langs": "",
+                "mediainfo_available": False
             })
 
     return versions
@@ -442,7 +444,8 @@ def build_version_changes(
             "audio_ger": version.get("audio_ger") or "",
             "audio_jpn": version.get("audio_jpn") or "",
             "audio_langs": version.get("audio_langs") or "",
-            "subtitle_langs": version.get("subtitle_langs") or ""
+            "subtitle_langs": version.get("subtitle_langs") or "",
+            "mediainfo_available": bool(version.get("mediainfo_available"))
         })
 
     return changes

@@ -7,10 +7,11 @@
     const selectItem = document.querySelector('[data-latest-verify-item]');
     const btnCheck = document.querySelector('[data-latest-verify-check]');
     const btnEnrich = document.querySelector('[data-latest-verify-enrich]');
-    const loadingDiv = overlay.querySelector('[data-latest-verify-loading]');
-    const resultsDiv = overlay.querySelector('[data-latest-verify-results]');
 
     if (!btnVerify || !overlay) return;
+
+    const loadingDiv = overlay.querySelector('[data-latest-verify-loading]');
+    const resultsDiv = overlay.querySelector('[data-latest-verify-results]');
 
     const getCsrfToken = () => {
         const el = document.querySelector('meta[name="csrf-token"]');
@@ -43,6 +44,65 @@
         return value === null || value === undefined ? '' : String(value);
     };
 
+    const optionalAudioLanguageFields = new Set([
+        'audio_ita',
+        'audio_eng',
+        'audio_fra',
+        'audio_spa',
+        'audio_ger',
+        'audio_jpn'
+    ]);
+
+    const mediaInfoFields = new Set([
+        'quality',
+        'resolution',
+        'video_codec',
+        'audio_codec',
+        'audio_channels',
+        'container',
+        'bitrate',
+        'size',
+        'source_name',
+        'path',
+        'video_details',
+        'audio_details',
+        'audio_ita',
+        'audio_eng',
+        'audio_fra',
+        'audio_spa',
+        'audio_ger',
+        'audio_jpn',
+        'audio_langs',
+        'subtitle_langs'
+    ]);
+
+    const hasFieldValue = (value) => {
+        if (Array.isArray(value)) {
+            return value.length > 0;
+        }
+        return value !== null && value !== undefined && value !== '' && value !== 0;
+    };
+
+    const hasAudioProbeData = (source) => {
+        if (!source || typeof source !== 'object') {
+            return false;
+        }
+        return hasFieldValue(source.audio_langs) || hasFieldValue(source.audio_details);
+    };
+
+    const isAbsentAudioLanguageField = (field, source) => {
+        return optionalAudioLanguageFields.has(field)
+            && !hasFieldValue(source ? source[field] : null)
+            && hasAudioProbeData(source);
+    };
+
+    const isVerifiedMediaInfoField = (field, source) => {
+        return mediaInfoFields.has(field)
+            && source
+            && source.mediainfo_available === true
+            && !hasFieldValue(source[field]);
+    };
+
     const formatDate = (value) => {
         if (!value) {
             return '';
@@ -68,6 +128,7 @@
 
     let latestData = null;
     let currentItem = null;
+    let currentItems = [];
 
     // Open modal
     btnVerify.addEventListener('click', async () => {
@@ -98,7 +159,10 @@
     // Load latest data from API
     async function loadLatestData() {
         try {
-            const limits = typeof getLatestFetchLimits === 'function' ? getLatestFetchLimits() : { total: 50, perServer: 50 };
+            const latestApi = window.octohubLatest || {};
+            const limits = typeof latestApi.getLatestFetchLimits === 'function'
+                ? latestApi.getLatestFetchLimits()
+                : { total: 50, perServer: 50 };
             const params = new URLSearchParams({
                 limit: String(limits.total || 50),
                 per_server_limit: String(limits.perServer || 10),
@@ -109,12 +173,14 @@
             const data = await response.json();
 
             if (!data.success) {
-                throw new Error(data.error || 'Errore nel caricamento dei dati');
+                throw new Error(data.error || data.message || 'Errore nel caricamento dei dati');
             }
 
             latestData = data;
             populateServerDropdown();
-            loadingDiv.style.display = 'none';
+            if (loadingDiv) {
+                loadingDiv.style.display = 'none';
+            }
         } catch (error) {
             console.error('Error loading latest data:', error);
             if (window.octohubUtils && typeof window.octohubUtils.openAlertModal === 'function') {
@@ -132,17 +198,29 @@
     function populateServerDropdown() {
         selectServer.innerHTML = '<option value="">Seleziona un server...</option>';
 
-        const servers = new Set();
+        const servers = new Map();
+        const addServer = (item) => {
+            const serverId = safeString(item && item.server_id);
+            if (!serverId) {
+                return;
+            }
+            const label = safeString(item.server_name || item.server_label || item.server || serverId) || serverId;
+            if (!servers.has(serverId)) {
+                servers.set(serverId, label);
+            }
+        };
         if (latestData.movies) {
-            latestData.movies.forEach(movie => servers.add(movie.server_name));
+            latestData.movies.forEach(addServer);
         }
         if (latestData.series) {
-            latestData.series.forEach(series => servers.add(series.server_name));
+            latestData.series.forEach(addServer);
         }
 
-        Array.from(servers).sort().forEach(serverName => {
+        Array.from(servers.entries())
+            .sort((a, b) => a[1].localeCompare(b[1]))
+            .forEach(([serverId, serverName]) => {
             const option = document.createElement('option');
-            option.value = serverName;
+            option.value = serverId;
             option.textContent = serverName;
             selectServer.appendChild(option);
         });
@@ -150,9 +228,9 @@
 
     // Server selection changed
     selectServer.addEventListener('change', () => {
-        const serverName = selectServer.value;
+        const serverId = selectServer.value;
 
-        if (!serverName) {
+        if (!serverId) {
             selectType.disabled = true;
             selectItem.disabled = true;
             btnCheck.disabled = true;
@@ -174,7 +252,7 @@
 
     // Type selection changed
     selectType.addEventListener('change', () => {
-        const serverName = selectServer.value;
+        const serverId = selectServer.value;
         const itemType = selectType.value;
 
         if (!itemType) {
@@ -186,20 +264,20 @@
             return;
         }
 
-        populateItemDropdown(serverName, itemType);
+        populateItemDropdown(serverId, itemType);
         selectItem.disabled = false;
         resultsDiv.style.display = 'none';
     });
 
     // Populate item dropdown based on server and type
-    function populateItemDropdown(serverName, itemType) {
+    function populateItemDropdown(serverId, itemType) {
         selectItem.innerHTML = '<option value="">Seleziona contenuto...</option>';
 
-        const items = itemType === 'movie'
-            ? (latestData.movies || []).filter(m => m.server_name === serverName)
-            : (latestData.series || []).filter(s => s.server_name === serverName);
+        currentItems = itemType === 'movie'
+            ? (latestData.movies || []).filter(item => item.server_id === serverId)
+            : (latestData.series || []).filter(item => item.server_id === serverId);
 
-        items.forEach((item, index) => {
+        currentItems.forEach((item, index) => {
             const option = document.createElement('option');
             option.value = index;
             option.textContent = item.title + (item.year ? ` (${item.year})` : '');
@@ -223,12 +301,7 @@
         }
 
         const itemType = selectType.value;
-        const serverName = selectServer.value;
-        const items = itemType === 'movie'
-            ? latestData.movies.filter(m => m.server_name === serverName)
-            : latestData.series.filter(s => s.server_name === serverName);
-
-        currentItem = items[parseInt(itemIndex)];
+        currentItem = currentItems[parseInt(itemIndex)];
         btnCheck.disabled = false;
         btnEnrich.disabled = false;
         resultsDiv.style.display = 'none';
@@ -253,7 +326,7 @@
             const response = await csrfFetch('/api/emby/latest/enrich', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ item: currentItem })
+                body: JSON.stringify({ item: currentItem, force_omdb: true })
             });
 
             const contentType = response.headers.get('content-type') || '';
@@ -270,6 +343,22 @@
             }
 
             currentItem = data.item;
+            if (currentItems[parseInt(selectItem.value)] && currentItem) {
+                currentItems[parseInt(selectItem.value)] = currentItem;
+            }
+            const selectedType = selectType.value;
+            const collection = selectedType === 'movie' ? latestData.movies : latestData.series;
+            if (Array.isArray(collection) && currentItem) {
+                const updatedId = safeString(currentItem.item_id);
+                const updatedServerId = safeString(currentItem.server_id);
+                const index = collection.findIndex(item => (
+                    safeString(item.item_id) === updatedId
+                    && safeString(item.server_id) === updatedServerId
+                ));
+                if (index >= 0) {
+                    collection[index] = currentItem;
+                }
+            }
             const baseDiff = calculateCurrentDiff(currentItem);
             if (data.diff && Array.isArray(data.diff.added)) {
                 const itemType = currentItem.item_type || currentItem.type || '';
@@ -315,7 +404,8 @@
 
         const tmdbFields = [
             'tmdb_id', 'tmdb_rating', 'tmdb_votes',
-            'tmdb_poster_url'
+            'tmdb_poster_url', 'tmdb_backdrop_url', 'tmdb_logo_url',
+            'tmdb_banner_url', 'tmdb_thumb_url'
         ];
 
         const omdbFields = [
@@ -358,10 +448,7 @@
             const missing = [];
             fields.forEach(field => {
                 const value = source[field];
-                let hasValue = value !== null && value !== undefined && value !== '' && value !== 0;
-                if (Array.isArray(value) && value.length === 0) {
-                    hasValue = false;
-                }
+                const hasValue = hasFieldValue(value);
                 const fieldInfo = {
                     field,
                     value,
@@ -369,6 +456,10 @@
                 };
                 if (hasValue) {
                     available.push(fieldInfo);
+                } else if (isVerifiedMediaInfoField(field, source)) {
+                    return;
+                } else if (isAbsentAudioLanguageField(field, source)) {
+                    return;
                 } else {
                     missing.push(fieldInfo);
                 }
@@ -570,7 +661,7 @@
                         ${label}
                         <span class="latest-verify-source">${source}</span>
                     </div>
-                    ${field.value !== null ? `<div class="latest-verify-field-value">${valueDisplay}</div>` : ''}
+                    ${field.value !== null ? `<div class="latest-verify-field-value">${escapeHtml(valueDisplay)}</div>` : ''}
                 </div>
             `;
         }).join('');
@@ -617,6 +708,10 @@
             'tmdb_rating': 'TMDB Rating',
             'tmdb_votes': 'TMDB Voti',
             'tmdb_poster_url': 'TMDB Poster',
+            'tmdb_backdrop_url': 'TMDB Backdrop',
+            'tmdb_logo_url': 'TMDB Logo',
+            'tmdb_banner_url': 'TMDB Banner',
+            'tmdb_thumb_url': 'TMDB Thumb',
             // OMDB
             'imdb_id': 'IMDb ID',
             'imdb_rating': 'IMDb Rating',

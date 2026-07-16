@@ -5,15 +5,60 @@ Extracted from the legacy monolith to reduce module size.
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 from core import config_manager
 from core.config_manager import _db_enabled, _ensure_db_backend, load_config
 from core.utils import get_emby_servers
 from emby_latest import get_manager as get_emby_latest_manager
+from emby_latest import get_manager_unavailable_reason as get_emby_latest_manager_unavailable_reason
 from emby_probe import get_probe_manager
 from emby_runtime.api_clients import _call_emby_api, _fetch_emby_scheduled_tasks
 from emby_users.registry import get_emby_user_manager as _get_emby_user_manager
+
+
+def _wf_positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _wf_enabled_server_count(config: Dict[str, Any] | None) -> int:
+    if not isinstance(config, dict):
+        return 1
+    servers = get_emby_servers(config)
+    if not servers:
+        return 1
+    enabled_servers = [
+        server for server in servers
+        if isinstance(server, dict) and server.get("enabled")
+    ]
+    if enabled_servers:
+        return len(enabled_servers)
+    if any(isinstance(server, dict) and "enabled" in server for server in servers):
+        return 1
+    return len([server for server in servers if isinstance(server, dict)]) or 1
+
+
+def _wf_latest_limits(
+    config: Dict[str, Any] | None,
+    latest_settings: Dict[str, Any] | None = None,
+) -> Tuple[int, int]:
+    if latest_settings is None:
+        from emby_latest.settings import _load_latest_settings
+        latest_settings = _load_latest_settings()
+
+    settings_cfg = latest_settings.get("SETTINGS") if isinstance(latest_settings, dict) else {}
+    if not isinstance(settings_cfg, dict):
+        settings_cfg = {}
+
+    max_movies = _wf_positive_int(settings_cfg.get("max_movies"), 50)
+    max_series = _wf_positive_int(settings_cfg.get("max_series"), 25)
+    per_server_limit = max(max_movies, max_series, 1)
+    limit = per_server_limit * _wf_enabled_server_count(config)
+    return limit, per_server_limit
 
 
 def _wf_trigger_sync() -> bool:
@@ -401,8 +446,10 @@ def _wf_refresh_cache(context: Dict[str, Any]) -> None:
         import time
         import threading
 
-        limit = 50
-        per_server_limit = 50
+        config, is_valid = load_config()
+        if not is_valid or not config:
+            config = {}
+        limit, per_server_limit = _wf_latest_limits(config)
 
         print(f"[WORKFLOW] [CACHE] Parametri: limit={limit}, per_server_limit={per_server_limit}")
 
@@ -419,8 +466,12 @@ def _wf_refresh_cache(context: Dict[str, Any]) -> None:
         # Get manager instance
         manager = get_emby_latest_manager()
         if not manager:
-            print("[WORKFLOW] [CACHE] ✗ Latest manager not available (disabled?)")
-            raise RuntimeError("Latest manager not available")
+            reason = get_emby_latest_manager_unavailable_reason()
+            message = "Latest manager not available"
+            if reason:
+                message = f"{message}: {reason}"
+            print(f"[WORKFLOW] [CACHE] ✗ {message}")
+            raise RuntimeError(message)
 
         print("[WORKFLOW] [CACHE] Manager trovato")
 
@@ -511,22 +562,20 @@ def _wf_notify(context: Dict[str, Any]) -> None:
             print(f"[WORKFLOW] [NOTIFY] ✗ {error_msg}")
             raise RuntimeError(error_msg)
 
-        limit = 12
-        per_server_limit = 12
+        _, per_server_limit = _wf_latest_limits(config)
         server_filter = context.get("server_id")
 
         print(
             "[WORKFLOW] [NOTIFY] Parametri: "
-            f"limit={limit}, per_server_limit={per_server_limit}, server_filter={server_filter}"
+            f"per_server_limit={per_server_limit}, server_filter={server_filter}"
         )
 
         from emby_latest.notifications import send_notifications as _send_notifications
 
         print("[WORKFLOW] [NOTIFY] Invio notifiche in corso...")
         result: dict = _send_notifications(
-            limit,
-            per_server_limit,
-            server_filter,
+            per_server_limit=per_server_limit,
+            server_filter=server_filter,
             config=config,
             db_storage=_ensure_db_backend(),
         )

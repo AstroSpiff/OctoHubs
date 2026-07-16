@@ -167,8 +167,10 @@ def merge_cached_entry(entry: Dict[str, Any], cached: Optional[Dict[str, Any]]) 
         "overview",
         "genres",
         "rating",
+        "community_rating",
         "official_rating",
         "runtime",
+        "runtime_minutes",
         "premiere_date",
         "tagline",
         "studios",
@@ -181,16 +183,23 @@ def merge_cached_entry(entry: Dict[str, Any], cached: Optional[Dict[str, Any]]) 
         "trakt_id",
         "tmdb_rating",
         "tmdb_votes",
+        "imdb_rating",
         "imdb_votes",
+        "metacritic_rating",
         "trakt_rating",
         "trakt_votes",
         "tmdb_poster_url",
-        "omdb_fetched_at"
-    ]
+        "tmdb_backdrop_url",
+        "tmdb_logo_url",
+        "tmdb_banner_url",
+	        "tmdb_thumb_url",
+	        "omdb_fetched_at",
+	        "trakt_fetched_at"
+	    ]
 
     # Series-specific fields
     if is_series:
-        copy_fields.extend(["creators", "imdb_rating", "metacritic_rating"])
+        copy_fields.append("creators")
     else:
         copy_fields.append("directors")
 
@@ -206,7 +215,7 @@ def merge_cached_entry(entry: Dict[str, Any], cached: Optional[Dict[str, Any]]) 
         entry["creators"] = []
 
     # Remove deprecated fields
-    for deprecated in ("critic_rating", "tmdb_logo_url", "rt_tomatometer", "rt_audience", "letterboxd_rating"):
+    for deprecated in ("critic_rating", "rt_tomatometer", "rt_audience", "letterboxd_rating"):
         if deprecated in entry:
             entry.pop(deprecated, None)
 
@@ -238,6 +247,47 @@ def merge_with_db(new_payload: Dict[str, Any], db_payload: Dict[str, Any]) -> Di
     # Build lookup maps from DB cache
     db_maps = build_cache_maps(db_payload)
 
+    def _find_matching_movie_batch(
+        entries: list,
+        server_id: str,
+        signature: str,
+        item_id: str,
+        batch_id: Any,
+    ) -> Optional[Dict[str, Any]]:
+        if not batch_id:
+            return None
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("server_id") or "") != server_id:
+                continue
+            if entry.get("batch_id") != batch_id:
+                continue
+            entry_signature = str(entry.get("signature") or entry.get("item_id") or "")
+            entry_item_id = str(entry.get("item_id") or "")
+            if (signature and entry_signature == signature) or (item_id and entry_item_id == item_id):
+                return entry
+        return None
+
+    def _find_matching_series_batch(
+        entries: list,
+        server_id: str,
+        item_id: str,
+        batch_id: Any,
+    ) -> Optional[Dict[str, Any]]:
+        if not batch_id:
+            return None
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("server_id") or "") != server_id:
+                continue
+            if entry.get("batch_id") != batch_id:
+                continue
+            if item_id and str(entry.get("item_id") or "") == item_id:
+                return entry
+        return None
+
     # Merge new movies
     for new_movie in new_payload.get("movies", []):
         if not isinstance(new_movie, dict):
@@ -251,14 +301,15 @@ def merge_with_db(new_payload: Dict[str, Any], db_payload: Dict[str, Any]) -> Di
         # Try to find existing entry
         key_sig = f"{server_id}:{signature}"
         key_id = f"{server_id}:{item_id}"
-        cached = db_maps["movie_by_signature"].get(key_sig) or db_maps["movie_by_item_id"].get(key_id)
+        batch_match = _find_matching_movie_batch(merged_movies, server_id, signature, item_id, batch_id)
+        cached = batch_match or db_maps["movie_by_signature"].get(key_sig) or db_maps["movie_by_item_id"].get(key_id)
 
         if cached:
             # Merge with cached entry
             merged_entry = merge_cached_entry(new_movie, cached)
 
             # Replace in list if batch_id matches, otherwise add as new
-            if batch_id == cached.get("batch_id"):
+            if batch_match or batch_id == cached.get("batch_id"):
                 try:
                     idx = merged_movies.index(cached)
                     merged_movies[idx] = merged_entry
@@ -281,12 +332,13 @@ def merge_with_db(new_payload: Dict[str, Any], db_payload: Dict[str, Any]) -> Di
         batch_id = new_series.get("batch_id")
 
         key = f"{server_id}:{item_id}"
-        cached = db_maps["series_by_item_id"].get(key)
+        batch_match = _find_matching_series_batch(merged_series, server_id, item_id, batch_id)
+        cached = batch_match or db_maps["series_by_item_id"].get(key)
 
         if cached:
             merged_entry = merge_cached_entry(new_series, cached)
 
-            if batch_id == cached.get("batch_id"):
+            if batch_match or batch_id == cached.get("batch_id"):
                 try:
                     idx = merged_series.index(cached)
                     merged_series[idx] = merged_entry

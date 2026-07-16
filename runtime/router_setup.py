@@ -133,6 +133,7 @@ def register_routes(app: FastAPI, templates: Jinja2Templates, logger: logging.Lo
     app.include_router(emby_library_ui_router)
     init_emby_latest_routes(
         _require_auth,
+        validate_csrf,
     )
     app.include_router(emby_latest_router)
     init_emby_latest_ui_routes(

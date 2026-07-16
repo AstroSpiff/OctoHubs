@@ -14,6 +14,22 @@ _EMBY_LIBRARY_CACHE: dict[str, list[dict]] = {}
 _EMBY_LIBRARY_ITEM_CACHE: dict[tuple[str, str], tuple[str, str]] = {}
 
 
+def _coerce_int_value(value: Any) -> Optional[int]:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _matches_episode_numbers(item: Dict[str, Any], season_number: int, episode_number: int) -> bool:
+    if not isinstance(item, dict):
+        return False
+    return (
+        _coerce_int_value(item.get("ParentIndexNumber")) == season_number
+        and _coerce_int_value(item.get("IndexNumber")) == episode_number
+    )
+
+
 def _load_emby_library_folders(server: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not isinstance(server, dict):
         return []
@@ -123,6 +139,36 @@ def _fetch_emby_items_by_signature(
     return items if isinstance(items, list) else []
 
 
+def _fetch_emby_episode_items(
+    server: Dict[str, Any],
+    series_id: str,
+    season_number: Optional[int],
+    episode_number: Optional[int],
+    fields: Optional[str] = None,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """Fetch all Emby items matching one logical episode."""
+    if not server or not series_id or season_number is None or episode_number is None:
+        return []
+    params = {
+        "Season": season_number,
+        "Fields": fields or (
+            "DateCreated,MediaSources,MediaStreams,Path,ProviderIds,SeriesId,SeriesName,"
+            "SeriesProductionYear,IndexNumber,ParentIndexNumber,ParentId,Type,Name,Container"
+        ),
+    }
+    success, payload = _call_emby_api(server, f"Shows/{series_id}/Episodes", params=params)
+    if not success or not isinstance(payload, dict):
+        return []
+    items = payload.get("Items")
+    if not isinstance(items, list):
+        return []
+    return [
+        item for item in items
+        if _matches_episode_numbers(item, season_number, episode_number)
+    ]
+
+
 def _fetch_emby_oldest_episode_date(
     server: Dict[str, Any],
     series_id: str,
@@ -154,7 +200,9 @@ def _fetch_emby_latest_items(
     server: Dict[str, Any],
     item_type: str,
     limit: int,
-    fields: Optional[str] = None
+    fields: Optional[str] = None,
+    stop_at: Optional[Any] = None,
+    page_size: Optional[int] = None,
 ) -> Tuple[List[Dict[str, Any]], Optional[Any]]:
     """
     Fetch recent items from Emby API.
@@ -171,6 +219,63 @@ def _fetch_emby_latest_items(
             "CommunityRating,OfficialRating,PremiereDate,ChildCount,Path,ParentId,People"
         )
     }
+
+    def _normalize_item_dates(items: List[Dict[str, Any]]) -> None:
+        for item in items:
+            if isinstance(item, dict):
+                if not item.get("DateCreated") and item.get("DateLastMediaAdded"):
+                    item["DateCreated"] = item["DateLastMediaAdded"]
+
+    stop_dt = _parse_date_value(stop_at)
+    if stop_dt:
+        try:
+            max_items = max(0, int(limit))
+        except (TypeError, ValueError):
+            max_items = 0
+        if max_items <= 0:
+            return [], None
+
+        try:
+            effective_page_size = int(page_size) if page_size is not None else min(max_items, 100)
+        except (TypeError, ValueError):
+            effective_page_size = min(max_items, 100)
+        effective_page_size = max(1, min(effective_page_size, max_items))
+
+        collected: List[Dict[str, Any]] = []
+        start_index = 0
+        while len(collected) < max_items:
+            current_limit = min(effective_page_size, max_items - len(collected))
+            page_params = dict(params)
+            page_params["Limit"] = current_limit
+            page_params["StartIndex"] = start_index
+            success, payload = _call_emby_api(server, "Items", params=page_params)
+            if not success or not isinstance(payload, dict):
+                return [], payload
+            page_items = payload.get("Items")
+            if not isinstance(page_items, list):
+                return [], "Risposta Items inattesa"
+            if not page_items:
+                break
+
+            _normalize_item_dates(page_items)
+            reached_cutoff = False
+            for item in page_items:
+                if not isinstance(item, dict):
+                    continue
+                item_dt = _parse_date_value(item.get("DateCreated"))
+                if item_dt and item_dt < stop_dt:
+                    reached_cutoff = True
+                    break
+                collected.append(item)
+                if len(collected) >= max_items:
+                    break
+
+            if reached_cutoff or len(page_items) < current_limit or len(collected) >= max_items:
+                break
+            start_index += len(page_items)
+
+        return collected, None
+
     success, payload = _call_emby_api(server, "Items", params=params)
     if not success or not isinstance(payload, dict):
         return [], payload
@@ -179,10 +284,7 @@ def _fetch_emby_latest_items(
         return [], "Risposta Items inattesa"
 
     # Enrich each item with the best available timestamp
-    for item in items:
-        if isinstance(item, dict):
-            if not item.get("DateCreated") and item.get("DateLastMediaAdded"):
-                item["DateCreated"] = item["DateLastMediaAdded"]
+    _normalize_item_dates(items)
 
     return items, None
 

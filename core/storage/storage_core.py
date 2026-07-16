@@ -968,6 +968,7 @@ class StorageCoreMixin:
                     "trakt_rating VARCHAR(50)",
                     "trakt_votes VARCHAR(50)",
                     "omdb_fetched_at TIMESTAMP WITH TIME ZONE",
+                    "trakt_fetched_at TIMESTAMP WITH TIME ZONE",
                     "sort_ts TIMESTAMP WITH TIME ZONE"
                 ]
                 for column_def in latest_cache_columns:

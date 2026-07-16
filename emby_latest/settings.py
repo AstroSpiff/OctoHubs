@@ -36,6 +36,37 @@ def _normalize_latest_presets(entries: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
+def _normalize_rule_enabled(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        return bool(normalized)
+    return bool(value)
+
+
+def _normalize_server_id_list(values: Any) -> List[str]:
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, list):
+        return []
+    normalized = []
+    seen = set()
+    for value in values:
+        if value is None:
+            continue
+        server_id = str(value).strip()
+        if not server_id or server_id in seen:
+            continue
+        normalized.append(server_id)
+        seen.add(server_id)
+    return normalized
+
+
 def _normalize_latest_notification_rules(entries: Any) -> List[Dict[str, Any]]:
     if not isinstance(entries, list):
         return []
@@ -47,16 +78,14 @@ def _normalize_latest_notification_rules(entries: Any) -> List[Dict[str, Any]]:
         if not name:
             continue
         raw_server_ids = entry.get("server_ids") or entry.get("servers") or []
-        if isinstance(raw_server_ids, str):
-            raw_server_ids = [raw_server_ids]
-        server_ids = [str(value) for value in raw_server_ids if str(value)]
+        server_ids = _normalize_server_id_list(raw_server_ids)
         preset_id = str(entry.get("preset_id") or "").strip()
         telegram_config_id = str(entry.get("telegram_config_id") or entry.get("telegram_preset_id") or "").strip()
         enabled = entry.get("enabled")
         normalized.append({
             "id": str(entry.get("id") or uuid.uuid4()),
             "name": name,
-            "enabled": True if enabled is None else bool(enabled),
+            "enabled": _normalize_rule_enabled(enabled),
             "server_ids": server_ids,
             "preset_id": preset_id,
             "telegram_config_id": telegram_config_id,
@@ -64,6 +93,17 @@ def _normalize_latest_notification_rules(entries: Any) -> List[Dict[str, Any]]:
             "updated_at": entry.get("updated_at") or ""
         })
     return normalized
+
+
+def _resolve_active_preset_id(presets: List[Dict[str, Any]], active_id: Any) -> str:
+    """Return an active preset id that exists in the current preset list."""
+    preset_ids = [str(preset.get("id") or "") for preset in presets if preset.get("id")]
+    if not preset_ids:
+        return ""
+    normalized_active = str(active_id or "").strip()
+    if normalized_active in preset_ids:
+        return normalized_active
+    return preset_ids[0]
 
 
 def _default_latest_settings() -> Dict[str, Any]:
@@ -90,6 +130,75 @@ def _default_latest_settings() -> Dict[str, Any]:
     }
 
 
+def _coerce_latest_int(value: Any, default: int) -> int:
+    if value is None:
+        return default
+    if isinstance(value, str) and not value.strip():
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_latest_numeric_settings(settings: Any) -> Dict[str, int]:
+    merged_settings = settings if isinstance(settings, dict) else {}
+    default_cfg = _default_latest_settings()["SETTINGS"]
+    batch_gap_minutes = _coerce_latest_int(
+        merged_settings.get("batch_gap_minutes"),
+        default_cfg["batch_gap_minutes"],
+    )
+    max_movies = _coerce_latest_int(
+        merged_settings.get("max_movies"),
+        default_cfg["max_movies"],
+    )
+    max_series = _coerce_latest_int(
+        merged_settings.get("max_series"),
+        default_cfg["max_series"],
+    )
+    legacy_max_movies = 50
+    legacy_max_series = 25
+    if max_movies == legacy_max_movies and default_cfg["max_movies"] > legacy_max_movies:
+        max_movies = default_cfg["max_movies"]
+    if max_series == legacy_max_series and default_cfg["max_series"] > legacy_max_series:
+        max_series = default_cfg["max_series"]
+    retention_days = _coerce_latest_int(
+        merged_settings.get("retention_days"),
+        default_cfg["retention_days"],
+    )
+    max_versions = _coerce_latest_int(
+        merged_settings.get("max_versions"),
+        default_cfg["max_versions"],
+    )
+    batch_fetch_limit = _coerce_latest_int(
+        merged_settings.get("batch_fetch_limit"),
+        default_cfg.get("batch_fetch_limit", 1000),
+    )
+    latest_cache_seconds = _coerce_latest_int(
+        merged_settings.get("latest_cache_seconds"),
+        default_cfg.get("latest_cache_seconds", 0),
+    )
+    if max_movies <= 0:
+        max_movies = default_cfg["max_movies"]
+    if max_series <= 0:
+        max_series = default_cfg["max_series"]
+    if max_movies > default_cfg["max_movies"]:
+        max_movies = default_cfg["max_movies"]
+    if max_series > default_cfg["max_series"]:
+        max_series = default_cfg["max_series"]
+    if latest_cache_seconds < 0:
+        latest_cache_seconds = default_cfg.get("latest_cache_seconds", 0)
+    return {
+        "batch_gap_minutes": batch_gap_minutes,
+        "max_movies": max_movies,
+        "max_series": max_series,
+        "retention_days": retention_days,
+        "max_versions": max_versions,
+        "batch_fetch_limit": batch_fetch_limit,
+        "latest_cache_seconds": latest_cache_seconds,
+    }
+
+
 def _prepare_latest_notification_rules(
     rules: List[Dict[str, Any]],
     servers: List[Dict[str, Any]],
@@ -103,7 +212,7 @@ def _prepare_latest_notification_rules(
     for rule in rules or []:
         if not isinstance(rule, dict):
             continue
-        server_ids = [str(value) for value in (rule.get("server_ids") or []) if str(value)]
+        server_ids = _normalize_server_id_list(rule.get("server_ids") or [])
         server_names = []
         missing_servers = []
         for server_id in server_ids:
@@ -141,56 +250,22 @@ def _load_latest_settings() -> Dict[str, Any]:
     if not isinstance(latest, dict):
         latest = {}
     merged = _default_latest_settings()
-    _raw = latest.get("SETTINGS")
-    merged_settings = _raw if isinstance(_raw, dict) else {}
-    default_cfg = merged["SETTINGS"]
-    batch_gap_minutes = int(merged_settings.get("batch_gap_minutes") or default_cfg["batch_gap_minutes"])
-    max_movies = int(merged_settings.get("max_movies") or default_cfg["max_movies"])
-    max_series = int(merged_settings.get("max_series") or default_cfg["max_series"])
-    legacy_max_movies = 50
-    legacy_max_series = 25
-    if max_movies == legacy_max_movies and default_cfg["max_movies"] > legacy_max_movies:
-        max_movies = default_cfg["max_movies"]
-    if max_series == legacy_max_series and default_cfg["max_series"] > legacy_max_series:
-        max_series = default_cfg["max_series"]
-    retention_days = int(merged_settings.get("retention_days") or default_cfg["retention_days"])
-    max_versions = int(merged_settings.get("max_versions") or default_cfg["max_versions"])
-    batch_fetch_limit = int(merged_settings.get("batch_fetch_limit") or default_cfg.get("batch_fetch_limit", 1000))
-    latest_cache_seconds = int(merged_settings.get("latest_cache_seconds") or default_cfg.get("latest_cache_seconds", 0))
-    if max_movies <= 0:
-        max_movies = default_cfg["max_movies"]
-    if max_series <= 0:
-        max_series = default_cfg["max_series"]
-    if max_movies > default_cfg["max_movies"]:
-        max_movies = default_cfg["max_movies"]
-    if max_series > default_cfg["max_series"]:
-        max_series = default_cfg["max_series"]
-    if latest_cache_seconds < 0:
-        latest_cache_seconds = default_cfg.get("latest_cache_seconds", 0)
-    merged["SETTINGS"].update({
-        "batch_gap_minutes": batch_gap_minutes,
-        "max_movies": max_movies,
-        "max_series": max_series,
-        "retention_days": retention_days,
-        "max_versions": max_versions,
-        "batch_fetch_limit": batch_fetch_limit,
-        "latest_cache_seconds": latest_cache_seconds
-    })
+    merged["SETTINGS"].update(_normalize_latest_numeric_settings(latest.get("SETTINGS")))
     merged["PRESETS"] = _normalize_latest_presets(latest.get("PRESETS"))
     if not merged["PRESETS"]:
         merged["PRESETS"] = [default_message_preset()]
-    active_id = str(latest.get("ACTIVE_PRESET_ID") or "").strip()
-    if not active_id:
-        active_id = merged["PRESETS"][0]["id"]
-    merged["ACTIVE_PRESET_ID"] = active_id
+    merged["ACTIVE_PRESET_ID"] = _resolve_active_preset_id(
+        merged["PRESETS"],
+        latest.get("ACTIVE_PRESET_ID"),
+    )
     merged["NOTIFICATION_RULES"] = _normalize_latest_notification_rules(
         latest.get("NOTIFICATION_RULES") or latest.get("notification_rules")
     )
     telegram_ids = latest.get("TELEGRAM_PRESET_IDS")
     if isinstance(telegram_ids, list):
-        merged["TELEGRAM_PRESET_IDS"] = [str(value) for value in telegram_ids if str(value)]
+        merged["TELEGRAM_PRESET_IDS"] = _normalize_server_id_list(telegram_ids)
     elif isinstance(telegram_ids, str) and telegram_ids:
-        merged["TELEGRAM_PRESET_IDS"] = [telegram_ids]
+        merged["TELEGRAM_PRESET_IDS"] = _normalize_server_id_list(telegram_ids)
     merged_state = latest.get("STATE")
     merged["STATE"] = merged_state if isinstance(merged_state, dict) else {}
     merged_cache = latest.get("CACHE")
@@ -217,18 +292,18 @@ def _save_latest_settings(latest_settings: Dict[str, Any]) -> None:
     if "NOTIFICATION_RULES" not in incoming:
         incoming["NOTIFICATION_RULES"] = existing.get("NOTIFICATION_RULES")
     normalized = _default_latest_settings()
-    normalized["SETTINGS"].update(incoming.get("SETTINGS") or {})
+    normalized["SETTINGS"].update(_normalize_latest_numeric_settings(incoming.get("SETTINGS")))
     normalized["PRESETS"] = _normalize_latest_presets(incoming.get("PRESETS"))
     normalized["NOTIFICATION_RULES"] = _normalize_latest_notification_rules(incoming.get("NOTIFICATION_RULES"))
-    active_id = str(incoming.get("ACTIVE_PRESET_ID") or "").strip()
-    if not active_id and normalized["PRESETS"]:
-        active_id = normalized["PRESETS"][0]["id"]
-    normalized["ACTIVE_PRESET_ID"] = active_id
+    normalized["ACTIVE_PRESET_ID"] = _resolve_active_preset_id(
+        normalized["PRESETS"],
+        incoming.get("ACTIVE_PRESET_ID"),
+    )
     telegram_ids = incoming.get("TELEGRAM_PRESET_IDS")
     if isinstance(telegram_ids, list):
-        normalized["TELEGRAM_PRESET_IDS"] = [str(value) for value in telegram_ids if str(value)]
+        normalized["TELEGRAM_PRESET_IDS"] = _normalize_server_id_list(telegram_ids)
     elif isinstance(telegram_ids, str) and telegram_ids:
-        normalized["TELEGRAM_PRESET_IDS"] = [telegram_ids]
+        normalized["TELEGRAM_PRESET_IDS"] = _normalize_server_id_list(telegram_ids)
     if isinstance(incoming.get("STATE"), dict):
         normalized["STATE"] = incoming.get("STATE")
     if isinstance(incoming.get("CACHE"), dict):

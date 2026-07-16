@@ -120,6 +120,7 @@ class StorageLatestMixin(_SessionProvider):
             "trakt_rating": row.trakt_rating,
             "trakt_votes": row.trakt_votes,
             "omdb_fetched_at": _dt(row.omdb_fetched_at),
+            "trakt_fetched_at": _dt(row.trakt_fetched_at),
             "changes": changes or []
         }
 
@@ -316,7 +317,8 @@ class StorageLatestMixin(_SessionProvider):
                     metacritic_rating=metacritic_rating,
                     trakt_rating=_string_max(entry.get("trakt_rating"), 50),
                     trakt_votes=_string_max(entry.get("trakt_votes"), 50),
-                    omdb_fetched_at=_parse_datetime_value(entry.get("omdb_fetched_at"))
+                    omdb_fetched_at=_parse_datetime_value(entry.get("omdb_fetched_at")),
+                    trakt_fetched_at=_parse_datetime_value(entry.get("trakt_fetched_at"))
                 )
                 row.sort_ts = row.added_at or row.premiere_date or datetime(1970, 1, 1, tzinfo=timezone.utc)  # type: ignore[assignment]
                 session.add(row)

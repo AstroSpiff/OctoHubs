@@ -38,6 +38,52 @@ class EmbyLatestManager:
         self._lock = threading.Lock()
         self._refreshing = False
 
+    @staticmethod
+    def _extract_cached_payload(cache_data: Any) -> tuple[Optional[Dict[str, Any]], bool]:
+        if not isinstance(cache_data, dict):
+            return None, False
+        payload = cache_data.get("payload")
+        if not isinstance(payload, dict):
+            return None, False
+        has_metadata = bool(cache_data.get("timestamp") or cache_data.get("updated_at"))
+        has_payload_shape = any(key in payload for key in ("movies", "series", "errors"))
+        return payload, has_metadata or has_payload_shape
+
+    def _collect_full_snapshots(
+        self,
+        limit: int,
+        per_server_limit: int,
+        fast_mode: bool,
+        enrich: bool,
+        force_omdb: bool,
+        progress_tracker,
+        skip_existing_complete: bool = False,
+        existing_db_payload: Optional[Dict[str, Any]] = None,
+    ) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+        # Collect once in publishable batch mode. The UI currently needs no
+        # broader history scan, so the same snapshot is stored as feed too.
+        batch_payload, batch_error = collectors.collect_entries(
+            limit=limit,
+            per_server_limit=per_server_limit,
+            apply_batch_gap=True,
+            skip_existing_complete=skip_existing_complete,
+            existing_db_payload=existing_db_payload,
+            fast_mode=fast_mode,
+            enrich=enrich,
+            force_omdb=force_omdb,
+            progress_tracker=progress_tracker,
+            db_cache=self.db_cache,
+            db_state=self.db_state
+        )
+
+        if batch_error:
+            return None, batch_error
+
+        if self.db_cache:
+            self.db_cache.save_cache("feed", batch_payload or {}, limit, per_server_limit)
+
+        return batch_payload, None
+
     def get_snapshot(self, mode: str = "batch") -> Dict[str, Any]:
         """
         Get current snapshot of latest publications.
@@ -55,7 +101,10 @@ class EmbyLatestManager:
 
             return {
                 "payload": cache_data.get("payload") if isinstance(cache_data, dict) else None,
-                "timestamp": cache_data.get("timestamp") if isinstance(cache_data, dict) else None,
+                "timestamp": (
+                    (cache_data.get("timestamp") or cache_data.get("updated_at"))
+                    if isinstance(cache_data, dict) else None
+                ),
                 "params": cache_data.get("params") if isinstance(cache_data, dict) else None,
                 "progress": progress,
                 "refreshing": self._refreshing
@@ -67,7 +116,8 @@ class EmbyLatestManager:
         per_server_limit: int,
         fast_mode: bool = False,
         enrich: bool = True,
-        force_omdb: bool = False
+        force_omdb: bool = False,
+        progress_tracker=None,
     ) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
         """
         Perform full refresh of latest publications (batch + feed modes).
@@ -89,43 +139,20 @@ class EmbyLatestManager:
                 return None, "Refresh already in progress"
             self._refreshing = True
 
+        effective_progress_tracker = progress_tracker or self.progress_tracker
+
         try:
             print(f"[LATEST] Avvio refresh completo (limit={limit}, per_server={per_server_limit}, fast={fast_mode})")
-            # Collect batch mode (with gap filtering)
-            batch_payload, batch_error = collectors.collect_entries(
+            batch_payload, error = self._collect_full_snapshots(
                 limit=limit,
                 per_server_limit=per_server_limit,
-                apply_batch_gap=True,  # Batch mode
-                skip_existing_complete=False,
-                existing_db_payload=None,
                 fast_mode=fast_mode,
                 enrich=enrich,
                 force_omdb=force_omdb,
-                progress_tracker=self.progress_tracker,
-                db_cache=self.db_cache,
-                db_state=self.db_state
+                progress_tracker=effective_progress_tracker,
             )
-
-            if batch_error:
-                return None, batch_error
-
-            # Collect feed mode (no gap filtering)
-            feed_payload, feed_error = collectors.collect_entries(
-                limit=limit,
-                per_server_limit=per_server_limit,
-                apply_batch_gap=False,  # Feed mode
-                skip_existing_complete=False,
-                existing_db_payload=None,
-                fast_mode=fast_mode,
-                enrich=enrich,
-                force_omdb=force_omdb,
-                progress_tracker=self.progress_tracker,
-                db_cache=self.db_cache,
-                db_state=self.db_state
-            )
-
-            if feed_error:
-                return None, feed_error
+            if error:
+                return None, error
 
             # BUG FIX #1: Both caches are already saved by collectors.collect_entries
             # No need to save again here - the fix is in collectors.py
@@ -144,7 +171,8 @@ class EmbyLatestManager:
         limit: int,
         per_server_limit: int,
         enrich: bool = True,
-        force_omdb: bool = False
+        force_omdb: bool = False,
+        progress_tracker=None,
     ) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
         """
         Perform incremental refresh (only enrich items with missing data).
@@ -165,30 +193,27 @@ class EmbyLatestManager:
                 return None, "Refresh already in progress"
             self._refreshing = True
 
+        effective_progress_tracker = progress_tracker or self.progress_tracker
+
         try:
             # Load existing payload from DB using module function
             existing_cache = db_cache.load_cache("batch")
-            existing_payload = existing_cache.get("payload") if isinstance(existing_cache, dict) else None
+            _batch_payload, has_batch_snapshot = self._extract_cached_payload(existing_cache)
+            feed_cache = db_cache.load_cache("feed")
+            feed_payload, has_feed_snapshot = self._extract_cached_payload(feed_cache)
 
-            # Collect with skip_existing_complete enabled
-            payload, error = collectors.collect_entries(
+            if not has_batch_snapshot or not has_feed_snapshot:
+                print("[LATEST] Snapshot Pubblicazioni DB incompleto: ricostruzione unica batch")
+            return self._collect_full_snapshots(
                 limit=limit,
                 per_server_limit=per_server_limit,
-                apply_batch_gap=True,
-                skip_existing_complete=True,  # Skip complete items
-                existing_db_payload=existing_payload,
                 fast_mode=False,
                 enrich=enrich,
                 force_omdb=force_omdb,
-                progress_tracker=self.progress_tracker,
-                db_cache=self.db_cache,
-                db_state=self.db_state
+                progress_tracker=effective_progress_tracker,
+                skip_existing_complete=has_feed_snapshot,
+                existing_db_payload=feed_payload if has_feed_snapshot else None,
             )
-
-            # BUG FIX #2: State is already saved by collectors.collect_entries
-            # The fix ensures state persistence happens in the collectors module
-
-            return payload, error
 
         finally:
             with self._lock:
@@ -253,7 +278,6 @@ class EmbyLatestManager:
 
     def send_notifications(
         self,
-        limit: Optional[int] = None,
         per_server_limit: Optional[int] = None,
         server_filter: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -261,7 +285,6 @@ class EmbyLatestManager:
         Send notifications for latest publications.
 
         Args:
-            limit: Optional limit override
             per_server_limit: Optional per-server limit override
             server_filter: Optional server ID filter
 
@@ -270,11 +293,9 @@ class EmbyLatestManager:
         """
         from emby_latest.notifications import send_notifications as _send_notifications
 
-        effective_limit = limit if limit is not None else 200
         effective_per_server = per_server_limit if per_server_limit is not None else 50
 
         return _send_notifications(
-            limit=effective_limit,
             per_server_limit=effective_per_server,
             server_filter=server_filter,
             config=self.config,
@@ -290,6 +311,17 @@ class EmbyLatestManager:
 # Global singleton instance
 _manager: Optional[EmbyLatestManager] = None
 _manager_lock = threading.Lock()
+_manager_unavailable_reason = ""
+
+
+def _set_manager_unavailable_reason(reason: str) -> None:
+    global _manager_unavailable_reason
+    _manager_unavailable_reason = reason
+
+
+def get_manager_unavailable_reason() -> str:
+    """Return the latest safe diagnostic reason for manager initialization failure."""
+    return _manager_unavailable_reason
 
 
 def _resolve_default_dependencies() -> tuple[Optional[Dict[str, Any]], Any]:
@@ -299,10 +331,17 @@ def _resolve_default_dependencies() -> tuple[Optional[Dict[str, Any]], Any]:
 
         config, is_valid = load_config()
         if not is_valid or not config:
+            _set_manager_unavailable_reason("database/config unavailable")
             return None, None
-        return config, _ensure_db_backend()
+        db_storage = _ensure_db_backend()
+        if db_storage is None:
+            _set_manager_unavailable_reason("database backend unavailable")
+            return config, None
+        return config, db_storage
     except Exception as exc:
-        print(f"[LATEST] Manager lazy init unavailable: {exc}")
+        safe_reason = f"database/config unavailable ({exc.__class__.__name__})"
+        _set_manager_unavailable_reason(safe_reason)
+        print(f"[LATEST] Manager lazy init unavailable: {safe_reason}")
         return None, None
 
 
@@ -328,11 +367,14 @@ def get_manager(config: Optional[Dict[str, Any]] = None, db_storage=None) -> Opt
         db_storage = db_storage or default_db_storage
 
     if config is None or db_storage is None:
+        if not _manager_unavailable_reason:
+            _set_manager_unavailable_reason("config or database backend missing")
         return None
 
     with _manager_lock:
         if _manager is None:
             _manager = EmbyLatestManager(config, db_storage)
+            _set_manager_unavailable_reason("")
         return _manager
 
 
@@ -341,3 +383,4 @@ def reset_manager():
     global _manager
     with _manager_lock:
         _manager = None
+        _set_manager_unavailable_reason("")
