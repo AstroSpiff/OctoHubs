@@ -5,7 +5,7 @@ import threading
 import copy
 import json
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 from core.config import _normalize_auto_settings, _default_auto_tasks, _coerce_request_int
 from core.utils import _normalize_scan_targets, _serialize_target_map
@@ -392,6 +392,7 @@ class WorkflowManager:
         self._check_scan_func = None
         self._trigger_probe_func = None
         self._check_probe_func = None
+        self._stop_probe_func = None
         self._refresh_cache_func = None
         self._notify_func = None
         self._db_storage = None  # DatabaseStorage instance
@@ -399,7 +400,8 @@ class WorkflowManager:
 
     def set_callbacks(self, trigger_scan_func, check_scan_func,
                      trigger_probe_func, check_probe_func,
-                     refresh_cache_func, notify_func):
+                     refresh_cache_func, notify_func,
+                     stop_probe_func: Optional[Callable] = None):
         """
         Inietta le dipendenze dall'esterno per evitare import circolari.
 
@@ -408,6 +410,7 @@ class WorkflowManager:
             check_scan_func: Funzione per verificare se la scansione è completata
             trigger_probe_func: Funzione per avviare il probe
             check_probe_func: Funzione per verificare se il probe è completato
+            stop_probe_func: Funzione opzionale per fermare probe avviati dal workflow
             refresh_cache_func: Funzione per aggiornare la cache "Latest"
             notify_func: Funzione per inviare notifiche
         """
@@ -415,6 +418,7 @@ class WorkflowManager:
         self._check_scan_func = check_scan_func
         self._trigger_probe_func = trigger_probe_func
         self._check_probe_func = check_probe_func
+        self._stop_probe_func = stop_probe_func
         self._refresh_cache_func = refresh_cache_func
         self._notify_func = notify_func
 
@@ -576,7 +580,8 @@ class WorkflowManager:
                 "steps": steps,
                 "error": None,
                 "workflow_job_ids": job_ids,
-                "operation_id": None
+                "operation_id": None,
+                "context": copy.deepcopy(context or {})
             }
             self._stop_event.clear()
 
@@ -615,12 +620,25 @@ class WorkflowManager:
         operation_id = None
         operation_tracker = None
         operation_details = None
+        stop_probe_func = None
+        stop_probe_context = None
         with self._lock:
             if self._status["status"] in ("running", "stopping"):
                 self._status["status"] = "stopping"
                 operation_id = self._status.get("operation_id")
                 operation_tracker = self._operation_tracker
                 operation_details = self._workflow_operation_details_locked()
+                current_step_index = self._status.get("current_step_index", -1)
+                steps = self._status.get("steps") or []
+                current_step = steps[current_step_index] if 0 <= current_step_index < len(steps) else {}
+                if current_step.get("id") == "probe" and self._stop_probe_func:
+                    stop_probe_func = self._stop_probe_func
+                    stop_probe_context = copy.deepcopy(self._status.get("context") or {})
+        if stop_probe_func:
+            try:
+                stop_probe_func(stop_probe_context or {})
+            except Exception as exc:
+                print(f"[WORKFLOW] ⚠️ Errore stop probe workflow: {exc}")
         if operation_tracker and operation_id:
             try:
                 operation_tracker.update(

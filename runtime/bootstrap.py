@@ -41,6 +41,7 @@ def initialize_runtime_services() -> None:
         _wf_check_scan,
         _wf_trigger_probe,
         _wf_check_probe,
+        _wf_stop_probe,
         _wf_refresh_cache,
         _wf_notify,
     )
@@ -52,6 +53,7 @@ def initialize_runtime_services() -> None:
         check_scan_func=_wf_check_scan,
         trigger_probe_func=_wf_trigger_probe,
         check_probe_func=_wf_check_probe,
+        stop_probe_func=_wf_stop_probe,
         refresh_cache_func=_wf_refresh_cache,
         notify_func=_wf_notify,
     )

@@ -359,6 +359,67 @@ def _wf_trigger_probe(context: Dict[str, Any]) -> bool:
         return False
 
 
+def _wf_stop_probe(context: Dict[str, Any] | None = None) -> bool:
+    """
+    Ferma i worker probe "ultimi aggiunti" avviati dal workflow.
+
+    Lo stop del WorkflowManager interrompe il polling del workflow; questa callback
+    propaga la richiesta ai worker del probe, evitando processing/discovery orfani.
+    """
+    context = context or {}
+    print("[WORKFLOW] [PROBE] Stop richiesto per STRM Probe Ultimi Aggiunti")
+    manager = get_probe_manager()
+    stopped_any = False
+
+    try:
+        if manager.stop_combo_workflow_all_servers(scope="recent"):
+            stopped_any = True
+        if manager.stop_recent_discovery_sequence():
+            stopped_any = True
+        if manager.stop_recent_processing_sequence():
+            stopped_any = True
+    except Exception as exc:
+        print(f"[WORKFLOW] [PROBE] ⚠ Errore stop globale probe: {exc}")
+
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        return stopped_any
+
+    emby_servers = (config.get("EMBY") or {}).get("SERVERS") or []
+    enabled_servers = [
+        server for server in emby_servers
+        if isinstance(server, dict) and server.get("enabled")
+    ]
+
+    server_id = context.get("server_id")
+    libraries = context.get("libraries")
+    library_server_ids = []
+    if isinstance(libraries, list):
+        for entry in libraries:
+            if isinstance(entry, dict) and entry.get("server_id"):
+                library_server_ids.append(str(entry.get("server_id")))
+    library_server_ids = list({sid for sid in library_server_ids if sid})
+
+    if library_server_ids:
+        enabled_servers = [server for server in enabled_servers if str(server.get("id")) in library_server_ids]
+    elif server_id:
+        enabled_servers = [server for server in enabled_servers if str(server.get("id")) == str(server_id)]
+
+    for server in enabled_servers:
+        target_server_id = server.get("id")
+        if not target_server_id:
+            continue
+        if manager.stop_combo_workflow(target_server_id, scope="recent"):
+            stopped_any = True
+        if manager.stop_recent_discovery(target_server_id):
+            stopped_any = True
+        if manager.stop_recent_processing(target_server_id):
+            stopped_any = True
+
+    print(f"[WORKFLOW] [PROBE] Stop probe propagato, stopped_any={stopped_any}")
+    return stopped_any
+
+
 def _wf_check_probe(context: Dict[str, Any] | None = None) -> bool:
     """
     Verifica se il combo workflow (discovery + processing) è completato.

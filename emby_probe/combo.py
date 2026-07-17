@@ -134,26 +134,46 @@ class ComboProbeMixin(ProbeManagerProtocol):
     def stop_combo_workflow(self, server_id: str, scope: str = PROBE_SCOPE_RECENT) -> bool:
         """Stop combo workflow for a specific server."""
         with self._lock:
-            worker_key = f"combo_{scope}"
-            if server_id not in self._stop_flags or worker_key not in self._stop_flags[server_id]:
+            server_flags = self._stop_flags.get(server_id)
+            if not server_flags:
                 return False
-            self._stop_flags[server_id][worker_key].set()
-        return True
+            worker_keys = [f"combo_{scope}"]
+            if scope == PROBE_SCOPE_RECENT:
+                worker_keys.extend(["recent_discovery", "recent_processing"])
+            else:
+                worker_keys.extend(["discovery", "processing"])
+
+            stopped_any = False
+            for worker_key in worker_keys:
+                stop_flag = server_flags.get(worker_key)
+                if stop_flag:
+                    stop_flag.set()
+                    stopped_any = True
+        return stopped_any
 
     def stop_combo_workflow_all_servers(self, scope: str = PROBE_SCOPE_RECENT) -> bool:
         """Stop combo workflow for all servers."""
         with self._lock:
-            worker_key = f"combo_all_{scope}"
+            worker_keys = [f"combo_{scope}"]
+            global_worker_keys = [f"combo_all_{scope}"]
+            if scope == PROBE_SCOPE_RECENT:
+                worker_keys.extend(["recent_discovery", "recent_processing"])
+                global_worker_keys.extend(["recent_discovery_all", "recent_processing_all"])
+            else:
+                worker_keys.extend(["discovery", "processing"])
+
             stopped_any = False
-            stop_flag = self._global_stop_flags.get(worker_key)
-            if stop_flag:
-                stop_flag.set()
-                stopped_any = True
-            for server_flags in self._stop_flags.values():
-                combo_flag = server_flags.get(f"combo_{scope}")
-                if combo_flag:
-                    combo_flag.set()
+            for worker_key in global_worker_keys:
+                stop_flag = self._global_stop_flags.get(worker_key)
+                if stop_flag:
+                    stop_flag.set()
                     stopped_any = True
+            for server_flags in self._stop_flags.values():
+                for worker_key in worker_keys:
+                    stop_flag = server_flags.get(worker_key)
+                    if stop_flag:
+                        stop_flag.set()
+                        stopped_any = True
         return stopped_any
 
     def _build_combo_queue(

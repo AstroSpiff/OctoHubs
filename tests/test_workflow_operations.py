@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -78,6 +79,34 @@ class WorkflowOperationTests(unittest.TestCase):
         self.assertEqual(tracker.finished[-1]["operation_id"], "operation-1")
         self.assertFalse(tracker.failed)
         self.assertFalse(tracker.interrupted)
+
+    def test_stop_during_probe_step_calls_probe_stop_callback(self):
+        manager = WorkflowManager()
+        probe_started = threading.Event()
+        stopped_contexts = []
+
+        def trigger_probe(_context):
+            probe_started.set()
+            return True
+
+        manager.set_callbacks(
+            trigger_scan_func=lambda _context: True,
+            check_scan_func=lambda _context: True,
+            trigger_probe_func=trigger_probe,
+            check_probe_func=lambda _context: False,
+            refresh_cache_func=lambda _context: None,
+            notify_func=lambda _context: None,
+        )
+        manager._stop_probe_func = lambda context: stopped_contexts.append(dict(context))
+
+        with patch("time.sleep", lambda _seconds: None):
+            self.assertTrue(manager.start("smart", context={"server_id": "server-a"}))
+            self.assertTrue(probe_started.wait(timeout=2))
+            manager.stop()
+            manager._thread.join(timeout=3)
+
+        self.assertFalse(manager._thread.is_alive())
+        self.assertEqual([{"server_id": "server-a"}], stopped_contexts)
 
 
 if __name__ == "__main__":
