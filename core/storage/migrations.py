@@ -32,6 +32,10 @@ class MigrationStatus:
     unknown_applied: List[str]
 
 
+MigrationBackupCallable = Callable[[MigrationStatus, List[Migration]], dict[str, Any]]
+BeforeApplyCallable = Callable[[], None]
+
+
 def _is_postgresql(url: str) -> bool:
     return "postgresql" in (url or "")
 
@@ -319,6 +323,8 @@ def apply_pending_migrations(
     migrations: Optional[Iterable[Migration]] = None,
     *,
     dry_run: bool = False,
+    backup_before_apply: Optional[MigrationBackupCallable] = None,
+    before_apply: Optional[BeforeApplyCallable] = None,
 ) -> dict[str, Any]:
     """Apply pending migrations or report them in dry-run mode."""
 
@@ -332,10 +338,18 @@ def apply_pending_migrations(
             "applied": [],
             "pending": [migration.id for migration in pending],
             "registry_exists": status.registry_exists,
+            "backup": None,
         }
 
     applied_now: List[str] = []
+    backup_info: Optional[dict[str, Any]] = None
     try:
+        if pending:
+            if backup_before_apply is not None:
+                backup_info = backup_before_apply(status, pending)
+            if before_apply is not None:
+                before_apply()
+
         for migration in pending:
             with engine.begin() as conn:
                 _ensure_registry_table(conn, url)
@@ -368,6 +382,7 @@ def apply_pending_migrations(
         "applied": applied_now,
         "pending": status.pending,
         "registry_exists": True,
+        "backup": backup_info,
     }
 
 
@@ -375,7 +390,17 @@ def run_storage_migrations(
     engine: Any,
     url: str,
     migrations: Optional[Iterable[Migration]] = None,
+    *,
+    backup_before_apply: Optional[MigrationBackupCallable] = None,
+    before_apply: Optional[BeforeApplyCallable] = None,
 ) -> dict[str, Any]:
     """Apply all pending storage migrations."""
 
-    return apply_pending_migrations(engine, url, migrations=migrations, dry_run=False)
+    return apply_pending_migrations(
+        engine,
+        url,
+        migrations=migrations,
+        dry_run=False,
+        backup_before_apply=backup_before_apply,
+        before_apply=before_apply,
+    )

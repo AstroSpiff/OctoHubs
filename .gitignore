@@ -17,6 +17,7 @@ env/
 *.db
 data/
 logs/
+backups/
 secrets/
 instance/
 docker-data/

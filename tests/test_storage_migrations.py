@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from sqlalchemy import create_engine, text
 
@@ -76,6 +79,77 @@ class StorageMigrationTests(unittest.TestCase):
         finally:
             engine.dispose()
 
+    def test_backup_runs_before_schema_changes_when_migrations_are_pending(self):
+        from core.storage.migrations import Migration, apply_pending_migrations
+
+        engine = create_engine("sqlite:///:memory:", future=True)
+        events = []
+        try:
+            migration = Migration(
+                "9999_test",
+                "test migration",
+                lambda conn, url: events.append("migration"),
+            )
+
+            def backup(status, pending):
+                events.append("backup")
+                self.assertEqual(status.pending, ["9999_test"])
+                self.assertEqual([migration.id for migration in pending], ["9999_test"])
+                with engine.connect() as conn:
+                    names = conn.execute(
+                        text("SELECT name FROM sqlite_master WHERE type='table'")
+                    ).fetchall()
+                self.assertNotIn(("sample",), names)
+                return {"path": "/tmp/pre-migration.dump"}
+
+            def create_schema_table():
+                events.append("create_all")
+                with engine.begin() as conn:
+                    conn.execute(text("CREATE TABLE sample (id INTEGER)"))
+
+            result = apply_pending_migrations(
+                engine,
+                "sqlite:///:memory:",
+                migrations=[migration],
+                backup_before_apply=backup,
+                before_apply=create_schema_table,
+            )
+
+            self.assertEqual(events, ["backup", "create_all", "migration"])
+            self.assertEqual(result["backup"], {"path": "/tmp/pre-migration.dump"})
+        finally:
+            engine.dispose()
+
+    def test_backup_failure_blocks_pending_migrations(self):
+        from core.storage.migrations import Migration, apply_pending_migrations
+        from core.storage.storage_errors import StorageError
+
+        engine = create_engine("sqlite:///:memory:", future=True)
+        events = []
+        try:
+            migration = Migration(
+                "9999_test",
+                "test migration",
+                lambda conn, url: events.append("migration"),
+            )
+
+            def backup(status, pending):
+                events.append("backup")
+                raise StorageError("backup failed")
+
+            with self.assertRaises(StorageError):
+                apply_pending_migrations(
+                    engine,
+                    "sqlite:///:memory:",
+                    migrations=[migration],
+                    backup_before_apply=backup,
+                    before_apply=lambda: events.append("create_all"),
+                )
+
+            self.assertEqual(events, ["backup"])
+        finally:
+            engine.dispose()
+
     def test_default_migration_catalog_contains_legacy_baseline(self):
         from core.storage.migrations import default_migrations
 
@@ -137,6 +211,78 @@ class StorageMigrationTests(unittest.TestCase):
         self.assertEqual(args.command, "db")
         self.assertEqual(args.db_command, "upgrade")
         self.assertIs(args.dry_run, True)
+
+
+class StorageBackupTests(unittest.TestCase):
+    def test_sqlite_backup_copies_database_and_writes_manifest(self):
+        from core.storage.backups import create_database_backup
+
+        with TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "source.db"
+            backup_root = Path(tmpdir) / "backups"
+            engine = create_engine(f"sqlite:///{db_path}", future=True)
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text("CREATE TABLE sample (id INTEGER PRIMARY KEY, name TEXT)"))
+                    conn.execute(text("INSERT INTO sample (name) VALUES ('before')"))
+            finally:
+                engine.dispose()
+
+            result = create_database_backup(
+                {"URL": f"sqlite:///{db_path}"},
+                ["0001_legacy_schema_alignment"],
+                backup_root=backup_root,
+            )
+
+            dump_path = Path(result["path"])
+            manifest_path = Path(result["manifest_path"])
+            self.assertTrue(dump_path.exists())
+            self.assertTrue(manifest_path.exists())
+            self.assertEqual(result["pending_migrations"], ["0001_legacy_schema_alignment"])
+
+            copied = create_engine(f"sqlite:///{dump_path}", future=True)
+            try:
+                with copied.connect() as conn:
+                    rows = conn.execute(text("SELECT name FROM sample")).fetchall()
+                self.assertEqual(rows, [("before",)])
+            finally:
+                copied.dispose()
+
+    def test_postgres_backup_uses_configured_pg_dump_path(self):
+        from core.storage.backups import create_database_backup
+
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            fake_pg_dump = root / "pg_dump"
+            fake_pg_dump.write_text(
+                "#!/bin/sh\n"
+                "while [ \"$1\" != \"\" ]; do\n"
+                "  if [ \"$1\" = \"--file\" ]; then shift; echo dump > \"$1\"; exit 0; fi\n"
+                "  shift\n"
+                "done\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            fake_pg_dump.chmod(0o755)
+
+            settings = {
+                "DRIVER": "postgresql+psycopg2",
+                "HOST": "localhost",
+                "PORT": 5432,
+                "NAME": "jellychecker",
+                "USER": "jellychecker",
+                "PASSWORD": "secret",
+            }
+            with patch.dict("os.environ", {"OCTOHUB_PG_DUMP": str(fake_pg_dump)}):
+                result = create_database_backup(
+                    settings,
+                    ["0001_legacy_schema_alignment"],
+                    backup_root=root / "backups",
+                )
+
+            self.assertTrue(Path(result["path"]).exists())
+            self.assertEqual(Path(result["path"]).read_text(encoding="utf-8").strip(), "dump")
+            self.assertTrue(Path(result["manifest_path"]).exists())
 
 
 if __name__ == "__main__":

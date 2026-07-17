@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from typing import Any, Optional
 
+from core.storage.backups import create_database_backup
 from core.storage.migrations import (
     apply_pending_migrations as apply_storage_migrations,
     default_migrations,
@@ -36,9 +37,7 @@ class StorageCoreMixin:
         with self._lock:
             if self._engine is None:
                 self._ensure_engine()
-                if Base is not None:
-                    Base.metadata.create_all(self._engine)
-                    self._apply_migrations()
+                self._apply_migrations()
 
     def _apply_migrations(self) -> None:
         self.apply_migrations(dry_run=False)
@@ -61,18 +60,29 @@ class StorageCoreMixin:
 
     def apply_migrations(self, *, dry_run: bool = False) -> dict[str, Any]:
         self._ensure_engine()
-        if not dry_run and Base is not None:
-            Base.metadata.create_all(self._engine)
         return apply_storage_migrations(
             self._engine,
             self.url,
             migrations=self._migration_catalog(),
             dry_run=dry_run,
+            backup_before_apply=None if dry_run else self._create_migration_backup,
+            before_apply=None if dry_run else self._create_schema_tables,
         )
 
     def _migration_catalog(self) -> Any:
         return default_migrations(
             legacy_schema_alignment=lambda conn, url: self._apply_legacy_schema_alignment()
+        )
+
+    def _create_schema_tables(self) -> None:
+        if Base is not None:
+            Base.metadata.create_all(self._engine)
+
+    def _create_migration_backup(self, status: Any, pending: list[Any]) -> dict[str, Any]:
+        settings = getattr(self, "settings", {}) or {}
+        return create_database_backup(
+            settings,
+            [migration.id for migration in pending],
         )
 
     def _apply_legacy_schema_alignment(self) -> None:

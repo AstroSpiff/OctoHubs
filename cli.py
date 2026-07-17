@@ -106,6 +106,10 @@ def _handle_db_command(args) -> int:
                 print(f"Pendenti: {_format_list(result['pending'])}")
             else:
                 print("Migrazioni database applicate")
+                backup = result.get("backup")
+                if backup:
+                    print(f"Backup: {backup.get('path')}")
+                    print(f"Manifest: {backup.get('manifest_path')}")
                 print(f"Applicate ora: {_format_list(result['applied'])}")
                 print(f"Pendenti iniziali: {_format_list(result['pending'])}")
             return 0
