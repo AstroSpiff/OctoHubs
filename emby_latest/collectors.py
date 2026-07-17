@@ -167,6 +167,14 @@ def collect_entries(
             version_keys.append(str(version_key))
         return str(logical_key or ""), tuple(sorted(version_keys))
 
+    def _series_change_sort_key(change: Dict[str, Any]) -> Tuple[int, int]:
+        season_number = _coerce_int(change.get("season_number"))
+        episode_number = _coerce_int(change.get("episode_number"))
+        return (
+            season_number if season_number is not None else 999999,
+            episode_number if episode_number is not None else 999999,
+        )
+
     def _ensure_batch_with_unique(
         items: List[Dict[str, Any]],
         gap_minutes: int,
@@ -1348,6 +1356,8 @@ def collect_entries(
 
                 if not changes:
                     continue
+
+                changes.sort(key=_series_change_sort_key)
 
                 # Determine update type for this group
                 if not series_known and series_is_new and group_index == 0:

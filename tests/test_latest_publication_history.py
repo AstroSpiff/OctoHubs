@@ -807,6 +807,59 @@ class LatestPublicationHistoryTests(unittest.TestCase):
             paths,
         )
 
+    def test_series_changes_are_sorted_by_season_and_episode(self):
+        db_state = _RecordingState({"server-a": {"movies": {"items": {}}, "series": {"items": {}}}})
+        db_cache = _RecordingCache()
+
+        def episode(episode_number, added_at):
+            return {
+                "Id": f"episode-{episode_number}",
+                "Name": f"Episode {episode_number}",
+                "Type": "Episode",
+                "SeriesId": "series-1",
+                "SeriesName": "Series One",
+                "SeriesProductionYear": 2026,
+                "ParentIndexNumber": 1,
+                "IndexNumber": episode_number,
+                "DateCreated": added_at,
+                "MediaSources": [
+                    {
+                        "Id": f"source-s01e{episode_number:02d}",
+                        "Path": f"/media/series-one/s01e{episode_number:02d}.mkv",
+                        "Container": "mkv",
+                        "Size": episode_number * 1000,
+                    }
+                ],
+            }
+
+        episode_items = [
+            episode(4, "2026-07-16T10:04:00+00:00"),
+            episode(1, "2026-07-16T10:03:00+00:00"),
+            episode(3, "2026-07-16T10:02:00+00:00"),
+            episode(2, "2026-07-16T10:01:00+00:00"),
+        ]
+        series = {
+            "Id": "series-1",
+            "Name": "Series One",
+            "Type": "Series",
+            "ProductionYear": 2026,
+            "DateCreated": "2026-07-16T10:04:00+00:00",
+        }
+
+        payload, error = _collect_with_mocks(
+            db_state,
+            db_cache,
+            episode_items=episode_items,
+            series_entries=[series],
+        )
+
+        self.assertIsNone(error)
+        self.assertTrue(payload["series"])
+        self.assertEqual(
+            [1, 2, 3, 4],
+            [change.get("episode_number") for change in payload["series"][0]["changes"]],
+        )
+
     def test_send_notifications_marks_series_episode_history_as_notified(self):
         saved_states = []
         episode_key = "series-1:S1:E2"
