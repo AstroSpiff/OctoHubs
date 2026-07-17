@@ -5,6 +5,12 @@ from __future__ import annotations
 import threading
 from typing import Any, Optional
 
+from core.storage.migrations import (
+    apply_pending_migrations as apply_storage_migrations,
+    default_migrations,
+    get_migration_status as get_storage_migration_status,
+    validate_migrations as validate_storage_migrations,
+)
 from core.storage.storage_errors import StorageError
 from core.storage.storage_models import (
     SQLAlchemyError,
@@ -21,16 +27,55 @@ class StorageCoreMixin:
     _lock: threading.Lock
     url: str
 
+    def _ensure_engine(self) -> None:
+        if self._engine is None:
+            self._engine = create_engine(self.url, future=True, echo=False)
+            self._Session = sessionmaker(bind=self._engine, expire_on_commit=False)
+
     def ensure_ready(self) -> None:
         with self._lock:
             if self._engine is None:
-                self._engine = create_engine(self.url, future=True, echo=False)
-                self._Session = sessionmaker(bind=self._engine, expire_on_commit=False)
+                self._ensure_engine()
                 if Base is not None:
                     Base.metadata.create_all(self._engine)
                     self._apply_migrations()
 
     def _apply_migrations(self) -> None:
+        self.apply_migrations(dry_run=False)
+
+    def get_migration_status(self) -> Any:
+        self._ensure_engine()
+        return get_storage_migration_status(
+            self._engine,
+            self.url,
+            migrations=self._migration_catalog(),
+        )
+
+    def validate_migrations(self) -> dict[str, Any]:
+        self._ensure_engine()
+        return validate_storage_migrations(
+            self._engine,
+            self.url,
+            migrations=self._migration_catalog(),
+        )
+
+    def apply_migrations(self, *, dry_run: bool = False) -> dict[str, Any]:
+        self._ensure_engine()
+        if not dry_run and Base is not None:
+            Base.metadata.create_all(self._engine)
+        return apply_storage_migrations(
+            self._engine,
+            self.url,
+            migrations=self._migration_catalog(),
+            dry_run=dry_run,
+        )
+
+    def _migration_catalog(self) -> Any:
+        return default_migrations(
+            legacy_schema_alignment=lambda conn, url: self._apply_legacy_schema_alignment()
+        )
+
+    def _apply_legacy_schema_alignment(self) -> None:
         if self._engine is None:
             return
         try:
