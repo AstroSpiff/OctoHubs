@@ -29,6 +29,7 @@ FROM python:3.11-alpine
 # Install runtime dependencies only
 RUN apk add --no-cache \
     libpq \
+    postgresql-client \
     libffi \
     openssl \
     ca-certificates \
