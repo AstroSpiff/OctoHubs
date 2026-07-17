@@ -63,6 +63,54 @@ def _registry_table_exists(conn: Any, url: str) -> bool:
     return row is not None
 
 
+def _table_exists(conn: Any, url: str, table_name: str) -> bool:
+    if _is_postgresql(url):
+        row = conn.execute(
+            text(
+                """
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_name = :table_name
+                LIMIT 1
+                """
+            ),
+            {"table_name": table_name},
+        ).first()
+        return row is not None
+
+    row = conn.execute(
+        text(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table' AND name = :table_name
+            LIMIT 1
+            """
+        ),
+        {"table_name": table_name},
+    ).first()
+    return row is not None
+
+
+def _column_exists(conn: Any, url: str, table_name: str, column_name: str) -> bool:
+    if _is_postgresql(url):
+        row = conn.execute(
+            text(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = :table_name AND column_name = :column_name
+                LIMIT 1
+                """
+            ),
+            {"table_name": table_name, "column_name": column_name},
+        ).first()
+        return row is not None
+
+    rows = conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
+    return any(row[1] == column_name for row in rows)
+
+
 def _ensure_registry_table(conn: Any, url: str) -> None:
     if _is_postgresql(url):
         conn.execute(
@@ -120,6 +168,78 @@ def _missing_legacy_alignment(conn: Any, url: str) -> None:
     )
 
 
+def apply_main_schema_bridge(conn: Any, url: str) -> None:
+    """Copy data from the old GitHub main schema into current table names."""
+
+    if _table_exists(conn, url, "request_rules") and _table_exists(conn, url, "request_rule_entries"):
+        conn.execute(
+            text(
+                """
+                INSERT INTO request_rule_entries (request_id, rules, updated_at)
+                SELECT legacy.request_id, legacy.data, COALESCE(legacy.updated_at, CURRENT_TIMESTAMP)
+                FROM request_rules legacy
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM request_rule_entries current
+                    WHERE current.request_id = legacy.request_id
+                )
+                """
+            )
+        )
+
+    if _table_exists(conn, url, "request_overview") and _table_exists(conn, url, "request_cache"):
+        conn.execute(
+            text(
+                """
+                INSERT INTO request_cache (id, payload, updated_at)
+                SELECT legacy.id, legacy.payload, COALESCE(legacy.updated_at, CURRENT_TIMESTAMP)
+                FROM request_overview legacy
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM request_cache current
+                    WHERE current.id = legacy.id
+                )
+                """
+            )
+        )
+
+    if not (
+        _table_exists(conn, url, "emby_probe_recent_scan")
+        and _table_exists(conn, url, "emby_probe_recent_scans")
+    ):
+        return
+
+    library_expr = "legacy.library_id" if _column_exists(conn, url, "emby_probe_recent_scan", "library_id") else "'__all__'"
+    last_scan_expr = "legacy.last_scan_at" if _column_exists(conn, url, "emby_probe_recent_scan", "last_scan_at") else "CURRENT_TIMESTAMP"
+    payload_value = "'{}'::json" if _is_postgresql(url) else "'{}'"
+    conn.execute(
+        text(
+            f"""
+            INSERT INTO emby_probe_recent_scans (
+                server_id,
+                library_id,
+                oldest_scanned_timestamp,
+                last_scan_at,
+                payload
+            )
+            SELECT
+                legacy.server_id,
+                COALESCE({library_expr}, '__all__'),
+                legacy.oldest_scanned_timestamp,
+                COALESCE({last_scan_expr}, CURRENT_TIMESTAMP),
+                {payload_value}
+            FROM emby_probe_recent_scan legacy
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM emby_probe_recent_scans current
+                WHERE current.server_id = legacy.server_id
+                  AND current.library_id = COALESCE({library_expr}, '__all__')
+            )
+            """
+        )
+    )
+
+
 def default_migrations(
     legacy_schema_alignment: Optional[MigrationCallable] = None,
 ) -> List[Migration]:
@@ -130,7 +250,12 @@ def default_migrations(
             "0001_legacy_schema_alignment",
             "Legacy schema alignment",
             legacy_schema_alignment or _missing_legacy_alignment,
-        )
+        ),
+        Migration(
+            "0002_main_schema_bridge",
+            "Bridge legacy GitHub main schema table names",
+            apply_main_schema_bridge,
+        ),
     ]
 
 

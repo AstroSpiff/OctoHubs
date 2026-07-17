@@ -295,7 +295,7 @@ if SQLALCHEMY_AVAILABLE:
     class RequestRuleEntry(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "request_rule_entries"
         request_id = Column(String(50), primary_key=True)  # type: ignore[assignment]
-        rules = Column(JSON, nullable=False)  # type: ignore[assignment]
+        data = Column("rules", JSON, nullable=False)  # type: ignore[assignment]
         updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
 
     class ScanResultEntry(Base):  # type: ignore[valid-type,misc]
