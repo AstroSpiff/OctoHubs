@@ -45,6 +45,7 @@ from emby_latest.utils import (
 from emby_latest.emby_api import (
     _fetch_emby_items_by_signature,
     _fetch_emby_episode_items,
+    _fetch_emby_playback_media_sources,
     _fetch_emby_oldest_episode_date,
     _fetch_emby_latest_items,
     _fetch_emby_latest_series_from_episodes,
@@ -166,6 +167,49 @@ def collect_entries(
             )
             version_keys.append(str(version_key))
         return str(logical_key or ""), tuple(sorted(version_keys))
+
+    playback_source_cache: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+
+    def _version_keys(versions: List[Dict[str, Any]]) -> Set[str]:
+        return {
+            str(version.get("key"))
+            for version in versions
+            if isinstance(version, dict) and version.get("key")
+        }
+
+    def _extract_versions_with_playback_baseline(
+        server: Dict[str, Any],
+        item: Dict[str, Any],
+        *,
+        include_playback_baseline: bool = False,
+    ) -> Tuple[List[Dict[str, Any]], Set[str], bool]:
+        versions = extract_versions(item, resolution_rules=resolution_rules)
+        apply_version_added_at(versions, item.get("DateCreated"))
+        if not include_playback_baseline:
+            return versions, set(), False
+
+        direct_keys = _version_keys(versions)
+        item_id = str(item.get("Id") or "")
+        server_id = str(server.get("id") or "")
+        if not item_id or not direct_keys:
+            return versions, set(), False
+
+        cache_key = (server_id, item_id)
+        if cache_key not in playback_source_cache:
+            playback_source_cache[cache_key] = _fetch_emby_playback_media_sources(server, item_id)
+        playback_sources = playback_source_cache.get(cache_key) or []
+        if not playback_sources:
+            return versions, set(), False
+
+        playback_item = dict(item)
+        playback_item["MediaSources"] = playback_sources
+        playback_versions = extract_versions(playback_item, resolution_rules=resolution_rules)
+        apply_version_added_at(playback_versions, item.get("DateCreated"))
+        playback_keys = _version_keys(playback_versions)
+        baseline_keys = playback_keys - direct_keys
+        if not baseline_keys:
+            return versions, set(), False
+        return merge_versions(versions + playback_versions), baseline_keys, True
 
     def _series_change_sort_key(change: Dict[str, Any]) -> Tuple[int, int]:
         season_number = _coerce_int(change.get("season_number"))
@@ -621,6 +665,7 @@ def collect_entries(
 
             # Collect all versions for this signature
             merged_versions: List[Dict[str, Any]] = []
+            playback_baseline_keys: Set[str] = set()
             latest_seen_dt: Optional[datetime] = None
             items_for_signature = group_items
             catalog_expanded = False
@@ -685,8 +730,14 @@ def collect_entries(
                 if grouped_dt and (latest_seen_dt is None or grouped_dt > latest_seen_dt):
                     latest_seen_dt = grouped_dt
 
-                item_versions = extract_versions(grouped_item, resolution_rules=resolution_rules)
-                apply_version_added_at(item_versions, grouped_date)
+                item_versions, item_baseline_keys, playback_expanded = _extract_versions_with_playback_baseline(
+                    server,
+                    grouped_item,
+                    include_playback_baseline=existing is None and movie_history is None,
+                )
+                if playback_expanded:
+                    catalog_expanded = True
+                    playback_baseline_keys.update(item_baseline_keys)
                 merged_versions.extend(item_versions)
 
             versions = merge_versions(merged_versions)
@@ -703,7 +754,11 @@ def collect_entries(
             # Determine new versions
             existing_keys = media_source_key_set(existing, movie_history)
 
-            new_versions = [v for v in versions if v.get("key") and v.get("key") not in existing_keys]
+            baseline_keys = playback_baseline_keys if existing is None and movie_history is None else set()
+            new_versions = [
+                v for v in versions
+                if v.get("key") and v.get("key") not in existing_keys and v.get("key") not in baseline_keys
+            ]
             version_time_map = {v.get("key"): dt_value for v, dt_value in version_times if v.get("key")}
 
             if debug_latest:
@@ -719,7 +774,7 @@ def collect_entries(
                 existing is None
                 and movie_history is None
                 and (catalog_expanded or len(items_for_signature) == 1)
-                and len(version_groups) > 1
+                and (len(version_groups) > 1 or bool(playback_baseline_keys))
             )
             if debug_latest and version_groups:
                 group_summaries = []
@@ -877,7 +932,7 @@ def collect_entries(
             if state_enabled:
                 merged_keys = merge_key_lists(
                     [v.get("key") for v in new_versions if v.get("key")],
-                    existing_keys,
+                    set(existing_keys) | set(baseline_keys),
                     [v.get("key") for v in versions if v.get("key")],
                     max_versions,
                 )
@@ -1048,9 +1103,13 @@ def collect_entries(
                 if episode_history is None and state_enabled and episode_id:
                     episode_history = get_history_entry(history_state, "episodes", episode_id)
 
-                versions = extract_versions(episode, resolution_rules=resolution_rules)
-                apply_version_added_at(versions, episode.get("DateCreated"))
+                versions, playback_baseline_keys, _playback_expanded = _extract_versions_with_playback_baseline(
+                    server,
+                    episode,
+                    include_playback_baseline=existing_episode is None and episode_history is None,
+                )
                 catalog_baseline_detected = False
+                catalog_baseline_keys: Set[str] = set(playback_baseline_keys)
                 season_number = _coerce_int(episode.get("ParentIndexNumber"))
                 episode_number = _coerce_int(episode.get("IndexNumber"))
                 if (
@@ -1078,8 +1137,12 @@ def collect_entries(
                             if not _matches_episode_numbers(catalog_item, season_number, episode_number):
                                 continue
                             catalog_item_id = str(catalog_item.get("Id") or "")
-                            item_versions = extract_versions(catalog_item, resolution_rules=resolution_rules)
-                            apply_version_added_at(item_versions, catalog_item.get("DateCreated"))
+                            item_versions, item_baseline_keys, _item_playback_expanded = _extract_versions_with_playback_baseline(
+                                server,
+                                catalog_item,
+                                include_playback_baseline=True,
+                            )
+                            catalog_baseline_keys.update(item_baseline_keys)
                             catalog_versions.extend(item_versions)
                             if catalog_item_id:
                                 seen_item_ids.add(catalog_item_id)
@@ -1088,7 +1151,7 @@ def collect_entries(
                             versions = merged_catalog_versions
                 version_times = collect_version_times(versions)
                 version_groups = group_version_times(version_times, gap_minutes)
-                if existing_episode is None and episode_history is None and len(version_groups) > 1:
+                if existing_episode is None and episode_history is None and (len(version_groups) > 1 or catalog_baseline_keys):
                     catalog_baseline_detected = True
                 version_time_map = {v.get("key"): dt_value for v, dt_value in version_times if v.get("key")}
                 mediainfo_source_keys = [
@@ -1117,6 +1180,7 @@ def collect_entries(
                         entry["_version_group_is_latest"] = idx == 0
                         entry["_version_group_has_split"] = True
                         entry["_catalog_baseline_detected"] = catalog_baseline_detected
+                        entry["_catalog_baseline_keys"] = list(catalog_baseline_keys)
                         entry["_version_time_map"] = version_time_map
                         episode_entries.append(entry)
                 else:
@@ -1130,6 +1194,7 @@ def collect_entries(
                     entry["_version_group_is_latest"] = True
                     entry["_version_group_has_split"] = False
                     entry["_catalog_baseline_detected"] = catalog_baseline_detected
+                    entry["_catalog_baseline_keys"] = list(catalog_baseline_keys)
                     entry["_version_time_map"] = version_time_map
                     episode_entries.append(entry)
 
@@ -1188,6 +1253,11 @@ def collect_entries(
                     version_time_map = episode.get("_version_time_map") or {}
                     version_gap = bool(episode.get("_version_group_has_split"))
                     catalog_baseline = bool(episode.get("_catalog_baseline_detected"))
+                    catalog_baseline_keys = {
+                        str(key)
+                        for key in (episode.get("_catalog_baseline_keys") or [])
+                        if key
+                    }
                     is_latest_version_group = bool(episode.get("_version_group_is_latest", True))
 
                     existing_episode = initial_episode_state.get(episode_key) if state_enabled else None
@@ -1205,7 +1275,10 @@ def collect_entries(
 
                     existing_keys = media_source_key_set(existing_episode, episode_history)
 
-                    new_versions = [v for v in versions if v.get("key") and v.get("key") not in existing_keys]
+                    new_versions = [
+                        v for v in versions
+                        if v.get("key") and v.get("key") not in existing_keys and v.get("key") not in catalog_baseline_keys
+                    ]
 
                     # Determine kind
                     episode_known = existing_episode is not None or episode_history is not None
@@ -1276,7 +1349,7 @@ def collect_entries(
                     if state_enabled:
                         merged_keys = merge_key_lists(
                             [v.get("key") for v in new_versions if v.get("key")],
-                            existing_keys,
+                            set(existing_keys) | set(catalog_baseline_keys),
                             [v.get("key") for v in versions if v.get("key")],
                             max_versions,
                         )

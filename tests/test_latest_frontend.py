@@ -95,6 +95,15 @@ class LatestFrontendTests(unittest.TestCase):
             source,
         )
 
+    def test_latest_tab_does_not_render_redundant_local_progress_loader(self):
+        source = pathlib.Path("static/emby_latest.js").read_text(encoding="utf-8")
+        template = pathlib.Path("templates/emby_dashboard.html").read_text(encoding="utf-8")
+
+        self.assertNotIn("data-latest-progress", template)
+        self.assertNotIn("data-latest-progress-bar", template)
+        self.assertNotIn("latestProgressWrap.style.display", source)
+        self.assertIn("const updateLatestProgressUI = (progress, refreshing) =>", source)
+
     def test_latest_load_message_uses_database_language_not_raw_cache_error(self):
         source = pathlib.Path("static/emby_latest.js").read_text(encoding="utf-8")
 

@@ -19,10 +19,6 @@
     const latestPanel = document.querySelector('[data-tab-panel="latest"]');
     const latestServerTabs = document.querySelectorAll('[data-latest-server]');
     const latestServerTabsContainer = document.querySelector('[data-latest-server-tabs]');
-    const latestProgressWrap = document.querySelector('[data-latest-progress]');
-    const latestProgressBar = document.querySelector('[data-latest-progress-bar]');
-    const latestProgressText = document.querySelector('[data-latest-progress-text]');
-    const latestProgressMeta = document.querySelector('[data-latest-progress-meta]');
     const isLatestTabActive = () => !!latestPanel && latestPanel.classList.contains('active');
     const canAutoRefreshLatest = () => isLatestTabActive() && document.visibilityState === 'visible';
 
@@ -469,39 +465,9 @@
     let latestProgressTimer = null;
     let latestProgressInFlight = false;
 
-    const coerceProgressNumber = (value) => {
-        const parsed = Number(value);
-        return Number.isFinite(parsed) ? parsed : 0;
-    };
-
     const updateLatestProgressUI = (progress, refreshing) => {
-        if (!latestProgressWrap || !latestProgressBar || !latestProgressText || !latestProgressMeta) {
-            return false;
-        }
         const state = progress && typeof progress.state === 'string' ? progress.state : 'idle';
-        const total = coerceProgressNumber(progress && progress.total);
-        const completed = coerceProgressNumber(progress && progress.completed);
-        const message = safeString(progress && progress.message);
-        const isActive = refreshing || state === 'collecting' || state === 'enriching';
-
-        if (!isActive) {
-            latestProgressWrap.style.display = 'none';
-            latestProgressBar.style.width = '0%';
-            latestProgressText.textContent = '';
-            latestProgressMeta.textContent = '';
-            return false;
-        }
-
-        const percent = total > 0 ? Math.min(100, Math.max(0, (completed / total) * 100)) : 0;
-        latestProgressWrap.style.display = 'flex';
-        latestProgressBar.style.width = `${percent}%`;
-        latestProgressText.textContent = total > 0 ? `${Math.round(percent)}%` : '...';
-        if (total > 0) {
-            latestProgressMeta.textContent = `${message || 'Aggiornamento in corso'} · ${Math.min(completed, total)}/${total}`;
-        } else {
-            latestProgressMeta.textContent = message || 'Aggiornamento in corso';
-        }
-        return true;
+        return refreshing || state === 'collecting' || state === 'enriching';
     };
 
     const stopLatestProgressPolling = () => {
@@ -542,7 +508,7 @@
     };
 
     const startLatestProgressPolling = () => {
-        if (!latestProgressWrap || latestProgressTimer) {
+        if (latestProgressTimer) {
             return;
         }
         fetchLatestProgress();

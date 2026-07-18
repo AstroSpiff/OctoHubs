@@ -591,7 +591,7 @@ def _wf_refresh_cache(context: Dict[str, Any]) -> None:
         raise
 
 
-def _wf_notify(context: Dict[str, Any]) -> None:
+def _wf_notify(context: Dict[str, Any]) -> dict:
     """
     Invia notifiche Telegram per i contenuti recenti.
 
@@ -651,7 +651,7 @@ def _wf_notify(context: Dict[str, Any]) -> None:
         else:
             print(f"[WORKFLOW] [NOTIFY] ✗ Notifiche fallite: {result.get('message')}")
 
-        # Non solleva eccezioni, anche se fallisce
+        return result
     except Exception as exc:
         print(f"[WORKFLOW] [NOTIFY] ✗ Errore invio notifiche: {exc}")
         import traceback

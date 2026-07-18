@@ -80,6 +80,30 @@ class WorkflowOperationTests(unittest.TestCase):
         self.assertFalse(tracker.failed)
         self.assertFalse(tracker.interrupted)
 
+    def test_notify_callback_failure_marks_workflow_failed(self):
+        tracker = _OperationTracker()
+        manager = WorkflowManager()
+        manager.set_operation_tracker(tracker)
+        manager.set_callbacks(
+            trigger_scan_func=lambda _context: True,
+            check_scan_func=lambda _context: True,
+            trigger_probe_func=lambda _context: True,
+            check_probe_func=lambda _context: True,
+            refresh_cache_func=lambda _context: None,
+            notify_func=lambda _context: {"success": False, "message": "Nessuna pubblicazione da notificare."},
+        )
+
+        with patch("time.sleep", lambda _seconds: None):
+            self.assertTrue(manager.start("full"))
+            manager._thread.join(timeout=3)
+
+        self.assertFalse(manager._thread.is_alive())
+        self.assertEqual("failed", manager.get_status()["status"])
+        self.assertEqual("failed", manager.get_status()["steps"][3]["status"])
+        self.assertIn("Nessuna pubblicazione da notificare.", manager.get_status()["error"])
+        self.assertTrue(tracker.failed)
+        self.assertFalse(tracker.finished)
+
     def test_stop_during_probe_step_calls_probe_stop_callback(self):
         manager = WorkflowManager()
         probe_started = threading.Event()

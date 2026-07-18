@@ -981,10 +981,25 @@ class WorkflowManager:
 
         # Chiama la funzione di notifica
         self._update_step_status(step_index, "running", "Invio notifiche in corso...", 50)
-        self._notify_func(context)
+        result = self._notify_func(context)
+
+        if isinstance(result, dict) and result.get("success") is False:
+            raise Exception(result.get("message") or "Invio notifiche Telegram non riuscito")
+
+        details = "Notifiche inviate"
+        if isinstance(result, dict):
+            sent = result.get("sent")
+            failed = result.get("failed")
+            detail_parts = []
+            if sent is not None:
+                detail_parts.append(f"{sent} inviate")
+            if failed:
+                detail_parts.append(f"{failed} fallite")
+            if detail_parts:
+                details = "Notifiche Telegram: " + ", ".join(detail_parts)
 
         print("[WORKFLOW] [NOTIFY] Notifiche Telegram inviate con successo")
-        self._update_step_status(step_index, "running", "Notifiche inviate", 90)
+        self._update_step_status(step_index, "running", details, 90)
 
     def _get_steps(self):
         """Restituisce una copia degli step correnti."""

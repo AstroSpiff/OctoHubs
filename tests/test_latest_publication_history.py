@@ -359,6 +359,111 @@ class LatestPublicationHistoryTests(unittest.TestCase):
             {change.get("path") for change in payload["movies"][0]["changes"]},
         )
 
+    def test_movie_uses_playbackinfo_extra_sources_as_existing_emby_baseline(self):
+        db_state = _RecordingState({"server-a": {"movies": {"items": {}}, "series": {"items": {}}}})
+        db_cache = _RecordingCache()
+        current_movie = {
+            "Id": "movie-1",
+            "Name": "Underworld: Evolution",
+            "Type": "Movie",
+            "ProductionYear": 2006,
+            "DateCreated": "2026-07-16T13:03:01+00:00",
+            "ProviderIds": {"Tmdb": "834"},
+            "MediaSources": [
+                {
+                    "Id": "source-2160",
+                    "Path": "/media/underworld-evolution-2160p.mkv",
+                    "Container": "mkv",
+                    "Size": 19608381412,
+                },
+                {
+                    "Id": "source-1080",
+                    "Path": "/media/underworld-evolution-1080p.mkv",
+                    "Container": "mkv",
+                    "Size": 10118529350,
+                },
+            ],
+        }
+        playback_sources = [
+            *current_movie["MediaSources"],
+            {
+                "Id": "source-720",
+                "Path": "/media/underworld-evolution-720p.mkv",
+                "Container": "mkv",
+                "Size": 1700000000,
+            },
+        ]
+
+        with patch(
+            "emby_latest.collectors._fetch_emby_playback_media_sources",
+            return_value=playback_sources,
+        ):
+            payload, error = _collect_with_mocks(
+                db_state,
+                db_cache,
+                movie_items=[current_movie],
+                movie_catalog_items=[current_movie],
+            )
+
+        self.assertIsNone(error)
+        self.assertTrue(payload["movies"])
+        self.assertEqual("update", payload["movies"][0].get("update_type"))
+        self.assertEqual("Nuova versione", payload["movies"][0].get("update_label"))
+        self.assertEqual(["new_version", "new_version"], [change.get("kind") for change in payload["movies"][0]["changes"]])
+        self.assertEqual(
+            {
+                "/media/underworld-evolution-2160p.mkv",
+                "/media/underworld-evolution-1080p.mkv",
+            },
+            {change.get("path") for change in payload["movies"][0]["changes"]},
+        )
+        saved_movie = db_state.saved[-1]["server-a"]["movies"]["items"]["tmdb:834"]
+        self.assertEqual(3, len(saved_movie.get("media_source_keys") or []))
+
+    def test_known_movie_does_not_fetch_playbackinfo_baseline(self):
+        db_state = _RecordingState(
+            {
+                "server-a": {
+                    "movies": {
+                        "items": {
+                            "tmdb:834": {
+                                "title": "Underworld: Evolution",
+                                "media_source_keys": ["old-720-key"],
+                                "notified": True,
+                                "notified_at": "2026-07-01T10:00:00+00:00",
+                            }
+                        }
+                    },
+                    "series": {"items": {}},
+                }
+            }
+        )
+        db_cache = _RecordingCache()
+        current_movie = {
+            "Id": "movie-1",
+            "Name": "Underworld: Evolution",
+            "Type": "Movie",
+            "ProductionYear": 2006,
+            "DateCreated": "2026-07-16T13:03:01+00:00",
+            "ProviderIds": {"Tmdb": "834"},
+            "MediaSources": [
+                {
+                    "Id": "source-1080",
+                    "Path": "/media/underworld-evolution-1080p.mkv",
+                    "Container": "mkv",
+                    "Size": 10118529350,
+                }
+            ],
+        }
+
+        with patch("emby_latest.collectors._fetch_emby_playback_media_sources") as playback_fetch:
+            payload, error = _collect_with_mocks(db_state, db_cache, movie_items=[current_movie])
+
+        playback_fetch.assert_not_called()
+        self.assertIsNone(error)
+        self.assertTrue(payload["movies"])
+        self.assertEqual("Nuova versione", payload["movies"][0].get("update_label"))
+
     def test_episode_history_classifies_pruned_notified_episode_as_new_version(self):
         episode_key = "series-1:S1:E2"
         db_state = _RecordingState(
@@ -433,6 +538,64 @@ class LatestPublicationHistoryTests(unittest.TestCase):
         self.assertTrue(saved_history["notified"])
         self.assertIn("old-episode-key", saved_history["media_source_keys"])
         self.assertGreaterEqual(len(saved_history["media_source_keys"]), 2)
+
+    def test_known_episode_does_not_fetch_playbackinfo_baseline(self):
+        episode_key = "series-1:S1:E2"
+        db_state = _RecordingState(
+            {
+                "server-a": {
+                    "movies": {"items": {}},
+                    "series": {"items": {}},
+                    "history": {
+                        "episodes": {
+                            episode_key: {
+                                "series_id": "series-1",
+                                "season": 1,
+                                "episode": 2,
+                                "media_source_keys": ["old-episode-key"],
+                                "notified": True,
+                                "notified_at": "2026-07-01T10:00:00+00:00",
+                            }
+                        }
+                    },
+                }
+            }
+        )
+        db_cache = _RecordingCache()
+        episode = {
+            "Id": "episode-2",
+            "Name": "Episode Two",
+            "Type": "Episode",
+            "SeriesId": "series-1",
+            "SeriesName": "Series One",
+            "SeriesProductionYear": 2026,
+            "ParentIndexNumber": 1,
+            "IndexNumber": 2,
+            "DateCreated": "2026-07-16T10:05:00+00:00",
+            "MediaSources": [
+                {
+                    "Id": "source-new",
+                    "Path": "/media/series-one/s01e02-2160p.mkv",
+                    "Container": "mkv",
+                    "Size": 2000,
+                }
+            ],
+        }
+        series = {
+            "Id": "series-1",
+            "Name": "Series One",
+            "Type": "Series",
+            "ProductionYear": 2026,
+            "DateCreated": "2026-07-16T10:05:00+00:00",
+        }
+
+        with patch("emby_latest.collectors._fetch_emby_playback_media_sources") as playback_fetch:
+            payload, error = _collect_with_mocks(db_state, db_cache, episode_items=[episode], series_entries=[series])
+
+        playback_fetch.assert_not_called()
+        self.assertIsNone(error)
+        self.assertTrue(payload["series"])
+        self.assertEqual("Nuova versione", payload["series"][0].get("update_label"))
 
     def test_unnotified_existing_episode_keeps_new_episode_classification_for_new_versions(self):
         episode_key = "series-1:S1:E2"
@@ -643,6 +806,78 @@ class LatestPublicationHistoryTests(unittest.TestCase):
             },
             {change.get("path") for change in payload["series"][0]["changes"]},
         )
+
+    def test_episode_uses_playbackinfo_extra_sources_as_existing_emby_baseline(self):
+        db_state = _RecordingState({"server-a": {"movies": {"items": {}}, "series": {"items": {}}}})
+        db_cache = _RecordingCache()
+        current_episode = {
+            "Id": "episode-2",
+            "Name": "Episode Two",
+            "Type": "Episode",
+            "SeriesId": "series-1",
+            "SeriesName": "Series One",
+            "SeriesProductionYear": 2026,
+            "ParentIndexNumber": 1,
+            "IndexNumber": 2,
+            "DateCreated": "2026-07-16T13:03:01+00:00",
+            "MediaSources": [
+                {
+                    "Id": "source-s01e02-2160",
+                    "Path": "/media/series-one/s01e02-2160p.mkv",
+                    "Container": "mkv",
+                    "Size": 2000,
+                },
+                {
+                    "Id": "source-s01e02-1080",
+                    "Path": "/media/series-one/s01e02-1080p.mkv",
+                    "Container": "mkv",
+                    "Size": 1000,
+                },
+            ],
+        }
+        series = {
+            "Id": "series-1",
+            "Name": "Series One",
+            "Type": "Series",
+            "ProductionYear": 2026,
+            "DateCreated": "2026-07-16T13:03:01+00:00",
+        }
+        playback_sources = [
+            *current_episode["MediaSources"],
+            {
+                "Id": "source-s01e02-720",
+                "Path": "/media/series-one/s01e02-720p.mkv",
+                "Container": "mkv",
+                "Size": 700,
+            },
+        ]
+
+        with patch(
+            "emby_latest.collectors._fetch_emby_playback_media_sources",
+            return_value=playback_sources,
+        ):
+            payload, error = _collect_with_mocks(
+                db_state,
+                db_cache,
+                episode_items=[current_episode],
+                episode_catalog_items=[current_episode],
+                series_entries=[series],
+            )
+
+        self.assertIsNone(error)
+        self.assertTrue(payload["series"])
+        self.assertEqual("update", payload["series"][0].get("update_type"))
+        self.assertEqual("Nuova versione", payload["series"][0].get("update_label"))
+        self.assertEqual(["new_version", "new_version"], [change.get("kind") for change in payload["series"][0]["changes"]])
+        self.assertEqual(
+            {
+                "/media/series-one/s01e02-2160p.mkv",
+                "/media/series-one/s01e02-1080p.mkv",
+            },
+            {change.get("path") for change in payload["series"][0]["changes"]},
+        )
+        saved_episode = db_state.saved[-1]["server-a"]["history"]["episodes"]["series-1:S1:E2"]
+        self.assertEqual(3, len(saved_episode.get("media_source_keys") or []))
 
     def test_episode_catalog_baseline_keeps_older_versions_as_new_episode(self):
         db_state = _RecordingState({"server-a": {"movies": {"items": {}}, "series": {"items": {}}}})

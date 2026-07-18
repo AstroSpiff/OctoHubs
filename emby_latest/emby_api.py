@@ -169,6 +169,27 @@ def _fetch_emby_episode_items(
     ]
 
 
+def _fetch_emby_playback_media_sources(
+    server: Dict[str, Any],
+    item_id: str,
+) -> List[Dict[str, Any]]:
+    """Fetch playable media sources for one Emby item."""
+    if not server or not item_id:
+        return []
+    success, payload = _call_emby_api(
+        server,
+        f"Items/{item_id}/PlaybackInfo",
+        method="POST",
+        params={"UserId": ""},
+    )
+    if not success or not isinstance(payload, dict):
+        return []
+    sources = payload.get("MediaSources")
+    if not isinstance(sources, list):
+        return []
+    return [source for source in sources if isinstance(source, dict)]
+
+
 def _fetch_emby_oldest_episode_date(
     server: Dict[str, Any],
     series_id: str,
