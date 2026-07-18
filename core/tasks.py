@@ -5,10 +5,35 @@ import threading
 import copy
 import json
 from datetime import datetime, timedelta
-from typing import Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from core.config import _normalize_auto_settings, _default_auto_tasks, _coerce_request_int
 from core.utils import _normalize_scan_targets, _serialize_target_map
+
+
+def _is_notification_noop_result(result: Dict[str, Any]) -> bool:
+    """Return True when notification callbacks report a successful no-op."""
+    try:
+        sent = int(result.get("sent") or 0)
+        failed = int(result.get("failed") or 0)
+    except (TypeError, ValueError):
+        return False
+    if sent or failed:
+        return False
+
+    message = str(result.get("message") or "").lower()
+    errors = result.get("errors") or []
+    if not isinstance(errors, list):
+        errors = [errors]
+
+    def _is_noop_text(value: Any) -> bool:
+        text = str(value or "").lower()
+        return (
+            "nessuna pubblicazione da notificare" in text
+            or "nessun contenuto da notificare" in text
+        )
+
+    return _is_noop_text(message) and all(_is_noop_text(entry) for entry in errors)
 
 
 class ScanManager:
@@ -761,7 +786,12 @@ class WorkflowManager:
                     print(f"[WORKFLOW] [DEBUG] Acquiring lock to mark step {i} as done")
                     with self._lock:
                         if self._status["steps"][i]["status"] != "failed":
-                            self._update_step_status(i, "done", "Completato", 100, duration)
+                            done_details = "Completato"
+                            if step["id"] == "notify":
+                                current_details = self._status["steps"][i].get("details")
+                                if current_details and current_details not in ("In esecuzione...", "Invio notifiche in corso..."):
+                                    done_details = current_details
+                            self._update_step_status(i, "done", done_details, 100, duration)
                             print(f"[WORKFLOW] [DEBUG] Step {i} ({step['id']}) marked as done")
 
                 except Exception as exc:
@@ -983,15 +1013,18 @@ class WorkflowManager:
         self._update_step_status(step_index, "running", "Invio notifiche in corso...", 50)
         result = self._notify_func(context)
 
-        if isinstance(result, dict) and result.get("success") is False:
+        is_noop = isinstance(result, dict) and _is_notification_noop_result(result)
+        if isinstance(result, dict) and result.get("success") is False and not is_noop:
             raise Exception(result.get("message") or "Invio notifiche Telegram non riuscito")
 
         details = "Notifiche inviate"
         if isinstance(result, dict):
+            if is_noop:
+                details = result.get("message") or "Nessuna pubblicazione da notificare."
             sent = result.get("sent")
             failed = result.get("failed")
             detail_parts = []
-            if sent is not None:
+            if sent is not None and not is_noop:
                 detail_parts.append(f"{sent} inviate")
             if failed:
                 detail_parts.append(f"{failed} fallite")

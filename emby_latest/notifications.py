@@ -72,6 +72,18 @@ def send_notifications(
     from emby_latest.batch_processor import build_episode_signature
     from emby_latest.publication_history import ensure_history, notification_snapshot, update_history_entry
 
+    def _no_notifications_result(message: str = "Nessuna pubblicazione da notificare.") -> Dict[str, Any]:
+        return {
+            "success": True,
+            "message": message,
+            "sent": 0,
+            "failed": 0,
+            "errors": []
+        }
+
+    def _is_no_content_rule_message(value: Any) -> bool:
+        return "nessun contenuto da notificare" in str(value or "").lower()
+
     # Load configuration if not provided
     if config is None:
         config, is_valid = load_config()
@@ -285,13 +297,7 @@ def send_notifications(
         effective_per_server_limit = 0
 
     if not items:
-        return {
-            "success": False,
-            "message": "Nessuna pubblicazione da notificare.",
-            "sent": 0,
-            "failed": 0,
-            "errors": []
-        }
+        return _no_notifications_result()
 
     # Load settings
     latest_settings = _load_latest_settings()
@@ -425,6 +431,8 @@ def send_notifications(
         })
 
     if not rule_runs:
+        if errors and all(_is_no_content_rule_message(error) for error in errors):
+            return _no_notifications_result("Nessuna pubblicazione da notificare per i server configurati.")
         if disabled_rules_count and not errors:
             message = f"Tutte le {disabled_rules_count} regole sono disabilitate."
         elif disabled_rules_count:
@@ -463,13 +471,7 @@ def send_notifications(
                 pending_item_signatures.add(item_signature)
 
     if not pending_item_signatures:
-        return {
-            "success": False,
-            "message": "Nessuna pubblicazione da notificare.",
-            "sent": 0,
-            "failed": 0,
-            "errors": errors
-        }
+        return _no_notifications_result()
 
     pending_items = [
         item for item in items
@@ -513,13 +515,7 @@ def send_notifications(
     rule_runs = filtered_rule_runs
 
     if not rule_runs:
-        return {
-            "success": False,
-            "message": "Nessuna pubblicazione da notificare.",
-            "sent": 0,
-            "failed": 0,
-            "errors": errors
-        }
+        return _no_notifications_result()
 
     # Send notifications
     sent = 0

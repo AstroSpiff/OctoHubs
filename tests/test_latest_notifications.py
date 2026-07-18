@@ -922,6 +922,85 @@ class LatestNotificationTests(unittest.TestCase):
         self.assertEqual(result["errors"], [])
         self.assertEqual(deliveries, [("token-a", "chat-a", "Movie A")])
 
+    def test_send_notifications_treats_no_content_for_rule_as_noop_success(self):
+        deliveries = []
+        cache_payload = {
+            "payload": {
+                "movies": [
+                    {
+                        "server_id": "server-b",
+                        "item_id": "movie-1",
+                        "signature": "server-b:tmdb:1",
+                        "item_type": "movie",
+                        "title": "Movie B",
+                        "year": 2026,
+                        "added_at": "2026-07-15T10:00:00+00:00",
+                    }
+                ],
+                "series": [],
+            }
+        }
+        latest_settings = {
+            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{title}"}],
+            "ACTIVE_PRESET_ID": "preset-a",
+            "TELEGRAM_PRESET_IDS": ["telegram-a"],
+            "NOTIFICATION_RULES": [
+                {
+                    "id": "rule-a",
+                    "name": "Rule A",
+                    "enabled": True,
+                    "server_ids": ["server-a"],
+                    "preset_id": "preset-a",
+                    "telegram_config_id": "telegram-a",
+                }
+            ],
+        }
+        telegram_settings = {
+            "PRESETS": [
+                {
+                    "id": "telegram-a",
+                    "name": "Telegram",
+                    "bot_ids": ["bot-a"],
+                    "group_ids": ["group-a"],
+                    "channel_ids": [],
+                }
+            ],
+            "BOTS": [{"id": "bot-a", "token": "token-a"}],
+            "GROUPS": [{"id": "group-a", "chat_id": "chat-a"}],
+            "CHANNELS": [],
+        }
+
+        def fake_telegram(token, _method, params):
+            deliveries.append((token, params.get("chat_id"), params.get("text") or params.get("caption")))
+            return True, "OK", {}
+
+        with patch("emby_latest.db_cache.load_cache", return_value=cache_payload), patch(
+            "emby_latest.db_state.load_state",
+            return_value={},
+        ), patch("emby_latest.db_state.save_state", return_value=None), patch(
+            "emby_latest.settings._load_latest_settings",
+            return_value=latest_settings,
+        ), patch("telegram._load_telegram_settings", return_value=telegram_settings), patch(
+            "emby_latest.jellyseerr._apply_jellyseerr_request_info",
+            return_value=None,
+        ), patch("emby_latest.notifications._telegram_api_request", side_effect=fake_telegram), patch(
+            "time.sleep",
+            return_value=None,
+        ):
+            result = send_notifications(
+                per_server_limit=10,
+                config={
+                    "DATABASE": {"ENABLED": True},
+                    "EMBY": {"SERVERS": [{"id": "server-a"}, {"id": "server-b"}]},
+                },
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["sent"], 0)
+        self.assertEqual(result["failed"], 0)
+        self.assertIn("Nessuna pubblicazione da notificare", result["message"])
+        self.assertEqual(deliveries, [])
+
     def test_send_notifications_requires_active_notification_rule(self):
         deliveries = []
         cache_payload = {

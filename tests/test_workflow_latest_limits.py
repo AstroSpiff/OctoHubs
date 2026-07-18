@@ -118,8 +118,8 @@ class WorkflowLatestLimitsTests(unittest.TestCase):
             "services.workflows.load_config",
             return_value=(config, True),
         ), patch("services.workflows.get_emby_latest_manager", return_value=manager), patch(
-            "services.manager._build_refresh_requests_snapshot",
-            return_value=None,
+            "services.latest_jellyseerr.refresh_latest_jellyseerr_requests",
+            return_value=({"success": True}, 200),
         ), patch(
             "threading.Thread",
             side_effect=lambda target, daemon=True: _ImmediateThread(target, daemon=daemon),
@@ -133,6 +133,36 @@ class WorkflowLatestLimitsTests(unittest.TestCase):
         self.assertEqual(1, len(manager.incremental_calls))
         self.assertEqual((80, 40), manager.incremental_calls[0][:2])
 
+    def test_refresh_cache_uses_lightweight_jellyseerr_refresh(self):
+        manager = _RefreshManager()
+        config = {
+            "EMBY": {
+                "SERVERS": [
+                    {"id": "server-a", "enabled": True},
+                ]
+            }
+        }
+
+        with patch("emby_latest.settings._load_latest_settings", return_value={"SETTINGS": {"max_movies": 10, "max_series": 10}}), patch(
+            "services.workflows.load_config",
+            return_value=(config, True),
+        ), patch("services.workflows.get_emby_latest_manager", return_value=manager), patch(
+            "services.latest_jellyseerr.refresh_latest_jellyseerr_requests",
+            return_value=({"success": True}, 200),
+        ) as refresh_lightweight, patch(
+            "services.manager._build_refresh_requests_snapshot",
+            side_effect=AssertionError("full Jellyseerr dashboard refresh must not run"),
+        ), patch(
+            "threading.Thread",
+            side_effect=lambda target, daemon=True: _ImmediateThread(target, daemon=daemon),
+        ), patch(
+            "time.sleep",
+            return_value=None,
+        ):
+            workflows._wf_refresh_cache({})
+
+        self.assertEqual(1, refresh_lightweight.call_count)
+
     def test_refresh_cache_waits_longer_than_five_minutes_for_running_refresh(self):
         manager = _SlowPollingRefreshManager(refreshing_polls=170)
         time_value = {"now": 0}
@@ -145,8 +175,8 @@ class WorkflowLatestLimitsTests(unittest.TestCase):
             "services.workflows.load_config",
             return_value=({"EMBY": {"SERVERS": [{"id": "server-a", "enabled": True}]}}, True),
         ), patch("services.workflows.get_emby_latest_manager", return_value=manager), patch(
-            "services.manager._build_refresh_requests_snapshot",
-            return_value=None,
+            "services.latest_jellyseerr.refresh_latest_jellyseerr_requests",
+            return_value=({"success": True}, 200),
         ), patch(
             "threading.Thread",
             side_effect=lambda target, daemon=True: _ImmediateThread(target, daemon=daemon),
@@ -168,8 +198,8 @@ class WorkflowLatestLimitsTests(unittest.TestCase):
             "services.workflows.load_config",
             return_value=({"EMBY": {"SERVERS": [{"id": "server-a", "enabled": True}]}}, True),
         ), patch("services.workflows.get_emby_latest_manager", return_value=manager), patch(
-            "services.manager._build_refresh_requests_snapshot",
-            return_value=None,
+            "services.latest_jellyseerr.refresh_latest_jellyseerr_requests",
+            return_value=({"success": True}, 200),
         ), patch(
             "threading.Thread",
             side_effect=lambda target, daemon=True: _ImmediateThread(target, daemon=daemon),
@@ -187,8 +217,8 @@ class WorkflowLatestLimitsTests(unittest.TestCase):
             "services.workflows.load_config",
             return_value=({"EMBY": {"SERVERS": [{"id": "server-a", "enabled": True}]}}, True),
         ), patch("services.workflows.get_emby_latest_manager", return_value=manager), patch(
-            "services.manager._build_refresh_requests_snapshot",
-            return_value=None,
+            "services.latest_jellyseerr.refresh_latest_jellyseerr_requests",
+            return_value=({"success": True}, 200),
         ), patch(
             "threading.Thread",
             side_effect=lambda target, daemon=True: _ImmediateThread(target, daemon=daemon),

@@ -536,13 +536,24 @@ def _wf_refresh_cache(context: Dict[str, Any]) -> None:
 
         print(f"[WORKFLOW] [CACHE] Parametri: limit={limit}, per_server_limit={per_server_limit}")
 
-        # Aggiorna le richieste Jellyseerr prima del refresh pubblicazioni,
-        # così l'arricchimento avrà i dati freschi dal DB.
-        print("[WORKFLOW] [CACHE] Aggiornamento richieste Jellyseerr...")
+        # Aggiorna solo l'indice Jellyseerr usato da Latest.
+        # Il refresh dashboard completo include JustWatch e resta fuori dal percorso
+        # critico di Aggiornamento Pubblicazioni.
+        print("[WORKFLOW] [CACHE] Aggiornamento indice richieste Jellyseerr per Latest...")
         try:
-            from services.manager import _build_refresh_requests_snapshot
-            _build_refresh_requests_snapshot()
-            print("[WORKFLOW] [CACHE] ✓ Richieste Jellyseerr aggiornate")
+            from services.latest_jellyseerr import refresh_latest_jellyseerr_requests
+            refresh_snapshot, _ = refresh_latest_jellyseerr_requests(config)
+            if refresh_snapshot.get("success"):
+                counts = refresh_snapshot.get("counts") or {}
+                print(
+                    "[WORKFLOW] [CACHE] ✓ Indice Jellyseerr aggiornato: "
+                    f"{counts.get('movies', 0)} film, {counts.get('tv', 0)} serie TV"
+                )
+            else:
+                print(
+                    "[WORKFLOW] [CACHE] ⚠ Indice Jellyseerr non aggiornato "
+                    f"({refresh_snapshot.get('message')})"
+                )
         except Exception as exc:
             print(f"[WORKFLOW] [CACHE] ⚠ Aggiornamento Jellyseerr fallito (continuo): {exc}")
 

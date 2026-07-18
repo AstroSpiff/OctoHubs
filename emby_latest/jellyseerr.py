@@ -279,14 +279,16 @@ def _sync_jellyseerr_to_db(config: Dict[str, Any]) -> bool:
         return False
 
     try:
-        from emby_runtime.api_clients import get_jellyseerr_requests
-        print("[LATEST] Jellyseerr: DB vuoto, sincronizzazione richieste in corso...")
-        requests_data, ok = get_jellyseerr_requests(config, silent=True, return_status=True)
-        if not ok:
+        from services.latest_jellyseerr import refresh_latest_jellyseerr_requests
+        print("[LATEST] Jellyseerr: DB vuoto, sincronizzazione indice richieste in corso...")
+        snapshot, _ = refresh_latest_jellyseerr_requests(config)
+        if not snapshot.get("success"):
             return False
-        entries = build_request_entries(requests_data)
-        backend.save_jellyseerr_requests(entries)
-        print(f"[LATEST] Jellyseerr: {len(entries)} richieste sincronizzate nel DB")
+        counts = snapshot.get("counts") or {}
+        print(
+            "[LATEST] Jellyseerr: indice richieste sincronizzato "
+            f"({counts.get('movies', 0)} film, {counts.get('tv', 0)} serie TV)"
+        )
         return True
     except Exception as exc:
         print(f"[LATEST] Jellyseerr: errore sincronizzazione DB: {exc}")

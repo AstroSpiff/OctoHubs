@@ -299,11 +299,9 @@ def _build_refresh_requests_snapshot():
         return json_error(f"Errore salvataggio cache: {exc}", 500)
 
     try:
-        backend = _ensure_db_backend()
-        from emby_latest import jellyseerr as latest_jellyseerr
-        entries = latest_jellyseerr.build_request_entries(requests_data)
-        backend.save_jellyseerr_requests(entries)
-        print(f"   -> [REFRESH] Jellyseerr requests salvate su DB: {len(entries)}")
+        from services.latest_jellyseerr import save_latest_jellyseerr_requests
+        saved = save_latest_jellyseerr_requests(requests_data, backend=_ensure_db_backend())
+        print(f"   -> [REFRESH] Jellyseerr requests salvate su DB: {saved.get('entries', 0)}")
     except Exception as exc:
         print(f"   -> [REFRESH] [WARNING] Salvataggio Jellyseerr requests fallito: {exc}")
 
