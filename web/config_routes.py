@@ -129,6 +129,7 @@ async def configuration_page(request: Request):
     requests_refresh_warning_at = _JELLYSEERR_REFRESH_STATE.get("last_warning_at")
 
     return _templates_dep().TemplateResponse(
+        request,
         "configuration.html",
         {
             "request": request,

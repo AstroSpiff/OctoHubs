@@ -118,6 +118,7 @@ async def view_emby_collections(request: Request, user=Depends(_get_current_user
     }
 
     return templates.TemplateResponse(
+        request,
         "emby_collections.html",
         {
             "request": request,

@@ -98,6 +98,7 @@ async def view_emby_dashboard(
     )
 
     return _templates_dep().TemplateResponse(
+        request,
         "emby_dashboard.html",
         {
             "request": request,
@@ -141,6 +142,7 @@ async def emby_probe_page(request: Request):
     message = messages[0][1] if messages else None
 
     return _templates_dep().TemplateResponse(
+        request,
         "emby_probe.html",
         {
             "request": request,

@@ -73,7 +73,7 @@ async def setup_user_get_route(request: Request):
     if _has_users_dep():
         return RedirectResponse(url="/setup/db", status_code=303)
 
-    return _templates_dep().TemplateResponse("setup.html", {"request": request, "step": "user"})
+    return _templates_dep().TemplateResponse(request, "setup.html", {"request": request, "step": "user"})
 
 
 @router.post("/setup/user")
@@ -130,7 +130,7 @@ async def setup_db_get_route(request: Request):
     legacy_config = read_raw_config() or {}
     db_defaults = _merge_database_settings(legacy_config.get("DATABASE"))
 
-    return _templates_dep().TemplateResponse("setup.html", {"request": request, "step": "db", "db": db_defaults})
+    return _templates_dep().TemplateResponse(request, "setup.html", {"request": request, "step": "db", "db": db_defaults})
 
 
 @router.post("/setup/db")
@@ -191,14 +191,14 @@ async def setup_db_post_route(
         not db_settings_effective.get("USER")
     ):
         _flash_dep(request, "Compila host, database e username.", "error")
-        return _templates_dep().TemplateResponse("setup.html", {"request": request, "step": "db", "db": db_defaults})
+        return _templates_dep().TemplateResponse(request, "setup.html", {"request": request, "step": "db", "db": db_defaults})
 
     try:
         backend = DatabaseStorage(db_settings_effective)
         backend.ensure_ready()
     except StorageError as exc:
         _flash_dep(request, f"Connessione DB fallita: {exc}", "error")
-        return _templates_dep().TemplateResponse("setup.html", {"request": request, "step": "db", "db": db_defaults})
+        return _templates_dep().TemplateResponse(request, "setup.html", {"request": request, "step": "db", "db": db_defaults})
 
     _seed_db_from_legacy_config(legacy_config, backend)
 
@@ -237,4 +237,4 @@ async def setup_db_post_route(
     db_settings_base["PASSWORD"] = ""  # Don't save password in config.json
     _write_database_config(db_settings_base)
 
-    return _templates_dep().TemplateResponse("setup.html", {"request": request, "step": "done"})
+    return _templates_dep().TemplateResponse(request, "setup.html", {"request": request, "step": "done"})

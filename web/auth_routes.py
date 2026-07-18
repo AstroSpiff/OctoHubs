@@ -108,6 +108,7 @@ async def login_page(request: Request):
         return _get_csrf_token_dep(request)
 
     return _templates_dep().TemplateResponse(
+        request,
         "login.html",
         {
             "request": request,
