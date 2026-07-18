@@ -477,9 +477,20 @@ def send_notifications(
     ]
     if effective_per_server_limit > 0:
         from emby_latest.utils import limit_by_server
-        # Notification totals are intentionally the sum of each server limit,
-        # after excluding destinations already delivered.
-        pending_items = limit_by_server(pending_items, effective_per_server_limit)
+        # Keep movies and series in separate buckets: a full movie batch should
+        # not consume the whole per-server budget before series are considered.
+        pending_movies = [
+            item for item in pending_items
+            if str(item.get("item_type") or "").lower() == "movie"
+        ]
+        pending_series = [
+            item for item in pending_items
+            if str(item.get("item_type") or "").lower() != "movie"
+        ]
+        pending_items = (
+            limit_by_server(pending_movies, effective_per_server_limit)
+            + limit_by_server(pending_series, effective_per_server_limit)
+        )
     allowed_item_signatures = {
         _publication_signature(item)
         for item in pending_items

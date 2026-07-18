@@ -517,6 +517,89 @@ class LatestPublicationHistoryTests(unittest.TestCase):
         saved_movie = db_state.saved[-1]["server-a"]["movies"]["items"]["tmdb:834"]
         self.assertEqual(3, len(saved_movie.get("media_source_keys") or []))
 
+    def test_movie_playbackinfo_sibling_versions_are_not_misclassified_as_baseline(self):
+        db_state = _RecordingState({"server-a": {"movies": {"items": {}}, "series": {"items": {}}}})
+        db_cache = _RecordingCache()
+        movie_1080 = {
+            "Id": "496002",
+            "Name": "Underworld: Evolution",
+            "Type": "Movie",
+            "ProductionYear": 2006,
+            "DateCreated": "2026-07-16T13:03:01+00:00",
+            "ProviderIds": {"Tmdb": "834"},
+            "MediaSources": [
+                {
+                    "Id": "mediasource_496002",
+                    "Path": "/media/underworld-evolution-1080p-new.mkv",
+                    "Container": "mkv",
+                    "Size": 10118529350,
+                }
+            ],
+        }
+        movie_2160 = {
+            "Id": "496003",
+            "Name": "Underworld: Evolution",
+            "Type": "Movie",
+            "ProductionYear": "2006",
+            "DateCreated": "2026-07-16T13:03:01+00:00",
+            "ProviderIds": {"Tmdb": "834"},
+            "MediaSources": [
+                {
+                    "Id": "mediasource_496003",
+                    "Path": "/media/underworld-evolution-2160p-new.mkv",
+                    "Container": "mkv",
+                    "Size": 19608381412,
+                }
+            ],
+        }
+        playback_sources = [
+            {
+                "Id": "mediasource_496003",
+                "Path": "/media/underworld-evolution-2160p-new.mkv",
+                "Container": "mkv",
+                "Size": 19608381412,
+                "DateCreated": "2026-07-16T13:03:01+00:00",
+            },
+            {
+                "Id": "mediasource_496002",
+                "Path": "/media/underworld-evolution-1080p-new.mkv",
+                "Container": "mkv",
+                "Size": 10118529350,
+                "DateCreated": "2026-07-16T13:03:01+00:00",
+            },
+            {
+                "Id": "mediasource_210661",
+                "Path": "/media/underworld-evolution-720p-old.mkv",
+                "Container": "mkv",
+                "Size": 2232553504,
+                "DateCreated": "2025-11-09T09:29:35+00:00",
+            },
+        ]
+
+        with patch(
+            "emby_latest.collectors._fetch_emby_playback_media_sources",
+            return_value=playback_sources,
+        ):
+            payload, error = _collect_with_mocks(
+                db_state,
+                db_cache,
+                movie_items=[movie_1080, movie_2160],
+                movie_catalog_items=[movie_1080, movie_2160],
+            )
+
+        self.assertIsNone(error)
+        self.assertTrue(payload["movies"])
+        self.assertEqual("update", payload["movies"][0].get("update_type"))
+        self.assertEqual("Nuova versione", payload["movies"][0].get("update_label"))
+        self.assertEqual(["new_version", "new_version"], [change.get("kind") for change in payload["movies"][0]["changes"]])
+        self.assertEqual(
+            {
+                "/media/underworld-evolution-1080p-new.mkv",
+                "/media/underworld-evolution-2160p-new.mkv",
+            },
+            {change.get("path") for change in payload["movies"][0]["changes"]},
+        )
+
     def test_known_movie_does_not_fetch_playbackinfo_baseline(self):
         db_state = _RecordingState(
             {
@@ -1044,6 +1127,103 @@ class LatestPublicationHistoryTests(unittest.TestCase):
         )
         saved_episode = db_state.saved[-1]["server-a"]["history"]["episodes"]["series-1:S1:E2"]
         self.assertEqual(3, len(saved_episode.get("media_source_keys") or []))
+
+    def test_episode_playbackinfo_sibling_versions_are_not_misclassified_as_baseline(self):
+        db_state = _RecordingState({"server-a": {"movies": {"items": {}}, "series": {"items": {}}}})
+        db_cache = _RecordingCache()
+        episode_1080 = {
+            "Id": "episode-sibling-1080",
+            "Name": "Episode Two",
+            "Type": "Episode",
+            "SeriesId": "series-1",
+            "SeriesName": "Series One",
+            "SeriesProductionYear": 2026,
+            "ParentIndexNumber": 1,
+            "IndexNumber": 2,
+            "DateCreated": "2026-07-16T13:03:01+00:00",
+            "MediaSources": [
+                {
+                    "Id": "source-s01e02-1080",
+                    "Path": "/media/series-one/s01e02-1080p-new.mkv",
+                    "Container": "mkv",
+                    "Size": 1000,
+                }
+            ],
+        }
+        episode_2160 = {
+            "Id": "episode-sibling-2160",
+            "Name": "Episode Two",
+            "Type": "Episode",
+            "SeriesId": "series-1",
+            "SeriesName": "Series One",
+            "SeriesProductionYear": 2026,
+            "ParentIndexNumber": 1,
+            "IndexNumber": 2,
+            "DateCreated": "2026-07-16T13:03:01+00:00",
+            "MediaSources": [
+                {
+                    "Id": "source-s01e02-2160",
+                    "Path": "/media/series-one/s01e02-2160p-new.mkv",
+                    "Container": "mkv",
+                    "Size": 2000,
+                }
+            ],
+        }
+        series = {
+            "Id": "series-1",
+            "Name": "Series One",
+            "Type": "Series",
+            "ProductionYear": 2026,
+            "DateCreated": "2026-07-16T13:03:01+00:00",
+        }
+        playback_sources = [
+            {
+                "Id": "source-s01e02-2160",
+                "Path": "/media/series-one/s01e02-2160p-new.mkv",
+                "Container": "mkv",
+                "Size": 2000,
+                "DateCreated": "2026-07-16T13:03:01+00:00",
+            },
+            {
+                "Id": "source-s01e02-1080",
+                "Path": "/media/series-one/s01e02-1080p-new.mkv",
+                "Container": "mkv",
+                "Size": 1000,
+                "DateCreated": "2026-07-16T13:03:01+00:00",
+            },
+            {
+                "Id": "source-s01e02-720",
+                "Path": "/media/series-one/s01e02-720p-old.mkv",
+                "Container": "mkv",
+                "Size": 700,
+                "DateCreated": "2025-11-09T09:29:35+00:00",
+            },
+        ]
+
+        with patch(
+            "emby_latest.collectors._fetch_emby_playback_media_sources",
+            return_value=playback_sources,
+        ):
+            payload, error = _collect_with_mocks(
+                db_state,
+                db_cache,
+                episode_items=[episode_1080, episode_2160],
+                episode_catalog_items=[episode_1080, episode_2160],
+                series_entries=[series],
+            )
+
+        self.assertIsNone(error)
+        self.assertTrue(payload["series"])
+        self.assertEqual("update", payload["series"][0].get("update_type"))
+        self.assertEqual("Nuova versione", payload["series"][0].get("update_label"))
+        self.assertEqual(["new_version", "new_version"], [change.get("kind") for change in payload["series"][0]["changes"]])
+        self.assertEqual(
+            {
+                "/media/series-one/s01e02-1080p-new.mkv",
+                "/media/series-one/s01e02-2160p-new.mkv",
+            },
+            {change.get("path") for change in payload["series"][0]["changes"]},
+        )
 
     def test_episode_catalog_baseline_keeps_older_versions_as_new_episode(self):
         db_state = _RecordingState({"server-a": {"movies": {"items": {}}, "series": {"items": {}}}})

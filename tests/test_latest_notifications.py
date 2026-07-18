@@ -326,6 +326,89 @@ class LatestNotificationTests(unittest.TestCase):
             ],
         )
 
+    def test_send_notifications_limits_movies_and_series_separately_per_server(self):
+        sent_titles = []
+        cache_payload = {
+            "payload": {
+                "movies": [
+                    {
+                        "server_id": "server-a",
+                        "item_id": f"movie-{index}",
+                        "signature": f"tmdb:movie-{index}",
+                        "item_type": "movie",
+                        "title": f"Movie {index}",
+                        "year": 2026,
+                        "added_at": f"2026-07-15T10:0{index}:00+00:00",
+                    }
+                    for index in range(1, 3)
+                ],
+                "series": [
+                    {
+                        "server_id": "server-a",
+                        "item_id": f"series-{index}",
+                        "item_type": "series",
+                        "title": f"Series {index}",
+                        "year": 2026,
+                        "added_at": f"2026-07-15T11:0{index}:00+00:00",
+                    }
+                    for index in range(1, 3)
+                ],
+            }
+        }
+        latest_settings = {
+            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{title}"}],
+            "NOTIFICATION_RULES": [
+                {
+                    "id": "rule-a",
+                    "name": "Rule A",
+                    "enabled": True,
+                    "server_ids": ["server-a"],
+                    "preset_id": "preset-a",
+                    "telegram_config_id": "telegram-a",
+                }
+            ],
+        }
+        telegram_settings = {
+            "PRESETS": [
+                {
+                    "id": "telegram-a",
+                    "name": "Telegram",
+                    "bot_ids": ["bot-a"],
+                    "group_ids": ["group-a"],
+                    "channel_ids": [],
+                }
+            ],
+            "BOTS": [{"id": "bot-a", "token": "token"}],
+            "GROUPS": [{"id": "group-a", "chat_id": "chat"}],
+            "CHANNELS": [],
+        }
+
+        def fake_telegram(_token, _method, params):
+            sent_titles.append(params.get("text") or params.get("caption") or "")
+            return True, "OK", {}
+
+        with patch("emby_latest.db_cache.load_cache", return_value=cache_payload), patch(
+            "emby_latest.db_state.load_state",
+            return_value={},
+        ), patch("emby_latest.db_state.save_state", return_value=None), patch(
+            "emby_latest.settings._load_latest_settings",
+            return_value=latest_settings,
+        ), patch("telegram._load_telegram_settings", return_value=telegram_settings), patch(
+            "emby_latest.jellyseerr._apply_jellyseerr_request_info",
+            return_value=None,
+        ), patch("emby_latest.notifications._telegram_api_request", side_effect=fake_telegram), patch(
+            "time.sleep",
+            return_value=None,
+        ):
+            result = send_notifications(
+                per_server_limit=2,
+                config={"DATABASE": {"ENABLED": True}, "EMBY": {"SERVERS": [{"id": "server-a"}]}},
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(4, result["sent"])
+        self.assertEqual(["Movie 1", "Movie 2", "Series 1", "Series 2"], sent_titles)
+
     def test_send_notifications_allows_same_item_for_different_rule_recipients(self):
         deliveries = []
         cache_payload = {
