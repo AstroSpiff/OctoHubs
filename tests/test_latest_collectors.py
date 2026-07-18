@@ -9,6 +9,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
+from core.utils import _parse_date_value
 from emby_latest.collectors import collect_entries
 
 
@@ -229,6 +230,435 @@ class LatestCollectorStateTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual([], payload["movies"])
         self.assertEqual([], payload["series"])
+
+    def test_collect_entries_expands_movie_catalog_from_servers_concurrently(self):
+        db_state = _RecordingState(
+            {
+                "server-a": {"movies": {"items": {}}, "series": {"items": {}}},
+                "server-b": {"movies": {"items": {}}, "series": {"items": {}}},
+            }
+        )
+        db_cache = _RecordingCache()
+        config = {
+            "DATABASE": {"ENABLED": True},
+            "EMBY": {
+                "SERVERS": [
+                    {"id": "server-a", "name": "Server A"},
+                    {"id": "server-b", "name": "Server B"},
+                ]
+            },
+        }
+        servers = [
+            {"id": "server-a", "name": "Server A"},
+            {"id": "server-b", "name": "Server B"},
+        ]
+        movies_by_server = {
+            "server-a": {
+                "Id": "movie-a",
+                "Name": "Shared Movie",
+                "Type": "Movie",
+                "ProductionYear": 2026,
+                "DateCreated": "2026-07-18T10:05:00+00:00",
+                "ProviderIds": {"Tmdb": "1"},
+                "MediaSources": [{"Id": "source-a", "Path": "/a/shared.mkv", "Size": 1000}],
+            },
+            "server-b": {
+                "Id": "movie-b",
+                "Name": "Shared Movie",
+                "Type": "Movie",
+                "ProductionYear": 2026,
+                "DateCreated": "2026-07-18T10:06:00+00:00",
+                "ProviderIds": {"Tmdb": "1"},
+                "MediaSources": [{"Id": "source-b", "Path": "/b/shared.mkv", "Size": 2000}],
+            },
+        }
+        catalog_barrier = threading.Barrier(2)
+
+        def fake_fetch(server, item_type, _limit, fields=None, **_kwargs):
+            if item_type == "Movie":
+                return [movies_by_server[server["id"]]], None
+            return [], None
+
+        def fake_fetch_by_signature(server, _signature, fields=None, limit=50):
+            try:
+                catalog_barrier.wait(timeout=0.5)
+            except threading.BrokenBarrierError as exc:
+                raise AssertionError("Movie catalog expansion did not run concurrently across servers") from exc
+            return []
+
+        with patch("core.config_manager.load_config", return_value=(config, True)), patch(
+            "core.config_manager._db_enabled",
+            return_value=True,
+        ), patch("emby_latest.collectors.get_emby_servers", return_value=servers), patch(
+            "emby_latest.collectors._load_latest_settings",
+            return_value={
+                "SETTINGS": {
+                    "batch_gap_minutes": 180,
+                    "max_movies": 10,
+                    "max_series": 10,
+                    "retention_days": 90,
+                    "max_versions": 6,
+                    "batch_fetch_limit": 100,
+                    "parallelism": {
+                        "server_workers": 2,
+                        "requests_per_server": 1,
+                    },
+                }
+            },
+        ), patch("emby_latest.collectors._fetch_emby_latest_items", side_effect=fake_fetch), patch(
+            "emby_latest.collectors._fetch_emby_items_by_signature",
+            side_effect=fake_fetch_by_signature,
+        ), patch("emby_latest.collectors._fetch_emby_latest_series_from_episodes", return_value=([], None)), patch(
+            "emby_latest.builders._resolve_emby_library_for_item",
+            return_value=("lib-a", "Movies"),
+        ), patch("emby_latest.collectors._sync_jellyseerr_to_db", return_value=None), patch(
+            "emby_latest.collectors._apply_jellyseerr_request_info",
+            return_value=None,
+        ):
+            payload, error = collect_entries(
+                limit=10,
+                per_server_limit=10,
+                enrich=False,
+                db_cache=db_cache,
+                db_state=db_state,
+            )
+
+        self.assertIsNone(error)
+        self.assertEqual(2, len(payload["movies"]))
+
+    def test_collect_entries_expands_multiple_movie_catalog_entries_per_server_concurrently(self):
+        db_state = _RecordingState({"server-a": {"movies": {"items": {}}, "series": {"items": {}}}})
+        db_cache = _RecordingCache()
+        config = {"DATABASE": {"ENABLED": True}, "EMBY": {"SERVERS": [{"id": "server-a", "name": "Server A"}]}}
+        server = {"id": "server-a", "name": "Server A"}
+        movies = [
+            {
+                "Id": "movie-1",
+                "Name": "Movie One",
+                "Type": "Movie",
+                "ProductionYear": 2026,
+                "DateCreated": "2026-07-18T10:06:00+00:00",
+                "ProviderIds": {"Tmdb": "1"},
+                "MediaSources": [{"Id": "source-1", "Path": "/media/movie-one.mkv", "Size": 1000}],
+            },
+            {
+                "Id": "movie-2",
+                "Name": "Movie Two",
+                "Type": "Movie",
+                "ProductionYear": 2026,
+                "DateCreated": "2026-07-18T10:05:00+00:00",
+                "ProviderIds": {"Tmdb": "2"},
+                "MediaSources": [{"Id": "source-2", "Path": "/media/movie-two.mkv", "Size": 2000}],
+            },
+        ]
+        catalog_barrier = threading.Barrier(2)
+
+        def fake_fetch(_server, item_type, _limit, fields=None, **_kwargs):
+            if item_type == "Movie":
+                return movies, None
+            return [], None
+
+        def fake_fetch_by_signature(_server, _signature, fields=None, limit=50):
+            try:
+                catalog_barrier.wait(timeout=0.5)
+            except threading.BrokenBarrierError as exc:
+                raise AssertionError("Movie catalog expansion did not use per-server request parallelism") from exc
+            return []
+
+        with patch("core.config_manager.load_config", return_value=(config, True)), patch(
+            "core.config_manager._db_enabled",
+            return_value=True,
+        ), patch("emby_latest.collectors.get_emby_servers", return_value=[server]), patch(
+            "emby_latest.collectors._load_latest_settings",
+            return_value={
+                "SETTINGS": {
+                    "batch_gap_minutes": 180,
+                    "max_movies": 10,
+                    "max_series": 10,
+                    "retention_days": 90,
+                    "max_versions": 6,
+                    "batch_fetch_limit": 100,
+                    "parallelism": {
+                        "server_workers": 1,
+                        "requests_per_server": 2,
+                    },
+                }
+            },
+        ), patch("emby_latest.collectors._fetch_emby_latest_items", side_effect=fake_fetch), patch(
+            "emby_latest.collectors._fetch_emby_items_by_signature",
+            side_effect=fake_fetch_by_signature,
+        ), patch("emby_latest.collectors._fetch_emby_latest_series_from_episodes", return_value=([], None)), patch(
+            "emby_latest.builders._resolve_emby_library_for_item",
+            return_value=("lib-a", "Movies"),
+        ), patch("emby_latest.collectors._sync_jellyseerr_to_db", return_value=None), patch(
+            "emby_latest.collectors._apply_jellyseerr_request_info",
+            return_value=None,
+        ):
+            payload, error = collect_entries(
+                limit=10,
+                per_server_limit=10,
+                enrich=False,
+                db_cache=db_cache,
+                db_state=db_state,
+            )
+
+        self.assertIsNone(error)
+        self.assertEqual(2, len(payload["movies"]))
+
+    def test_collect_entries_prefetches_playback_info_per_server_concurrently(self):
+        db_state = _RecordingState({"server-a": {"movies": {"items": {}}, "series": {"items": {}}}})
+        db_cache = _RecordingCache()
+        config = {"DATABASE": {"ENABLED": True}, "EMBY": {"SERVERS": [{"id": "server-a", "name": "Server A"}]}}
+        server = {"id": "server-a", "name": "Server A"}
+        movies = [
+            {
+                "Id": "movie-1",
+                "Name": "Movie One",
+                "Type": "Movie",
+                "ProductionYear": 2026,
+                "DateCreated": "2026-07-18T10:06:00+00:00",
+                "ProviderIds": {"Tmdb": "1"},
+                "MediaSources": [{"Id": "source-1", "Path": "/media/movie-one.mkv", "Size": 1000}],
+            },
+            {
+                "Id": "movie-2",
+                "Name": "Movie Two",
+                "Type": "Movie",
+                "ProductionYear": 2026,
+                "DateCreated": "2026-07-18T10:05:00+00:00",
+                "ProviderIds": {"Tmdb": "2"},
+                "MediaSources": [{"Id": "source-2", "Path": "/media/movie-two.mkv", "Size": 2000}],
+            },
+        ]
+        playback_barrier = threading.Barrier(2)
+
+        def fake_fetch(_server, item_type, _limit, fields=None, **_kwargs):
+            if item_type == "Movie":
+                return movies, None
+            return [], None
+
+        def fake_playback(_server, _item_id):
+            try:
+                playback_barrier.wait(timeout=0.5)
+            except threading.BrokenBarrierError as exc:
+                raise AssertionError("PlaybackInfo fetches did not use per-server request parallelism") from exc
+            return []
+
+        with patch("core.config_manager.load_config", return_value=(config, True)), patch(
+            "core.config_manager._db_enabled",
+            return_value=True,
+        ), patch("emby_latest.collectors.get_emby_servers", return_value=[server]), patch(
+            "emby_latest.collectors._load_latest_settings",
+            return_value={
+                "SETTINGS": {
+                    "batch_gap_minutes": 180,
+                    "max_movies": 10,
+                    "max_series": 10,
+                    "retention_days": 90,
+                    "max_versions": 6,
+                    "batch_fetch_limit": 100,
+                    "parallelism": {
+                        "server_workers": 1,
+                        "requests_per_server": 2,
+                    },
+                }
+            },
+        ), patch("emby_latest.collectors._fetch_emby_latest_items", side_effect=fake_fetch), patch(
+            "emby_latest.collectors._fetch_emby_items_by_signature",
+            return_value=[],
+        ), patch("emby_latest.collectors._fetch_emby_playback_media_sources", side_effect=fake_playback), patch(
+            "emby_latest.collectors._fetch_emby_latest_series_from_episodes",
+            return_value=([], None),
+        ), patch("emby_latest.builders._resolve_emby_library_for_item", return_value=("lib-a", "Movies")), patch(
+            "emby_latest.collectors._sync_jellyseerr_to_db",
+            return_value=None,
+        ), patch("emby_latest.collectors._apply_jellyseerr_request_info", return_value=None):
+            payload, error = collect_entries(
+                limit=10,
+                per_server_limit=10,
+                enrich=False,
+                db_cache=db_cache,
+                db_state=db_state,
+            )
+
+        self.assertIsNone(error)
+        self.assertEqual(2, len(payload["movies"]))
+
+    def test_collect_entries_fetches_oldest_episode_dates_per_server_concurrently(self):
+        db_state = _RecordingState({"server-a": {"movies": {"items": {}}, "series": {"items": {}}}})
+        db_cache = _RecordingCache()
+        config = {"DATABASE": {"ENABLED": True}, "EMBY": {"SERVERS": [{"id": "server-a", "name": "Server A"}]}}
+        server = {"id": "server-a", "name": "Server A"}
+        episodes = [
+            {
+                "Id": "episode-1",
+                "Name": "Episode 1",
+                "Type": "Episode",
+                "SeriesId": "series-1",
+                "SeriesName": "Series One",
+                "DateCreated": "2026-07-18T10:06:00+00:00",
+                "ParentIndexNumber": 1,
+                "IndexNumber": 1,
+                "MediaSources": [{"Id": "source-1", "Path": "/series-one/s01e01.mkv", "Size": 1000}],
+            },
+            {
+                "Id": "episode-2",
+                "Name": "Episode 1",
+                "Type": "Episode",
+                "SeriesId": "series-2",
+                "SeriesName": "Series Two",
+                "DateCreated": "2026-07-18T10:05:00+00:00",
+                "ParentIndexNumber": 1,
+                "IndexNumber": 1,
+                "MediaSources": [{"Id": "source-2", "Path": "/series-two/s01e01.mkv", "Size": 2000}],
+            },
+        ]
+        oldest_barrier = threading.Barrier(2)
+
+        def fake_fetch(_server, item_type, _limit, fields=None, **_kwargs):
+            if item_type == "Episode":
+                return episodes, None
+            return [], None
+
+        def fake_oldest(_server, series_id, season_number=None):
+            if season_number is None:
+                try:
+                    oldest_barrier.wait(timeout=0.5)
+                except threading.BrokenBarrierError as exc:
+                    raise AssertionError("Oldest episode date fetches did not use per-server request parallelism") from exc
+            return _parse_date_value("2026-07-18T10:00:00+00:00")
+
+        with patch("core.config_manager.load_config", return_value=(config, True)), patch(
+            "core.config_manager._db_enabled",
+            return_value=True,
+        ), patch("emby_latest.collectors.get_emby_servers", return_value=[server]), patch(
+            "emby_latest.collectors._load_latest_settings",
+            return_value={
+                "SETTINGS": {
+                    "batch_gap_minutes": 180,
+                    "max_movies": 10,
+                    "max_series": 10,
+                    "retention_days": 90,
+                    "max_versions": 6,
+                    "batch_fetch_limit": 100,
+                    "parallelism": {
+                        "server_workers": 1,
+                        "requests_per_server": 2,
+                    },
+                }
+            },
+        ), patch("emby_latest.collectors._fetch_emby_latest_items", side_effect=fake_fetch), patch(
+            "emby_latest.collectors._fetch_emby_items_by_signature",
+            return_value=[],
+        ), patch("emby_latest.collectors._fetch_emby_oldest_episode_date", side_effect=fake_oldest), patch(
+            "emby_latest.collectors._fetch_emby_episode_items",
+            return_value=[],
+        ), patch("emby_latest.collectors._fetch_emby_playback_media_sources", return_value=[]), patch(
+            "emby_latest.collectors._fetch_emby_latest_series_from_episodes",
+            return_value=([{"Id": "series-1", "Name": "Series One"}, {"Id": "series-2", "Name": "Series Two"}], None),
+        ), patch("emby_latest.builders._resolve_emby_library_for_item", return_value=("lib-a", "Shows")), patch(
+            "emby_latest.collectors._sync_jellyseerr_to_db",
+            return_value=None,
+        ), patch("emby_latest.collectors._apply_jellyseerr_request_info", return_value=None):
+            payload, error = collect_entries(
+                limit=10,
+                per_server_limit=10,
+                enrich=False,
+                db_cache=db_cache,
+                db_state=db_state,
+            )
+
+        self.assertIsNone(error)
+        self.assertEqual(2, len(payload["series"]))
+
+    def test_collect_entries_expands_episode_catalog_per_server_concurrently(self):
+        db_state = _RecordingState({"server-a": {"movies": {"items": {}}, "series": {"items": {}}}})
+        db_cache = _RecordingCache()
+        config = {"DATABASE": {"ENABLED": True}, "EMBY": {"SERVERS": [{"id": "server-a", "name": "Server A"}]}}
+        server = {"id": "server-a", "name": "Server A"}
+        episodes = [
+            {
+                "Id": "episode-1",
+                "Name": "Episode 1",
+                "Type": "Episode",
+                "SeriesId": "series-1",
+                "SeriesName": "Series One",
+                "DateCreated": "2026-07-18T10:06:00+00:00",
+                "ParentIndexNumber": 1,
+                "IndexNumber": 1,
+                "MediaSources": [{"Id": "source-1", "Path": "/series-one/s01e01.mkv", "Size": 1000}],
+            },
+            {
+                "Id": "episode-2",
+                "Name": "Episode 2",
+                "Type": "Episode",
+                "SeriesId": "series-1",
+                "SeriesName": "Series One",
+                "DateCreated": "2026-07-18T10:05:00+00:00",
+                "ParentIndexNumber": 1,
+                "IndexNumber": 2,
+                "MediaSources": [{"Id": "source-2", "Path": "/series-one/s01e02.mkv", "Size": 2000}],
+            },
+        ]
+        episode_catalog_barrier = threading.Barrier(2)
+
+        def fake_fetch(_server, item_type, _limit, fields=None, **_kwargs):
+            if item_type == "Episode":
+                return episodes, None
+            return [], None
+
+        def fake_episode_items(_server, _series_id, _season_number, _episode_number, fields=None, limit=50):
+            try:
+                episode_catalog_barrier.wait(timeout=0.5)
+            except threading.BrokenBarrierError as exc:
+                raise AssertionError("Episode catalog expansion did not use per-server request parallelism") from exc
+            return []
+
+        with patch("core.config_manager.load_config", return_value=(config, True)), patch(
+            "core.config_manager._db_enabled",
+            return_value=True,
+        ), patch("emby_latest.collectors.get_emby_servers", return_value=[server]), patch(
+            "emby_latest.collectors._load_latest_settings",
+            return_value={
+                "SETTINGS": {
+                    "batch_gap_minutes": 180,
+                    "max_movies": 10,
+                    "max_series": 10,
+                    "retention_days": 90,
+                    "max_versions": 6,
+                    "batch_fetch_limit": 100,
+                    "parallelism": {
+                        "server_workers": 1,
+                        "requests_per_server": 2,
+                    },
+                }
+            },
+        ), patch("emby_latest.collectors._fetch_emby_latest_items", side_effect=fake_fetch), patch(
+            "emby_latest.collectors._fetch_emby_items_by_signature",
+            return_value=[],
+        ), patch(
+            "emby_latest.collectors._fetch_emby_oldest_episode_date",
+            return_value=_parse_date_value("2026-07-18T10:00:00+00:00"),
+        ), patch("emby_latest.collectors._fetch_emby_episode_items", side_effect=fake_episode_items), patch(
+            "emby_latest.collectors._fetch_emby_playback_media_sources",
+            return_value=[],
+        ), patch(
+            "emby_latest.collectors._fetch_emby_latest_series_from_episodes",
+            return_value=([{"Id": "series-1", "Name": "Series One"}], None),
+        ), patch("emby_latest.builders._resolve_emby_library_for_item", return_value=("lib-a", "Shows")), patch(
+            "emby_latest.collectors._sync_jellyseerr_to_db",
+            return_value=None,
+        ), patch("emby_latest.collectors._apply_jellyseerr_request_info", return_value=None):
+            payload, error = collect_entries(
+                limit=10,
+                per_server_limit=10,
+                enrich=False,
+                db_cache=db_cache,
+                db_state=db_state,
+            )
+
+        self.assertIsNone(error)
+        self.assertEqual(1, len(payload["series"]))
 
     def test_collect_entries_preserves_movie_notification_destinations(self):
         existing_destinations = {

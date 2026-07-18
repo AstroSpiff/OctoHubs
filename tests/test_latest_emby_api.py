@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -9,6 +10,7 @@ from emby_latest import emby_api
 from emby_latest.emby_api import (
     _fetch_emby_episode_items,
     _fetch_emby_latest_items,
+    _fetch_emby_latest_series_from_episodes,
     _hydrate_media_source_item_dates,
 )
 
@@ -127,6 +129,49 @@ class LatestEmbyApiTests(unittest.TestCase):
             ],
             [source.get("DateCreated") for source in hydrated["MediaSources"]],
         )
+
+    def test_fetch_latest_series_from_episodes_fetches_series_details_concurrently(self):
+        barrier = threading.Barrier(2)
+        calls = []
+        episodes = [
+            {
+                "Id": "episode-1",
+                "SeriesId": "series-1",
+                "SeriesName": "Series One",
+                "SeriesProductionYear": 2026,
+                "DateCreated": "2026-07-18T10:00:00+00:00",
+            },
+            {
+                "Id": "episode-2",
+                "SeriesId": "series-2",
+                "SeriesName": "Series Two",
+                "SeriesProductionYear": 2026,
+                "DateCreated": "2026-07-18T10:01:00+00:00",
+            },
+        ]
+
+        def fake_call(server, path, params=None, method="GET"):
+            calls.append(path)
+            if path.startswith("Items/series-"):
+                try:
+                    barrier.wait(timeout=0.5)
+                except threading.BrokenBarrierError as exc:
+                    raise AssertionError("Series detail fetches did not run concurrently") from exc
+                series_id = path.split("/", 1)[1]
+                return True, {"Id": series_id, "Name": series_id.title(), "Type": "Series"}
+            return False, "Unexpected Emby API call"
+
+        with patch("emby_latest.emby_api._call_emby_api", fake_call):
+            entries, error = _fetch_emby_latest_series_from_episodes(
+                {"id": "server-a"},
+                2,
+                episodes=episodes,
+                parallel_workers=2,
+            )
+
+        self.assertIsNone(error)
+        self.assertEqual(["series-1", "series-2"], [entry["Id"] for entry in entries])
+        self.assertEqual(2, len([path for path in calls if path.startswith("Items/series-")]))
 
 
 if __name__ == "__main__":

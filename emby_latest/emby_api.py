@@ -5,6 +5,7 @@ This module centralizes Emby fetches used by the Latest system to avoid
 legacy coupling.
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
 from emby_runtime.api_clients import _call_emby_api
@@ -445,7 +446,8 @@ def _fetch_emby_latest_items(
 def _fetch_emby_latest_series_from_episodes(
     server: Dict[str, Any],
     limit: int,
-    episodes: Optional[List[Dict[str, Any]]] = None
+    episodes: Optional[List[Dict[str, Any]]] = None,
+    parallel_workers: int = 1,
 ) -> Tuple[List[Dict[str, Any]], Optional[Any]]:
     """Fetch series from recent episodes."""
     if episodes is None:
@@ -481,8 +483,7 @@ def _fetch_emby_latest_series_from_episodes(
         if len(series_candidates) >= limit:
             break
 
-    entries: List[Dict[str, Any]] = []
-    for candidate in series_candidates:
+    def _fetch_series_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
         series_id = candidate["series_id"]
         params = {
             "Fields": (
@@ -575,6 +576,25 @@ def _fetch_emby_latest_series_from_episodes(
                         seen.add(key)
                     item_payload["People"] = merged
 
-        entries.append(item_payload)
+        return item_payload
+
+    try:
+        worker_count = int(parallel_workers)
+    except (TypeError, ValueError):
+        worker_count = 1
+    worker_count = min(max(1, worker_count), len(series_candidates))
+
+    if worker_count <= 1:
+        entries = [_fetch_series_candidate(candidate) for candidate in series_candidates]
+    else:
+        ordered_entries: List[Optional[Dict[str, Any]]] = [None] * len(series_candidates)
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="latest-series") as executor:
+            future_map = {
+                executor.submit(_fetch_series_candidate, candidate): index
+                for index, candidate in enumerate(series_candidates)
+            }
+            for future in as_completed(future_map):
+                ordered_entries[future_map[future]] = future.result()
+        entries = [entry for entry in ordered_entries if isinstance(entry, dict)]
 
     return entries, None

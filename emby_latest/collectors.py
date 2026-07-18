@@ -10,6 +10,7 @@ CRITICAL BUG FIXES:
 """
 
 import hashlib
+from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -86,7 +87,6 @@ from core.utils import (
 def _preserve_notification_state(existing: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(existing, dict):
         return {"notified": False, "notified_at": ""}
-    from copy import deepcopy
 
     preserved = {
         "notified": bool(existing.get("notified")),
@@ -217,6 +217,46 @@ def collect_entries(
         if not baseline_keys:
             return versions, set(), False
         return merge_versions(versions + playback_versions), baseline_keys, True
+
+    def _prefetch_playback_media_sources(
+        server: Dict[str, Any],
+        candidate_items: List[Dict[str, Any]],
+        include_item,
+        max_workers: int,
+    ) -> None:
+        server_id = str(server.get("id") or "")
+        if not server_id or not candidate_items:
+            return
+
+        fetches: List[Tuple[Tuple[str, str], str]] = []
+        seen_keys: Set[Tuple[str, str]] = set()
+        for item in candidate_items:
+            if not isinstance(item, dict) or not include_item(item):
+                continue
+            item_id = str(item.get("Id") or "")
+            if not item_id:
+                continue
+            cache_key = (server_id, item_id)
+            if cache_key in playback_source_cache or cache_key in seen_keys:
+                continue
+            versions = extract_versions(item, resolution_rules=resolution_rules)
+            if not _version_keys(versions):
+                continue
+            seen_keys.add(cache_key)
+            fetches.append((cache_key, item_id))
+
+        worker_count = min(max(1, max_workers), len(fetches))
+        if worker_count > 1:
+            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="latest-emby-playback") as executor:
+                future_map = {
+                    executor.submit(_fetch_emby_playback_media_sources, server, item_id): cache_key
+                    for cache_key, item_id in fetches
+                }
+                for future in as_completed(future_map):
+                    playback_source_cache[future_map[future]] = future.result()
+        else:
+            for cache_key, item_id in fetches:
+                playback_source_cache[cache_key] = _fetch_emby_playback_media_sources(server, item_id)
 
     def _series_change_sort_key(change: Dict[str, Any]) -> Tuple[int, int]:
         season_number = _coerce_int(change.get("season_number"))
@@ -571,11 +611,25 @@ def collect_entries(
         if "changes" not in target_entry:
             target_entry["changes"] = []
 
-    # Process each server
-    for server in servers:
+    def _empty_server_result(server_id: Any = "") -> Dict[str, Any]:
+        return {
+            "server_id": server_id,
+            "movies": [],
+            "series": [],
+            "errors": [],
+            "state_changed": False,
+            "server_state": None,
+        }
+
+    def _process_server(server: Dict[str, Any]) -> Dict[str, Any]:
+        local_movies: List[Dict[str, Any]] = []
+        local_series: List[Dict[str, Any]] = []
+        local_errors: List[Dict[str, Any]] = []
+        local_state_changed = False
+        server_state_result: Optional[Dict[str, Any]] = None
         server_id = server.get("id")
         if not server_id:
-            continue
+            return _empty_server_result(server_id)
 
         server_label = server.get("alias") or server.get("name") or str(server_id)
         print(f"[LATEST] Raccolta da server: {server_label} (mode={'batch' if apply_batch_gap else 'feed'})")
@@ -603,9 +657,9 @@ def collect_entries(
         episode_items = fetch_data.get("episode_items") or []
         episode_error = fetch_data.get("episode_error")
         if movie_error:
-            errors.append({"server_id": server_id, "message": str(movie_error)})
+            local_errors.append({"server_id": server_id, "message": str(movie_error)})
         if episode_error:
-            errors.append({"server_id": server_id, "message": str(episode_error)})
+            local_errors.append({"server_id": server_id, "message": str(episode_error)})
 
         # --- MOVIES COLLECTION ---
 
@@ -698,7 +752,7 @@ def collect_entries(
         episode_batch_id = build_batch_id(server_id, "series", episode_batch)
 
         # Get server state
-        server_state = latest_state.setdefault(server_id, {}) if state_enabled else {}
+        server_state = deepcopy(latest_state.get(server_id) or {}) if state_enabled else {}
         movies_state = server_state.setdefault("movies", {}) if state_enabled else {}
         series_state = server_state.setdefault("series", {}) if state_enabled else {}
         movie_items_state = movies_state.setdefault("items", {}) if state_enabled else {}
@@ -725,6 +779,84 @@ def collect_entries(
             current = movie_rep_items.get(signature)
             if current is None or item_dt > current[0]:
                 movie_rep_items[signature] = (item_dt, item)
+
+        def _movie_signature_needs_catalog_fetch(signature: str, group_items: List[Any]) -> bool:
+            if (
+                not signature.startswith(("tmdb:", "imdb:", "tvdb:"))
+                or len(group_items) != 1
+                or signature in movie_signature_cache
+            ):
+                return False
+            all_items = movie_all_by_signature.get(signature)
+            if all_items and len(all_items) > len(group_items):
+                return False
+            rep_entry = movie_rep_items.get(signature)
+            if not rep_entry:
+                return False
+            _, item = rep_entry
+            item_id = item.get("Id") if isinstance(item, dict) else None
+            state_key = signature or str(item_id or "")
+            legacy_key = item_id if item_id and item_id != state_key else None
+            existing = movie_items_state.get(state_key) if state_enabled else None
+            if existing is None and legacy_key:
+                existing = movie_items_state.get(legacy_key)
+            movie_history = get_history_entry(history_state, "movies", state_key) if state_enabled else None
+            if movie_history is None and legacy_key:
+                movie_history = get_history_entry(history_state, "movies", legacy_key)
+            return not (
+                skip_existing_complete
+                and (
+                    (isinstance(existing, dict) and bool(existing.get("mediainfo_complete")))
+                    or (isinstance(movie_history, dict) and bool(movie_history.get("mediainfo_complete")))
+                )
+            )
+
+        movie_prefetch_signatures = [
+            signature
+            for signature, group_items in movie_groups.items()
+            if _movie_signature_needs_catalog_fetch(signature, group_items)
+        ]
+        movie_prefetch_workers = min(max(1, requests_per_server), len(movie_prefetch_signatures))
+        if movie_prefetch_workers > 1:
+            with ThreadPoolExecutor(max_workers=movie_prefetch_workers, thread_name_prefix="latest-emby-catalog") as executor:
+                future_map = {
+                    executor.submit(_fetch_emby_items_by_signature, server, signature, batch_fields): signature
+                    for signature in movie_prefetch_signatures
+                }
+                for future in as_completed(future_map):
+                    movie_signature_cache[future_map[future]] = future.result()
+        else:
+            for signature in movie_prefetch_signatures:
+                movie_signature_cache[signature] = _fetch_emby_items_by_signature(server, signature, fields=batch_fields)
+
+        def _movie_needs_playback_prefetch(item: Dict[str, Any]) -> bool:
+            item_id = item.get("Id") if isinstance(item, dict) else None
+            signature = build_movie_signature(item) or str(item_id or "")
+            title_signature = movie_title_by_id.get(str(item_id or "")) or build_movie_title_signature(item)
+            if signature.startswith("title:") and title_signature:
+                signature = movie_provider_signature_by_title.get(title_signature, signature)
+            state_key = signature or str(item_id or "")
+            legacy_key = item_id if item_id and item_id != state_key else None
+            existing = movie_items_state.get(state_key) if state_enabled else None
+            if existing is None and legacy_key:
+                existing = movie_items_state.get(legacy_key)
+            movie_history = get_history_entry(history_state, "movies", state_key) if state_enabled else None
+            if movie_history is None and legacy_key:
+                movie_history = get_history_entry(history_state, "movies", legacy_key)
+            return existing is None and movie_history is None
+
+        movie_playback_items: List[Dict[str, Any]] = [
+            item for item in movie_items if isinstance(item, dict)
+        ]
+        for extra_items in movie_signature_cache.values():
+            if isinstance(extra_items, list):
+                movie_playback_items.extend(item for item in extra_items if isinstance(item, dict))
+        _prefetch_playback_media_sources(
+            server,
+            movie_playback_items,
+            _movie_needs_playback_prefetch,
+            requests_per_server,
+        )
 
         # Process each movie group
         movie_changes: Dict[str, Any] = {}
@@ -1082,7 +1214,7 @@ def collect_entries(
                 if legacy_key and legacy_key in movie_items_state and legacy_key != state_key:
                     movie_items_state.pop(legacy_key, None)
 
-                state_changed = True
+                local_state_changed = True
 
         # --- SERIES PROCESSING ---
 
@@ -1095,6 +1227,52 @@ def collect_entries(
             if not series_id:
                 continue
             episodes_by_series.setdefault(series_id, []).append(item)
+
+        oldest_date_fetches: List[Tuple[str, Optional[int]]] = []
+        for prefetch_series_id, prefetch_episodes in episodes_by_series.items():
+            existing_series = series_items_state.get(prefetch_series_id) if state_enabled else None
+            series_history = get_history_entry(history_state, "series", prefetch_series_id) if state_enabled else None
+            if existing_series is not None or series_history is not None:
+                continue
+            oldest_date_fetches.append((prefetch_series_id, None))
+            prefetch_seasons: Set[int] = set()
+            for episode in prefetch_episodes:
+                episode_dt = _parse_date_value(episode.get("DateCreated"))
+                season_number = _coerce_int(episode.get("ParentIndexNumber"))
+                if season_number is not None and episode_dt:
+                    prefetch_seasons.add(season_number)
+            for season_number in sorted(prefetch_seasons):
+                oldest_date_fetches.append((prefetch_series_id, season_number))
+
+        oldest_fetch_workers = min(max(1, requests_per_server), len(oldest_date_fetches))
+        if oldest_fetch_workers > 1:
+            with ThreadPoolExecutor(max_workers=oldest_fetch_workers, thread_name_prefix="latest-emby-oldest") as executor:
+                future_map = {
+                    executor.submit(
+                        _fetch_emby_oldest_episode_date,
+                        server,
+                        prefetch_series_id,
+                        season_number=season_number,
+                    ): (prefetch_series_id, season_number)
+                    for prefetch_series_id, season_number in oldest_date_fetches
+                }
+                for future in as_completed(future_map):
+                    prefetch_series_id, season_number = future_map[future]
+                    if season_number is None:
+                        series_oldest_cache[prefetch_series_id] = future.result()
+                    else:
+                        season_oldest_cache[f"{prefetch_series_id}:{season_number}"] = future.result()
+        else:
+            for prefetch_series_id, season_number in oldest_date_fetches:
+                oldest_dt = _fetch_emby_oldest_episode_date(
+                    server,
+                    prefetch_series_id,
+                    season_number=season_number,
+                )
+                if season_number is None:
+                    series_oldest_cache[prefetch_series_id] = oldest_dt
+                else:
+                    season_oldest_cache[f"{prefetch_series_id}:{season_number}"] = oldest_dt
 
         for series_id, episodes in episodes_by_series.items():
             existing_series = series_items_state.get(series_id) if state_enabled else None
@@ -1133,7 +1311,7 @@ def collect_entries(
             # Determine if series/seasons are new (only for unknown series)
             if not series_known:
                 series_oldest_dt = series_oldest_cache.get(series_id)
-                if series_oldest_dt is None:
+                if series_id not in series_oldest_cache:
                     series_oldest_dt = _fetch_emby_oldest_episode_date(server, series_id)
                     series_oldest_cache[series_id] = series_oldest_dt
 
@@ -1144,7 +1322,7 @@ def collect_entries(
                 for season_number, latest_dt in season_latest_dt_map.items():
                     cache_key = f"{series_id}:{season_number}"
                     season_oldest_dt = season_oldest_cache.get(cache_key)
-                    if season_oldest_dt is None:
+                    if cache_key not in season_oldest_cache:
                         season_oldest_dt = _fetch_emby_oldest_episode_date(server, series_id, season_number=season_number)
                         season_oldest_cache[cache_key] = season_oldest_dt
 
@@ -1163,6 +1341,96 @@ def collect_entries(
             episode_entries: List[Dict[str, Any]] = []
             episode_entry_seen: Set[Tuple[str, Tuple[str, ...]]] = set()
             episode_catalog_cache: Dict[str, List[Dict[str, Any]]] = {}
+
+            episode_catalog_fetches: List[Tuple[str, int, int]] = []
+            episode_catalog_seen: Set[str] = set()
+            if state_enabled:
+                for episode in episodes:
+                    episode_id = episode.get("Id")
+                    if not episode_id:
+                        continue
+                    episode_key = build_episode_signature(
+                        series_id,
+                        episode.get("ParentIndexNumber"),
+                        episode.get("IndexNumber"),
+                        episode_id=episode_id,
+                        episode_name=episode.get("Name") or "",
+                    )
+                    if not episode_key or episode_key in episode_catalog_seen:
+                        continue
+                    existing_episode = initial_episode_state.get(episode_key)
+                    if existing_episode is None:
+                        existing_episode = initial_episode_state.get(episode_id)
+                    episode_history = get_history_entry(history_state, "episodes", episode_key)
+                    if episode_history is None:
+                        episode_history = get_history_entry(history_state, "episodes", episode_id)
+                    season_number = _coerce_int(episode.get("ParentIndexNumber"))
+                    episode_number = _coerce_int(episode.get("IndexNumber"))
+                    if existing_episode is None and episode_history is None and season_number is not None and episode_number is not None:
+                        episode_catalog_fetches.append((episode_key, season_number, episode_number))
+                        episode_catalog_seen.add(episode_key)
+
+            episode_catalog_workers = min(max(1, requests_per_server), len(episode_catalog_fetches))
+            if episode_catalog_workers > 1:
+                with ThreadPoolExecutor(max_workers=episode_catalog_workers, thread_name_prefix="latest-emby-episodes") as executor:
+                    future_map = {
+                        executor.submit(
+                            _fetch_emby_episode_items,
+                            server,
+                            series_id,
+                            season_number,
+                            episode_number,
+                            fields=batch_fields,
+                        ): episode_key
+                        for episode_key, season_number, episode_number in episode_catalog_fetches
+                    }
+                    for future in as_completed(future_map):
+                        episode_catalog_cache[future_map[future]] = future.result()
+            else:
+                for episode_key, season_number, episode_number in episode_catalog_fetches:
+                    episode_catalog_cache[episode_key] = _fetch_emby_episode_items(
+                        server,
+                        series_id,
+                        season_number,
+                        episode_number,
+                        fields=batch_fields,
+                    )
+
+            def _episode_needs_playback_prefetch(item: Dict[str, Any]) -> bool:
+                episode_id = item.get("Id") if isinstance(item, dict) else None
+                if not episode_id:
+                    return False
+                season_number = _coerce_int(item.get("ParentIndexNumber"))
+                episode_number = _coerce_int(item.get("IndexNumber"))
+                if season_number is None or episode_number is None:
+                    return False
+                episode_key = build_episode_signature(
+                    series_id,
+                    season_number,
+                    episode_number,
+                    episode_id=episode_id,
+                    episode_name=item.get("Name") or "",
+                )
+                existing_episode = initial_episode_state.get(episode_key) if state_enabled else None
+                if existing_episode is None and state_enabled:
+                    existing_episode = initial_episode_state.get(episode_id)
+                episode_history = get_history_entry(history_state, "episodes", episode_key) if state_enabled else None
+                if episode_history is None and state_enabled:
+                    episode_history = get_history_entry(history_state, "episodes", episode_id)
+                return existing_episode is None and episode_history is None
+
+            episode_playback_items: List[Dict[str, Any]] = [
+                item for item in episodes if isinstance(item, dict)
+            ]
+            for catalog_items in episode_catalog_cache.values():
+                if isinstance(catalog_items, list):
+                    episode_playback_items.extend(item for item in catalog_items if isinstance(item, dict))
+            _prefetch_playback_media_sources(
+                server,
+                episode_playback_items,
+                _episode_needs_playback_prefetch,
+                requests_per_server,
+            )
 
             # First, collect already-seen episodes
             if episode_state:
@@ -1544,7 +1812,7 @@ def collect_entries(
                                 **episode_notification_state,
                             })
 
-                        state_changed = True
+                        local_state_changed = True
 
                     if season_number is not None:
                         seasons_in_group.add(season_number)
@@ -1634,7 +1902,7 @@ def collect_entries(
                     **notification_snapshot(existing_series, series_history),
                 })
 
-                state_changed = True
+                local_state_changed = True
 
         # --- BUILD FINAL ENTRIES ---
 
@@ -1669,7 +1937,7 @@ def collect_entries(
                         grouped_entry["added_at"] = group.get("added_at")
                     if group.get("batch_id"):
                         grouped_entry["batch_id"] = group.get("batch_id")
-                    movies.append(grouped_entry)
+                    local_movies.append(grouped_entry)
             else:
                 # Single change
                 if change:
@@ -1689,12 +1957,17 @@ def collect_entries(
                         batch_entry = batch_movie_by_item.get(f"{server_id}:{item_id}")
                     _apply_batch_overlay(entry, batch_entry)
 
-                movies.append(entry)
+                local_movies.append(entry)
 
         # Build series entries
-        series_entries, series_error = _fetch_emby_latest_series_from_episodes(server, per_server_limit, episodes=episode_batch)
+        series_entries, series_error = _fetch_emby_latest_series_from_episodes(
+            server,
+            per_server_limit,
+            episodes=episode_batch,
+            parallel_workers=requests_per_server,
+        )
         if series_error:
-            errors.append({"server_id": server_id, "message": str(series_error)})
+            local_errors.append({"server_id": server_id, "message": str(series_error)})
 
         for entry in series_entries:
             if not entry:
@@ -1731,7 +2004,7 @@ def collect_entries(
                         grouped_entry["added_at"] = group.get("added_at")
                     if group.get("batch_id"):
                         grouped_entry["batch_id"] = group.get("batch_id")
-                    series.append(grouped_entry)
+                    local_series.append(grouped_entry)
             else:
                 # Single change
                 if change:
@@ -1748,7 +2021,7 @@ def collect_entries(
                     batch_entry = batch_series_by_item.get(f"{server_id}:{entry.get('item_id')}")
                     _apply_batch_overlay(entry, batch_entry)
 
-                series.append(entry)
+                local_series.append(entry)
 
         # Prune state if enabled
         if state_enabled:
@@ -1768,7 +2041,39 @@ def collect_entries(
                     filtered[episode_id] = ep_entry
                 entry["episodes"] = filtered
 
-            latest_state[server_id] = server_state
+            server_state_result = server_state
+
+        return {
+            "server_id": server_id,
+            "movies": local_movies,
+            "series": local_series,
+            "errors": local_errors,
+            "state_changed": local_state_changed,
+            "server_state": server_state_result,
+        }
+
+    server_results: List[Dict[str, Any]] = []
+    if len(servers) > 1 and server_workers > 1:
+        ordered_results: List[Optional[Dict[str, Any]]] = [None] * len(servers)
+        with ThreadPoolExecutor(max_workers=server_workers, thread_name_prefix="latest-process") as executor:
+            future_map = {executor.submit(_process_server, server): index for index, server in enumerate(servers)}
+            for future in as_completed(future_map):
+                ordered_results[future_map[future]] = future.result()
+        server_results = [result for result in ordered_results if result]
+    else:
+        server_results = [_process_server(server) for server in servers]
+
+    for server_result in server_results:
+        movies.extend(server_result.get("movies") or [])
+        series.extend(server_result.get("series") or [])
+        errors.extend(server_result.get("errors") or [])
+        if server_result.get("state_changed"):
+            state_changed = True
+        if state_enabled:
+            result_server_id = server_result.get("server_id")
+            result_server_state = server_result.get("server_state")
+            if result_server_id and isinstance(result_server_state, dict):
+                latest_state[result_server_id] = result_server_state
 
     # --- FINAL PROCESSING ---
 
