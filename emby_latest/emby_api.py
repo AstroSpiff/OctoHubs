@@ -12,8 +12,7 @@ from core.utils import normalize_string, _parse_date_value
 
 _EMBY_LIBRARY_CACHE: dict[str, list[dict]] = {}
 _EMBY_LIBRARY_ITEM_CACHE: dict[tuple[str, str], tuple[str, str]] = {}
-_EMBY_USER_CACHE: dict[str, str] = {}
-_EMBY_USER_ITEM_CACHE: dict[tuple[str, str], dict] = {}
+_EMBY_ITEM_CACHE: dict[tuple[str, str], dict] = {}
 
 
 def _coerce_int_value(value: Any) -> Optional[int]:
@@ -55,46 +54,56 @@ def _media_source_item_id(source: Dict[str, Any]) -> str:
     return ""
 
 
-def _fetch_emby_first_user_id(server: Dict[str, Any]) -> str:
-    cache_key = _server_cache_key(server)
-    if cache_key in _EMBY_USER_CACHE:
-        return _EMBY_USER_CACHE[cache_key]
-    success, payload = _call_emby_api(server, "Users", method="GET")
-    user_id = ""
-    if success and isinstance(payload, list):
-        for user in payload:
-            if isinstance(user, dict) and user.get("Id"):
-                user_id = str(user.get("Id"))
-                break
-    if cache_key:
-        _EMBY_USER_CACHE[cache_key] = user_id
-    return user_id
-
-
-def _fetch_emby_user_item_metadata(server: Dict[str, Any], item_id: str) -> Dict[str, Any]:
+def _fetch_emby_item_metadata_batch(server: Dict[str, Any], item_ids: List[str]) -> Dict[str, Dict[str, Any]]:
     server_key = _server_cache_key(server)
-    item_key = str(item_id or "").strip()
-    if not server_key or not item_key:
-        return {}
-    cache_key = (server_key, item_key)
-    if cache_key in _EMBY_USER_ITEM_CACHE:
-        return _EMBY_USER_ITEM_CACHE[cache_key]
+    unique_ids = []
+    seen = set()
+    for item_id in item_ids:
+        item_key = str(item_id or "").strip()
+        if not item_key or item_key in seen:
+            continue
+        seen.add(item_key)
+        unique_ids.append(item_key)
 
-    user_id = _fetch_emby_first_user_id(server)
-    if not user_id:
-        _EMBY_USER_ITEM_CACHE[cache_key] = {}
+    if not server_key or not unique_ids:
         return {}
 
-    fields = "DateCreated,DateLastMediaAdded,DateModified,Path,Name,ProductionYear,Size,Container,Type"
-    success, payload = _call_emby_api(
-        server,
-        f"Users/{user_id}/Items/{item_key}",
-        method="GET",
-        params={"Fields": fields},
-    )
-    metadata = payload if success and isinstance(payload, dict) else {}
-    _EMBY_USER_ITEM_CACHE[cache_key] = metadata
-    return metadata
+    results: Dict[str, Dict[str, Any]] = {}
+    missing_ids = []
+    for item_key in unique_ids:
+        cache_key = (server_key, item_key)
+        if cache_key in _EMBY_ITEM_CACHE:
+            results[item_key] = _EMBY_ITEM_CACHE[cache_key]
+        else:
+            missing_ids.append(item_key)
+
+    if missing_ids:
+        fields = "DateCreated,DateLastMediaAdded,DateModified,Path,Name,ProductionYear,Size,Container,Type"
+        success, payload = _call_emby_api(
+            server,
+            "Items",
+            method="GET",
+            params={"Ids": ",".join(missing_ids), "Fields": fields, "Limit": len(missing_ids)},
+        )
+        returned_ids = set()
+        items = payload.get("Items") if success and isinstance(payload, dict) else []
+        if isinstance(items, list):
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                item_key = str(item.get("Id") or "").strip()
+                if not item_key:
+                    continue
+                returned_ids.add(item_key)
+                _EMBY_ITEM_CACHE[(server_key, item_key)] = item
+                results[item_key] = item
+
+        for item_key in missing_ids:
+            if item_key not in returned_ids:
+                _EMBY_ITEM_CACHE[(server_key, item_key)] = {}
+                results.setdefault(item_key, {})
+
+    return results
 
 
 def _hydrate_media_source_item_dates(server: Dict[str, Any], item: Dict[str, Any]) -> Dict[str, Any]:
@@ -106,6 +115,12 @@ def _hydrate_media_source_item_dates(server: Dict[str, Any], item: Dict[str, Any
 
     hydrated_sources: List[Dict[str, Any]] = []
     changed = False
+    source_item_ids = [
+        _media_source_item_id(source)
+        for source in media_sources
+        if isinstance(source, dict) and not _media_source_has_date(source)
+    ]
+    metadata_by_id = _fetch_emby_item_metadata_batch(server, source_item_ids)
     for source in media_sources:
         if not isinstance(source, dict):
             hydrated_sources.append(source)
@@ -113,7 +128,7 @@ def _hydrate_media_source_item_dates(server: Dict[str, Any], item: Dict[str, Any
         updated = source
         if not _media_source_has_date(source):
             source_item_id = _media_source_item_id(source)
-            metadata = _fetch_emby_user_item_metadata(server, source_item_id)
+            metadata = metadata_by_id.get(source_item_id) or {}
             source_date = (
                 metadata.get("DateCreated")
                 or metadata.get("DateLastMediaAdded")

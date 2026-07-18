@@ -86,6 +86,14 @@ def _collect_with_mocks(
     def fake_emby_api(_server, path, method="GET", params=None, json_payload=None):
         if path == "Users":
             return True, [{"Id": "emby-user-a"}]
+        if path == "Items":
+            params = params or {}
+            item_ids = [
+                item_id.strip()
+                for item_id in str(params.get("Ids") or "").split(",")
+                if item_id.strip()
+            ]
+            return True, {"Items": [deepcopy(emby_user_items[item_id]) for item_id in item_ids if item_id in emby_user_items]}
         prefix = "Users/emby-user-a/Items/"
         if isinstance(path, str) and path.startswith(prefix):
             item_id = path[len(prefix):]

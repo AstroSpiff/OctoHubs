@@ -5,10 +5,21 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from emby_latest.emby_api import _fetch_emby_episode_items, _fetch_emby_latest_items
+from emby_latest import emby_api
+from emby_latest.emby_api import (
+    _fetch_emby_episode_items,
+    _fetch_emby_latest_items,
+    _hydrate_media_source_item_dates,
+)
 
 
 class LatestEmbyApiTests(unittest.TestCase):
+    def setUp(self):
+        for cache_name in ("_EMBY_ITEM_CACHE", "_EMBY_USER_CACHE", "_EMBY_USER_ITEM_CACHE"):
+            cache = getattr(emby_api, cache_name, None)
+            if isinstance(cache, dict):
+                cache.clear()
+
     def test_fetch_emby_episode_items_uses_series_episode_endpoint_and_filters_episode(self):
         calls = []
 
@@ -77,6 +88,45 @@ class LatestEmbyApiTests(unittest.TestCase):
         self.assertEqual(["new-1", "new-2", "overlap-edge"], [item["Id"] for item in items])
         self.assertEqual([0, 2], [call[2].get("StartIndex") for call in calls])
         self.assertEqual([2, 2], [call[2].get("Limit") for call in calls])
+
+    def test_hydrate_media_source_item_dates_fetches_dates_in_one_items_batch(self):
+        calls = []
+        item = {
+            "Id": "movie-1",
+            "Name": "Movie One",
+            "MediaSources": [
+                {"Id": "mediasource_496007", "Path": "/media/movie-1080p.mkv"},
+                {"Id": "mediasource_496008", "Path": "/media/movie-2160p.mkv"},
+                {"Id": "mediasource_489411", "Path": "/media/movie-old.mkv"},
+            ],
+        }
+
+        def fake_call(server, path, params=None, method="GET"):
+            calls.append((server, path, params or {}, method))
+            if path != "Items":
+                return False, "unexpected path"
+            return True, {
+                "Items": [
+                    {"Id": "496007", "DateCreated": "2026-07-16T13:03:01+00:00"},
+                    {"Id": "496008", "DateCreated": "2026-07-16T13:03:01+00:00"},
+                    {"Id": "489411", "DateCreated": "2026-06-14T03:27:22+00:00"},
+                ]
+            }
+
+        with patch("emby_latest.emby_api._call_emby_api", fake_call):
+            hydrated = _hydrate_media_source_item_dates({"id": "server-a"}, item)
+
+        self.assertEqual(["Items"], [call[1] for call in calls])
+        self.assertEqual("496007,496008,489411", calls[0][2].get("Ids"))
+        self.assertEqual(3, calls[0][2].get("Limit"))
+        self.assertEqual(
+            [
+                "2026-07-16T13:03:01+00:00",
+                "2026-07-16T13:03:01+00:00",
+                "2026-06-14T03:27:22+00:00",
+            ],
+            [source.get("DateCreated") for source in hydrated["MediaSources"]],
+        )
 
 
 if __name__ == "__main__":
