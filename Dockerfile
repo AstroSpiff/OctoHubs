@@ -54,6 +54,7 @@ ENV PATH="/opt/venv/bin:$PATH" \
     SECRET_KEY="" \
     OCTOHUB_CONFIG_FILE="/config/config.json" \
     OCTOHUB_RESULTS_FILE="/storage/last_results.json" \
+    OCTOHUB_DB_BACKUP_DIR="/storage/db-backups" \
     AUTH_DATABASE_URL="sqlite:////storage/auth.db" \
     ADMIN_USERNAME="" \
     ADMIN_PASSWORD="" \
@@ -64,7 +65,7 @@ ENV PATH="/opt/venv/bin:$PATH" \
     CSRF_TIME_LIMIT_SECONDS="3600"
 
 # Create directories for data persistence
-RUN mkdir -p /config /storage /app/logs && \
+RUN mkdir -p /config /storage /storage/db-backups /app/logs && \
     chown -R octohub:octohub /config /storage /app/logs
 
 RUN chmod +x /app/docker-entrypoint.sh

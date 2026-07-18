@@ -22,6 +22,7 @@ services:
       - SECRET_KEY=${SECRET_KEY:-change-this-secret-key}
       - OCTOHUB_CONFIG_FILE=${OCTOHUB_CONFIG_FILE:-/config/config.json}
       - OCTOHUB_RESULTS_FILE=${OCTOHUB_RESULTS_FILE:-/storage/last_results.json}
+      - OCTOHUB_DB_BACKUP_DIR=${OCTOHUB_DB_BACKUP_DIR:-/storage/db-backups}
 
       # Authentication Database (SQLite by default, PostgreSQL optional)
       - AUTH_DATABASE_URL=${AUTH_DATABASE_URL:-sqlite:////storage/auth.db}
