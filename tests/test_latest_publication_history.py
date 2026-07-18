@@ -517,6 +517,85 @@ class LatestPublicationHistoryTests(unittest.TestCase):
         saved_movie = db_state.saved[-1]["server-a"]["movies"]["items"]["tmdb:834"]
         self.assertEqual(3, len(saved_movie.get("media_source_keys") or []))
 
+    def test_movie_change_list_omits_strm_placeholders_when_real_sources_exist(self):
+        db_state = _RecordingState(
+            {
+                "server-a": {
+                    "movies": {"items": {}},
+                    "series": {"items": {}},
+                    "history": {
+                        "movies": {
+                            "tmdb:277": {
+                                "item_id": "movie-1",
+                                "signature": "tmdb:277",
+                                "media_source_keys": ["old-720-key"],
+                                "notified": True,
+                                "notified_at": "2026-06-15T10:00:00+00:00",
+                            }
+                        }
+                    },
+                }
+            }
+        )
+        db_cache = _RecordingCache()
+        current_movie = {
+            "Id": "movie-1",
+            "Name": "Underworld",
+            "Type": "Movie",
+            "ProductionYear": 2003,
+            "DateCreated": "2026-07-16T13:03:01+00:00",
+            "ProviderIds": {"Tmdb": "277"},
+            "MediaSources": [
+                {
+                    "Id": "source-2160",
+                    "Path": "http://example.test/Underworld (2003) - 2160p.mkv",
+                    "Container": "mkv",
+                    "Size": 37916041979,
+                },
+                {
+                    "Id": "source-1080",
+                    "Path": "http://example.test/Underworld (2003) - 1080p.mkv",
+                    "Container": "mkv",
+                    "Size": 14974791386,
+                },
+                {
+                    "Path": "/mnt/shared/fusemounts/redprimrose_strms/media/movies/Underworld (2003)/Underworld (2003) - 1080p.strm",
+                    "Container": "strm",
+                },
+                {
+                    "Path": "/mnt/shared/fusemounts/redprimrose_strms/media/movies/Underworld (2003)/Underworld (2003) - 2160p.strm",
+                    "Container": "strm",
+                },
+            ],
+        }
+        emby_user_items = {
+            "source-2160": {"Id": "source-2160", "DateCreated": "2026-07-16T13:03:01+00:00"},
+            "source-1080": {"Id": "source-1080", "DateCreated": "2026-07-16T13:03:01+00:00"},
+        }
+
+        payload, error = _collect_with_mocks(
+            db_state,
+            db_cache,
+            movie_items=[current_movie],
+            movie_catalog_items=[current_movie],
+            emby_user_items=emby_user_items,
+        )
+
+        self.assertIsNone(error)
+        self.assertTrue(payload["movies"])
+        changes = payload["movies"][0]["changes"]
+        self.assertEqual("Nuova versione", payload["movies"][0].get("update_label"))
+        self.assertEqual(
+            {
+                "http://example.test/Underworld (2003) - 1080p.mkv",
+                "http://example.test/Underworld (2003) - 2160p.mkv",
+            },
+            {change.get("path") for change in changes},
+        )
+        self.assertFalse([change for change in changes if str(change.get("path") or "").endswith(".strm")])
+        saved_movie = db_state.saved[-1]["server-a"]["movies"]["items"]["tmdb:277"]
+        self.assertEqual(5, len(saved_movie.get("media_source_keys") or []))
+
     def test_movie_playbackinfo_sibling_versions_are_not_misclassified_as_baseline(self):
         db_state = _RecordingState({"server-a": {"movies": {"items": {}}, "series": {"items": {}}}})
         db_cache = _RecordingCache()
@@ -1055,6 +1134,96 @@ class LatestPublicationHistoryTests(unittest.TestCase):
             },
             {change.get("path") for change in payload["series"][0]["changes"]},
         )
+
+    def test_episode_change_list_omits_strm_placeholders_when_real_sources_exist(self):
+        db_state = _RecordingState(
+            {
+                "server-a": {
+                    "movies": {"items": {}},
+                    "series": {"items": {}},
+                    "history": {
+                        "episodes": {
+                            "series-1:S1:E2": {
+                                "item_id": "episode-2",
+                                "series_id": "series-1",
+                                "season_number": 1,
+                                "episode_number": 2,
+                                "media_source_keys": ["old-720-key"],
+                                "notified": True,
+                                "notified_at": "2026-06-15T10:00:00+00:00",
+                            }
+                        }
+                    },
+                }
+            }
+        )
+        db_cache = _RecordingCache()
+        current_episode = {
+            "Id": "episode-2",
+            "Name": "Episode Two",
+            "Type": "Episode",
+            "SeriesId": "series-1",
+            "SeriesName": "Series One",
+            "SeriesProductionYear": 2026,
+            "ParentIndexNumber": 1,
+            "IndexNumber": 2,
+            "DateCreated": "2026-07-16T13:03:01+00:00",
+            "MediaSources": [
+                {
+                    "Id": "source-s01e02-2160",
+                    "Path": "http://example.test/Series One S01E02 - 2160p.mkv",
+                    "Container": "mkv",
+                    "Size": 2000,
+                },
+                {
+                    "Id": "source-s01e02-1080",
+                    "Path": "http://example.test/Series One S01E02 - 1080p.mkv",
+                    "Container": "mkv",
+                    "Size": 1000,
+                },
+                {
+                    "Path": "/mnt/shared/fusemounts/redprimrose_strms/media/tv/Series One/Series One S01E02 - 1080p.strm",
+                    "Container": "strm",
+                },
+                {
+                    "Path": "/mnt/shared/fusemounts/redprimrose_strms/media/tv/Series One/Series One S01E02 - 2160p.strm",
+                    "Container": "strm",
+                },
+            ],
+        }
+        series = {
+            "Id": "series-1",
+            "Name": "Series One",
+            "Type": "Series",
+            "ProductionYear": 2026,
+            "DateCreated": "2026-07-16T13:03:01+00:00",
+        }
+        emby_user_items = {
+            "source-s01e02-2160": {"Id": "source-s01e02-2160", "DateCreated": "2026-07-16T13:03:01+00:00"},
+            "source-s01e02-1080": {"Id": "source-s01e02-1080", "DateCreated": "2026-07-16T13:03:01+00:00"},
+        }
+
+        payload, error = _collect_with_mocks(
+            db_state,
+            db_cache,
+            episode_items=[current_episode],
+            episode_catalog_items=[current_episode],
+            series_entries=[series],
+            emby_user_items=emby_user_items,
+        )
+
+        self.assertIsNone(error)
+        self.assertTrue(payload["series"])
+        changes = payload["series"][0]["changes"]
+        self.assertEqual("Nuova versione", payload["series"][0].get("update_label"))
+        self.assertEqual(
+            {
+                "http://example.test/Series One S01E02 - 1080p.mkv",
+                "http://example.test/Series One S01E02 - 2160p.mkv",
+            },
+            {change.get("path") for change in changes},
+        )
+        self.assertFalse([change for change in changes if str(change.get("path") or "").endswith(".strm")])
 
     def test_episode_uses_playbackinfo_extra_sources_as_existing_emby_baseline(self):
         db_state = _RecordingState({"server-a": {"movies": {"items": {}}, "series": {"items": {}}}})

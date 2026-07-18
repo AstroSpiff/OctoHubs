@@ -27,6 +27,7 @@ from emby_latest.batch_processor import (
     select_recent_versions_by_time,
     group_version_times,
     _sort_versions_by_quality,
+    filter_versions_for_changes,
     compute_batch,
     build_batch_id,
     group_items_by_date,
@@ -885,7 +886,9 @@ def collect_entries(
                 # Multiple version groups detected - split into separate updates
                 grouped_changes = []
                 for idx, group in enumerate(version_groups):
-                    group_versions = _sort_versions_by_quality([version for version, _ in group])
+                    group_versions = filter_versions_for_changes(
+                        _sort_versions_by_quality([version for version, _ in group])
+                    )
                     group_dt = max(dt_value for _, dt_value in group)
                     is_oldest = idx == len(version_groups) - 1
                     update_type = "new" if is_oldest else "update"
@@ -957,6 +960,7 @@ def collect_entries(
                     recent_versions = select_recent_versions_by_time(version_times, gap_minutes)
                     if recent_versions:
                         target_versions = _sort_versions_by_quality(recent_versions)
+                target_versions = filter_versions_for_changes(target_versions)
 
                 if not target_versions and update_type != "existing":
                     changes.append({
@@ -1432,6 +1436,7 @@ def collect_entries(
 
                     # Add changes for this episode
                     target_versions = _sort_versions_by_quality(new_versions or versions)
+                    target_versions = filter_versions_for_changes(target_versions)
                     for version in target_versions:
                         version_dt = version_time_map.get(version.get("key")) or _parse_date_value(version.get("added_at"))
                         changes.append({

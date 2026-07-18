@@ -332,6 +332,44 @@ def _sort_versions_by_quality(versions: List[Dict[str, Any]]) -> List[Dict[str, 
     return sorted(valid_versions, key=_version_quality_key, reverse=True)
 
 
+def _is_strm_placeholder_version(version: Dict[str, Any]) -> bool:
+    path = str(version.get("path") or version.get("path_original") or "").lower()
+    container = str(version.get("container") or "").lower()
+    if not (path.endswith(".strm") or container == "strm"):
+        return False
+    return not any(
+        version.get(field)
+        for field in (
+            "quality",
+            "resolution",
+            "video_codec",
+            "audio_codec",
+            "audio_channels",
+            "size",
+            "bitrate",
+            "video_details",
+            "audio_details",
+            "mediainfo_available",
+        )
+    )
+
+
+def filter_versions_for_changes(versions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Hide STRM placeholder sources from user-visible changes when real media
+    sources are present. State tracking still receives the full version list.
+    """
+    valid_versions = [entry for entry in versions if isinstance(entry, dict)]
+    if len(valid_versions) <= 1:
+        return valid_versions
+
+    visible_versions = [
+        version for version in valid_versions
+        if not _is_strm_placeholder_version(version)
+    ]
+    return visible_versions or valid_versions
+
+
 def merge_versions(versions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     Merge duplicate versions based on key/id/path.
