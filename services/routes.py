@@ -72,6 +72,35 @@ def _load_config_dep():
     return _load_config()
 
 
+def _build_trakt_settings_payload(
+    existing_trakt: Any,
+    *,
+    client_id: str,
+    client_secret: str,
+    access_token: str,
+    enabled: str,
+) -> dict[str, Any]:
+    existing = existing_trakt if isinstance(existing_trakt, dict) else {}
+    payload: dict[str, Any] = {
+        "CLIENT_ID": client_id or existing.get("CLIENT_ID") or "",
+        "CLIENT_SECRET": client_secret or existing.get("CLIENT_SECRET") or "",
+    }
+
+    for token_key in ("REFRESH_TOKEN", "EXPIRES_AT", "ACCESS_TOKEN"):
+        if existing.get(token_key):
+            payload[token_key] = existing[token_key]
+
+    if access_token:
+        payload["ACCESS_TOKEN"] = access_token
+
+    if payload.get("REFRESH_TOKEN") and payload.get("ACCESS_TOKEN"):
+        payload["ENABLED"] = True
+    else:
+        payload["ENABLED"] = bool(enabled)
+
+    return payload
+
+
 @router.post("/test-connections")
 async def test_connections(request: Request):
     _require_auth_dep(request)
@@ -328,28 +357,13 @@ async def update_config_route(
     else:
         app_settings["OMDB_API_KEY"] = ""
 
-    existing_trakt = app_settings.get("TRAKT", {})
-    trakt_payload: dict[str, Any] = {
-        "CLIENT_ID": trakt_client_id or "",
-        "CLIENT_SECRET": trakt_client_secret or "",
-    }
-
-    if isinstance(existing_trakt, dict):
-        if existing_trakt.get("REFRESH_TOKEN"):
-            trakt_payload["REFRESH_TOKEN"] = existing_trakt["REFRESH_TOKEN"]
-        if existing_trakt.get("EXPIRES_AT"):
-            trakt_payload["EXPIRES_AT"] = existing_trakt["EXPIRES_AT"]
-        if existing_trakt.get("ACCESS_TOKEN"):
-            trakt_payload["ACCESS_TOKEN"] = existing_trakt["ACCESS_TOKEN"]
-
-    if trakt_access_token:
-        trakt_payload["ACCESS_TOKEN"] = trakt_access_token
-
-    if trakt_payload.get("REFRESH_TOKEN") and trakt_payload.get("ACCESS_TOKEN"):
-        trakt_payload["ENABLED"] = True
-    else:
-        trakt_payload["ENABLED"] = bool(trakt_enabled)
-
+    trakt_payload = _build_trakt_settings_payload(
+        app_settings.get("TRAKT", {}),
+        client_id=trakt_client_id,
+        client_secret=trakt_client_secret,
+        access_token=trakt_access_token,
+        enabled=trakt_enabled,
+    )
     app_settings["TRAKT"] = _merge_trakt_settings(trakt_payload)
 
     justwatch_payload = {

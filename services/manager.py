@@ -6,7 +6,7 @@ from typing import Any, Dict
 
 import requests
 
-from core.config import CONFIG_FILE, _merge_database_settings
+from core.config import CONFIG_FILE, _merge_database_settings, _merge_trakt_settings
 from core.storage import DatabaseStorage, StorageError
 from core.utils import json_error
 
@@ -168,8 +168,9 @@ def _save_app_settings_snapshot(settings):
     try:
         backend = _ensure_db_backend()
         backend.save_app_settings(settings)
+        return True
     except StorageError:
-        return
+        return False
 
 
 def _build_update_request_rules_snapshot(payload):
@@ -426,14 +427,15 @@ def _build_trakt_device_poll_snapshot(payload):
         payload = {}
     try:
         client_id = (payload.get("client_id") or "").strip()
+        client_secret = (payload.get("client_secret") or "").strip()
         device_code = (payload.get("device_code") or "").strip()
-        if not client_id or not device_code:
+        if not client_id or not client_secret or not device_code:
             return json_error("Parametri mancanti")
 
         response = requests.post(
             "https://api.trakt.tv/oauth/device/token",
             headers={"Content-Type": "application/json"},
-            json={"code": device_code, "client_id": client_id},
+            json={"code": device_code, "client_id": client_id, "client_secret": client_secret},
             timeout=10
         )
 
@@ -448,9 +450,12 @@ def _build_trakt_device_poll_snapshot(payload):
 
         result = response.json()
         access_token = result.get("access_token")
+        refresh_token = result.get("refresh_token")
         expires_in = result.get("expires_in", 7776000)
         if not access_token:
             return json_error("Token non ricevuto", 500)
+        if not refresh_token:
+            return json_error("Refresh token non ricevuto", 500)
 
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
         try:
@@ -459,15 +464,19 @@ def _build_trakt_device_poll_snapshot(payload):
             if not isinstance(trakt_config, dict):
                 trakt_config = {}
             trakt_config["CLIENT_ID"] = client_id
+            trakt_config["CLIENT_SECRET"] = client_secret
             trakt_config["ACCESS_TOKEN"] = access_token
+            trakt_config["REFRESH_TOKEN"] = refresh_token
             trakt_config["ENABLED"] = True
             trakt_config["EXPIRES_AT"] = expires_at.isoformat()
-            app_settings["TRAKT"] = trakt_config
-            _save_app_settings_snapshot(app_settings)
+            app_settings["TRAKT"] = _merge_trakt_settings(trakt_config)
+            if not _save_app_settings_snapshot(app_settings):
+                return json_error("Impossibile salvare token Trakt", 500)
             from core.config_manager import load_config
             load_config()
         except Exception as exc:
             print(f"   -> Errore salvataggio token Trakt: {exc}")
+            return json_error("Impossibile salvare token Trakt", 500)
 
         return {
             "status": "authorized",
@@ -490,7 +499,8 @@ def _build_trakt_clear_snapshot():
         trakt_config["ENABLED"] = False
 
         app_settings["TRAKT"] = trakt_config
-        _save_app_settings_snapshot(app_settings)
+        if not _save_app_settings_snapshot(app_settings):
+            return json_error("Impossibile salvare configurazione Trakt", 500)
         return {"success": True, "message": "Token Trakt rimosso"}, 200
     except Exception as exc:
         print(f"   -> Errore rimozione token Trakt: {exc}")

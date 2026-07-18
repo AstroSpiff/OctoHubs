@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import requests
 
 from core import config_manager
+from core.config import _merge_trakt_settings
 from core.config_manager import _db_enabled, _ensure_db_backend
 from core.justwatch_manager import JustWatchManager, JustWatchError, is_justwatch_available
 from search.parsing import _try_parse_int
@@ -24,15 +26,46 @@ class TraktAPIError(RuntimeError):
 
 class TraktClient:
     BASE_URL = "https://api.trakt.tv"
+    REFRESH_MARGIN_SECONDS = 24 * 60 * 60
+    OAUTH_REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
 
-    def __init__(self, client_id: str, access_token: str):
+    def __init__(
+        self,
+        client_id: str,
+        access_token: str,
+        client_secret: str = "",
+        refresh_token: str = "",
+        expires_at: str = "",
+        on_token_update=None,
+    ):
         self.client_id = (client_id or "").strip()
         self.access_token = (access_token or "").strip()
+        self.client_secret = (client_secret or "").strip()
+        self.refresh_token = (refresh_token or "").strip()
+        self.expires_at = self._parse_expires_at(expires_at)
+        self._on_token_update = on_token_update
         self._collection_cache = None
         self._collection_timestamp = 0.0
         self._season_cache: Dict[tuple, Any] = {}
         self._show_id_cache: Dict[int, Any] = {}
         self._lock = threading.Lock()
+        self._token_lock = threading.Lock()
+
+    @staticmethod
+    def _parse_expires_at(value: Any) -> float:
+        if not value:
+            return 0.0
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = str(value or "").strip()
+        if not text:
+            return 0.0
+        if text.isdigit():
+            return float(text)
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return 0.0
 
     def _headers(self):
         return {
@@ -44,7 +77,75 @@ class TraktClient:
             "User-Agent": "OctoHub/1.0 (+https://github.com/roy/octohub)",
         }
 
+    def _token_refresh_payload(self):
+        return {
+            "refresh_token": self.refresh_token,
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "redirect_uri": self.OAUTH_REDIRECT_URI,
+            "grant_type": "refresh_token",
+        }
+
+    def _refresh_access_token(self) -> bool:
+        if not self.client_id or not self.client_secret or not self.refresh_token:
+            return False
+        with self._token_lock:
+            response = requests.post(
+                f"{self.BASE_URL}/oauth/token",
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                json=self._token_refresh_payload(),
+                timeout=15,
+            )
+            if response.status_code != 200:
+                detail = ""
+                try:
+                    payload = response.json()
+                    if isinstance(payload, dict):
+                        detail = payload.get("error_description") or payload.get("error") or ""
+                except Exception:
+                    detail = response.text
+                detail = (detail or response.text or "").strip()
+                raise TraktAPIError(
+                    f"Refresh token Trakt non riuscito ({response.status_code})"
+                    + (f": {detail}" if detail else ".")
+                )
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise TraktAPIError("Risposta refresh Trakt non valida.") from exc
+            access_token = (payload.get("access_token") or "").strip()
+            refresh_token = (payload.get("refresh_token") or self.refresh_token or "").strip()
+            if not access_token or not refresh_token:
+                raise TraktAPIError("Risposta refresh Trakt incompleta.")
+            expires_in = payload.get("expires_in") or 604800
+            try:
+                expires_seconds = int(expires_in)
+            except (TypeError, ValueError):
+                expires_seconds = 604800
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_seconds)
+            self.access_token = access_token
+            self.refresh_token = refresh_token
+            self.expires_at = expires_at.timestamp()
+            update = {
+                "ACCESS_TOKEN": access_token,
+                "REFRESH_TOKEN": refresh_token,
+                "EXPIRES_AT": expires_at.isoformat(),
+            }
+            if self._on_token_update is not None:
+                self._on_token_update(update)
+            return True
+
+    def _ensure_valid_token(self) -> None:
+        if not self.refresh_token:
+            return
+        if not self.expires_at:
+            return
+        refresh_at = self.expires_at - self.REFRESH_MARGIN_SECONDS
+        if time.time() >= refresh_at:
+            self._refresh_access_token()
+
     def _request(self, method: str, path: str, **kwargs):
+        self._ensure_valid_token()
         url = path if path.startswith("http") else f"{self.BASE_URL}{path}"
         headers = kwargs.pop("headers", {})
         headers.update(self._headers())
@@ -54,6 +155,15 @@ class TraktClient:
         except requests.RequestException as exc:
             raise TraktAPIError(f"Errore di rete Trakt: {exc}") from exc
         if response.status_code == 401:
+            if self._refresh_access_token():
+                headers = kwargs.pop("headers", {})
+                headers.update(self._headers())
+                try:
+                    response = requests.request(method, url, headers=headers, timeout=timeout, **kwargs)
+                except requests.RequestException as exc:
+                    raise TraktAPIError(f"Errore di rete Trakt: {exc}") from exc
+                if response.status_code != 401:
+                    return self._decode_response(response)
             detail = ""
             try:
                 payload = response.json()
@@ -75,6 +185,9 @@ class TraktClient:
             raise TraktAPIError("Trakt non disponibile (errore 5xx).")
         if response.status_code >= 400:
             raise TraktAPIError(f"Errore Trakt {response.status_code}.")
+        return self._decode_response(response)
+
+    def _decode_response(self, response):
         if response.status_code == 204:
             return None
         try:
@@ -204,12 +317,47 @@ def _justwatch_enabled(settings: Dict[str, Any] | None) -> bool:
     return bool(settings.get("ENABLED"))
 
 
+def _persist_trakt_token_update(token_update: Dict[str, Any]) -> None:
+    if not token_update:
+        return
+    backend = _ensure_db_backend()
+    app_settings = backend.load_app_settings() or {}
+    if not isinstance(app_settings, dict):
+        app_settings = {}
+
+    active_trakt = (
+        config_manager._ACTIVE_CONFIG.get("TRAKT", {})
+        if isinstance(config_manager._ACTIVE_CONFIG, dict)
+        else {}
+    )
+    stored_trakt = app_settings.get("TRAKT", {})
+    if not isinstance(active_trakt, dict):
+        active_trakt = {}
+    if not isinstance(stored_trakt, dict):
+        stored_trakt = {}
+
+    trakt_settings = dict(active_trakt)
+    trakt_settings.update(stored_trakt)
+    trakt_settings.update(token_update)
+    trakt_settings["ENABLED"] = True
+    merged_trakt = _merge_trakt_settings(trakt_settings)
+
+    app_settings["TRAKT"] = merged_trakt
+    backend.save_app_settings(app_settings)
+    if isinstance(config_manager._ACTIVE_CONFIG, dict):
+        config_manager._ACTIVE_CONFIG["TRAKT"] = merged_trakt
+
+
 def _get_trakt_client(settings: Dict[str, Any] | None) -> Optional[TraktClient]:
     if not settings:
         return None
     return TraktClient(
         client_id=settings.get("CLIENT_ID", ""),
         access_token=settings.get("ACCESS_TOKEN", ""),
+        client_secret=settings.get("CLIENT_SECRET", ""),
+        refresh_token=settings.get("REFRESH_TOKEN", ""),
+        expires_at=settings.get("EXPIRES_AT", ""),
+        on_token_update=_persist_trakt_token_update,
     )
 
 
