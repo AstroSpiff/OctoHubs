@@ -36,6 +36,7 @@ from emby_latest.enrichment import (
     enrich_entry_with_tmdb,
     has_missing_data,
 )
+from emby_latest.enrichment_cache import SharedEnrichmentCache
 from emby_latest.db_cache import merge_cached_entry
 from emby_latest.utils import (
     prune_state_items_by_last_seen,
@@ -1841,6 +1842,15 @@ def collect_entries(
 
     # --- ENRICHMENT ---
 
+    cached_enrichment_entries = []
+    if isinstance(cache_payload, dict):
+        cached_enrichment_entries.extend(cache_payload.get("movies") or [])
+        cached_enrichment_entries.extend(cache_payload.get("series") or [])
+    enrichment_cache = SharedEnrichmentCache(cached_enrichment_entries)
+    enrichment_cache.remember_many(final_movies + final_series)
+    for entry in final_movies + final_series:
+        enrichment_cache.apply(entry)
+
     progress_total = 0
     progress_completed = 0
 
@@ -1863,63 +1873,16 @@ def collect_entries(
                 message="Arricchimento dati esterni" if progress_total else "Nessun arricchimento esterno necessario"
             )
 
-    # Campi di enrichment condivisibili tra entry con stesso tmdb_id (da fonti esterne)
-    _SHARED_ENRICHMENT_FIELDS = (
-        "tmdb_id",
-        "tmdb_poster_url", "tmdb_backdrop_url", "tmdb_logo_url",
-        "tmdb_banner_url", "tmdb_thumb_url",
-        "tmdb_rating", "tmdb_votes",
-        "imdb_id", "tvdb_id", "trakt_id",
-        "creators",
-        "imdb_rating", "imdb_votes", "metacritic_rating",
-        "rt_tomatometer", "rt_audience", "letterboxd_rating",
-        "trakt_rating", "trakt_votes",
-        "omdb_fetched_at", "trakt_fetched_at",
-    )
-
     def _enrich_latest_entries(entries):
-        """Enrich entries with TMDB/OMDb/Trakt data, deduplicating by tmdb_id."""
+        """Enrich entries with TMDB/OMDb/Trakt data using a shared content cache."""
         if not isinstance(entries, list) or not entries:
             return entries
         nonlocal progress_completed
 
-        def _title_cache_key(e: dict) -> str:
-            title = str(e.get("title") or e.get("series_name") or "").lower().strip()
-            year = str(e.get("year") or "")
-            return f"{title}:{year}" if title else ""
-
-        def _apply_cached(e: dict, cached: dict) -> None:
-            for field, value in cached.items():
-                if value is not None and not e.get(field):
-                    e[field] = value
-
-        # Pre-fill: propaga il tmdb_id alle copie che ne sono prive.
-        # Se lo stesso film esiste su più server e almeno uno ha il tmdb_id,
-        # lo assegniamo agli altri in anticipo per evitare chiamate API ridondanti.
-        title_to_tmdb: dict = {}
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            tid = str(entry.get("tmdb_id") or "")
-            if not tid:
-                continue
-            tk = _title_cache_key(entry)
-            if tk and tk not in title_to_tmdb:
-                title_to_tmdb[tk] = tid
-
-        for entry in entries:
-            if not isinstance(entry, dict) or entry.get("tmdb_id"):
-                continue
-            tk = _title_cache_key(entry)
-            if tk and tk in title_to_tmdb:
-                entry["tmdb_id"] = title_to_tmdb[tk]
-
-        # Cache dei dati enrichment per tmdb_id: evita chiamate API ridondanti
-        enriched_by_tmdb: dict = {}
-
         for idx, entry in enumerate(entries):
             if not isinstance(entry, dict):
                 continue
+            enrichment_cache.apply(entry)
             if not entry_needs_enrichment(
                 entry,
                 config,
@@ -1928,32 +1891,13 @@ def collect_entries(
             ):
                 continue
 
-            tmdb_id = str(entry.get("tmdb_id") or "")
-
-            if tmdb_id and tmdb_id in enriched_by_tmdb:
-                # Copia i dati già arricchiti senza ripetere le chiamate API
-                _apply_cached(entry, enriched_by_tmdb[tmdb_id])
-                entries[idx] = entry
-            else:
-                entries[idx] = enrich_entry_with_tmdb(
-                    entry,
-                    config,
-                    force_omdb=force_omdb,
-                    omdb_cache_hours=omdb_cache_hours
-                )
-                # Salva i dati arricchiti per riutilizzarli con entry duplicate
-                resolved_tmdb_id = str(entries[idx].get("tmdb_id") or tmdb_id)
-                if resolved_tmdb_id:
-                    enriched_snapshot = {
-                        f: entries[idx].get(f)
-                        for f in _SHARED_ENRICHMENT_FIELDS
-                        if entries[idx].get(f) is not None
-                    }
-                    enriched_by_tmdb[resolved_tmdb_id] = enriched_snapshot
-                    # Aggiorna la mappa title→tmdb_id per eventuali copie successive
-                    tk = _title_cache_key(entries[idx])
-                    if tk and tk not in title_to_tmdb:
-                        title_to_tmdb[tk] = resolved_tmdb_id
+            entries[idx] = enrich_entry_with_tmdb(
+                entry,
+                config,
+                force_omdb=force_omdb,
+                omdb_cache_hours=omdb_cache_hours
+            )
+            enrichment_cache.remember(entries[idx])
 
             if enrich and progress_total and progress_tracker:
                 progress_completed += 1
