@@ -67,12 +67,14 @@ def _collect_with_mocks(
     episode_items=None,
     series_entries=None,
     episode_catalog_items=None,
+    emby_user_items=None,
 ):
     movie_items = list(movie_items or [])
     movie_catalog_items = list(movie_catalog_items or [])
     episode_items = list(episode_items or [])
     series_entries = list(series_entries or [])
     episode_catalog_items = list(episode_catalog_items or [])
+    emby_user_items = deepcopy(emby_user_items or {})
 
     def fake_fetch(_server, item_type, _limit, fields=None):
         if item_type == "Movie":
@@ -80,6 +82,18 @@ def _collect_with_mocks(
         if item_type == "Episode":
             return episode_items, None
         return [], None
+
+    def fake_emby_api(_server, path, method="GET", params=None, json_payload=None):
+        if path == "Users":
+            return True, [{"Id": "emby-user-a"}]
+        prefix = "Users/emby-user-a/Items/"
+        if isinstance(path, str) and path.startswith(prefix):
+            item_id = path[len(prefix):]
+            item = emby_user_items.get(item_id)
+            if item is not None:
+                return True, deepcopy(item)
+            return False, "404 Not Found"
+        return False, "Unexpected Emby API call"
 
     with patch("core.config_manager.load_config", return_value=(_base_config(), True)), patch(
         "core.config_manager._db_enabled",
@@ -96,6 +110,9 @@ def _collect_with_mocks(
     ), patch("emby_latest.collectors._fetch_emby_latest_series_from_episodes", return_value=(series_entries, None)), patch(
         "emby_latest.collectors._fetch_emby_oldest_episode_date",
         return_value=_parse_date_value("2026-06-01T10:00:00+00:00"),
+    ), patch(
+        "emby_latest.emby_api._call_emby_api",
+        side_effect=fake_emby_api,
     ), patch(
         "emby_latest.builders._resolve_emby_library_for_item",
         return_value=("lib-a", "Library"),
@@ -357,6 +374,78 @@ class LatestPublicationHistoryTests(unittest.TestCase):
                 "/media/underworld-rise-of-the-lycans-2160p.mkv",
             },
             {change.get("path") for change in payload["movies"][0]["changes"]},
+        )
+
+    def test_movie_uses_media_source_item_dates_when_playback_sources_have_no_dates(self):
+        db_state = _RecordingState({"server-a": {"movies": {"items": {}}, "series": {"items": {}}}})
+        db_cache = _RecordingCache()
+        current_movie = {
+            "Id": "movie-1",
+            "Name": "Underworld: Il risveglio",
+            "Type": "Movie",
+            "ProductionYear": 2012,
+            "DateCreated": "2026-07-16T13:03:01+00:00",
+            "ProviderIds": {"Tmdb": "52520"},
+            "MediaSources": [
+                {
+                    "Id": "mediasource_496008",
+                    "Path": "/media/underworld-awakening-2160p-new.mkv",
+                    "Container": "mkv",
+                    "Size": 37985466278,
+                },
+                {
+                    "Id": "mediasource_489411",
+                    "Path": "/media/underworld-awakening-2160p-old.mkv",
+                    "Container": "mkv",
+                    "Size": 12040319162,
+                },
+                {
+                    "Id": "mediasource_496007",
+                    "Path": "/media/underworld-awakening-1080p-new.mkv",
+                    "Container": "mkv",
+                    "Size": 19343509796,
+                },
+                {
+                    "Id": "mediasource_489412",
+                    "Path": "/media/underworld-awakening-1080p-old.mkv",
+                    "Container": "mkv",
+                    "Size": 9158170433,
+                },
+            ],
+        }
+        emby_user_items = {
+            "496008": {"Id": "496008", "DateCreated": "2026-07-16T13:03:01+00:00"},
+            "496007": {"Id": "496007", "DateCreated": "2026-07-16T13:03:01+00:00"},
+            "489411": {"Id": "489411", "DateCreated": "2026-06-14T03:27:22+00:00"},
+            "489412": {"Id": "489412", "DateCreated": "2026-06-14T03:27:22+00:00"},
+        }
+
+        payload, error = _collect_with_mocks(
+            db_state,
+            db_cache,
+            movie_items=[current_movie],
+            movie_catalog_items=[current_movie],
+            emby_user_items=emby_user_items,
+        )
+
+        self.assertIsNone(error)
+        self.assertTrue(payload["movies"])
+        self.assertEqual("update", payload["movies"][0].get("update_type"))
+        self.assertEqual("Nuova versione", payload["movies"][0].get("update_label"))
+        self.assertEqual(["new_version", "new_version"], [change.get("kind") for change in payload["movies"][0]["changes"]])
+        self.assertEqual(
+            {
+                "/media/underworld-awakening-1080p-new.mkv",
+                "/media/underworld-awakening-2160p-new.mkv",
+            },
+            {change.get("path") for change in payload["movies"][0]["changes"]},
+        )
+        self.assertFalse(
+            {
+                "/media/underworld-awakening-1080p-old.mkv",
+                "/media/underworld-awakening-2160p-old.mkv",
+            }
+            & {change.get("path") for change in payload["movies"][0]["changes"]},
         )
 
     def test_movie_uses_playbackinfo_extra_sources_as_existing_emby_baseline(self):
@@ -803,6 +892,75 @@ class LatestPublicationHistoryTests(unittest.TestCase):
             {
                 "/media/series-one/s01e02-1080p.mkv",
                 "/media/series-one/s01e02-2160p.mkv",
+            },
+            {change.get("path") for change in payload["series"][0]["changes"]},
+        )
+
+    def test_episode_uses_media_source_item_dates_when_playback_sources_have_no_dates(self):
+        db_state = _RecordingState({"server-a": {"movies": {"items": {}}, "series": {"items": {}}}})
+        db_cache = _RecordingCache()
+        current_episode = {
+            "Id": "episode-2",
+            "Name": "Episode Two",
+            "Type": "Episode",
+            "SeriesId": "series-1",
+            "SeriesName": "Series One",
+            "SeriesProductionYear": 2026,
+            "ParentIndexNumber": 1,
+            "IndexNumber": 2,
+            "DateCreated": "2026-07-16T13:03:01+00:00",
+            "MediaSources": [
+                {
+                    "Id": "mediasource_496008",
+                    "Path": "/media/series-one/s01e02-2160p-new.mkv",
+                    "Container": "mkv",
+                    "Size": 2000,
+                },
+                {
+                    "Id": "mediasource_489411",
+                    "Path": "/media/series-one/s01e02-2160p-old.mkv",
+                    "Container": "mkv",
+                    "Size": 1500,
+                },
+                {
+                    "Id": "mediasource_496007",
+                    "Path": "/media/series-one/s01e02-1080p-new.mkv",
+                    "Container": "mkv",
+                    "Size": 1000,
+                },
+            ],
+        }
+        series = {
+            "Id": "series-1",
+            "Name": "Series One",
+            "Type": "Series",
+            "ProductionYear": 2026,
+            "DateCreated": "2026-07-16T13:03:01+00:00",
+        }
+        emby_user_items = {
+            "496008": {"Id": "496008", "DateCreated": "2026-07-16T13:03:01+00:00"},
+            "496007": {"Id": "496007", "DateCreated": "2026-07-16T13:03:01+00:00"},
+            "489411": {"Id": "489411", "DateCreated": "2026-06-14T03:27:22+00:00"},
+        }
+
+        payload, error = _collect_with_mocks(
+            db_state,
+            db_cache,
+            episode_items=[current_episode],
+            episode_catalog_items=[current_episode],
+            series_entries=[series],
+            emby_user_items=emby_user_items,
+        )
+
+        self.assertIsNone(error)
+        self.assertTrue(payload["series"])
+        self.assertEqual("update", payload["series"][0].get("update_type"))
+        self.assertEqual("Nuova versione", payload["series"][0].get("update_label"))
+        self.assertEqual(["new_version", "new_version"], [change.get("kind") for change in payload["series"][0]["changes"]])
+        self.assertEqual(
+            {
+                "/media/series-one/s01e02-1080p-new.mkv",
+                "/media/series-one/s01e02-2160p-new.mkv",
             },
             {change.get("path") for change in payload["series"][0]["changes"]},
         )

@@ -12,6 +12,8 @@ from core.utils import normalize_string, _parse_date_value
 
 _EMBY_LIBRARY_CACHE: dict[str, list[dict]] = {}
 _EMBY_LIBRARY_ITEM_CACHE: dict[tuple[str, str], tuple[str, str]] = {}
+_EMBY_USER_CACHE: dict[str, str] = {}
+_EMBY_USER_ITEM_CACHE: dict[tuple[str, str], dict] = {}
 
 
 def _coerce_int_value(value: Any) -> Optional[int]:
@@ -19,6 +21,121 @@ def _coerce_int_value(value: Any) -> Optional[int]:
         return int(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _server_cache_key(server: Dict[str, Any]) -> str:
+    if not isinstance(server, dict):
+        return ""
+    return str(server.get("id") or server.get("url") or "")
+
+
+def _media_source_has_date(source: Dict[str, Any]) -> bool:
+    return any(
+        source.get(field)
+        for field in ("DateCreated", "DateAdded", "CreatedDate", "AddedAt", "added_at")
+    )
+
+
+def _media_source_item_id(source: Dict[str, Any]) -> str:
+    if not isinstance(source, dict):
+        return ""
+    for field in ("ItemId", "ItemID", "Item"):
+        value = source.get(field)
+        text = str(value or "").strip()
+        if text:
+            return text
+    for field in ("Id", "MediaSourceId"):
+        text = str(source.get(field) or "").strip()
+        if text.startswith("mediasource_"):
+            candidate = text.split("_", 1)[1].strip()
+            if candidate:
+                return candidate
+        if text.isdigit():
+            return text
+    return ""
+
+
+def _fetch_emby_first_user_id(server: Dict[str, Any]) -> str:
+    cache_key = _server_cache_key(server)
+    if cache_key in _EMBY_USER_CACHE:
+        return _EMBY_USER_CACHE[cache_key]
+    success, payload = _call_emby_api(server, "Users", method="GET")
+    user_id = ""
+    if success and isinstance(payload, list):
+        for user in payload:
+            if isinstance(user, dict) and user.get("Id"):
+                user_id = str(user.get("Id"))
+                break
+    if cache_key:
+        _EMBY_USER_CACHE[cache_key] = user_id
+    return user_id
+
+
+def _fetch_emby_user_item_metadata(server: Dict[str, Any], item_id: str) -> Dict[str, Any]:
+    server_key = _server_cache_key(server)
+    item_key = str(item_id or "").strip()
+    if not server_key or not item_key:
+        return {}
+    cache_key = (server_key, item_key)
+    if cache_key in _EMBY_USER_ITEM_CACHE:
+        return _EMBY_USER_ITEM_CACHE[cache_key]
+
+    user_id = _fetch_emby_first_user_id(server)
+    if not user_id:
+        _EMBY_USER_ITEM_CACHE[cache_key] = {}
+        return {}
+
+    fields = "DateCreated,DateLastMediaAdded,DateModified,Path,Name,ProductionYear,Size,Container,Type"
+    success, payload = _call_emby_api(
+        server,
+        f"Users/{user_id}/Items/{item_key}",
+        method="GET",
+        params={"Fields": fields},
+    )
+    metadata = payload if success and isinstance(payload, dict) else {}
+    _EMBY_USER_ITEM_CACHE[cache_key] = metadata
+    return metadata
+
+
+def _hydrate_media_source_item_dates(server: Dict[str, Any], item: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(item, dict):
+        return item
+    media_sources = item.get("MediaSources")
+    if not isinstance(media_sources, list) or len(media_sources) < 2:
+        return item
+
+    hydrated_sources: List[Dict[str, Any]] = []
+    changed = False
+    for source in media_sources:
+        if not isinstance(source, dict):
+            hydrated_sources.append(source)
+            continue
+        updated = source
+        if not _media_source_has_date(source):
+            source_item_id = _media_source_item_id(source)
+            metadata = _fetch_emby_user_item_metadata(server, source_item_id)
+            source_date = (
+                metadata.get("DateCreated")
+                or metadata.get("DateLastMediaAdded")
+                or metadata.get("DateModified")
+            )
+            if source_date:
+                updated = dict(source)
+                updated["DateCreated"] = source_date
+                if not updated.get("Path") and metadata.get("Path"):
+                    updated["Path"] = metadata.get("Path")
+                if not updated.get("Size") and metadata.get("Size") is not None:
+                    updated["Size"] = metadata.get("Size")
+                if not updated.get("Container") and metadata.get("Container"):
+                    updated["Container"] = metadata.get("Container")
+                changed = True
+        hydrated_sources.append(updated)
+
+    if not changed:
+        return item
+    hydrated_item = dict(item)
+    hydrated_item["MediaSources"] = hydrated_sources
+    return hydrated_item
 
 
 def _matches_episode_numbers(item: Dict[str, Any], season_number: int, episode_number: int) -> bool:

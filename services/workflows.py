@@ -539,14 +539,19 @@ def _wf_refresh_cache(context: Dict[str, Any]) -> None:
         # Verifica che il refresh non sia già in corso
         if manager.is_refreshing():
             print("[WORKFLOW] [CACHE] Cache refresh già in corso, attendo completamento...")
+            refresh_result = {"payload": None, "error": None, "exception": None}
         else:
             # Avvia il refresh in background thread
             print("[WORKFLOW] [CACHE] Avvio refresh in background thread...")
+            refresh_result = {"payload": None, "error": None, "exception": None}
 
             def _do_refresh():
                 try:
-                    manager.refresh_full(limit, per_server_limit, fast_mode=False, enrich=True, force_omdb=False)
+                    payload, error = manager.refresh_full(limit, per_server_limit, fast_mode=False, enrich=True, force_omdb=False)
+                    refresh_result["payload"] = payload
+                    refresh_result["error"] = error
                 except Exception as exc:
+                    refresh_result["exception"] = exc
                     print(f"[WORKFLOW] [CACHE] Errore in refresh: {exc}")
                     import traceback
                     traceback.print_exc()
@@ -563,6 +568,7 @@ def _wf_refresh_cache(context: Dict[str, Any]) -> None:
         print(f"[WORKFLOW] [CACHE] Inizio polling (max {max_wait_seconds}s, interval {poll_interval}s)")
 
         poll_count = 0
+        timed_out = False
         while True:
             elapsed = time.time() - start_time
             poll_count += 1
@@ -575,6 +581,7 @@ def _wf_refresh_cache(context: Dict[str, Any]) -> None:
             # Timeout check
             if elapsed > max_wait_seconds:
                 print(f"[WORKFLOW] [CACHE] ⚠️ TIMEOUT cache refresh dopo {max_wait_seconds}s")
+                timed_out = True
                 break
 
             # Check se il refresh è completato
@@ -583,6 +590,18 @@ def _wf_refresh_cache(context: Dict[str, Any]) -> None:
                 break
 
             time.sleep(poll_interval)
+
+        if refresh_result.get("exception") is not None:
+            raise RuntimeError(str(refresh_result["exception"]))
+        if refresh_result.get("error"):
+            raise RuntimeError(str(refresh_result["error"]))
+        if timed_out:
+            raise RuntimeError("Timeout aggiornamento Pubblicazioni")
+
+        snapshot = manager.get_snapshot(mode="batch")
+        latest_payload = snapshot.get("payload") if isinstance(snapshot, dict) else None
+        if not isinstance(latest_payload, dict):
+            raise RuntimeError("Cache DB non disponibile dopo aggiornamento Pubblicazioni")
 
     except Exception as exc:
         print(f"[WORKFLOW] [CACHE] ✗ Errore refresh cache: {exc}")

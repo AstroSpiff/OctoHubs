@@ -49,6 +49,7 @@ from emby_latest.emby_api import (
     _fetch_emby_oldest_episode_date,
     _fetch_emby_latest_items,
     _fetch_emby_latest_series_from_episodes,
+    _hydrate_media_source_item_dates,
 )
 from emby_latest.builders import (
     _build_emby_latest_item,
@@ -183,8 +184,9 @@ def collect_entries(
         *,
         include_playback_baseline: bool = False,
     ) -> Tuple[List[Dict[str, Any]], Set[str], bool]:
-        versions = extract_versions(item, resolution_rules=resolution_rules)
-        apply_version_added_at(versions, item.get("DateCreated"))
+        hydrated_item = _hydrate_media_source_item_dates(server, item)
+        versions = extract_versions(hydrated_item, resolution_rules=resolution_rules)
+        apply_version_added_at(versions, hydrated_item.get("DateCreated") or item.get("DateCreated"))
         if not include_playback_baseline:
             return versions, set(), False
 
@@ -203,8 +205,9 @@ def collect_entries(
 
         playback_item = dict(item)
         playback_item["MediaSources"] = playback_sources
+        playback_item = _hydrate_media_source_item_dates(server, playback_item)
         playback_versions = extract_versions(playback_item, resolution_rules=resolution_rules)
-        apply_version_added_at(playback_versions, item.get("DateCreated"))
+        apply_version_added_at(playback_versions, playback_item.get("DateCreated") or item.get("DateCreated"))
         playback_keys = _version_keys(playback_versions)
         baseline_keys = playback_keys - direct_keys
         if not baseline_keys:
