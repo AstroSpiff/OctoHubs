@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 
 from core.emby_servers import _emby_display_name
 
+from emby_latest.concurrency import DEFAULT_PARALLELISM, normalize_parallelism_settings
 from emby_latest.messages import default_message_preset
 from emby_latest.db_cache import clear_cache, delete_cache_for_server
 from emby_latest.db_state import clear_state, delete_state_for_server
@@ -115,7 +116,8 @@ def _default_latest_settings() -> Dict[str, Any]:
             "retention_days": 90,
             "max_versions": 6,
             "batch_fetch_limit": 1000,
-            "latest_cache_seconds": 60
+            "latest_cache_seconds": 60,
+            "parallelism": dict(DEFAULT_PARALLELISM),
         },
         "PRESETS": [],
         "ACTIVE_PRESET_ID": "",
@@ -141,7 +143,7 @@ def _coerce_latest_int(value: Any, default: int) -> int:
         return default
 
 
-def _normalize_latest_numeric_settings(settings: Any) -> Dict[str, int]:
+def _normalize_latest_numeric_settings(settings: Any) -> Dict[str, Any]:
     merged_settings = settings if isinstance(settings, dict) else {}
     default_cfg = _default_latest_settings()["SETTINGS"]
     batch_gap_minutes = _coerce_latest_int(
@@ -178,6 +180,7 @@ def _normalize_latest_numeric_settings(settings: Any) -> Dict[str, int]:
         merged_settings.get("latest_cache_seconds"),
         default_cfg.get("latest_cache_seconds", 0),
     )
+    parallelism = normalize_parallelism_settings(merged_settings)
     if max_movies <= 0:
         max_movies = default_cfg["max_movies"]
     if max_series <= 0:
@@ -196,6 +199,7 @@ def _normalize_latest_numeric_settings(settings: Any) -> Dict[str, int]:
         "max_versions": max_versions,
         "batch_fetch_limit": batch_fetch_limit,
         "latest_cache_seconds": latest_cache_seconds,
+        "parallelism": parallelism,
     }
 
 

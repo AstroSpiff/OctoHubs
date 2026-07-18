@@ -137,6 +137,10 @@ class LatestSettingsTests(unittest.TestCase):
                     "max_versions": "",
                     "batch_fetch_limit": "bad",
                     "latest_cache_seconds": -5,
+                    "parallelism": {
+                        "server_workers": "bad",
+                        "requests_per_server": -20,
+                    },
                 }
             }
         }
@@ -151,6 +155,24 @@ class LatestSettingsTests(unittest.TestCase):
         self.assertEqual(settings["max_versions"], 6)
         self.assertEqual(settings["batch_fetch_limit"], 1000)
         self.assertEqual(settings["latest_cache_seconds"], 60)
+        self.assertEqual(settings["parallelism"], {"server_workers": 0, "requests_per_server": 4})
+
+    def test_load_settings_normalizes_latest_parallelism_block(self):
+        stored = {
+            "EMBY_LATEST": {
+                "SETTINGS": {
+                    "parallelism": {
+                        "server_workers": "8",
+                        "requests_per_server": "6",
+                    },
+                }
+            }
+        }
+
+        with patch("services.manager._load_app_settings_snapshot", return_value=stored):
+            settings = _load_latest_settings()["SETTINGS"]
+
+        self.assertEqual(settings["parallelism"], {"server_workers": 8, "requests_per_server": 6})
 
     def test_save_settings_persists_normalized_numeric_values(self):
         saved = {}
@@ -169,6 +191,10 @@ class LatestSettingsTests(unittest.TestCase):
                         "max_versions": "",
                         "batch_fetch_limit": "bad",
                         "latest_cache_seconds": -5,
+                        "parallelism": {
+                            "server_workers": "bad",
+                            "requests_per_server": -20,
+                        },
                     },
                     "PRESETS": [
                         {"id": "preset-a", "name": "A", "template": "{title}"},
@@ -185,6 +211,7 @@ class LatestSettingsTests(unittest.TestCase):
         self.assertEqual(settings["max_versions"], 6)
         self.assertEqual(settings["batch_fetch_limit"], 1000)
         self.assertEqual(settings["latest_cache_seconds"], 60)
+        self.assertEqual(settings["parallelism"], {"server_workers": 0, "requests_per_server": 4})
 
 
 if __name__ == "__main__":

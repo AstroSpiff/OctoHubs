@@ -10,6 +10,7 @@ CRITICAL BUG FIXES:
 """
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -69,6 +70,7 @@ from emby_latest.publication_history import (
 )
 from emby_latest.scan_cursor import incremental_stop_at_from_state
 from emby_latest.settings import _default_latest_settings, _load_latest_settings
+from emby_latest.concurrency import resolve_parallelism
 
 # Import from utils (shared utilities)
 from core.utils import (
@@ -408,6 +410,118 @@ def collect_entries(
         "SeriesProductionYear,IndexNumber,ParentIndexNumber,ParentId,Type,ImageTags,Container,Name,People,"
         "OriginalTitle,Taglines,Studios,ProviderIds,SeasonName"
     )
+    parallelism = resolve_parallelism(settings_cfg, len(servers))
+    server_workers = parallelism["server_workers"]
+    requests_per_server = parallelism["requests_per_server"]
+
+    def _server_batch_limit() -> int:
+        if fast_mode:
+            value = max(per_server_limit * 4, 120)
+        else:
+            value = max(per_server_limit * 8, 200)
+        return min(value, batch_fetch_limit)
+
+    def _fetch_latest_with_fallback(
+        server: Dict[str, Any],
+        item_type: str,
+        batch_limit: int,
+        stop_at: Optional[Any],
+    ) -> Tuple[List[Dict[str, Any]], Optional[Any]]:
+        if stop_at:
+            items, error = _fetch_emby_latest_items(
+                server,
+                item_type,
+                batch_limit,
+                fields=batch_fields,
+                stop_at=stop_at,
+            )
+        else:
+            items, error = _fetch_emby_latest_items(server, item_type, batch_limit, fields=batch_fields)
+        if not error:
+            return items, None
+
+        if stop_at:
+            fallback_items, fallback_error = _fetch_emby_latest_items(
+                server,
+                item_type,
+                batch_limit,
+                stop_at=stop_at,
+            )
+        else:
+            fallback_items, fallback_error = _fetch_emby_latest_items(server, item_type, batch_limit)
+        if not fallback_error:
+            return fallback_items, None
+        return [], error
+
+    def _prepare_server_latest_fetch(server: Dict[str, Any]) -> Dict[str, Any]:
+        server_id = server.get("id")
+        batch_limit = _server_batch_limit()
+        movie_stop_at = (
+            incremental_stop_at_from_state(latest_state, server_id, "Movie")
+            if skip_existing_complete and state_enabled else None
+        )
+        episode_stop_at = (
+            incremental_stop_at_from_state(latest_state, server_id, "Episode")
+            if skip_existing_complete and state_enabled else None
+        )
+
+        fetches = {
+            "movie": ("Movie", movie_stop_at),
+            "episode": ("Episode", episode_stop_at),
+        }
+        results: Dict[str, Tuple[List[Dict[str, Any]], Optional[Any]]] = {}
+        worker_count = min(max(1, requests_per_server), len(fetches))
+        if worker_count > 1:
+            with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="latest-emby") as executor:
+                future_map = {
+                    executor.submit(
+                        _fetch_latest_with_fallback,
+                        server,
+                        item_type,
+                        batch_limit,
+                        stop_at,
+                    ): key
+                    for key, (item_type, stop_at) in fetches.items()
+                }
+                for future in as_completed(future_map):
+                    results[future_map[future]] = future.result()
+        else:
+            for key, (item_type, stop_at) in fetches.items():
+                results[key] = _fetch_latest_with_fallback(server, item_type, batch_limit, stop_at)
+
+        movie_items, movie_error = results.get("movie", ([], None))
+        episode_items, episode_error = results.get("episode", ([], None))
+        return {
+            "server_id": server_id,
+            "batch_limit": batch_limit,
+            "movie_stop_at": movie_stop_at,
+            "episode_stop_at": episode_stop_at,
+            "movie_items": movie_items,
+            "movie_error": movie_error,
+            "episode_items": episode_items,
+            "episode_error": episode_error,
+        }
+
+    server_latest_fetches: Dict[str, Dict[str, Any]] = {}
+    if len(servers) > 1 and server_workers > 1:
+        with ThreadPoolExecutor(max_workers=server_workers, thread_name_prefix="latest-server") as executor:
+            future_map = {executor.submit(_prepare_server_latest_fetch, server): server for server in servers}
+            for future in as_completed(future_map):
+                server = future_map[future]
+                server_id = str(server.get("id") or "")
+                try:
+                    server_latest_fetches[server_id] = future.result()
+                except Exception as exc:
+                    server_latest_fetches[server_id] = {
+                        "server_id": server_id,
+                        "batch_limit": _server_batch_limit(),
+                        "movie_stop_at": None,
+                        "episode_stop_at": None,
+                        "movie_items": [],
+                        "movie_error": str(exc),
+                        "episode_items": [],
+                        "episode_error": str(exc),
+                    }
 
     # If feed mode, load batch cache for overlay data
     batch_movie_by_sig: Dict[str, Any] = {}
@@ -468,49 +582,30 @@ def collect_entries(
         series_oldest_cache: Dict[str, Optional[datetime]] = {}
         season_oldest_cache: Dict[str, Optional[datetime]] = {}
 
-        # Determine batch limit based on mode
-        if fast_mode:
-            batch_limit = max(per_server_limit * 4, 120)
-        else:
-            batch_limit = max(per_server_limit * 8, 200)
-        batch_limit = min(batch_limit, batch_fetch_limit)
-        movie_stop_at = (
-            incremental_stop_at_from_state(latest_state, server_id, "Movie")
-            if skip_existing_complete and state_enabled else None
-        )
-        episode_stop_at = (
-            incremental_stop_at_from_state(latest_state, server_id, "Episode")
-            if skip_existing_complete and state_enabled else None
-        )
+        fetch_data = server_latest_fetches.get(str(server_id))
+        if fetch_data is None:
+            try:
+                fetch_data = _prepare_server_latest_fetch(server)
+            except Exception as exc:
+                fetch_data = {
+                    "batch_limit": _server_batch_limit(),
+                    "movie_items": [],
+                    "movie_error": str(exc),
+                    "episode_items": [],
+                    "episode_error": str(exc),
+                }
+
+        batch_limit = int(fetch_data.get("batch_limit") or _server_batch_limit())
+        movie_items = fetch_data.get("movie_items") or []
+        movie_error = fetch_data.get("movie_error")
+        episode_items = fetch_data.get("episode_items") or []
+        episode_error = fetch_data.get("episode_error")
+        if movie_error:
+            errors.append({"server_id": server_id, "message": str(movie_error)})
+        if episode_error:
+            errors.append({"server_id": server_id, "message": str(episode_error)})
 
         # --- MOVIES COLLECTION ---
-
-        if movie_stop_at:
-            movie_items, movie_error = _fetch_emby_latest_items(
-                server,
-                "Movie",
-                batch_limit,
-                fields=batch_fields,
-                stop_at=movie_stop_at,
-            )
-        else:
-            movie_items, movie_error = _fetch_emby_latest_items(server, "Movie", batch_limit, fields=batch_fields)
-        if movie_error:
-            # Fallback without fields parameter
-            if movie_stop_at:
-                fallback_items, fallback_error = _fetch_emby_latest_items(
-                    server,
-                    "Movie",
-                    batch_limit,
-                    stop_at=movie_stop_at,
-                )
-            else:
-                fallback_items, fallback_error = _fetch_emby_latest_items(server, "Movie", batch_limit)
-            if not fallback_error:
-                movie_items = fallback_items
-                movie_error = None
-            else:
-                errors.append({"server_id": server_id, "message": str(movie_error)})
 
         # Build title→signature mapping (used for unique batch sizing + grouping)
         movie_title_by_id: Dict[str, str] = {}
@@ -574,32 +669,6 @@ def collect_entries(
             movie_all_by_signature.setdefault(signature, []).append(item)
 
         # --- EPISODES COLLECTION ---
-
-        if episode_stop_at:
-            episode_items, episode_error = _fetch_emby_latest_items(
-                server,
-                "Episode",
-                batch_limit,
-                fields=batch_fields,
-                stop_at=episode_stop_at,
-            )
-        else:
-            episode_items, episode_error = _fetch_emby_latest_items(server, "Episode", batch_limit, fields=batch_fields)
-        if episode_error:
-            if episode_stop_at:
-                fallback_items, fallback_error = _fetch_emby_latest_items(
-                    server,
-                    "Episode",
-                    batch_limit,
-                    stop_at=episode_stop_at,
-                )
-            else:
-                fallback_items, fallback_error = _fetch_emby_latest_items(server, "Episode", batch_limit)
-            if not fallback_error:
-                episode_items = fallback_items
-                episode_error = None
-            else:
-                errors.append({"server_id": server_id, "message": str(episode_error)})
 
         # Apply batch filtering (or skip if feed mode)
         min_episode_count = per_server_limit

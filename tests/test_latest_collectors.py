@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import redirect_stdout
 from copy import deepcopy
 import io
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -42,6 +43,75 @@ class _RecordingState:
 
 
 class LatestCollectorStateTests(unittest.TestCase):
+    def test_collect_entries_fetches_latest_items_from_servers_concurrently(self):
+        db_state = _RecordingState(
+            {
+                "server-a": {"movies": {"items": {}}, "series": {"items": {}}},
+                "server-b": {"movies": {"items": {}}, "series": {"items": {}}},
+            }
+        )
+        db_cache = _RecordingCache()
+        config = {
+            "DATABASE": {"ENABLED": True},
+            "EMBY": {
+                "SERVERS": [
+                    {"id": "server-a", "name": "Server A"},
+                    {"id": "server-b", "name": "Server B"},
+                ]
+            },
+        }
+        servers = [
+            {"id": "server-a", "name": "Server A"},
+            {"id": "server-b", "name": "Server B"},
+        ]
+        movie_barrier = threading.Barrier(2)
+
+        def fake_fetch(server, item_type, _limit, fields=None, **_kwargs):
+            if item_type == "Movie":
+                try:
+                    movie_barrier.wait(timeout=0.5)
+                except threading.BrokenBarrierError as exc:
+                    raise AssertionError("Movie latest fetches did not run concurrently") from exc
+            return [], None
+
+        with patch("core.config_manager.load_config", return_value=(config, True)), patch(
+            "core.config_manager._db_enabled",
+            return_value=True,
+        ), patch("emby_latest.collectors.get_emby_servers", return_value=servers), patch(
+            "emby_latest.collectors._load_latest_settings",
+            return_value={
+                "SETTINGS": {
+                    "batch_gap_minutes": 180,
+                    "max_movies": 10,
+                    "max_series": 10,
+                    "retention_days": 90,
+                    "max_versions": 6,
+                    "batch_fetch_limit": 100,
+                    "parallelism": {
+                        "server_workers": 2,
+                        "requests_per_server": 2,
+                    },
+                }
+            },
+        ), patch("emby_latest.collectors._fetch_emby_latest_items", side_effect=fake_fetch), patch(
+            "emby_latest.collectors._fetch_emby_latest_series_from_episodes",
+            return_value=([], None),
+        ), patch("emby_latest.collectors._sync_jellyseerr_to_db", return_value=None), patch(
+            "emby_latest.collectors._apply_jellyseerr_request_info",
+            return_value=None,
+        ):
+            payload, error = collect_entries(
+                limit=10,
+                per_server_limit=10,
+                enrich=False,
+                db_cache=db_cache,
+                db_state=db_state,
+            )
+
+        self.assertIsNone(error)
+        self.assertEqual([], payload["movies"])
+        self.assertEqual([], payload["series"])
+
     def test_collect_entries_preserves_movie_notification_destinations(self):
         existing_destinations = {
             "bot-a:chat-a": {
