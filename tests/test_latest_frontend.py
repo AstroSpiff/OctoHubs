@@ -61,7 +61,8 @@ class LatestFrontendTests(unittest.TestCase):
     def test_latest_script_cache_buster_tracks_operations_change(self):
         source = pathlib.Path("templates/emby_dashboard.html").read_text(encoding="utf-8")
 
-        self.assertIn("emby_latest.js') }}?v=20260716-latest-episode-null", source)
+        self.assertIn("emby_latest.js') }}?v=20260718-latest-tab-load", source)
+        self.assertIn("script_shell.js') }}?v=20260718-main-tab-events", source)
 
     def test_latest_refresh_notifies_global_operation_center(self):
         source = pathlib.Path("static/emby_latest.js").read_text(encoding="utf-8")
@@ -111,6 +112,17 @@ class LatestFrontendTests(unittest.TestCase):
         self.assertIn("Aggiornamento Pubblicazioni in corso...", source)
         self.assertIn("Nessun dato Pubblicazioni salvato nel DB. Avvia un aggiornamento.", source)
         self.assertNotIn("renderLatestList([], latestMoviesContainer, latestMoviesCount, message);", source)
+
+    def test_latest_tab_loads_cache_when_it_becomes_active(self):
+        shell_source = pathlib.Path("static/script_shell.js").read_text(encoding="utf-8")
+        latest_source = pathlib.Path("static/emby_latest.js").read_text(encoding="utf-8")
+
+        self.assertIn("octohub:main-tab-changed", shell_source)
+        self.assertIn("detail: { tab: target }", shell_source)
+        self.assertIn("octohub:main-tab-changed", latest_source)
+        self.assertIn("if (tab === 'latest')", latest_source)
+        self.assertIn("if (isLatestTabActive())", latest_source)
+        self.assertIn("loadLatestReleases(false, false, true);", latest_source)
 
     def test_latest_episode_code_does_not_convert_null_to_s00e00(self):
         source = pathlib.Path("static/emby_latest.js").read_text(encoding="utf-8")

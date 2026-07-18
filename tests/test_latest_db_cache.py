@@ -4,10 +4,34 @@ from __future__ import annotations
 
 import unittest
 
+from emby_latest import db_cache
 from emby_latest.db_cache import merge_cached_entry, merge_with_db
 
 
+class _ExplicitCacheStorage:
+    def __init__(self):
+        self.calls = []
+
+    def load_latest_cache(self, cache_kind):
+        self.calls.append(("load_latest_cache", cache_kind))
+        return {
+            "payload": {
+                "movies": [{"title": "Cached movie"}],
+                "series": [],
+                "errors": [],
+            }
+        }
+
+
 class LatestDbCacheTests(unittest.TestCase):
+    def test_load_cache_can_use_explicit_storage_without_global_backend(self):
+        storage = _ExplicitCacheStorage()
+
+        data = db_cache.load_cache("batch", db_storage=storage)
+
+        self.assertEqual("Cached movie", data["payload"]["movies"][0]["title"])
+        self.assertEqual([("load_latest_cache", "batch")], storage.calls)
+
     def test_merge_cached_entry_preserves_movie_rating_runtime_and_external_ratings(self):
         entry = {
             "item_type": "Movie",

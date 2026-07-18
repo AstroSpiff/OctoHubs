@@ -9,7 +9,91 @@ from unittest.mock import patch
 from emby_latest.notifications import send_notifications
 
 
+class _ExplicitNotificationStorage:
+    def __init__(self, cache_payload):
+        self.cache_payload = deepcopy(cache_payload)
+        self.saved_states = []
+
+    def load_latest_cache(self, cache_kind):
+        if cache_kind != "batch":
+            return {}
+        return deepcopy(self.cache_payload)
+
+    def load_latest_state(self):
+        return {}
+
+    def save_latest_state(self, state):
+        self.saved_states.append(deepcopy(state))
+
+
 class LatestNotificationTests(unittest.TestCase):
+    def test_send_notifications_uses_explicit_db_storage_for_cache_and_state(self):
+        cache_payload = {
+            "payload": {
+                "movies": [
+                    {
+                        "server_id": "server-a",
+                        "item_id": "movie-1",
+                        "signature": "tmdb:1",
+                        "item_type": "movie",
+                        "title": "Movie",
+                        "year": 2026,
+                        "added_at": "2026-07-15T10:00:00+00:00",
+                    }
+                ],
+                "series": [],
+            }
+        }
+        storage = _ExplicitNotificationStorage(cache_payload)
+        latest_settings = {
+            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{title}"}],
+            "NOTIFICATION_RULES": [
+                {
+                    "id": "rule-a",
+                    "name": "Rule A",
+                    "enabled": True,
+                    "server_ids": ["server-a"],
+                    "preset_id": "preset-a",
+                    "telegram_config_id": "telegram-a",
+                }
+            ],
+        }
+        telegram_settings = {
+            "PRESETS": [
+                {
+                    "id": "telegram-a",
+                    "name": "Telegram",
+                    "bot_ids": ["bot-a"],
+                    "group_ids": ["group-a"],
+                    "channel_ids": [],
+                }
+            ],
+            "BOTS": [{"id": "bot-a", "token": "token"}],
+            "GROUPS": [{"id": "group-a", "chat_id": "chat"}],
+            "CHANNELS": [],
+        }
+
+        with patch(
+            "core.config_manager._ensure_db_backend",
+            side_effect=AssertionError("global backend should not be used"),
+        ), patch("emby_latest.settings._load_latest_settings", return_value=latest_settings), patch(
+            "telegram._load_telegram_settings",
+            return_value=telegram_settings,
+        ), patch("emby_latest.jellyseerr._apply_jellyseerr_request_info", return_value=None), patch(
+            "emby_latest.notifications._telegram_api_request",
+            return_value=(True, "OK", {}),
+        ), patch("time.sleep", return_value=None):
+            result = send_notifications(
+                10,
+                config={"DATABASE": {"ENABLED": True}, "EMBY": {"SERVERS": [{"id": "server-a"}]}},
+                db_storage=storage,
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(1, result["sent"])
+        self.assertTrue(storage.saved_states)
+        self.assertTrue(storage.saved_states[-1]["server-a"]["movies"]["items"]["tmdb:1"]["notified"])
+
     def test_send_notifications_marks_lowercase_movie_type_as_notified(self):
         saved_states = []
         latest_state = {"server-a": {"movies": {"items": {}}}}

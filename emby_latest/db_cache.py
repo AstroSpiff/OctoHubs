@@ -6,24 +6,69 @@ Handles loading, saving, clearing, and managing cache data in the database.
 from typing import Any, Dict, Optional
 
 
-def _get_db_backend():
+class LatestCacheRepository:
+    """Latest cache operations bound to a concrete DB storage backend."""
+
+    def __init__(self, db_storage=None):
+        self.db_storage = db_storage
+
+    def load_cache(self, cache_kind: str) -> Dict[str, Any]:
+        return load_cache(cache_kind, db_storage=self.db_storage)
+
+    def save_cache(
+        self,
+        cache_kind: str,
+        payload: Dict[str, Any],
+        limit: int,
+        per_server_limit: int,
+    ) -> None:
+        save_cache(
+            cache_kind,
+            payload,
+            limit,
+            per_server_limit,
+            db_storage=self.db_storage,
+        )
+
+    def clear_cache(self, cache_kind: Optional[str] = None) -> None:
+        clear_cache(cache_kind, db_storage=self.db_storage)
+
+    def delete_cache_for_server(self, server_id: str, cache_kind: Optional[str] = None) -> None:
+        delete_cache_for_server(server_id, cache_kind, db_storage=self.db_storage)
+
+    def merge_cached_entry(self, entry: Dict[str, Any], cached: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        return merge_cached_entry(entry, cached)
+
+    def merge_with_db(self, new_payload: Dict[str, Any], db_payload: Dict[str, Any]) -> Dict[str, Any]:
+        return merge_with_db(new_payload, db_payload)
+
+
+def bind(db_storage=None) -> LatestCacheRepository:
+    """Create cache helpers that always use the provided DB backend."""
+    return LatestCacheRepository(db_storage)
+
+
+def _get_db_backend(db_storage=None):
     """Get database backend instance."""
+    if db_storage is not None:
+        return db_storage
     from core.config_manager import _ensure_db_backend
     return _ensure_db_backend()
 
 
-def load_cache(cache_kind: str) -> Dict[str, Any]:
+def load_cache(cache_kind: str, db_storage=None) -> Dict[str, Any]:
     """
     Load cache data from database.
 
     Args:
         cache_kind: Cache type ("feed" or "batch")
+        db_storage: Optional explicit database storage backend
 
     Returns:
         Dict containing cache payload and metadata, or empty dict on error
     """
     try:
-        backend = _get_db_backend()
+        backend = _get_db_backend(db_storage)
         payload = backend.load_latest_cache(cache_kind)
         return payload if isinstance(payload, dict) else {}
     except Exception as exc:
@@ -35,7 +80,8 @@ def save_cache(
     cache_kind: str,
     payload: Dict[str, Any],
     limit: int,
-    per_server_limit: int
+    per_server_limit: int,
+    db_storage=None,
 ) -> None:
     """
     Save cache data to database.
@@ -45,38 +91,41 @@ def save_cache(
         payload: Cache payload containing movies, series, errors
         limit: Total item limit
         per_server_limit: Per-server item limit
+        db_storage: Optional explicit database storage backend
     """
     try:
-        backend = _get_db_backend()
+        backend = _get_db_backend(db_storage)
         backend.save_latest_cache(cache_kind, payload, limit, per_server_limit)
     except Exception as exc:
         print(f"[LATEST_DB] Error saving cache {cache_kind}: {exc}")
 
 
-def clear_cache(cache_kind: Optional[str] = None) -> None:
+def clear_cache(cache_kind: Optional[str] = None, db_storage=None) -> None:
     """
     Clear cache data from database.
 
     Args:
         cache_kind: Cache type to clear, or None to clear all
+        db_storage: Optional explicit database storage backend
     """
     try:
-        backend = _get_db_backend()
+        backend = _get_db_backend(db_storage)
         backend.clear_latest_cache(cache_kind)
     except Exception as exc:
         print(f"[LATEST_DB] Error clearing cache {cache_kind or 'all'}: {exc}")
 
 
-def delete_cache_for_server(server_id: str, cache_kind: Optional[str] = None) -> None:
+def delete_cache_for_server(server_id: str, cache_kind: Optional[str] = None, db_storage=None) -> None:
     """
     Delete cache entries for a specific server.
 
     Args:
         server_id: Server identifier
         cache_kind: Cache type to clear, or None to clear all for this server
+        db_storage: Optional explicit database storage backend
     """
     try:
-        backend = _get_db_backend()
+        backend = _get_db_backend(db_storage)
         backend.delete_latest_cache_for_server(server_id, cache_kind)
     except Exception as exc:
         print(f"[LATEST_DB] Error deleting cache for server {server_id}: {exc}")

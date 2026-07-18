@@ -7,13 +7,51 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 
-def _get_db_backend():
+class LatestStateRepository:
+    """Latest state operations bound to a concrete DB storage backend."""
+
+    def __init__(self, db_storage=None):
+        self.db_storage = db_storage
+
+    def load_state(self) -> Dict[str, Any]:
+        return load_state(db_storage=self.db_storage)
+
+    def save_state(self, state: Dict[str, Any]) -> None:
+        save_state(state, db_storage=self.db_storage)
+
+    def clear_state(self) -> None:
+        clear_state(db_storage=self.db_storage)
+
+    def delete_state_for_server(self, server_id: str) -> None:
+        delete_state_for_server(server_id, db_storage=self.db_storage)
+
+    def get_latest_date_from_state(
+        self,
+        latest_state: Dict[str, Any],
+        server_id: str,
+        item_type: str,
+    ) -> Optional[datetime]:
+        return get_latest_date_from_state(
+            latest_state,
+            server_id,
+            item_type,
+        )
+
+
+def bind(db_storage=None) -> LatestStateRepository:
+    """Create state helpers that always use the provided DB backend."""
+    return LatestStateRepository(db_storage)
+
+
+def _get_db_backend(db_storage=None):
     """Get database backend instance."""
+    if db_storage is not None:
+        return db_storage
     from core.config_manager import _ensure_db_backend
     return _ensure_db_backend()
 
 
-def load_state() -> Dict[str, Any]:
+def load_state(db_storage=None) -> Dict[str, Any]:
     """
     Load state data from database.
 
@@ -21,14 +59,14 @@ def load_state() -> Dict[str, Any]:
         Dict containing state data (server_id -> {movies, series}), or empty dict on error
     """
     try:
-        backend = _get_db_backend()
+        backend = _get_db_backend(db_storage)
         state = backend.load_latest_state()
         return state if isinstance(state, dict) else {}
     except Exception:
         return {}
 
 
-def save_state(state: Dict[str, Any]) -> None:
+def save_state(state: Dict[str, Any], db_storage=None) -> None:
     """
     Save state data to database.
 
@@ -36,22 +74,22 @@ def save_state(state: Dict[str, Any]) -> None:
         state: State data structure (server_id -> {movies, series})
     """
     try:
-        backend = _get_db_backend()
+        backend = _get_db_backend(db_storage)
         backend.save_latest_state(state or {})
     except Exception as exc:
         print(f"[LATEST_DB] Error saving state: {exc}")
 
 
-def clear_state() -> None:
+def clear_state(db_storage=None) -> None:
     """Clear all state data from database."""
     try:
-        backend = _get_db_backend()
+        backend = _get_db_backend(db_storage)
         backend.clear_latest_state()
     except Exception as exc:
         print(f"[LATEST_DB] Error clearing state: {exc}")
 
 
-def delete_state_for_server(server_id: str) -> None:
+def delete_state_for_server(server_id: str, db_storage=None) -> None:
     """
     Delete state entries for a specific server.
 
@@ -59,7 +97,7 @@ def delete_state_for_server(server_id: str) -> None:
         server_id: Server identifier
     """
     try:
-        backend = _get_db_backend()
+        backend = _get_db_backend(db_storage)
         backend.delete_latest_state_for_server(server_id)
     except Exception as exc:
         print(f"[LATEST_DB] Error deleting state for server {server_id}: {exc}")

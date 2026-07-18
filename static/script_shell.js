@@ -247,6 +247,9 @@
                 mainTabPanels.forEach((panel) => {
                     panel.classList.toggle('active', panel.dataset.tabPanel === target);
                 });
+                document.dispatchEvent(new CustomEvent('octohub:main-tab-changed', {
+                    detail: { tab: target }
+                }));
                 if (updateHash) {
                     window.history.replaceState(null, '', `#${target}`);
                 }

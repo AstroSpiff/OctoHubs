@@ -94,8 +94,24 @@ def send_notifications(
             "errors": []
         }
 
+    def _load_latest_cache(cache_kind: str) -> Dict[str, Any]:
+        if db_storage is not None:
+            return db_cache.load_cache(cache_kind, db_storage=db_storage)
+        return db_cache.load_cache(cache_kind)
+
+    def _load_latest_state() -> Dict[str, Any]:
+        if db_storage is not None:
+            return db_state.load_state(db_storage=db_storage)
+        return db_state.load_state()
+
+    def _save_latest_state(state: Dict[str, Any]) -> None:
+        if db_storage is not None:
+            db_state.save_state(state, db_storage=db_storage)
+        else:
+            db_state.save_state(state)
+
     # Load latest entries from DB cache (batch mode)
-    cache_data = db_cache.load_cache("batch")
+    cache_data = _load_latest_cache("batch")
     latest_payload = cache_data.get("payload") if isinstance(cache_data, dict) else None
 
     if not isinstance(latest_payload, dict):
@@ -118,7 +134,7 @@ def send_notifications(
     _apply_jellyseerr_request_info(series, config)
 
     # Load DB state for notified filtering
-    latest_state = db_state.load_state()
+    latest_state = _load_latest_state()
     if not isinstance(latest_state, dict):
         latest_state = {}
 
@@ -626,7 +642,7 @@ def send_notifications(
         if value.get("delivered")
     }
     if state_updates_to_save:
-        latest_state = db_state.load_state()
+        latest_state = _load_latest_state()
         if not isinstance(latest_state, dict):
             latest_state = {}
 
@@ -781,7 +797,7 @@ def send_notifications(
                         })
 
         try:
-            db_state.save_state(latest_state)
+            _save_latest_state(latest_state)
         except Exception as exc:
             errors.append(f"Errore salvataggio STATE: {exc}")
 

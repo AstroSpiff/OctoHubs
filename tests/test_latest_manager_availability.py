@@ -6,6 +6,7 @@ import unittest
 import threading
 from unittest.mock import patch
 
+from emby_latest import db_cache
 from emby_latest import reset_manager
 from emby_latest.api_handlers import build_latest_progress_payload
 from emby_latest.manager import EmbyLatestManager
@@ -44,6 +45,33 @@ class LatestManagerAvailabilityTests(unittest.TestCase):
 
 
 class LatestManagerSnapshotTests(unittest.TestCase):
+    def test_snapshot_uses_manager_bound_cache_backend(self):
+        class _Storage:
+            def load_latest_cache(self, cache_kind):
+                return {
+                    "updated_at": f"{cache_kind}-timestamp",
+                    "payload": {"movies": [{"title": "Bound movie"}], "series": [], "errors": []},
+                }
+
+        manager = EmbyLatestManager.__new__(EmbyLatestManager)
+        manager._lock = threading.Lock()
+        manager._refreshing = False
+        manager.db_cache = db_cache.bind(_Storage())
+        manager.progress_tracker = type(
+            "ProgressTracker",
+            (),
+            {"get_snapshot": lambda _self: {}},
+        )()
+
+        with patch(
+            "core.config_manager._ensure_db_backend",
+            side_effect=AssertionError("global backend should not be used"),
+        ):
+            snapshot = manager.get_snapshot("batch")
+
+        self.assertEqual("batch-timestamp", snapshot["timestamp"])
+        self.assertEqual("Bound movie", snapshot["payload"]["movies"][0]["title"])
+
     def test_snapshot_uses_updated_at_as_cache_timestamp(self):
         manager = EmbyLatestManager.__new__(EmbyLatestManager)
         manager._lock = threading.Lock()

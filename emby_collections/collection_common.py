@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List
 
 from core.emby_servers import _get_emby_servers_from_config
@@ -15,6 +15,7 @@ SYNC_STATE_FIELDS = (
     "last_sync_message",
     "last_sync_items",
     "last_sync_candidates",
+    "last_sync_per_server",
 )
 COLLECTION_BATCH_SIZE = 50
 COLLECTION_POSTER_MAX_BYTES = 5 * 1024 * 1024
@@ -28,7 +29,7 @@ OCTOHUB_COLLECTION_TAG = "OctoHub"
 
 
 def _now_iso() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _server_map() -> Dict[str, Dict[str, Any]]:

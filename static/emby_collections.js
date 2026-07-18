@@ -1533,13 +1533,17 @@
 
     const handleToggle = async (collectionId, enabled) => {
         try {
-            await baseCsrfFetch(`${apiUrl}/${encodeURIComponent(collectionId)}/toggle`, {
+            const response = await baseCsrfFetch(`${apiUrl}/${encodeURIComponent(collectionId)}/toggle`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({ enabled })
             });
+            const data = await response.json();
+            if (!response.ok || data.success === false) {
+                throw new Error(data.error || 'Errore aggiornamento stato.');
+            }
             await fetchCollections();
         } catch (error) {
             showToast(error.message || 'Errore aggiornamento stato.', 'error');

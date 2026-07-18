@@ -33,8 +33,8 @@ class EmbyLatestManager:
         self.config = config
         self.db_storage = db_storage
         self.progress_tracker = get_tracker(db_storage)
-        self.db_cache = db_cache  # Module reference, not a class
-        self.db_state = db_state  # Module reference, not a class
+        self.db_cache = db_cache.bind(db_storage)
+        self.db_state = db_state.bind(db_storage)
         self._lock = threading.Lock()
         self._refreshing = False
 
@@ -48,6 +48,12 @@ class EmbyLatestManager:
         has_metadata = bool(cache_data.get("timestamp") or cache_data.get("updated_at"))
         has_payload_shape = any(key in payload for key in ("movies", "series", "errors"))
         return payload, has_metadata or has_payload_shape
+
+    def _load_cache(self, mode: str) -> Dict[str, Any]:
+        cache_backend = getattr(self, "db_cache", None)
+        if cache_backend is not None and hasattr(cache_backend, "load_cache"):
+            return cache_backend.load_cache(mode)
+        return db_cache.load_cache(mode)
 
     def _collect_full_snapshots(
         self,
@@ -95,8 +101,7 @@ class EmbyLatestManager:
             Dict with keys: payload, timestamp, params, progress, refreshing
         """
         with self._lock:
-            # Load from DB cache using module function
-            cache_data = db_cache.load_cache(mode)
+            cache_data = self._load_cache(mode)
             progress = self.progress_tracker.get_snapshot()
 
             return {
@@ -196,10 +201,10 @@ class EmbyLatestManager:
         effective_progress_tracker = progress_tracker or self.progress_tracker
 
         try:
-            # Load existing payload from DB using module function
-            existing_cache = db_cache.load_cache("batch")
+            # Load existing payload from the manager-bound DB backend.
+            existing_cache = self._load_cache("batch")
             _batch_payload, has_batch_snapshot = self._extract_cached_payload(existing_cache)
-            feed_cache = db_cache.load_cache("feed")
+            feed_cache = self._load_cache("feed")
             feed_payload, has_feed_snapshot = self._extract_cached_payload(feed_cache)
 
             if not has_batch_snapshot or not has_feed_snapshot:

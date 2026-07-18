@@ -206,12 +206,15 @@ def _clear_collection_items(server: Dict[str, Any], collection_id: str) -> int:
     valid_items = [str(item) for item in items if isinstance(item, str) and item]
     if not valid_items:
         return 0
-    _, removal_response = _call_emby_api(
+    removed, removal_response = _call_emby_api(
         server,
         f"Collections/{collection_id}/Items",
         method="DELETE",
         params={"Ids": ",".join(valid_items)}
     )
+    if not removed:
+        logger.warning("Errore svuotamento collezione %s: %s", collection_id, removal_response)
+        raise RuntimeError(removal_response)
     if removal_response and not isinstance(removal_response, str):
         logger.debug("Clear collection response: %s", removal_response)
     logger.info("Collezione %s svuotata (%d elementi)", collection_id, len(items))

@@ -2428,6 +2428,16 @@
     applyPreviewFilter('movie');
     updatePreview();
 
+    document.addEventListener('octohub:main-tab-changed', (event) => {
+        const tab = event?.detail?.tab || '';
+        if (tab === 'latest') {
+            loadLatestReleases(false, false, true);
+        }
+    });
+
+    if (isLatestTabActive()) {
+        loadLatestReleases(false, false, true);
+    }
 
     window.loadLatestReleases = loadLatestReleases;
     window.octohubLatest = {
