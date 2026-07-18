@@ -11,6 +11,7 @@ from services import workflows
 class _RefreshManager:
     def __init__(self):
         self.calls = []
+        self.incremental_calls = []
         self.progress_tracker = self
         self._refreshing = False
         self.snapshot = {"payload": {"movies": [], "series": [], "errors": []}}
@@ -20,6 +21,10 @@ class _RefreshManager:
 
     def refresh_full(self, limit, per_server_limit, **kwargs):
         self.calls.append((limit, per_server_limit, kwargs))
+        return self.snapshot["payload"], None
+
+    def refresh_incremental(self, limit, per_server_limit, **kwargs):
+        self.incremental_calls.append((limit, per_server_limit, kwargs))
         return self.snapshot["payload"], None
 
     def get_snapshot(self, mode="batch"):
@@ -35,11 +40,28 @@ class _FailingRefreshManager(_RefreshManager):
         self.calls.append((limit, per_server_limit, kwargs))
         return None, self.error
 
+    def refresh_incremental(self, limit, per_server_limit, **kwargs):
+        self.incremental_calls.append((limit, per_server_limit, kwargs))
+        return None, self.error
+
 
 class _MissingCacheRefreshManager(_RefreshManager):
     def __init__(self):
         super().__init__()
         self.snapshot = {"payload": None}
+
+
+class _SlowPollingRefreshManager(_RefreshManager):
+    def __init__(self, refreshing_polls):
+        super().__init__()
+        self.refreshing_polls = refreshing_polls
+        self.is_refreshing_calls = 0
+
+    def is_refreshing(self):
+        self.is_refreshing_calls += 1
+        if self.is_refreshing_calls == 1:
+            return False
+        return self.is_refreshing_calls <= self.refreshing_polls
 
 
 class _ImmediateThread:
@@ -107,8 +129,37 @@ class WorkflowLatestLimitsTests(unittest.TestCase):
         ):
             workflows._wf_refresh_cache({})
 
-        self.assertEqual(1, len(manager.calls))
-        self.assertEqual((80, 40), manager.calls[0][:2])
+        self.assertEqual([], manager.calls)
+        self.assertEqual(1, len(manager.incremental_calls))
+        self.assertEqual((80, 40), manager.incremental_calls[0][:2])
+
+    def test_refresh_cache_waits_longer_than_five_minutes_for_running_refresh(self):
+        manager = _SlowPollingRefreshManager(refreshing_polls=170)
+        time_value = {"now": 0}
+
+        def fake_time():
+            time_value["now"] += 2
+            return time_value["now"]
+
+        with patch("emby_latest.settings._load_latest_settings", return_value={"SETTINGS": {"max_movies": 10, "max_series": 10}}), patch(
+            "services.workflows.load_config",
+            return_value=({"EMBY": {"SERVERS": [{"id": "server-a", "enabled": True}]}}, True),
+        ), patch("services.workflows.get_emby_latest_manager", return_value=manager), patch(
+            "services.manager._build_refresh_requests_snapshot",
+            return_value=None,
+        ), patch(
+            "threading.Thread",
+            side_effect=lambda target, daemon=True: _ImmediateThread(target, daemon=daemon),
+        ), patch(
+            "time.time",
+            side_effect=fake_time,
+        ), patch(
+            "time.sleep",
+            return_value=None,
+        ):
+            workflows._wf_refresh_cache({})
+
+        self.assertGreater(time_value["now"], 300)
 
     def test_refresh_cache_raises_refresh_error_from_background_thread(self):
         manager = _FailingRefreshManager("forced refresh failure")

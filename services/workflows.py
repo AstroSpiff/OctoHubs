@@ -61,6 +61,28 @@ def _wf_latest_limits(
     return limit, per_server_limit
 
 
+def _wf_latest_refresh_timeout_seconds(latest_settings: Dict[str, Any] | None = None) -> int:
+    if latest_settings is None:
+        from emby_latest.settings import _load_latest_settings
+        latest_settings = _load_latest_settings()
+
+    settings_cfg = latest_settings.get("SETTINGS") if isinstance(latest_settings, dict) else {}
+    if not isinstance(settings_cfg, dict):
+        settings_cfg = {}
+
+    configured = _wf_positive_int(
+        settings_cfg.get("workflow_refresh_timeout_seconds")
+        or settings_cfg.get("refresh_timeout_seconds"),
+        0,
+    )
+    if configured:
+        return configured
+
+    # Align Latest with scan/probe workflow steps: the first rebuild can be slow
+    # on large Emby libraries, but individual API calls still have their own timeouts.
+    return 7200
+
+
 def _wf_trigger_sync() -> bool:
     """Wrapper per avviare la sincronizzazione utenti."""
     manager = _get_emby_user_manager(
@@ -547,7 +569,12 @@ def _wf_refresh_cache(context: Dict[str, Any]) -> None:
 
             def _do_refresh():
                 try:
-                    payload, error = manager.refresh_full(limit, per_server_limit, fast_mode=False, enrich=True, force_omdb=False)
+                    payload, error = manager.refresh_incremental(
+                        limit,
+                        per_server_limit,
+                        enrich=True,
+                        force_omdb=False,
+                    )
                     refresh_result["payload"] = payload
                     refresh_result["error"] = error
                 except Exception as exc:
@@ -561,7 +588,7 @@ def _wf_refresh_cache(context: Dict[str, Any]) -> None:
             print("[WORKFLOW] [CACHE] Thread refresh avviato, attendo completamento...")
 
         # Polling loop: attende fino a quando is_refreshing diventa False
-        max_wait_seconds = 300  # 5 minuti max
+        max_wait_seconds = _wf_latest_refresh_timeout_seconds()
         start_time = time.time()
         poll_interval = 2  # Controlla ogni 2 secondi
 
