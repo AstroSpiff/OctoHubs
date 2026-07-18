@@ -1,6 +1,6 @@
 [Italiano](README_ita.md) | [English](README.md)
 
-Documenti: [Docker Deploy](docs/DOCKER_DEPLOY_ita.md) | [Deployment](docs/DEPLOYMENT_ita.md) | [Configurazione](docs/CONFIGURATION_ita.md) | [Funzionalita](docs/FEATURES_ita.md) | [Integrazioni](docs/INTEGRATIONS_ita.md) | [Strumenti Emby](docs/EMBY_TOOLS_ita.md)
+Documenti: [Docker Deploy](docs/DOCKER_DEPLOY_ita.md) | [Deployment](docs/DEPLOYMENT_ita.md) | [Configurazione](docs/CONFIGURATION_ita.md) | [Funzionalita](docs/FEATURES_ita.md) | [Integrazioni](docs/INTEGRATIONS_ita.md) | [Strumenti Emby](docs/EMBY_TOOLS_ita.md) | [Release Checklist](docs/RELEASE_CHECKLIST_ita.md)
 
 # OctoHub
 
@@ -134,7 +134,7 @@ Se queste variabili sono impostate, l'utente admin viene creato automaticamente 
 
 ## Documentazione
 - `docs/DOCKER_DEPLOY_ita.md`, `docs/DEPLOYMENT_ita.md`, `docs/CONFIGURATION_ita.md`, `docs/FEATURES_ita.md`
-- `docs/INTEGRATIONS_ita.md`, `docs/EMBY_TOOLS_ita.md`
+- `docs/INTEGRATIONS_ita.md`, `docs/EMBY_TOOLS_ita.md`, `docs/RELEASE_CHECKLIST_ita.md`
 
 ## Aggiornamenti rapidi
 ```bash

@@ -305,6 +305,13 @@ def _extract_emby_media_sources(
         source_size = source.get("Size")
         container = source.get("Container") or item.get("Container") or ""
         source_name = source.get("Name") or source.get("DisplayName") or source.get("Path") or ""
+        added_at = (
+            source.get("DateCreated")
+            or source.get("DateAdded")
+            or source.get("CreatedDate")
+            or source.get("AddedAt")
+            or source.get("added_at")
+        )
         runtime = source.get("RunTimeTicks") or item.get("RunTimeTicks")
         has_video_stream = isinstance(video_stream, dict) and bool(
             video_stream.get("Codec") or video_stream.get("Width") or video_stream.get("Height")
@@ -336,6 +343,7 @@ def _extract_emby_media_sources(
             "size": source_size,
             "container": str(container or ""),
             "source_name": source_name,
+            "added_at": added_at,
             "audio_tracks": audio_tracks,
             "streams": stream_entries,
             "mediainfo_available": mediainfo_available

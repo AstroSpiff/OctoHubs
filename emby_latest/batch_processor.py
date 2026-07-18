@@ -218,6 +218,7 @@ def extract_versions(
             "audio_codec": source.get("audio_codec") or "",
             "audio_channels": source.get("audio_channels") or "",
             "path": source_path,
+            "added_at": source.get("added_at") or "",
             "size": source.get("size"),
             "container": source.get("container") or "",
             "bitrate": source.get("bitrate_mbps") or source.get("bitrate") or "",

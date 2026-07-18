@@ -718,7 +718,7 @@ def collect_entries(
             catalog_baseline_detected = (
                 existing is None
                 and movie_history is None
-                and catalog_expanded
+                and (catalog_expanded or len(items_for_signature) == 1)
                 and len(version_groups) > 1
             )
             if debug_latest and version_groups:
