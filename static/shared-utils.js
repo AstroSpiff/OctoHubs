@@ -110,13 +110,13 @@
         const wrapper = document.createElement('div');
         wrapper.innerHTML = `
             <div id="generic-modal" class="modal-overlay" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 10010; align-items: center; justify-content: center;">
-                <div class="modal-content" style="background: var(--bg-card); padding: 2rem; border-radius: 12px; max-width: 520px; width: 90%; position: relative; box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
-                    <button class="icon-button close-modal-btn" style="position: absolute; top: 1rem; right: 1rem; font-size: 1.2rem;">&times;</button>
-                    <div class="modal-header" style="margin-bottom: 1.5rem;">
+                <div class="generic-modal-content" style="background: var(--bg-card, #ffffff); padding: 2rem; border-radius: 12px; max-width: 520px; width: 90%; position: relative; box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
+                    <button type="button" class="icon-button close-modal-btn generic-modal-close" style="position: absolute; top: 1rem; right: 1rem; font-size: 1.2rem;" aria-label="Chiudi">&times;</button>
+                    <div class="generic-modal-header" style="margin-bottom: 1.5rem;">
                         <h3 id="generic-modal-title" style="margin: 0;">Messaggio</h3>
                         <p class="text-muted" style="margin: 0.5rem 0 0; font-size: 0.9rem;" id="generic-modal-subtitle"></p>
                     </div>
-                    <div class="modal-body">
+                    <div class="generic-modal-body">
                         <div id="generic-modal-message" class="text-muted"></div>
                         <div id="generic-modal-input-row" class="form-group" style="margin-top: 1rem; display: none;">
                             <label id="generic-modal-input-label" for="generic-modal-input">Valore</label>
@@ -124,7 +124,7 @@
                         </div>
                         <div id="generic-modal-error" class="alert error" style="display: none; margin-top: 1rem; font-size: 0.85rem;"></div>
                     </div>
-                    <div class="modal-actions" style="margin-top: 1.5rem; display: flex; justify-content: space-between;">
+                    <div class="generic-modal-actions" style="margin-top: 1.5rem; display: flex; justify-content: space-between;">
                         <button class="btn ghost" id="generic-modal-cancel">Annulla</button>
                         <button class="btn primary" id="generic-modal-confirm">Conferma</button>
                     </div>

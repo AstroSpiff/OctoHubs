@@ -26,11 +26,12 @@ class SearchFrontendTests(unittest.TestCase):
                 self.assertIn("script_tmdb_emby.js') }}?v=20260719-search", source)
                 self.assertNotIn("script_tmdb_emby.js') }}?v=20260628-tmdb", source)
 
-    def test_last_summary_expansion_uses_adjacent_details_row(self):
+    def test_last_summary_expansion_finds_details_row_by_row_key(self):
         source = pathlib.Path("static/script.js").read_text(encoding="utf-8")
 
-        self.assertIn("const detailsRow = row.nextElementSibling;", source)
-        self.assertIn("detailsRow.classList.contains('details-row')", source)
+        self.assertIn("function findDetailsRowForResult(row)", source)
+        self.assertIn("const key = getResultDetailKey(row);", source)
+        self.assertIn("tbody.querySelectorAll('.details-row')", source)
         self.assertNotIn("document.querySelector(`.details-row[data-details-for=", source)
 
     def test_last_summary_cleanup_controls_are_available(self):
@@ -43,3 +44,24 @@ class SearchFrontendTests(unittest.TestCase):
         self.assertIn('data-result-cleanup-single', macros)
         self.assertIn("/api/search/results/cleanup", script)
         self.assertNotIn("cleanup-stale-results-btn", dashboard)
+
+    def test_last_summary_table_has_non_overlapping_layout_contracts(self):
+        macros = pathlib.Path("templates/macros.html").read_text(encoding="utf-8")
+        css = pathlib.Path("static/dashboard.css").read_text(encoding="utf-8")
+
+        self.assertIn('class="results-table-wrap"', macros)
+        self.assertIn('class="result-row-actions"', macros)
+        self.assertIn('aria-label="Rimuovi questo risultato dal riepilogo"', macros)
+        self.assertIn(".results-table-wrap", css)
+        self.assertIn(".result-row-actions", css)
+        self.assertIn(".result-summary", css)
+        self.assertIn(".result-cleanup-btn", css)
+
+    def test_generic_modal_uses_dedicated_stable_search_styles(self):
+        shared_utils = pathlib.Path("static/shared-utils.js").read_text(encoding="utf-8")
+        css = pathlib.Path("static/dashboard.css").read_text(encoding="utf-8")
+
+        self.assertIn("generic-modal-content", shared_utils)
+        self.assertIn("var(--bg-card, #ffffff)", shared_utils)
+        self.assertIn(".generic-modal-content", css)
+        self.assertIn(".generic-modal-actions", css)

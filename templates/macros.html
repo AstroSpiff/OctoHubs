@@ -25,6 +25,7 @@
 {% endmacro %}
 
 {% macro results_table(items, qb_available, results) %}
+<div class="results-table-wrap">
 <table class="results-table sortable-table">
     <thead>
         <tr>
@@ -48,7 +49,8 @@
                 data-season="{{ item.season if item.season is not none else '' }}"
                 data-sort-id="{{ item.request_id }}"
                 data-sort-title="{{ item.title|lower }}"
-                data-sort-results="{{ item.results_found or 0 }}">
+                data-sort-results="{{ item.results_found or 0 }}"
+                aria-expanded="false">
                 <td class="select-col col-select">
                     <input type="checkbox" class="result-scan-checkbox" title="Includi questa richiesta nelle Ricerche selezionate">
                 </td>
@@ -60,27 +62,32 @@
                     {% endif %}
                 </td>
                 <td class="actions-col col-actions">
-                    <button type="button"
-                            class="btn ghost small quick-scan-btn"
-                            data-request-id="{{ item.request_id }}"
-                            data-season="{{ item.season if item.season is not none else '' }}"
-                            title="Esegue subito una ricerca mirata solo su questa richiesta">
-                        Ricerca rapida
-                    </button>
-                    <button type="button"
-                            class="icon-btn result-cleanup-btn"
-                            data-result-cleanup-single
-                            data-request-id="{{ item.request_id }}"
-                            data-season="{{ item.season if item.season is not none else '' }}"
-                            title="Rimuovi questo risultato dal riepilogo">
-                        <i class="fa-solid fa-trash" aria-hidden="true"></i>
-                    </button>
+                    <div class="result-row-actions">
+                        <button type="button"
+                                class="btn ghost small quick-scan-btn"
+                                data-request-id="{{ item.request_id }}"
+                                data-season="{{ item.season if item.season is not none else '' }}"
+                                title="Esegue subito una ricerca mirata solo su questa richiesta">
+                            Ricerca rapida
+                        </button>
+                        <button type="button"
+                                class="icon-btn result-cleanup-btn"
+                                data-result-cleanup-single
+                                data-request-id="{{ item.request_id }}"
+                                data-season="{{ item.season if item.season is not none else '' }}"
+                                aria-label="Rimuovi questo risultato dal riepilogo"
+                                title="Rimuovi questo risultato dal riepilogo">
+                            <i class="fa-solid fa-trash" aria-hidden="true"></i>
+                        </button>
+                    </div>
                 </td>
                 <td class="details-cell clickable col-results">
-                    <div class="result-updated">
-                        Ultimo aggiornamento: {{ item.updated_at or 'N/D' }}{% if is_stale %} · storico{% endif %}
+                    <div class="result-summary">
+                        <div class="result-updated">
+                            Ultimo aggiornamento: {{ item.updated_at or 'N/D' }}{% if is_stale %} · storico{% endif %}
+                        </div>
+                        <div class="results-count">{{ item.results_found }} risultati</div>
                     </div>
-                    <div class="results-count">{{ item.results_found }} risultati</div>
                 </td>
             </tr>
             <tr class="details-row" data-details-for="{{ item.request_id }}-{{ item.season if item.season is not none else 'all' }}">
@@ -254,6 +261,7 @@
         {% endfor %}
     </tbody>
 </table>
+</div>
 {% if items|length == 0 %}
     <p class="tagline" style="padding: 2rem; text-align: center;">Nessun risultato trovato per questa categoria.</p>
 {% endif %}

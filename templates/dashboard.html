@@ -7,7 +7,7 @@
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>Ricerche e richieste</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}?v=20260719-search-summary">
     <link rel="stylesheet" href="{{ url_for('static', filename='operations_center.css') }}?v=20260715-global-operations">
 </head>
 <body data-qb-available="{{ 'true' if qb_available else 'false' }}">
@@ -1164,7 +1164,7 @@
     <div id="toast-container"></div>
     <script src="{{ url_for('static', filename='search-streaming.js') }}?v=20260719-search"></script>
     <script src="{{ url_for('static', filename='search-history.js') }}"></script>
-    <script src="{{ url_for('static', filename='shared-utils.js') }}"></script>
+    <script src="{{ url_for('static', filename='shared-utils.js') }}?v=20260719-search-summary"></script>
     <script src="{{ url_for('static', filename='operations_center.js') }}?v=20260719-operations-json"></script>
     <script src="{{ url_for('static', filename='actions.js') }}"></script>
     <script src="{{ url_for('static', filename='script_shell.js') }}?v=20260628-shell"></script>
@@ -1176,4 +1176,4 @@
     <script src="{{ url_for('static', filename='script_tmdb_emby.js') }}?v=20260719-search"></script>
     <script src="{{ url_for('static', filename='script_manual_search.js') }}?v=20260719-search"></script>
     <script src="{{ url_for('static', filename='script_telegram.js') }}?v=20260628-telegram"></script>
-    <script src="{{ url_for('static', filename='script.js') }}"></script>
+    <script src="{{ url_for('static', filename='script.js') }}?v=20260719-search-summary"></script>

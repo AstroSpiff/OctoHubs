@@ -602,7 +602,34 @@
             }, 5000);
         })();
 
-        // Toggle details row when clicking on any part of the row except checkbox
+        function getResultDetailKey(row) {
+            if (!row) return '';
+            const requestId = row.dataset.requestId || '';
+            const season = row.dataset.season || 'all';
+            return `${requestId}-${season}`;
+        }
+
+        function findDetailsRowForResult(row) {
+            const key = getResultDetailKey(row);
+            if (!key) return null;
+
+            const adjacent = row.nextElementSibling;
+            if (
+                adjacent &&
+                adjacent.classList.contains('details-row') &&
+                adjacent.dataset.detailsFor === key
+            ) {
+                return adjacent;
+            }
+
+            const tbody = row.closest('tbody');
+            if (!tbody) return null;
+
+            return Array.from(tbody.querySelectorAll('.details-row'))
+                .find(detailsRow => detailsRow.dataset.detailsFor === key) || null;
+        }
+
+        // Toggle details row when clicking on any part of the row except controls.
         document.addEventListener('click', (event) => {
             // Ignore clicks on controls inside the row.
             if (event.target.closest('.select-col, button, a, input, select, textarea, label')) {
@@ -612,7 +639,7 @@
             const row = event.target.closest('.results-row');
             if (!row) return;
 
-            const detailsRow = row.nextElementSibling;
+            const detailsRow = findDetailsRowForResult(row);
 
             if (detailsRow && detailsRow.classList.contains('details-row')) {
                 const isCurrentlyExpanded = detailsRow.classList.contains('expanded');
@@ -620,6 +647,9 @@
                 // Close all other expanded rows in the same table
                 const table = row.closest('table');
                 if (table) {
+                    table.querySelectorAll('.results-row[aria-expanded="true"]').forEach(expandedRow => {
+                        expandedRow.setAttribute('aria-expanded', 'false');
+                    });
                     table.querySelectorAll('.details-row.expanded').forEach(expandedRow => {
                         expandedRow.classList.remove('expanded');
                     });
@@ -628,6 +658,9 @@
                 // Toggle current row (reopen if it was expanded)
                 if (!isCurrentlyExpanded) {
                     detailsRow.classList.add('expanded');
+                    row.setAttribute('aria-expanded', 'true');
+                } else {
+                    row.setAttribute('aria-expanded', 'false');
                 }
             }
         });
@@ -678,9 +711,7 @@
                     // Re-append rows with their corresponding details rows
                     rows.forEach(row => {
                         tbody.appendChild(row);
-                        const requestId = row.dataset.requestId;
-                        const season = row.dataset.season || 'all';
-                        const detailsRow = detailsRows.find(dr => dr.dataset.detailsFor === `${requestId}-${season}`);
+                        const detailsRow = detailsRows.find(dr => dr.dataset.detailsFor === getResultDetailKey(row));
                         if (detailsRow) {
                             tbody.appendChild(detailsRow);
                         }
