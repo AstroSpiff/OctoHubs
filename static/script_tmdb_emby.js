@@ -34,6 +34,7 @@
         const tmdbSelectedCard = document.getElementById('tmdb-selected-card');
         const tmdbClearBtn = document.getElementById('tmdb-clear-btn');
         const tmdbSeasonPicker = document.getElementById('tmdb-season-picker');
+        const tmdbSeasonList = document.getElementById('tmdb-season-list');
         const tmdbSelectedAvailability = document.getElementById('tmdb-selected-availability');
         const tmdbSelectedAvailabilityLabel = document.getElementById('tmdb-selected-availability-label');
         const tmdbSelectedAvailabilityIcons = document.getElementById('tmdb-selected-availability-icons');
@@ -118,6 +119,7 @@
                 selectedTmdbData = null;
                 if (tmdbSelectedCard) tmdbSelectedCard.classList.add('is-hidden');
                 if (tmdbSeasonPicker) tmdbSeasonPicker.classList.add('is-hidden');
+                if (tmdbSeasonList) tmdbSeasonList.innerHTML = '';
                 if (jellyseerrBtn) jellyseerrBtn.classList.add('is-hidden');
                 if (tmdbSelectedAvailability) tmdbSelectedAvailability.classList.add('is-hidden');
                 if (tmdbSelectedAvailabilityIcons) tmdbSelectedAvailabilityIcons.innerHTML = '';
@@ -1331,6 +1333,9 @@
 
                 loadEmbyAvailability(item);
 
+                if (tmdbSeasonPicker) tmdbSeasonPicker.classList.add('is-hidden');
+                if (tmdbSeasonList) tmdbSeasonList.innerHTML = '';
+
                 // Load and show seasons for TV shows
                 if (item.media_type === 'tv' && tmdbSeasonPicker) {
                     try {
@@ -1338,7 +1343,7 @@
                         if (resp.ok) {
                             const data = await resp.json();
                             if (data.success && data.details && data.details.seasons) {
-                                const seasonList = document.getElementById('tmdb-season-list');
+                                const seasonList = tmdbSeasonList;
                                 if (seasonList) {
                                     seasonList.innerHTML = '';
 

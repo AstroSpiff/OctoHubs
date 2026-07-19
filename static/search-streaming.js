@@ -50,6 +50,7 @@ class SearchStreamingClient {
             use_custom_rules,
             tmdb_id,
             custom_rules,
+            seasons,
             onResult,
             onProgress,
             onComplete,
@@ -118,7 +119,8 @@ class SearchStreamingClient {
                 use_jellyseerr_logic: use_jellyseerr_logic || false,
                 use_custom_rules: use_custom_rules || false,
                 tmdb_id: tmdb_id || '',
-                custom_rules: custom_rules || null
+                custom_rules: custom_rules || null,
+                seasons: Array.isArray(seasons) ? seasons : []
             }));
 
             console.log('[SearchStreaming] Ricerca avviata');

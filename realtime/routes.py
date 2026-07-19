@@ -201,6 +201,7 @@ async def websocket_search_endpoint(websocket: WebSocket, session_id: str):
             use_custom_rules = bool(data.get("use_custom_rules", False))
             tmdb_id = data.get("tmdb_id", "")
             custom_rules = data.get("custom_rules")
+            seasons = data.get("seasons")
 
             print(
                 f"[WebSocket /ws/search/{session_id}] Avvio ricerca: {len(query_variants)} variants, "
@@ -234,6 +235,7 @@ async def websocket_search_endpoint(websocket: WebSocket, session_id: str):
                 use_custom_rules=use_custom_rules,
                 tmdb_id=tmdb_id,
                 custom_rules=custom_rules,
+                seasons=seasons,
             )
 
             print(f"[WebSocket /ws/search/{session_id}] Ricerca completata: {stats}")

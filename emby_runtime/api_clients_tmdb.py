@@ -1,6 +1,7 @@
 import requests
 
 from core.utils import _normalize_media_type
+from emby_runtime.api_client_urls import build_jellyseerr_api_url
 
 
 def _try_parse_int(value):
@@ -45,7 +46,7 @@ def _fetch_tmdb_payload(tmdb_id, media_type_candidates, config, cache):
         endpoint = f"/api/v1/{normalized}/{tmdb_id}"
         try:
             response = requests.get(
-                f"{config['JELLYSEERR_URL']}{endpoint}",
+                build_jellyseerr_api_url(config, endpoint),
                 headers=headers,
                 timeout=15
             )

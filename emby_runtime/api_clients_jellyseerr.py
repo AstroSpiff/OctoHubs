@@ -2,6 +2,7 @@ import requests
 import time
 
 from core.utils import _normalize_media_type
+from emby_runtime.api_client_urls import build_jellyseerr_api_url
 from emby_runtime.api_clients_tmdb import _extract_tmdb_id, _fetch_tmdb_payload
 
 
@@ -20,7 +21,7 @@ def get_jellyseerr_requests(config, silent=False, return_status=False):
                 print(f"   - Stato interrogato: {status}")
             params = {"take": 100, "skip": 0, "filter": status, "sort": "added"}
             response = requests.get(
-                f"{config['JELLYSEERR_URL']}/api/v1/request",
+                build_jellyseerr_api_url(config, "/api/v1/request"),
                 headers=headers,
                 params=params,
                 timeout=10
@@ -58,7 +59,7 @@ def fetch_request_details(request_id, config, cache, max_retries=2):
         return cache[request_id]
 
     headers = {"X-Api-Key": config["JELLYSEERR_API_KEY"]}
-    url = f"{config['JELLYSEERR_URL']}/api/v1/request/{request_id}"
+    url = build_jellyseerr_api_url(config, f"/api/v1/request/{request_id}")
 
     for attempt in range(max_retries + 1):
         try:
@@ -144,7 +145,7 @@ def search_jellyseerr(query, config):
         return []
     headers = {"X-Api-Key": config["JELLYSEERR_API_KEY"]}
     try:
-        url = f"{config['JELLYSEERR_URL']}/api/v1/search"
+        url = build_jellyseerr_api_url(config, "/api/v1/search")
         response = requests.get(url, headers=headers, params={"query": query}, timeout=10)
         response.raise_for_status()
         data = response.json()
@@ -167,7 +168,7 @@ def submit_jellyseerr_request(payload, config):
     headers = {"X-Api-Key": config["JELLYSEERR_API_KEY"]}
     try:
         response = requests.post(
-            f"{config['JELLYSEERR_URL']}/api/v1/request",
+            build_jellyseerr_api_url(config, "/api/v1/request"),
             headers=headers,
             json=payload,
             timeout=15

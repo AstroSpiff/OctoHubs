@@ -17,6 +17,11 @@ from search.rules import _compose_request_search_rules, _get_request_rule
 from search.indexers import _prowlarr_configured, _jackett_configured
 from search.parsing import _extract_season_hint_from_title, _extract_year_from_title, _try_parse_int
 from search.library_index import _load_emby_library_title_index
+from search.customization import (
+    apply_custom_search_rules,
+    build_independent_query_variants,
+    normalize_seasons,
+)
 from search.seasons import extract_request_seasons, get_episode_count_for_season, get_pending_episode_numbers
 from core.scanner import (
     build_search_queries,
@@ -25,7 +30,6 @@ from core.scanner import (
     gather_title_candidates,
     sanitize_title,
 )
-from core.config import DEFAULT_CONFIG
 from core.utils import (
     _normalize_media_type,
     get_nested,
@@ -220,6 +224,9 @@ def _build_manual_search_snapshot(payload, form_payload=None) -> JsonResult:
 
     effective_config = copy.deepcopy(config)
     effective_rules = copy.deepcopy(config.get("SEARCH_RULES", {}))
+    selected_seasons = normalize_seasons(payload.get("seasons"))
+    if custom_rules:
+        effective_config, effective_rules = apply_custom_search_rules(effective_config, custom_rules)
     request_rule = None
     request_item = None
     request_details = None
@@ -249,34 +256,9 @@ def _build_manual_search_snapshot(payload, form_payload=None) -> JsonResult:
                     request_details = fetch_request_details(request_item.get("id"), config, details_cache) or request_item
                 else:
                     request_details = request_item
-    if use_jellyseerr_logic and custom_rules:
-        overrides = {}
-        if isinstance(custom_rules.get("SEARCH_RULES"), dict):
-            overrides.update(custom_rules.get("SEARCH_RULES") or {})
-        if isinstance(custom_rules.get("search_rules"), dict):
-            overrides.update(custom_rules.get("search_rules") or {})
-        for key, value in custom_rules.items():
-            if key in {"SEARCH_RULES", "search_rules", "TARGET_LANGUAGES", "target_languages", "EXCLUDE_TAGS", "exclude_tags"}:
-                continue
-            if key in effective_rules or key in DEFAULT_CONFIG.get("SEARCH_RULES", {}):
-                overrides[key] = value
-        if overrides:
-            effective_rules.update(overrides)
-        effective_config["SEARCH_RULES"] = effective_rules
-        if "TARGET_LANGUAGES" in custom_rules or "target_languages" in custom_rules:
-            target_langs = custom_rules.get("TARGET_LANGUAGES")
-            if target_langs is None:
-                target_langs = custom_rules.get("target_languages")
-            if target_langs is not None:
-                effective_config["TARGET_LANGUAGES"] = target_langs
-        if "EXCLUDE_TAGS" in custom_rules or "exclude_tags" in custom_rules:
-            exclude_tags = custom_rules.get("EXCLUDE_TAGS")
-            if exclude_tags is None:
-                exclude_tags = custom_rules.get("exclude_tags")
-            if exclude_tags is not None:
-                effective_config["EXCLUDE_TAGS"] = exclude_tags
     if use_jellyseerr_logic and request_rule:
         effective_rules = _compose_request_search_rules(effective_rules, request_rule)
+        effective_config["SEARCH_RULES"] = effective_rules
 
     warnings = []
     warnings_set = set()
@@ -304,14 +286,7 @@ def _build_manual_search_snapshot(payload, form_payload=None) -> JsonResult:
                 search_media_type = resolved_type or media_type
                 season_targets = [None]
                 if _normalize_media_type(search_media_type) == "tv":
-                    seasons_payload = payload.get("seasons")
-                    seasons_list = []
-                    if isinstance(seasons_payload, list):
-                        for entry in seasons_payload:
-                            try:
-                                seasons_list.append(int(entry))
-                            except (TypeError, ValueError):
-                                continue
+                    seasons_list = selected_seasons[:]
                     if not seasons_list and request_details:
                         seasons_list = extract_request_seasons(request_details, skip_available=False)
                     if seasons_list:
@@ -342,6 +317,15 @@ def _build_manual_search_snapshot(payload, form_payload=None) -> JsonResult:
                         search_rules_override=effective_rules,
                         year_variance=year_variance
                     ))
+
+    if not query_variants and (custom_rules or selected_seasons):
+        query_variants = build_independent_query_variants(
+            [query],
+            effective_config,
+            media_type=search_media_type,
+            seasons=selected_seasons,
+            search_rules_override=effective_rules,
+        )
 
     if not query_variants:
         query_variants = [query]

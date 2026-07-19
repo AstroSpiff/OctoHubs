@@ -1,5 +1,7 @@
 import requests
 
+from emby_runtime.api_client_urls import build_jellyseerr_api_url
+
 
 def _ping_api_service(url, headers=None, params=None, timeout=10):
     """
@@ -25,7 +27,7 @@ def _ping_api_service(url, headers=None, params=None, timeout=10):
 def _ping_jellyseerr(config):
     headers = {"X-Api-Key": config["JELLYSEERR_API_KEY"]}
     params = {"take": 1, "skip": 0, "filter": "pending", "sort": "added"}
-    url = f"{config['JELLYSEERR_URL']}/api/v1/request"
+    url = build_jellyseerr_api_url(config, "/api/v1/request")
     return _ping_api_service(url, headers=headers, params=params)
 
 

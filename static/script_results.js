@@ -376,21 +376,35 @@
         }
 
         function updateSelectAllState() {
-            if (!scanSelectAll) return;
-            const checkboxes = document.querySelectorAll('.result-scan-checkbox');
-            if (!checkboxes.length) {
-                scanSelectAll.checked = false;
-                scanSelectAll.indeterminate = false;
-                return;
+            document.querySelectorAll('.scan-select-all-group').forEach(selectAllCheckbox => {
+                const table = selectAllCheckbox.closest('table');
+                const checkboxes = table
+                    ? Array.from(table.querySelectorAll('tbody .result-scan-checkbox'))
+                    : [];
+                if (!checkboxes.length) {
+                    selectAllCheckbox.checked = false;
+                    selectAllCheckbox.indeterminate = false;
+                    return;
+                }
+                const checkedCount = checkboxes.filter(cb => cb.checked).length;
+                selectAllCheckbox.checked = checkedCount === checkboxes.length;
+                selectAllCheckbox.indeterminate = checkedCount > 0 && checkedCount < checkboxes.length;
+            });
+            if (scanSelectAll) {
+                const allCheckboxes = Array.from(document.querySelectorAll('.result-scan-checkbox'));
+                const checkedCount = allCheckboxes.filter(cb => cb.checked).length;
+                scanSelectAll.checked = allCheckboxes.length > 0 && checkedCount === allCheckboxes.length;
+                scanSelectAll.indeterminate = checkedCount > 0 && checkedCount < allCheckboxes.length;
             }
-            const checkedCount = Array.from(checkboxes).filter(cb => cb.checked).length;
-            scanSelectAll.checked = checkedCount === checkboxes.length;
-            scanSelectAll.indeterminate = checkedCount > 0 && checkedCount < checkboxes.length;
         }
 
         function clearSelections() {
             selectionState.clear();
             document.querySelectorAll('.result-scan-checkbox').forEach(cb => { cb.checked = false; });
+            document.querySelectorAll('.scan-select-all-group').forEach(cb => {
+                cb.checked = false;
+                cb.indeterminate = false;
+            });
             if (scanSelectAll) {
                 scanSelectAll.checked = false;
                 scanSelectAll.indeterminate = false;

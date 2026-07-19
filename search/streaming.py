@@ -15,6 +15,7 @@ async def search_streaming_parallel(
     use_custom_rules=False,
     tmdb_id=None,
     custom_rules=None,
+    seasons=None,
 ):
     """
     Esegue ricerche completamente parallelizzate con streaming dei risultati via WebSocket.
@@ -43,7 +44,6 @@ async def search_streaming_parallel(
     from datetime import datetime, timezone
     from starlette.websockets import WebSocketState
 
-    from core.config import DEFAULT_CONFIG
     from core.scanner import build_search_queries, extract_title_and_year, gather_title_candidates, sanitize_title
     from core.utils import _normalize_media_type, get_nested, validate_jellyseerr_config
     from emby_runtime.api_clients import (
@@ -62,6 +62,11 @@ async def search_streaming_parallel(
     from core.scanner import filter_results
     from core.search_normalizer import build_dedupe_key
     from search.utils import merge_duplicate_results, sort_results
+    from search.customization import (
+        apply_custom_search_rules,
+        build_independent_query_variants,
+        normalize_seasons,
+    )
 
     # Helper per inviare messaggi WebSocket solo se ancora connesso
     async def safe_send_json(data):
@@ -84,6 +89,17 @@ async def search_streaming_parallel(
     all_results = []  # Lista di tutti i risultati per salvataggio finale
     query_attempts = []  # Lista delle query provate
 
+    def normalize_search_types(raw_types):
+        normalized = []
+        for raw_type in raw_types or []:
+            media_type = _normalize_media_type(raw_type)
+            if media_type and media_type not in normalized:
+                normalized.append(media_type)
+        return normalized or ["movie", "tv"]
+
+    search_types = normalize_search_types(search_types)
+    selected_seasons = normalize_seasons(seasons)
+
     # Se "Usa direttive Jellyseerr" è attivo e c'è tmdb_id, genera query automatiche
     actual_query_variants = query_variants
     effective_config = copy.deepcopy(config)
@@ -91,43 +107,12 @@ async def search_streaming_parallel(
     request_rule = None
     request_item = None
     request_details = None
-    search_media_type = search_types[0] if search_types else "movie"
+    search_media_type = search_types[0] if len(search_types) == 1 else None
 
-    if use_custom_rules and isinstance(custom_rules, dict):
-        overrides = {}
-        if isinstance(custom_rules.get("SEARCH_RULES"), dict):
-            overrides.update(custom_rules.get("SEARCH_RULES") or {})
-        if isinstance(custom_rules.get("search_rules"), dict):
-            overrides.update(custom_rules.get("search_rules") or {})
-        for key, value in custom_rules.items():
-            if key in {
-                "SEARCH_RULES",
-                "search_rules",
-                "TARGET_LANGUAGES",
-                "target_languages",
-                "EXCLUDE_TAGS",
-                "exclude_tags",
-            }:
-                continue
-            if key in effective_rules or key in DEFAULT_CONFIG.get("SEARCH_RULES", {}):
-                overrides[key] = value
-        if overrides:
-            effective_rules.update(overrides)
-        effective_config["SEARCH_RULES"] = effective_rules
+    if use_custom_rules:
+        effective_config, effective_rules = apply_custom_search_rules(effective_config, custom_rules)
 
-        if "TARGET_LANGUAGES" in custom_rules or "target_languages" in custom_rules:
-            target_langs = custom_rules.get("TARGET_LANGUAGES")
-            if target_langs is None:
-                target_langs = custom_rules.get("target_languages")
-            if target_langs is not None:
-                effective_config["TARGET_LANGUAGES"] = target_langs
-        if "EXCLUDE_TAGS" in custom_rules or "exclude_tags" in custom_rules:
-            exclude_tags = custom_rules.get("EXCLUDE_TAGS")
-            if exclude_tags is None:
-                exclude_tags = custom_rules.get("exclude_tags")
-            if exclude_tags is not None:
-                effective_config["EXCLUDE_TAGS"] = exclude_tags
-
+    generated_from_tmdb = False
     if use_jellyseerr_logic and tmdb_id and search_types:
         try:
             media_type = search_types[0]
@@ -190,8 +175,9 @@ async def search_streaming_parallel(
                         # 4. Gestisci stagioni per TV
                         season_targets = [None]
                         if _normalize_media_type(search_media_type) == "tv":
-                            # TODO: Potremmo ricevere seasons da custom_rules
-                            if request_details:
+                            if selected_seasons:
+                                season_targets = selected_seasons
+                            elif request_details:
                                 seasons_list = extract_request_seasons(request_details, skip_available=False)
                                 if seasons_list:
                                     season_targets = sorted(set(seasons_list))
@@ -233,6 +219,7 @@ async def search_streaming_parallel(
 
                         if generated_queries:
                             actual_query_variants = generated_queries
+                            generated_from_tmdb = True
                             print(
                                 f"[STREAM] Generate {len(actual_query_variants)} query da TMDB con direttive Jellyseerr"
                             )
@@ -242,6 +229,17 @@ async def search_streaming_parallel(
 
             traceback.print_exc()
             # Fallback alle query originali
+
+    if not generated_from_tmdb and (use_custom_rules or selected_seasons):
+        generated_queries = build_independent_query_variants(
+            query_variants,
+            effective_config,
+            media_type=search_media_type,
+            seasons=selected_seasons,
+            search_rules_override=effective_rules,
+        )
+        if generated_queries:
+            actual_query_variants = generated_queries
 
     # Prepara tutte le combinazioni di ricerca
     search_tasks = []
@@ -438,7 +436,7 @@ async def search_streaming_parallel(
     # Ordina i risultati usando le regole di ordinamento configurate
     # SEMPRE applicato per garantire consistenza con le ricerche automatiche
     search_rules = effective_config.get("SEARCH_RULES", {})
-    media_type_for_sort = search_types[0] if search_types else None
+    media_type_for_sort = search_types[0] if len(search_types) == 1 else None
     all_results = sort_results(all_results, search_rules, media_type=media_type_for_sort)
 
     # Salva ricerca nel database (stesso formato delle ricerche automatiche)
@@ -447,7 +445,7 @@ async def search_streaming_parallel(
 
         # Estrai dati dalla prima variante di query
         original_query = query_variants[0] if query_variants else "Ricerca Manuale"
-        media_type_str = search_types[0] if search_types else "unknown"
+        media_type_str = search_types[0] if len(search_types) == 1 else "mixed"
 
         # Crea payload compatibile con le ricerche automatiche
         search_payload = {

@@ -1297,9 +1297,10 @@
                     showToast('Attiva Prowlarr o Jackett nelle regole locali', 'error');
                     return;
                 }
-                const mediaType = (manualMediaTypeSelect && manualMediaTypeSelect.value)
+                const selectedMediaType = (manualMediaTypeSelect && manualMediaTypeSelect.value)
                     ? manualMediaTypeSelect.value
-                    : (tmdbTypeField ? tmdbTypeField.value : 'unknown');
+                    : (tmdbTypeField ? tmdbTypeField.value : '');
+                const mediaType = selectedMediaType || '';
 
                 const useCustomRules = customizeToggle
                     ? customizeToggle.checked
@@ -1364,12 +1365,13 @@
                 try {
                     await streamingClient.startSearch({
                         query_variants: [queryValue],
-                        search_types: [mediaType],
+                        search_types: mediaType ? [mediaType] : ['movie', 'tv'],
                         indexers: indexers,
                         use_jellyseerr_logic: payload.use_jellyseerr_logic || false,
                         use_custom_rules: payload.use_custom_rules || false,
                         tmdb_id: payload.tmdb_id || '',
                         custom_rules: payload.custom_rules || null,
+                        seasons: payload.seasons || [],
 
                         // Callback: ogni volta che arriva un nuovo risultato
                         onResult: (result) => {
