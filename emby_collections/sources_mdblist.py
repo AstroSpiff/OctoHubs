@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import urllib.parse
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 import requests
 
@@ -51,7 +52,12 @@ class MdblistClient:
             except ValueError as exc:
                 logger.warning("MDBList (%s) risposta non JSON: %s", list_id, exc)
                 return None
-            items = result.get("movies") or result.get("shows") or []
+            items = []
+            for key in ("movies", "shows"):
+                value = result.get(key) or []
+                if not isinstance(value, list):
+                    return None
+                items.extend(value)
             if not isinstance(items, list):
                 return None
             all_items.extend(items)
@@ -141,14 +147,14 @@ def _normalize_mdblist_entries(entries: List[Any]) -> List[Dict[str, Any]]:
         provider_key = None
         provider_id = None
         provider_label = None
-        if item.get("imdb_id"):
-            provider_key = "imdb"
-            provider_id = item["imdb_id"]
-            provider_label = "Imdb"
-        elif item.get("tmdb_id"):
+        if item.get("tmdb_id"):
             provider_key = "tmdb"
             provider_id = str(item["tmdb_id"])
             provider_label = "Tmdb"
+        elif item.get("imdb_id"):
+            provider_key = "imdb"
+            provider_id = item["imdb_id"]
+            provider_label = "Imdb"
         if not provider_key or not provider_id:
             continue
         media_type = _normalize_media_type(item.get("mediatype") or item.get("mediaType") or item.get("type"))
@@ -166,6 +172,112 @@ def _normalize_mdblist_entries(entries: List[Any]) -> List[Dict[str, Any]]:
             "title": item.get("title") or item.get("name") or "",
             "year": year
         })
+    return normalized
+
+
+def _iter_text_values(value: Any) -> Iterable[str]:
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped:
+            yield stripped
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(key, str):
+                yield key
+            yield from _iter_text_values(item)
+        return
+    if isinstance(value, list):
+        for item in value:
+            yield from _iter_text_values(item)
+
+
+def _strip_imdb_locale_path(path: str) -> str:
+    parts = [part for part in (path or "").split("/") if part]
+    if parts and re.fullmatch(r"[a-z]{2}", parts[0].lower()):
+        parts = parts[1:]
+    return "/" + "/".join(parts)
+
+
+def _imdb_reference_keys_from_text(value: Any) -> Set[str]:
+    text = str(value or "").strip()
+    if not text:
+        return set()
+    keys: Set[str] = set()
+    lowered = text.lower()
+
+    for list_id in re.findall(r"\b(ls\d+)\b", lowered):
+        keys.add(f"imdb:list:{list_id}")
+    for title_id in re.findall(r"\b(tt\d+)\b", lowered):
+        keys.add(f"imdb:title:{title_id}")
+
+    candidates = []
+    if lowered.startswith(("http://", "https://")):
+        candidates.append(text)
+    candidates.extend(match.group(0) for match in re.finditer(r"https?://[^\s\"'<>]+", text, re.IGNORECASE))
+
+    for candidate in candidates:
+        parsed = urllib.parse.urlparse(candidate.strip())
+        if "imdb.com" not in parsed.netloc.lower():
+            continue
+        path = _strip_imdb_locale_path(parsed.path).rstrip("/")
+        path_lower = path.lower()
+        list_match = re.search(r"/list/(ls\d+)", path_lower)
+        if list_match:
+            keys.add(f"imdb:list:{list_match.group(1)}")
+        chart_match = re.search(r"/chart/([^/?#]+)", path_lower)
+        if chart_match:
+            keys.add(f"imdb:chart:{chart_match.group(1)}")
+        title_match = re.search(r"/title/(tt\d+)", path_lower)
+        if title_match:
+            keys.add(f"imdb:title:{title_match.group(1)}")
+    return keys
+
+
+def _find_mdblist_external_entry_for_imdb(
+    raw_lists: List[Dict[str, Any]],
+    imdb_value: str,
+) -> Optional[Dict[str, Any]]:
+    target_keys = _imdb_reference_keys_from_text(imdb_value)
+    if not target_keys:
+        return None
+    for entry in raw_lists or []:
+        if not isinstance(entry, dict):
+            continue
+        entry_keys: Set[str] = set()
+        for text in _iter_text_values(entry):
+            entry_keys.update(_imdb_reference_keys_from_text(text))
+        if target_keys.intersection(entry_keys):
+            return entry
+    return None
+
+
+def _fetch_imdb_via_mdblist_items(value: str, max_items: Optional[int] = None) -> List[Dict[str, Any]]:
+    trimmed = str(value or "").strip()
+    if not trimmed:
+        raise RuntimeError("URL IMDb non valido")
+    target_keys = _imdb_reference_keys_from_text(trimmed)
+    if not target_keys:
+        raise RuntimeError("Inserisci un URL IMDb lista/chart valido")
+
+    client = _ensure_mdblist_client()
+    raw_lists = client.get_my_lists()
+    if raw_lists is None:
+        raise RuntimeError("Impossibile leggere le liste MDBList")
+    match = _find_mdblist_external_entry_for_imdb(raw_lists, trimmed)
+    if not match:
+        raise RuntimeError(
+            "External List MDBList non trovata per questo URL IMDb. "
+            "Crea la External List su MDBList, attendi che venga popolata e ricarica le liste in OctoHub."
+        )
+    list_id = match.get("id") or match.get("list_id")
+    if not list_id:
+        raise RuntimeError("External List MDBList senza ID valido")
+    entries = client.get_list(str(list_id), max_items=max_items)
+    if entries is None:
+        raise RuntimeError("Impossibile recuperare la External List MDBList collegata a IMDb")
+    normalized = _normalize_mdblist_entries(entries)
+    logger.info("IMDb via MDBList %s usa lista %s e restituisce %d elementi", trimmed, list_id, len(normalized))
     return normalized
 
 

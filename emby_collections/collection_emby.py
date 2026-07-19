@@ -21,37 +21,52 @@ from .sources import PROVIDER_LABEL_MAP
 logger = logging.getLogger(__name__)
 
 
-def _find_emby_item_ids(server: Dict[str, Any], entry: Dict[str, Any]) -> List[str]:
-    provider_key = entry.get("provider_key")
-    provider_id = entry.get("provider_id")
+def _entry_provider_candidates(entry: Dict[str, Any]) -> List[Tuple[str, str, str]]:
+    provider_key = str(entry.get("provider_key") or "").strip()
+    provider_id = str(entry.get("provider_id") or "").strip()
     if not provider_key or not provider_id:
         return []
-    provider_label = entry.get("provider_label") or PROVIDER_LABEL_MAP.get(provider_key, provider_key.title())
-    params = {
-        "AnyProviderIdEquals": f"{provider_label}.{provider_id}",
-        "Recursive": "true",
-        "Fields": "ProviderIds"
-    }
-    media_type = entry.get("media_type")
-    if media_type == "movie":
-        params["IncludeItemTypes"] = "Movie"
-    elif media_type == "tv":
-        params["IncludeItemTypes"] = "Series"
-    success, payload = _call_emby_api(server, "Items", params=params)
-    if not success:
-        logger.warning("Errore ricerca Emby %s: %s", provider_label, payload)
+    provider_label = str(
+        entry.get("provider_label") or PROVIDER_LABEL_MAP.get(provider_key, provider_key.title())
+    )
+    candidates = [(provider_key, provider_id, provider_label)]
+    tmdb_id = str(entry.get("tmdb_id") or "").strip()
+    if tmdb_id and (provider_key.lower() != "tmdb" or provider_id != tmdb_id):
+        candidates.append(("tmdb", tmdb_id, PROVIDER_LABEL_MAP.get("tmdb", "Tmdb")))
+    return candidates
+
+
+def _find_emby_item_ids(server: Dict[str, Any], entry: Dict[str, Any]) -> List[str]:
+    candidates = _entry_provider_candidates(entry)
+    if not candidates:
         return []
-    items = payload.get("Items") if isinstance(payload, dict) else payload if isinstance(payload, list) else []
-    result = []
-    if isinstance(items, list):
-        for item in items:
-            if isinstance(item, dict):
-                item_id = item.get("Id")
-                if item_id:
-                    result.append(item_id)
-    if result:
-        logger.info("Trovati %d elementi Emby per %s.%s", len(result), provider_label, provider_id)
-    return result
+    for _provider_key, provider_id, provider_label in candidates:
+        params = {
+            "AnyProviderIdEquals": f"{provider_label}.{provider_id}",
+            "Recursive": "true",
+            "Fields": "ProviderIds"
+        }
+        media_type = entry.get("media_type")
+        if media_type == "movie":
+            params["IncludeItemTypes"] = "Movie"
+        elif media_type == "tv":
+            params["IncludeItemTypes"] = "Series"
+        success, payload = _call_emby_api(server, "Items", params=params)
+        if not success:
+            logger.warning("Errore ricerca Emby %s: %s", provider_label, payload)
+            continue
+        items = payload.get("Items") if isinstance(payload, dict) else payload if isinstance(payload, list) else []
+        result = []
+        if isinstance(items, list):
+            for item in items:
+                if isinstance(item, dict):
+                    item_id = item.get("Id")
+                    if item_id:
+                        result.append(item_id)
+        if result:
+            logger.info("Trovati %d elementi Emby per %s.%s", len(result), provider_label, provider_id)
+            return result
+    return []
 
 
 def _ensure_emby_collection(server: Dict[str, Any], name: str, sort_name: str, initial_item_ids: List[str] | None = None) -> Tuple[str, bool]:

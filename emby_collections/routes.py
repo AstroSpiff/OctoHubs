@@ -31,6 +31,11 @@ from emby_collections import (
     COLLECTION_POSTER_MAX_BYTES,
 )
 from emby_collections.sources import SOURCE_TYPES, list_trakt_lists, list_mdblist_user_lists, is_mdblist_enabled
+from emby_collections.source_inventory import (
+    add_source_inventory_item,
+    list_source_inventory,
+    remove_source_inventory_item,
+)
 
 
 router = APIRouter()
@@ -374,4 +379,47 @@ async def api_emby_collections_mdblist_lists(request: Request, user=Depends(_req
     except RuntimeError as exc:
         return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
     except Exception as exc:
+        return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
+
+
+@router.get("/api/emby/collections/source-inventory")
+async def api_emby_collections_source_inventory(user=Depends(_require_user_dep)):
+    logger = _logger_dep()
+    actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
+    logger.info("User %s requested collection source inventory", actor_id or "unknown")
+    try:
+        return {"success": True, "items": list_source_inventory()}
+    except StorageError as exc:
+        return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
+
+
+@router.post("/api/emby/collections/source-inventory")
+async def api_emby_collections_source_inventory_save(request: Request, user=Depends(_require_user_dep)):
+    logger = _logger_dep()
+    actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
+    logger.info("User %s saving collection source inventory item", actor_id or "unknown")
+    try:
+        payload = await request.json()
+    except ValueError:
+        return JSONResponse(status_code=400, content={"success": False, "error": "JSON non valido"})
+    try:
+        item = add_source_inventory_item(payload, origin="manual")
+        return {"success": True, "item": item, "items": list_source_inventory()}
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
+    except StorageError as exc:
+        return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
+
+
+@router.post("/api/emby/collections/source-inventory/{item_id}/delete")
+async def api_emby_collections_source_inventory_delete(item_id: str, user=Depends(_require_user_dep)):
+    logger = _logger_dep()
+    actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
+    logger.info("User %s deleting collection source inventory item %s", actor_id or "unknown", item_id)
+    try:
+        removed = remove_source_inventory_item(item_id)
+        if not removed:
+            return JSONResponse(status_code=404, content={"success": False, "error": "Lista non trovata"})
+        return {"success": True, "items": list_source_inventory()}
+    except StorageError as exc:
         return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})

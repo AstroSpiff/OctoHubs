@@ -170,9 +170,14 @@ def _sync_collection_to_server(
         item.pop("emby_id", None)
     unique_ids = list(dict.fromkeys(matched_ids))
     if not unique_ids:
+        message = (
+            "La fonte non ha restituito contenuti"
+            if total_candidates == 0
+            else "Nessun contenuto corrispondente trovato su Emby"
+        )
         return {
             "status": "warning",
-            "message": "Nessun contenuto corrispondente trovato su Emby",
+            "message": message,
             "matched": 0,
             "candidates": total_candidates,
             "missing": len(missing),

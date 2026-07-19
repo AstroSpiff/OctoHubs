@@ -17,6 +17,7 @@ from .collection_common import (
     _server_map,
 )
 from .collection_emby import _delete_emby_collection, _find_collection_ids_for_definition
+from .source_inventory import maybe_add_collection_source_to_inventory
 from .sources import SOURCE_TYPE_MAP
 
 logger = logging.getLogger(__name__)
@@ -159,6 +160,8 @@ def save_collection_definition(payload: Dict[str, Any]) -> Dict[str, Any]:
     servers = _server_map()
     previous_server_ids = _normalize_server_ids(existing_data, existing_data, servers)
     server_ids = _normalize_server_ids(payload, existing_data, servers)
+    if not server_ids:
+        raise ValueError("Seleziona almeno un server Emby")
     definition: Dict[str, Any] = {
         "id": definition_id,
         "name": name,
@@ -208,6 +211,10 @@ def save_collection_definition(payload: Dict[str, Any]) -> Dict[str, Any]:
         if field in existing_data:
             definition[field] = existing_data[field]
     backend.save_emby_collection_definition(definition)
+    try:
+        maybe_add_collection_source_to_inventory(definition)
+    except Exception as exc:
+        logger.warning("Impossibile aggiornare inventario liste per %s: %s", definition_id, exc)
     logger.info(
         "Saved collection definition '%s' (id=%s) for server=%s enabled=%s",
         name,

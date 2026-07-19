@@ -127,11 +127,20 @@
     const mdblistStatus = document.getElementById('mdblist-lists-status');
     const mdblistTableBody = document.getElementById('mdblist-lists-body');
     const mdblistRefreshButton = document.getElementById('mdblist-lists-refresh');
+    const sourceInventoryStatus = document.getElementById('source-inventory-status');
+    const sourceInventoryTableBody = document.getElementById('source-inventory-body');
+    const sourceInventoryRefreshButton = document.getElementById('source-inventory-refresh');
+    const sourceInventoryAddButton = document.getElementById('source-inventory-add');
+    const sourceInventoryNameInput = document.getElementById('source-inventory-name');
+    const sourceInventoryTypeSelect = document.getElementById('source-inventory-type');
+    const sourceInventoryValueInput = document.getElementById('source-inventory-value');
 
     const apiUrl = '/api/emby/collections';
+    const sourceInventoryApiUrl = '/api/emby/collections/source-inventory';
     const sourceTypes = window.collectionSourceTypes || [];
     const state = {
         collections: [],
+        sourceInventory: [],
         saving: false
     };
     const syncStatusLabels = {
@@ -796,7 +805,7 @@
             ? entry.server_labels
             : serverIds.length
                 ? serverIds
-                : entry.server_display ? entry.server_display.split(' · ') : ['Globale'];
+                : entry.server_display ? entry.server_display.split(' · ') : ['Nessun server'];
         const perServer = Array.isArray(entry.last_sync_per_server)
             ? entry.last_sync_per_server
             : [];
@@ -827,7 +836,7 @@
             })
             : [{
                 server_id: '',
-                label: serverLabels[0] || 'Globale',
+                label: serverLabels[0] || 'Nessun server',
                 synced_at: entry.last_sync_at,
                 matched: entry.last_sync_items,
                 candidates: entry.last_sync_candidates,
@@ -1051,8 +1060,8 @@
         const name = escapeHtml(entry.name || 'Lista MDBList');
         const description = buildTruncatedDescription(entry.description);
         const itemCount = entry.item_count || 0;
-        const link = entry.link || '';
-        const sourceValue = entry.source_value || '';
+        const link = escapeHtml(entry.link || '');
+        const sourceValue = escapeHtml(entry.source_value || '');
         return `
             <tr data-list-id="${sourceValue}">
                 <td>
@@ -1172,9 +1181,187 @@
             renderMdblistLists(data.lists || []);
             updateMdblistStatus(`Liste disponibili: ${data.lists ? data.lists.length : 0}`);
         } catch (error) {
-            updateMdblistStatus('Errore caricamento liste MDBList.');
+            updateMdblistStatus(error.message || 'Errore caricamento liste MDBList.');
             showToast(error.message || 'Errore MDBList.', 'error');
             renderMdblistLists([]);
+        }
+    };
+
+    const updateSourceInventoryStatus = (text) => {
+        if (sourceInventoryStatus) {
+            sourceInventoryStatus.textContent = String(text || '');
+        }
+    };
+
+    const buildSourceInventoryRow = (entry) => {
+        const id = escapeHtml(entry.id || '');
+        const name = escapeHtml(entry.name || entry.source_value || 'Lista salvata');
+        const sourceType = escapeHtml(entry.source_type || '');
+        const sourceValue = escapeHtml(entry.source_value || '');
+        const sourceLink = escapeHtml(entry.source_link || '');
+        const sourceLabel = escapeHtml(getSourceLabel(entry.source_type));
+        return `
+            <tr data-source-id="${id}">
+                <td>
+                    <strong>${name}</strong>
+                    <div class="tagline small">${sourceValue}</div>
+                </td>
+                <td>${sourceLabel}</td>
+                <td style="white-space: nowrap;">
+                    <button class="btn ghost compact" type="button" data-action="use-source-inventory"
+                        data-source-type="${sourceType}"
+                        data-source-value="${sourceValue}"
+                        data-source-name="${name}">
+                        Usa
+                    </button>
+                    ${sourceLink ? `<a class="btn secondary compact" href="${sourceLink}" target="_blank" rel="noopener">Apri</a>` : ''}
+                    <button class="btn danger compact" type="button" data-action="delete-source-inventory" data-source-id="${id}">
+                        Rimuovi
+                    </button>
+                </td>
+            </tr>
+        `;
+    };
+
+    const renderSourceInventory = (entries) => {
+        if (!sourceInventoryTableBody) {
+            return;
+        }
+        state.sourceInventory = Array.isArray(entries) ? entries : [];
+        if (!state.sourceInventory.length) {
+            sourceInventoryTableBody.innerHTML = `
+                <tr>
+                    <td colspan="3" class="tagline small" style="font-style: italic;">
+                        Nessuna lista salvata.
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+        sourceInventoryTableBody.innerHTML = state.sourceInventory.map(buildSourceInventoryRow).join('');
+    };
+
+    const fetchSourceInventory = async () => {
+        updateSourceInventoryStatus('Caricamento liste salvate...');
+        try {
+            const response = await baseCsrfFetch(sourceInventoryApiUrl);
+            const data = await response.json();
+            if (!response.ok || data.success === false) {
+                throw new Error(data.error || 'Impossibile caricare le liste salvate.');
+            }
+            renderSourceInventory(data.items || []);
+            updateSourceInventoryStatus(`Liste salvate: ${data.items ? data.items.length : 0}`);
+        } catch (error) {
+            updateSourceInventoryStatus(error.message || 'Errore caricamento liste salvate.');
+            showToast(error.message || 'Errore liste salvate.', 'error');
+            renderSourceInventory([]);
+        }
+    };
+
+    const clearSourceInventoryForm = () => {
+        if (sourceInventoryNameInput) {
+            sourceInventoryNameInput.value = '';
+        }
+        if (sourceInventoryValueInput) {
+            sourceInventoryValueInput.value = '';
+        }
+    };
+
+    const handleSourceInventoryAdd = async () => {
+        const payload = {
+            name: sourceInventoryNameInput ? sourceInventoryNameInput.value.trim() : '',
+            source_type: sourceInventoryTypeSelect ? sourceInventoryTypeSelect.value : '',
+            source_value: sourceInventoryValueInput ? sourceInventoryValueInput.value.trim() : ''
+        };
+        const detectedType = detectSourceTypeFromValue(payload.source_value);
+        if (detectedType) {
+            payload.source_type = detectedType;
+            if (sourceInventoryTypeSelect) {
+                sourceInventoryTypeSelect.value = detectedType;
+            }
+        }
+        if (!payload.source_value) {
+            showToast('Inserisci un link o ID lista.', 'warning');
+            return;
+        }
+        if (sourceInventoryAddButton) {
+            sourceInventoryAddButton.disabled = true;
+        }
+        try {
+            const response = await baseCsrfFetch(sourceInventoryApiUrl, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            if (!response.ok || data.success === false) {
+                throw new Error(data.error || 'Errore salvataggio lista.');
+            }
+            renderSourceInventory(data.items || []);
+            updateSourceInventoryStatus(`Liste salvate: ${data.items ? data.items.length : 0}`);
+            clearSourceInventoryForm();
+            showToast('Lista salvata.', 'success');
+        } catch (error) {
+            showToast(error.message || 'Errore salvataggio lista.', 'error');
+        } finally {
+            if (sourceInventoryAddButton) {
+                sourceInventoryAddButton.disabled = false;
+            }
+        }
+    };
+
+    const handleSourceInventoryValueUpdate = () => {
+        if (!sourceInventoryValueInput || !sourceInventoryTypeSelect) {
+            return;
+        }
+        const detectedType = detectSourceTypeFromValue(sourceInventoryValueInput.value);
+        if (detectedType) {
+            sourceInventoryTypeSelect.value = detectedType;
+        }
+    };
+
+    const handleSourceInventoryActions = async (event) => {
+        const trigger = event.target.closest('button[data-action]');
+        if (!trigger) {
+            return;
+        }
+        const action = trigger.dataset.action;
+        if (action === 'use-source-inventory') {
+            fillImportForm(trigger.dataset.sourceType, trigger.dataset.sourceValue, trigger.dataset.sourceName);
+            return;
+        }
+        if (action !== 'delete-source-inventory') {
+            return;
+        }
+        const itemId = trigger.dataset.sourceId;
+        if (!itemId) {
+            showToast('Lista salvata non valida.', 'error');
+            return;
+        }
+        const confirmed = await openConfirmDialog('Rimuovere questa lista salvata?', 'Rimuovi lista');
+        if (!confirmed) {
+            return;
+        }
+        trigger.disabled = true;
+        try {
+            const response = await baseCsrfFetch(`${sourceInventoryApiUrl}/${encodeURIComponent(itemId)}/delete`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+            const data = await response.json();
+            if (!response.ok || data.success === false) {
+                throw new Error(data.error || 'Errore rimozione lista.');
+            }
+            renderSourceInventory(data.items || []);
+            updateSourceInventoryStatus(`Liste salvate: ${data.items ? data.items.length : 0}`);
+            showToast('Lista rimossa.', 'success');
+        } catch (error) {
+            trigger.disabled = false;
+            showToast(error.message || 'Errore rimozione lista.', 'error');
         }
     };
 
@@ -1186,20 +1373,24 @@
         if (!trimmed) {
             return null;
         }
-        const baseValue = trimmed.split('?', 1)[0];
+        const hashIndex = trimmed.indexOf('#');
+        const withoutHash = hashIndex >= 0 ? trimmed.slice(0, hashIndex) : trimmed;
+        const queryIndex = withoutHash.indexOf('?');
+        const baseValue = queryIndex >= 0 ? withoutHash.slice(0, queryIndex) : withoutHash;
+        const querySuffix = queryIndex >= 0 ? withoutHash.slice(queryIndex) : '';
         const directMatch = /^([^/]+)\/([^/]+)$/.exec(baseValue);
         if (directMatch) {
-            return `${directMatch[1]}/${directMatch[2]}`;
+            return `${directMatch[1]}/${directMatch[2]}${querySuffix}`;
         }
         const userPattern = /trakt\.tv\/users\/([^/]+)\/lists\/([^/?#]+)/i;
         const userMatch = userPattern.exec(baseValue);
         if (userMatch) {
-            return `${userMatch[1]}/${userMatch[2]}`;
+            return `${userMatch[1]}/${userMatch[2]}${querySuffix}`;
         }
         const listPattern = /trakt\.tv\/lists\/([^/?#]+)/i;
         const listMatch = listPattern.exec(baseValue);
         if (listMatch) {
-            return listMatch[1];
+            return `${listMatch[1]}${querySuffix}`;
         }
         return null;
     };
@@ -1220,6 +1411,55 @@
         updateSourceHint();
     };
 
+    const hasSourceType = (sourceType) => {
+        return sourceTypes.some((entry) => entry.value === sourceType);
+    };
+
+    const detectSourceTypeFromValue = (value) => {
+        const text = (value || '').trim();
+        const lowered = text.toLowerCase();
+        if (!lowered) {
+            return '';
+        }
+        if (lowered.includes('mdblist.com/')) {
+            return 'mdblist';
+        }
+        if (lowered.includes('trakt.tv/')) {
+            return 'trakt_list';
+        }
+        if (lowered.includes('imdb.com/') || /^ls\d+$/i.test(text)) {
+            return hasSourceType('imdb_mdblist') ? 'imdb_mdblist' : 'imdb_list';
+        }
+        if (lowered.includes('themoviedb.org/list/')) {
+            return 'tmdb_list';
+        }
+        if (lowered.includes('themoviedb.org/collection/')) {
+            return 'tmdb_collection';
+        }
+        return '';
+    };
+
+    const parseImdbSourceValue = (value) => {
+        if (!value) {
+            return null;
+        }
+        const trimmed = value.trim();
+        if (!trimmed) {
+            return null;
+        }
+        if (/^ls\d+$/i.test(trimmed)) {
+            return trimmed;
+        }
+        const match = /imdb\.com\/(?:[a-z]{2}\/)?(?:list\/(ls\d+)|chart\/([^/?#]+))/i.exec(trimmed);
+        if (!match) {
+            return null;
+        }
+        if (match[1]) {
+            return match[1];
+        }
+        return trimmed;
+    };
+
     const handleSourceValueUpdate = () => {
         if (!sourceValueInput) {
             return;
@@ -1230,6 +1470,17 @@
                 sourceTypeSelect.value = 'trakt_list';
             }
             sourceValueInput.value = parsed;
+        }
+        const parsedImdb = parseImdbSourceValue(sourceValueInput.value);
+        if (parsedImdb) {
+            if (sourceTypeSelect) {
+                if (hasSourceType('imdb_mdblist')) {
+                    sourceTypeSelect.value = 'imdb_mdblist';
+                } else {
+                    sourceTypeSelect.value = 'imdb_list';
+                }
+            }
+            sourceValueInput.value = parsedImdb;
         }
         updateSourceHint();
     };
@@ -1413,7 +1664,7 @@
             renderTraktLists(data.lists || []);
             updateTraktStatus(`Liste disponibili: ${data.lists ? data.lists.length : 0}`);
         } catch (error) {
-            updateTraktStatus('Errore caricamento liste Trakt.');
+            updateTraktStatus(error.message || 'Errore caricamento liste Trakt.');
             showToast(error.message || 'Errore Trakt.', 'error');
             renderTraktLists([]);
         }
@@ -1486,6 +1737,10 @@
             showToast('Nome e valore lista sono obbligatori.', 'warning');
             return;
         }
+        if (!payload.server_ids.length) {
+            showToast('Seleziona almeno un server Emby.', 'warning');
+            return;
+        }
         state.saving = true;
         if (formStatus) {
             formStatus.textContent = 'Salvataggio in corso...';
@@ -1518,6 +1773,7 @@
             showToast('Collezione salvata.', 'success');
             closeModal(true);
             await fetchCollections();
+            await fetchSourceInventory();
         } catch (error) {
             showToast(error.message || 'Errore salvataggio collezione.', 'error');
             if (formStatus) {
@@ -1905,6 +2161,11 @@
         mdblistTableBody?.addEventListener('click', handleDescriptionExpand);
         mdblistTableBody?.addEventListener('click', handleMdblistActions);
         mdblistRefreshButton?.addEventListener('click', fetchMdblistLists);
+        sourceInventoryTableBody?.addEventListener('click', handleSourceInventoryActions);
+        sourceInventoryRefreshButton?.addEventListener('click', fetchSourceInventory);
+        sourceInventoryAddButton?.addEventListener('click', handleSourceInventoryAdd);
+        sourceInventoryValueInput?.addEventListener('blur', handleSourceInventoryValueUpdate);
+        sourceInventoryValueInput?.addEventListener('paste', () => setTimeout(handleSourceInventoryValueUpdate, 200));
         if (traktEnabled) {
             fetchTraktLists();
         } else {
@@ -1915,6 +2176,7 @@
         } else {
             updateMdblistStatus('MDBList non configurato.');
         }
+        fetchSourceInventory();
     };
 
     if (document.readyState === 'loading') {

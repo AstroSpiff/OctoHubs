@@ -875,6 +875,30 @@
             display: flex;
             justify-content: flex-end;
         }
+        .source-inventory-form {
+            display: grid;
+            grid-template-columns: minmax(10rem, 1fr) minmax(9rem, 13rem) minmax(14rem, 2fr) auto;
+            gap: 0.75rem;
+            align-items: end;
+            width: 100%;
+        }
+        .source-inventory-form label {
+            display: grid;
+            gap: 0.35rem;
+            font-weight: 700;
+            color: #334155;
+        }
+        .source-inventory-actions {
+            display: flex;
+            justify-content: space-between;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+        @media (max-width: 900px) {
+            .source-inventory-form {
+                grid-template-columns: 1fr;
+            }
+        }
         .collection-source-table {
             width: 100%;
             border-collapse: collapse;
@@ -1054,7 +1078,7 @@
                                     <span class="collection-server-icon collection-server-icon--muted">
                                         <i class="fa-solid fa-circle-minus"></i>
                                     </span>
-                                    <span class="collection-server-name">Nessun server (globale)</span>
+                                    <span class="collection-server-name">Nessun server selezionato</span>
                                 </label>
                                 {% for server in emby_servers %}
                                     <label class="collection-server-option">
@@ -1205,6 +1229,56 @@
                                     </tr>
                                 </thead>
                                 <tbody id="mdblist-lists-body"></tbody>
+                            </table>
+                        </div>
+                    </details>
+
+                    <details class="collection-source-panel" id="source-inventory-card">
+                        <summary>
+                            <div>
+                                <div class="collection-source-panel__title">Liste salvate</div>
+                                <div class="collection-source-panel__status" id="source-inventory-status">
+                                    Caricamento liste salvate…
+                                </div>
+                            </div>
+                            <i class="fa-solid fa-chevron-down"></i>
+                        </summary>
+                        <div class="collection-source-panel__body">
+                            <div class="source-inventory-actions">
+                                <div class="source-inventory-form">
+                                    <label for="source-inventory-name">
+                                        Nome
+                                        <input type="text" id="source-inventory-name" maxlength="120" placeholder="Nome lista">
+                                    </label>
+                                    <label for="source-inventory-type">
+                                        Fonte
+                                        <select id="source-inventory-type">
+                                            {% for option in collection_source_types %}
+                                                <option value="{{ option.value }}">{{ option.label }}</option>
+                                            {% endfor %}
+                                        </select>
+                                    </label>
+                                    <label for="source-inventory-value">
+                                        Link o ID
+                                        <input type="text" id="source-inventory-value" placeholder="https://...">
+                                    </label>
+                                    <button class="btn primary compact" id="source-inventory-add" type="button">
+                                        <i class="fa-solid fa-plus"></i> Aggiungi
+                                    </button>
+                                </div>
+                                <button class="btn secondary compact" id="source-inventory-refresh" type="button">
+                                    <i class="fa-solid fa-rotate"></i> Aggiorna
+                                </button>
+                            </div>
+                            <table class="collection-source-table" id="source-inventory-table" aria-live="polite">
+                                <thead>
+                                    <tr>
+                                        <th>Lista</th>
+                                        <th>Fonte</th>
+                                        <th>Azioni</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="source-inventory-body"></tbody>
                             </table>
                         </div>
                     </details>

@@ -127,9 +127,12 @@ def _parse_trakt_list_reference(value: str) -> Optional[TraktListReference]:
             sort_how = str(sort_how_candidate).strip().lower() or None
     if sort_how not in (None, "asc", "desc"):
         sort_how = None
+    def _api_username(raw: str) -> str:
+        return str(raw or "").strip().lower()
+
     match = re.search(r"trakt\.tv/users/([^/]+)/lists/([^/?#]+)", base_value, re.IGNORECASE)
     if match:
-        username = match.group(1)
+        username = _api_username(match.group(1))
         list_id = match.group(2)
         return {
             "username": username,
@@ -150,6 +153,7 @@ def _parse_trakt_list_reference(value: str) -> Optional[TraktListReference]:
         }
     if "/" in base_value:
         username, list_id = base_value.split("/", 1)
+        username = _api_username(username)
         return {
             "username": username,
             "list_id": list_id,

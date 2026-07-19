@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, List, Tuple
 
 from .sources_common import PROVIDER_LABEL_MAP
 from .sources_imdb import _fetch_imdb_list_from_value
-from .sources_mdblist import _fetch_mdblist_items, is_mdblist_enabled, list_mdblist_user_lists
+from .sources_mdblist import _fetch_imdb_via_mdblist_items, _fetch_mdblist_items, is_mdblist_enabled, list_mdblist_user_lists
 from .sources_tmdb import _fetch_tmdb_collection_from_value, _fetch_tmdb_list_from_value
 from .sources_trakt import list_trakt_lists, _fetch_trakt_list_items
 
@@ -19,15 +19,16 @@ def build_source_link(source_type: str, source_value: str) -> str:
     if value.startswith("http://") or value.startswith("https://"):
         return value
     if source_type == "trakt_list":
-        parts = value.split("/", 2)
+        base_value, _, query = value.partition("?")
+        parts = base_value.split("/", 1)
         if len(parts) == 1:
-            return f"https://trakt.tv/users/{parts[0]}/lists"
-        list_value, _, query = parts[1].partition("?")
-        url = f"https://trakt.tv/users/{urllib.parse.quote(parts[0])}/lists/{urllib.parse.quote(list_value)}"
+            url = f"https://trakt.tv/lists/{urllib.parse.quote(parts[0])}"
+        else:
+            url = f"https://trakt.tv/users/{urllib.parse.quote(parts[0])}/lists/{urllib.parse.quote(parts[1])}"
         if query:
             url = f"{url}?{query}"
         return url
-    if source_type == "imdb_list":
+    if source_type in {"imdb_list", "imdb_mdblist"}:
         if value.startswith("ls"):
             return f"https://www.imdb.com/list/{value}"
         return value
@@ -63,6 +64,16 @@ SOURCE_PROVIDER_CONFIG: List[Tuple[str, Dict[str, Any]]] = [
             "placeholder": "ls123456789",
             "help": "Supporta ID, URL lista e chart.",
             "fetch": _fetch_imdb_list_from_value
+        }
+    ),
+    (
+        "imdb_mdblist",
+        {
+            "label": "IMDb tramite MDBList",
+            "description": "Usa un URL IMDb lista/chart collegato a una External List MDBList già creata.",
+            "placeholder": "https://www.imdb.com/chart/toptv/",
+            "help": "OctoHub legge ogni volta la lista MDBList aggiornata, evitando il WAF IMDb.",
+            "fetch": _fetch_imdb_via_mdblist_items
         }
     ),
     (
