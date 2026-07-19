@@ -12,6 +12,7 @@ from app_helpers import _get_total_blacklist_counts
 from app_state import _JELLYSEERR_REFRESH_STATE
 from core.config import DEFAULT_CONFIG, TV_SORT_OPTIONS, MOVIE_SORT_OPTIONS, _default_auto_tasks
 from core.config_manager import load_config
+from search.availability import is_request_available, normalize_request_availability
 from services.scheduler_manager import scan_manager
 from services.scan_results import load_results_file
 from services.requests_cache import _load_cached_requests_overview
@@ -94,12 +95,17 @@ async def dashboard_root(request: Request):
     if is_valid:
         requests_overview_data, overview_stamp = _load_cached_requests_overview()
         requests_overview: list = requests_overview_data if isinstance(requests_overview_data, list) else []
+        requests_overview = normalize_request_availability(requests_overview)
     else:
         requests_overview = []
         overview_stamp = None
 
-    # Filter results to remove fully available content (status 5 = available).
-    available_ids = {req.get("request_id") for req in requests_overview if req.get("status") == 5}
+    # Filter results to remove fully available content.
+    available_ids = {
+        str(req.get("request_id") or req.get("id"))
+        for req in requests_overview
+        if is_request_available(req)
+    }
 
     # Filter requests overview to remove available content.
     requests_overview = [req for req in requests_overview if req.get("status") != 5]
@@ -107,7 +113,7 @@ async def dashboard_root(request: Request):
     # Filter results items to remove available content.
     if results and results.get("items"):
         results["items"] = [
-            item for item in results["items"] if item.get("request_id") not in available_ids
+            item for item in results["items"] if str(item.get("request_id")) not in available_ids
         ]
 
     tv_requests = [

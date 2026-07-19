@@ -244,6 +244,52 @@ def apply_main_schema_bridge(conn: Any, url: str) -> None:
     )
 
 
+def apply_manual_search_history_schema(conn: Any, url: str) -> None:
+    """Create the manual search history table for databases migrated before it existed."""
+
+    if _is_postgresql(url):
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS manual_search_history (
+                    id SERIAL PRIMARY KEY,
+                    generated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                    payload JSON NOT NULL
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS ix_manual_search_history_generated_at
+                ON manual_search_history (generated_at)
+                """
+            )
+        )
+        return
+
+    conn.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS manual_search_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                generated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                payload JSON NOT NULL
+            )
+            """
+        )
+    )
+    conn.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_manual_search_history_generated_at
+            ON manual_search_history (generated_at)
+            """
+        )
+    )
+
+
 def default_migrations(
     legacy_schema_alignment: Optional[MigrationCallable] = None,
 ) -> List[Migration]:
@@ -259,6 +305,11 @@ def default_migrations(
             "0002_main_schema_bridge",
             "Bridge legacy GitHub main schema table names",
             apply_main_schema_bridge,
+        ),
+        Migration(
+            "0003_manual_search_history",
+            "Create manual search history table",
+            apply_manual_search_history_schema,
         ),
     ]
 

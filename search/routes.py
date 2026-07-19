@@ -11,6 +11,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from core.utils import json_error
+from search.availability import is_request_available, normalize_request_availability
 from search.manager import (
     _download_torrent_file,
     _build_manual_search_snapshot,
@@ -20,6 +21,7 @@ from search.manager import (
     _build_tmdb_search_snapshot,
     _build_tmdb_tv_details_snapshot,
 )
+from services.scan_result_cleanup import clean_scan_results_payload
 
 router = APIRouter()
 
@@ -51,6 +53,20 @@ def _ensure_db_backend_dep():
 def _error_response(message: str, status_code: int = 400, **extra) -> JSONResponse:
     data, code = json_error(message, status_code, **extra)
     return JSONResponse(data, status_code=code)
+
+
+def _available_request_ids_from_overview(backend: Any) -> set[str]:
+    try:
+        overview, _updated_at = backend.load_request_overview()
+    except Exception:
+        return set()
+    rows = overview if isinstance(overview, list) else []
+    normalized = normalize_request_availability(rows)
+    return {
+        str(row.get("request_id") or row.get("id"))
+        for row in normalized
+        if is_request_available(row)
+    }
 
 
 @router.get("/api/tmdb/search")
@@ -278,6 +294,70 @@ async def delete_manual_search(request: Request, search_id: int):
         }, status_code=200)
     except Exception as exc:
         print(f"[API] Errore eliminazione ricerca: {exc}")
+        return JSONResponse({
+            "success": False,
+            "message": f"Errore: {str(exc)}",
+        }, status_code=500)
+
+
+@router.post("/api/search/results/cleanup")
+async def cleanup_search_results(request: Request):
+    _require_auth_dep(request)
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    mode = str(payload.get("mode") or "").strip().lower() if isinstance(payload, dict) else ""
+    if mode not in {"single", "resolved", "all"}:
+        return _error_response("Modalita pulizia risultati non valida", 400)
+
+    try:
+        backend = _ensure_db_backend_dep()
+        if mode == "all" and hasattr(backend, "delete_scan_results"):
+            removed = backend.delete_scan_results(keep_last=0)
+            return JSONResponse({
+                "success": True,
+                "message": "Risultati azzerati",
+                "removed": int(removed or 0),
+                "remaining": 0,
+            }, status_code=200)
+
+        current = backend.load_last_result()
+        if not current:
+            return JSONResponse({
+                "success": True,
+                "message": "Nessun riepilogo da pulire",
+                "removed": 0,
+                "remaining": 0,
+            }, status_code=200)
+
+        available_ids = _available_request_ids_from_overview(backend) if mode == "resolved" else None
+        result = clean_scan_results_payload(
+            current,
+            mode=mode,
+            request_id=payload.get("request_id") if isinstance(payload, dict) else None,
+            season=payload.get("season") if isinstance(payload, dict) else None,
+            available_ids=available_ids,
+        )
+        if result["removed"] > 0 or mode == "all":
+            backend.save_scan_result(result["payload"])
+
+        messages = {
+            "single": "Risultato rimosso",
+            "resolved": "Risultati evasi rimossi",
+            "all": "Risultati azzerati",
+        }
+        return JSONResponse({
+            "success": True,
+            "message": messages.get(mode, "Riepilogo aggiornato"),
+            "removed": result["removed"],
+            "remaining": result["remaining"],
+        }, status_code=200)
+    except ValueError as exc:
+        return _error_response(str(exc), 400)
+    except Exception as exc:
+        print(f"[API] Errore pulizia risultati: {exc}")
         return JSONResponse({
             "success": False,
             "message": f"Errore: {str(exc)}",

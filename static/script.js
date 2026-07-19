@@ -604,19 +604,17 @@
 
         // Toggle details row when clicking on any part of the row except checkbox
         document.addEventListener('click', (event) => {
-            // Ignore clicks on checkboxes and their labels
-            if (event.target.closest('.select-col') || event.target.closest('input[type="checkbox"]')) {
+            // Ignore clicks on controls inside the row.
+            if (event.target.closest('.select-col, button, a, input, select, textarea, label')) {
                 return;
             }
 
             const row = event.target.closest('.results-row');
             if (!row) return;
 
-            const requestId = row.dataset.requestId;
-            const season = row.dataset.season || 'all';
-            const detailsRow = document.querySelector(`.details-row[data-details-for="${requestId}-${season}"]`);
+            const detailsRow = row.nextElementSibling;
 
-            if (detailsRow) {
+            if (detailsRow && detailsRow.classList.contains('details-row')) {
                 const isCurrentlyExpanded = detailsRow.classList.contains('expanded');
 
                 // Close all other expanded rows in the same table

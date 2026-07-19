@@ -67,6 +67,14 @@
                             title="Esegue subito una ricerca mirata solo su questa richiesta">
                         Ricerca rapida
                     </button>
+                    <button type="button"
+                            class="icon-btn result-cleanup-btn"
+                            data-result-cleanup-single
+                            data-request-id="{{ item.request_id }}"
+                            data-season="{{ item.season if item.season is not none else '' }}"
+                            title="Rimuovi questo risultato dal riepilogo">
+                        <i class="fa-solid fa-trash" aria-hidden="true"></i>
+                    </button>
                 </td>
                 <td class="details-cell clickable col-results">
                     <div class="result-updated">

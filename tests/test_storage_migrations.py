@@ -157,8 +157,64 @@ class StorageMigrationTests(unittest.TestCase):
 
         self.assertEqual(
             [migration.id for migration in migrations],
-            ["0001_legacy_schema_alignment", "0002_main_schema_bridge"],
+            [
+                "0001_legacy_schema_alignment",
+                "0002_main_schema_bridge",
+                "0003_manual_search_history",
+            ],
         )
+
+    def test_manual_search_history_migration_repairs_already_migrated_database(self):
+        from core.storage.migrations import apply_pending_migrations, default_migrations
+
+        engine = create_engine("sqlite:///:memory:", future=True)
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE schema_migrations (
+                            id VARCHAR(255) PRIMARY KEY,
+                            name VARCHAR(255) NOT NULL,
+                            applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                        )
+                        """
+                    )
+                )
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO schema_migrations (id, name)
+                        VALUES (:id, :name)
+                        """
+                    ),
+                    [
+                        {"id": "0001_legacy_schema_alignment", "name": "Legacy schema alignment"},
+                        {"id": "0002_main_schema_bridge", "name": "Bridge legacy GitHub main schema table names"},
+                    ],
+                )
+
+            result = apply_pending_migrations(
+                engine,
+                "sqlite:///:memory:",
+                migrations=default_migrations(lambda conn, url: None),
+            )
+
+            self.assertEqual(result["applied"], ["0003_manual_search_history"])
+            with engine.connect() as conn:
+                row = conn.execute(
+                    text(
+                        """
+                        SELECT 1
+                        FROM sqlite_master
+                        WHERE type = 'table' AND name = 'manual_search_history'
+                        LIMIT 1
+                        """
+                    )
+                ).first()
+            self.assertIsNotNone(row)
+        finally:
+            engine.dispose()
 
     def test_request_rule_entry_exposes_data_attribute_for_rules_column(self):
         from core.storage.storage_models import RequestRuleEntry

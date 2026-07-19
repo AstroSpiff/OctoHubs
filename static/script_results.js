@@ -542,6 +542,78 @@
             });
         });
 
+        const cleanupResolvedBtn = document.getElementById('cleanup-resolved-results-btn');
+        const resetScanResultsBtn = document.getElementById('reset-scan-results-btn');
+
+        async function cleanupScanResults(mode, extraPayload, button, confirmMessage) {
+            const confirmed = await openConfirmDialog(confirmMessage);
+            if (!confirmed) {
+                return;
+            }
+            if (button) {
+                button.disabled = true;
+            }
+            try {
+                const resp = await csrfFetch('/api/search/results/cleanup', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({mode, ...(extraPayload || {})})
+                });
+                const data = await readJsonResponse(resp);
+                if (!resp.ok || !data || data.success === false) {
+                    throw new Error((data && data.message) || 'Errore pulizia risultati');
+                }
+                const removed = Number(data.removed || 0);
+                const message = data.message || 'Riepilogo aggiornato';
+                showToast(removed > 0 ? `${message}: ${removed}` : message, removed > 0 ? 'success' : 'warning');
+                window.location.reload();
+            } catch (err) {
+                showToast(err.message || 'Errore pulizia risultati', 'error');
+            } finally {
+                if (button) {
+                    button.disabled = false;
+                }
+            }
+        }
+
+        if (cleanupResolvedBtn) {
+            cleanupResolvedBtn.addEventListener('click', () => {
+                cleanupScanResults(
+                    'resolved',
+                    {},
+                    cleanupResolvedBtn,
+                    'Vuoi rimuovere dal riepilogo i risultati collegati a richieste già disponibili?'
+                );
+            });
+        }
+
+        if (resetScanResultsBtn) {
+            resetScanResultsBtn.addEventListener('click', () => {
+                cleanupScanResults(
+                    'all',
+                    {},
+                    resetScanResultsBtn,
+                    "Vuoi cancellare tutto l'Ultimo Riepilogo? Lo storico delle ricerche manuali non verrà toccato."
+                );
+            });
+        }
+
+        document.querySelectorAll('[data-result-cleanup-single]').forEach(btn => {
+            btn.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                cleanupScanResults(
+                    'single',
+                    {
+                        request_id: btn.dataset.requestId,
+                        season: getSeasonValue(btn.dataset.season)
+                    },
+                    btn,
+                    'Vuoi rimuovere questo risultato dal riepilogo?'
+                );
+            });
+        });
+
         refreshSelectionButton();
         updateSelectAllState();
 

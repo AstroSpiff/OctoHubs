@@ -12,6 +12,7 @@ from core.justwatch_manager import JustWatchError
 from core.scanner import extract_title_and_year, gather_title_candidates
 from core.utils import _normalize_media_type, _parse_date_value, _sanitize_terms_list, get_nested
 from emby_runtime.api_clients import fetch_media_info, fetch_request_details, get_jellyseerr_requests
+from search.availability import is_request_available
 from search.rules import _get_request_rule
 from search.seasons import describe_season_statuses, select_scan_seasons, _request_release_date
 
@@ -128,6 +129,9 @@ def _summarize_requests_for_dashboard(config, requests_data=None):
         media_type = _normalize_media_type(req.get("type") or get_nested(req, "media", "mediaType"))
         if media_type == "tv":
             tv_count += 1
+            if is_request_available(req):
+                enriched_requests.append(req)
+                continue
             req_id = req.get("id")
             detailed = fetch_request_details(req_id, config, details_cache)
             if detailed:
@@ -152,7 +156,7 @@ def _summarize_requests_for_dashboard(config, requests_data=None):
         if not req_id:
             continue
         type_hint = _normalize_media_type(req.get("type") or get_nested(req, "media", "mediaType"))
-        force_details = bool(type_hint == "tv")
+        force_details = bool(type_hint == "tv" and not is_request_available(req))
         base_req, title, year, media_type = _resolve_request_metadata_for_summary(
             req,
             config,
@@ -166,9 +170,10 @@ def _summarize_requests_for_dashboard(config, requests_data=None):
         release_dt = _request_release_date(base_req)
         release_label = release_dt.strftime("%Y-%m-%d") if release_dt else None
         status_code = get_nested(base_req, "media", "status") or get_nested(req, "media", "status")
+        is_available = is_request_available(base_req, season_status)
         request_rule = _get_request_rule(config, req_id)
         will_skip = False
-        if skip_available and status_code == 5:
+        if skip_available and is_available:
             will_skip = True
         if skip_unreleased and release_dt and release_dt > now:
             will_skip = True
@@ -195,7 +200,7 @@ def _summarize_requests_for_dashboard(config, requests_data=None):
         justwatch_checked = False
         justwatch_available = False
         justwatch_providers = []
-        if normalized_type != "tv" and not (status_code == 5 or (release_dt and release_dt > now)):
+        if normalized_type != "tv" and not (is_available or (release_dt and release_dt > now)):
             settings = _active_justwatch_settings()
             if _justwatch_enabled(settings):
                 manager = _get_justwatch_manager(settings)
@@ -225,7 +230,7 @@ def _summarize_requests_for_dashboard(config, requests_data=None):
                 "seasons": seasons,
                 "status": status_code,
                 "release_date": release_label,
-                "is_available": status_code == 5,
+                "is_available": is_available,
                 "is_unreleased": bool(release_dt and release_dt > now),
                 "will_skip": will_skip,
                 "age": age_label,

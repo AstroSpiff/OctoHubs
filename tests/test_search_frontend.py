@@ -25,3 +25,21 @@ class SearchFrontendTests(unittest.TestCase):
 
                 self.assertIn("script_tmdb_emby.js') }}?v=20260719-search", source)
                 self.assertNotIn("script_tmdb_emby.js') }}?v=20260628-tmdb", source)
+
+    def test_last_summary_expansion_uses_adjacent_details_row(self):
+        source = pathlib.Path("static/script.js").read_text(encoding="utf-8")
+
+        self.assertIn("const detailsRow = row.nextElementSibling;", source)
+        self.assertIn("detailsRow.classList.contains('details-row')", source)
+        self.assertNotIn("document.querySelector(`.details-row[data-details-for=", source)
+
+    def test_last_summary_cleanup_controls_are_available(self):
+        dashboard = pathlib.Path("templates/dashboard.html").read_text(encoding="utf-8")
+        macros = pathlib.Path("templates/macros.html").read_text(encoding="utf-8")
+        script = pathlib.Path("static/script_results.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="cleanup-resolved-results-btn"', dashboard)
+        self.assertIn('id="reset-scan-results-btn"', dashboard)
+        self.assertIn('data-result-cleanup-single', macros)
+        self.assertIn("/api/search/results/cleanup", script)
+        self.assertNotIn("cleanup-stale-results-btn", dashboard)
