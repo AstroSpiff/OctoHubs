@@ -65,3 +65,18 @@ class SearchFrontendTests(unittest.TestCase):
         self.assertIn("var(--bg-card, #ffffff)", shared_utils)
         self.assertIn(".generic-modal-content", css)
         self.assertIn(".generic-modal-actions", css)
+
+    def test_requests_list_uses_compact_media_cards_with_external_links(self):
+        dashboard = pathlib.Path("templates/dashboard.html").read_text(encoding="utf-8")
+        css = pathlib.Path("static/dashboard.css").read_text(encoding="utf-8")
+
+        self.assertIn("request-poster", dashboard)
+        self.assertIn("request-external-links", dashboard)
+        self.assertIn("req.jellyseerr_url", dashboard)
+        self.assertIn("req.trakt_url", dashboard)
+        self.assertIn("req.imdb_url", dashboard)
+        self.assertIn("req.tmdb_url", dashboard)
+        self.assertIn("<details class=\"request-rules-details\"", dashboard)
+        self.assertIn(".request-poster", css)
+        self.assertIn(".request-external-links", css)
+        self.assertIn(".request-rules-details", css)

@@ -22,6 +22,7 @@ except ImportError:  # pragma: no cover - optional dependency
     JUSTWATCH_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+TV_EPISODE_CACHE_SUFFIX = "::episode-v2"
 JW_HEADERS = {
     "User-Agent": "Mozilla/5.0"
 }
@@ -154,6 +155,10 @@ class JustWatchManager:
         self._show_details_cache: Dict[str, Optional[Dict[str, Any]]] = {}
         self._jw_id: Optional[str] = None
         self._jw_id_registered = False
+
+    @staticmethod
+    def _episode_cache_key(show_name: str) -> str:
+        return f"{show_name}{TV_EPISODE_CACHE_SUFFIX}"
 
     def _rate_limit(self) -> None:
         """Enforce rate limiting between API requests."""
@@ -338,9 +343,8 @@ class JustWatchManager:
                     offers = episode.get("offers") or []
                     if isinstance(offers, list) and offers:
                         return offers
-                    break
-        offers = show_details.get("offers") or []
-        return offers if isinstance(offers, list) else []
+                    return []
+        return []
 
     def _get_title_offers(self, node_id: str) -> list:
         try:
@@ -644,8 +648,9 @@ class JustWatchManager:
         episode_num: int,
         year: Optional[int] = None
     ) -> tuple:
+        cache_key = self._episode_cache_key(show_name)
         cached = self.storage.get_justwatch_cache(
-            show_name=show_name,
+            show_name=cache_key,
             season=season_num,
             episode=episode_num
         )
@@ -682,7 +687,7 @@ class JustWatchManager:
         show_data = self._search_show(show_name, year)
         if not show_data:
             self.storage.save_justwatch_cache(
-                show_name=show_name,
+                show_name=cache_key,
                 season=season_num,
                 episode=episode_num,
                 is_available=False,
@@ -694,7 +699,7 @@ class JustWatchManager:
         if not show_id:
             logger.error(f"ID show mancante per '{show_name}'")
             self.storage.save_justwatch_cache(
-                show_name=show_name,
+                show_name=cache_key,
                 season=season_num,
                 episode=episode_num,
                 is_available=False,
@@ -702,10 +707,7 @@ class JustWatchManager:
             )
             return False, []
 
-        search_offers = show_data.get("offers") if isinstance(show_data, dict) else None
-        search_offers = search_offers if isinstance(search_offers, list) else []
         offers = self._get_episode_offers(show_id, season_num, episode_num)
-        offers = offers if offers else search_offers
         offers = [offer for offer in offers if isinstance(offer, dict)]
         valid_offers = []
         for offer in offers:
@@ -718,7 +720,7 @@ class JustWatchManager:
         providers = self._extract_offer_providers(offers)
 
         self.storage.save_justwatch_cache(
-            show_name=show_name,
+            show_name=cache_key,
             season=season_num,
             episode=episode_num,
             is_available=is_available,
@@ -858,7 +860,12 @@ class JustWatchManager:
         Returns:
             Number of entries cleared
         """
-        return self.storage.clear_justwatch_cache(show_name=show_name)
+        cleared = self.storage.clear_justwatch_cache(show_name=show_name)
+        if show_name:
+            cleared += self.storage.clear_justwatch_cache(
+                show_name=self._episode_cache_key(show_name)
+            )
+        return cleared
 
     def get_cache_stats(self) -> Dict[str, int]:
         """

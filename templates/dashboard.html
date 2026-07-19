@@ -910,63 +910,84 @@
                                             <div class="request-card">
                                                 <div class="request-main">
                                                     <div class="request-info-block">
-                                                        <div class="request-title-block">
-                                                            <div>
-                                                                <strong>{{ req.title }}</strong>
-                                                                {% if req.year %}
-                                                                    <span class="title-year">({{ req.year }})</span>
+                                                        <div class="request-media-line">
+                                                            <div class="request-poster {% if not req.poster_url %}is-empty{% endif %}" aria-hidden="true">
+                                                                {% if req.poster_url %}
+                                                                    <img src="{{ req.poster_url }}" alt="" loading="lazy">
+                                                                {% else %}
+                                                                    <i class="fa-solid {% if show_seasons %}fa-tv{% else %}fa-film{% endif %}"></i>
                                                                 {% endif %}
                                                             </div>
-                                                            <div>
-                                                                {% if req.is_available %}
-                                                                    <span class="badge info">Già disponibile</span>
-                                                                {% endif %}
-                                                                {% if req.is_unreleased %}
-                                                                    <span class="badge warn">Non ancora pubblicato</span>
-                                                                {% endif %}
-                                                                {% if req.will_skip %}
-                                                                    <span class="badge skip">Ignorata con le regole attuali</span>
-                                                                {% endif %}
-                                                                {% if req.release_date %}
-                                                                    <span class="badge info">Data uscita: {{ req.release_date }}</span>
-                                                                {% endif %}
-                                                                {% if not show_seasons and req.justwatch_available %}
-                                                                    {% set jw_providers = req.justwatch_providers if req.justwatch_providers else None %}
-                                                                    {% set jw_title = None %}
-                                                                    {% if jw_providers %}
-                                                                        {% set jw_title = 'JustWatch: ' ~ (jw_providers | join(', ')) %}
+                                                            <div class="request-title-block">
+                                                                <div class="request-title-row">
+                                                                    <strong>{{ req.title }}</strong>
+                                                                    {% if req.year %}
+                                                                        <span class="title-year">({{ req.year }})</span>
                                                                     {% endif %}
-                                                                    <button type="button"
-                                                                            class="justwatch-pill justwatch-checked"
-                                                                            {% if jw_title %}title="{{ jw_title }}"{% endif %}
-                                                                            {% if jw_title %}data-jw-label="{{ jw_title }}"{% endif %}>
-                                                                        Justwatch
-                                                                    </button>
-                                                                {% endif %}
-                                                            </div>
-                                                        </div>
-                                                        <div class="request-meta">
-                                                            <div class="meta-item">
-                                                                <span class="meta-label">ID</span>
-                                                                <span class="meta-value">{{ req.id }}</span>
-                                                            </div>
-                                                            <div class="meta-item">
-                                                                <span class="meta-label">Tipo</span>
-                                                                <span class="meta-value">{{ req.media_type or 'N/D' }}</span>
-                                                            </div>
-                                                            <div class="meta-item">
-                                                                <span class="meta-label">Richiesta</span>
-                                                                <span class="meta-value">{{ req.age or 'N/D' }}</span>
-                                                            </div>
-                                                        </div>
-                                                        {% if show_seasons %}
-                                                            <div class="request-meta" style="margin-top:0;">
-                                                                <div class="meta-item" style="grid-column: 1 / -1;">
-                                                                    <span class="meta-label">Stagioni</span>
-                                                                    <span class="meta-value">{{ req.seasons | join(', ') if req.seasons else '—' }}</span>
+                                                                </div>
+                                                                <div class="request-badges">
+                                                                    {% if req.is_available %}
+                                                                        <span class="badge info">Già disponibile</span>
+                                                                    {% endif %}
+                                                                    {% if req.is_unreleased %}
+                                                                        <span class="badge warn">Non ancora pubblicato</span>
+                                                                    {% endif %}
+                                                                    {% if req.will_skip %}
+                                                                        <span class="badge skip">Ignorata con le regole attuali</span>
+                                                                    {% endif %}
+                                                                    {% if req.release_date %}
+                                                                        <span class="badge info">Data uscita: {{ req.release_date }}</span>
+                                                                    {% endif %}
+                                                                    {% if not show_seasons and req.justwatch_available %}
+                                                                        {% set jw_providers = req.justwatch_providers if req.justwatch_providers else None %}
+                                                                        {% set jw_title = None %}
+                                                                        {% if jw_providers %}
+                                                                            {% set jw_title = 'JustWatch: ' ~ (jw_providers | join(', ')) %}
+                                                                        {% endif %}
+                                                                        <button type="button"
+                                                                                class="justwatch-pill justwatch-checked"
+                                                                                {% if jw_title %}title="{{ jw_title }}"{% endif %}
+                                                                                {% if jw_title %}data-jw-label="{{ jw_title }}"{% endif %}>
+                                                                            Justwatch
+                                                                        </button>
+                                                                    {% endif %}
+                                                                </div>
+                                                                <div class="request-external-links" aria-label="Link rapidi">
+                                                                    {% if req.jellyseerr_url %}
+                                                                        <a href="{{ req.jellyseerr_url }}" target="_blank" rel="noopener" title="Apri in Jellyseerr">Jellyseerr</a>
+                                                                    {% endif %}
+                                                                    {% if req.trakt_url %}
+                                                                        <a href="{{ req.trakt_url }}" target="_blank" rel="noopener" title="Apri su Trakt">Trakt</a>
+                                                                    {% endif %}
+                                                                    {% if req.imdb_url %}
+                                                                        <a href="{{ req.imdb_url }}" target="_blank" rel="noopener" title="Apri su IMDb">IMDb</a>
+                                                                    {% endif %}
+                                                                    {% if req.tmdb_url %}
+                                                                        <a href="{{ req.tmdb_url }}" target="_blank" rel="noopener" title="Apri su TMDB">TMDB</a>
+                                                                    {% endif %}
+                                                                </div>
+                                                                <div class="request-meta">
+                                                                    <div class="meta-item">
+                                                                        <span class="meta-label">ID</span>
+                                                                        <span class="meta-value">{{ req.id }}</span>
+                                                                    </div>
+                                                                    <div class="meta-item">
+                                                                        <span class="meta-label">Tipo</span>
+                                                                        <span class="meta-value">{{ req.media_type or 'N/D' }}</span>
+                                                                    </div>
+                                                                    <div class="meta-item">
+                                                                        <span class="meta-label">Richiesta</span>
+                                                                        <span class="meta-value">{{ req.age or 'N/D' }}</span>
+                                                                    </div>
+                                                                    {% if show_seasons %}
+                                                                        <div class="meta-item">
+                                                                            <span class="meta-label">Stagioni</span>
+                                                                            <span class="meta-value">{{ req.seasons | join(', ') if req.seasons else '—' }}</span>
+                                                                        </div>
+                                                                    {% endif %}
                                                                 </div>
                                                             </div>
-                                                        {% endif %}
+                                                        </div>
                                                             {% if req.season_status %}
                                                             <div class="season-status-line">
                                                                 {% for season in req.season_status %}
@@ -1032,63 +1053,66 @@
                                                             </div>
                                                         {% endif %}
                                                     </div>
-                                                    <div class="request-right-block">
-                                                        <div class="request-fields">
-                                                            <label title="Termini aggiuntivi da aggiungere solo per questa richiesta">
-                                                                Termini query
-                                                                <input type="text" name="request-query" value="{{ req.rules.query_terms }}">
-                                                            </label>
-                                                            <label title="Parole che devono essere presenti nel titolo del risultato per essere accettato">
-                                                                Termini filtrati
-                                                                <input type="text" name="request-filter" value="{{ req.rules.filter_terms }}">
-                                                            </label>
-                                                            <label title="Se compare uno di questi termini, il risultato viene scartato">
-                                                                Termini esclusi
-                                                                <input type="text" name="request-exclude" value="{{ req.rules.exclude_terms }}">
-                                                            </label>
-                                                        </div>
-                                                        <div class="request-options-panel">
-                                                            <div class="request-option-inline option-small-text">
-                                                                <span class="option-label">Cerca anche:</span>
-                                                                {% if is_movie %}
-                                                                    <label title="Amplia la ricerca includendo anni vicini">
-                                                                        Anno +/-
-                                                                        <input type="number"
-                                                                               min="0"
-                                                                               max="10"
-                                                                               step="1"
-                                                                               id="year-variance-{{ req.id }}"
-                                                                               name="year-variance"
-                                                                               class="req-year-variance"
-                                                                               value="{{ year_variance_value }}">
-                                                                    </label>
-                                                                {% endif %}
-                                                                <label title="Include anche il titolo originale (lingua madre)">
-                                                                    <input type="checkbox" name="use-original-title" {% if use_original %}checked{% endif %}>
-                                                                    Titolo VO
+                                                    <details class="request-rules-details">
+                                                        <summary>Regole ricerca</summary>
+                                                        <div class="request-right-block">
+                                                            <div class="request-fields">
+                                                                <label title="Termini aggiuntivi da aggiungere solo per questa richiesta">
+                                                                    Termini query
+                                                                    <input type="text" name="request-query" value="{{ req.rules.query_terms }}">
                                                                 </label>
-                                                                <label title="Usa eventuali titoli alternativi disponibili nella lingua originale">
-                                                                    <input type="checkbox" name="use-alt-titles-original" {% if use_alt_original %}checked{% endif %}>
-                                                                    Titoli alt. VO
+                                                                <label title="Parole che devono essere presenti nel titolo del risultato per essere accettato">
+                                                                    Termini filtrati
+                                                                    <input type="text" name="request-filter" value="{{ req.rules.filter_terms }}">
                                                                 </label>
-                                                                <label title="Usa titoli alternativi in una lingua a scelta">
-                                                                    <input type="checkbox" name="use-alt-titles-language" {% if use_alt_language %}checked{% endif %}>
-                                                                    Titoli alt.
+                                                                <label title="Se compare uno di questi termini, il risultato viene scartato">
+                                                                    Termini esclusi
+                                                                    <input type="text" name="request-exclude" value="{{ req.rules.exclude_terms }}">
                                                                 </label>
-                                                                <select name="alt-titles-language"
-                                                                        class="req-alt-select"
-                                                                        {% if not use_alt_language %}disabled{% endif %}
-                                                                        title="Seleziona la lingua dei titoli alternativi">
-                                                                    {% for opt in alt_language_choices %}
-                                                                        <option value="{{ opt.value }}" {% if alt_select_value == opt.value %}selected{% endif %}>{{ opt.label }}</option>
-                                                                    {% endfor %}
-                                                                </select>
                                                             </div>
-                                                            {% if not is_movie %}
-                                                                <input type="hidden" name="year-variance" value="{{ year_variance_value }}">
-                                                            {% endif %}
+                                                            <div class="request-options-panel">
+                                                                <div class="request-option-inline option-small-text">
+                                                                    <span class="option-label">Cerca anche:</span>
+                                                                    {% if is_movie %}
+                                                                        <label title="Amplia la ricerca includendo anni vicini">
+                                                                            Anno +/-
+                                                                            <input type="number"
+                                                                                   min="0"
+                                                                                   max="10"
+                                                                                   step="1"
+                                                                                   id="year-variance-{{ req.id }}"
+                                                                                   name="year-variance"
+                                                                                   class="req-year-variance"
+                                                                                   value="{{ year_variance_value }}">
+                                                                        </label>
+                                                                    {% endif %}
+                                                                    <label title="Include anche il titolo originale (lingua madre)">
+                                                                        <input type="checkbox" name="use-original-title" {% if use_original %}checked{% endif %}>
+                                                                        Titolo VO
+                                                                    </label>
+                                                                    <label title="Usa eventuali titoli alternativi disponibili nella lingua originale">
+                                                                        <input type="checkbox" name="use-alt-titles-original" {% if use_alt_original %}checked{% endif %}>
+                                                                        Titoli alt. VO
+                                                                    </label>
+                                                                    <label title="Usa titoli alternativi in una lingua a scelta">
+                                                                        <input type="checkbox" name="use-alt-titles-language" {% if use_alt_language %}checked{% endif %}>
+                                                                        Titoli alt.
+                                                                    </label>
+                                                                    <select name="alt-titles-language"
+                                                                            class="req-alt-select"
+                                                                            {% if not use_alt_language %}disabled{% endif %}
+                                                                            title="Seleziona la lingua dei titoli alternativi">
+                                                                        {% for opt in alt_language_choices %}
+                                                                            <option value="{{ opt.value }}" {% if alt_select_value == opt.value %}selected{% endif %}>{{ opt.label }}</option>
+                                                                        {% endfor %}
+                                                                    </select>
+                                                                </div>
+                                                                {% if not is_movie %}
+                                                                    <input type="hidden" name="year-variance" value="{{ year_variance_value }}">
+                                                                {% endif %}
+                                                            </div>
                                                         </div>
-                                                    </div>
+                                                    </details>
                                                 </div>
                                             </div>
                                         </div>

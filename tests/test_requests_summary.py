@@ -81,6 +81,36 @@ class RequestsSummaryTests(unittest.TestCase):
         self.assertTrue(normalized[0]["is_available"])
         self.assertFalse(request["is_available"])
 
+    def test_request_summary_exposes_compact_card_links_and_poster(self):
+        request = {
+            "id": 454,
+            "type": "tv",
+            "title": "Cape Fear",
+            "firstAirDate": "2026-06-05",
+            "media": {
+                "mediaType": "tv",
+                "status": 3,
+                "tmdbId": 12345,
+                "imdbId": "tt9999999",
+                "posterPath": "/cape.jpg",
+            },
+            "seasons": [{"seasonNumber": 1}],
+        }
+        config = _config() | {"JELLYSEERR_URL": "https://jelly.example"}
+
+        with patch("services.requests_summary._log_justwatch_status"), patch(
+            "services.requests_summary.fetch_request_details",
+            return_value=None,
+        ):
+            summary = _summarize_requests_for_dashboard(config, requests_data=[request])
+
+        item = summary[0]
+        self.assertEqual("https://image.tmdb.org/t/p/w92/cape.jpg", item["poster_url"])
+        self.assertEqual("https://jelly.example/tv/12345", item["jellyseerr_url"])
+        self.assertEqual("https://www.themoviedb.org/tv/12345", item["tmdb_url"])
+        self.assertEqual("https://www.imdb.com/title/tt9999999", item["imdb_url"])
+        self.assertEqual("https://trakt.tv/search/imdb/tt9999999", item["trakt_url"])
+
 
 if __name__ == "__main__":
     unittest.main()

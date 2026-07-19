@@ -16,6 +16,92 @@ from search.availability import is_request_available
 from search.rules import _get_request_rule
 from search.seasons import describe_season_statuses, select_scan_seasons, _request_release_date
 
+TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w92"
+
+
+def _iter_metadata_sources(*sources):
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        yield source
+        for key in ("media", "mediaInfo"):
+            nested = source.get(key)
+            if isinstance(nested, dict):
+                yield nested
+                nested_media_info = nested.get("mediaInfo")
+                if isinstance(nested_media_info, dict):
+                    yield nested_media_info
+
+
+def _first_metadata_value(sources, keys):
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in keys:
+            value = source.get(key)
+            if value not in (None, ""):
+                return value
+        external_ids = source.get("external_ids") or source.get("externalIds")
+        if isinstance(external_ids, dict):
+            for key in keys:
+                value = external_ids.get(key)
+                if value not in (None, ""):
+                    return value
+    return None
+
+
+def _normalize_tmdb_media_type(media_type):
+    normalized = _normalize_media_type(media_type)
+    if normalized == "tv":
+        return "tv"
+    if normalized == "movie":
+        return "movie"
+    return ""
+
+
+def _build_tmdb_poster_url(value):
+    if not value:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    if text.startswith(("http://", "https://")):
+        return text
+    if not text.startswith("/"):
+        text = f"/{text}"
+    return f"{TMDB_IMAGE_BASE_URL}{text}"
+
+
+def _build_jellyseerr_url(config, media_type, tmdb_id):
+    base_url = str((config or {}).get("JELLYSEERR_URL") or "").rstrip("/")
+    media_token = _normalize_tmdb_media_type(media_type)
+    if not base_url or not tmdb_id or media_token not in {"movie", "tv"}:
+        return ""
+    return f"{base_url}/{media_token}/{tmdb_id}"
+
+
+def _build_request_external_links(config, base_req, media_type):
+    sources = list(_iter_metadata_sources(base_req))
+    tmdb_id = _first_metadata_value(sources, ("tmdbId", "tmdb_id", "tmdbid", "mediaId", "media_id"))
+    imdb_id = _first_metadata_value(sources, ("imdbId", "imdb_id", "imdbID", "imdb"))
+    poster = _first_metadata_value(sources, ("posterPath", "poster_path", "posterUrl", "poster_url", "poster"))
+    media_token = _normalize_tmdb_media_type(media_type)
+    tmdb_url = f"https://www.themoviedb.org/{media_token}/{tmdb_id}" if media_token and tmdb_id else ""
+    imdb_id = str(imdb_id).strip() if imdb_id else ""
+    imdb_url = f"https://www.imdb.com/title/{imdb_id}" if imdb_id.startswith("tt") else ""
+    trakt_url = ""
+    if imdb_url:
+        trakt_url = f"https://trakt.tv/search/imdb/{imdb_id}"
+    elif tmdb_id and media_token:
+        trakt_url = f"https://trakt.tv/search/tmdb/{tmdb_id}"
+    return {
+        "poster_url": _build_tmdb_poster_url(poster),
+        "jellyseerr_url": _build_jellyseerr_url(config, media_token, tmdb_id),
+        "tmdb_url": tmdb_url,
+        "imdb_url": imdb_url,
+        "trakt_url": trakt_url,
+    }
+
 
 def _estimate_variant_summary(rules):
     if not rules:
@@ -200,6 +286,7 @@ def _summarize_requests_for_dashboard(config, requests_data=None):
         justwatch_checked = False
         justwatch_available = False
         justwatch_providers = []
+        external_links = _build_request_external_links(config, base_req, normalized_type)
         if normalized_type != "tv" and not (is_available or (release_dt and release_dt > now)):
             settings = _active_justwatch_settings()
             if _justwatch_enabled(settings):
@@ -238,6 +325,7 @@ def _summarize_requests_for_dashboard(config, requests_data=None):
                 "justwatch_checked": justwatch_checked,
                 "justwatch_available": justwatch_available,
                 "justwatch_providers": justwatch_providers,
+                **external_links,
                 "rules": {
                     "query_terms": ",".join(request_rule.get("query_terms", [])),
                     "filter_terms": ",".join(request_rule.get("filter_terms", [])),
