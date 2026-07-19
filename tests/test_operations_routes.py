@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 
+from core.storage import StorageError
 from services.operations_routes import (
     api_operations,
     api_operations_clear_completed,
@@ -54,6 +55,18 @@ class OperationRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["removed"], 1)
         self.assertTrue(tracker.cleared)
+
+    async def test_global_operations_route_returns_json_when_tracker_unavailable(self):
+        init_operations_routes(
+            require_auth=lambda _request: {"id": "admin"},
+            validate_csrf=lambda _request, _token: True,
+            get_operation_tracker=lambda: (_ for _ in ()).throw(StorageError("DB non disponibile")),
+        )
+
+        response = await api_operations(object())
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.body.decode(), '{"ok":false,"error":"DB non disponibile"}')
 
 
 if __name__ == "__main__":

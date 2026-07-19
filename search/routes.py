@@ -10,6 +10,7 @@ from typing import Any, Callable, Optional
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from core.storage import StorageError
 from core.utils import json_error
 from search.availability import is_request_available, normalize_request_availability
 from search.manager import (
@@ -271,6 +272,13 @@ async def get_manual_search_history(request: Request):
         return JSONResponse({
             "success": True,
             "searches": searches,
+        }, status_code=200)
+    except StorageError as exc:
+        print(f"[API] Storico ricerche non disponibile: {exc}")
+        return JSONResponse({
+            "success": True,
+            "searches": [],
+            "warning": str(exc),
         }, status_code=200)
     except Exception as exc:
         print(f"[API] Errore recupero storico: {exc}")

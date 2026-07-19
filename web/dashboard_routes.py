@@ -107,8 +107,8 @@ async def dashboard_root(request: Request):
         if is_request_available(req)
     }
 
-    # Filter requests overview to remove available content.
-    requests_overview = [req for req in requests_overview if req.get("status") != 5]
+    # Filter requests overview to remove content that is available after normalization.
+    requests_overview = [req for req in requests_overview if not is_request_available(req)]
 
     # Filter results items to remove available content.
     if results and results.get("items"):

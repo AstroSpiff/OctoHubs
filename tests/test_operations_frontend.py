@@ -16,6 +16,15 @@ class OperationsFrontendTests(unittest.TestCase):
         self.assertIn("Agg.: ${formatDateTime(operation.updated_at)}", source)
         self.assertNotIn("if (!chips.length && operation.started_at)", source)
 
+    def test_operation_center_reads_json_responses_defensively(self):
+        source = pathlib.Path("static/operations_center.js").read_text(encoding="utf-8")
+
+        self.assertIn("async function readOperationJson(response)", source)
+        self.assertIn("const payload = await readOperationJson(res);", source)
+        self.assertNotIn("const payload = await res.json();", source)
+        self.assertIn("console.warn('[OPERATIONS] Refresh unavailable:',", source)
+        self.assertNotIn("console.error('[OPERATIONS] Refresh failed:',", source)
+
 
 if __name__ == "__main__":
     unittest.main()

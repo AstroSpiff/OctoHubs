@@ -8,6 +8,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
+from core.storage import StorageError
+
 router = APIRouter()
 
 _require_auth: Optional[Callable[[Request], Any]] = None
@@ -48,10 +50,20 @@ def _get_tracker():
 @router.get("/api/operations")
 async def api_operations(request: Request):
     _require_auth_dep(request)
-    tracker = _get_tracker()
+    try:
+        tracker = _get_tracker()
+    except StorageError as exc:
+        return JSONResponse(status_code=503, content={"ok": False, "error": str(exc)})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
     if not tracker:
         return JSONResponse(status_code=503, content={"ok": False, "error": "Operation tracker not initialized"})
-    operations = await run_in_threadpool(tracker.list_operations)
+    try:
+        operations = await run_in_threadpool(tracker.list_operations)
+    except StorageError as exc:
+        return JSONResponse(status_code=503, content={"ok": False, "error": str(exc)})
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
     active_count = sum(1 for item in operations if item.get("status") in ("queued", "running"))
     return {"ok": True, "operations": operations, "active_count": active_count}
 

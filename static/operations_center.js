@@ -45,6 +45,18 @@
         return window.fetch(url, { credentials: 'same-origin', ...opts, headers });
     };
 
+    async function readOperationJson(response) {
+        const contentType = response.headers?.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+            return response.json();
+        }
+        const text = await response.text().catch(() => '');
+        return {
+            ok: false,
+            error: text.trim() || `HTTP ${response.status}`,
+        };
+    }
+
     const statusMeta = {
         queued: { label: 'In attesa', icon: 'fa-clock', className: 'is-running' },
         running: { label: 'In corso', icon: 'fa-circle-notch fa-spin', className: 'is-running' },
@@ -161,7 +173,7 @@
         state.inFlight = true;
         try {
             const res = await apiFetch(`/api/operations?t=${Date.now()}`);
-            const payload = await res.json();
+            const payload = await readOperationJson(res);
             if (!res.ok || payload.ok === false) {
                 throw new Error(payload.error || `HTTP ${res.status}`);
             }
@@ -169,7 +181,7 @@
             state.activeCount = Number(payload.active_count || 0);
             render();
         } catch (err) {
-            console.error('[OPERATIONS] Refresh failed:', err);
+            console.warn('[OPERATIONS] Refresh unavailable:', err.message || err);
         } finally {
             state.inFlight = false;
             scheduleNext(state.activeCount > 0 ? POLL_ACTIVE_MS : POLL_IDLE_MS);
@@ -187,7 +199,7 @@
     async function clearCompleted() {
         try {
             const res = await apiFetch('/api/operations/clear-completed', { method: 'POST' });
-            const payload = await res.json();
+            const payload = await readOperationJson(res);
             if (!res.ok || payload.ok === false) {
                 throw new Error(payload.error || `HTTP ${res.status}`);
             }
@@ -200,7 +212,7 @@
     async function stopWorkflow() {
         try {
             const res = await apiFetch('/api/workflow/stop', { method: 'POST' });
-            const payload = await res.json().catch(() => ({}));
+            const payload = await readOperationJson(res);
             if (!res.ok || payload.success === false || payload.ok === false) {
                 throw new Error(payload.message || payload.error || `HTTP ${res.status}`);
             }
