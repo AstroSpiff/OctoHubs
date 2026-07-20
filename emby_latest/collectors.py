@@ -101,6 +101,42 @@ def _preserve_notification_state(existing: Optional[Dict[str, Any]]) -> Dict[str
     return preserved
 
 
+def _notification_checkpoint_datetime(*entries: Optional[Dict[str, Any]]) -> Optional[datetime]:
+    """Return the latest notification checkpoint for state/history entries."""
+    checkpoints: List[datetime] = []
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("notified"):
+            continue
+        checkpoint = _parse_date_value(entry.get("notified_at"))
+        if checkpoint is None:
+            checkpoint = _parse_date_value(entry.get("last_seen_at"))
+        if checkpoint is not None:
+            checkpoints.append(checkpoint)
+    return max(checkpoints) if checkpoints else None
+
+
+def _version_keys_at_or_before_checkpoint(
+    versions: List[Dict[str, Any]],
+    version_time_map: Dict[str, datetime],
+    checkpoint: Optional[datetime],
+) -> Set[str]:
+    """Return media source keys whose Emby-added time is already covered."""
+    if checkpoint is None:
+        return set()
+
+    covered_keys: Set[str] = set()
+    for version in versions:
+        if not isinstance(version, dict):
+            continue
+        key = str(version.get("key") or "")
+        if not key:
+            continue
+        version_dt = version_time_map.get(key) or _parse_date_value(version.get("added_at"))
+        if version_dt is not None and version_dt <= checkpoint:
+            covered_keys.add(key)
+    return covered_keys
+
+
 def collect_entries(
     limit: int,
     per_server_limit: int,
@@ -438,7 +474,7 @@ def collect_entries(
     # Extract settings
     settings_cfg = latest_settings.get("SETTINGS") or {}
     debug_latest = debug_enabled(settings_cfg)
-    gap_minutes = int(settings_cfg.get("batch_gap_minutes") or 180)
+    gap_minutes = int(settings_cfg.get("batch_gap_minutes") or 10)
     max_movies = int(settings_cfg.get("max_movies") or 200)
     max_series = int(settings_cfg.get("max_series") or 150)
     retention_days = int(settings_cfg.get("retention_days") or 90)
@@ -952,6 +988,7 @@ def collect_entries(
             version_times = collect_version_times(versions)
             version_gap = has_version_time_gap(version_times, gap_minutes)
             version_groups = group_version_times(version_times, gap_minutes)
+            version_time_map = {v.get("key"): dt_value for v, dt_value in version_times if v.get("key")}
             raw_baseline_keys = playback_baseline_keys - direct_version_keys
             mediainfo_source_keys = [
                 v.get("key")
@@ -963,6 +1000,7 @@ def collect_entries(
 
             # Determine new versions
             existing_keys = media_source_key_set(existing, movie_history)
+            existing_notified = is_notified(existing, movie_history)
 
             baseline_keys: Set[str] = set()
             if existing is None and movie_history is None:
@@ -985,11 +1023,15 @@ def collect_entries(
                     baseline_keys.update(raw_baseline_keys - latest_group_keys)
                 else:
                     baseline_keys.update(raw_baseline_keys)
+            if existing_notified:
+                checkpoint = _notification_checkpoint_datetime(existing, movie_history)
+                baseline_keys.update(
+                    _version_keys_at_or_before_checkpoint(versions, version_time_map, checkpoint)
+                )
             new_versions = [
                 v for v in versions
                 if v.get("key") and v.get("key") not in existing_keys and v.get("key") not in baseline_keys
             ]
-            version_time_map = {v.get("key"): dt_value for v, dt_value in version_times if v.get("key")}
 
             if debug_latest:
                 time_list = [dt_value.isoformat() for _, dt_value in version_times]
@@ -1010,9 +1052,6 @@ def collect_entries(
                     dt_values = [dt_value for _, dt_value in group]
                     group_summaries.append(f"{len(group)}@{min(dt_values).isoformat()}..{max(dt_values).isoformat()}")
                 debug(debug_latest, f"Movie groups: {', '.join(group_summaries)}")
-
-            # Determine if we should split into multiple batch groups
-            existing_notified = is_notified(existing, movie_history)
 
             if len(version_groups) > 1 and existing is None and movie_history is None and not catalog_baseline_detected:
                 # Multiple version groups detected - split into separate updates
@@ -1665,6 +1704,12 @@ def collect_entries(
                         episode_history = get_history_entry(history_state, "episodes", existing_key)
 
                     existing_keys = media_source_key_set(existing_episode, episode_history)
+                    episode_notified = is_notified(existing_episode, episode_history)
+                    if episode_notified:
+                        checkpoint = _notification_checkpoint_datetime(existing_episode, episode_history)
+                        catalog_baseline_keys.update(
+                            _version_keys_at_or_before_checkpoint(versions, version_time_map, checkpoint)
+                        )
 
                     new_versions = [
                         v for v in versions
@@ -1673,7 +1718,6 @@ def collect_entries(
 
                     # Determine kind
                     episode_known = existing_episode is not None or episode_history is not None
-                    episode_notified = is_notified(existing_episode, episode_history)
                     if catalog_baseline:
                         if is_latest_version_group:
                             kind = "new_version"

@@ -148,7 +148,7 @@ class LatestSettingsTests(unittest.TestCase):
         with patch("services.manager._load_app_settings_snapshot", return_value=stored):
             settings = _load_latest_settings()["SETTINGS"]
 
-        self.assertEqual(settings["batch_gap_minutes"], 180)
+        self.assertEqual(settings["batch_gap_minutes"], 10)
         self.assertEqual(settings["max_movies"], 50)
         self.assertEqual(settings["max_series"], 25)
         self.assertEqual(settings["retention_days"], 90)
@@ -204,7 +204,7 @@ class LatestSettingsTests(unittest.TestCase):
             )
 
         settings = saved["EMBY_LATEST"]["SETTINGS"]
-        self.assertEqual(settings["batch_gap_minutes"], 180)
+        self.assertEqual(settings["batch_gap_minutes"], 10)
         self.assertEqual(settings["max_movies"], 50)
         self.assertEqual(settings["max_series"], 25)
         self.assertEqual(settings["retention_days"], 90)

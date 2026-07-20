@@ -494,7 +494,9 @@ def collect_version_times(versions: List[Dict[str, Any]]) -> List[Tuple[Dict, da
     """
     Collect file modification times for versions.
 
-    Uses file mtime/ctime if path exists, otherwise uses added_at from version.
+    Uses Emby-added dates when available, with file mtime/ctime only as a
+    fallback. Latest-publication classification must follow Emby's media
+    source chronology, not local filesystem copy/rename times.
 
     Args:
         versions: List of version dicts
@@ -512,18 +514,17 @@ def collect_version_times(versions: List[Dict[str, Any]]) -> List[Tuple[Dict, da
         if not isinstance(version, dict):
             continue
 
+        date_fallback = _parse_date_value(version.get("added_at"))
+        if date_fallback:
+            times.append((version, date_fallback))
+            continue
+
         path = (version.get("path") or version.get("path_original") or "").strip()
         if not path:
-            date_fallback = _parse_date_value(version.get("added_at"))
-            if date_fallback:
-                times.append((version, date_fallback))
             continue
 
         try:
             if not os.path.exists(path):
-                date_fallback = _parse_date_value(version.get("added_at"))
-                if date_fallback:
-                    times.append((version, date_fallback))
                 continue
 
             stat = os.stat(path)
@@ -533,9 +534,6 @@ def collect_version_times(versions: List[Dict[str, Any]]) -> List[Tuple[Dict, da
             file_dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
             times.append((version, file_dt))
         except OSError:
-            date_fallback = _parse_date_value(version.get("added_at"))
-            if date_fallback:
-                times.append((version, date_fallback))
             continue
 
     return times
@@ -623,7 +621,7 @@ def compute_batch(items: List[Dict[str, Any]], gap_minutes: int) -> List[Dict[st
 
     Args:
         items: List of items with DateCreated field
-        gap_minutes: Gap threshold in minutes (typically 180 = 3 hours)
+        gap_minutes: Gap threshold in minutes
 
     Returns:
         Most recent batch (list of items within gap of newest item)

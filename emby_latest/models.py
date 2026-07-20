@@ -226,7 +226,7 @@ class LatestBatch:
     batch_id: Optional[str] = None
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
-    gap_minutes: int = 180  # Default 3-hour gap
+    gap_minutes: int = 10  # Default 10-minute gap
 
     def add_item(self, item: LatestItem) -> None:
         """Add item to batch."""
@@ -288,7 +288,7 @@ VALID_ITEM_TYPES = [LatestItemType.MOVIE, LatestItemType.SERIES, LatestItemType.
 VALID_CACHE_KINDS = ["feed", "batch"]
 VALID_PROGRESS_STATES = [state.value for state in ProgressState]
 
-DEFAULT_BATCH_GAP_MINUTES = 180  # 3 hours
+DEFAULT_BATCH_GAP_MINUTES = 10
 DEFAULT_CACHE_TTL_SECONDS = 60
 DEFAULT_MAX_ITEMS = 200
 DEFAULT_PER_SERVER_LIMIT = 50

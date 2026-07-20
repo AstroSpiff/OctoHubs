@@ -778,6 +778,19 @@ class CollectionFrontendTests(unittest.TestCase):
         self.assertIn("const handleSourceInventoryActions = async", source)
         self.assertIn("await fetchSourceInventory()", source)
 
+    def test_source_inventory_actions_wrap_inside_panel(self):
+        template = pathlib.Path("templates/emby_collections.html").read_text(encoding="utf-8")
+        source = pathlib.Path("static/emby_collections.js").read_text(encoding="utf-8")
+        row_start = source.index("const buildSourceInventoryRow =")
+        row_end = source.index("const renderSourceInventory =", row_start)
+        row_block = source[row_start:row_end]
+
+        self.assertIn('class="collection-source-table__actions"', row_block)
+        self.assertIn('class="collection-source-actions"', row_block)
+        self.assertNotIn('style="white-space: nowrap;"', row_block)
+        self.assertIn(".collection-source-actions", template)
+        self.assertIn("flex-wrap: wrap;", template)
+
     def test_personal_list_refreshes_run_through_operations(self):
         source = pathlib.Path("static/emby_collections.js").read_text(encoding="utf-8")
 

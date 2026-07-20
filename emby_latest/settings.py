@@ -110,7 +110,7 @@ def _resolve_active_preset_id(presets: List[Dict[str, Any]], active_id: Any) -> 
 def _default_latest_settings() -> Dict[str, Any]:
     return {
         "SETTINGS": {
-            "batch_gap_minutes": 180,
+            "batch_gap_minutes": 10,
             "max_movies": 50,
             "max_series": 25,
             "retention_days": 90,

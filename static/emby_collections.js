@@ -1260,17 +1260,19 @@
                     <div class="tagline small">${sourceValue}</div>
                 </td>
                 <td>${sourceLabel}</td>
-                <td style="white-space: nowrap;">
-                    <button class="btn ghost compact" type="button" data-action="use-source-inventory"
-                        data-source-type="${sourceType}"
-                        data-source-value="${sourceValue}"
-                        data-source-name="${name}">
-                        Usa
-                    </button>
-                    ${sourceLink ? `<a class="btn secondary compact" href="${sourceLink}" target="_blank" rel="noopener">Apri</a>` : ''}
-                    <button class="btn danger compact" type="button" data-action="delete-source-inventory" data-source-id="${id}">
-                        Rimuovi
-                    </button>
+                <td class="collection-source-table__actions">
+                    <div class="collection-source-actions">
+                        <button class="btn ghost compact" type="button" data-action="use-source-inventory"
+                            data-source-type="${sourceType}"
+                            data-source-value="${sourceValue}"
+                            data-source-name="${name}">
+                            Usa
+                        </button>
+                        ${sourceLink ? `<a class="btn secondary compact" href="${sourceLink}" target="_blank" rel="noopener">Apri</a>` : ''}
+                        <button class="btn danger compact" type="button" data-action="delete-source-inventory" data-source-id="${id}">
+                            Rimuovi
+                        </button>
+                    </div>
                 </td>
             </tr>
         `;

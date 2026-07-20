@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import os
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -42,10 +44,10 @@ class _RecordingState:
         self.state = deepcopy(state)
 
 
-def _latest_settings():
+def _latest_settings(batch_gap_minutes=180):
     return {
         "SETTINGS": {
-            "batch_gap_minutes": 180,
+            "batch_gap_minutes": batch_gap_minutes,
             "max_movies": 10,
             "max_series": 10,
             "retention_days": 90,
@@ -68,6 +70,7 @@ def _collect_with_mocks(
     series_entries=None,
     episode_catalog_items=None,
     emby_user_items=None,
+    batch_gap_minutes=180,
 ):
     movie_items = list(movie_items or [])
     movie_catalog_items = list(movie_catalog_items or [])
@@ -108,7 +111,7 @@ def _collect_with_mocks(
         return_value=True,
     ), patch("emby_latest.collectors.get_emby_servers", return_value=[{"id": "server-a", "name": "Server A"}]), patch(
         "emby_latest.collectors._load_latest_settings",
-        return_value=_latest_settings(),
+        return_value=_latest_settings(batch_gap_minutes=batch_gap_minutes),
     ), patch("emby_latest.collectors._fetch_emby_latest_items", side_effect=fake_fetch), patch(
         "emby_latest.collectors._fetch_emby_items_by_signature",
         return_value=movie_catalog_items,
@@ -383,6 +386,118 @@ class LatestPublicationHistoryTests(unittest.TestCase):
             },
             {change.get("path") for change in payload["movies"][0]["changes"]},
         )
+
+    def test_movie_version_classification_prefers_emby_dates_over_filesystem_times(self):
+        db_state = _RecordingState({"server-a": {"movies": {"items": {}}, "series": {"items": {}}}})
+        db_cache = _RecordingCache()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_path = os.path.join(tmpdir, "tito-720p.mkv")
+            new_path = os.path.join(tmpdir, "tito-1080p.mkv")
+            for path in (old_path, new_path):
+                with open(path, "wb") as handle:
+                    handle.write(b"media")
+                os.utime(path, (1_800_000_000, 1_800_000_000))
+
+            current_movie = {
+                "Id": "movie-1",
+                "Name": "Tito e gli alieni",
+                "Type": "Movie",
+                "ProductionYear": 2018,
+                "DateCreated": "2026-07-16T10:00:00+00:00",
+                "ProviderIds": {"Tmdb": "1"},
+                "MediaSources": [
+                    {
+                        "Id": "source-720",
+                        "Path": old_path,
+                        "Container": "mkv",
+                        "Size": 7780000000,
+                        "DateCreated": "2026-07-16T09:40:00+00:00",
+                    },
+                    {
+                        "Id": "source-1080",
+                        "Path": new_path,
+                        "Container": "mkv",
+                        "Size": 8120000000,
+                        "DateCreated": "2026-07-16T10:00:00+00:00",
+                    },
+                ],
+            }
+
+            payload, error = _collect_with_mocks(
+                db_state,
+                db_cache,
+                movie_items=[current_movie],
+                movie_catalog_items=[current_movie],
+                batch_gap_minutes=10,
+            )
+
+        self.assertIsNone(error)
+        self.assertTrue(payload["movies"])
+        self.assertEqual("Nuova versione", payload["movies"][0].get("update_label"))
+        self.assertEqual(["new_version"], [change.get("kind") for change in payload["movies"][0]["changes"]])
+        self.assertEqual([new_path], [change.get("path") for change in payload["movies"][0]["changes"]])
+
+    def test_movie_notification_checkpoint_excludes_versions_already_notified_inside_gap(self):
+        db_state = _RecordingState(
+            {
+                "server-a": {
+                    "movies": {"items": {}},
+                    "series": {"items": {}},
+                    "history": {
+                        "movies": {
+                            "tmdb:1": {
+                                "item_id": "movie-1",
+                                "signature": "tmdb:1",
+                                "title": "Tito e gli alieni",
+                                "notified": True,
+                                "notified_at": "2026-07-16T10:02:00+00:00",
+                                "media_source_keys": [],
+                            }
+                        }
+                    },
+                }
+            }
+        )
+        db_cache = _RecordingCache()
+        current_movie = {
+            "Id": "movie-1",
+            "Name": "Tito e gli alieni",
+            "Type": "Movie",
+            "ProductionYear": 2018,
+            "DateCreated": "2026-07-16T10:05:00+00:00",
+            "ProviderIds": {"Tmdb": "1"},
+            "MediaSources": [
+                {
+                    "Id": "source-720",
+                    "Path": "/media/tito-720p.mkv",
+                    "Container": "mkv",
+                    "Size": 7780000000,
+                    "DateCreated": "2026-07-16T10:00:00+00:00",
+                },
+                {
+                    "Id": "source-1080",
+                    "Path": "/media/tito-1080p.mkv",
+                    "Container": "mkv",
+                    "Size": 8120000000,
+                    "DateCreated": "2026-07-16T10:05:00+00:00",
+                },
+            ],
+        }
+
+        payload, error = _collect_with_mocks(
+            db_state,
+            db_cache,
+            movie_items=[current_movie],
+            movie_catalog_items=[current_movie],
+            batch_gap_minutes=10,
+        )
+
+        self.assertIsNone(error)
+        self.assertTrue(payload["movies"])
+        self.assertEqual("Nuova versione", payload["movies"][0].get("update_label"))
+        self.assertEqual(["new_version"], [change.get("kind") for change in payload["movies"][0]["changes"]])
+        self.assertEqual(["/media/tito-1080p.mkv"], [change.get("path") for change in payload["movies"][0]["changes"]])
 
     def test_movie_uses_media_source_item_dates_when_playback_sources_have_no_dates(self):
         db_state = _RecordingState({"server-a": {"movies": {"items": {}}, "series": {"items": {}}}})
@@ -1064,6 +1179,143 @@ class LatestPublicationHistoryTests(unittest.TestCase):
                 "/media/series-one/s01e02-2160p.mkv",
             },
             {change.get("path") for change in payload["series"][0]["changes"]},
+        )
+
+    def test_episode_version_classification_prefers_emby_dates_over_filesystem_times(self):
+        db_state = _RecordingState({"server-a": {"movies": {"items": {}}, "series": {"items": {}}}})
+        db_cache = _RecordingCache()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_path = os.path.join(tmpdir, "ride-or-die-s01e01-2160p.mkv")
+            new_path = os.path.join(tmpdir, "ride-or-die-s01e01-1080p.mkv")
+            for path in (old_path, new_path):
+                with open(path, "wb") as handle:
+                    handle.write(b"media")
+                os.utime(path, (1_800_000_000, 1_800_000_000))
+
+            current_episode = {
+                "Id": "episode-1",
+                "Name": "Il libro di Giuditta",
+                "Type": "Episode",
+                "SeriesId": "series-1",
+                "SeriesName": "Ride or Die",
+                "SeriesProductionYear": 2026,
+                "ParentIndexNumber": 1,
+                "IndexNumber": 1,
+                "DateCreated": "2026-07-19T11:00:00+00:00",
+                "MediaSources": [
+                    {
+                        "Id": "source-s01e01-2160",
+                        "Path": old_path,
+                        "Container": "mkv",
+                        "Size": 7540000000,
+                        "DateCreated": "2026-07-19T10:00:00+00:00",
+                    },
+                    {
+                        "Id": "source-s01e01-1080",
+                        "Path": new_path,
+                        "Container": "mkv",
+                        "Size": 2940000000,
+                        "DateCreated": "2026-07-19T11:00:00+00:00",
+                    },
+                ],
+            }
+            series = {
+                "Id": "series-1",
+                "Name": "Ride or Die",
+                "Type": "Series",
+                "ProductionYear": 2026,
+                "DateCreated": "2026-07-19T10:00:00+00:00",
+            }
+
+            payload, error = _collect_with_mocks(
+                db_state,
+                db_cache,
+                episode_items=[current_episode],
+                episode_catalog_items=[current_episode],
+                series_entries=[series],
+                batch_gap_minutes=10,
+            )
+
+        self.assertIsNone(error)
+        self.assertTrue(payload["series"])
+        self.assertEqual("Nuova versione", payload["series"][0].get("update_label"))
+        self.assertEqual(["new_version"], [change.get("kind") for change in payload["series"][0]["changes"]])
+        self.assertEqual([new_path], [change.get("path") for change in payload["series"][0]["changes"]])
+
+    def test_episode_notification_checkpoint_excludes_versions_already_notified_inside_gap(self):
+        db_state = _RecordingState(
+            {
+                "server-a": {
+                    "movies": {"items": {}},
+                    "series": {"items": {}},
+                    "history": {
+                        "episodes": {
+                            "series-1:S1:E1": {
+                                "series_id": "series-1",
+                                "season": 1,
+                                "episode": 1,
+                                "notified": True,
+                                "notified_at": "2026-07-19T10:02:00+00:00",
+                                "media_source_keys": [],
+                            }
+                        }
+                    },
+                }
+            }
+        )
+        db_cache = _RecordingCache()
+        current_episode = {
+            "Id": "episode-1",
+            "Name": "Il libro di Giuditta",
+            "Type": "Episode",
+            "SeriesId": "series-1",
+            "SeriesName": "Ride or Die",
+            "SeriesProductionYear": 2026,
+            "ParentIndexNumber": 1,
+            "IndexNumber": 1,
+            "DateCreated": "2026-07-19T10:05:00+00:00",
+            "MediaSources": [
+                {
+                    "Id": "source-s01e01-2160",
+                    "Path": "/media/ride-or-die-s01e01-2160p.mkv",
+                    "Container": "mkv",
+                    "Size": 7540000000,
+                    "DateCreated": "2026-07-19T10:00:00+00:00",
+                },
+                {
+                    "Id": "source-s01e01-1080",
+                    "Path": "/media/ride-or-die-s01e01-1080p.mkv",
+                    "Container": "mkv",
+                    "Size": 2940000000,
+                    "DateCreated": "2026-07-19T10:05:00+00:00",
+                },
+            ],
+        }
+        series = {
+            "Id": "series-1",
+            "Name": "Ride or Die",
+            "Type": "Series",
+            "ProductionYear": 2026,
+            "DateCreated": "2026-07-19T10:00:00+00:00",
+        }
+
+        payload, error = _collect_with_mocks(
+            db_state,
+            db_cache,
+            episode_items=[current_episode],
+            episode_catalog_items=[current_episode],
+            series_entries=[series],
+            batch_gap_minutes=10,
+        )
+
+        self.assertIsNone(error)
+        self.assertTrue(payload["series"])
+        self.assertEqual("Nuova versione", payload["series"][0].get("update_label"))
+        self.assertEqual(["new_version"], [change.get("kind") for change in payload["series"][0]["changes"]])
+        self.assertEqual(
+            ["/media/ride-or-die-s01e01-1080p.mkv"],
+            [change.get("path") for change in payload["series"][0]["changes"]],
         )
 
     def test_episode_uses_media_source_item_dates_when_playback_sources_have_no_dates(self):
