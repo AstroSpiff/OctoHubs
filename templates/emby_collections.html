@@ -835,6 +835,20 @@
         .collection-source-panel + .collection-source-panel {
             margin-top: 0.9rem;
         }
+        .collection-sources-heading {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.45rem;
+            margin: 0 0 0.65rem;
+            font-size: 0.95rem;
+            font-weight: 700;
+            color: #1f2937;
+            cursor: help;
+        }
+        .collection-sources-heading i {
+            color: #64748b;
+            font-size: 0.78rem;
+        }
         .collection-source-panel summary {
             list-style: none;
             cursor: pointer;
@@ -1187,10 +1201,14 @@
                 </div>
 
                 <div class="collection-modal__pane">
+                    <div class="collection-sources-heading" title="Fonti personali e liste salvate usabili per creare o sincronizzare collezioni Emby.">
+                        <span>Fonti liste</span>
+                        <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
+                    </div>
                     <details class="collection-source-panel" id="trakt-lists-card">
                         <summary>
                             <div>
-                                <div class="collection-source-panel__title">Liste Trakt</div>
+                                <div class="collection-source-panel__title">Liste Trakt personali</div>
                                 <div class="collection-source-panel__status" id="trakt-lists-status">
                                     {% if trakt_enabled %}
                                         Caricamento liste dal tuo account Trakt…
@@ -1223,7 +1241,7 @@
                     <details class="collection-source-panel" id="mdblist-lists-card">
                         <summary>
                             <div>
-                                <div class="collection-source-panel__title">Liste MDBList</div>
+                                <div class="collection-source-panel__title">Liste MDBList personali</div>
                                 <div class="collection-source-panel__status" id="mdblist-lists-status">
                                     {% if not collection_settings.mdblist_enabled %}
                                         Configura le chiavi MDBList in Configurazione per accedere alle tue liste.

@@ -742,6 +742,21 @@ class CollectionFrontendTests(unittest.TestCase):
         self.assertIn('id="source-inventory-name"', template)
         self.assertIn('id="source-inventory-body"', template)
 
+    def test_collection_source_column_has_clear_personal_list_heading(self):
+        template = pathlib.Path("templates/emby_collections.html").read_text(encoding="utf-8")
+        pane_start = template.index('id="trakt-lists-card"')
+        sidebar_start = template.rindex('<div class="collection-modal__pane">', 0, pane_start)
+        sidebar_end = template.index('id="source-inventory-card"', pane_start)
+        block = template[sidebar_start:sidebar_end]
+
+        self.assertIn('class="collection-sources-heading"', block)
+        self.assertIn('title="Fonti personali e liste salvate usabili per creare o sincronizzare collezioni Emby."', block)
+        self.assertIn(">Fonti liste<", block)
+        self.assertIn(">Liste Trakt personali<", block)
+        self.assertIn(">Liste MDBList personali<", block)
+        self.assertNotIn(">Liste Trakt<", block)
+        self.assertNotIn(">Liste MDBList<", block)
+
     def test_source_inventory_form_uses_two_rows(self):
         template = pathlib.Path("templates/emby_collections.html").read_text(encoding="utf-8")
         css_start = template.index(".source-inventory-form")
