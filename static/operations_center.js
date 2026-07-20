@@ -75,6 +75,11 @@
         user_sync: 'fa-arrows-rotate',
         latest_refresh: 'fa-newspaper',
         delete_user: 'fa-trash',
+        requests_refresh: 'fa-list-check',
+        collections_trakt_lists: 'fa-list-ul',
+        collections_mdblist_lists: 'fa-list-ul',
+        collection_sync: 'fa-layer-group',
+        collections_sync_all: 'fa-arrows-rotate',
     };
 
     const workflowStepIcons = {
@@ -186,6 +191,33 @@
             state.inFlight = false;
             scheduleNext(state.activeCount > 0 ? POLL_ACTIVE_MS : POLL_IDLE_MS);
         }
+    }
+
+    async function waitFor(operationId, options = {}) {
+        const targetId = String(operationId || '');
+        if (!targetId) {
+            throw new Error('Operazione non valida.');
+        }
+        const timeoutMs = Number(options.timeoutMs || 180000);
+        const intervalMs = Number(options.intervalMs || 1500);
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < timeoutMs) {
+            const res = await apiFetch(`/api/operations?t=${Date.now()}`);
+            const payload = await readOperationJson(res);
+            if (!res.ok || payload.ok === false) {
+                throw new Error(payload.error || `HTTP ${res.status}`);
+            }
+            const operations = Array.isArray(payload.operations) ? payload.operations : [];
+            const operation = operations.find((item) => String(item.id || '') === targetId);
+            if (operation && !ACTIVE_STATUSES.has(String(operation.status || ''))) {
+                state.operations = operations;
+                state.activeCount = Number(payload.active_count || 0);
+                render();
+                return operation;
+            }
+            await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        }
+        throw new Error('Timeout operazione.');
     }
 
     function refreshSoon(delay = 250) {
@@ -442,6 +474,7 @@
         __initialized: true,
         refresh,
         refreshSoon,
+        waitFor,
         open: () => setOpen(true),
         close: () => setOpen(false),
         notifyStarted: () => {

@@ -377,6 +377,22 @@
             refreshRowAltLanguageControls(row);
         });
 
+        const requestRulesDetails = Array.from(document.querySelectorAll('.request-rules-details'));
+        if (requestRulesDetails.length && window.matchMedia) {
+            const requestRulesCompactQuery = window.matchMedia('(max-width: 1100px)');
+            const applyRequestRulesDefaultVisibility = () => {
+                requestRulesDetails.forEach(details => {
+                    details.open = !requestRulesCompactQuery.matches;
+                });
+            };
+            applyRequestRulesDefaultVisibility();
+            if (requestRulesCompactQuery.addEventListener) {
+                requestRulesCompactQuery.addEventListener('change', applyRequestRulesDefaultVisibility);
+            } else if (requestRulesCompactQuery.addListener) {
+                requestRulesCompactQuery.addListener(applyRequestRulesDefaultVisibility);
+            }
+        }
+
         document.querySelectorAll('.group-toggle').forEach(btn => {
             btn.addEventListener('click', () => {
                 const target = btn.dataset.target;
@@ -444,7 +460,7 @@
                             }
                         }, 1500);
                     };
-                    csrfFetch('/api/refresh-requests', {method: 'POST'})
+                    csrfFetch('/api/refresh-requests?background=1', {method: 'POST'})
                         .then(async resp => {
                             const data = await resp.json().catch(() => ({}));
                             if (!resp.ok) {
@@ -453,6 +469,9 @@
                             return data;
                         })
                         .then(data => {
+                            if (data.background) {
+                                window.octohubOperations?.notifyStarted?.();
+                            }
                             if (statusLabel) statusLabel.textContent = data.message || 'Lista aggiornata';
                             if (refreshStatus) refreshStatus.textContent = data.message || 'Lista aggiornata';
                             const toastType = data.success === false ? 'warning' : 'success';

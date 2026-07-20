@@ -1,6 +1,7 @@
 import os
 import json
 import copy
+import threading
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict
 
@@ -254,10 +255,10 @@ def _build_update_request_rules_snapshot(payload):
     return {"success": True, "message": "Regole per le richieste aggiornate"}, 200
 
 
-def _build_refresh_requests_snapshot():
+def _build_refresh_requests_snapshot(*, reserved: bool = False, operation_tracker=None, operation_id=None):
     from app_state import _JELLYSEERR_REFRESH_STATE
 
-    if _JELLYSEERR_REFRESH_STATE.get("running"):
+    if _JELLYSEERR_REFRESH_STATE.get("running") and not reserved:
         return {"success": True, "message": "Aggiornamento richieste gia in corso."}, 200
 
     from core.config_manager import load_config, _ensure_db_backend
@@ -265,10 +266,11 @@ def _build_refresh_requests_snapshot():
     from services.requests_cache import _save_cached_requests_overview
     from services.requests_summary import _summarize_requests_for_dashboard
 
-    _JELLYSEERR_REFRESH_STATE["running"] = True
-    _JELLYSEERR_REFRESH_STATE["last_error"] = None
-    _JELLYSEERR_REFRESH_STATE["last_warning"] = None
-    _JELLYSEERR_REFRESH_STATE["last_warning_at"] = None
+    if not reserved:
+        _JELLYSEERR_REFRESH_STATE["running"] = True
+        _JELLYSEERR_REFRESH_STATE["last_error"] = None
+        _JELLYSEERR_REFRESH_STATE["last_warning"] = None
+        _JELLYSEERR_REFRESH_STATE["last_warning_at"] = None
 
     try:
         config, is_valid = load_config()
@@ -279,6 +281,13 @@ def _build_refresh_requests_snapshot():
             return json_error("Config non valida")
 
         print("   -> [REFRESH] Inizio aggiornamento lista richieste Jellyseerr...")
+        if operation_tracker and operation_id:
+            operation_tracker.update(
+                operation_id,
+                message="Lettura richieste da Jellyseerr",
+                progress=15,
+                details={"current_step_label": "Lettura Jellyseerr"},
+            )
         requests_data, ok = get_jellyseerr_requests(config, silent=True, return_status=True)
         if not ok:
             warning = "Jellyseerr non risponde: refresh richieste saltato."
@@ -290,9 +299,23 @@ def _build_refresh_requests_snapshot():
             print(f"   -> [REFRESH] [WARNING] {warning}")
             return {"success": False, "message": warning}, 200
 
+        if operation_tracker and operation_id:
+            operation_tracker.update(
+                operation_id,
+                message="Analisi richieste e disponibilita",
+                progress=45,
+                details={"current_step_label": "Analisi richieste"},
+            )
         overview = _summarize_requests_for_dashboard(config, requests_data=requests_data)
 
         try:
+            if operation_tracker and operation_id:
+                operation_tracker.update(
+                    operation_id,
+                    message="Salvataggio cache richieste",
+                    progress=75,
+                    details={"current_step_label": "Salvataggio cache"},
+                )
             _save_cached_requests_overview(overview)
             print(f"   -> [REFRESH] Cache aggiornata con successo: {len(overview)} richieste salvate")
         except Exception as exc:
@@ -330,6 +353,18 @@ def _build_refresh_requests_snapshot():
             "tv": len(tv_list),
             "movies": len(movies_list)
         }
+        if operation_tracker and operation_id:
+            operation_tracker.update(
+                operation_id,
+                message=f"Richieste elaborate: {counts['total']}",
+                progress=95,
+                details={
+                    "current_step_label": "Completamento",
+                    "total": counts["total"],
+                    "movies": counts["movies"],
+                    "tv": counts["tv"],
+                },
+            )
         print(f"   -> [REFRESH] Aggiornamento completato: {len(movies_list)} film, {len(tv_list)} serie TV")
 
         _JELLYSEERR_REFRESH_STATE["running"] = False
@@ -351,6 +386,58 @@ def _build_refresh_requests_snapshot():
         _JELLYSEERR_REFRESH_STATE["last_error"] = str(exc)
         _JELLYSEERR_REFRESH_STATE["completed_at"] = datetime.now(timezone.utc).isoformat()
         return json_error(f"Errore aggiornamento richieste: {exc}", 500)
+
+
+def _build_refresh_requests_background_snapshot():
+    from app_state import _JELLYSEERR_REFRESH_STATE, get_operation_tracker
+
+    if _JELLYSEERR_REFRESH_STATE.get("running"):
+        return {
+            "success": True,
+            "background": True,
+            "operation_id": _JELLYSEERR_REFRESH_STATE.get("operation_id"),
+            "message": "Aggiornamento richieste gia in corso.",
+        }, 200
+
+    tracker = get_operation_tracker()
+    operation = tracker.start(
+        "requests_refresh",
+        "Aggiornamento Richieste Jellyseerr",
+        summary="Ricerca",
+        details={"current_step_label": "Avvio refresh"},
+    )
+    operation_id = operation.get("id")
+    _JELLYSEERR_REFRESH_STATE["running"] = True
+    _JELLYSEERR_REFRESH_STATE["operation_id"] = operation_id
+    _JELLYSEERR_REFRESH_STATE["last_status"] = "running"
+    _JELLYSEERR_REFRESH_STATE["last_error"] = None
+    _JELLYSEERR_REFRESH_STATE["last_warning"] = None
+    _JELLYSEERR_REFRESH_STATE["last_warning_at"] = None
+
+    def _do_refresh():
+        data, status_code = _build_refresh_requests_snapshot(
+            reserved=True,
+            operation_tracker=tracker,
+            operation_id=operation_id,
+        )
+        message = str((data or {}).get("message") or "Aggiornamento richieste completato")
+        try:
+            if status_code >= 400:
+                tracker.fail(operation_id, message, result=data)
+            elif data.get("success") is False:
+                tracker.skip(operation_id, message, result=data)
+            else:
+                tracker.finish(operation_id, message, result=data)
+        finally:
+            _JELLYSEERR_REFRESH_STATE.pop("operation_id", None)
+
+    threading.Thread(target=_do_refresh, daemon=True).start()
+    return {
+        "success": True,
+        "background": True,
+        "operation_id": operation_id,
+        "message": "Aggiornamento richieste avviato in Operazioni.",
+    }, 202
 
 
 def _build_test_connections_snapshot():

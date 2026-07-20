@@ -3,6 +3,7 @@
 from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, Form, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from core.config import read_raw_config, _merge_database_settings, _merge_trakt_settings, _merge_justwatch_settings
@@ -135,9 +136,15 @@ async def update_request_rules(request: Request):
 @router.post("/api/refresh-requests")
 async def refresh_requests(request: Request):
     _require_auth_dep(request)
+    if str(request.query_params.get("background") or "").lower() in {"1", "true", "yes"}:
+        from services.manager import _build_refresh_requests_background_snapshot
+
+        data, status_code = _build_refresh_requests_background_snapshot()
+        return JSONResponse(data, status_code=status_code)
+
     from services.manager import _build_refresh_requests_snapshot
 
-    data, status_code = _build_refresh_requests_snapshot()
+    data, status_code = await run_in_threadpool(_build_refresh_requests_snapshot)
     return JSONResponse(data, status_code=status_code)
 
 

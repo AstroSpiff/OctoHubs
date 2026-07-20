@@ -130,6 +130,9 @@ def save_collection_definition(payload: Dict[str, Any]) -> Dict[str, Any]:
     raw_value = str(payload.get("source_value") or "").strip()
     if not raw_value:
         raise ValueError("Valore della lista obbligatorio")
+    source_origin = str(payload.get("source_origin") or existing_data.get("source_origin") or "manual").strip().lower()
+    if source_origin not in {"manual", "personal", "inventory", "auto"}:
+        source_origin = "manual"
     source_payload = {
         "type": source_type,
         "value": raw_value,
@@ -170,6 +173,7 @@ def save_collection_definition(payload: Dict[str, Any]) -> Dict[str, Any]:
         "enabled": bool(payload.get("enabled", True)),
         "server_id": server_ids[0] if server_ids else "",
         "server_ids": server_ids,
+        "source_origin": source_origin,
         "updated_at": now,
         "created_at": existing_data.get("created_at") or now
     }

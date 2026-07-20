@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, Request, Depends, UploadFile, File
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response, RedirectResponse, HTMLResponse
 
 from app_helpers import _get_total_blacklist_counts
@@ -31,6 +32,11 @@ from emby_collections import (
     COLLECTION_POSTER_MAX_BYTES,
 )
 from emby_collections.sources import SOURCE_TYPES, list_trakt_lists, list_mdblist_user_lists, is_mdblist_enabled
+from emby_collections.operations import (
+    start_collection_sync_all_operation,
+    start_collection_sync_operation,
+    start_source_list_operation,
+)
 from emby_collections.source_inventory import (
     add_source_inventory_item,
     list_source_inventory,
@@ -45,6 +51,10 @@ _require_user: Optional[Callable[[Request], Any]] = None
 _templates: Optional[Any] = None
 _logger: Optional[Any] = None
 _get_csrf_token: Optional[Callable[[Request], str]] = None
+
+
+def _wants_background(request: Request) -> bool:
+    return str(request.query_params.get("background") or "").lower() in {"1", "true", "yes"}
 
 
 def init_emby_collections_routes(
@@ -315,8 +325,25 @@ async def api_emby_collections_sync(collection_id: str, request: Request, user=D
     logger = _logger_dep()
     actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
     logger.info("User %s syncing collection %s", actor_id or "unknown", collection_id)
+    if _wants_background(request):
+        try:
+            operation = start_collection_sync_operation(
+                collection_id=collection_id,
+                runner=run_collection_sync,
+            )
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "success": True,
+                    "background": True,
+                    "operation_id": operation.get("id"),
+                    "message": "Sincronizzazione collezione avviata",
+                },
+            )
+        except Exception as exc:
+            return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
     try:
-        result = run_collection_sync(collection_id)
+        result = await run_in_threadpool(run_collection_sync, collection_id)
         return {"success": True, "collection": result.get("collection"), "details": result.get("details")}
     except KeyError as exc:
         return JSONResponse(status_code=404, content={"success": False, "error": str(exc)})
@@ -345,8 +372,22 @@ async def api_emby_collections_sync_all(request: Request, user=Depends(_require_
     logger = _logger_dep()
     actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
     logger.info("User %s requested sync-all collections", actor_id or "unknown")
+    if _wants_background(request):
+        try:
+            operation = start_collection_sync_all_operation(runner=sync_all_collections)
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "success": True,
+                    "background": True,
+                    "operation_id": operation.get("id"),
+                    "message": "Sincronizzazione globale collezioni avviata",
+                },
+            )
+        except Exception as exc:
+            return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
     try:
-        result = sync_all_collections()
+        result = await run_in_threadpool(sync_all_collections)
         return {"success": True, "summary": result.get("summary", {})}
     except StorageError as exc:
         return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
@@ -359,8 +400,26 @@ async def api_emby_collections_trakt_lists(request: Request, user=Depends(_requi
     logger = _logger_dep()
     actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
     logger.info("User %s requested Trakt lists", actor_id or "unknown")
+    if _wants_background(request):
+        try:
+            operation = start_source_list_operation(
+                source_key="trakt",
+                title="Liste Trakt",
+                fetcher=list_trakt_lists,
+            )
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "success": True,
+                    "background": True,
+                    "operation_id": operation.get("id"),
+                    "message": "Aggiornamento Liste Trakt avviato",
+                },
+            )
+        except Exception as exc:
+            return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
     try:
-        trakt_lists = list_trakt_lists()
+        trakt_lists = await run_in_threadpool(list_trakt_lists)
         return {"success": True, "lists": trakt_lists}
     except RuntimeError as exc:
         return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
@@ -373,8 +432,26 @@ async def api_emby_collections_mdblist_lists(request: Request, user=Depends(_req
     logger = _logger_dep()
     actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
     logger.info("User %s requested MDBList lists", actor_id or "unknown")
+    if _wants_background(request):
+        try:
+            operation = start_source_list_operation(
+                source_key="mdblist",
+                title="Liste MDBList",
+                fetcher=list_mdblist_user_lists,
+            )
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "success": True,
+                    "background": True,
+                    "operation_id": operation.get("id"),
+                    "message": "Aggiornamento Liste MDBList avviato",
+                },
+            )
+        except Exception as exc:
+            return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
     try:
-        lists = list_mdblist_user_lists()
+        lists = await run_in_threadpool(list_mdblist_user_lists)
         return {"success": True, "lists": lists}
     except RuntimeError as exc:
         return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})

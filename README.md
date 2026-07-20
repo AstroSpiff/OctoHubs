@@ -11,7 +11,7 @@ OctoHub is a FastAPI web app to orchestrate Emby servers and related services (J
 ## Key features
 - Dashboard with scan status, results, and main metrics.
 - Multi-server Emby management with quick actions.
-- Automated Emby collections management (create/update from MDBList, Trakt, IMDb lists).
+- Automated Emby collections management (create/update from MDBList, Trakt, and TMDB lists).
 - Automated scans and scheduled refresh tasks.
 - RSS and JSON import tools with archive view.
 - STRM Extract and STRM Guard workflows for Emby.

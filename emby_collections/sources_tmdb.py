@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
@@ -47,15 +47,18 @@ def _extract_tmdb_identifier(value: str, segment: str) -> str | None:
     return None
 
 
-def _fetch_tmdb_payload(endpoint_template: str, identifier: str) -> Dict[str, Any]:
+def _fetch_tmdb_payload(endpoint_template: str, identifier: str, page: Optional[int] = None) -> Dict[str, Any]:
     api_key, language = _get_tmdb_credentials()
     if not api_key:
         raise RuntimeError("Chiave TMDB non configurata")
     url = endpoint_template.format(list_id=identifier, collection_id=identifier)
+    params: Dict[str, Any] = {"api_key": api_key, "language": language}
+    if page is not None:
+        params["page"] = page
     try:
         response = requests.get(
             url,
-            params={"api_key": api_key, "language": language},
+            params=params,
             timeout=15
         )
     except requests.RequestException as exc:
@@ -96,9 +99,26 @@ def _normalize_tmdb_entries(entries: List[Any]) -> List[Dict[str, Any]]:
     return normalized
 
 
+def _coerce_tmdb_page_count(value: Any) -> int:
+    try:
+        total_pages = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return max(total_pages, 1)
+
+
+def _extract_tmdb_list_entries(payload: Dict[str, Any]) -> List[Any]:
+    entries = payload.get("items") if isinstance(payload, dict) else []
+    return list(entries) if isinstance(entries, list) else []
+
+
 def _fetch_tmdb_list_items(list_id: str) -> List[Dict[str, Any]]:
-    payload = _fetch_tmdb_payload(TMDB_LIST_ENDPOINT, list_id)
-    entries = payload.get("items") or []
+    payload = _fetch_tmdb_payload(TMDB_LIST_ENDPOINT, list_id, page=1)
+    entries = _extract_tmdb_list_entries(payload)
+    total_pages = _coerce_tmdb_page_count(payload.get("total_pages") or payload.get("totalPages"))
+    for page in range(2, total_pages + 1):
+        page_payload = _fetch_tmdb_payload(TMDB_LIST_ENDPOINT, list_id, page=page)
+        entries.extend(_extract_tmdb_list_entries(page_payload))
     normalized = _normalize_tmdb_entries(entries)
     logger.info("TMDB lista %s restituisce %d elementi", list_id, len(normalized))
     return normalized

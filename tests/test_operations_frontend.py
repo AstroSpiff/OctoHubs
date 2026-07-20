@@ -21,6 +21,15 @@ class OperationsFrontendTests(unittest.TestCase):
 
         self.assertIn("async function readOperationJson(response)", source)
         self.assertIn("const payload = await readOperationJson(res);", source)
+
+    def test_operation_center_exposes_wait_for_and_collection_icons(self):
+        source = pathlib.Path("static/operations_center.js").read_text(encoding="utf-8")
+
+        self.assertIn("async function waitFor(operationId", source)
+        self.assertIn("waitFor,", source)
+        self.assertIn("requests_refresh: 'fa-list-check'", source)
+        self.assertIn("collections_trakt_lists: 'fa-list-ul'", source)
+        self.assertIn("collections_mdblist_lists: 'fa-list-ul'", source)
         self.assertNotIn("const payload = await res.json();", source)
         self.assertIn("console.warn('[OPERATIONS] Refresh unavailable:',", source)
         self.assertNotIn("console.error('[OPERATIONS] Refresh failed:',", source)

@@ -986,7 +986,7 @@
         if (!entry || !entry.username || !entry.slug) {
             return '';
         }
-        return `https://trakt.tv/users/${encodeURIComponent(entry.username)}/lists/${encodeURIComponent(entry.slug)}`;
+        return `https://trakt.tv/users/${encodeURIComponent(String(entry.username).toLowerCase())}/lists/${encodeURIComponent(entry.slug)}`;
     };
 
     const buildTruncatedDescription = (value, limit = 100) => {
@@ -1024,7 +1024,8 @@
                 <td style="white-space: nowrap;">
                     <button class="btn ghost compact" type="button" data-action="import-trakt"
                         data-source-value="${sourceValue}"
-                        data-source-name="${name}">
+                        data-source-name="${name}"
+                        data-source-origin="personal">
                         Importa
                     </button>
                     ${url ? `<a class="btn secondary compact" href="${url}" target="_blank" rel="noopener">Apri</a>` : ''}
@@ -1062,6 +1063,7 @@
         const itemCount = entry.item_count || 0;
         const link = escapeHtml(entry.link || '');
         const sourceValue = escapeHtml(entry.source_value || '');
+        const sourceType = escapeHtml(entry.source_type || 'mdblist');
         return `
             <tr data-list-id="${sourceValue}">
                 <td>
@@ -1072,7 +1074,9 @@
                 <td style="white-space: nowrap;">
                     <button class="btn ghost compact" type="button" data-action="import-mdblist"
                         data-source-value="${sourceValue}"
-                        data-source-name="${name}">
+                        data-source-name="${name}"
+                        data-source-type="${sourceType}"
+                        data-source-origin="personal">
                         Importa
                     </button>
                     ${link ? `<a class="btn secondary compact" href="${link}" target="_blank" rel="noopener">Apri</a>` : ''}
@@ -1151,6 +1155,49 @@
         }
     };
 
+    const waitForBackgroundListResult = async (data, label) => {
+        if (!data || !data.background) {
+            return data && Array.isArray(data.lists) ? data.lists : [];
+        }
+        const operationId = data.operation_id || '';
+        if (!operationId || !window.octohubOperations?.waitFor) {
+            throw new Error(`Operazione ${label} non disponibile.`);
+        }
+        window.octohubOperations?.notifyStarted?.();
+        const operation = await window.octohubOperations.waitFor(operationId, {
+            timeoutMs: 240000,
+            intervalMs: 1500
+        });
+        if (operation.status === 'error') {
+            throw new Error(operation.error || operation.message || `Errore ${label}.`);
+        }
+        const result = operation.result || {};
+        return Array.isArray(result.lists) ? result.lists : [];
+    };
+
+    const waitForBackgroundOperationResult = async (data, label) => {
+        if (!data || !data.background) {
+            return data || {};
+        }
+        const operationId = data.operation_id || '';
+        if (!operationId || !window.octohubOperations?.waitFor) {
+            throw new Error(`Operazione ${label} non disponibile.`);
+        }
+        window.octohubOperations?.notifyStarted?.();
+        const operation = await window.octohubOperations.waitFor(operationId, {
+            timeoutMs: 360000,
+            intervalMs: 1500
+        });
+        if (operation.status === 'error') {
+            throw new Error(operation.error || operation.message || `Errore ${label}.`);
+        }
+        const result = operation.result || {};
+        if (result.success === false) {
+            throw new Error(result.error || `Errore ${label}.`);
+        }
+        return result;
+    };
+
     const handleMdblistActions = (event) => {
         const trigger = event.target.closest('button[data-action="import-mdblist"]');
         if (!trigger) {
@@ -1158,11 +1205,13 @@
         }
         const value = trigger.dataset.sourceValue;
         const label = trigger.dataset.sourceName;
+        const sourceType = trigger.dataset.sourceType || 'mdblist';
+        const origin = trigger.dataset.sourceOrigin || 'manual';
         if (!value) {
             showToast('Valore lista mancante.', 'error');
             return;
         }
-        fillImportForm('mdblist', value, label);
+        fillImportForm(sourceType, value, label, origin);
     };
 
     const fetchMdblistLists = async () => {
@@ -1173,13 +1222,17 @@
         }
         updateMdblistStatus('Caricamento liste MDBList...');
         try {
-            const response = await baseCsrfFetch('/api/emby/collections/mdblist-lists');
+            const response = await baseCsrfFetch('/api/emby/collections/mdblist-lists?background=1');
             const data = await response.json();
             if (!response.ok || data.success === false) {
                 throw new Error(data.error || 'Impossibile caricare le liste MDBList.');
             }
-            renderMdblistLists(data.lists || []);
-            updateMdblistStatus(`Liste disponibili: ${data.lists ? data.lists.length : 0}`);
+            if (data.background) {
+                updateMdblistStatus('Aggiornamento MDBList avviato in Operazioni...');
+            }
+            const lists = await waitForBackgroundListResult(data, 'MDBList');
+            renderMdblistLists(lists);
+            updateMdblistStatus(`Liste disponibili: ${lists.length}`);
         } catch (error) {
             updateMdblistStatus(error.message || 'Errore caricamento liste MDBList.');
             showToast(error.message || 'Errore MDBList.', 'error');
@@ -1329,7 +1382,7 @@
         }
         const action = trigger.dataset.action;
         if (action === 'use-source-inventory') {
-            fillImportForm(trigger.dataset.sourceType, trigger.dataset.sourceValue, trigger.dataset.sourceName);
+            fillImportForm(trigger.dataset.sourceType, trigger.dataset.sourceValue, trigger.dataset.sourceName, 'inventory');
             return;
         }
         if (action !== 'delete-source-inventory') {
@@ -1380,12 +1433,12 @@
         const querySuffix = queryIndex >= 0 ? withoutHash.slice(queryIndex) : '';
         const directMatch = /^([^/]+)\/([^/]+)$/.exec(baseValue);
         if (directMatch) {
-            return `${directMatch[1]}/${directMatch[2]}${querySuffix}`;
+            return `${directMatch[1].toLowerCase()}/${directMatch[2]}${querySuffix}`;
         }
         const userPattern = /trakt\.tv\/users\/([^/]+)\/lists\/([^/?#]+)/i;
         const userMatch = userPattern.exec(baseValue);
         if (userMatch) {
-            return `${userMatch[1]}/${userMatch[2]}${querySuffix}`;
+            return `${userMatch[1].toLowerCase()}/${userMatch[2]}${querySuffix}`;
         }
         const listPattern = /trakt\.tv\/lists\/([^/?#]+)/i;
         const listMatch = listPattern.exec(baseValue);
@@ -1411,10 +1464,6 @@
         updateSourceHint();
     };
 
-    const hasSourceType = (sourceType) => {
-        return sourceTypes.some((entry) => entry.value === sourceType);
-    };
-
     const detectSourceTypeFromValue = (value) => {
         const text = (value || '').trim();
         const lowered = text.toLowerCase();
@@ -1427,9 +1476,6 @@
         if (lowered.includes('trakt.tv/')) {
             return 'trakt_list';
         }
-        if (lowered.includes('imdb.com/') || /^ls\d+$/i.test(text)) {
-            return hasSourceType('imdb_mdblist') ? 'imdb_mdblist' : 'imdb_list';
-        }
         if (lowered.includes('themoviedb.org/list/')) {
             return 'tmdb_list';
         }
@@ -1437,27 +1483,6 @@
             return 'tmdb_collection';
         }
         return '';
-    };
-
-    const parseImdbSourceValue = (value) => {
-        if (!value) {
-            return null;
-        }
-        const trimmed = value.trim();
-        if (!trimmed) {
-            return null;
-        }
-        if (/^ls\d+$/i.test(trimmed)) {
-            return trimmed;
-        }
-        const match = /imdb\.com\/(?:[a-z]{2}\/)?(?:list\/(ls\d+)|chart\/([^/?#]+))/i.exec(trimmed);
-        if (!match) {
-            return null;
-        }
-        if (match[1]) {
-            return match[1];
-        }
-        return trimmed;
     };
 
     const handleSourceValueUpdate = () => {
@@ -1470,17 +1495,6 @@
                 sourceTypeSelect.value = 'trakt_list';
             }
             sourceValueInput.value = parsed;
-        }
-        const parsedImdb = parseImdbSourceValue(sourceValueInput.value);
-        if (parsedImdb) {
-            if (sourceTypeSelect) {
-                if (hasSourceType('imdb_mdblist')) {
-                    sourceTypeSelect.value = 'imdb_mdblist';
-                } else {
-                    sourceTypeSelect.value = 'imdb_list';
-                }
-            }
-            sourceValueInput.value = parsedImdb;
         }
         updateSourceHint();
     };
@@ -1593,14 +1607,18 @@
         if (!keepEditing && form) {
             form.removeAttribute('data-editing');
         }
+        if (form) {
+            form.dataset.sourceOrigin = 'manual';
+        }
         updateSourceHint();
     };
 
-    const fillImportForm = (sourceType, value, label) => {
+    const fillImportForm = (sourceType, value, label, sourceOrigin = 'manual') => {
         if (!form) {
             return;
         }
         form.removeAttribute('data-editing');
+        form.dataset.sourceOrigin = sourceOrigin || 'manual';
         if (nameInput) {
             nameInput.value = label || '';
         }
@@ -1630,8 +1648,8 @@
         openModal('Crea nuova collezione', 'Completa i dettagli e salva la nuova raccolta.');
     };
 
-    const handleTraktImport = (value, name) => {
-        fillImportForm('trakt_list', value, name);
+    const handleTraktImport = (value, name, origin = 'manual') => {
+        fillImportForm('trakt_list', value, name, origin);
     };
 
     const handleTraktActions = (event) => {
@@ -1641,11 +1659,12 @@
         }
         const value = trigger.dataset.sourceValue;
         const label = trigger.dataset.sourceName;
+        const origin = trigger.dataset.sourceOrigin || 'manual';
         if (!value) {
             showToast('Valore lista mancante.', 'error');
             return;
         }
-        handleTraktImport(value, label);
+        handleTraktImport(value, label, origin);
     };
 
     const fetchTraktLists = async () => {
@@ -1656,13 +1675,17 @@
         }
         updateTraktStatus('Caricamento liste Trakt...');
         try {
-            const response = await baseCsrfFetch('/api/emby/collections/trakt-lists');
+            const response = await baseCsrfFetch('/api/emby/collections/trakt-lists?background=1');
             const data = await response.json();
             if (!response.ok || data.success === false) {
                 throw new Error(data.error || 'Impossibile caricare le liste Trakt.');
             }
-            renderTraktLists(data.lists || []);
-            updateTraktStatus(`Liste disponibili: ${data.lists ? data.lists.length : 0}`);
+            if (data.background) {
+                updateTraktStatus('Aggiornamento Trakt avviato in Operazioni...');
+            }
+            const lists = await waitForBackgroundListResult(data, 'Trakt');
+            renderTraktLists(lists);
+            updateTraktStatus(`Liste disponibili: ${lists.length}`);
         } catch (error) {
             updateTraktStatus(error.message || 'Errore caricamento liste Trakt.');
             showToast(error.message || 'Errore Trakt.', 'error');
@@ -1700,6 +1723,7 @@
             sort_name: sortInput.value.trim(),
             source_type: sourceTypeSelect.value,
             source_value: sourceValueInput.value.trim(),
+            source_origin: form?.dataset.sourceOrigin || 'manual',
             server_ids: getSelectedServerIds(),
             enabled: enabledInput.checked
         };
@@ -1814,16 +1838,17 @@
             button.disabled = true;
         }
         try {
-            const response = await baseCsrfFetch(`${apiUrl}/${encodeURIComponent(collectionId)}/sync`, {
+            const response = await baseCsrfFetch(`${apiUrl}/${encodeURIComponent(collectionId)}/sync?background=1`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 }
             });
-            const data = await response.json();
-            if (!response.ok || data.success === false) {
-                throw new Error(data.error || 'Errore sincronizzazione collezione.');
+            const initialData = await response.json();
+            if (!response.ok || initialData.success === false) {
+                throw new Error(initialData.error || 'Errore sincronizzazione collezione.');
             }
+            const data = await waitForBackgroundOperationResult(initialData, 'sincronizzazione collezione');
             const status = (data.collection && data.collection.last_sync_status) || '';
             const toastType = status === 'error'
                 ? 'error'
@@ -1856,16 +1881,17 @@
             syncAllButton.disabled = true;
         }
         try {
-            const response = await baseCsrfFetch(`${apiUrl}/sync-all`, {
+            const response = await baseCsrfFetch(`${apiUrl}/sync-all?background=1`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 }
             });
-            const data = await response.json();
-            if (!response.ok || data.success === false) {
-                throw new Error(data.error || 'Errore sincronizzazione globale.');
+            const initialData = await response.json();
+            if (!response.ok || initialData.success === false) {
+                throw new Error(initialData.error || 'Errore sincronizzazione globale.');
             }
+            const data = await waitForBackgroundOperationResult(initialData, 'sincronizzazione globale');
             const summary = data.summary || {};
             const synced = Number(summary.synced) || 0;
             const removed = (Number(summary.removed_disabled) || 0)
@@ -1942,6 +1968,7 @@
         }
         if (form) {
             form.dataset.editing = collectionId;
+            form.dataset.sourceOrigin = entry.source_origin || 'manual';
         }
         if (nameInput) {
             nameInput.value = entry.name;

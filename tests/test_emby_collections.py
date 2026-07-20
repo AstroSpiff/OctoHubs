@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import pathlib
 import unittest
 from unittest.mock import patch
@@ -14,12 +15,24 @@ from emby_collections.collection_store import (
 )
 from emby_collections.source_inventory import (
     add_source_inventory_item,
+    detect_inventory_source_type,
     list_source_inventory,
     remove_source_inventory_item,
 )
 from emby_collections.collection_sync import run_collection_sync
-from emby_collections.sources import build_source_link, fetch_source_items
-from emby_collections.sources_mdblist import MdblistClient, _fetch_imdb_via_mdblist_items, _normalize_mdblist_entries
+from emby_collections.routes import (
+    api_emby_collections_mdblist_lists,
+    api_emby_collections_sync,
+    api_emby_collections_sync_all,
+    api_emby_collections_trakt_lists,
+)
+from emby_collections.sources import SOURCE_TYPES, build_source_link, fetch_source_items
+from emby_collections.sources_mdblist import (
+    MdblistClient,
+    _normalize_mdblist_entries,
+    list_mdblist_user_lists,
+)
+from emby_collections.sources_tmdb import _extract_tmdb_identifier, _fetch_tmdb_list_items
 from emby_collections.sources_trakt import _parse_trakt_list_reference
 
 
@@ -139,6 +152,48 @@ class CollectionEmbyTests(unittest.TestCase):
 
 
 class CollectionSourceTests(unittest.TestCase):
+    def test_tmdb_list_identifier_accepts_slugged_grid_url(self):
+        identifier = _extract_tmdb_identifier(
+            "https://www.themoviedb.org/list/49435-movies-trending?view=grid",
+            "list",
+        )
+
+        self.assertEqual("49435", identifier)
+
+    def test_tmdb_list_fetches_all_pages(self):
+        payloads = [
+            {
+                "page": 1,
+                "total_pages": 2,
+                "items": [
+                    {
+                        "id": 10,
+                        "title": "First page movie",
+                        "media_type": "movie",
+                    }
+                ],
+            },
+            {
+                "page": 2,
+                "total_pages": 2,
+                "items": [
+                    {
+                        "id": 20,
+                        "name": "Second page show",
+                        "media_type": "tv",
+                    }
+                ],
+            },
+        ]
+
+        with patch("emby_collections.sources_tmdb._fetch_tmdb_payload", side_effect=payloads) as fetcher:
+            items = _fetch_tmdb_list_items("123")
+
+        self.assertEqual(["10", "20"], [item["provider_id"] for item in items])
+        self.assertEqual(["First page movie", "Second page show"], [item["title"] for item in items])
+        self.assertEqual([1, 2], [call.kwargs["page"] for call in fetcher.call_args_list])
+        self.assertEqual(2, fetcher.call_count)
+
     def test_mdblist_get_list_merges_movies_and_shows_from_same_response(self):
         class _FakeResponse:
             text = "{}"
@@ -173,72 +228,79 @@ class CollectionSourceTests(unittest.TestCase):
         self.assertEqual("42", items[0]["provider_id"])
         self.assertEqual("Tmdb", items[0]["provider_label"])
 
-    def test_imdb_via_mdblist_uses_matching_external_list(self):
+    def test_mdblist_direct_source_can_fetch_external_list_by_prefix(self):
         class _FakeClient:
             def __init__(self):
-                self.calls = 0
+                self.list_id = ""
 
-            def get_my_lists(self):
+            def get_external_list(self, list_id, max_items=None):
+                self.list_id = str(list_id)
                 return [
                     {
-                        "id": "external-42",
-                        "name": "IMDb Top TV",
-                        "external": {
-                            "url": "https://www.imdb.com/it/chart/toptv/?sort=list_order%2Casc",
-                        },
-                    }
-                ]
-
-            def get_list(self, list_id, max_items=None):
-                self.calls += 1
-                self.list_id = list_id
-                return [
-                    {
-                        "tmdb_id": 100 + self.calls,
-                        "title": "Show",
-                        "mediatype": "show",
+                        "tmdb_id": 550,
+                        "title": "Movie",
+                        "mediatype": "movie",
                     }
                 ]
 
         fake_client = _FakeClient()
         with patch("emby_collections.sources_mdblist._ensure_mdblist_client", return_value=fake_client):
-            items = _fetch_imdb_via_mdblist_items("https://www.imdb.com/chart/toptv/")
-            refreshed_items = _fetch_imdb_via_mdblist_items("https://www.imdb.com/chart/toptv/")
+            items = fetch_source_items("mdblist", "external:2868")
 
-        self.assertEqual("external-42", fake_client.list_id)
-        self.assertEqual(1, len(items))
-        self.assertEqual("tmdb", items[0]["provider_key"])
-        self.assertEqual("101", items[0]["provider_id"])
-        self.assertEqual("102", refreshed_items[0]["provider_id"])
-        self.assertEqual(2, fake_client.calls)
+        self.assertEqual("2868", fake_client.list_id)
+        self.assertEqual("550", items[0]["provider_id"])
 
-    def test_imdb_via_mdblist_explains_missing_external_list(self):
+    def test_mdblist_user_lists_include_external_lists(self):
         class _FakeClient:
+            def __init__(self, api_key):
+                self.api_key = api_key
+
             def get_my_lists(self):
-                return [{"id": "external-42", "name": "Other list"}]
+                return [
+                    {
+                        "id": "list-1",
+                        "name": "Regular list",
+                        "slug": "regular-list",
+                        "user_name": "roy",
+                        "items": 3,
+                    }
+                ]
 
-        with patch("emby_collections.sources_mdblist._ensure_mdblist_client", return_value=_FakeClient()):
-            with self.assertRaisesRegex(RuntimeError, "External List MDBList"):
-                _fetch_imdb_via_mdblist_items("https://www.imdb.com/chart/toptv/")
+            def get_user_external_lists(self):
+                return [
+                    {
+                        "id": 2868,
+                        "name": "IMDb Top TV",
+                        "source_url": "https://www.imdb.com/chart/toptv/",
+                        "user_name": "roy",
+                        "items": 250,
+                    }
+                ]
 
-    def test_source_registry_supports_imdb_via_mdblist(self):
-        with patch(
-            "emby_collections.sources_mdblist._ensure_mdblist_client",
-        ) as ensure_client:
-            ensure_client.return_value.get_my_lists.return_value = [
-                {
-                    "id": "external-42",
-                    "name": "IMDb Top TV",
-                    "source_url": "https://www.imdb.com/chart/toptv/",
-                }
-            ]
-            ensure_client.return_value.get_list.return_value = [
-                {"tmdb_id": 100, "title": "Show", "mediatype": "show"}
-            ]
+        with patch("emby_collections.sources_mdblist.load_config", return_value=({}, None)), patch(
+            "emby_collections.sources_mdblist._collect_mdblist_api_keys",
+            return_value=["key"],
+        ), patch(
+            "emby_collections.sources_mdblist.MdblistClient",
+            _FakeClient,
+        ):
+            lists = list_mdblist_user_lists()
 
-            items = fetch_source_items("imdb_mdblist", "https://www.imdb.com/chart/toptv/")
+        self.assertEqual("list-1", lists[0]["source_value"])
+        self.assertEqual("mdblist", lists[0]["source_type"])
+        self.assertEqual("external:2868", lists[1]["source_value"])
+        self.assertEqual("mdblist", lists[1]["source_type"])
+        self.assertTrue(lists[1]["external"])
 
-        self.assertEqual("100", items[0]["provider_id"])
+    def test_source_registry_excludes_imdb_sources(self):
+        source_values = {entry["value"] for entry in SOURCE_TYPES}
+
+        self.assertNotIn("imdb_list", source_values)
+        self.assertNotIn("imdb_mdblist", source_values)
+        with self.assertRaisesRegex(RuntimeError, "non supportata"):
+            fetch_source_items("imdb_list", "")
+        with self.assertRaisesRegex(RuntimeError, "non supportata"):
+            fetch_source_items("imdb_mdblist", "")
 
     def test_trakt_source_link_handles_global_list_and_sort_query(self):
         self.assertEqual(
@@ -248,6 +310,10 @@ class CollectionSourceTests(unittest.TestCase):
         self.assertEqual(
             "https://trakt.tv/users/roy/lists/my-list?sort=rank,desc",
             build_source_link("trakt_list", "roy/my-list?sort=rank,desc"),
+        )
+        self.assertEqual(
+            "https://trakt.tv/users/redprimrose/lists/festival-list",
+            build_source_link("trakt_list", "RedPrimrose/festival-list"),
         )
 
     def test_trakt_reference_normalizes_username_for_api_paths(self):
@@ -261,23 +327,62 @@ class CollectionSourceTests(unittest.TestCase):
 
 
 class CollectionStoreTests(unittest.TestCase):
+    def test_source_inventory_rejects_imdb_links(self):
+        backend = _CollectionStorage()
+
+        with patch("emby_collections.source_inventory._ensure_db_backend", return_value=backend):
+            detected = detect_inventory_source_type("https://www.imdb.com/chart/toptv/")
+            with self.assertRaisesRegex(ValueError, "Tipo di fonte non valido"):
+                add_source_inventory_item(
+                    {
+                        "name": "Top TV",
+                        "source_value": "https://www.imdb.com/chart/toptv/",
+                    },
+                    origin="manual",
+                )
+
+        self.assertIsNone(detected)
+        self.assertEqual([], backend.key_values.get("collections.source_inventory", []))
+
+    def test_source_inventory_hides_existing_imdb_entries(self):
+        backend = _CollectionStorage()
+        backend.key_values["collections.source_inventory"] = [
+            {
+                "id": "source-1",
+                "name": "Old IMDb",
+                "source_type": "imdb_mdblist",
+                "source_value": "https://www.imdb.com/chart/toptv/",
+            },
+            {
+                "id": "source-2",
+                "name": "TMDB",
+                "source_type": "tmdb_list",
+                "source_value": "123",
+            },
+        ]
+
+        with patch("emby_collections.source_inventory._ensure_db_backend", return_value=backend):
+            items = list_source_inventory()
+
+        self.assertEqual(["source-2"], [item["id"] for item in items])
+
     def test_source_inventory_adds_deduplicates_and_removes_saved_links(self):
         backend = _CollectionStorage()
 
         with patch("emby_collections.source_inventory._ensure_db_backend", return_value=backend):
             first = add_source_inventory_item(
                 {
-                    "name": "Top TV",
-                    "source_type": "imdb_mdblist",
-                    "source_value": "https://www.imdb.com/it/chart/toptv/?sort=list_order%2Casc",
+                    "name": "Festival",
+                    "source_type": "trakt_list",
+                    "source_value": "https://trakt.tv/users/RedPrimrose/lists/festival-list?sort=rank,asc",
                 },
                 origin="manual",
             )
             updated = add_source_inventory_item(
                 {
-                    "name": "Top TV aggiornata",
-                    "source_type": "imdb_mdblist",
-                    "source_value": "https://www.imdb.com/chart/toptv/",
+                    "name": "Festival aggiornata",
+                    "source_type": "trakt_list",
+                    "source_value": "redprimrose/festival-list?sort=rank,asc",
                 },
                 origin="manual",
             )
@@ -287,8 +392,42 @@ class CollectionStoreTests(unittest.TestCase):
 
         self.assertEqual(first["id"], updated["id"])
         self.assertEqual(1, len(items))
-        self.assertEqual("Top TV aggiornata", items[0]["name"])
+        self.assertEqual("Festival aggiornata", items[0]["name"])
         self.assertEqual([], empty)
+
+    def test_source_inventory_list_normalizes_existing_trakt_links(self):
+        backend = _CollectionStorage()
+        backend.key_values["collections.source_inventory"] = [
+            {
+                "id": "source-1",
+                "name": "Festival",
+                "source_type": "trakt_list",
+                "source_value": "RedPrimrose/festival-list",
+                "source_link": "https://trakt.tv/users/RedPrimrose/lists/festival-list",
+            }
+        ]
+
+        with patch("emby_collections.source_inventory._ensure_db_backend", return_value=backend):
+            items = list_source_inventory()
+
+        self.assertEqual("https://trakt.tv/users/redprimrose/lists/festival-list", items[0]["source_link"])
+
+    def test_save_collection_definition_rejects_imdb_sources(self):
+        backend = _CollectionStorage()
+
+        with patch("emby_collections.collection_store._ensure_db_backend", return_value=backend), patch(
+            "emby_collections.collection_store._server_map",
+            return_value=_servers(),
+        ):
+            with self.assertRaisesRegex(ValueError, "Tipo di fonte non valido"):
+                save_collection_definition(
+                    {
+                        "name": "Top TV",
+                        "source_type": "imdb_list",
+                        "source_value": "ls123456789",
+                        "server_ids": ["server-a"],
+                    }
+                )
 
     def test_save_collection_definition_auto_adds_source_to_inventory(self):
         backend = _CollectionStorage()
@@ -302,18 +441,42 @@ class CollectionStoreTests(unittest.TestCase):
         ):
             save_collection_definition(
                 {
-                    "name": "Top TV",
-                    "source_type": "imdb_mdblist",
-                    "source_value": "https://www.imdb.com/chart/toptv/",
+                    "name": "TMDB List",
+                    "source_type": "tmdb_list",
+                    "source_value": "123",
                     "server_ids": ["server-a"],
                 }
             )
             items = list_source_inventory()
 
         self.assertEqual(1, len(items))
-        self.assertEqual("Top TV", items[0]["name"])
-        self.assertEqual("imdb_mdblist", items[0]["source_type"])
+        self.assertEqual("TMDB List", items[0]["name"])
+        self.assertEqual("tmdb_list", items[0]["source_type"])
         self.assertEqual("auto", items[0]["origin"])
+
+    def test_save_collection_definition_skips_personal_service_sources_in_inventory(self):
+        backend = _CollectionStorage()
+
+        with patch("emby_collections.collection_store._ensure_db_backend", return_value=backend), patch(
+            "emby_collections.collection_store._server_map",
+            return_value=_servers(),
+        ), patch(
+            "emby_collections.source_inventory._ensure_db_backend",
+            return_value=backend,
+        ):
+            saved = save_collection_definition(
+                {
+                    "name": "Festival",
+                    "source_type": "trakt_list",
+                    "source_value": "RedPrimrose/festival-list",
+                    "source_origin": "personal",
+                    "server_ids": ["server-a"],
+                }
+            )
+            items = list_source_inventory()
+
+        self.assertEqual("personal", saved["source_origin"])
+        self.assertEqual([], items)
 
     def test_save_and_list_collection_definition_normalizes_servers_and_assets(self):
         backend = _CollectionStorage(
@@ -523,8 +686,8 @@ class CollectionFrontendTests(unittest.TestCase):
 
         self.assertNotIn("split('?', 1)", block)
         self.assertIn("querySuffix", block)
-        self.assertIn("return `${directMatch[1]}/${directMatch[2]}${querySuffix}`", block)
-        self.assertIn("return `${userMatch[1]}/${userMatch[2]}${querySuffix}`", block)
+        self.assertIn("return `${directMatch[1].toLowerCase()}/${directMatch[2]}${querySuffix}`", block)
+        self.assertIn("return `${userMatch[1].toLowerCase()}/${userMatch[2]}${querySuffix}`", block)
 
     def test_save_form_requires_server_selection_before_api_call(self):
         source = pathlib.Path("static/emby_collections.js").read_text(encoding="utf-8")
@@ -556,15 +719,19 @@ class CollectionFrontendTests(unittest.TestCase):
         self.assertIn("updateMdblistStatus(error.message || 'Errore caricamento liste MDBList.')", mdblist_block)
         self.assertIn("updateTraktStatus(error.message || 'Errore caricamento liste Trakt.')", trakt_block)
 
-    def test_imdb_links_prefer_mdblist_source_when_available(self):
+    def test_frontend_no_longer_detects_imdb_sources(self):
         source = pathlib.Path("static/emby_collections.js").read_text(encoding="utf-8")
+        detect_start = source.index("const detectSourceTypeFromValue =")
+        detect_end = source.index("const handleSourceValueUpdate =", detect_start)
+        detect_block = source[detect_start:detect_end]
         start = source.index("const handleSourceValueUpdate =")
         end = source.index("const getSourceLabel =", start)
         block = source[start:end]
 
-        self.assertIn("const parsedImdb = parseImdbSourceValue(sourceValueInput.value)", block)
-        self.assertIn("hasSourceType('imdb_mdblist')", block)
-        self.assertIn("sourceTypeSelect.value = 'imdb_mdblist'", block)
+        self.assertNotIn("imdb.com/", detect_block)
+        self.assertNotIn("imdb_mdblist", block)
+        self.assertNotIn("imdb_list", block)
+        self.assertNotIn("parseImdbSourceValue", block)
 
     def test_source_inventory_panel_is_below_personal_service_lists(self):
         template = pathlib.Path("templates/emby_collections.html").read_text(encoding="utf-8")
@@ -575,6 +742,18 @@ class CollectionFrontendTests(unittest.TestCase):
         self.assertIn('id="source-inventory-name"', template)
         self.assertIn('id="source-inventory-body"', template)
 
+    def test_source_inventory_form_uses_two_rows(self):
+        template = pathlib.Path("templates/emby_collections.html").read_text(encoding="utf-8")
+        css_start = template.index(".source-inventory-form")
+        css_end = template.index(".source-inventory-form label", css_start)
+        css_block = template[css_start:css_end]
+
+        self.assertIn("grid-template-columns: minmax(10rem, 1fr) minmax(9rem, 13rem);", css_block)
+        self.assertIn("grid-template-areas:", css_block)
+        self.assertIn('"name type"', css_block)
+        self.assertIn('"value add"', css_block)
+        self.assertIn(".source-inventory-field--value", template)
+
     def test_source_inventory_frontend_uses_inventory_api(self):
         source = pathlib.Path("static/emby_collections.js").read_text(encoding="utf-8")
 
@@ -583,6 +762,143 @@ class CollectionFrontendTests(unittest.TestCase):
         self.assertIn("const handleSourceInventoryAdd = async", source)
         self.assertIn("const handleSourceInventoryActions = async", source)
         self.assertIn("await fetchSourceInventory()", source)
+
+    def test_personal_list_refreshes_run_through_operations(self):
+        source = pathlib.Path("static/emby_collections.js").read_text(encoding="utf-8")
+
+        self.assertIn("'/api/emby/collections/trakt-lists?background=1'", source)
+        self.assertIn("'/api/emby/collections/mdblist-lists?background=1'", source)
+        self.assertIn("window.octohubOperations?.notifyStarted?.();", source)
+        self.assertIn("window.octohubOperations?.waitFor", source)
+
+    def test_collection_sync_actions_run_through_operations(self):
+        source = pathlib.Path("static/emby_collections.js").read_text(encoding="utf-8")
+
+        self.assertIn("}/sync?background=1`", source)
+        self.assertIn("}/sync-all?background=1`", source)
+        self.assertIn("waitForBackgroundOperationResult(initialData, 'sincronizzazione collezione')", source)
+        self.assertIn("waitForBackgroundOperationResult(initialData, 'sincronizzazione globale')", source)
+
+    def test_personal_service_import_marks_source_origin(self):
+        source = pathlib.Path("static/emby_collections.js").read_text(encoding="utf-8")
+        trakt_start = source.index("const buildTraktRow =")
+        trakt_end = source.index("const renderTraktLists =", trakt_start)
+        mdblist_start = source.index("const buildMdblistRow =")
+        mdblist_end = source.index("const renderMdblistLists =", mdblist_start)
+        save_start = source.index("const handleSave = async")
+        save_end = source.index("const handleToggle = async", save_start)
+
+        self.assertIn('data-source-origin="personal"', source[trakt_start:trakt_end])
+        self.assertIn('data-source-origin="personal"', source[mdblist_start:mdblist_end])
+        self.assertIn('data-source-type="${sourceType}"', source[mdblist_start:mdblist_end])
+        self.assertIn("source_origin: form?.dataset.sourceOrigin || 'manual'", source[save_start:save_end])
+
+
+class CollectionRoutesTests(unittest.IsolatedAsyncioTestCase):
+    class _Request:
+        def __init__(self, params):
+            self.query_params = params
+
+    async def test_trakt_lists_can_start_background_operation(self):
+        class _Logger:
+            def info(self, *_args, **_kwargs):
+                pass
+
+        with patch(
+            "emby_collections.routes._logger_dep",
+            return_value=_Logger(),
+        ), patch(
+            "emby_collections.routes.start_source_list_operation",
+            return_value={"id": "operation-1", "title": "Aggiornamento Liste Trakt"},
+        ) as starter, patch("emby_collections.routes.list_trakt_lists") as sync_fetch:
+            response = await api_emby_collections_trakt_lists(
+                self._Request({"background": "1"}),
+                user={"username": "tester"},
+            )
+
+        payload = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(202, response.status_code)
+        self.assertTrue(payload["success"])
+        self.assertTrue(payload["background"])
+        self.assertEqual("operation-1", payload["operation_id"])
+        starter.assert_called_once()
+        sync_fetch.assert_not_called()
+
+    async def test_mdblist_lists_can_start_background_operation(self):
+        class _Logger:
+            def info(self, *_args, **_kwargs):
+                pass
+
+        with patch(
+            "emby_collections.routes._logger_dep",
+            return_value=_Logger(),
+        ), patch(
+            "emby_collections.routes.start_source_list_operation",
+            return_value={"id": "operation-2", "title": "Aggiornamento Liste MDBList"},
+        ) as starter, patch("emby_collections.routes.list_mdblist_user_lists") as sync_fetch:
+            response = await api_emby_collections_mdblist_lists(
+                self._Request({"background": "1"}),
+                user={"username": "tester"},
+            )
+
+        payload = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(202, response.status_code)
+        self.assertTrue(payload["success"])
+        self.assertTrue(payload["background"])
+        self.assertEqual("operation-2", payload["operation_id"])
+        starter.assert_called_once()
+        sync_fetch.assert_not_called()
+
+    async def test_collection_sync_can_start_background_operation(self):
+        class _Logger:
+            def info(self, *_args, **_kwargs):
+                pass
+
+        with patch(
+            "emby_collections.routes._logger_dep",
+            return_value=_Logger(),
+        ), patch(
+            "emby_collections.routes.start_collection_sync_operation",
+            return_value={"id": "operation-3", "title": "Sincronizzazione collezione"},
+        ) as starter, patch("emby_collections.routes.run_collection_sync") as sync_now:
+            response = await api_emby_collections_sync(
+                "collection-1",
+                self._Request({"background": "1"}),
+                user={"username": "tester"},
+            )
+
+        payload = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(202, response.status_code)
+        self.assertTrue(payload["success"])
+        self.assertTrue(payload["background"])
+        self.assertEqual("operation-3", payload["operation_id"])
+        starter.assert_called_once()
+        sync_now.assert_not_called()
+
+    async def test_collection_sync_all_can_start_background_operation(self):
+        class _Logger:
+            def info(self, *_args, **_kwargs):
+                pass
+
+        with patch(
+            "emby_collections.routes._logger_dep",
+            return_value=_Logger(),
+        ), patch(
+            "emby_collections.routes.start_collection_sync_all_operation",
+            return_value={"id": "operation-4", "title": "Sincronizzazione collezioni"},
+        ) as starter, patch("emby_collections.routes.sync_all_collections") as sync_now:
+            response = await api_emby_collections_sync_all(
+                self._Request({"background": "1"}),
+                user={"username": "tester"},
+            )
+
+        payload = json.loads(response.body.decode("utf-8"))
+        self.assertEqual(202, response.status_code)
+        self.assertTrue(payload["success"])
+        self.assertTrue(payload["background"])
+        self.assertEqual("operation-4", payload["operation_id"])
+        starter.assert_called_once()
+        sync_now.assert_not_called()
 
 
 if __name__ == "__main__":

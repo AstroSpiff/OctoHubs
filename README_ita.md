@@ -11,7 +11,7 @@ OctoHub e una web app FastAPI per orchestrare server Emby e servizi collegati (J
 ## Funzionalita principali
 - Dashboard con stato scansioni, risultati e metriche principali.
 - Gestione multi-server Emby con azioni rapide.
-- Gestione collezioni Emby automatizzate (creazione/aggiornamento da liste MDBList, Trakt, IMDb).
+- Gestione collezioni Emby automatizzate (creazione/aggiornamento da liste MDBList, Trakt e TMDB).
 - Automazioni per scansioni e refresh programmati.
 - Import RSS e JSON con archivio consultabile.
 - Workflow STRM Extract e STRM Guard per Emby.

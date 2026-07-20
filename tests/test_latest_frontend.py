@@ -71,7 +71,7 @@ class LatestFrontendTests(unittest.TestCase):
 
         self.assertIn("window.octohubOperations?.notifyStarted?.();", source)
         self.assertIn("latest_refresh: 'fa-newspaper'", operations_source)
-        self.assertIn("operations_center.js') }}?v=20260719-operations-json", template)
+        self.assertIn("operations_center.js') }}?v=20260720-background-ops", template)
 
     def test_latest_refresh_button_uses_inflight_guard(self):
         source = pathlib.Path("static/emby_latest.js").read_text(encoding="utf-8")

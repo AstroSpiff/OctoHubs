@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import urllib.parse
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 import requests
 
@@ -24,6 +24,7 @@ class MdblistClient:
         self.api_key = api_key
         encoded = urllib.parse.quote_plus(api_key)
         self.my_lists_url = f"{self.BASE_URL}/lists/user/?apikey={encoded}"
+        self.external_lists_url = f"{self.BASE_URL}/external/lists/user?apikey={encoded}"
 
     def _build_url(self, path: str) -> str:
         separator = "&" if "?" in path else "?"
@@ -32,25 +33,31 @@ class MdblistClient:
     def _request(self, url: str) -> requests.Response:
         return requests.get(url, timeout=20)
 
-    def get_list(self, list_id: str, limit: int = 1000, offset: int = 0, max_items: Optional[int] = None) -> Optional[List[Dict[str, Any]]]:
+    def _get_items_from_endpoint(
+        self,
+        endpoint: str,
+        params: List[str],
+        limit: int = 1000,
+        offset: int = 0,
+        max_items: Optional[int] = None,
+    ) -> Optional[List[Dict[str, Any]]]:
         all_items: List[Dict[str, Any]] = []
         current_offset = offset
         while True:
-            endpoint = f"{self.BASE_URL}/lists/{list_id}/items/"
-            params = [
-                "fields=imdb_id,tmdb_id,title,name,mediatype,year",
+            query_params = [
+                *params,
                 f"limit={limit}",
-                f"offset={current_offset}"
+                f"offset={current_offset}",
             ]
-            url = f"{endpoint}?{'&'.join(params)}&apikey={urllib.parse.quote_plus(self.api_key)}"
+            url = f"{endpoint}?{'&'.join(query_params)}&apikey={urllib.parse.quote_plus(self.api_key)}"
             response = self._request(url)
             if not response.text:
-                logger.warning("MDBList (%s) non ha risposto: %s", list_id, url)
+                logger.warning("MDBList endpoint non ha risposto: %s", url)
                 return None
             try:
                 result = response.json()
             except ValueError as exc:
-                logger.warning("MDBList (%s) risposta non JSON: %s", list_id, exc)
+                logger.warning("MDBList endpoint risposta non JSON: %s", exc)
                 return None
             items = []
             for key in ("movies", "shows"):
@@ -68,6 +75,21 @@ class MdblistClient:
                 break
             current_offset += limit
         return all_items
+
+    def get_list(self, list_id: str, limit: int = 1000, offset: int = 0, max_items: Optional[int] = None) -> Optional[List[Dict[str, Any]]]:
+        endpoint = f"{self.BASE_URL}/lists/{list_id}/items/"
+        params = ["fields=imdb_id,tmdb_id,title,name,mediatype,year"]
+        return self._get_items_from_endpoint(endpoint, params, limit=limit, offset=offset, max_items=max_items)
+
+    def get_external_list(
+        self,
+        list_id: str,
+        limit: int = 1000,
+        offset: int = 0,
+        max_items: Optional[int] = None,
+    ) -> Optional[List[Dict[str, Any]]]:
+        endpoint = f"{self.BASE_URL}/external/lists/{list_id}/items"
+        return self._get_items_from_endpoint(endpoint, [], limit=limit, offset=offset, max_items=max_items)
 
     def get_list_using_url(self, url: str) -> Optional[List[Dict[str, Any]]]:
         normalized = url.rstrip("/")
@@ -101,6 +123,20 @@ class MdblistClient:
             data = response.json()
         except ValueError as exc:
             logger.warning("MDBList user lists risposta non JSON: %s", exc)
+            return None
+        if isinstance(data, list):
+            return data
+        return None
+
+    def get_user_external_lists(self) -> Optional[List[Dict[str, Any]]]:
+        response = self._request(self.external_lists_url)
+        if not response.text:
+            logger.warning("MDBList external user lists non ha risposto")
+            return None
+        try:
+            data = response.json()
+        except ValueError as exc:
+            logger.warning("MDBList external user lists risposta non JSON: %s", exc)
             return None
         if isinstance(data, list):
             return data
@@ -144,22 +180,26 @@ def _normalize_mdblist_entries(entries: List[Any]) -> List[Dict[str, Any]]:
     for item in entries:
         if not isinstance(item, dict):
             continue
+        ids = item.get("ids") if isinstance(item.get("ids"), dict) else {}
+        tmdb_id = item.get("tmdb_id") or ids.get("tmdb")
+        imdb_id = item.get("imdb_id") or ids.get("imdb")
         provider_key = None
         provider_id = None
         provider_label = None
-        if item.get("tmdb_id"):
+        if tmdb_id:
             provider_key = "tmdb"
-            provider_id = str(item["tmdb_id"])
+            provider_id = str(tmdb_id)
             provider_label = "Tmdb"
-        elif item.get("imdb_id"):
+        elif imdb_id:
             provider_key = "imdb"
-            provider_id = item["imdb_id"]
+            provider_id = str(imdb_id)
             provider_label = "Imdb"
         if not provider_key or not provider_id:
             continue
         media_type = _normalize_media_type(item.get("mediatype") or item.get("mediaType") or item.get("type"))
         year = _extract_year(
             item.get("year")
+            or item.get("release_year")
             or item.get("release_date")
             or item.get("first_air_date")
             or item.get("released")
@@ -175,110 +215,17 @@ def _normalize_mdblist_entries(entries: List[Any]) -> List[Dict[str, Any]]:
     return normalized
 
 
-def _iter_text_values(value: Any) -> Iterable[str]:
-    if isinstance(value, str):
-        stripped = value.strip()
-        if stripped:
-            yield stripped
-        return
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if isinstance(key, str):
-                yield key
-            yield from _iter_text_values(item)
-        return
-    if isinstance(value, list):
-        for item in value:
-            yield from _iter_text_values(item)
-
-
-def _strip_imdb_locale_path(path: str) -> str:
-    parts = [part for part in (path or "").split("/") if part]
-    if parts and re.fullmatch(r"[a-z]{2}", parts[0].lower()):
-        parts = parts[1:]
-    return "/" + "/".join(parts)
-
-
-def _imdb_reference_keys_from_text(value: Any) -> Set[str]:
+def _extract_external_list_id_from_value(value: str) -> Optional[str]:
     text = str(value or "").strip()
     if not text:
-        return set()
-    keys: Set[str] = set()
-    lowered = text.lower()
-
-    for list_id in re.findall(r"\b(ls\d+)\b", lowered):
-        keys.add(f"imdb:list:{list_id}")
-    for title_id in re.findall(r"\b(tt\d+)\b", lowered):
-        keys.add(f"imdb:title:{title_id}")
-
-    candidates = []
-    if lowered.startswith(("http://", "https://")):
-        candidates.append(text)
-    candidates.extend(match.group(0) for match in re.finditer(r"https?://[^\s\"'<>]+", text, re.IGNORECASE))
-
-    for candidate in candidates:
-        parsed = urllib.parse.urlparse(candidate.strip())
-        if "imdb.com" not in parsed.netloc.lower():
-            continue
-        path = _strip_imdb_locale_path(parsed.path).rstrip("/")
-        path_lower = path.lower()
-        list_match = re.search(r"/list/(ls\d+)", path_lower)
-        if list_match:
-            keys.add(f"imdb:list:{list_match.group(1)}")
-        chart_match = re.search(r"/chart/([^/?#]+)", path_lower)
-        if chart_match:
-            keys.add(f"imdb:chart:{chart_match.group(1)}")
-        title_match = re.search(r"/title/(tt\d+)", path_lower)
-        if title_match:
-            keys.add(f"imdb:title:{title_match.group(1)}")
-    return keys
-
-
-def _find_mdblist_external_entry_for_imdb(
-    raw_lists: List[Dict[str, Any]],
-    imdb_value: str,
-) -> Optional[Dict[str, Any]]:
-    target_keys = _imdb_reference_keys_from_text(imdb_value)
-    if not target_keys:
         return None
-    for entry in raw_lists or []:
-        if not isinstance(entry, dict):
-            continue
-        entry_keys: Set[str] = set()
-        for text in _iter_text_values(entry):
-            entry_keys.update(_imdb_reference_keys_from_text(text))
-        if target_keys.intersection(entry_keys):
-            return entry
+    prefixed = re.fullmatch(r"external:(\d+)", text, re.IGNORECASE)
+    if prefixed:
+        return prefixed.group(1)
+    url_match = re.search(r"(?:/external/lists/|/external/)(\d+)\b", text, re.IGNORECASE)
+    if url_match:
+        return url_match.group(1)
     return None
-
-
-def _fetch_imdb_via_mdblist_items(value: str, max_items: Optional[int] = None) -> List[Dict[str, Any]]:
-    trimmed = str(value or "").strip()
-    if not trimmed:
-        raise RuntimeError("URL IMDb non valido")
-    target_keys = _imdb_reference_keys_from_text(trimmed)
-    if not target_keys:
-        raise RuntimeError("Inserisci un URL IMDb lista/chart valido")
-
-    client = _ensure_mdblist_client()
-    raw_lists = client.get_my_lists()
-    if raw_lists is None:
-        raise RuntimeError("Impossibile leggere le liste MDBList")
-    match = _find_mdblist_external_entry_for_imdb(raw_lists, trimmed)
-    if not match:
-        raise RuntimeError(
-            "External List MDBList non trovata per questo URL IMDb. "
-            "Crea la External List su MDBList, attendi che venga popolata e ricarica le liste in OctoHub."
-        )
-    list_id = match.get("id") or match.get("list_id")
-    if not list_id:
-        raise RuntimeError("External List MDBList senza ID valido")
-    entries = client.get_list(str(list_id), max_items=max_items)
-    if entries is None:
-        raise RuntimeError("Impossibile recuperare la External List MDBList collegata a IMDb")
-    normalized = _normalize_mdblist_entries(entries)
-    logger.info("IMDb via MDBList %s usa lista %s e restituisce %d elementi", trimmed, list_id, len(normalized))
-    return normalized
 
 
 def _fetch_mdblist_items(value: str, max_items: Optional[int] = None) -> List[Dict[str, Any]]:
@@ -286,7 +233,10 @@ def _fetch_mdblist_items(value: str, max_items: Optional[int] = None) -> List[Di
     trimmed = value.strip()
     if not trimmed:
         raise RuntimeError("Valore MDBList non valido")
-    if trimmed.lower().startswith("http"):
+    external_list_id = _extract_external_list_id_from_value(trimmed)
+    if external_list_id:
+        entries = client.get_external_list(external_list_id, max_items=max_items)
+    elif trimmed.lower().startswith("http"):
         entries = client.get_list_using_url(trimmed)
     else:
         entries = client.get_list(trimmed, max_items=max_items)
@@ -337,11 +287,58 @@ def list_mdblist_user_lists() -> List[Dict[str, Any]]:
                 "list_id": str(list_id),
                 "slug": slug,
                 "user_name": user_name,
+                "source_type": "mdblist",
                 "source_value": str(list_id),
                 "item_count": item_count,
                 "link": link,
                 "dynamic": bool(entry.get("dynamic")),
-                "private": bool(entry.get("private"))
+                "private": bool(entry.get("private")),
+                "external": False,
+            })
+        external_fetcher = getattr(client, "get_user_external_lists", None)
+        raw_external_lists = external_fetcher() if callable(external_fetcher) else []
+        if raw_external_lists is None:
+            last_error = f"Errore MDBList External Lists (chiave {index})"
+            raw_external_lists = []
+        for entry in raw_external_lists or []:
+            if not isinstance(entry, dict):
+                continue
+            list_id = entry.get("id") or entry.get("list_id")
+            if not list_id:
+                continue
+            user_name = entry.get("user_name") or entry.get("user_id") or ""
+            name = entry.get("name") or f"External List MDBList {list_id}"
+            source_url = (
+                entry.get("source_url")
+                or entry.get("url")
+                or entry.get("external_url")
+                or entry.get("source")
+                or ""
+            )
+            description = entry.get("description") or source_url or ""
+            item_count = entry.get("items") or entry.get("item_count") or 0
+            link = entry.get("link") or entry.get("mdblist_url") or ""
+            if not link and user_name:
+                link = f"https://mdblist.com/lists/{user_name}/external/{list_id}"
+            elif not link:
+                link = f"https://mdblist.com/external/lists/{list_id}"
+            dedupe_key = ("external", str(list_id), str(user_name))
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            normalized.append({
+                "name": name,
+                "description": description,
+                "list_id": str(list_id),
+                "slug": entry.get("slug") or "",
+                "user_name": user_name,
+                "source_type": "mdblist",
+                "source_value": f"external:{list_id}",
+                "item_count": item_count,
+                "link": link,
+                "dynamic": True,
+                "private": bool(entry.get("private")),
+                "external": True,
             })
     if not normalized and last_error:
         raise RuntimeError(last_error)

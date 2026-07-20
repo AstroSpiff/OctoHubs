@@ -924,15 +924,34 @@
                                                                     {% if req.year %}
                                                                         <span class="title-year">({{ req.year }})</span>
                                                                     {% endif %}
+                                                                </div>
+                                                                <div class="request-meta">
+                                                                    <div class="meta-item">
+                                                                        <span class="meta-label">ID</span>
+                                                                        <span class="meta-value">{{ req.id }}</span>
+                                                                    </div>
+                                                                    <div class="meta-item">
+                                                                        <span class="meta-label">Tipo</span>
+                                                                        <span class="meta-value">{{ req.media_type or 'N/D' }}</span>
+                                                                    </div>
+                                                                    <div class="meta-item">
+                                                                        <span class="meta-label">Richiesta</span>
+                                                                        <span class="meta-value">{{ req.age or 'N/D' }}</span>
+                                                                    </div>
+                                                                    {% if show_seasons %}
+                                                                        <div class="meta-item">
+                                                                            <span class="meta-label">Stagioni</span>
+                                                                            <span class="meta-value">{{ req.seasons | join(', ') if req.seasons else '—' }}</span>
+                                                                        </div>
+                                                                    {% endif %}
+                                                                </div>
+                                                                <div class="request-links-row">
                                                                     <span class="request-external-links" aria-label="Link rapidi">
                                                                         {% if req.jellyseerr_url %}
                                                                             <a href="{{ req.jellyseerr_url }}" target="_blank" rel="noopener" title="Apri in Jellyseerr">Jellyseerr</a>
                                                                         {% endif %}
                                                                         {% if req.trakt_url %}
                                                                             <a href="{{ req.trakt_url }}" target="_blank" rel="noopener" title="Apri su Trakt">Trakt</a>
-                                                                        {% endif %}
-                                                                        {% if req.imdb_url %}
-                                                                            <a href="{{ req.imdb_url }}" target="_blank" rel="noopener" title="Apri su IMDb">IMDb</a>
                                                                         {% endif %}
                                                                         {% if req.tmdb_url %}
                                                                             <a href="{{ req.tmdb_url }}" target="_blank" rel="noopener" title="Apri su TMDB">TMDB</a>
@@ -964,26 +983,6 @@
                                                                                 {% if jw_title %}data-jw-label="{{ jw_title }}"{% endif %}>
                                                                             Justwatch
                                                                         </button>
-                                                                    {% endif %}
-                                                                </div>
-                                                                <div class="request-meta">
-                                                                    <div class="meta-item">
-                                                                        <span class="meta-label">ID</span>
-                                                                        <span class="meta-value">{{ req.id }}</span>
-                                                                    </div>
-                                                                    <div class="meta-item">
-                                                                        <span class="meta-label">Tipo</span>
-                                                                        <span class="meta-value">{{ req.media_type or 'N/D' }}</span>
-                                                                    </div>
-                                                                    <div class="meta-item">
-                                                                        <span class="meta-label">Richiesta</span>
-                                                                        <span class="meta-value">{{ req.age or 'N/D' }}</span>
-                                                                    </div>
-                                                                    {% if show_seasons %}
-                                                                        <div class="meta-item">
-                                                                            <span class="meta-label">Stagioni</span>
-                                                                            <span class="meta-value">{{ req.seasons | join(', ') if req.seasons else '—' }}</span>
-                                                                        </div>
                                                                     {% endif %}
                                                                 </div>
                                                             </div>
@@ -1053,7 +1052,7 @@
                                                             </div>
                                                         {% endif %}
                                                     </div>
-                                                    <details class="request-rules-details">
+                                                    <details class="request-rules-details" open>
                                                         <summary>Regole ricerca</summary>
                                                         <div class="request-right-block">
                                                             <div class="request-fields">
@@ -1189,7 +1188,7 @@
     <script src="{{ url_for('static', filename='search-streaming.js') }}?v=20260719-search"></script>
     <script src="{{ url_for('static', filename='search-history.js') }}"></script>
     <script src="{{ url_for('static', filename='shared-utils.js') }}?v=20260719-search-summary"></script>
-    <script src="{{ url_for('static', filename='operations_center.js') }}?v=20260719-operations-json"></script>
+    <script src="{{ url_for('static', filename='operations_center.js') }}?v=20260720-background-ops"></script>
     <script src="{{ url_for('static', filename='actions.js') }}"></script>
     <script src="{{ url_for('static', filename='script_shell.js') }}?v=20260628-shell"></script>
     <script src="{{ url_for('static', filename='script_rss_tools.js') }}?v=20260628-rss"></script>
@@ -1200,4 +1199,4 @@
     <script src="{{ url_for('static', filename='script_tmdb_emby.js') }}?v=20260719-search"></script>
     <script src="{{ url_for('static', filename='script_manual_search.js') }}?v=20260719-search"></script>
     <script src="{{ url_for('static', filename='script_telegram.js') }}?v=20260628-telegram"></script>
-    <script src="{{ url_for('static', filename='script.js') }}?v=20260719-search-summary"></script>
+    <script src="{{ url_for('static', filename='script.js') }}?v=20260720-background-requests"></script>

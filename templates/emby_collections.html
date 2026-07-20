@@ -877,7 +877,10 @@
         }
         .source-inventory-form {
             display: grid;
-            grid-template-columns: minmax(10rem, 1fr) minmax(9rem, 13rem) minmax(14rem, 2fr) auto;
+            grid-template-columns: minmax(10rem, 1fr) minmax(9rem, 13rem);
+            grid-template-areas:
+                "name type"
+                "value add";
             gap: 0.75rem;
             align-items: end;
             width: 100%;
@@ -894,9 +897,26 @@
             gap: 0.75rem;
             flex-wrap: wrap;
         }
+        .source-inventory-field--name {
+            grid-area: name;
+        }
+        .source-inventory-field--type {
+            grid-area: type;
+        }
+        .source-inventory-field--value {
+            grid-area: value;
+        }
+        .source-inventory-form #source-inventory-add {
+            grid-area: add;
+        }
         @media (max-width: 900px) {
             .source-inventory-form {
                 grid-template-columns: 1fr;
+                grid-template-areas:
+                    "name"
+                    "type"
+                    "value"
+                    "add";
             }
         }
         .collection-source-table {
@@ -987,7 +1007,7 @@
             <div>
                 <h1>Collezioni Emby</h1>
                 <p class="tagline">
-                    Crea collezioni personalizzate importando liste da Trakt, TMDB, IMDb o MDBList. Gestisci tutto come su Emby, ma con superpoteri.
+                    Crea collezioni personalizzate importando liste da Trakt, TMDB o MDBList. Gestisci tutto come su Emby, ma con superpoteri.
                 </p>
             </div>
             <div class="collections-hero__status">
@@ -1246,11 +1266,11 @@
                         <div class="collection-source-panel__body">
                             <div class="source-inventory-actions">
                                 <div class="source-inventory-form">
-                                    <label for="source-inventory-name">
+                                    <label class="source-inventory-field--name" for="source-inventory-name">
                                         Nome
                                         <input type="text" id="source-inventory-name" maxlength="120" placeholder="Nome lista">
                                     </label>
-                                    <label for="source-inventory-type">
+                                    <label class="source-inventory-field--type" for="source-inventory-type">
                                         Fonte
                                         <select id="source-inventory-type">
                                             {% for option in collection_source_types %}
@@ -1258,7 +1278,7 @@
                                             {% endfor %}
                                         </select>
                                     </label>
-                                    <label for="source-inventory-value">
+                                    <label class="source-inventory-field--value" for="source-inventory-value">
                                         Link o ID
                                         <input type="text" id="source-inventory-value" placeholder="https://...">
                                     </label>
@@ -1334,7 +1354,7 @@
         });
     </script>
     <script src="{{ url_for('static', filename='shared-utils.js') }}"></script>
-    <script src="{{ url_for('static', filename='operations_center.js') }}?v=20260719-operations-json"></script>
+    <script src="{{ url_for('static', filename='operations_center.js') }}?v=20260720-background-ops"></script>
     <script src="{{ url_for('static', filename='actions.js') }}"></script>
     <script src="{{ url_for('static', filename='script_shell.js') }}?v=20260628-shell"></script>
     <script src="{{ url_for('static', filename='script_rss_tools.js') }}?v=20260628-rss"></script>
@@ -1346,6 +1366,6 @@
     <script src="{{ url_for('static', filename='script_manual_search.js') }}?v=20260719-search"></script>
     <script src="{{ url_for('static', filename='script_telegram.js') }}?v=20260628-telegram"></script>
     <script src="{{ url_for('static', filename='script.js') }}"></script>
-    <script src="{{ url_for('static', filename='emby_collections.js') }}"></script>
+    <script src="{{ url_for('static', filename='emby_collections.js') }}?v=20260720-background-collections"></script>
 </body>
 </html>

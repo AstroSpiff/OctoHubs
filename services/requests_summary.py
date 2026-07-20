@@ -16,7 +16,7 @@ from search.availability import is_request_available
 from search.rules import _get_request_rule
 from search.seasons import describe_season_statuses, select_scan_seasons, _request_release_date
 
-TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w92"
+TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w154"
 
 
 def _iter_metadata_sources(*sources):
@@ -80,20 +80,30 @@ def _build_jellyseerr_url(config, media_type, tmdb_id):
     return f"{base_url}/{media_token}/{tmdb_id}"
 
 
-def _build_request_external_links(config, base_req, media_type):
-    sources = list(_iter_metadata_sources(base_req))
+def _trakt_media_type(media_token):
+    if media_token == "tv":
+        return "show"
+    if media_token == "movie":
+        return "movie"
+    return ""
+
+
+def _build_request_external_links(config, base_req, media_type, *fallback_sources):
+    sources = list(_iter_metadata_sources(base_req, *fallback_sources))
     tmdb_id = _first_metadata_value(sources, ("tmdbId", "tmdb_id", "tmdbid", "mediaId", "media_id"))
     imdb_id = _first_metadata_value(sources, ("imdbId", "imdb_id", "imdbID", "imdb"))
     poster = _first_metadata_value(sources, ("posterPath", "poster_path", "posterUrl", "poster_url", "poster"))
     media_token = _normalize_tmdb_media_type(media_type)
+    tmdb_id = str(tmdb_id).strip() if tmdb_id else ""
     tmdb_url = f"https://www.themoviedb.org/{media_token}/{tmdb_id}" if media_token and tmdb_id else ""
     imdb_id = str(imdb_id).strip() if imdb_id else ""
     imdb_url = f"https://www.imdb.com/title/{imdb_id}" if imdb_id.startswith("tt") else ""
+    trakt_type = _trakt_media_type(media_token)
     trakt_url = ""
-    if imdb_url:
-        trakt_url = f"https://trakt.tv/search/imdb/{imdb_id}"
-    elif tmdb_id and media_token:
-        trakt_url = f"https://trakt.tv/search/tmdb/{tmdb_id}"
+    if tmdb_id and trakt_type:
+        trakt_url = f"https://trakt.tv/search/tmdb/{tmdb_id}?type={trakt_type}"
+    elif imdb_url and trakt_type:
+        trakt_url = f"https://trakt.tv/search/imdb/{imdb_id}?type={trakt_type}"
     return {
         "poster_url": _build_tmdb_poster_url(poster),
         "jellyseerr_url": _build_jellyseerr_url(config, media_token, tmdb_id),
@@ -221,6 +231,7 @@ def _summarize_requests_for_dashboard(config, requests_data=None):
             req_id = req.get("id")
             detailed = fetch_request_details(req_id, config, details_cache)
             if detailed:
+                detailed["_summary_source_request"] = req
                 tv_detailed_success += 1
                 enriched_requests.append(detailed)
                 continue
@@ -286,7 +297,8 @@ def _summarize_requests_for_dashboard(config, requests_data=None):
         justwatch_checked = False
         justwatch_available = False
         justwatch_providers = []
-        external_links = _build_request_external_links(config, base_req, normalized_type)
+        source_request = req.get("_summary_source_request") if isinstance(req, dict) else None
+        external_links = _build_request_external_links(config, base_req, normalized_type, source_request or req)
         if normalized_type != "tv" and not (is_available or (release_dt and release_dt > now)):
             settings = _active_justwatch_settings()
             if _justwatch_enabled(settings):

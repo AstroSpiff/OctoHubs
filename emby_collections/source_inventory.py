@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import re
 import urllib.parse
 import uuid
 from typing import Any, Dict, List, Optional
@@ -42,16 +41,22 @@ def _canonical_source_value(source_type: str, source_value: str) -> str:
     lowered = value.lower()
     if lowered.startswith(("http://", "https://")):
         value = _normalize_url_value(value)
-    if source_type == "imdb_mdblist":
+    if source_type == "trakt_list":
         parsed = urllib.parse.urlparse(value)
-        path = parsed.path
-        parts = [part for part in path.split("/") if part]
-        if parts and re.fullmatch(r"[a-z]{2}", parts[0].lower()):
-            parts = parts[1:]
-        if len(parts) >= 2 and parts[0].lower() == "chart":
-            return f"https://www.imdb.com/chart/{parts[1].lower()}/"
-        if len(parts) >= 2 and parts[0].lower() == "list":
-            return parts[1]
+        if parsed.scheme and parsed.netloc and "trakt.tv" in parsed.netloc.lower():
+            parts = [part for part in parsed.path.split("/") if part]
+            if len(parts) >= 4 and parts[0].lower() == "users" and parts[2].lower() == "lists":
+                token = f"{parts[1].lower()}/{parts[3]}"
+            elif len(parts) >= 2 and parts[0].lower() == "lists":
+                token = parts[1]
+            else:
+                token = value
+            return f"{token}?{parsed.query}" if parsed.query and token != value else token
+        base_value, separator, query = value.partition("?")
+        if "/" in base_value:
+            username, list_id = base_value.split("/", 1)
+            normalized = f"{username.strip().lower()}/{list_id.strip()}"
+            return f"{normalized}{separator}{query}" if separator else normalized
     return value
 
 
@@ -69,8 +74,6 @@ def detect_inventory_source_type(value: str) -> Optional[str]:
         return "mdblist"
     if "trakt.tv/" in lowered:
         return "trakt_list"
-    if "imdb.com/" in lowered or re.fullmatch(r"ls\d+", lowered):
-        return "imdb_mdblist" if "imdb_mdblist" in _source_type_map() else "imdb_list"
     if "themoviedb.org/list/" in lowered:
         return "tmdb_list"
     if "themoviedb.org/collection/" in lowered:
@@ -118,7 +121,18 @@ def _normalize_inventory_payload(payload: Dict[str, Any], origin: str) -> Dict[s
 
 
 def list_source_inventory() -> List[Dict[str, Any]]:
-    items = _load_inventory()
+    supported_types = _source_type_map()
+    items = [
+        item for item in _load_inventory()
+        if str(item.get("source_type") or "") in supported_types
+    ]
+    from .sources import build_source_link
+
+    for item in items:
+        source_type = str(item.get("source_type") or "")
+        source_value = str(item.get("source_value") or "")
+        if source_type and source_value:
+            item["source_link"] = build_source_link(source_type, _canonical_source_value(source_type, source_value))
     items.sort(key=lambda item: (str(item.get("name") or "").lower(), str(item.get("source_value") or "").lower()))
     return items
 
@@ -154,6 +168,8 @@ def add_source_inventory_item(payload: Dict[str, Any], origin: str = "manual") -
 
 
 def maybe_add_collection_source_to_inventory(collection: Dict[str, Any], origin: str = "auto") -> Optional[Dict[str, Any]]:
+    if str(collection.get("source_origin") or "").strip().lower() == "personal":
+        return None
     source = collection.get("source") if isinstance(collection.get("source"), dict) else {}
     source_type = str(source.get("type") or "").strip()
     source_value = str(source.get("value") or "").strip()

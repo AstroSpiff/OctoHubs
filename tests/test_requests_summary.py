@@ -105,11 +105,44 @@ class RequestsSummaryTests(unittest.TestCase):
             summary = _summarize_requests_for_dashboard(config, requests_data=[request])
 
         item = summary[0]
-        self.assertEqual("https://image.tmdb.org/t/p/w92/cape.jpg", item["poster_url"])
+        self.assertEqual("https://image.tmdb.org/t/p/w154/cape.jpg", item["poster_url"])
         self.assertEqual("https://jelly.example/tv/12345", item["jellyseerr_url"])
         self.assertEqual("https://www.themoviedb.org/tv/12345", item["tmdb_url"])
         self.assertEqual("https://www.imdb.com/title/tt9999999", item["imdb_url"])
-        self.assertEqual("https://trakt.tv/search/imdb/tt9999999", item["trakt_url"])
+        self.assertEqual("https://trakt.tv/search/tmdb/12345?type=show", item["trakt_url"])
+
+    def test_request_summary_keeps_original_poster_when_tv_details_omit_it(self):
+        request = {
+            "id": 455,
+            "type": "tv",
+            "title": "Poster Show",
+            "media": {
+                "mediaType": "tv",
+                "status": 3,
+                "tmdbId": 22222,
+                "posterPath": "/original.jpg",
+            },
+            "seasons": [{"seasonNumber": 1}],
+        }
+        detailed = {
+            "id": 455,
+            "type": "tv",
+            "title": "Poster Show",
+            "media": {
+                "mediaType": "tv",
+                "status": 3,
+                "tmdbId": 22222,
+            },
+            "seasons": [{"seasonNumber": 1}],
+        }
+
+        with patch("services.requests_summary._log_justwatch_status"), patch(
+            "services.requests_summary.fetch_request_details",
+            return_value=detailed,
+        ):
+            summary = _summarize_requests_for_dashboard(_config(), requests_data=[request])
+
+        self.assertEqual("https://image.tmdb.org/t/p/w154/original.jpg", summary[0]["poster_url"])
 
 
 if __name__ == "__main__":
