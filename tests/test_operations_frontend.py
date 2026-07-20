@@ -34,6 +34,13 @@ class OperationsFrontendTests(unittest.TestCase):
         self.assertIn("console.warn('[OPERATIONS] Refresh unavailable:',", source)
         self.assertNotIn("console.error('[OPERATIONS] Refresh failed:',", source)
 
+    def test_operation_center_emits_completion_event_on_status_transition(self):
+        source = pathlib.Path("static/operations_center.js").read_text(encoding="utf-8")
+
+        self.assertIn("function emitCompletedOperations(previousOperations, nextOperations)", source)
+        self.assertIn("'octohub:operation-completed'", source)
+        self.assertIn("previousIsActive && !nextIsActive", source)
+
 
 if __name__ == "__main__":
     unittest.main()

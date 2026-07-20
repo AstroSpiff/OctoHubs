@@ -40,6 +40,8 @@ class LatestFrontendTests(unittest.TestCase):
         source = pathlib.Path("static/emby_latest.js").read_text(encoding="utf-8")
 
         self.assertIn("latestState.loaded && !force && !allowRefresh && !cacheOnly", source)
+        self.assertIn("requestLatestCacheReload", source)
+        self.assertIn("cacheReloadQueued", source)
 
     def test_latest_progress_completion_reloads_latest_cache_even_after_reset(self):
         source = pathlib.Path("static/emby_latest.js").read_text(encoding="utf-8")
@@ -47,7 +49,7 @@ class LatestFrontendTests(unittest.TestCase):
         self.assertIn(
             "if (!active) {\n"
             "                stopLatestProgressPolling();\n"
-            "                loadLatestReleases(false, false, true);\n"
+            "                requestLatestCacheReload();\n"
             "            }",
             source,
         )
@@ -61,7 +63,7 @@ class LatestFrontendTests(unittest.TestCase):
     def test_latest_script_cache_buster_tracks_operations_change(self):
         source = pathlib.Path("templates/emby_dashboard.html").read_text(encoding="utf-8")
 
-        self.assertIn("emby_latest.js') }}?v=20260718-latest-tab-load", source)
+        self.assertIn("emby_latest.js') }}?v=20260720-latest-operation-refresh", source)
         self.assertIn("script_shell.js') }}?v=20260718-main-tab-events", source)
 
     def test_latest_refresh_notifies_global_operation_center(self):
@@ -71,7 +73,7 @@ class LatestFrontendTests(unittest.TestCase):
 
         self.assertIn("window.octohubOperations?.notifyStarted?.();", source)
         self.assertIn("latest_refresh: 'fa-newspaper'", operations_source)
-        self.assertIn("operations_center.js') }}?v=20260720-background-ops", template)
+        self.assertIn("operations_center.js') }}?v=20260720-operation-events", template)
 
     def test_latest_refresh_button_uses_inflight_guard(self):
         source = pathlib.Path("static/emby_latest.js").read_text(encoding="utf-8")
@@ -86,7 +88,7 @@ class LatestFrontendTests(unittest.TestCase):
 
         self.assertIn(
             "if (latestState.loaded) {\n"
-            "                loadLatestReleases(false, false, true);\n"
+            "                requestLatestCacheReload();\n"
             "            }",
             source,
         )
@@ -123,6 +125,17 @@ class LatestFrontendTests(unittest.TestCase):
         self.assertIn("if (tab === 'latest')", latest_source)
         self.assertIn("if (isLatestTabActive())", latest_source)
         self.assertIn("loadLatestReleases(false, false, true);", latest_source)
+
+    def test_latest_reloads_when_relevant_global_operation_completes(self):
+        source = pathlib.Path("static/emby_latest.js").read_text(encoding="utf-8")
+        operations_source = pathlib.Path("static/operations_center.js").read_text(encoding="utf-8")
+
+        self.assertIn("document.addEventListener('octohub:operation-completed'", source)
+        self.assertIn("shouldReloadLatestAfterOperation", source)
+        self.assertIn("kind === 'workflow'", source)
+        self.assertIn("kind === 'latest_refresh'", source)
+        self.assertIn("requestLatestCacheReload();", source)
+        self.assertIn("emitCompletedOperations(previousOperations, nextOperations);", operations_source)
 
     def test_latest_episode_code_does_not_convert_null_to_s00e00(self):
         source = pathlib.Path("static/emby_latest.js").read_text(encoding="utf-8")

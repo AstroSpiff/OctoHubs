@@ -5,6 +5,7 @@
         loaded: false,
         loading: false,
         refreshing: false,
+        cacheReloadQueued: false,
         currentServerId: 'all',
         movies: [],
         series: []
@@ -498,7 +499,7 @@
             const active = updateLatestProgressUI(data.progress || {}, !!data.refreshing);
             if (!active) {
                 stopLatestProgressPolling();
-                loadLatestReleases(false, false, true);
+                requestLatestCacheReload();
             }
         } catch (err) {
             // Ignore transient errors
@@ -593,6 +594,28 @@
             limit = 10;
         }
         return limit;
+    };
+
+    const shouldReloadLatestAfterOperation = (operation) => {
+        const kind = String(operation?.kind || '');
+        if (kind === 'workflow' || kind === 'latest_refresh' || kind === 'latest_notify') {
+            return true;
+        }
+        const details = operation?.details || {};
+        const result = operation?.result || {};
+        const currentStepId = String(details.current_step_id || result.current_step_id || '');
+        return currentStepId === 'cache' || currentStepId === 'notify';
+    };
+
+    const requestLatestCacheReload = () => {
+        if (!latestMoviesContainer || !latestSeriesContainer || !isLatestTabActive()) {
+            return;
+        }
+        if (latestState.loading) {
+            latestState.cacheReloadQueued = true;
+            return;
+        }
+        loadLatestReleases(false, false, true);
     };
 
     function loadLatestReleases(force = false, allowRefresh = false, cacheOnly = false) {
@@ -690,6 +713,10 @@
             })
             .finally(() => {
                 latestState.loading = false;
+                if (latestState.cacheReloadQueued) {
+                    latestState.cacheReloadQueued = false;
+                    requestLatestCacheReload();
+                }
             });
     }
 
@@ -716,12 +743,11 @@
                 window.showToast?.(data.message || 'Errore aggiornamento.', 'error');
                 return;
             }
-            if (latestState.loaded) {
-                loadLatestReleases(false, false, true);
-            }
             if (data.refreshing) {
                 window.octohubOperations?.notifyStarted?.();
                 startLatestProgressPolling();
+            } else if (latestState.loaded) {
+                requestLatestCacheReload();
             }
         } catch (err) {
             window.showToast?.('Errore aggiornamento.', 'error');
@@ -758,6 +784,7 @@
                     window.showToast?.(data.message || 'Errore invio notifiche.', 'error');
                 } else {
                     window.showToast?.(data.message || 'Notifiche inviate.', 'success');
+                    requestLatestCacheReload();
                 }
             } catch (err) {
                 window.showToast?.('Errore invio notifiche.', 'error');
@@ -2432,6 +2459,13 @@
         const tab = event?.detail?.tab || '';
         if (tab === 'latest') {
             loadLatestReleases(false, false, true);
+        }
+    });
+
+    document.addEventListener('octohub:operation-completed', (event) => {
+        const operation = event?.detail?.operation || {};
+        if (shouldReloadLatestAfterOperation(operation)) {
+            requestLatestCacheReload();
         }
     });
 

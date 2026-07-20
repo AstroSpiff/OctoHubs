@@ -28,6 +28,10 @@
         open: window.localStorage?.getItem(STORAGE_KEY) === 'true',
     };
 
+    const isActiveOperation = (operation) => {
+        return ACTIVE_STATUSES.has(String(operation?.status || ''));
+    };
+
     const apiFetch = (url, options = {}) => {
         const utils = window.octohubUtils;
         if (utils && typeof utils.csrfFetch === 'function') {
@@ -170,6 +174,31 @@
         state.timer = setTimeout(() => refresh(), delay);
     }
 
+    function emitCompletedOperations(previousOperations, nextOperations) {
+        const previousById = new Map(
+            (previousOperations || [])
+                .filter((operation) => operation && operation.id)
+                .map((operation) => [String(operation.id), operation])
+        );
+        (nextOperations || []).forEach((operation) => {
+            const operationId = String(operation?.id || '');
+            if (!operationId) {
+                return;
+            }
+            const previous = previousById.get(operationId);
+            if (!previous) {
+                return;
+            }
+            const previousIsActive = isActiveOperation(previous);
+            const nextIsActive = isActiveOperation(operation);
+            if (previousIsActive && !nextIsActive) {
+                document.dispatchEvent(new CustomEvent('octohub:operation-completed', {
+                    detail: { operation, previous },
+                }));
+            }
+        });
+    }
+
     async function refresh(options = {}) {
         ensureShell();
         if (state.inFlight && !options.force) {
@@ -182,9 +211,12 @@
             if (!res.ok || payload.ok === false) {
                 throw new Error(payload.error || `HTTP ${res.status}`);
             }
-            state.operations = Array.isArray(payload.operations) ? payload.operations : [];
+            const previousOperations = state.operations;
+            const nextOperations = Array.isArray(payload.operations) ? payload.operations : [];
+            state.operations = nextOperations;
             state.activeCount = Number(payload.active_count || 0);
             render();
+            emitCompletedOperations(previousOperations, nextOperations);
         } catch (err) {
             console.warn('[OPERATIONS] Refresh unavailable:', err.message || err);
         } finally {
@@ -210,9 +242,11 @@
             const operations = Array.isArray(payload.operations) ? payload.operations : [];
             const operation = operations.find((item) => String(item.id || '') === targetId);
             if (operation && !ACTIVE_STATUSES.has(String(operation.status || ''))) {
+                const previousOperations = state.operations;
                 state.operations = operations;
                 state.activeCount = Number(payload.active_count || 0);
                 render();
+                emitCompletedOperations(previousOperations, operations);
                 return operation;
             }
             await new Promise((resolve) => setTimeout(resolve, intervalMs));
