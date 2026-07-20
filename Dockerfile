@@ -78,7 +78,7 @@ EXPOSE 5050
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:5050/login', timeout=5)" || exit 1
+    CMD python -c "import socket; sock = socket.create_connection(('127.0.0.1', 5050), timeout=5); sock.close()" || exit 1
 
 # Run with Uvicorn ASGI server
 # Using single worker for SSE compatibility, relying on async for concurrency
