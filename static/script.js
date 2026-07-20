@@ -51,6 +51,7 @@
         let requestRulesSaveTimer = null;
         let requestRulesSaving = false;
         let requestRulesPending = false;
+        let requestsRefreshInFlight = false;
 
         const traktConnectBtn = document.getElementById('trakt-connect-btn');
         const traktDisconnectBtn = document.getElementById('trakt-disconnect-btn');
@@ -393,6 +394,11 @@
                 const group = btn.closest('.list-actions')?.dataset.group;
                 if (!action) return;
                 if (action === 'refresh') {
+                    if (requestsRefreshInFlight) {
+                        showToast('Aggiornamento richieste gia in corso', 'warning');
+                        return;
+                    }
+                    requestsRefreshInFlight = true;
                     const statusLabel = document.getElementById('request-rules-status');
                     const refreshStatus = document.getElementById('requests-refresh-status');
                     if (statusLabel) statusLabel.textContent = 'Aggiornamento lista...';
@@ -439,19 +445,28 @@
                         }, 1500);
                     };
                     csrfFetch('/api/refresh-requests', {method: 'POST'})
-                        .then(resp => resp.json())
+                        .then(async resp => {
+                            const data = await resp.json().catch(() => ({}));
+                            if (!resp.ok) {
+                                throw new Error(data.message || 'Errore durante l\'aggiornamento');
+                            }
+                            return data;
+                        })
                         .then(data => {
                             if (statusLabel) statusLabel.textContent = data.message || 'Lista aggiornata';
                             if (refreshStatus) refreshStatus.textContent = data.message || 'Lista aggiornata';
-                            showToast(data.message || 'Aggiornamento richieste avviato', 'success');
+                            const toastType = data.success === false ? 'warning' : 'success';
+                            showToast(data.message || 'Aggiornamento richieste avviato', toastType);
                             pollRefreshStatus();
                         })
-                        .catch(() => {
-                            if (statusLabel) statusLabel.textContent = 'Errore durante l\'aggiornamento';
-                            if (refreshStatus) refreshStatus.textContent = 'Errore durante l\'aggiornamento';
-                            showToast('Errore durante l\'aggiornamento', 'error');
+                        .catch(err => {
+                            const message = err.message || 'Errore durante l\'aggiornamento';
+                            if (statusLabel) statusLabel.textContent = message;
+                            if (refreshStatus) refreshStatus.textContent = message;
+                            showToast(message, 'error');
                         })
                         .finally(() => {
+                            requestsRefreshInFlight = false;
                             btn.disabled = false;
                         });
                     return;

@@ -255,86 +255,102 @@ def _build_update_request_rules_snapshot(payload):
 
 
 def _build_refresh_requests_snapshot():
+    from app_state import _JELLYSEERR_REFRESH_STATE
+
+    if _JELLYSEERR_REFRESH_STATE.get("running"):
+        return {"success": True, "message": "Aggiornamento richieste gia in corso."}, 200
+
     from core.config_manager import load_config, _ensure_db_backend
     from emby_runtime.api_clients import get_jellyseerr_requests
-    from app_state import _JELLYSEERR_REFRESH_STATE
     from services.requests_cache import _save_cached_requests_overview
     from services.requests_summary import _summarize_requests_for_dashboard
 
     _JELLYSEERR_REFRESH_STATE["running"] = True
     _JELLYSEERR_REFRESH_STATE["last_error"] = None
-
-    config, is_valid = load_config()
-    if not is_valid:
-        _JELLYSEERR_REFRESH_STATE["running"] = False
-        _JELLYSEERR_REFRESH_STATE["last_status"] = "error"
-        _JELLYSEERR_REFRESH_STATE["last_error"] = "Config non valida"
-        return json_error("Config non valida")
-
-    print("   -> [REFRESH] Inizio aggiornamento lista richieste Jellyseerr...")
-    requests_data, ok = get_jellyseerr_requests(config, silent=True, return_status=True)
-    if not ok:
-        warning = "Jellyseerr non risponde: refresh richieste saltato."
-        _JELLYSEERR_REFRESH_STATE["running"] = False
-        _JELLYSEERR_REFRESH_STATE["last_status"] = "skipped"
-        _JELLYSEERR_REFRESH_STATE["last_warning"] = warning
-        _JELLYSEERR_REFRESH_STATE["last_warning_at"] = datetime.now(timezone.utc).isoformat()
-        _JELLYSEERR_REFRESH_STATE["completed_at"] = datetime.now(timezone.utc).isoformat()
-        print(f"   -> [REFRESH] [WARNING] {warning}")
-        return {"success": False, "message": warning}, 200
-
-    overview = _summarize_requests_for_dashboard(config, requests_data=requests_data)
+    _JELLYSEERR_REFRESH_STATE["last_warning"] = None
+    _JELLYSEERR_REFRESH_STATE["last_warning_at"] = None
 
     try:
-        _save_cached_requests_overview(overview)
-        print(f"   -> [REFRESH] Cache aggiornata con successo: {len(overview)} richieste salvate")
+        config, is_valid = load_config()
+        if not is_valid:
+            _JELLYSEERR_REFRESH_STATE["running"] = False
+            _JELLYSEERR_REFRESH_STATE["last_status"] = "error"
+            _JELLYSEERR_REFRESH_STATE["last_error"] = "Config non valida"
+            return json_error("Config non valida")
+
+        print("   -> [REFRESH] Inizio aggiornamento lista richieste Jellyseerr...")
+        requests_data, ok = get_jellyseerr_requests(config, silent=True, return_status=True)
+        if not ok:
+            warning = "Jellyseerr non risponde: refresh richieste saltato."
+            _JELLYSEERR_REFRESH_STATE["running"] = False
+            _JELLYSEERR_REFRESH_STATE["last_status"] = "skipped"
+            _JELLYSEERR_REFRESH_STATE["last_warning"] = warning
+            _JELLYSEERR_REFRESH_STATE["last_warning_at"] = datetime.now(timezone.utc).isoformat()
+            _JELLYSEERR_REFRESH_STATE["completed_at"] = datetime.now(timezone.utc).isoformat()
+            print(f"   -> [REFRESH] [WARNING] {warning}")
+            return {"success": False, "message": warning}, 200
+
+        overview = _summarize_requests_for_dashboard(config, requests_data=requests_data)
+
+        try:
+            _save_cached_requests_overview(overview)
+            print(f"   -> [REFRESH] Cache aggiornata con successo: {len(overview)} richieste salvate")
+        except Exception as exc:
+            print(f"   -> [ERRORE] Impossibile salvare cache richieste: {exc}")
+            import traceback
+            traceback.print_exc()
+            _JELLYSEERR_REFRESH_STATE["running"] = False
+            _JELLYSEERR_REFRESH_STATE["last_status"] = "error"
+            _JELLYSEERR_REFRESH_STATE["last_error"] = str(exc)
+            _JELLYSEERR_REFRESH_STATE["completed_at"] = datetime.now(timezone.utc).isoformat()
+            return json_error(f"Errore salvataggio cache: {exc}", 500)
+
+        try:
+            from services.latest_jellyseerr import save_latest_jellyseerr_requests
+            saved = save_latest_jellyseerr_requests(requests_data, backend=_ensure_db_backend())
+            print(f"   -> [REFRESH] Jellyseerr requests salvate su DB: {saved.get('entries', 0)}")
+        except Exception as exc:
+            print(f"   -> [REFRESH] [WARNING] Salvataggio Jellyseerr requests fallito: {exc}")
+
+        tv_list = [req for req in overview if (req.get("media_type") or "").lower() == "tv"]
+        movies_list = [req for req in overview if (req.get("media_type") or "").lower() in ("movie", "movies", "film", "")]
+
+        tv_with_seasons = [req for req in tv_list if req.get("season_status")]
+        tv_without_seasons = [req for req in tv_list if not req.get("season_status")]
+        if tv_list:
+            print(f"   -> [REFRESH] Serie TV totali: {len(tv_list)}")
+            print(f"   -> [REFRESH] Serie TV con dettagli stagioni: {len(tv_with_seasons)}")
+            if tv_without_seasons:
+                print(f"   -> [REFRESH] [WARNING] Serie TV SENZA dettagli stagioni: {len(tv_without_seasons)}")
+                for req in tv_without_seasons[:5]:
+                    print(f"   -> [REFRESH]   - ID {req.get('id')}: {req.get('title', 'N/D')}")
+
+        counts = {
+            "total": len(overview),
+            "tv": len(tv_list),
+            "movies": len(movies_list)
+        }
+        print(f"   -> [REFRESH] Aggiornamento completato: {len(movies_list)} film, {len(tv_list)} serie TV")
+
+        _JELLYSEERR_REFRESH_STATE["running"] = False
+        _JELLYSEERR_REFRESH_STATE["last_status"] = "success"
+        _JELLYSEERR_REFRESH_STATE["counts"] = counts
+        _JELLYSEERR_REFRESH_STATE["completed_at"] = datetime.now(timezone.utc).isoformat()
+
+        return {
+            "success": True,
+            "message": "Lista aggiornata da Jellyseerr.",
+            "counts": counts
+        }, 200
     except Exception as exc:
-        print(f"   -> [ERRORE] Impossibile salvare cache richieste: {exc}")
+        print(f"   -> [ERRORE] Aggiornamento richieste fallito: {exc}")
         import traceback
         traceback.print_exc()
         _JELLYSEERR_REFRESH_STATE["running"] = False
         _JELLYSEERR_REFRESH_STATE["last_status"] = "error"
         _JELLYSEERR_REFRESH_STATE["last_error"] = str(exc)
         _JELLYSEERR_REFRESH_STATE["completed_at"] = datetime.now(timezone.utc).isoformat()
-        return json_error(f"Errore salvataggio cache: {exc}", 500)
-
-    try:
-        from services.latest_jellyseerr import save_latest_jellyseerr_requests
-        saved = save_latest_jellyseerr_requests(requests_data, backend=_ensure_db_backend())
-        print(f"   -> [REFRESH] Jellyseerr requests salvate su DB: {saved.get('entries', 0)}")
-    except Exception as exc:
-        print(f"   -> [REFRESH] [WARNING] Salvataggio Jellyseerr requests fallito: {exc}")
-
-    tv_list = [req for req in overview if (req.get("media_type") or "").lower() == "tv"]
-    movies_list = [req for req in overview if (req.get("media_type") or "").lower() in ("movie", "movies", "film", "")]
-
-    tv_with_seasons = [req for req in tv_list if req.get("season_status")]
-    tv_without_seasons = [req for req in tv_list if not req.get("season_status")]
-    if tv_list:
-        print(f"   -> [REFRESH] Serie TV totali: {len(tv_list)}")
-        print(f"   -> [REFRESH] Serie TV con dettagli stagioni: {len(tv_with_seasons)}")
-        if tv_without_seasons:
-            print(f"   -> [REFRESH] [WARNING] Serie TV SENZA dettagli stagioni: {len(tv_without_seasons)}")
-            for req in tv_without_seasons[:5]:
-                print(f"   -> [REFRESH]   - ID {req.get('id')}: {req.get('title', 'N/D')}")
-
-    counts = {
-        "total": len(overview),
-        "tv": len(tv_list),
-        "movies": len(movies_list)
-    }
-    print(f"   -> [REFRESH] Aggiornamento completato: {len(movies_list)} film, {len(tv_list)} serie TV")
-
-    _JELLYSEERR_REFRESH_STATE["running"] = False
-    _JELLYSEERR_REFRESH_STATE["last_status"] = "success"
-    _JELLYSEERR_REFRESH_STATE["counts"] = counts
-    _JELLYSEERR_REFRESH_STATE["completed_at"] = datetime.now(timezone.utc).isoformat()
-
-    return {
-        "success": True,
-        "message": "Lista aggiornata da Jellyseerr.",
-        "counts": counts
-    }, 200
+        return json_error(f"Errore aggiornamento richieste: {exc}", 500)
 
 
 def _build_test_connections_snapshot():

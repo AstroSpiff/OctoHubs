@@ -924,6 +924,20 @@
                                                                     {% if req.year %}
                                                                         <span class="title-year">({{ req.year }})</span>
                                                                     {% endif %}
+                                                                    <span class="request-external-links" aria-label="Link rapidi">
+                                                                        {% if req.jellyseerr_url %}
+                                                                            <a href="{{ req.jellyseerr_url }}" target="_blank" rel="noopener" title="Apri in Jellyseerr">Jellyseerr</a>
+                                                                        {% endif %}
+                                                                        {% if req.trakt_url %}
+                                                                            <a href="{{ req.trakt_url }}" target="_blank" rel="noopener" title="Apri su Trakt">Trakt</a>
+                                                                        {% endif %}
+                                                                        {% if req.imdb_url %}
+                                                                            <a href="{{ req.imdb_url }}" target="_blank" rel="noopener" title="Apri su IMDb">IMDb</a>
+                                                                        {% endif %}
+                                                                        {% if req.tmdb_url %}
+                                                                            <a href="{{ req.tmdb_url }}" target="_blank" rel="noopener" title="Apri su TMDB">TMDB</a>
+                                                                        {% endif %}
+                                                                    </span>
                                                                 </div>
                                                                 <div class="request-badges">
                                                                     {% if req.is_available %}
@@ -950,20 +964,6 @@
                                                                                 {% if jw_title %}data-jw-label="{{ jw_title }}"{% endif %}>
                                                                             Justwatch
                                                                         </button>
-                                                                    {% endif %}
-                                                                </div>
-                                                                <div class="request-external-links" aria-label="Link rapidi">
-                                                                    {% if req.jellyseerr_url %}
-                                                                        <a href="{{ req.jellyseerr_url }}" target="_blank" rel="noopener" title="Apri in Jellyseerr">Jellyseerr</a>
-                                                                    {% endif %}
-                                                                    {% if req.trakt_url %}
-                                                                        <a href="{{ req.trakt_url }}" target="_blank" rel="noopener" title="Apri su Trakt">Trakt</a>
-                                                                    {% endif %}
-                                                                    {% if req.imdb_url %}
-                                                                        <a href="{{ req.imdb_url }}" target="_blank" rel="noopener" title="Apri su IMDb">IMDb</a>
-                                                                    {% endif %}
-                                                                    {% if req.tmdb_url %}
-                                                                        <a href="{{ req.tmdb_url }}" target="_blank" rel="noopener" title="Apri su TMDB">TMDB</a>
                                                                     {% endif %}
                                                                 </div>
                                                                 <div class="request-meta">

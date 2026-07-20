@@ -80,3 +80,11 @@ class SearchFrontendTests(unittest.TestCase):
         self.assertIn(".request-poster", css)
         self.assertIn(".request-external-links", css)
         self.assertIn(".request-rules-details", css)
+
+    def test_requests_refresh_ui_has_inflight_guard_and_specific_errors(self):
+        source = pathlib.Path("static/script.js").read_text(encoding="utf-8")
+
+        self.assertIn("let requestsRefreshInFlight = false;", source)
+        self.assertIn("if (requestsRefreshInFlight)", source)
+        self.assertIn("throw new Error(data.message || 'Errore durante l\\'aggiornamento');", source)
+        self.assertIn("const message = err.message || 'Errore durante l\\'aggiornamento';", source)
