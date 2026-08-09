@@ -10,6 +10,7 @@ import os
 import uuid
 from typing import Any, Dict, Optional
 
+from core.env import octohubs_env
 from core.utils import (
     _split_csv_field,
     _coerce_request_bool,
@@ -23,8 +24,8 @@ from core.utils import (
 logger = logging.getLogger(__name__)
 
 # --- COSTANTI ---
-CONFIG_FILE = os.environ.get("OCTOHUB_CONFIG_FILE", "config.json")
-RESULTS_FILE = os.environ.get("OCTOHUB_RESULTS_FILE", "last_results.json")
+CONFIG_FILE = octohubs_env("OCTOHUBS_CONFIG_FILE", "config.json")
+RESULTS_FILE = octohubs_env("OCTOHUBS_RESULTS_FILE", "last_results.json")
 MAX_PRIMARY_QUERY_VARIANTS = 80
 
 DEFAULT_SORT_MODE = "seeders_desc"
@@ -137,12 +138,6 @@ DEFAULT_CONFIG = {
         "ENABLED": False,
         "LOCALE": "it_IT"
     },
-    "RSS_IMPORT": {
-        "ENABLED": False,
-        "POLL_INTERVAL_MINUTES": 30,
-        "DEDUP_KEEP": "newest",
-        "SOURCES": []
-    },
     "AUTO_TASKS": {
         "scan": {
             "enabled": False,
@@ -166,12 +161,6 @@ DEFAULT_CONFIG = {
             "enabled": False,
             "mode": "interval",
             "interval_minutes": 60,
-            "times": []
-        },
-        "rss": {
-            "enabled": False,
-            "mode": "interval",
-            "interval_minutes": 30,
             "times": []
         }
     },
@@ -443,47 +432,6 @@ def _merge_resolution_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
         base["thresholds"] = merge_nested_dict(base["thresholds"], normalized_thresholds)
 
     return base
-
-def _merge_rss_import_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
-    """Unisci le impostazioni RSS/Import dell'utente con quelle di default."""
-    base = copy.deepcopy(DEFAULT_CONFIG["RSS_IMPORT"])
-    if not isinstance(user_settings, dict):
-        return base
-
-    normalized_updates = {}
-    for key, value in user_settings.items():
-        normalized_key = key.upper()
-
-        if normalized_key == "ENABLED":
-            normalized_updates["ENABLED"] = bool(value)
-        elif normalized_key == "POLL_INTERVAL_MINUTES":
-            normalized_updates["POLL_INTERVAL_MINUTES"] = _coerce_request_int(
-                value, base.get("POLL_INTERVAL_MINUTES", 30), 5, 1440
-            )
-        elif normalized_key == "DEDUP_KEEP":
-            keep = (str(value) or "").lower().strip()
-            normalized_updates["DEDUP_KEEP"] = "newest" if keep == "newest" else "oldest"
-        elif normalized_key == "SOURCES":
-            sources = []
-            if isinstance(value, list):
-                for entry in value:
-                    if not isinstance(entry, dict):
-                        continue
-                    url = (entry.get("url") or "").strip()
-                    if not url:
-                        continue
-                    sources.append({
-                        "name": (entry.get("name") or "").strip(),
-                        "url": url,
-                        "tags": _split_csv_field(entry.get("tags")) if isinstance(entry.get("tags"), str) else (entry.get("tags") or []),
-                        "enabled": _coerce_request_bool(entry.get("enabled"), True)
-                    })
-            normalized_updates["SOURCES"] = sources
-        else:
-            normalized_updates[key] = value
-
-    return merge_nested_dict(base, normalized_updates, skip_empty_strings=False)
-
 
 def _merge_collection_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
     """Merge user-defined collection settings with defaults."""

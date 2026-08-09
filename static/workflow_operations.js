@@ -14,7 +14,7 @@
     const getCsrfToken = () => document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
 
     const csrfFetch = (url, options = {}) => {
-        const utils = window.octohubUtils;
+        const utils = window.octohubsUtils;
         if (utils && typeof utils.csrfFetch === 'function') {
             return utils.csrfFetch(url, options);
         }
@@ -36,7 +36,7 @@
         }
     };
 
-    const operationsCenter = () => window.octohubOperations || window.embyUsersOperations;
+    const operationsCenter = () => window.octohubsOperations || window.embyUsersOperations;
 
     const getWorkflowToggleState = () => workflowToggleControls.length ? workflowToggleControls[0].checked : false;
 

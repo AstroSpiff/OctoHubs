@@ -7,6 +7,10 @@ import pathlib
 import unittest
 from unittest.mock import patch
 
+from emby_collections.collection_common import (
+    _build_collection_tags,
+    _extract_octohubs_definition_id,
+)
 from emby_collections.collection_emby import _clear_collection_items, _find_emby_item_ids
 from emby_collections.collection_store import (
     list_collection_definitions,
@@ -99,6 +103,20 @@ def _servers():
 
 
 class CollectionEmbyTests(unittest.TestCase):
+    def test_collection_tags_use_octohubs_and_drop_legacy_octohub_tags(self):
+        tags = _build_collection_tags(
+            {"id": "definition-a"},
+            ["Featured", "OctoHub", "OctoHub:old-definition"],
+        )
+
+        self.assertEqual(tags, ["Featured", "OctoHubs", "OctoHubs:definition-a"])
+
+    def test_extract_collection_id_accepts_legacy_octohub_tag(self):
+        self.assertEqual(
+            _extract_octohubs_definition_id(["OctoHub:definition-a"]),
+            "definition-a",
+        )
+
     def test_clear_collection_items_raises_when_emby_delete_fails(self):
         calls = []
 
@@ -796,8 +814,8 @@ class CollectionFrontendTests(unittest.TestCase):
 
         self.assertIn("'/api/emby/collections/trakt-lists?background=1'", source)
         self.assertIn("'/api/emby/collections/mdblist-lists?background=1'", source)
-        self.assertIn("window.octohubOperations?.notifyStarted?.();", source)
-        self.assertIn("window.octohubOperations?.waitFor", source)
+        self.assertIn("window.octohubsOperations?.notifyStarted?.();", source)
+        self.assertIn("window.octohubsOperations?.waitFor", source)
 
     def test_collection_sync_actions_run_through_operations(self):
         source = pathlib.Path("static/emby_collections.js").read_text(encoding="utf-8")

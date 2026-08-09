@@ -43,24 +43,7 @@ File originale: **`static/emby.js`** — rimosso dopo verifica.
 
 ---
 
-### 2. `script_rss.js` — 1.295 righe → 4 moduli
-
-File originale: **`static/script_rss.js`** — rimosso dopo verifica.
-
-| Nuovo file | Righe | Contenuto |
-|---|---|---|
-| `script_rss_tools.js` | 313 | XML inspect, JSON inspect, import RSS/JSON, dedup |
-| `script_rss_view.js` | 427 | Modal visualizzazione articoli, paginazione, ricerca, eliminazione |
-| `script_rss_cleanup.js` | 328 | Sezione cleanup: ricerca, anteprima, eliminazione, dettagli |
-| `script_rss_categories.js` | 319 | Gestione categorie: lista, accettate/nascoste/blacklist |
-
-**Template aggiornati**: `templates/configuration.html`, `templates/emby_collections.html`, `templates/dashboard.html`, `templates/emby_dashboard.html`
-
-**Tecnica**: IIFE wrapper per ciascun modulo. Le funzioni `escapeRssHtml` e `formatRssDate` (utility locali) sono duplicate nei moduli che ne hanno bisogno — soluzione preferita rispetto a esporle globalmente. Il modulo `script_rss_categories.js` chiama `loadCategories()` automaticamente al caricamento.
-
----
-
-### 3. `emby_users_settings.js` — 1.261 righe → 4 moduli
+### 2. `emby_users_settings.js` — 1.261 righe → 4 moduli
 
 File originale: **`static/emby_users_settings.js`** — rimosso dopo verifica.
 
@@ -127,7 +110,6 @@ emby_users_clone.js        ← usa BulkCloneWizard e getSelectedUsers
 
 ```
 static/emby.js
-static/script_rss.js
 static/emby_users_settings.js
 static/emby_users_bulk.js
 ```
@@ -140,10 +122,7 @@ Nessun template li referenzia più.
 
 | Template | Cambiamenti |
 |---|---|
-| `templates/emby_dashboard.html` | Sostituiti: `emby.js` (9 tag), `script_rss.js` (4 tag), `emby_users_settings.js` (4 tag), `emby_users_bulk.js` (4 tag) |
-| `templates/configuration.html` | Sostituito: `script_rss.js` (4 tag) |
-| `templates/emby_collections.html` | Sostituito: `script_rss.js` (4 tag) |
-| `templates/dashboard.html` | Sostituito: `script_rss.js` (4 tag) |
+| `templates/emby_dashboard.html` | Sostituiti: `emby.js` (9 tag), `emby_users_settings.js` (4 tag), `emby_users_bulk.js` (4 tag) |
 
 ---
 
@@ -153,6 +132,5 @@ Nessun template li referenzia più.
 - [x] Aggiornare i `<script src>` in tutti i template dopo il rinomino
 - [x] Eseguire `node --check` su tutti i JS in `static/`
 - [ ] Testare `emby_dashboard.html`: apertura modal utente, rinomina, password, settings, link, sync, clone
-- [ ] Testare `configuration.html` e `dashboard.html`: RSS view, cleanup, categorie, tools
 - [x] Verificare assenza di riferimenti ai file originali nei template
-- [x] Eliminare: `emby.js`, `script_rss.js`, `emby_users_settings.js`, `emby_users_bulk.js`
+- [x] Eliminare: `emby.js`, `emby_users_settings.js`, `emby_users_bulk.js`

@@ -222,6 +222,26 @@ def send_notifications(
             return item_signature
         return f"{item_signature}:{publication_key}"
 
+    def _notification_sort_datetime(item: Dict[str, Any]) -> datetime:
+        try:
+            from core.utils import _parse_date_value
+            dt_value = _parse_date_value(item.get("added_at"))
+        except Exception:
+            dt_value = None
+        if not dt_value:
+            dt_value = datetime.min.replace(tzinfo=timezone.utc)
+        elif dt_value.tzinfo is None:
+            dt_value = dt_value.replace(tzinfo=timezone.utc)
+        return dt_value
+
+    def _notification_send_order_key(item: Dict[str, Any]) -> Tuple[datetime, str, str, str]:
+        return (
+            _notification_sort_datetime(item),
+            str(item.get("server_id") or ""),
+            str(item.get("item_type") or ""),
+            str(item.get("item_id") or ""),
+        )
+
     def _has_destination_state(entry: Optional[Dict[str, Any]]) -> bool:
         return isinstance(entry, dict) and isinstance(entry.get("notified_destinations"), dict)
 
@@ -538,7 +558,7 @@ def send_notifications(
     for rule_run in rule_runs:
         template = rule_run.get("template") or default_message_template()
         rule_name = str(rule_run.get("name") or rule_run.get("id") or "Regola")
-        rule_items = rule_run.get("items") or []
+        rule_items = sorted(rule_run.get("items") or [], key=_notification_send_order_key)
         recipients = rule_run.get("recipients") or []
 
         for item in rule_items:

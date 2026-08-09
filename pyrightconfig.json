@@ -1,3 +1,10 @@
 {
-  "stubPath": "typings"
+  "exclude": [
+    "rss",
+    "core/storage/storage_rss.py"
+  ],
+  "stubPath": "typings",
+  "venvPath": ".",
+  "venv": "venv",
+  "typeCheckingMode": "off"
 }

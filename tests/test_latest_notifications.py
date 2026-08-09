@@ -167,6 +167,95 @@ class LatestNotificationTests(unittest.TestCase):
         movie_state = saved_states[-1]["server-a"]["movies"]["items"]["tmdb:1"]
         self.assertTrue(movie_state["notified"])
 
+    def test_send_notifications_sends_oldest_publication_first(self):
+        sent_titles = []
+        cache_payload = {
+            "payload": {
+                "movies": [
+                    {
+                        "server_id": "server-a",
+                        "item_id": "movie-new",
+                        "signature": "tmdb:new",
+                        "item_type": "movie",
+                        "title": "New Movie",
+                        "year": 2026,
+                        "added_at": "2026-07-15T10:30:00+00:00",
+                    },
+                    {
+                        "server_id": "server-a",
+                        "item_id": "movie-mid",
+                        "signature": "tmdb:mid",
+                        "item_type": "movie",
+                        "title": "Middle Movie",
+                        "year": 2026,
+                        "added_at": "2026-07-15T10:20:00+00:00",
+                    },
+                    {
+                        "server_id": "server-a",
+                        "item_id": "movie-old",
+                        "signature": "tmdb:old",
+                        "item_type": "movie",
+                        "title": "Old Movie",
+                        "year": 2026,
+                        "added_at": "2026-07-15T10:10:00+00:00",
+                    },
+                ],
+                "series": [],
+            }
+        }
+        latest_settings = {
+            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{title}"}],
+            "NOTIFICATION_RULES": [
+                {
+                    "id": "rule-a",
+                    "name": "Rule A",
+                    "enabled": True,
+                    "server_ids": ["server-a"],
+                    "preset_id": "preset-a",
+                    "telegram_config_id": "telegram-a",
+                }
+            ],
+        }
+        telegram_settings = {
+            "PRESETS": [
+                {
+                    "id": "telegram-a",
+                    "name": "Telegram",
+                    "bot_ids": ["bot-a"],
+                    "group_ids": ["group-a"],
+                    "channel_ids": [],
+                }
+            ],
+            "BOTS": [{"id": "bot-a", "token": "token"}],
+            "GROUPS": [{"id": "group-a", "chat_id": "chat"}],
+            "CHANNELS": [],
+        }
+
+        def fake_telegram(_token, _method, params):
+            sent_titles.append(params.get("text") or params.get("caption") or "")
+            return True, "OK", {}
+
+        with patch("emby_latest.db_cache.load_cache", return_value=cache_payload), patch(
+            "emby_latest.db_state.load_state",
+            return_value={},
+        ), patch("emby_latest.db_state.save_state", return_value=None), patch(
+            "emby_latest.settings._load_latest_settings",
+            return_value=latest_settings,
+        ), patch("telegram._load_telegram_settings", return_value=telegram_settings), patch(
+            "emby_latest.jellyseerr._apply_jellyseerr_request_info",
+            return_value=None,
+        ), patch("emby_latest.notifications._telegram_api_request", side_effect=fake_telegram), patch(
+            "time.sleep",
+            return_value=None,
+        ):
+            result = send_notifications(
+                10,
+                config={"DATABASE": {"ENABLED": True}, "EMBY": {"SERVERS": [{"id": "server-a"}]}},
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(sent_titles, ["Old Movie", "Middle Movie", "New Movie"])
+
     def test_send_notifications_reports_template_errors_without_sending(self):
         cache_payload = {
             "payload": {
@@ -320,8 +409,8 @@ class LatestNotificationTests(unittest.TestCase):
             sent_titles,
             [
                 "server-a Movie 1",
-                "server-a Movie 2",
                 "server-b Movie 1",
+                "server-a Movie 2",
                 "server-b Movie 2",
             ],
         )

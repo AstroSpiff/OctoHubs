@@ -6,7 +6,7 @@
     <meta name="csrf-token" content="{{ csrf_token }}">
     <title>Emby Toolkit</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <link rel="stylesheet" href="{{ url_for('static', filename='emby.css') }}?v=20260715-user-operations-panel">
+    <link rel="stylesheet" href="{{ url_for('static', filename='emby.css') }}?v=20260809-users-multiselect-84">
     <link rel="stylesheet" href="{{ url_for('static', filename='operations_center.css') }}?v=20260715-global-operations">
 </head>
 <body>
@@ -63,12 +63,16 @@
         <div class="tab-shell">
             <div class="tabs">
                 <button class="tab-btn active" data-tab="actions" title="Operazioni rapide e stato server">Operazioni</button>
+                <button class="tab-btn" data-tab="transcode-guard" title="Protezione flessibile contro le transcodifiche video">Transcode Guard</button>
+                <button class="tab-btn" data-tab="transcode-stats" title="Statistiche utenti sugli stream osservati">Stats utenti</button>
                 <button class="tab-btn" data-tab="libraries" title="Gestione librerie Emby">Librerie</button>
                 <button class="tab-btn" data-tab="latest" title="Ultime pubblicazioni dai server Emby">Pubblicazioni</button>
                 <button class="tab-btn" data-tab="users" title="Gestione Utenti e Sync">Utenti</button>
             </div>
 
             {% include "partials/emby_operations.html" %}
+            {% include "partials/emby_transcode_guard.html" %}
+            {% include "partials/emby_transcode_stats.html" %}
 
             <!-- TAB UTENTI -->
             <div class="tab-panel" data-tab-panel="users">
@@ -98,65 +102,26 @@
                     <!-- Filters Toolbar (Ultra-Compact) -->
                     <div class="users-toolbar-container" style="background: var(--bg-card); border-bottom: 1px solid var(--border-color); padding: 0.75rem; margin-bottom: 1rem; border-radius: 6px; display: flex; flex-direction: column; gap: 0.5rem;">
                         
-                        <!-- Row 1: Selection + Search + Refresh -->
+                        <!-- Row 1: Selection + Sort + Actions -->
                         <div class="users-toolbar-main">
-                            <div class="users-selection-actions" role="group" aria-label="Selezione rapida utenti">
-                                <button type="button" class="btn secondary compact users-selection-btn" id="select-all-users" onclick="selectVisibleUsers()" title="Seleziona tutti gli utenti visibili">
-                                    <i class="fa-solid fa-check-double"></i> <span>Seleziona tutti</span>
-                                </button>
-                                <button type="button" class="btn secondary compact users-selection-btn" id="select-leaders-users" onclick="selectLeaderUsers()" title="Seleziona solo leader e utenti singoli visibili">
-                                    <i class="fa-solid fa-star"></i> <span>Solo leader</span>
-                                </button>
-                                <button type="button" class="btn secondary compact users-selection-btn" id="clear-visible-users" onclick="clearVisibleUserSelection()" title="Deseleziona gli utenti visibili">
-                                    <i class="fa-solid fa-xmark"></i> <span>Deseleziona</span>
-                                </button>
+                            <div class="users-toolbar-group users-selection-group">
+                                <div class="users-toolbar-label">Selezione</div>
+                                <div class="users-selection-actions" role="group" aria-label="Selezione rapida utenti">
+                                    <button type="button" class="btn secondary compact users-selection-btn" id="select-all-users" onclick="selectVisibleUsers()" title="Seleziona tutti gli utenti visibili">
+                                        <i class="fa-solid fa-check-double"></i> <span>Seleziona tutti</span>
+                                    </button>
+                                    <button type="button" class="btn secondary compact users-selection-btn" id="select-leaders-users" onclick="selectLeaderUsers()" title="Seleziona solo leader e utenti singoli visibili">
+                                        <i class="fa-solid fa-star"></i> <span>Solo leader</span>
+                                    </button>
+                                    <button type="button" class="btn secondary compact users-selection-btn" id="clear-visible-users" onclick="clearVisibleUserSelection()" title="Deseleziona gli utenti visibili">
+                                        <i class="fa-solid fa-xmark"></i> <span>Deseleziona</span>
+                                    </button>
+                                </div>
                             </div>
 
-                            <!-- Search -->
-                            <div class="users-search-field">
-                                <i class="fa-solid fa-search"></i>
-                                <input type="text" id="filter-search" class="form-input" placeholder="Cerca utente, server o gruppo..." oninput="filterUsers()">
-                            </div>
-
-                            <div class="users-toolbar-actions">
-                                <button class="btn primary compact users-create-btn" onclick="openCreateUserModal()" title="Crea utente">
-                                    <i class="fa-solid fa-user-plus"></i> <span>Crea utente</span>
-                                </button>
-                                <button class="btn secondary users-refresh-btn" onclick="loadEmbyUsers(true)" title="Aggiorna lista">
-                                    <i class="fa-solid fa-rotate"></i>
-                                </button>
-                            </div>
-                        </div>
-
-                        <!-- Row 2: Filters & Sort -->
-                        <div class="users-filter-sort-row" style="display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; justify-content: space-between;">
-                            
-                            <!-- Filters (Left) -->
-                            <div class="users-filter-controls" style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; flex-grow: 1;">
-                                <select id="filter-group-type" class="form-input compact" onchange="filterUsers()" title="Tipo Utente" style="max-width: 140px; flex-grow: 1;">
-                                    <option value="all">Tutti gli utenti</option>
-                                    <option value="single">Utenti Singoli</option>
-                                    <option value="group">Gruppi Utente</option>
-                                </select>
-
-                                <select id="filter-server" class="form-input compact interactive-multiselect" multiple title="Server" style="max-width: 160px; flex-grow: 1;">
-                                    <option value="all">Tutti i Server</option>
-                                </select>
-                                
-                                <select id="filter-status" class="form-input compact interactive-multiselect" multiple title="Stato" style="max-width: 130px; flex-grow: 1;">
-                                    <option value="all">Tutti gli stati</option>
-                                    <option value="active">Attivi</option>
-                                    <option value="disabled">Disabilitati</option>
-                                </select>
-
-                                <select id="filter-icon-profile" class="form-input compact interactive-multiselect" multiple title="Profilo Icone" style="max-width: 150px; flex-grow: 1;">
-                                    <option value="all">Tutti i Profili</option>
-                                </select>
-                            </div>
-
-                            <!-- Sort (Right) -->
-                            <div class="users-sort-controls" style="display: flex; align-items: center; gap: 0.5rem; flex-shrink: 1; min-width: 0;">
-                                <select id="sort-users" class="form-input compact" onchange="filterUsers()" title="Ordina per" style="min-width: 0; width: 100%; max-width: 100%;">
+                            <div class="users-toolbar-group users-sort-controls">
+                                <label class="users-toolbar-label" for="sort-users">Ordina</label>
+                                <select id="sort-users" class="form-input compact" onchange="filterUsers()" title="Ordina per">
                                     <optgroup label="Per Utente + Server">
                                         <option value="name_asc_server_asc" selected>Utente (A-Z) + Server</option>
                                         <option value="name_asc_server_desc">Utente (A-Z) + Server (Desc)</option>
@@ -170,6 +135,52 @@
                                         <option value="server_desc_name_desc">Server (Desc) + Utente (Desc)</option>
                                     </optgroup>
                                 </select>
+                            </div>
+
+                            <div class="users-toolbar-group users-actions-group">
+                                <div class="users-toolbar-label">Azioni</div>
+                                <div class="users-toolbar-actions">
+                                    <button class="btn primary compact users-create-btn" onclick="openCreateUserModal()" title="Crea utente">
+                                        <i class="fa-solid fa-user-plus"></i> <span>Crea utente</span>
+                                    </button>
+                                    <button class="btn secondary users-refresh-btn" onclick="loadEmbyUsers(true)" title="Aggiorna lista">
+                                        <i class="fa-solid fa-rotate"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Row 2: Filters -->
+                        <div class="users-filter-sort-row" style="display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: flex-start; justify-content: flex-start;">
+
+                            <div class="users-toolbar-group users-filter-group">
+                                <div class="users-toolbar-label">Filtra</div>
+                                <div class="users-filter-controls" style="display: flex; gap: 0.5rem; align-items: flex-start; flex-wrap: wrap; flex-grow: 1;">
+                                    <div class="users-search-field">
+                                        <i class="fa-solid fa-search"></i>
+                                        <input type="text" id="filter-search" class="form-input" placeholder="Cerca utente o gruppo..." oninput="filterUsers()">
+                                    </div>
+
+                                    <select id="filter-group-type" class="form-input compact" onchange="filterUsers()" title="Tipo Utente" style="max-width: 140px; flex-grow: 1;">
+                                        <option value="all">Tutti gli utenti</option>
+                                        <option value="single">Utenti Singoli</option>
+                                        <option value="group">Gruppi Utente</option>
+                                    </select>
+
+                                    <select id="filter-server" class="form-input compact interactive-multiselect" multiple title="Server" style="max-width: 160px; flex-grow: 1;">
+                                        <option value="all">Tutti i Server</option>
+                                    </select>
+
+                                    <select id="filter-status" class="form-input compact interactive-multiselect" multiple title="Stato" style="max-width: 130px; flex-grow: 1;">
+                                        <option value="all">Tutti gli stati</option>
+                                        <option value="active">Attivi</option>
+                                        <option value="disabled">Disabilitati</option>
+                                    </select>
+
+                                    <select id="filter-icon-profile" class="form-input compact interactive-multiselect" multiple title="Profilo Icone" style="max-width: 150px; flex-grow: 1;">
+                                        <option value="all">Tutti i Profili</option>
+                                    </select>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -356,13 +367,13 @@
                  data-latest-fetch-limit="{{ ([latest_max_movies, latest_max_series] | max) * latest_server_count }}"
                  data-latest-fetch-per-server="{{ [latest_max_movies, latest_max_series] | max }}">
                 <div class="card">
-                    <div class="latest-header">
+                    <div class="latest-header page-card-header">
                         <div>
                             <h2>Ultime pubblicazioni</h2>
                             <p class="tagline">Film e serie TV aggiunti di recente nei server Emby connessi.</p>
                             <p class="tagline" data-cache-status style="display:none; font-size: 0.8rem; color: #6b7280; margin-top: 0.25rem;"></p>
                         </div>
-                        <div class="latest-actions">
+                        <div class="latest-actions page-card-actions">
                             <button class="btn primary" type="button" onclick="workflowUI.startFull()" title="Avvia l'aggiornamento completo (scan, probe, cache, notify)">
                                 <i class="fa-solid fa-rocket"></i> Aggiorna Tutto
                             </button>
@@ -1198,7 +1209,7 @@
     <script src="{{ url_for('static', filename='emby_users_api.js') }}"></script>
     <script src="{{ url_for('static', filename='emby_users_core.js') }}?v=20260628-users-sync-now-bg"></script>
     <script src="{{ url_for('static', filename='operations_center.js') }}?v=20260720-operation-events"></script>
-    <script src="{{ url_for('static', filename='emby_users_render.js') }}?v=20260715-users-master-normal"></script>
+    <script src="{{ url_for('static', filename='emby_users_render.js') }}?v=20260809-users-search-scope"></script>
     <script src="{{ url_for('static', filename='emby_users_details.js') }}?v=20260628-users-live"></script>
     <script src="{{ url_for('static', filename='emby_users_passwords.js') }}?v=20260628-users-live"></script>
     <script src="{{ url_for('static', filename='emby_users_settings_builders.js') }}?v=20260629-user-feature-prefs"></script>
@@ -1213,10 +1224,6 @@
     <script src="{{ url_for('static', filename='emby_users_icons.js') }}?v=20260628-users-live"></script>
     <script src="{{ url_for('static', filename='actions.js') }}"></script>
     <script src="{{ url_for('static', filename='script_shell.js') }}?v=20260718-main-tab-events"></script>
-    <script src="{{ url_for('static', filename='script_rss_tools.js') }}?v=20260628-rss"></script>
-    <script src="{{ url_for('static', filename='script_rss_view.js') }}?v=20260628-rss"></script>
-    <script src="{{ url_for('static', filename='script_rss_cleanup.js') }}?v=20260628-rss"></script>
-    <script src="{{ url_for('static', filename='script_rss_categories.js') }}?v=20260628-rss"></script>
     <script src="{{ url_for('static', filename='script_results.js') }}?v=20260719-search"></script>
     <script src="{{ url_for('static', filename='script_tmdb_emby.js') }}?v=20260719-search"></script>
     <script src="{{ url_for('static', filename='script_manual_search.js') }}?v=20260719-search"></script>
@@ -1231,7 +1238,7 @@
     <script src="{{ url_for('static', filename='emby_scan_tracker.js') }}?v=20260628"></script>
     <script src="{{ url_for('static', filename='emby_dialogs.js') }}?v=20260628"></script>
     <script src="{{ url_for('static', filename='emby_latest.js') }}?v=20260720-latest-operation-refresh"></script>
-    <script src="{{ url_for('static', filename='emby_operations.js') }}?v=20260715-operations-refactor"></script>
+    <script src="{{ url_for('static', filename='emby_operations.js') }}?v=20260722-transcode-guard-message-ui"></script>
     <script src="{{ url_for('static', filename='emby_widgets.js') }}?v=20260628"></script>
     <script src="{{ url_for('static', filename='emby_tabs.js') }}?v=20260714-users-hash"></script>
     <script src="{{ url_for('static', filename='emby_verify.js') }}?v=20260716-verify-mediainfo-state"></script>

@@ -303,16 +303,17 @@ def _handle_sessions_update(server_id: str, sessions_data):
         print(f"[WS_SESSIONS:{server_id}] Server not found in config")
         return
 
-    # Fetch and process active sessions from Emby
-    streams, error = _fetch_emby_active_sessions(server)
-
+    streams_manager = get_streams_manager()
+    streams, error = streams_manager.refresh_server(
+        server,
+        _fetch_emby_active_sessions,
+        max_age_seconds=0,
+        force=True,
+    )
     if error:
         print(f"[WS_SESSIONS:{server_id}] Error fetching sessions: {error}")
         return
 
-    # Update in-memory cache via EmbyStreamsManager
-    streams_manager = get_streams_manager()
-    streams_manager.refresh_from_api(server_id, streams)
     logger.debug("[WS_SESSIONS:%s] Updated %s active playback session(s)", server_id, len(streams))
 
     # Broadcast processed sessions to frontend
@@ -346,6 +347,8 @@ def _initialize_emby_websockets():
     # Setup forwarding RefreshProgress to client WebSocket (replaces polling)
     ws_manager.setup_scan_progress_forwarding()
     print("[WS_INIT] ✓ Setup RefreshProgress forwarding to client WebSockets")
+    ws_manager.setup_stream_session_forwarding()
+    print("[WS_INIT] ✓ Setup stream session forwarding to shared stream manager")
 
     print(f"[WS_INIT] Initializing WebSocket connections for {len(servers)} Emby servers")
 

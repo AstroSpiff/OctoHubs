@@ -1,7 +1,5 @@
-version: '3.8'
-
 services:
-  # OctoHub Application
+  # OctoHubs Application
   app:
     # Build locale (usa questa per sviluppo o feature non ancora pushate)
     build:
@@ -9,20 +7,20 @@ services:
       dockerfile: Dockerfile
     # Build da GitHub (commenta la sezione build sopra e decommenta questa per production)
     # build:
-    #   context: https://github.com/AstroSpiff/OctoHub.git#main
+    #   context: https://github.com/AstroSpiff/OctoHubs.git#FastAPI
     #   dockerfile: Dockerfile
-    image: octohub:latest
-    container_name: octohub-app
+    image: octohubs:latest
+    container_name: octohubs-app
     restart: unless-stopped
-    user: "${OCTOHUB_UID:-0}:${OCTOHUB_GID:-0}"
+    user: "${OCTOHUBS_UID:-0}:${OCTOHUBS_GID:-0}"
     ports:
       - "5050:5050"
     environment:
       
       - SECRET_KEY=${SECRET_KEY:-change-this-secret-key}
-      - OCTOHUB_CONFIG_FILE=${OCTOHUB_CONFIG_FILE:-/config/config.json}
-      - OCTOHUB_RESULTS_FILE=${OCTOHUB_RESULTS_FILE:-/storage/last_results.json}
-      - OCTOHUB_DB_BACKUP_DIR=${OCTOHUB_DB_BACKUP_DIR:-/storage/db-backups}
+      - OCTOHUBS_CONFIG_FILE=${OCTOHUBS_CONFIG_FILE:-/config/config.json}
+      - OCTOHUBS_RESULTS_FILE=${OCTOHUBS_RESULTS_FILE:-/storage/last_results.json}
+      - OCTOHUBS_DB_BACKUP_DIR=${OCTOHUBS_DB_BACKUP_DIR:-/storage/db-backups}
 
       # Authentication Database (SQLite by default, PostgreSQL optional)
       - AUTH_DATABASE_URL=${AUTH_DATABASE_URL:-sqlite:////storage/auth.db}
@@ -31,7 +29,7 @@ services:
       - ADMIN_USERNAME=${ADMIN_USERNAME:-}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
       - ADMIN_EMAIL=${ADMIN_EMAIL:-}
-      # - ADMIN_PASSWORD_FILE=/run/secrets/octohub_admin_password
+      # - ADMIN_PASSWORD_FILE=/run/secrets/octohubs_admin_password
 
       # Webhook Security (optional)
       - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
@@ -44,22 +42,22 @@ services:
 
       # Application Database (PostgreSQL - required)
       # Usare ENV/Secrets: non vengono salvate nel config.json
-      - OCTOHUB_DB_HOST=${OCTOHUB_DB_HOST:-}
-      - OCTOHUB_DB_PORT=${OCTOHUB_DB_PORT:-}
-      - OCTOHUB_DB_NAME=${OCTOHUB_DB_NAME:-}
-      - OCTOHUB_DB_USER=${OCTOHUB_DB_USER:-}
-      - OCTOHUB_DB_PASSWORD=${OCTOHUB_DB_PASSWORD:-}
-      # - OCTOHUB_DB_PASSWORD_FILE=/run/secrets/octohub_db_password
-      - OCTOHUB_DB_DRIVER=${OCTOHUB_DB_DRIVER:-}
-      - OCTOHUB_DB_URL=${OCTOHUB_DB_URL:-}
-      - OCTOHUB_DB_PARAMS=${OCTOHUB_DB_PARAMS:-}
+      - OCTOHUBS_DB_HOST=${OCTOHUBS_DB_HOST:-}
+      - OCTOHUBS_DB_PORT=${OCTOHUBS_DB_PORT:-}
+      - OCTOHUBS_DB_NAME=${OCTOHUBS_DB_NAME:-}
+      - OCTOHUBS_DB_USER=${OCTOHUBS_DB_USER:-}
+      - OCTOHUBS_DB_PASSWORD=${OCTOHUBS_DB_PASSWORD:-}
+      # - OCTOHUBS_DB_PASSWORD_FILE=/run/secrets/octohubs_db_password
+      - OCTOHUBS_DB_DRIVER=${OCTOHUBS_DB_DRIVER:-}
+      - OCTOHUBS_DB_URL=${OCTOHUBS_DB_URL:-}
+      - OCTOHUBS_DB_PARAMS=${OCTOHUBS_DB_PARAMS:-}
     volumes:
       # Modifica i path host (/mnt/shared/...) in base al tuo storage
-      - /mnt/shared/config/octohub:/config
-      - /mnt/shared/applications/octohub:/storage
-      - /mnt/shared/applications/octohub/logs:/app/logs
+      - /mnt/shared/config/octohubs:/config
+      - /mnt/shared/applications/octohubs:/storage
+      - /mnt/shared/applications/octohubs/logs:/app/logs
     networks:
-      - octohub-network
+      - octohubs-network
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; sock = socket.create_connection(('127.0.0.1', 5050), timeout=5); sock.close()"]
       interval: 30s
@@ -81,18 +79,18 @@ services:
   #
   # postgres:
   #   image: postgres:15-alpine
-  #   container_name: octohub-postgres
+  #   container_name: octohubs-postgres
   #   restart: unless-stopped
   #   environment:
-  #     - POSTGRES_DB=${POSTGRES_DB:-octohub}
-  #     - POSTGRES_USER=${POSTGRES_USER:-octohub}
-  #     - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-octohub_password}
+  #     - POSTGRES_DB=${POSTGRES_DB:-octohubs}
+  #     - POSTGRES_USER=${POSTGRES_USER:-octohubs}
+  #     - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-octohubs_password}
   #   volumes:
-  #     - /mnt/shared/applications/octohub/postgres:/var/lib/postgresql/data
+  #     - /mnt/shared/applications/octohubs/postgres:/var/lib/postgresql/data
   #   networks:
-  #     - octohub-network
+  #     - octohubs-network
   #   healthcheck:
-  #     test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-octohub}"]
+  #     test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-octohubs}"]
   #     interval: 10s
   #     timeout: 5s
   #     retries: 5
@@ -101,17 +99,17 @@ services:
   # Decommenta questo blocco per abilitarlo.
   # nginx:
   #   image: nginx:alpine
-  #   container_name: octohub-nginx
+  #   container_name: octohubs-nginx
   #   restart: unless-stopped
   #   ports:
   #     - "80:80"
   #     - "443:443"
   #   volumes:
   #     - ./nginx.conf:/etc/nginx/nginx.conf:ro
-  #     - /mnt/shared/config/octohub/nginx/ssl:/etc/nginx/ssl:ro
-  #     - /mnt/shared/applications/octohub/nginx/logs:/var/log/nginx
+  #     - /mnt/shared/config/octohubs/nginx/ssl:/etc/nginx/ssl:ro
+  #     - /mnt/shared/applications/octohubs/nginx/logs:/var/log/nginx
   #   networks:
-  #     - octohub-network
+  #     - octohubs-network
   #   depends_on:
   #     - app
   #   healthcheck:
@@ -121,5 +119,5 @@ services:
   #     retries: 3
 
 networks:
-  octohub-network:
+  octohubs-network:
     driver: bridge

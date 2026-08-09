@@ -1,4 +1,4 @@
-"""Storage backends for OctoHub."""
+"""Storage backends for OctoHubs."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from core.storage.storage_justwatch import StorageJustWatchMixin
 from core.storage.storage_core import StorageCoreMixin
 from core.storage.storage_latest import StorageLatestMixin
 from core.storage.storage_maintenance import StorageMaintenanceMixin
-from core.storage.storage_rss import StorageRssMixin
 from core.storage.storage_requests import StorageRequestsMixin
 from core.storage.storage_manual_search import StorageManualSearchMixin
 from core.storage.storage_probe import StorageProbeMixin
@@ -38,7 +37,6 @@ class DatabaseStorage(
     StorageImageCacheMixin,
     StorageRequestsMixin,
     StorageProbeMixin,
-    StorageRssMixin,
     StorageUsersMixin,
     StorageCollectionsMixin,
     StorageJustWatchMixin,

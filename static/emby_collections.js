@@ -1,5 +1,5 @@
 (() => {
-    const globalFlag = '__octohub_emby_collections_initialized';
+    const globalFlag = '__octohubs_emby_collections_initialized';
     if (window[globalFlag]) {
         return;
     }
@@ -40,8 +40,8 @@
     };
 
     const openConfirmDialog = (message, title = 'Conferma') => {
-        if (window.octohubUtils && typeof window.octohubUtils.openConfirmModal === 'function') {
-            return window.octohubUtils.openConfirmModal(title, message);
+        if (window.octohubsUtils && typeof window.octohubsUtils.openConfirmModal === 'function') {
+            return window.octohubsUtils.openConfirmModal(title, message);
         }
         const fallbackMsg = message || 'Modale non disponibile: azione annullata.';
         if (typeof showToast === 'function') {
@@ -1160,11 +1160,11 @@
             return data && Array.isArray(data.lists) ? data.lists : [];
         }
         const operationId = data.operation_id || '';
-        if (!operationId || !window.octohubOperations?.waitFor) {
+        if (!operationId || !window.octohubsOperations?.waitFor) {
             throw new Error(`Operazione ${label} non disponibile.`);
         }
-        window.octohubOperations?.notifyStarted?.();
-        const operation = await window.octohubOperations.waitFor(operationId, {
+        window.octohubsOperations?.notifyStarted?.();
+        const operation = await window.octohubsOperations.waitFor(operationId, {
             timeoutMs: 240000,
             intervalMs: 1500
         });
@@ -1180,11 +1180,11 @@
             return data || {};
         }
         const operationId = data.operation_id || '';
-        if (!operationId || !window.octohubOperations?.waitFor) {
+        if (!operationId || !window.octohubsOperations?.waitFor) {
             throw new Error(`Operazione ${label} non disponibile.`);
         }
-        window.octohubOperations?.notifyStarted?.();
-        const operation = await window.octohubOperations.waitFor(operationId, {
+        window.octohubsOperations?.notifyStarted?.();
+        const operation = await window.octohubsOperations.waitFor(operationId, {
             timeoutMs: 360000,
             intervalMs: 1500
         });

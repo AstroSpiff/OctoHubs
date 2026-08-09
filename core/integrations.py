@@ -74,7 +74,7 @@ class TraktClient:
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "OctoHub/1.0 (+https://github.com/roy/octohub)",
+            "User-Agent": "OctoHubs/1.0 (+https://github.com/AstroSpiff/OctoHubs)",
         }
 
     def _token_refresh_payload(self):

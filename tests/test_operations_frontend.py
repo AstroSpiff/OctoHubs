@@ -30,6 +30,7 @@ class OperationsFrontendTests(unittest.TestCase):
         self.assertIn("requests_refresh: 'fa-list-check'", source)
         self.assertIn("collections_trakt_lists: 'fa-list-ul'", source)
         self.assertIn("collections_mdblist_lists: 'fa-list-ul'", source)
+        self.assertIn("transcode_guard: 'fa-shield-halved'", source)
         self.assertNotIn("const payload = await res.json();", source)
         self.assertIn("console.warn('[OPERATIONS] Refresh unavailable:',", source)
         self.assertNotIn("console.error('[OPERATIONS] Refresh failed:',", source)
@@ -38,7 +39,7 @@ class OperationsFrontendTests(unittest.TestCase):
         source = pathlib.Path("static/operations_center.js").read_text(encoding="utf-8")
 
         self.assertIn("function emitCompletedOperations(previousOperations, nextOperations)", source)
-        self.assertIn("'octohub:operation-completed'", source)
+        self.assertIn("'octohubs:operation-completed'", source)
         self.assertIn("previousIsActive && !nextIsActive", source)
 
 

@@ -1,9 +1,9 @@
 (() => {
-    const { csrfFetch } = window.octohubUtils;
+    const { csrfFetch } = window.octohubsUtils;
     const { ScanTracker, groupTotals, groupPassiveState, groupedLibrariesCache,
         updateProgressRows, normalizeRawPercent, getPhaseMetrics, formatLibraryPhase,
-        loadGroupPassiveState, saveGroupPassiveState, getGroupTotalServers } = window.octohubScanTracker;
-    const { escapeHtml, buildServerLabelParts, formatDate } = window.octohubLatest;
+        loadGroupPassiveState, saveGroupPassiveState, getGroupTotalServers } = window.octohubsScanTracker;
+    const { escapeHtml, buildServerLabelParts, formatDate } = window.octohubsLatest;
     const toastContainer = document.querySelector('#toast-container');
 
     const navItems = document.querySelectorAll('.server-nav-item');
@@ -274,7 +274,7 @@
     }
     const streamPanels = document.querySelectorAll('[data-stream-panel]');
 
-    const librariesModule = window.octohubEmbyLibraries?.init?.({
+    const librariesModule = window.octohubsEmbyLibraries?.init?.({
         csrfFetch,
         showToast,
         buildServerLabelParts,

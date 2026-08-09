@@ -259,6 +259,7 @@ async def update_config_route(
     trakt_enabled: str = Form(""),
     justwatch_enabled: str = Form(""),
     justwatch_locale: str = Form("it_IT"),
+    webhook_secret: str = Form(""),
 ):
     """Update general configuration (database, API connections, Trakt, JustWatch)."""
     _require_auth_dep(request)
@@ -378,6 +379,15 @@ async def update_config_route(
         "LOCALE": justwatch_locale or "it_IT",
     }
     app_settings["JUSTWATCH"] = _merge_justwatch_settings(justwatch_payload)
+
+    if str(webhook_secret or "").strip():
+        try:
+            from services.runtime_env import save_runtime_secret
+
+            save_runtime_secret("WEBHOOK_SECRET", webhook_secret)
+        except (OSError, ValueError) as exc:
+            _flash_dep(request, f"Errore Event Bridge Emby: {exc}", "error")
+            return RedirectResponse(url=next_url, status_code=303)
 
     _save_app_settings_snapshot(app_settings)
     _load_config_dep()

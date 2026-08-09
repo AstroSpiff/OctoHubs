@@ -10,7 +10,7 @@
     const ACTIVE_STATUSES = new Set(['queued', 'running']);
     const POLL_ACTIVE_MS = 2000;
     const POLL_IDLE_MS = 12000;
-    const STORAGE_KEY = 'octohub.users.operations.open';
+    const STORAGE_KEY = 'octohubs.users.operations.open';
 
     const state = {
         root: null,
@@ -32,7 +32,7 @@
         if (api && typeof api.fetch === 'function') {
             return api.fetch(url, options);
         }
-        const utils = window.octohubUtils;
+        const utils = window.octohubsUtils;
         if (utils && typeof utils.csrfFetch === 'function') {
             return utils.csrfFetch(url, options);
         }

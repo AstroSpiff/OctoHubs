@@ -66,7 +66,7 @@
                 <button class="tab-btn active" data-tab="emby-servers" title="Gestisci i server Emby">Server Emby</button>
                 <button class="tab-btn" data-tab="telegram" title="Configura i canali Telegram">Telegram</button>
                 <button class="tab-btn" data-tab="services" title="Servizi esterni e automazioni">Servizi &amp; Automazioni</button>
-                <button class="tab-btn" data-tab="rss-import" title="Configura feed RSS e importazioni">RSS &amp; Import</button>
+                <button class="tab-btn" data-tab="event-bridge" title="Configura il plugin Event Bridge per server Emby">Event Bridge</button>
             </div>
 
             <div class="tab-panel active" data-tab-panel="emby-servers">
@@ -696,31 +696,6 @@
                                     </div>
                                     <p class="auto-note">Sincronizza lo stato di visione degli utenti nei gruppi abilitati.</p>
                                 </section>
-                                <section class="auto-section" data-task="rss">
-                                    <div class="auto-header">
-                                        <h3>RSS Import</h3>
-                                        <label class="auto-inline" title="Attiva o disattiva l'importazione automatica RSS">
-                                            <input type="checkbox" name="rss_enabled" class="auto-enable" {% if auto_tasks.rss and auto_tasks.rss.enabled %}checked{% endif %}>
-                                            Attiva
-                                        </label>
-                                    </div>
-                                    <div class="auto-mode">
-                                        <label class="auto-inline" title="Ripeti il polling RSS a intervalli costanti">
-                                            <input type="radio" name="rss_mode" value="interval" {% if auto_tasks.rss and auto_tasks.rss.mode != 'fixed' %}checked{% else %}checked{% endif %}>
-                                            Avvia ogni
-                                        </label>
-                                        <input type="number" name="rss_interval" min="1" value="{{ (auto_tasks.rss.interval_minutes if auto_tasks.rss else 30) }}">
-                                        <span>minuti</span>
-                                    </div>
-                                    <div class="auto-mode">
-                                        <label class="auto-inline" title="Esegui il polling RSS in orari precisi (usa 24h)">
-                                            <input type="radio" name="rss_mode" value="fixed" {% if auto_tasks.rss and auto_tasks.rss.mode == 'fixed' %}checked{% endif %}>
-                                            Orari fissi
-                                        </label>
-                                        <input type="text" name="rss_times" placeholder="01:00, 13:00" value="{{ (auto_tasks.rss.times | join(', ')) if auto_tasks.rss else '' }}">
-                                    </div>
-                                    <p class="auto-note">Importa automaticamente gli articoli dai feed RSS configurati.</p>
-                                </section>
                                 <section class="auto-section" data-task="collections">
                                     <div class="auto-header">
                                         <h3>Collezioni Emby</h3>
@@ -951,10 +926,10 @@
                                     <button class="help-trigger" type="button" aria-label="Istruzioni Database">i</button>
                                     <div class="help-content">
                                         <strong>Password via ENV/Secret.</strong>
-                                        <div class="tagline">Usa <code>OCTOHUB_DB_PASSWORD</code> o <code>OCTOHUB_DB_PASSWORD_FILE</code>.</div>
-                                        <div class="tagline">Portainer: Stack -> Environment variables -> aggiungi <code>OCTOHUB_DB_PASSWORD</code>.</div>
-                                        <div class="tagline">CLI: <code>export OCTOHUB_DB_PASSWORD="password"</code></div>
-                                        <div class="tagline">URL completa: <code class="breakable">export OCTOHUB_DB_URL="postgresql+psycopg2://utente:<wbr>password@host:<wbr>5432/db"</code></div>
+                                        <div class="tagline">Usa <code>OCTOHUBS_DB_PASSWORD</code> o <code>OCTOHUBS_DB_PASSWORD_FILE</code>.</div>
+                                        <div class="tagline">Portainer: Stack -> Environment variables -> aggiungi <code>OCTOHUBS_DB_PASSWORD</code>.</div>
+                                        <div class="tagline">CLI: <code>export OCTOHUBS_DB_PASSWORD="password"</code></div>
+                                        <div class="tagline">URL completa: <code class="breakable">export OCTOHUBS_DB_URL="postgresql+psycopg2://utente:<wbr>password@host:<wbr>5432/db"</code></div>
                                     </div>
                                 </div>
                                 <div class="form-grid">
@@ -1067,188 +1042,145 @@
                 </div>
             </div>
 
-            <div class="tab-panel" data-tab-panel="rss-import">
+            <div class="tab-panel" data-tab-panel="event-bridge">
                 <div class="card">
-                    <h2>RSS &amp; Import</h2>
-                    <p class="tagline">Configura le sorgenti RSS, analizza i formati e prepara l'import nel database.</p>
-                    <p class="tagline"><strong>Nota:</strong> L'importazione automatica si configura nella sezione "Servizi &amp; Automazioni".</p>
-                    <form action="/update-rss-import" method="post">
-                        <input type="hidden" name="next" value="{{ url_for('configuration') }}">
-                        {% set rss_import = config.RSS_IMPORT if config and config.RSS_IMPORT else {} %}
-                        <div class="form-grid">
-                            <div>
-                                <label for="rss_dedup_keep">Duplicati per link</label>
-                                <select id="rss_dedup_keep" name="rss_dedup_keep">
-                                    <option value="oldest" {% if rss_import.DEDUP_KEEP == 'oldest' %}selected{% endif %}>Mantieni il meno recente</option>
-                                    <option value="newest" {% if rss_import.DEDUP_KEEP == 'newest' %}selected{% endif %}>Mantieni il più recente</option>
-                                </select>
-                                <div class="tagline">Regola di deduplica basata sul link dell'articolo.</div>
-                            </div>
-                            <div style="grid-column:1 / span 3;">
-                                <label for="rss_sources">Sorgenti RSS (una per riga)</label>
-                                <textarea id="rss_sources" name="rss_sources" rows="6" placeholder="Nome feed | https://example.com/rss | tag1, tag2">{% if rss_import.SOURCES %}{% for source in rss_import.SOURCES %}{{ (source.name ~ ' | ' if source.name) ~ source.url }}{% if source.tags %} | {{ source.tags | join(', ') }}{% endif %}{% if not loop.last %}&#10;{% endif %}{% endfor %}{% endif %}</textarea>
-                                <div class="tagline">Formato: Nome | URL | tag opzionali. Se inserisci solo URL, il nome sarà auto-deducibile.</div>
-                            </div>
+                    <div class="trakt-header">
+                        <div>
+                            <h2>Event Bridge Emby</h2>
+                            <p class="tagline">Configura il plugin installato sui server Emby. Il secret è comune, le opzioni sono specifiche per ogni server.</p>
                         </div>
-                        <button class="btn" type="submit">Salva configurazione RSS</button>
+                        <span class="status-pill {{ 'status-ok' if webhook_secret_configured else 'status-skip' }}">
+                            {{ 'Secret configurato' if webhook_secret_configured else 'Secret non configurato' }}
+                        </span>
+                    </div>
+                    <form action="/configuration/event-bridge" method="post">
+                        <input type="hidden" name="next" value="{{ url_for('configuration') }}">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                        <section class="config-box">
+                            <h4>Secret condiviso</h4>
+                            <div class="form-grid">
+                                <div style="grid-column:1 / span 2;">
+                                    <label for="webhook_secret">Webhook secret</label>
+                                    <input type="password"
+                                           id="webhook_secret"
+                                           name="webhook_secret"
+                                           value=""
+                                           autocomplete="new-password"
+                                           placeholder="{{ 'Già configurato: inserisci un nuovo valore per sostituirlo' if webhook_secret_configured else 'Secret condiviso con il plugin Emby' }}">
+                                    <div class="tagline">Inserisci qui lo stesso valore configurato nei plugin Emby. Lascia vuoto per non modificarlo.</div>
+                                </div>
+                            </div>
+                        </section>
+
+                        {% if event_bridge_servers %}
+                            <div class="event-bridge-server-grid">
+                                {% for bridge_server in event_bridge_servers %}
+                                    {% set bridge_settings = bridge_server.settings %}
+                                    {% set bridge_status = bridge_server.status %}
+                                    {% set bridge_id = bridge_server.id | replace('-', '_') %}
+                                    <details class="config-box event-bridge-server-card" open>
+                                        <summary class="event-bridge-server-summary">
+                                            <div class="event-bridge-server-heading">
+                                                <h4>
+                                                    <i class="fa-solid {{ bridge_server.icon }} event-bridge-server-icon" data-icon-color="{{ bridge_server.icon_color }}"></i>
+                                                    {{ bridge_server.name }}
+                                                </h4>
+                                                <div class="tagline">Server ID: <code>{{ bridge_server.id }}</code></div>
+                                            </div>
+                                            <div class="event-bridge-server-status">
+                                                <span class="status-pill {{ 'status-ok' if bridge_status and bridge_status.connected else 'status-skip' }}">
+                                                    {% if bridge_status and bridge_status.connected %}
+                                                        WebSocket connesso
+                                                    {% elif bridge_status and bridge_status.received_count %}
+                                                        HTTP ricevuto
+                                                    {% else %}
+                                                        Non visto
+                                                    {% endif %}
+                                                </span>
+                                                <i class="fa-solid fa-chevron-down event-bridge-server-chevron" aria-hidden="true"></i>
+                                            </div>
+                                        </summary>
+
+                                        <div class="event-bridge-server-body">
+                                            <input type="hidden" name="event_bridge_server_ids" value="{{ bridge_server.id }}">
+                                            <div class="event-bridge-options">
+                                                <label title="Abilita o disabilita Event Bridge per questo server">
+                                                    <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_enabled" {% if bridge_settings.ENABLED %}checked{% endif %}>
+                                                    Abilita
+                                                </label>
+                                                <label title="Usa WebSocket bidirezionale quando il plugin riesce a connettersi">
+                                                    <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_websocket_enabled" {% if bridge_settings.WEBSOCKET_ENABLED %}checked{% endif %}>
+                                                    WebSocket
+                                                </label>
+                                                <label title="Se WebSocket non è disponibile, consenti invio HTTP batch">
+                                                    <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_http_fallback_enabled" {% if bridge_settings.HTTP_FALLBACK_ENABLED %}checked{% endif %}>
+                                                    Fallback HTTP
+                                                </label>
+                                                <label title="Includi eventi playback: start, stop, progressi whitelist e cambi player">
+                                                    <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_capture_playback" {% if bridge_settings.CAPTURE_PLAYBACK_EVENTS %}checked{% endif %}>
+                                                    Playback
+                                                </label>
+                                                <label title="Includi eventi sessione Emby selezionati">
+                                                    <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_capture_session" {% if bridge_settings.CAPTURE_SESSION_EVENTS %}checked{% endif %}>
+                                                    Sessione
+                                                </label>
+                                                <label title="Includi eventi diagnostici generati dal plugin">
+                                                    <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_capture_plugin" {% if bridge_settings.CAPTURE_PLUGIN_EVENTS %}checked{% endif %}>
+                                                    Plugin
+                                                </label>
+                                                <label title="Invia payload grezzi compatti solo per diagnostica">
+                                                    <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_include_raw_payload" {% if bridge_settings.INCLUDE_RAW_PAYLOAD %}checked{% endif %}>
+                                                    Raw
+                                                </label>
+                                            </div>
+
+                                            <div class="event-bridge-number-grid">
+                                                <label for="event_bridge_{{ bridge_id }}_batch_interval_seconds">
+                                                    Batch secondi
+                                                    <input type="number" min="0" id="event_bridge_{{ bridge_id }}_batch_interval_seconds" name="event_bridge_{{ bridge_server.id }}_batch_interval_seconds" value="{{ bridge_settings.EVENT_BATCH_INTERVAL_SECONDS }}">
+                                                </label>
+                                                <label for="event_bridge_{{ bridge_id }}_ws_reconnect_seconds">
+                                                    Reconnect WS
+                                                    <input type="number" min="1" id="event_bridge_{{ bridge_id }}_ws_reconnect_seconds" name="event_bridge_{{ bridge_server.id }}_ws_reconnect_seconds" value="{{ bridge_settings.WEBSOCKET_RECONNECT_SECONDS }}">
+                                                </label>
+                                                <label for="event_bridge_{{ bridge_id }}_http_timeout_seconds">
+                                                    Timeout HTTP
+                                                    <input type="number" min="1" id="event_bridge_{{ bridge_id }}_http_timeout_seconds" name="event_bridge_{{ bridge_server.id }}_http_timeout_seconds" value="{{ bridge_settings.HTTP_TIMEOUT_SECONDS }}">
+                                                </label>
+                                                <label for="event_bridge_{{ bridge_id }}_retry_count">
+                                                    Retry HTTP
+                                                    <input type="number" min="0" id="event_bridge_{{ bridge_id }}_retry_count" name="event_bridge_{{ bridge_server.id }}_retry_count" value="{{ bridge_settings.RETRY_COUNT }}">
+                                                </label>
+                                            </div>
+
+                                            <div class="event-bridge-events-grid">
+                                                <label for="event_bridge_{{ bridge_id }}_playback_event_names">
+                                                    Eventi playback progress
+                                                    <textarea id="event_bridge_{{ bridge_id }}_playback_event_names" name="event_bridge_{{ bridge_server.id }}_playback_event_names" rows="7">{% for event_name in bridge_settings.PLAYBACK_EVENT_NAMES %}{{ event_name }}{% if not loop.last %}&#10;{% endif %}{% endfor %}</textarea>
+                                                </label>
+                                                <label for="event_bridge_{{ bridge_id }}_session_event_names">
+                                                    Eventi sessione
+                                                    <textarea id="event_bridge_{{ bridge_id }}_session_event_names" name="event_bridge_{{ bridge_server.id }}_session_event_names" rows="7">{% for event_name in bridge_settings.SESSION_EVENT_NAMES %}{{ event_name }}{% if not loop.last %}&#10;{% endif %}{% endfor %}</textarea>
+                                                </label>
+                                                <label for="event_bridge_{{ bridge_id }}_plugin_event_names">
+                                                    Eventi plugin
+                                                    <textarea id="event_bridge_{{ bridge_id }}_plugin_event_names" name="event_bridge_{{ bridge_server.id }}_plugin_event_names" rows="7">{% for event_name in bridge_settings.PLUGIN_EVENT_NAMES %}{{ event_name }}{% if not loop.last %}&#10;{% endif %}{% endfor %}</textarea>
+                                                </label>
+                                            </div>
+                                        </div>
+                                    </details>
+                                {% endfor %}
+                            </div>
+                        {% else %}
+                            <section class="config-box">
+                                <p class="tagline">Nessun server Emby configurato. Aggiungi prima almeno un server in “Server Emby”.</p>
+                            </section>
+                        {% endif %}
+                        <button class="btn" type="submit">Salva Event Bridge</button>
                     </form>
                 </div>
-                <div class="card">
-                    <h3>Importa nel database</h3>
-                    <p class="tagline">Avvia un import manuale dei feed configurati o di un export JSON.</p>
-                    <div class="form-grid">
-                        <div>
-                            <label>Importa dai feed RSS</label>
-                            <div class="tagline">Legge tutte le sorgenti attive nella configurazione.</div>
-                        </div>
-                        <div class="inline-actions" style="align-items:flex-end;">
-                            <button type="button" class="btn light" id="rss-import-btn">Importa RSS</button>
-                            <button type="button" class="btn" id="rss-view-btn">Apri archivio RSS</button>
-                        </div>
-                    </div>
-                    <div class="form-grid">
-                        <div>
-                            <label for="rss_import_json_file">Importa JSON export</label>
-                            <input type="file" id="rss_import_json_file" name="rss_import_json_file" accept="application/json" multiple>
-                        </div>
-                        <div class="inline-actions" style="align-items:flex-end;">
-                            <button type="button" class="btn light" id="rss-import-json-btn">Importa JSON</button>
-                        </div>
-                    </div>
-                    <div id="rss-import-result" class="rss-inspect-result"></div>
-                </div>
-                <div class="card">
-                    <h3>Pulisci duplicati</h3>
-                    <p class="tagline">Rimuove i duplicati con link identico e mantiene quello {{ 'piu recente' if rss_import.DEDUP_KEEP == 'newest' else 'meno recente' }}.</p>
-                    <div class="inline-actions" style="justify-content:flex-start;">
-                        <button type="button" class="btn light" id="rss-dedup-btn">Pulisci duplicati</button>
-                    </div>
-                    <div id="rss-dedup-result" class="rss-inspect-result"></div>
-                </div>
-                <div class="card">
-                    <h3>Gestione Categorie</h3>
-                    <p class="tagline">Gestisci la visibilità delle categorie: accettate (visibili), nascoste (non visibili ma non eliminate), blacklistate (da eliminare).</p>
-                    <div class="category-management-controls">
-                        <button type="button" class="btn" id="categories-refresh-btn">Aggiorna Categorie</button>
-                        <button type="button" class="btn light" id="categories-show-btn" disabled>Mostra</button>
-                        <button type="button" class="btn light" id="categories-hide-btn" disabled>Nascondi</button>
-                        <button type="button" class="btn light" id="categories-blacklist-btn" disabled>Blacklist</button>
-                        <button type="button" class="btn danger" id="categories-delete-blacklisted-btn" disabled>Elimina Articoli Blacklistati</button>
-                    </div>
-                    <div class="categories-three-column-layout">
-                        <div class="categories-column">
-                            <h4>Categorie Accettate <span id="accepted-count" class="category-column-count">(0)</span></h4>
-                            <div id="categories-accepted-list" class="categories-column-list"></div>
-                        </div>
-                        <div class="categories-column">
-                            <h4>Categorie Nascoste <span id="hidden-count" class="category-column-count">(0)</span></h4>
-                            <div id="categories-hidden-list" class="categories-column-list"></div>
-                        </div>
-                        <div class="categories-column">
-                            <h4>Categorie Blacklistate <span id="blacklisted-count" class="category-column-count">(0)</span></h4>
-                            <div id="categories-blacklisted-list" class="categories-column-list"></div>
-                        </div>
-                    </div>
-                </div>
-                <div class="card">
-                    <h3>Cerca e pulisci archivio</h3>
-                    <p class="tagline">Cerca articoli per parole chiave ed elimina quelli non desiderati.</p>
-                    <div class="rss-cleanup-controls">
-                        <div class="rss-cleanup-search-row">
-                            <input type="text" id="rss-cleanup-search-input" placeholder="Cerca per parole chiave (titolo, sommario, contenuto)..." />
-                            <label class="rss-cleanup-regex-label">
-                                <input type="checkbox" id="rss-cleanup-regex-checkbox" />
-                                Regex
-                            </label>
-                            <select id="rss-cleanup-scope-select">
-                                <option value="all">Tutto</option>
-                                <option value="title">Solo titolo</option>
-                                <option value="summary">Solo sommario</option>
-                                <option value="content">Solo contenuto</option>
-                            </select>
-                        </div>
-                        <div class="rss-cleanup-buttons-row">
-                            <div class="rss-cleanup-buttons-left">
-                                <button type="button" class="btn" id="rss-cleanup-search-btn">Cerca</button>
-                                <button type="button" class="btn light" id="rss-cleanup-clear-btn">Cancella</button>
-                            </div>
-                            <select id="rss-cleanup-limit-select">
-                                <option value="50">50 risultati</option>
-                                <option value="100">100 risultati</option>
-                                <option value="500">500 risultati</option>
-                                <option value="1000">1000 risultati</option>
-                                <option value="999999">Tutti</option>
-                            </select>
-                        </div>
-                        <div class="rss-cleanup-actions-row">
-                            <span id="rss-cleanup-selected-count">0 selezionati</span>
-                            <button type="button" class="btn danger" id="rss-cleanup-delete-btn" disabled>Elimina selezionati</button>
-                        </div>
-                    </div>
-                    <div id="rss-cleanup-results" class="rss-cleanup-results"></div>
-                </div>
-                <div class="card">
-                    <h3>Analizza RSS</h3>
-                    <p class="tagline">Usa questa analisi per capire quali campi restituisce il feed.</p>
-                    <div class="form-grid">
-                        <div>
-                            <label for="rss_test_url">URL feed</label>
-                            <input type="text" id="rss_test_url" name="rss_test_url" placeholder="https://example.com/feed.xml">
-                        </div>
-                        <div class="inline-actions" style="align-items:flex-end;">
-                            <button type="button" class="btn light" id="rss-inspect-btn">Analizza feed</button>
-                        </div>
-                    </div>
-                    <div id="rss-inspect-result" class="rss-inspect-result"></div>
-                </div>
-                <div class="card">
-                    <h3>Analizza JSON esportati</h3>
-                    <p class="tagline">Carica un JSON per vedere la struttura dei campi disponibili.</p>
-                    <div class="form-grid">
-                        <div>
-                            <label for="rss_json_file">File JSON</label>
-                            <input type="file" id="rss_json_file" name="json_file" accept="application/json">
-                        </div>
-                        <div class="inline-actions" style="align-items:flex-end;">
-                            <button type="button" class="btn light" id="rss-json-inspect-btn">Analizza JSON</button>
-                        </div>
-                    </div>
-                    <div id="rss-json-result" class="rss-inspect-result"></div>
-                </div>
             </div>
-        </div>
-    </div>
-    <div class="modal-backdrop is-hidden" id="rss-items-modal" aria-hidden="true">
-        <div class="modal rss-items-modal" role="dialog" aria-modal="true" aria-labelledby="rss-modal-title">
-            <div class="modal-header">
-                <h3 id="rss-modal-title">Archivio RSS</h3>
-                <button type="button" class="modal-close" data-modal-close aria-label="Chiudi">×</button>
-            </div>
-            <div class="modal-body">
-                <div class="rss-search-controls">
-                    <div class="rss-search-input-group">
-                        <input type="text" id="rss-search-input" placeholder="Cerca per parole chiave..." />
-                        <button type="button" class="btn" id="rss-search-btn">Cerca</button>
-                        <button type="button" class="btn light" id="rss-clear-search-btn">Mostra tutti</button>
-                    </div>
-                    <div class="rss-delete-controls">
-                        <span id="rss-selected-count">0 selezionati</span>
-                        <button type="button" class="btn danger" id="rss-delete-btn" disabled>Elimina selezionati</button>
-                    </div>
-                </div>
-                <div class="rss-view-controls">
-                    <div class="rss-view-tabs">
-                        <button type="button" class="btn light is-active" data-rss-view="table">Tabella</button>
-                        <button type="button" class="btn light" data-rss-view="html">HTML</button>
-                    </div>
-                    <div class="rss-view-actions">
-                        <span class="rss-view-range" id="rss-view-range">—</span>
-                        <button type="button" class="btn light" id="rss-prev-btn">Precedenti</button>
-                        <button type="button" class="btn light" id="rss-next-btn">Successivi</button>
-                    </div>
-                </div>
-                <div class="rss-view-content" id="rss-view-content"></div>
-            </div>
+
         </div>
     </div>
     <div id="toast-container"></div>
@@ -1256,10 +1188,6 @@
     <script src="{{ url_for('static', filename='operations_center.js') }}?v=20260720-operation-events"></script>
     <script src="{{ url_for('static', filename='actions.js') }}"></script>
     <script src="{{ url_for('static', filename='script_shell.js') }}?v=20260628-shell"></script>
-    <script src="{{ url_for('static', filename='script_rss_tools.js') }}?v=20260628-rss"></script>
-    <script src="{{ url_for('static', filename='script_rss_view.js') }}?v=20260628-rss"></script>
-    <script src="{{ url_for('static', filename='script_rss_cleanup.js') }}?v=20260628-rss"></script>
-    <script src="{{ url_for('static', filename='script_rss_categories.js') }}?v=20260628-rss"></script>
     <script src="{{ url_for('static', filename='script_results.js') }}?v=20260719-search"></script>
     <script src="{{ url_for('static', filename='script_tmdb_emby.js') }}?v=20260719-search"></script>
     <script src="{{ url_for('static', filename='script_manual_search.js') }}?v=20260719-search"></script>

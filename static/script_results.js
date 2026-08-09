@@ -1,5 +1,5 @@
 (() => {
-        const scriptShared = window.octohubScriptShared || {};
+        const scriptShared = window.octohubsScriptShared || {};
         const {
             getCsrfToken = () => {
                 const el = document.querySelector('meta[name="csrf-token"]');
@@ -338,7 +338,7 @@
             });
             const batchButtons = block.querySelectorAll('.batch-icon-btn');
             batchButtons.forEach(btn => {
-                const batchHandler = window.octohubActions?.handleBatchAction;
+                const batchHandler = window.octohubsActions?.handleBatchAction;
                 if (batchHandler) {
                     btn.addEventListener('click', () => batchHandler(btn.dataset.batchAction, rows, btn));
                 }
@@ -346,8 +346,8 @@
             updateSelectState();
         }
 
-        window.octohubResultsShared = {
-            ...(window.octohubResultsShared || {}),
+        window.octohubsResultsShared = {
+            ...(window.octohubsResultsShared || {}),
             setupResolutionBlock
         };
 

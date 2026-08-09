@@ -159,7 +159,7 @@
     // Load latest data from API
     async function loadLatestData() {
         try {
-            const latestApi = window.octohubLatest || {};
+            const latestApi = window.octohubsLatest || {};
             const limits = typeof latestApi.getLatestFetchLimits === 'function'
                 ? latestApi.getLatestFetchLimits()
                 : { total: 50, perServer: 50 };
@@ -183,8 +183,8 @@
             }
         } catch (error) {
             console.error('Error loading latest data:', error);
-            if (window.octohubUtils && typeof window.octohubUtils.openAlertModal === 'function') {
-                await window.octohubUtils.openAlertModal('Errore', 'Errore nel caricamento dei dati: ' + error.message);
+            if (window.octohubsUtils && typeof window.octohubsUtils.openAlertModal === 'function') {
+                await window.octohubsUtils.openAlertModal('Errore', 'Errore nel caricamento dei dati: ' + error.message);
             } else if (typeof window.showToast === 'function') {
                 window.showToast('Errore nel caricamento dei dati: ' + error.message, 'error');
             } else {
@@ -371,8 +371,8 @@
             displayDiff(baseDiff);
         } catch (error) {
             console.error('Error enriching data:', error);
-            if (window.octohubUtils && typeof window.octohubUtils.openAlertModal === 'function') {
-                await window.octohubUtils.openAlertModal('Errore', 'Errore durante l\'aggiornamento dei dati: ' + error.message);
+            if (window.octohubsUtils && typeof window.octohubsUtils.openAlertModal === 'function') {
+                await window.octohubsUtils.openAlertModal('Errore', 'Errore durante l\'aggiornamento dei dati: ' + error.message);
             } else if (typeof window.showToast === 'function') {
                 window.showToast('Errore durante l\'aggiornamento dei dati: ' + error.message, 'error');
             } else {

@@ -3,7 +3,6 @@ Utility functions for Latest Publications system.
 Provides formatting, validation, and helper functions.
 """
 
-import os
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -284,7 +283,7 @@ def debug_enabled(settings_cfg: Optional[Dict] = None) -> bool:
     Check if debug mode is enabled for Latest Publications.
 
     Checks:
-    1. OCTOHUB_LATEST_DEBUG environment variable
+    1. OCTOHUBS_LATEST_DEBUG environment variable
     2. debug_latest setting in config
 
     Args:
@@ -293,9 +292,10 @@ def debug_enabled(settings_cfg: Optional[Dict] = None) -> bool:
     Returns:
         True if debug mode is enabled
     """
+    from core.env import octohubs_env
     from core.utils import normalize_string
 
-    env_flag = normalize_string(os.getenv("OCTOHUB_LATEST_DEBUG", ""))
+    env_flag = normalize_string(octohubs_env("OCTOHUBS_LATEST_DEBUG"))
     if env_flag in ("1", "true", "yes", "on"):
         return True
 

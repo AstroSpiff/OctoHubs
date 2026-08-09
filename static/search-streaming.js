@@ -4,7 +4,7 @@
  * Gestisce ricerche parallelizzate con aggiornamento risultati in tempo reale.
  */
 
-const __searchStreamingUtils = window.octohubUtils || {};
+const __searchStreamingUtils = window.octohubsUtils || {};
 const __searchStreamingCsrfFetch = __searchStreamingUtils.csrfFetch || ((url, options = {}) => {
     const opts = options || {};
     const headers = new Headers(opts.headers || {});

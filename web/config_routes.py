@@ -17,7 +17,14 @@ from core.config_manager import load_config, _db_enabled
 from core.storage import StorageError
 from core.utils import _split_csv_field, _coerce_request_int
 from emby_actions import _prepare_emby_servers_for_view
+from emby_runtime.event_bridge_manager import get_event_bridge_manager
+from emby_runtime.event_bridge_settings import (
+    event_bridge_settings_for_server,
+    normalize_event_bridge_config,
+    normalize_event_bridge_settings,
+)
 from services.app_settings import _update_app_settings_overrides, _parse_auto_task_payload
+from services.runtime_env import runtime_secret_configured, save_runtime_secret
 from telegram import _default_telegram_settings, _load_telegram_settings, _build_telegram_alerts
 
 router = APIRouter()
@@ -127,6 +134,9 @@ async def configuration_page(request: Request):
 
     requests_refresh_warning = _JELLYSEERR_REFRESH_STATE.get("last_warning")
     requests_refresh_warning_at = _JELLYSEERR_REFRESH_STATE.get("last_warning_at")
+    event_bridge_config = normalize_event_bridge_config((config or {}).get("EVENT_BRIDGE", {}))
+    event_bridge_status = get_event_bridge_manager().status()
+    event_bridge_servers = _event_bridge_servers_for_view(emby_servers, event_bridge_config, event_bridge_status)
 
     return _templates_dep().TemplateResponse(
         request,
@@ -151,10 +161,144 @@ async def configuration_page(request: Request):
             "total_incomplete_count": total_incomplete_count,
             "requests_refresh_warning": requests_refresh_warning,
             "requests_refresh_warning_at": requests_refresh_warning_at,
+            "event_bridge_settings": event_bridge_config["DEFAULT"],
+            "event_bridge_config": event_bridge_config,
+            "event_bridge_servers": event_bridge_servers,
+            "event_bridge_status": event_bridge_status,
+            "webhook_secret_configured": runtime_secret_configured("WEBHOOK_SECRET"),
             "get_flashed_messages": _get_flashed_messages_local,
             "csrf_token": _csrf_token_value,
         },
     )
+
+
+@router.post("/configuration/event-bridge")
+async def update_event_bridge_route(
+    request: Request,
+    next_page: str = Form(None, alias="next"),
+    csrf_token: str = Form(None, alias="csrf_token"),
+):
+    """Update Emby Event Bridge transport settings."""
+    _require_auth_dep(request)
+
+    if not _validate_csrf_dep(request, csrf_token):
+        _flash_dep(request, "CSRF token non valido.", "error")
+        return RedirectResponse(url="/dashboard", status_code=303)
+
+    next_url = _resolve_next_url_dep(next_page, "config")
+    form = await request.form()
+    current_config, _is_valid = load_config()
+    current_bridge = normalize_event_bridge_config((current_config or {}).get("EVENT_BRIDGE", {}))
+    server_ids = _form_list(form, "event_bridge_server_ids")
+    server_settings = {
+        server_id: normalize_event_bridge_settings(_event_bridge_settings_payload(form, f"event_bridge_{server_id}_"))
+        for server_id in server_ids
+    }
+    bridge_config = normalize_event_bridge_config(
+        {
+            "DEFAULT": current_bridge["DEFAULT"],
+            "SERVERS": server_settings,
+        }
+    )
+    webhook_secret = str(form.get("webhook_secret") or "").strip()
+    if webhook_secret:
+        try:
+            save_runtime_secret("WEBHOOK_SECRET", webhook_secret)
+        except (OSError, ValueError) as exc:
+            _flash_dep(request, f"Errore Event Bridge Emby: {exc}", "error")
+            return RedirectResponse(url=next_url, status_code=303)
+
+    try:
+        _save_event_bridge_settings(bridge_config)
+    except StorageError as exc:
+        _flash_dep(request, f"Errore salvataggio Event Bridge: {exc}", "error")
+        return RedirectResponse(url=next_url, status_code=303)
+
+    try:
+        pushed = 0
+        manager = get_event_bridge_manager()
+        connected_ids = {item.get("server_id") for item in manager.status().get("servers", [])}
+        target_ids = set(server_settings) | {str(item or "") for item in connected_ids if item}
+        for server_id in sorted(target_ids):
+            pushed += await manager.push_configuration(
+                server_id,
+                event_bridge_settings_for_server(bridge_config, server_id),
+            )
+    except Exception as exc:
+        _flash_dep(request, f"Event Bridge salvato, push WebSocket non riuscito: {exc}", "warning")
+    else:
+        suffix = f" ({pushed} plugin aggiornati via WebSocket)" if pushed else ""
+        _flash_dep(request, f"Event Bridge aggiornato{suffix}", "success")
+    return RedirectResponse(url=next_url, status_code=303)
+
+
+def _save_event_bridge_settings(settings: dict[str, Any]) -> None:
+    if _config_manager._ACTIVE_CONFIG is not None:
+        _config_manager._ACTIVE_CONFIG["EVENT_BRIDGE"] = settings
+    backend = _config_manager._ensure_db_backend()
+    app_settings = backend.load_app_settings() or {}
+    app_settings["EVENT_BRIDGE"] = settings
+    backend.save_app_settings(app_settings)
+
+
+def _event_bridge_settings_payload(form: Any, prefix: str) -> dict[str, Any]:
+    return {
+        "ENABLED": bool(form.get(prefix + "enabled")),
+        "WEBSOCKET_ENABLED": bool(form.get(prefix + "websocket_enabled")),
+        "HTTP_FALLBACK_ENABLED": bool(form.get(prefix + "http_fallback_enabled")),
+        "WEBSOCKET_RECONNECT_SECONDS": form.get(prefix + "ws_reconnect_seconds"),
+        "CAPTURE_PLAYBACK_EVENTS": bool(form.get(prefix + "capture_playback")),
+        "CAPTURE_SESSION_EVENTS": bool(form.get(prefix + "capture_session")),
+        "CAPTURE_PLUGIN_EVENTS": bool(form.get(prefix + "capture_plugin")),
+        "EVENT_BATCH_INTERVAL_SECONDS": form.get(prefix + "batch_interval_seconds"),
+        "HTTP_TIMEOUT_SECONDS": form.get(prefix + "http_timeout_seconds"),
+        "RETRY_COUNT": form.get(prefix + "retry_count"),
+        "INCLUDE_RAW_PAYLOAD": bool(form.get(prefix + "include_raw_payload")),
+        "PLAYBACK_EVENT_NAMES": form.get(prefix + "playback_event_names"),
+        "SESSION_EVENT_NAMES": form.get(prefix + "session_event_names"),
+        "PLUGIN_EVENT_NAMES": form.get(prefix + "plugin_event_names"),
+    }
+
+
+def _event_bridge_servers_for_view(
+    emby_servers: list[dict[str, Any]],
+    bridge_config: dict[str, Any],
+    event_bridge_status: dict[str, Any],
+) -> list[dict[str, Any]]:
+    status_by_id = {
+        str(item.get("server_id") or ""): item
+        for item in (event_bridge_status or {}).get("servers", [])
+        if isinstance(item, dict)
+    }
+    items: list[dict[str, Any]] = []
+    for server in emby_servers or []:
+        server_id = str(server.get("id") or server.get("server_id") or "").strip()
+        if not server_id:
+            continue
+        name = server.get("alias") or server.get("original_name") or server.get("name") or server_id
+        settings = event_bridge_settings_for_server(bridge_config, server_id)
+        items.append(
+            {
+                "id": server_id,
+                "name": name,
+                "icon": server.get("icon") or "fa-server",
+                "icon_color": server.get("icon_color") or "#3b82f6",
+                "settings": settings,
+                "status": status_by_id.get(server_id),
+            }
+        )
+    return items
+
+
+def _form_list(form: Any, name: str) -> list[str]:
+    getter = getattr(form, "getlist", None)
+    values = getter(name) if callable(getter) else [form.get(name)]
+    result: list[str] = []
+    for value in values or []:
+        text = str(value or "").strip()
+        if text:
+            result.append(text)
+    return result
 
 
 @router.post("/update-scheduler")
@@ -163,7 +307,7 @@ async def update_scheduler_route(
     next_page: str = Form(None, alias="next"),
     csrf_token: str = Form(None, alias="csrf_token"),
 ):
-    """Update scheduler automation settings (scan, refresh, workflow, collections)."""
+    """Update scheduler automation settings."""
     _require_auth_dep(request)
 
     if not _validate_csrf_dep(request, csrf_token):
@@ -217,16 +361,6 @@ async def update_scheduler_route(
         "sync",
         current.get("sync", defaults.get("sync", {"enabled": False, "mode": "interval", "interval_minutes": 60, "times": []})),
     )
-    updated["rss"] = _parse_auto_section(
-        "rss",
-        current.get("rss", defaults.get("rss", {"enabled": False, "mode": "interval", "interval_minutes": 30, "times": []})),
-    )
-
-    rss_import_config = config.get("RSS_IMPORT") or {}
-    if updated["rss"].get("enabled") != rss_import_config.get("ENABLED"):
-        rss_import_config["ENABLED"] = updated["rss"].get("enabled", False)
-        config["RSS_IMPORT"] = rss_import_config
-
     collections_enabled = form_data.get("collections_auto_refresh_enabled")
     collections_mode = form_data.get("collections_auto_refresh_mode") or "interval"
     collections_interval_raw = form_data.get("collections_auto_refresh_interval")
@@ -249,7 +383,6 @@ async def update_scheduler_route(
         _update_app_settings_overrides({
             "AUTO_TASKS": updated,
             "COLLECTIONS": collections_payload,
-            "RSS_IMPORT": rss_import_config,
         })
     except StorageError as exc:
         _flash_dep(request, f"Errore salvataggio automazioni: {exc}", "error")
@@ -259,10 +392,8 @@ async def update_scheduler_route(
         _config_manager._ACTIVE_CONFIG = copy.deepcopy(CONFIG_DEFAULTS)
     _config_manager._ACTIVE_CONFIG["AUTO_TASKS"] = updated
     _config_manager._ACTIVE_CONFIG["COLLECTIONS"] = collections_payload
-    _config_manager._ACTIVE_CONFIG["RSS_IMPORT"] = rss_import_config
     config["AUTO_TASKS"] = updated
     config["COLLECTIONS"] = collections_payload
-    config["RSS_IMPORT"] = rss_import_config
 
     sync_auto_scheduler(is_valid)
 

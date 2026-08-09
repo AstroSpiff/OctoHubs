@@ -742,6 +742,37 @@
             gap: 0.35rem;
             margin-bottom: 0.75rem;
         }
+        .probe-parallel-control {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        .probe-parallel-options {
+            display: inline-flex;
+            gap: 0.35rem;
+            flex-wrap: wrap;
+        }
+        .probe-parallel-btn {
+            min-width: 3rem;
+            padding: 0.45rem 0.7rem;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            background: #fff;
+            color: #1f2937;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .probe-parallel-btn.active {
+            border-color: #2563eb;
+            background: #2563eb;
+            color: #fff;
+        }
+        .probe-parallel-btn:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
 
         /* Button Sizes */
         .btn.small {
@@ -1317,7 +1348,27 @@
                     Le modifiche si applicano dal prossimo scan.
                 </div>
 
-                <div style="display: grid; gap: 1.5rem; max-width: 800px;">
+                    <div style="display: grid; gap: 1.5rem; max-width: 800px;">
+                    <div style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1.5rem;">
+                        <h4 style="margin: 0 0 1rem 0; color: #1f2937; font-size: 1.1rem;">Parallelismo Probe</h4>
+                        <div class="probe-parallel-control">
+                            <label style="font-weight: 500; color: #374151;">Slot simultanei per server</label>
+                            <div class="probe-parallel-options" data-config-probe-parallelism data-value="1">
+                                <button type="button" class="probe-parallel-btn active" data-probe-parallelism-value="1" title="Un file alla volta">1x</button>
+                                <button type="button" class="probe-parallel-btn" data-probe-parallelism-value="2" title="Due file alla volta">2x</button>
+                                <button type="button" class="probe-parallel-btn" data-probe-parallelism-value="3" title="Tre file alla volta">3x</button>
+                                <button type="button" class="probe-parallel-btn" data-probe-parallelism-value="4" title="Quattro file alla volta">4x</button>
+                                <button type="button" class="probe-parallel-btn" data-probe-parallelism-value="5" title="Cinque file alla volta">5x</button>
+                                <button type="button" class="probe-parallel-btn" data-probe-parallelism-value="6" title="Sei file alla volta">6x</button>
+                                <button type="button" class="probe-parallel-btn" data-probe-parallelism-value="7" title="Sette file alla volta">7x</button>
+                                <button type="button" class="probe-parallel-btn" data-probe-parallelism-value="8" title="Otto file alla volta">8x</button>
+                            </div>
+                        </div>
+                        <small style="color: #6b7280; display: block; margin-top: 0.75rem;">
+                            Default: 1x. Si applica alla prossima Analisi, sia Librerie sia Ultimi aggiunti.
+                        </small>
+                    </div>
+
                     <!-- Sliding Window Parameters -->
                     <div style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 1.5rem;">
                         <h4 style="margin: 0 0 1rem 0; color: #1f2937; font-size: 1.1rem;">Parametri Finestra Scorrevole</h4>
@@ -1481,7 +1532,8 @@
             window_threshold: 0.90,
             max_days: 60,
             max_items: 2000,
-            safety_margin_days: 7
+            safety_margin_days: 7,
+            probe_parallelism: 1
         };
         const comboHistoryState = {
             libraries: {},
@@ -1865,8 +1917,22 @@
                 windowThreshold: document.querySelector('[data-config-window-threshold]'),
                 safetyMargin: document.querySelector('[data-config-safety-margin]'),
                 maxDays: document.querySelector('[data-config-max-days]'),
-                maxItems: document.querySelector('[data-config-max-items]')
+                maxItems: document.querySelector('[data-config-max-items]'),
+                probeParallelism: document.querySelector('[data-config-probe-parallelism]')
             };
+        }
+
+        function setProbeParallelism(value) {
+            const inputs = getRecentConfigInputs();
+            const container = inputs.probeParallelism;
+            if (!container) {
+                return;
+            }
+            const numeric = Math.max(1, Math.min(8, parseInt(value, 10) || recentConfigDefaults.probe_parallelism));
+            container.dataset.value = String(numeric);
+            container.querySelectorAll('[data-probe-parallelism-value]').forEach(button => {
+                button.classList.toggle('active', parseInt(button.dataset.probeParallelismValue, 10) === numeric);
+            });
         }
 
         function setRecentConfigInputs(config) {
@@ -1889,6 +1955,7 @@
             if (inputs.maxItems) {
                 inputs.maxItems.value = merged.max_items;
             }
+            setProbeParallelism(merged.probe_parallelism);
         }
 
         function readRecentConfigInputs() {
@@ -1898,13 +1965,15 @@
             const safetyMargin = parseInt(inputs.safetyMargin?.value || '', 10);
             const maxDays = parseInt(inputs.maxDays?.value || '', 10);
             const maxItems = parseInt(inputs.maxItems?.value || '', 10);
+            const probeParallelism = parseInt(inputs.probeParallelism?.dataset.value || '', 10);
 
             return {
                 window_size: Number.isNaN(windowSize) ? recentConfigDefaults.window_size : windowSize,
                 window_threshold: Number.isNaN(windowThreshold) ? recentConfigDefaults.window_threshold * 100 : windowThreshold,
                 safety_margin_days: Number.isNaN(safetyMargin) ? recentConfigDefaults.safety_margin_days : safetyMargin,
                 max_days: Number.isNaN(maxDays) ? recentConfigDefaults.max_days : maxDays,
-                max_items: Number.isNaN(maxItems) ? recentConfigDefaults.max_items : maxItems
+                max_items: Number.isNaN(maxItems) ? recentConfigDefaults.max_items : maxItems,
+                probe_parallelism: Number.isNaN(probeParallelism) ? recentConfigDefaults.probe_parallelism : probeParallelism
             };
         }
 
@@ -1912,7 +1981,12 @@
             const inputs = getRecentConfigInputs();
             Object.values(inputs).forEach(input => {
                 if (input) {
-                    input.disabled = disabled;
+                    if ('disabled' in input) {
+                        input.disabled = disabled;
+                    }
+                    input.querySelectorAll?.('button').forEach(button => {
+                        button.disabled = disabled;
+                    });
                 }
             });
             const saveButton = document.querySelector('[data-recent-config-save]');
@@ -2974,6 +3048,14 @@
             });
             bindClick('[data-recent-config-reset]', () => {
                 resetRecentConfig();
+            });
+            document.querySelectorAll('[data-probe-parallelism-value]').forEach(button => {
+                button.addEventListener('click', () => {
+                    if (button.disabled) {
+                        return;
+                    }
+                    setProbeParallelism(button.dataset.probeParallelismValue);
+                });
             });
 
             // Processing controls

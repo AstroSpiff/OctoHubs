@@ -674,7 +674,7 @@ def _resolve_trakt_identifier(trakt_id, media_type, client_id, access_token=None
         "trakt-api-key": client_id,
         "Content-Type": "application/json",
         "Accept": "application/json",
-        "User-Agent": "OctoHub/1.0 (+https://github.com/roy/octohub)",
+        "User-Agent": "OctoHubs/1.0 (+https://github.com/AstroSpiff/OctoHubs)",
     }
     if access_token:
         headers["Authorization"] = f"Bearer {access_token}"
@@ -730,7 +730,7 @@ def _fetch_trakt_rating(trakt_id, media_type, client_id, access_token=None, tmdb
         "trakt-api-key": client_id,
         "Content-Type": "application/json",
         "Accept": "application/json",
-        "User-Agent": "OctoHub/1.0 (+https://github.com/roy/octohub)",
+        "User-Agent": "OctoHubs/1.0 (+https://github.com/AstroSpiff/OctoHubs)",
     }
     if access_token:
         headers["Authorization"] = f"Bearer {access_token}"

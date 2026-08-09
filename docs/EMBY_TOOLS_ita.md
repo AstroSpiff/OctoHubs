@@ -4,10 +4,10 @@ Documenti: [README](../README_ita.md) | [Docker Deploy](DOCKER_DEPLOY_ita.md) | 
 
 # Strumenti Emby
 
-Questo documento copre gli strumenti legati a Emby in OctoHub.
+Questo documento copre gli strumenti legati a Emby in OctoHubs.
 
 ## Collezioni Emby
-OctoHub supporta la gestione automatizzata delle collezioni Emby tramite integrazione con liste esterne:
+OctoHubs supporta la gestione automatizzata delle collezioni Emby tramite integrazione con liste esterne:
 - **MDBList**: Importa collezioni da liste MDBList pubbliche o private
 - **Trakt**: Sincronizza collezioni da liste Trakt
 - **TMDB**: Importa collezioni da liste e collezioni TMDB
@@ -43,7 +43,7 @@ STRM Extract e un task Emby che ricostruisce o aggiorna file STRM.
 
 Come funziona:
 - Puoi avviarlo manualmente dalla dashboard Emby.
-- Se un server ha `strm_task_id`, OctoHub lo usa per il task.
+- Se un server ha `strm_task_id`, OctoHubs lo usa per il task.
 
 ## STRM Guard
 STRM Guard avvia STRM Extract solo quando il server non ha stream attivi.

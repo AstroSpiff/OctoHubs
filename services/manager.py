@@ -8,51 +8,39 @@ from typing import Any, Dict
 import requests
 
 from core.config import CONFIG_FILE, _merge_database_settings, _merge_trakt_settings
+from core.env import env_first, octohubs_env, octohubs_secret
 from core.storage import DatabaseStorage, StorageError
 from core.utils import json_error
 
 
 def _read_env_secret(key: str) -> str:
-    file_key = f"{key}_FILE"
-    file_path = os.environ.get(file_key)
-    if file_path:
-        try:
-            with open(file_path, "r") as handle:
-                value = handle.read().strip()
-            if value:
-                return value
-        except OSError:
-            pass
-    value = os.environ.get(key)
-    if isinstance(value, str):
-        value = value.strip()
-    return value or ""
+    return octohubs_secret(key)
 
 
 def _apply_db_env_overrides(db_settings: Dict[str, Any]) -> Dict[str, Any]:
     overrides: Dict[str, Any] = {}
-    env_url = os.environ.get("OCTOHUB_DB_URL") or os.environ.get("DATABASE_URL")
+    env_url = octohubs_env("OCTOHUBS_DB_URL") or env_first(("DATABASE_URL",))
     if env_url:
         overrides["URL"] = env_url
-    env_driver = os.environ.get("OCTOHUB_DB_DRIVER")
+    env_driver = octohubs_env("OCTOHUBS_DB_DRIVER")
     if env_driver:
         overrides["DRIVER"] = env_driver.strip()
-    env_host = os.environ.get("OCTOHUB_DB_HOST")
+    env_host = octohubs_env("OCTOHUBS_DB_HOST")
     if env_host:
         overrides["HOST"] = env_host.strip()
-    env_port = os.environ.get("OCTOHUB_DB_PORT")
+    env_port = octohubs_env("OCTOHUBS_DB_PORT")
     if env_port:
         overrides["PORT"] = env_port.strip()
-    env_name = os.environ.get("OCTOHUB_DB_NAME")
+    env_name = octohubs_env("OCTOHUBS_DB_NAME")
     if env_name:
         overrides["NAME"] = env_name.strip()
-    env_user = os.environ.get("OCTOHUB_DB_USER")
+    env_user = octohubs_env("OCTOHUBS_DB_USER")
     if env_user:
         overrides["USER"] = env_user.strip()
-    env_password = _read_env_secret("OCTOHUB_DB_PASSWORD")
+    env_password = _read_env_secret("OCTOHUBS_DB_PASSWORD")
     if env_password:
         overrides["PASSWORD"] = env_password
-    env_params = os.environ.get("OCTOHUB_DB_PARAMS")
+    env_params = octohubs_env("OCTOHUBS_DB_PARAMS")
     if env_params:
         overrides["PARAMS"] = env_params.strip()
 
@@ -130,12 +118,6 @@ def _seed_db_from_legacy_config(legacy_config: Dict[str, Any], backend: Database
         from core.config import _normalize_auto_settings
 
         _set_if_missing("AUTO_TASKS", _normalize_auto_settings(legacy_auto))
-
-    legacy_rss = legacy_config.get("RSS_IMPORT")
-    if isinstance(legacy_rss, dict):
-        from core.config import _merge_rss_import_settings
-
-        _set_if_missing("RSS_IMPORT", _merge_rss_import_settings(legacy_rss))
 
     legacy_collections = legacy_config.get("COLLECTIONS")
     if isinstance(legacy_collections, dict):

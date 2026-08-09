@@ -90,6 +90,6 @@ class SearchFrontendTests(unittest.TestCase):
         self.assertIn("let requestsRefreshInFlight = false;", source)
         self.assertIn("if (requestsRefreshInFlight)", source)
         self.assertIn("'/api/refresh-requests?background=1'", source)
-        self.assertIn("window.octohubOperations?.notifyStarted?.();", source)
+        self.assertIn("window.octohubsOperations?.notifyStarted?.();", source)
         self.assertIn("throw new Error(data.message || 'Errore durante l\\'aggiornamento');", source)
         self.assertIn("const message = err.message || 'Errore durante l\\'aggiornamento';", source)

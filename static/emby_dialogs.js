@@ -1,5 +1,5 @@
 (() => {
-    const { ensureNextInForms } = window.octohubUtils;
+    const { ensureNextInForms } = window.octohubsUtils;
 
     const showConfirmDialog = (message) => {
         return new Promise((resolve) => {

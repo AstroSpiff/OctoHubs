@@ -66,7 +66,7 @@
 
 **Interfaces:**
 - Consumes: `/api/operations`, `/api/operations/clear-completed`, `/api/workflow/start`, `/api/workflow/stop`.
-- Produces: `window.octohubOperations` plus `window.embyUsersOperations` compatibility alias.
+- Produces: `window.octohubsOperations` plus `window.embyUsersOperations` compatibility alias.
 
 - [ ] **Step 1: Replace user-only operations JS** with a global operations center that renders user and workflow operations.
 - [ ] **Step 2: Add workflow start controls** that open/refresh the global center instead of the old workflow offcanvas.

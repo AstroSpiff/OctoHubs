@@ -1,5 +1,5 @@
 """
-Command-line entrypoint for OctoHub.
+Command-line entrypoint for OctoHubs.
 """
 
 import argparse
@@ -15,7 +15,7 @@ def _print_fastapi_start_hint(port: int = 8000) -> None:
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="OctoHub")
+    parser = argparse.ArgumentParser(description="OctoHubs")
     parser.add_argument(
         "--web",
         action="store_true",

@@ -1,4 +1,4 @@
-"""SQLAlchemy models for OctoHub storage."""
+"""SQLAlchemy models for OctoHubs storage."""
 
 from __future__ import annotations
 
@@ -402,36 +402,6 @@ if SQLALCHEMY_AVAILABLE:
         providers = Column(JSON)  # type: ignore[assignment]
         last_checked = Column(DateTime, default=_utcnow, nullable=False, index=True)  # type: ignore[assignment]
 
-    class RssItem(Base):  # type: ignore[valid-type,misc]
-        __tablename__ = "rss_items"
-        id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
-        source_name = Column(String(200))  # type: ignore[assignment]
-        source_url = Column(String(1000))  # type: ignore[assignment]
-        source_tags = Column(JSON)  # type: ignore[assignment]
-        title = Column(String(1000))  # type: ignore[assignment]
-        link = Column(String(2000))  # type: ignore[assignment]
-        guid = Column(String(1000))  # type: ignore[assignment]
-        author = Column(String(500))  # type: ignore[assignment]
-        summary = Column(Text)  # type: ignore[assignment]
-        content = Column(Text)  # type: ignore[assignment]
-        categories = Column(ARRAY(String))  # type: ignore[assignment]
-        published_at = Column(DateTime)  # type: ignore[assignment]
-        updated_at = Column(DateTime)  # type: ignore[assignment]
-        ingested_at = Column(DateTime, default=_utcnow, nullable=False, index=True)  # type: ignore[assignment]
-        extra = Column(JSON)  # type: ignore[assignment]
-
-    class CategoryBlacklist(Base):  # type: ignore[valid-type,misc]
-        __tablename__ = "category_blacklist"
-        id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
-        category_name = Column(String(200), index=True)  # type: ignore[assignment]
-        added_at = Column(DateTime, default=_utcnow, nullable=False)  # type: ignore[assignment]
-
-    class CategoryHidden(Base):  # type: ignore[valid-type,misc]
-        __tablename__ = "category_hidden"
-        id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
-        category_name = Column(String(200), index=True)  # type: ignore[assignment]
-        added_at = Column(DateTime, default=_utcnow, nullable=False)  # type: ignore[assignment]
-
     class EmbyProbeRecentScan(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "emby_probe_recent_scans"
         id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
@@ -530,7 +500,7 @@ if SQLALCHEMY_AVAILABLE:
 
 else:
     _PLACEHOLDER = object
-    AppSettings = EmbyLatestCacheMeta = EmbyLatestCacheItem = JellyseerrRequest = EmbyLatestCacheChange = EmbyLatestCacheError = EmbyImageCache = EmbyLatestStateMovie = EmbyLatestStateSeries = EmbyLatestStateEpisode = EmbyLatestStateSeriesGroup = EmbyLatestStateSeriesChange = EmbyCollectionDefinition = EmbyCollectionPoster = EmbyCollectionBackdrop = RequestRuleEntry = ScanResultEntry = RequestCacheEntry = EmbyLatestProgress = LibraryAssociation = LibraryGroupOrder = TabOrder = EmbyProbeBlacklist = EmbyProbeQueue = EmbyProbeHistory = JustWatchCache = RssItem = CategoryBlacklist = CategoryHidden = EmbyProbeRecentScan = KeyValueEntry = EmbyUserLink = EmbyUserBackup = EmbyIconProfile = EmbyIconRule = EmbyIconBinding = EmbyGroupPassword = WorkflowExecution = ManualSearchHistory = WorkflowStep = _PLACEHOLDER  # type: ignore[assignment]
+    AppSettings = EmbyLatestCacheMeta = EmbyLatestCacheItem = JellyseerrRequest = EmbyLatestCacheChange = EmbyLatestCacheError = EmbyImageCache = EmbyLatestStateMovie = EmbyLatestStateSeries = EmbyLatestStateEpisode = EmbyLatestStateSeriesGroup = EmbyLatestStateSeriesChange = EmbyCollectionDefinition = EmbyCollectionPoster = EmbyCollectionBackdrop = RequestRuleEntry = ScanResultEntry = RequestCacheEntry = EmbyLatestProgress = LibraryAssociation = LibraryGroupOrder = TabOrder = EmbyProbeBlacklist = EmbyProbeQueue = EmbyProbeHistory = JustWatchCache = EmbyProbeRecentScan = KeyValueEntry = EmbyUserLink = EmbyUserBackup = EmbyIconProfile = EmbyIconRule = EmbyIconBinding = EmbyGroupPassword = WorkflowExecution = ManualSearchHistory = WorkflowStep = _PLACEHOLDER  # type: ignore[assignment]
 
 
 __all__ = [
@@ -569,9 +539,6 @@ __all__ = [
     "EmbyProbeQueue",
     "EmbyProbeHistory",
     "JustWatchCache",
-    "RssItem",
-    "CategoryBlacklist",
-    "CategoryHidden",
     "EmbyProbeRecentScan",
     "KeyValueEntry",
     "EmbyUserLink",

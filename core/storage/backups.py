@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, Optional
 
 from sqlalchemy.engine import make_url
 
+from core.env import octohubs_env
 from core.storage.storage_errors import StorageError
 from core.storage.storage_utils import _build_connection_url
 
@@ -29,17 +30,17 @@ def _safe_filename_part(value: Any, fallback: str) -> str:
 
 
 def _backup_root(backup_root: Optional[Path | str]) -> Path:
-    configured = backup_root or os.environ.get("OCTOHUB_DB_BACKUP_DIR") or "backups/db"
+    configured = backup_root or octohubs_env("OCTOHUBS_DB_BACKUP_DIR", "backups/db")
     return Path(configured)
 
 
 def _find_pg_dump() -> str:
-    configured = os.environ.get("OCTOHUB_PG_DUMP")
+    configured = octohubs_env("OCTOHUBS_PG_DUMP")
     if configured:
         candidate = Path(configured)
         if candidate.exists() and os.access(candidate, os.X_OK):
             return str(candidate)
-        raise StorageError(f"Backup PostgreSQL fallito: OCTOHUB_PG_DUMP non eseguibile ({configured})")
+        raise StorageError(f"Backup PostgreSQL fallito: OCTOHUBS_PG_DUMP non eseguibile ({configured})")
 
     discovered = shutil.which("pg_dump")
     if discovered:
@@ -63,7 +64,7 @@ def _find_pg_dump() -> str:
 
     raise StorageError(
         "Backup PostgreSQL fallito: pg_dump non trovato. Installa il client PostgreSQL "
-        "oppure imposta OCTOHUB_PG_DUMP con il percorso di pg_dump."
+        "oppure imposta OCTOHUBS_PG_DUMP con il percorso di pg_dump."
     )
 
 

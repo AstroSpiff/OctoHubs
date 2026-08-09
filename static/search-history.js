@@ -5,7 +5,7 @@
  * delle ricerche automatiche (scan results).
  */
 
-const __searchHistoryUtils = window.octohubUtils || {};
+const __searchHistoryUtils = window.octohubsUtils || {};
 const __searchHistoryCsrfFetch = __searchHistoryUtils.csrfFetch || ((url, options = {}) => {
     const opts = options || {};
     const headers = new Headers(opts.headers || {});
@@ -241,8 +241,8 @@ class SearchHistoryManager {
     }
 
     confirmAction(message, title = 'Conferma') {
-        if (window.octohubUtils && typeof window.octohubUtils.openConfirmModal === 'function') {
-            return window.octohubUtils.openConfirmModal(title, message);
+        if (window.octohubsUtils && typeof window.octohubsUtils.openConfirmModal === 'function') {
+            return window.octohubsUtils.openConfirmModal(title, message);
         }
         const fallbackMsg = message || 'Modale non disponibile: azione annullata.';
         if (typeof window.showToast === 'function') {

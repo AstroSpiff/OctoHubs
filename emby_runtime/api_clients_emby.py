@@ -335,16 +335,24 @@ def _fetch_emby_active_sessions(server):
         audio_stream = _pick_stream(streams, "Audio", default_only=True) or _pick_stream(streams, "Audio")
         container_stream = _pick_stream(streams, "Video")
         video_label = ""
+        video_width = None
+        video_height = None
+        video_codec = ""
         if video_stream:
             width = video_stream.get("Width")
             height = video_stream.get("Height")
             codec = video_stream.get("Codec") or ""
+            video_width = width if isinstance(width, int) else None
+            video_height = height if isinstance(height, int) else None
+            video_codec = codec
             if width and height:
                 video_label = f"{height}p {codec}".strip()
             else:
                 video_label = f"{codec}".strip()
         audio_label = ""
+        audio_codec = ""
         if audio_stream:
+            audio_codec = audio_stream.get("Codec") or ""
             audio_label = audio_stream.get("DisplayTitle") or audio_stream.get("Codec") or ""
         stream_container = now_playing.get("Container") or ""
         if container_stream and container_stream.get("Container"):
@@ -367,6 +375,22 @@ def _fetch_emby_active_sessions(server):
             transcode_percent = None
         sessions.append({
             "session_id": entry.get("Id") or "",
+            "play_session_id": (
+                entry.get("PlaySessionId")
+                or play_state.get("PlaySessionId")
+                or transcoding.get("PlaySessionId")
+                or ""
+            ),
+            "media_source_id": (
+                now_playing.get("MediaSourceId")
+                or play_state.get("MediaSourceId")
+                or transcoding.get("MediaSourceId")
+                or ""
+            ),
+            "audio_stream_index": play_state.get("AudioStreamIndex"),
+            "subtitle_stream_index": play_state.get("SubtitleStreamIndex"),
+            "playback_event_name": play_state.get("EventName") or entry.get("EventName") or "",
+            "item_id": now_playing.get("Id") or "",
             "media_type": media_type,
             "series_name": series_name,
             "season_number": season,
@@ -378,6 +402,7 @@ def _fetch_emby_active_sessions(server):
             "transcode_percent": transcode_percent,
             "user": user,
             "device": device,
+            "device_id": entry.get("DeviceId") or "",
             "client": client,
             "ip": remote_ip,
             "protocol": protocol,
@@ -387,7 +412,11 @@ def _fetch_emby_active_sessions(server):
             "video_mode": video_mode,
             "audio_mode": audio_mode,
             "video_label": video_label,
+            "video_width": video_width,
+            "video_height": video_height,
+            "video_codec": video_codec,
             "audio_label": audio_label,
+            "audio_codec": audio_codec,
             "container": container,
             "stream_container": stream_container,
             "bitrate": bitrate,
@@ -490,6 +519,36 @@ def _stop_emby_task(server: Dict[str, Any], task_id: str):
             return success, payload
         last_payload = payload
     return False, last_payload
+
+
+def _send_emby_session_message(
+    server: Dict[str, Any],
+    session_id: str,
+    header: str,
+    text: str,
+    timeout_ms: Optional[int] = 45000,
+):
+    if not session_id:
+        return False, "ID sessione mancante"
+    params = {
+        "Header": header or "OctoHubs",
+        "Text": text or "",
+    }
+    if timeout_ms is not None:
+        params["TimeoutMs"] = max(1000, int(timeout_ms or 45000))
+    return _call_emby_api(server, f"Sessions/{session_id}/Message", method="POST", params=params)
+
+
+def _stop_emby_playback_session(server: Dict[str, Any], session_id: str):
+    if not session_id:
+        return False, "ID sessione mancante"
+    return _call_emby_api(server, f"Sessions/{session_id}/Playing/Stop", method="POST")
+
+
+def _pause_emby_playback_session(server: Dict[str, Any], session_id: str):
+    if not session_id:
+        return False, "ID sessione mancante"
+    return _call_emby_api(server, f"Sessions/{session_id}/Playing/Pause", method="POST")
 
 
 def _run_emby_scheduled_task(server, task_id):

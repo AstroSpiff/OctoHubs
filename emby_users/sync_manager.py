@@ -74,7 +74,7 @@ class SyncManager:
         Copies Configuration and Policy from source to targets.
         target_tuples: list of (server_id, user_id)
 
-        Server-specific library IDs are remapped through OctoHub associations;
+        Server-specific library IDs are remapped through OctoHubs associations;
         unrelated protected fields remain excluded from the copy.
         """
         source_server = self._get_server_by_id(source_server_id)

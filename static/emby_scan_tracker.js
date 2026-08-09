@@ -1,10 +1,10 @@
 (() => {
-    const { csrfFetch } = window.octohubUtils;
+    const { csrfFetch } = window.octohubsUtils;
 
     const groupTotals = new Map();
     let groupedLibrariesCache = [];
     const groupPassiveState = new Map();
-    const GROUP_PASSIVE_STORAGE_KEY = 'octohub_group_scan_state_v1';
+    const GROUP_PASSIVE_STORAGE_KEY = 'octohubs_group_scan_state_v1';
 
     const buildGroupKey = (groupName, collectionType = '') => `${collectionType || ''}::${groupName || ''}`;
 
@@ -686,7 +686,7 @@
     };
     window.ScanTracker = ScanTracker;
 
-    window.octohubScanTracker = {
+    window.octohubsScanTracker = {
         ScanTracker,
         groupTotals,
         groupPassiveState,

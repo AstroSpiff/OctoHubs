@@ -63,7 +63,7 @@ function buildFeatureAccessField(featureItems) {
         type: 'feature_access',
         group: 'Accesso alle funzionalità',
         options: featureItems,
-        description: 'Interruttore acceso = funzione consentita. Se lo spegni, OctoHub salva il relativo ID in RestrictedFeatures.'
+        description: 'Interruttore acceso = funzione consentita. Se lo spegni, OctoHubs salva il relativo ID in RestrictedFeatures.'
     };
 }
 

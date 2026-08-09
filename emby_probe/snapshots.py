@@ -37,7 +37,8 @@ _RECENT_PROBE_CONFIG_DEFAULTS = {
     "window_threshold": 0.90,
     "max_days": 60,
     "max_items": 2000,
-    "safety_margin_days": 7
+    "safety_margin_days": 7,
+    "probe_parallelism": 1
 }
 
 
@@ -64,7 +65,8 @@ def _normalize_recent_probe_config(payload: Dict[str, Any]) -> Dict[str, Any]:
         "window_threshold": _parse_recent_window_threshold(payload.get("window_threshold"), defaults["window_threshold"]),
         "max_days": _coerce_request_int(payload.get("max_days"), defaults["max_days"], 7, 365),
         "max_items": _coerce_request_int(payload.get("max_items"), defaults["max_items"], 500, 10000),
-        "safety_margin_days": _coerce_request_int(payload.get("safety_margin_days"), defaults["safety_margin_days"], 1, 30)
+        "safety_margin_days": _coerce_request_int(payload.get("safety_margin_days"), defaults["safety_margin_days"], 1, 30),
+        "probe_parallelism": _coerce_request_int(payload.get("probe_parallelism"), defaults["probe_parallelism"], 1, 8)
     }
 
 

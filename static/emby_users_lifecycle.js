@@ -46,11 +46,11 @@ function ensureCreateUserModal() {
                 <select id="create-user-preset" class="form-select">
                     <option value="">Default Emby</option>
                 </select>
-                <div class="form-help">Default Emby non applica patch da OctoHub. Un preset viene applicato dopo la creazione.</div>
+                <div class="form-help">Default Emby non applica patch da OctoHubs. Un preset viene applicato dopo la creazione.</div>
             </div>
             <label class="checkbox-row" style="cursor:pointer;">
                 <input type="checkbox" id="create-user-link-group" checked>
-                <span>Associa in un gruppo OctoHub se creato su più server</span>
+                <span>Associa in un gruppo OctoHubs se creato su più server</span>
             </label>
             <div id="create-user-error" class="alert error" style="display:none; font-size:0.85rem;"></div>
         </div>

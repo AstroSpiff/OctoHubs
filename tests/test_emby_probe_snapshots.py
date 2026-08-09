@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -32,6 +33,7 @@ class _Backend:
             "max_days": 1,
             "max_items": 99999,
             "safety_margin_days": 0,
+            "probe_parallelism": 99,
         }
 
     def save_recent_scan_config(self, server_id, config):
@@ -120,6 +122,13 @@ class _ProbeManager:
 
 
 class EmbyProbeSnapshotTests(unittest.TestCase):
+    def test_probe_parallelism_ui_exposes_values_up_to_8x(self):
+        template = Path("templates/emby_probe.html").read_text(encoding="utf-8")
+        values = []
+        for marker in template.split("data-probe-parallelism-value=\"")[1:]:
+            values.append(marker.split("\"", 1)[0])
+        self.assertEqual([str(value) for value in range(1, 9)], values)
+
     def test_recent_config_get_and_save_normalize_values(self):
         backend = _Backend()
         with patch("emby_probe.snapshots.load_config", return_value=(_config(), True)), patch(
@@ -135,6 +144,7 @@ class EmbyProbeSnapshotTests(unittest.TestCase):
                     "max_days": 7,
                     "max_items": 10000,
                     "safety_margin_days": 1,
+                    "probe_parallelism": 8,
                 },
                 payload["config"],
             )
@@ -147,11 +157,13 @@ class EmbyProbeSnapshotTests(unittest.TestCase):
                     "max_days": 30,
                     "max_items": 1500,
                     "safety_margin_days": 3,
+                    "probe_parallelism": 4,
                 },
             })
 
         self.assertEqual(200, status)
         self.assertEqual(0.87, payload["config"]["window_threshold"])
+        self.assertEqual(4, payload["config"]["probe_parallelism"])
         self.assertEqual(payload["config"], backend.saved_config)
 
     def test_recent_start_all_filters_enabled_servers_and_coerces_limit(self):

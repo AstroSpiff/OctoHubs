@@ -1,13 +1,14 @@
-"""Versioned database migration orchestration for OctoHub storage."""
+"""Versioned database migration orchestration for OctoHubs storage."""
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, List, Optional
 
 from core.storage.storage_errors import StorageError
-from core.storage.storage_models import SQLAlchemyError, text
+from core.storage.storage_models import SQLAlchemyError, AppSettings, text
 
 MigrationCallable = Callable[[Any, str], None]
 
@@ -34,6 +35,12 @@ class MigrationStatus:
 
 MigrationBackupCallable = Callable[[MigrationStatus, List[Migration]], dict[str, Any]]
 BeforeApplyCallable = Callable[[], None]
+
+REMOVED_RSS_TABLES = (
+    "rss_items",
+    "category_blacklist",
+    "category_hidden",
+)
 
 
 def _is_postgresql(url: str) -> bool:
@@ -290,6 +297,58 @@ def apply_manual_search_history_schema(conn: Any, url: str) -> None:
     )
 
 
+def _without_removed_rss_settings(data: Any) -> tuple[Any, bool]:
+    if not isinstance(data, dict):
+        return data, False
+
+    cleaned = copy.deepcopy(data)
+    changed = False
+
+    if "RSS_IMPORT" in cleaned:
+        cleaned.pop("RSS_IMPORT", None)
+        changed = True
+
+    auto_tasks = cleaned.get("AUTO_TASKS")
+    if isinstance(auto_tasks, dict) and "rss" in auto_tasks:
+        cleaned_auto_tasks = dict(auto_tasks)
+        cleaned_auto_tasks.pop("rss", None)
+        cleaned["AUTO_TASKS"] = cleaned_auto_tasks
+        changed = True
+
+    return cleaned, changed
+
+
+def _remove_rss_app_settings(conn: Any, url: str) -> None:
+    if not _table_exists(conn, url, "app_settings") or not hasattr(AppSettings, "__table__"):
+        return
+
+    table = AppSettings.__table__
+    rows = conn.execute(table.select()).fetchall()
+    for row in rows:
+        mapping = row._mapping
+        cleaned, changed = _without_removed_rss_settings(mapping.get("data"))
+        if not changed:
+            continue
+        conn.execute(
+            table.update()
+            .where(table.c.id == mapping.get("id"))
+            .values(data=cleaned)
+        )
+
+
+def apply_removed_rss_collection_storage_cleanup(conn: Any, url: str) -> None:
+    """Drop storage left behind by the removed RSS collection feature."""
+
+    cascade = " CASCADE" if _is_postgresql(url) else ""
+    for table_name in REMOVED_RSS_TABLES:
+        conn.execute(text(f"DROP TABLE IF EXISTS {table_name}{cascade}"))
+
+    if _is_postgresql(url):
+        conn.execute(text("DROP SEQUENCE IF EXISTS rss_items_id_seq CASCADE"))
+
+    _remove_rss_app_settings(conn, url)
+
+
 def default_migrations(
     legacy_schema_alignment: Optional[MigrationCallable] = None,
 ) -> List[Migration]:
@@ -310,6 +369,11 @@ def default_migrations(
             "0003_manual_search_history",
             "Create manual search history table",
             apply_manual_search_history_schema,
+        ),
+        Migration(
+            "0004_remove_rss_collection_storage",
+            "Remove RSS collection storage",
+            apply_removed_rss_collection_storage_cleanup,
         ),
     ]
 

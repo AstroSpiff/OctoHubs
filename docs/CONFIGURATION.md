@@ -4,12 +4,12 @@ Docs: [README](../README.md) | [Docker Deploy](DOCKER_DEPLOY.md) | [Deployment](
 
 # Configuration Reference
 
-This document describes the `config.json` structure and the main options used by OctoHub.
+This document describes the `config.json` structure and the main options used by OctoHubs.
 
 ## Location
-- File: `/mnt/shared/config/octohub/config.json`
+- File: `/mnt/shared/config/octohubs/config.json`
 - Created automatically on first start if missing.
-- When `DATABASE.ENABLED=true`, OctoHub stores app settings in PostgreSQL and merges them with `config.json`.
+- When `DATABASE.ENABLED=true`, OctoHubs stores app settings in PostgreSQL and merges them with `config.json`.
 
 ## Editing workflow
 - Prefer the UI for settings that are available there.
@@ -88,18 +88,6 @@ Note: the auth database for users is configured via `AUTH_DATABASE_URL` in the e
 - `ENABLED`
 - `LOCALE` (example: `it_IT`)
 
-## RSS_IMPORT
-RSS import requires `DATABASE.ENABLED=true`.
-
-Fields:
-- `ENABLED`
-- `POLL_INTERVAL_MINUTES`
-- `DEDUP_KEEP` (`newest` or `oldest`)
-- `SOURCES`: list of sources
-
-Source fields:
-- `name`, `url`, `tags` (list), `enabled`
-
 ## AUTO_TASKS
 Schedules background actions.
 
@@ -153,9 +141,9 @@ Fields per server:
     "ENABLED": true,
     "HOST": "postgres",
     "PORT": 5432,
-    "NAME": "octohub",
-    "USER": "octohub",
-    "PASSWORD": "octohub_password",
+    "NAME": "octohubs",
+    "USER": "octohubs",
+    "PASSWORD": "octohubs_password",
     "DRIVER": "postgresql+psycopg2"
   },
   "JUSTWATCH": {

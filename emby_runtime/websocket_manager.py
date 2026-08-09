@@ -7,10 +7,52 @@ import json
 import threading
 import time
 import websocket
-from typing import Dict, Callable, Optional, Any
+from typing import Dict, Callable, Optional, Any, List
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+_NON_STREAM_EVENT_TYPES = {
+    "ConnectionEstablished",
+    "ConnectionClosed",
+    "RefreshProgress",
+    "ScheduledTasksInfo",
+    "ScheduledTasksInfoStart",
+    "ScheduledTasksInfoStop",
+}
+
+
+def _is_stream_session_event(event_data: Dict[str, Any]) -> bool:
+    """Return True when an Emby WebSocket event can affect active streams."""
+    message_type = str((event_data or {}).get("MessageType") or "")
+    if not message_type or message_type in _NON_STREAM_EVENT_TYPES:
+        return False
+    if message_type == "Sessions":
+        return True
+    lowered = message_type.lower()
+    return "playback" in lowered or "session" in lowered or _has_session_identity(event_data)
+
+
+def _has_session_identity(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key in ("SessionId", "SessionID", "Session", "SessionInfo"):
+            candidate = value.get(key)
+            if isinstance(candidate, dict):
+                if _has_session_identity(candidate):
+                    return True
+            elif str(candidate or "").strip():
+                return True
+        data = value.get("Data")
+        if _has_session_identity(data):
+            return True
+        play_state = value.get("PlayState")
+        if _has_session_identity(play_state):
+            return True
+        return False
+    if isinstance(value, list):
+        return any(_has_session_identity(item) for item in value)
+    return False
 
 
 class EmbyWebSocketConnection:
@@ -54,7 +96,7 @@ class EmbyWebSocketConnection:
         self.last_event_time = 0
 
         # Device ID for Emby
-        self.device_id = f"OctoHub_{server_id[:8]}"
+        self.device_id = f"OctoHubs_{server_id[:8]}"
 
     def get_websocket_url(self) -> str:
         """Build WebSocket URL for Emby server."""
@@ -80,6 +122,7 @@ class EmbyWebSocketConnection:
 
         if self.ws:
             try:
+                self._send_sessions_stop()
                 self.ws.close()
             except Exception as e:
                 logger.error(f"[WS:{self.server_id}] Error closing WebSocket: {e}")
@@ -125,6 +168,7 @@ class EmbyWebSocketConnection:
         self.reconnect_delay = 1  # Reset reconnect delay on successful connection
 
         logger.info(f"[WS:{self.server_id}] ✓ Connected successfully (attempt #{self.connection_attempts})")
+        self._send_sessions_start()
 
         # Notify callback about connection
         self._notify_event({
@@ -193,6 +237,24 @@ class EmbyWebSocketConnection:
         except Exception as e:
             logger.error(f"[WS:{self.server_id}] Error in event callback: {e}")
 
+    def _send_sessions_start(self):
+        """Subscribe to Emby session updates after connecting."""
+        self._send_command({"MessageType": "SessionsStart", "Data": "0,1500"})
+
+    def _send_sessions_stop(self):
+        """Unsubscribe from Emby session updates before disconnecting."""
+        self._send_command({"MessageType": "SessionsStop"})
+
+    def _send_command(self, payload: Dict[str, Any]) -> bool:
+        if not self.ws:
+            return False
+        try:
+            self.ws.send(json.dumps(payload))
+            return True
+        except Exception as e:
+            logger.warning(f"[WS:{self.server_id}] Failed sending command {payload.get('MessageType')}: {e}")
+            return False
+
     def is_connected(self) -> bool:
         """Check if WebSocket is currently connected."""
         return self.state == self.STATE_CONNECTED
@@ -221,6 +283,8 @@ class EmbyWebSocketManager:
 
         # Global event callback
         self.global_event_callback: Optional[Callable] = None
+        self._global_event_callbacks: List[Callable] = []
+        self._stream_session_forwarding_ready = False
 
         logger.info("[WSManager] Initialized")
 
@@ -266,6 +330,12 @@ class EmbyWebSocketManager:
         """Set a global callback for all events."""
         self.global_event_callback = callback
 
+    def add_global_callback(self, callback: Callable):
+        """Add a global callback without replacing the primary event router."""
+        with self._lock:
+            if callback not in self._global_event_callbacks:
+                self._global_event_callbacks.append(callback)
+
     def _handle_event(self, server_id: str, event_data: Dict):
         """Handle events received from any Emby server."""
         message_type = event_data.get("MessageType")
@@ -283,6 +353,12 @@ class EmbyWebSocketManager:
                 self.global_event_callback(server_id, event_data)
             except Exception as e:
                 logger.error(f"[WSManager] Error in global callback: {e}")
+
+        for callback in list(self._global_event_callbacks):
+            try:
+                callback(server_id, event_data)
+            except Exception as e:
+                logger.error(f"[WSManager] Error in extra global callback: {e}")
 
     def get_connection(self, server_id: str) -> Optional[EmbyWebSocketConnection]:
         """Get connection for a specific server."""
@@ -372,6 +448,38 @@ class EmbyWebSocketManager:
         # Registra handler per RefreshProgress
         self.register_event_handler("RefreshProgress", sync_handler)
         logger.info("[WSManager] Setup RefreshProgress forwarding to client WebSockets")
+
+    def setup_stream_session_forwarding(self):
+        """Mark the shared stream cache stale when playback WebSocket events arrive."""
+        with self._lock:
+            if self._stream_session_forwarding_ready:
+                return
+            self._stream_session_forwarding_ready = True
+
+        def sync_handler(server_id: str, event_data: Dict):
+            if not _is_stream_session_event(event_data):
+                return
+
+            message_type = str(event_data.get("MessageType") or "event")
+            try:
+                if message_type != "Sessions":
+                    from emby_runtime.streams import get_streams_manager
+
+                    get_streams_manager().mark_stale(server_id, f"websocket:{message_type}")
+            except Exception as e:
+                logger.error("[WSManager] Error marking stream cache stale for %s: %s", server_id, e)
+
+            try:
+                from emby_runtime.transcode_guard import get_transcode_guard_service
+
+                service = get_transcode_guard_service()
+                service.record_playback_event(server_id, event_data)
+                service.wake()
+            except Exception as e:
+                logger.error("[WSManager] Error waking Transcode Guard for %s: %s", server_id, e)
+
+        self.add_global_callback(sync_handler)
+        logger.info("[WSManager] Setup stream session forwarding to shared stream manager")
 
 
 # Global singleton instance

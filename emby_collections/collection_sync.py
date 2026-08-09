@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 from core.config_manager import _ensure_db_backend
 from .collection_common import (
     _enrich_definition,
-    _extract_octohub_definition_id,
+    _extract_octohubs_definition_id,
     _is_collection_active,
     _normalize_pending_servers,
     _now_iso,
@@ -445,10 +445,10 @@ def sync_all_collections() -> Dict[str, Any]:
             entry_id = str(entry.get("Id") or "").strip()
             if not entry_id:
                 continue
-            octohub_id = _extract_octohub_definition_id(entry.get("Tags"))
-            if not octohub_id:
+            octohubs_id = _extract_octohubs_definition_id(entry.get("Tags"))
+            if not octohubs_id:
                 continue
-            definition = definition_map.get(octohub_id)
+            definition = definition_map.get(octohubs_id)
             if not definition:
                 if _delete_emby_collection(server, entry_id):
                     summary["removed_orphans"] += 1

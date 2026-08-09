@@ -95,6 +95,45 @@ class OperationTrackerTests(unittest.TestCase):
         self.assertIsNotNone(interrupted["finished_at"])
         self.assertEqual(tracker.active_count(), 0)
 
+    def test_interrupt_active_marks_orphaned_running_operations_after_restart(self):
+        tracker = OperationTracker(_Storage(), now=_Clock())
+        running = tracker.start("workflow", "Workflow", total=4)
+        tracker.update(running["id"], current=2, total=4)
+        completed = tracker.start("latest_refresh", "Pubblicazioni")
+        tracker.finish(completed["id"])
+
+        interrupted = tracker.interrupt_active("Interrotta da riavvio OctoHubs")
+        operations = tracker.list_operations()
+
+        self.assertEqual(interrupted, 1)
+        by_id = {item["id"]: item for item in operations}
+        self.assertEqual(by_id[running["id"]]["status"], "interrupted")
+        self.assertEqual(by_id[running["id"]]["progress"], 50)
+        self.assertEqual(by_id[running["id"]]["message"], "Interrotta da riavvio OctoHubs")
+        self.assertEqual(by_id[completed["id"]]["status"], "success")
+        self.assertEqual(tracker.active_count(), 0)
+
+    def test_operation_tracker_reads_legacy_octohub_storage_key(self):
+        storage = _Storage()
+        storage.set_key_value(
+            "octohub_operations:v1",
+            {
+                "version": 1,
+                "operations": {
+                    "old-op": {
+                        "id": "old-op",
+                        "status": "running",
+                        "updated_at": "2026-07-15T10:00:00+00:00",
+                    }
+                },
+            },
+        )
+        tracker = OperationTracker(storage, now=_Clock())
+
+        operations = tracker.list_operations()
+
+        self.assertEqual([item["id"] for item in operations], ["old-op"])
+
 
 if __name__ == "__main__":
     unittest.main()

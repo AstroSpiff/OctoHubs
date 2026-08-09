@@ -2,18 +2,17 @@
 
 Docs: [Docker Deploy](docs/DOCKER_DEPLOY.md) | [Deployment](docs/DEPLOYMENT.md) | [Configuration](docs/CONFIGURATION.md) | [Features](docs/FEATURES.md) | [Integrations](docs/INTEGRATIONS.md) | [Emby Tools](docs/EMBY_TOOLS.md)
 
-# OctoHub
+# OctoHubs
 
 [![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 
-OctoHub is a FastAPI web app to orchestrate Emby servers and related services (Jellyseerr, Prowlarr, Jackett, qBittorrent, Trakt). It provides a dashboard, library scans, automation, realtime webhooks, and role-based user management.
+OctoHubs is a FastAPI web app to orchestrate Emby servers and related services (Jellyseerr, Prowlarr, Jackett, qBittorrent, Trakt). It provides a dashboard, library scans, automation, realtime webhooks, and role-based user management.
 
 ## Key features
 - Dashboard with scan status, results, and main metrics.
 - Multi-server Emby management with quick actions.
 - Automated Emby collections management (create/update from MDBList, Trakt, and TMDB lists).
 - Automated scans and scheduled refresh tasks.
-- RSS and JSON import tools with archive view.
 - STRM Extract and STRM Guard workflows for Emby.
 - Emby webhooks for realtime updates.
 - User management with roles (admin, user, viewer).
@@ -24,8 +23,8 @@ OctoHub is a FastAPI web app to orchestrate Emby servers and related services (J
 - (Optional) SSL certificates if you enable Nginx (by uncommenting the `nginx` block in the compose)
 
 ## Persistent data layout
-- `/mnt/shared/config/octohub`: `config.json` and Nginx certs (if proxy is enabled).
-- `/mnt/shared/applications/octohub`: `auth.db`, `last_results.json`, app logs, `nginx/logs`, Postgres data.
+- `/mnt/shared/config/octohubs`: `config.json` and Nginx certs (if proxy is enabled).
+- `/mnt/shared/applications/octohubs`: `auth.db`, `last_results.json`, app logs, `nginx/logs`, Postgres data.
 - Update the `/mnt/shared/...` paths in `docker-compose.yml` if your storage differs.
 
 ## Portainer quick install (copy/paste)
@@ -33,7 +32,7 @@ OctoHub is a FastAPI web app to orchestrate Emby servers and related services (J
 2. Update the `/mnt/shared/...` paths to your real storage.
 3. Set `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`.
 4. (Optional) PostgreSQL is already commented by default. The app works without external DB.
-5. (Optional) For HTTPS, uncomment the `nginx` block and place certs in `/mnt/shared/config/octohub/nginx/ssl`.
+5. (Optional) For HTTPS, uncomment the `nginx` block and place certs in `/mnt/shared/config/octohubs/nginx/ssl`.
 6. Deploy the stack and open `http://IP:5050`.
 
 ## Quick start (Docker)
@@ -45,14 +44,14 @@ OctoHub is a FastAPI web app to orchestrate Emby servers and related services (J
 PostgreSQL is optional and already commented by default.
 
 ## HTTPS with Nginx (optional)
-1. Put certificates in `/mnt/shared/config/octohub/nginx/ssl`.
+1. Put certificates in `/mnt/shared/config/octohubs/nginx/ssl`.
 2. Ensure `nginx.conf` is available (from the repo or mounted in the stack).
 3. Uncomment the `nginx` block in `docker-compose.yml`.
 4. Start:
    - `docker compose up -d --build`
 
 ## Main environment variables (optional)
-You can set them in Portainer or in the Docker environment. If not set, OctoHub generates `SECRET_KEY` automatically.
+You can set them in Portainer or in the Docker environment. If not set, OctoHubs generates `SECRET_KEY` automatically.
 Essential example:
 ```env
 SECRET_KEY=a-long-random-key
@@ -79,7 +78,7 @@ python3 -c "import secrets; print(secrets.token_hex(32))"
 ```
 
 ## `config.json` (minimal)
-`config.json` can be edited manually or saved from the UI. In Docker it lives at `/mnt/shared/config/octohub/config.json`.
+`config.json` can be edited manually or saved from the UI. In Docker it lives at `/mnt/shared/config/octohubs/config.json`.
 Minimal example:
 ```json
 {
@@ -110,7 +109,7 @@ If you want integrations and automation:
 Note: `config.json` contains secrets. Do not publish it if it has real credentials.
 
 ## First access
-On first deployment, OctoHub automatically redirects to the setup wizard at `/setup`:
+On first deployment, OctoHubs automatically redirects to the setup wizard at `/setup`:
 1. **Create admin user**: Set username, password (and optional email)
 2. **Configure database** (optional): Set up PostgreSQL if needed, or skip to use file-based storage
 

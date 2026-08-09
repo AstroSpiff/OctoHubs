@@ -2,9 +2,9 @@
 
 Documenti: [README](../README_ita.md) | [Docker Deploy](DOCKER_DEPLOY_ita.md) | [Deployment](DEPLOYMENT_ita.md) | [Configurazione](CONFIGURATION_ita.md) | [Funzionalita](FEATURES_ita.md) | [Integrazioni](INTEGRATIONS_ita.md) | [Strumenti Emby](EMBY_TOOLS_ita.md)
 
-# Release Checklist OctoHub
+# Release Checklist OctoHubs
 
-Questa checklist serve a capire se OctoHub e pronto per essere usato come applicativo stabile.
+Questa checklist serve a capire se OctoHubs e pronto per essere usato come applicativo stabile.
 
 Usala prima di ogni release importante, dopo refactor estesi, o dopo modifiche a Utenti, Pubblicazioni, STRM Probe, Workflow, Operazioni o Librerie.
 
@@ -59,11 +59,11 @@ Usare solo utenti `a_test*` per prove distruttive. Non modificare il provider au
 | Priorita | Area | Test | Procedura | Risultato atteso | Esito | Note |
 | --- | --- | --- | --- | --- | --- | --- |
 | P0 | Utenti | Caricamento tab | Aprire tab Utenti | Lista gruppi/utenti caricata senza errori console/API |  |  |
-| P0 | Utenti | Crea utente | Creare utente test su uno o piu server | Utente creato su Emby e visibile in OctoHub |  |  |
+| P0 | Utenti | Crea utente | Creare utente test su uno o piu server | Utente creato su Emby e visibile in OctoHubs |  |  |
 | P0 | Utenti | Clona utente | Clonare da/a utenti `a_test*` | Impostazioni, librerie, preferiti, visti, resume, playlist coerenti |  |  |
 | P0 | Utenti | Elimina utente | Eliminare utente test con conferma | Utente rimosso da Emby e UI aggiornata |  |  |
 | P0 | Gruppi | Elimina gruppo | Eliminare gruppo test con conferma | Tutti gli utenti del gruppo rimossi dai server corretti |  |  |
-| P0 | Impostazioni | Applica impostazioni singolo | Cambiare impostazioni su `a_test*` | Emby riceve le modifiche e OctoHub rilegge lo stesso stato |  |  |
+| P0 | Impostazioni | Applica impostazioni singolo | Cambiare impostazioni su `a_test*` | Emby riceve le modifiche e OctoHubs rilegge lo stesso stato |  |  |
 | P0 | Impostazioni | Applica impostazioni bulk | Selezionare piu `a_test*` e applicare impostazioni | Tutti i target aggiornati, progress e risultati coerenti |  |  |
 | P0 | Preset | Crea/aggiorna preset | Creare preset, caricarlo, modificarlo, aggiornarlo | Preset salvato e riutilizzabile |  |  |
 | P0 | Preset | Nome duplicato | Salvare nuovo preset con nome esistente | Errore inline, finestra resta aperta e nome correggibile |  |  |

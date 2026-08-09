@@ -1,5 +1,5 @@
 (() => {
-    const { csrfFetch } = window.octohubUtils;
+    const { csrfFetch } = window.octohubsUtils;
 
     const latestState = {
         loaded: false,
@@ -744,7 +744,7 @@
                 return;
             }
             if (data.refreshing) {
-                window.octohubOperations?.notifyStarted?.();
+                window.octohubsOperations?.notifyStarted?.();
                 startLatestProgressPolling();
             } else if (latestState.loaded) {
                 requestLatestCacheReload();
@@ -815,12 +815,12 @@
         if (!latestDisplaySelect) {
             return;
         }
-        const storedLimit = localStorage.getItem('octohub_latest_display_limit');
+        const storedLimit = localStorage.getItem('octohubs_latest_display_limit');
         if (storedLimit && latestDisplaySelect.querySelector(`option[value="${storedLimit}"]`)) {
             latestDisplaySelect.value = storedLimit;
         }
         latestDisplaySelect.addEventListener('change', () => {
-            localStorage.setItem('octohub_latest_display_limit', latestDisplaySelect.value);
+            localStorage.setItem('octohubs_latest_display_limit', latestDisplaySelect.value);
             renderLatestView();
             updatePreviewSelectionOptions();
             updatePreview();
@@ -949,7 +949,7 @@
         { token: '{jellyseerr_requested_by}', label: 'Jellyseerr richiesto da', example: 'Mario Rossi', description: 'Utente che ha richiesto.', group: 'Jellyseerr' },
         { token: '{jellyseerr_requested}', label: 'Jellyseerr richiesto', example: 'true', description: 'True se presente una richiesta.', group: 'Jellyseerr' },
 
-        { token: '{image_url}', label: 'Poster (cache DB)', example: '/api/emby/image?server_id=...&item_id=...&type=Primary', description: 'Poster via cache DB OctoHub.', group: 'Immagini & Link' },
+        { token: '{image_url}', label: 'Poster (cache DB)', example: '/api/emby/image?server_id=...&item_id=...&type=Primary', description: 'Poster via cache DB OctoHubs.', group: 'Immagini & Link' },
         { token: '{poster_url}', label: 'Poster URL', example: 'https://emby.local/Items/.../Images/Primary', description: 'Poster (Emby).', group: 'Immagini & Link' },
         { token: '{tmdb_poster_url}', label: 'TMDB Poster', example: 'https://image.tmdb.org/t/p/w780/abc.jpg', description: 'Poster (TMDB).', group: 'Immagini & Link' },
         { token: '{backdrop_url}', label: 'Backdrop URL', example: 'https://emby.local/Items/.../Images/Backdrop', description: 'Backdrop (Emby).', group: 'Immagini & Link' },
@@ -2455,14 +2455,14 @@
     applyPreviewFilter('movie');
     updatePreview();
 
-    document.addEventListener('octohub:main-tab-changed', (event) => {
+    document.addEventListener('octohubs:main-tab-changed', (event) => {
         const tab = event?.detail?.tab || '';
         if (tab === 'latest') {
             loadLatestReleases(false, false, true);
         }
     });
 
-    document.addEventListener('octohub:operation-completed', (event) => {
+    document.addEventListener('octohubs:operation-completed', (event) => {
         const operation = event?.detail?.operation || {};
         if (shouldReloadLatestAfterOperation(operation)) {
             requestLatestCacheReload();
@@ -2474,7 +2474,7 @@
     }
 
     window.loadLatestReleases = loadLatestReleases;
-    window.octohubLatest = {
+    window.octohubsLatest = {
         escapeHtml,
         safeString,
         buildServerLabelParts,

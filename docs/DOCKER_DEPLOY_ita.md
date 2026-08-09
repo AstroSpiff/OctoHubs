@@ -4,7 +4,7 @@ Documenti: [README](../README_ita.md) | [Docker Deploy](DOCKER_DEPLOY_ita.md) | 
 
 # Deploy Docker
 
-Guida per installare OctoHub con Docker Compose e Portainer.
+Guida per installare OctoHubs con Docker Compose e Portainer.
 
 ## Prerequisiti
 - Docker 20.10+
@@ -17,11 +17,11 @@ Percorsi host usati nel `docker-compose.yml`:
 ```text
 /mnt/shared/
 |-- config/
-|   `-- octohub/
+|   `-- octohubs/
 |       |-- config.json
 |       `-- nginx/ssl/
 `-- applications/
-    `-- octohub/
+    `-- octohubs/
         |-- auth.db
         |-- last_results.json
         |-- logs/
@@ -42,7 +42,7 @@ Se il tuo storage e diverso, modifica i path `/mnt/shared/...` in `docker-compos
 7. **Primo avvio**:
    - Se hai impostato le ENV admin: vedrai subito il login.
    - Altrimenti: vedrai il wizard `/setup` per creare l'admin e configurare il DB (opzionale).
-8. Dopo il setup iniziale, modifica `/mnt/shared/config/octohub/config.json` con il tuo server Emby e le integrazioni.
+8. Dopo il setup iniziale, modifica `/mnt/shared/config/octohubs/config.json` con il tuo server Emby e le integrazioni.
 9. Riavvia il container `app` per applicare le modifiche.
 
 ## Avvio rapido (CLI)
@@ -75,7 +75,7 @@ ADMIN_EMAIL=admin@example.com
 ```
 
 ## config.json
-File: `/mnt/shared/config/octohub/config.json`.
+File: `/mnt/shared/config/octohubs/config.json`.
 Per il riferimento completo, vedi `CONFIGURATION_ita.md`.
 
 Esempio minimo:
@@ -113,9 +113,9 @@ Esempio blocco `DATABASE` in `config.json`:
     "ENABLED": true,
     "HOST": "postgres",
     "PORT": 5432,
-    "NAME": "octohub",
-    "USER": "octohub",
-    "PASSWORD": "octohub_password",
+    "NAME": "octohubs",
+    "USER": "octohubs",
+    "PASSWORD": "octohubs_password",
     "DRIVER": "postgresql+psycopg2"
   }
 }
@@ -130,7 +130,7 @@ Per abilitare PostgreSQL:
 Il servizio Nginx e commentato di default.
 
 Per abilitare HTTPS:
-1. Metti i cert in `/mnt/shared/config/octohub/nginx/ssl`.
+1. Metti i cert in `/mnt/shared/config/octohubs/nginx/ssl`.
 2. Assicurati che `nginx.conf` sia disponibile (da repo o montato).
 3. Decommenta il blocco `nginx` in `docker-compose.yml`.
 4. Avvia con `docker compose up -d --build`.

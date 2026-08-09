@@ -1,20 +1,24 @@
 #!/bin/bash
-# Script per avviare OctoHub in development mode con logging completo
+# Script per avviare OctoHubs in development mode con logging completo
 
 export PYTHONUNBUFFERED=1
 export PYTHONDONTWRITEBYTECODE=1
 export SECRET_KEY="${SECRET_KEY:-admin}"
 
 # Database PostgreSQL configuration
-export OCTOHUB_DB_HOST="${OCTOHUB_DB_HOST:-localhost}"
-export OCTOHUB_DB_PORT="${OCTOHUB_DB_PORT:-5432}"
-export OCTOHUB_DB_NAME="${OCTOHUB_DB_NAME:-jellychecker}"
-export OCTOHUB_DB_USER="${OCTOHUB_DB_USER:-jellychecker}"
-export OCTOHUB_DB_PASSWORD="${OCTOHUB_DB_PASSWORD:-supersecret}"
+export OCTOHUBS_DB_HOST="${OCTOHUBS_DB_HOST:-localhost}"
+export OCTOHUBS_DB_PORT="${OCTOHUBS_DB_PORT:-5432}"
+export OCTOHUBS_DB_NAME="${OCTOHUBS_DB_NAME:-octohubs}"
+export OCTOHUBS_DB_USER="${OCTOHUBS_DB_USER:-octohubs}"
+export OCTOHUBS_DB_PASSWORD="${OCTOHUBS_DB_PASSWORD:-supersecret}"
+export OCTOHUBS_HOST="${OCTOHUBS_HOST:-127.0.0.1}"
+export OCTOHUBS_PORT="${OCTOHUBS_PORT:-5050}"
 
 echo "=========================================="
-echo "Starting OctoHub with MEGA LOGGING"
-echo "Database: ${OCTOHUB_DB_NAME}@${OCTOHUB_DB_HOST}:${OCTOHUB_DB_PORT}"
+echo "Starting OctoHubs with MEGA LOGGING"
+echo "Database: ${OCTOHUBS_DB_NAME}@${OCTOHUBS_DB_HOST}:${OCTOHUBS_DB_PORT}"
+echo "Bind: ${OCTOHUBS_HOST}:${OCTOHUBS_PORT}"
+echo "Event Bridge endpoint: http://${OCTOHUBS_HOST}:${OCTOHUBS_PORT}/api/emby/event-bridge/events"
 echo "=========================================="
 
-./venv/bin/python -u -m uvicorn asgi:app --reload --host 127.0.0.1 --port 5050
+./venv/bin/python -u -m uvicorn asgi:app --reload --host "${OCTOHUBS_HOST}" --port "${OCTOHUBS_PORT}"

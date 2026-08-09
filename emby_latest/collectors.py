@@ -995,8 +995,6 @@ def collect_entries(
                 for v in versions
                 if v.get("key") and v.get("mediainfo_available")
             ]
-            version_key_count = len([v for v in versions if v.get("key")])
-            mediainfo_complete = bool(version_key_count) and len(mediainfo_source_keys) == version_key_count
 
             # Determine new versions
             existing_keys = media_source_key_set(existing, movie_history)
@@ -1589,8 +1587,6 @@ def collect_entries(
                     for v in versions
                     if v.get("key") and v.get("mediainfo_available")
                 ]
-                version_key_count = len([v for v in versions if v.get("key")])
-                mediainfo_complete = bool(version_key_count) and len(mediainfo_source_keys) == version_key_count
 
                 # Split into version groups if new episode with multiple groups
                 can_split_versions = existing_episode is None and len(version_groups) > 1
@@ -1643,6 +1639,7 @@ def collect_entries(
             )
 
             local_seasons_seen = set(seasons_seen)
+            batch_episode_keys_seen: Set[str] = set()
             grouped_changes = []
 
             # Process each episode group
@@ -1718,6 +1715,7 @@ def collect_entries(
 
                     # Determine kind
                     episode_known = existing_episode is not None or episode_history is not None
+                    episode_seen_in_batch = bool(episode_key and episode_key in batch_episode_keys_seen)
                     if catalog_baseline:
                         if is_latest_version_group:
                             kind = "new_version"
@@ -1725,6 +1723,9 @@ def collect_entries(
                         else:
                             kind = "new_episode"
                             new_episode = True
+                    elif episode_seen_in_batch and (new_versions or not episode_known):
+                        kind = "new_version"
+                        new_version = True
                     elif not episode_known:
                         season_recent = season_recent_map.get(season_number, False) if season_number is not None else False
                         if not series_known and series_is_new and group_index == 0:
@@ -1895,6 +1896,7 @@ def collect_entries(
                 })
 
                 local_seasons_seen.update(seasons_in_group)
+                batch_episode_keys_seen.update(group_episode_keys)
                 episode_seen.update(group_episode_keys)
 
             # Save grouped changes

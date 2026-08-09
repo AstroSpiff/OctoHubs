@@ -12,7 +12,7 @@ class LatestFrontendTests(unittest.TestCase):
 
         self.assertIn("option.value = serverId;", source)
         self.assertIn("item.server_id === serverId", source)
-        self.assertIn("window.octohubLatest || {}", source)
+        self.assertIn("window.octohubsLatest || {}", source)
         self.assertIn("getLatestFetchLimits", pathlib.Path("static/emby_latest.js").read_text(encoding="utf-8"))
         self.assertNotIn("option.value = serverName;", source)
         self.assertNotIn("m.server_name === serverName", source)
@@ -71,7 +71,7 @@ class LatestFrontendTests(unittest.TestCase):
         operations_source = pathlib.Path("static/operations_center.js").read_text(encoding="utf-8")
         template = pathlib.Path("templates/emby_dashboard.html").read_text(encoding="utf-8")
 
-        self.assertIn("window.octohubOperations?.notifyStarted?.();", source)
+        self.assertIn("window.octohubsOperations?.notifyStarted?.();", source)
         self.assertIn("latest_refresh: 'fa-newspaper'", operations_source)
         self.assertIn("operations_center.js') }}?v=20260720-operation-events", template)
 
@@ -119,9 +119,9 @@ class LatestFrontendTests(unittest.TestCase):
         shell_source = pathlib.Path("static/script_shell.js").read_text(encoding="utf-8")
         latest_source = pathlib.Path("static/emby_latest.js").read_text(encoding="utf-8")
 
-        self.assertIn("octohub:main-tab-changed", shell_source)
+        self.assertIn("octohubs:main-tab-changed", shell_source)
         self.assertIn("detail: { tab: target }", shell_source)
-        self.assertIn("octohub:main-tab-changed", latest_source)
+        self.assertIn("octohubs:main-tab-changed", latest_source)
         self.assertIn("if (tab === 'latest')", latest_source)
         self.assertIn("if (isLatestTabActive())", latest_source)
         self.assertIn("loadLatestReleases(false, false, true);", latest_source)
@@ -130,7 +130,7 @@ class LatestFrontendTests(unittest.TestCase):
         source = pathlib.Path("static/emby_latest.js").read_text(encoding="utf-8")
         operations_source = pathlib.Path("static/operations_center.js").read_text(encoding="utf-8")
 
-        self.assertIn("document.addEventListener('octohub:operation-completed'", source)
+        self.assertIn("document.addEventListener('octohubs:operation-completed'", source)
         self.assertIn("shouldReloadLatestAfterOperation", source)
         self.assertIn("kind === 'workflow'", source)
         self.assertIn("kind === 'latest_refresh'", source)

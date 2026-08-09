@@ -8,7 +8,7 @@
     }
 
     const apiFetch = (url, options = {}) => {
-        const utils = window.octohubUtils;
+        const utils = window.octohubsUtils;
         if (utils && typeof utils.csrfFetch === 'function') {
             return utils.csrfFetch(url, options);
         }

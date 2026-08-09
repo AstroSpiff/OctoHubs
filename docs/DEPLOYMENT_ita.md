@@ -7,7 +7,7 @@ Documenti: [README](../README_ita.md) | [Docker Deploy](DOCKER_DEPLOY_ita.md) | 
 Note avanzate per il deployment in produzione.
 
 ## Panoramica
-OctoHub e una web app FastAPI per orchestrare Emby e servizi collegati. Le integrazioni con Jellyseerr, Prowlarr, Jackett, qBittorrent e Trakt sono opzionali e si configurano via `config.json`.
+OctoHubs e una web app FastAPI per orchestrare Emby e servizi collegati. Le integrazioni con Jellyseerr, Prowlarr, Jackett, qBittorrent e Trakt sono opzionali e si configurano via `config.json`.
 
 ## Requisiti e sizing
 - Docker 20.10+ e Docker Compose 2.x
@@ -15,7 +15,7 @@ OctoHub e una web app FastAPI per orchestrare Emby e servizi collegati. Le integ
 - Minimo: 1 vCPU, 1 GB RAM
 
 ## Porte e rete
-- 5000/tcp per OctoHub (HTTP)
+- 5000/tcp per OctoHubs (HTTP)
 - 80/tcp e 443/tcp se abiliti Nginx
 - Assicurati che Emby raggiunga l'URL webhook
 
@@ -23,11 +23,11 @@ OctoHub e una web app FastAPI per orchestrare Emby e servizi collegati. Le integ
 ```text
 /mnt/shared/
 |-- config/
-|   `-- octohub/
+|   `-- octohubs/
 |       |-- config.json
 |       `-- nginx/ssl/
 `-- applications/
-    `-- octohub/
+    `-- octohubs/
         |-- auth.db
         |-- last_results.json
         |-- logs/
@@ -46,7 +46,7 @@ Imposta le variabili in Portainer o nella shell:
 - `SESSION_TIMEOUT_MINUTES`, `CSRF_TIME_LIMIT_SECONDS`, `SESSION_COOKIE_SECURE`
 
 ## config.json
-Percorso: `/mnt/shared/config/octohub/config.json`.
+Percorso: `/mnt/shared/config/octohubs/config.json`.
 Riferimento completo: `CONFIGURATION_ita.md`.
 
 Sezioni chiave:
@@ -64,14 +64,14 @@ Sezioni chiave:
 
 ## SSL e reverse proxy (opzionale)
 Per abilitare Nginx:
-1. Metti i cert in `/mnt/shared/config/octohub/nginx/ssl`.
+1. Metti i cert in `/mnt/shared/config/octohubs/nginx/ssl`.
 2. Assicurati che `nginx.conf` sia disponibile.
 3. Decommenta il servizio `nginx` nel `docker-compose.yml`.
 4. Avvia con `docker compose up -d --build`.
 
 ## Database
 Due storage separati:
-- Auth DB (utenti): SQLite di default (`/mnt/shared/applications/octohub/auth.db`).
+- Auth DB (utenti): SQLite di default (`/mnt/shared/applications/octohubs/auth.db`).
 - App DB (opzionale): PostgreSQL se `DATABASE.ENABLED=true` in `config.json`.
 
 Esempio `DATABASE`:
@@ -81,9 +81,9 @@ Esempio `DATABASE`:
     "ENABLED": true,
     "HOST": "postgres",
     "PORT": 5432,
-    "NAME": "octohub",
-    "USER": "octohub",
-    "PASSWORD": "octohub_password",
+    "NAME": "octohubs",
+    "USER": "octohubs",
+    "PASSWORD": "octohubs_password",
     "DRIVER": "postgresql+psycopg2"
   }
 }
@@ -93,27 +93,27 @@ Se non ti serve PostgreSQL, commenta il servizio `postgres` in `docker-compose.y
 
 ## Backup e restore
 Backup consigliato:
-- `/mnt/shared/config/octohub/config.json`
-- `/mnt/shared/applications/octohub/last_results.json`
-- `/mnt/shared/applications/octohub/auth.db`
-- `/mnt/shared/applications/octohub/logs/` (opzionale)
-- `/mnt/shared/applications/octohub/postgres/` se Postgres e abilitato
+- `/mnt/shared/config/octohubs/config.json`
+- `/mnt/shared/applications/octohubs/last_results.json`
+- `/mnt/shared/applications/octohubs/auth.db`
+- `/mnt/shared/applications/octohubs/logs/` (opzionale)
+- `/mnt/shared/applications/octohubs/postgres/` se Postgres e abilitato
 
 Esempio backup SQLite:
 ```bash
-cp /mnt/shared/applications/octohub/auth.db backup/auth.db
-cp /mnt/shared/config/octohub/config.json backup/config.json
-cp /mnt/shared/applications/octohub/last_results.json backup/last_results.json
+cp /mnt/shared/applications/octohubs/auth.db backup/auth.db
+cp /mnt/shared/config/octohubs/config.json backup/config.json
+cp /mnt/shared/applications/octohubs/last_results.json backup/last_results.json
 ```
 
 Esempio backup PostgreSQL:
 ```bash
-docker compose exec postgres pg_dump -U octohub octohub > backup/octohub.sql
+docker compose exec postgres pg_dump -U octohubs octohubs > backup/octohubs.sql
 ```
 
 ## Monitoraggio e log
-- Log app: `/mnt/shared/applications/octohub/logs/`
-- Log Nginx: `/mnt/shared/applications/octohub/nginx/logs/`
+- Log app: `/mnt/shared/applications/octohubs/logs/`
+- Log Nginx: `/mnt/shared/applications/octohubs/nginx/logs/`
 - Log container: `docker compose logs -f app`
 
 ## Aggiornamenti e rollback

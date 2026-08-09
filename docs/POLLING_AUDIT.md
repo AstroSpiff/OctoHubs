@@ -1,4 +1,4 @@
-# Audit del Polling in OctoHub
+# Audit del Polling in OctoHubs
 
 Report completo di tutti i sistemi che usano ancora polling dopo l'implementazione del WebSocket real-time.
 
@@ -56,7 +56,7 @@ def _poll_library_scan_progress(job_id: str, server: dict, library_ids: list):
 - Se WebSocket invia `ScheduledTasksInfoStart`, non serve
 **Perché potrebbe servire ancora**:
 - Rileva scan avviati PRIMA del page load
-- Rileva scan avviati da altri client (non OctoHub)
+- Rileva scan avviati da altri client (non OctoHubs)
 
 **Azione**: Convertire in WebSocket event listener + fetch iniziale al page load
 
@@ -123,19 +123,7 @@ def _poll_library_scan_progress(job_id: str, server: dict, library_ids: list):
 **Cosa fa**: OAuth device flow per Trakt.tv
 **Perché mantenere**:
 - Standard OAuth device flow richiede polling
-- Non controllabile da OctoHub
-
-**Azione**: Mantenere
-
----
-
-### 9. **RSS Import Polling - Backend** ✅ MANTENERE
-**File**: `legacy monolith` linea 10861-10894
-**Intervallo**: Configurabile (default 30 minuti)
-**Cosa fa**: Poll RSS feed per nuovi contenuti
-**Perché mantenere**:
-- RSS non ha push notification
-- Polling è l'unico modo
+- Non controllabile da OctoHubs
 
 **Azione**: Mantenere
 
@@ -153,7 +141,6 @@ def _poll_library_scan_progress(job_id: str, server: dict, library_ids: list):
 | SSE Fallback | emby.js:5134-5235 | ✅ Fallback | Mantenere |
 | Strm Guard Manager | legacy monolith:2683 | ✅ Necessario | Mantenere |
 | Trakt Device Poll | legacy monolith:12287 | ✅ OAuth standard | Mantenere |
-| RSS Import Poll | legacy monolith:10861 | ✅ RSS limitation | Mantenere |
 
 ---
 
@@ -182,8 +169,8 @@ Dopo rimozione polling:
    - Verifica che scan completi correttamente
 
 2. **Test Active Scans Detection**:
-   - Avvia scan da Emby web client (non OctoHub)
-   - Verifica che OctoHub rilevi scan via WebSocket
+   - Avvia scan da Emby web client (non OctoHubs)
+   - Verifica che OctoHubs rilevi scan via WebSocket
 
 3. **Test Reconnection**:
    - Stacca cavo rete per 10 secondi

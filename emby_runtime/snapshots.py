@@ -22,6 +22,27 @@ from emby_runtime.api_clients import (
     _stop_emby_task,
 )
 from emby_runtime.streams import get_streams_manager
+from emby_runtime.transcode_guard import get_transcode_guard_service
+
+
+def _streams_refresh_seconds() -> int:
+    try:
+        return int(os.environ.get("STREAMS_REFRESH_SECONDS", "5"))
+    except ValueError:
+        return 5
+
+
+def _fetch_active_streams_shared(server, *, max_age_seconds=None, force=False):
+    server_id = str((server or {}).get("id") or "")
+    streams, error = get_streams_manager().refresh_server(
+        server,
+        _fetch_emby_active_sessions,
+        max_age_seconds=max_age_seconds if max_age_seconds is not None else _streams_refresh_seconds(),
+        force=force,
+    )
+    if error is None:
+        streams = get_transcode_guard_service().decorate_streams(server_id, streams)
+    return streams, error
 
 
 def _build_emby_stop_task_snapshot(payload):
@@ -69,7 +90,7 @@ def _build_emby_server_status_snapshot(server_id):
         }, 200
     status = _fetch_emby_status(target)
     tasks, error = _fetch_emby_scheduled_tasks(target)
-    streams, streams_error = _fetch_emby_active_sessions(target)
+    streams, streams_error = _fetch_active_streams_shared(target)
     running = []
     for task in tasks:
         if task.get("is_running"):
@@ -107,7 +128,7 @@ def _build_emby_health_status_snapshot():
         ok = bool(status.get("ok"))
         error = status.get("error") if not ok else None
         version = status.get("version") if ok else None
-        streams, streams_error = _fetch_emby_active_sessions(server)
+        streams, streams_error = _fetch_active_streams_shared(server)
         active_streams = len(streams) if streams_error is None else 0
         payload.append({
             "name": display_name or status.get("name") or "Server Emby",
@@ -130,7 +151,7 @@ def _build_emby_activity_snapshot(server_id: str):
         return json_error("Server non trovato", 404)
     if not target.get("enabled"):
         return json_error("Server disabilitato")
-    sessions, error = _fetch_emby_active_sessions(target)
+    sessions, error = _fetch_active_streams_shared(target)
     if error:
         return json_error(str(error), 500)
     payload = []
@@ -243,7 +264,7 @@ def _build_emby_streams_snapshot():
         if not server.get("enabled"):
             payload[server_id] = {"ok": False, "error": "Server disabilitato", "streams": []}
             continue
-        streams, error = _fetch_emby_active_sessions(server)
+        streams, error = _fetch_active_streams_shared(server)
         payload[server_id] = {
             "ok": error is None,
             "streams": streams,
@@ -279,21 +300,7 @@ def _build_emby_status_stream_payload():
             if task.get("is_running"):
                 running.append(task)
 
-        streams_mgr = get_streams_manager()
-        streams_error = None
-        try:
-            refresh_age = int(os.environ.get("STREAMS_REFRESH_SECONDS", "5"))
-        except ValueError:
-            refresh_age = 5
-        if streams_mgr.is_stale(server_id, refresh_age):
-            streams_api, streams_error = _fetch_emby_active_sessions(server)
-            if streams_error is None:
-                streams_mgr.refresh_from_api(server_id, streams_api)
-                streams = streams_api
-            else:
-                streams = streams_mgr.get_streams(server_id)
-        else:
-            streams = streams_mgr.get_streams(server_id)
+        streams, streams_error = _fetch_active_streams_shared(server)
 
         probe_status = get_probe_manager().get_status(server_id)
         data[server_id] = {

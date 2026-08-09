@@ -14,7 +14,7 @@ from .collection_common import (
     COLLECTION_BATCH_SIZE,
     _build_collection_tags,
     _extract_emby_items,
-    _octohub_id_tag,
+    _octohubs_id_tag,
 )
 from .sources import PROVIDER_LABEL_MAP
 
@@ -242,7 +242,7 @@ def _set_collection_poster(server: Dict[str, Any], collection_id: str, poster_ur
     payload = {
         "Type": "Primary",
         "ImageUrl": poster_url,
-        "ProviderName": "OctoHub Collections"
+        "ProviderName": "OctoHubs Collections"
     }
     success, response = _call_emby_api(
         server,
@@ -262,7 +262,7 @@ def _set_collection_background(server: Dict[str, Any], collection_id: str, backg
     payload = {
         "Type": "Backdrop",
         "ImageUrl": background_url,
-        "ProviderName": "OctoHub Collections"
+        "ProviderName": "OctoHubs Collections"
     }
     success, response = _call_emby_api(
         server,
@@ -436,7 +436,7 @@ def _find_collection_ids_for_definition(
     name = str(definition.get("name") or "").strip()
     sort_name = str(definition.get("sort_name") or "").strip()
     definition_id = str(definition.get("id") or "").strip()
-    id_tag = _octohub_id_tag(definition_id) if definition_id else ""
+    id_tag = _octohubs_id_tag(definition_id) if definition_id else ""
     matches: List[str] = []
     entries, ok = _list_emby_collections(server)
     if not ok:

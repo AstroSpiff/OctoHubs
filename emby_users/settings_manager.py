@@ -413,7 +413,7 @@ USER_SETTINGS_SCHEMA = [
     {
         "id": "libraries",
         "label": "Accesso librerie",
-        "description": "Usa le associazioni librerie di OctoHub per applicare gli ID corretti su ogni server.",
+        "description": "Usa le associazioni librerie di OctoHubs per applicare gli ID corretti su ogni server.",
         "column": "right",
         "libraries": True,
         "policy": [
@@ -556,7 +556,7 @@ USER_SETTINGS_SCHEMA = [
                 "label": "Schermata predefinita per libreria",
                 "type": "library_landing",
                 "group": "Schermate predefinite",
-                "description": "OctoHub usa gli ID delle librerie del server aperto. Per Live TV Emby usa la chiave landing-livetv."
+                "description": "OctoHubs usa gli ID delle librerie del server aperto. Per Live TV Emby usa la chiave landing-livetv."
             }
         ]
     },

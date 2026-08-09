@@ -29,14 +29,18 @@ ENV/
 *.sql
 *.csv
 logs/
+backups/
 data/
 secrets/
 instance/
+docker-data/
+*.log
 
 # Tests
 tests/
 *.test.py
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
 

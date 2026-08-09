@@ -1,21 +1,21 @@
 #!/bin/bash
-# Generate self-signed SSL certificate for OctoHub
+# Generate self-signed SSL certificate for OctoHubs
 
 set -e
 
-BASE_DIR="${OCTOHUB_CONFIG_DIR:-/mnt/shared/config/octohub}"
+BASE_DIR="${OCTOHUBS_CONFIG_DIR:-/mnt/shared/config/octohubs}"
 CERT_DIR="${BASE_DIR%/}/nginx/ssl"
 DAYS_VALID=365
 
-echo "🔐 Generating self-signed SSL certificate for OctoHub..."
+echo "🔐 Generating self-signed SSL certificate for OctoHubs..."
 echo ""
 
 # Create directory if it doesn't exist
 mkdir -p "$CERT_DIR"
 
 # Ask for domain name (optional)
-read -p "Enter domain name (or press Enter for 'octohub.local'): " DOMAIN
-DOMAIN=${DOMAIN:-octohub.local}
+read -p "Enter domain name (or press Enter for 'octohubs.local'): " DOMAIN
+DOMAIN=${DOMAIN:-octohubs.local}
 
 echo ""
 echo "Generating certificate for: $DOMAIN"
@@ -26,7 +26,7 @@ echo ""
 openssl req -x509 -nodes -days "$DAYS_VALID" -newkey rsa:2048 \
   -keyout "$CERT_DIR/privkey.pem" \
   -out "$CERT_DIR/fullchain.pem" \
-  -subj "/CN=$DOMAIN/O=OctoHub/C=IT"
+  -subj "/CN=$DOMAIN/O=OctoHubs/C=IT"
 
 # Set permissions
 chmod 644 "$CERT_DIR/fullchain.pem"

@@ -1,5 +1,5 @@
 (() => {
-        const scriptShared = window.octohubScriptShared || {};
+        const scriptShared = window.octohubsScriptShared || {};
         const {
             getCsrfToken = () => {
                 const el = document.querySelector('meta[name="csrf-token"]');
@@ -28,11 +28,11 @@
             openAlertDialog = () => Promise.resolve(null),
             openAlertDialogRich = () => Promise.resolve(null)
         } = scriptShared;
-        const resultsShared = window.octohubResultsShared || {};
+        const resultsShared = window.octohubsResultsShared || {};
         const {
             setupResolutionBlock = () => {}
         } = resultsShared;
-        const tmdbEmbyShared = window.octohubTmdbEmbyShared || {};
+        const tmdbEmbyShared = window.octohubsTmdbEmbyShared || {};
         const {
             sanitizeText = (value) => String(value ?? ''),
             buildServerIconHtml = () => '',
@@ -996,8 +996,8 @@
                     await navigator.clipboard.writeText(magnet);
                     showToast('Magnet copiato negli appunti', 'success');
                 } catch (err) {
-                    if (window.octohubUtils && typeof window.octohubUtils.openPromptModal === 'function') {
-                        await window.octohubUtils.openPromptModal(
+                    if (window.octohubsUtils && typeof window.octohubsUtils.openPromptModal === 'function') {
+                        await window.octohubsUtils.openPromptModal(
                             'Copia magnet',
                             'Copia il magnet:',
                             magnet,
@@ -1122,9 +1122,9 @@
                             .map(row => row.dataset.magnet || row.dataset.torrent)
                             .filter(Boolean);
                         let successCount = 0;
-                        if (links.length && window.octohubActions?.sendToQbBatch) {
+                        if (links.length && window.octohubsActions?.sendToQbBatch) {
                             try {
-                                const payload = await window.octohubActions.sendToQbBatch(links);
+                                const payload = await window.octohubsActions.sendToQbBatch(links);
                                 successCount = Number(payload.sent || 0);
                             } catch (err) {
                                 // ignore

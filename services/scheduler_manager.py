@@ -9,7 +9,6 @@ from services.requests_cache import _save_cached_requests_overview
 from services.requests_summary import _summarize_requests_for_dashboard
 from services.requests_processor import process_requests
 from services.workflows import _wf_trigger_sync
-from rss import _trigger_rss_polling
 
 scan_manager = ScanManager()
 _AUTO_SCHEDULER: AutoScheduler | None = None
@@ -24,7 +23,6 @@ def _ensure_auto_scheduler() -> AutoScheduler:
             save_overview_func=_save_cached_requests_overview,
             process_requests_func=process_requests,
             sync_users_func=_wf_trigger_sync,
-            rss_poll_func=_trigger_rss_polling,
         )
     return _AUTO_SCHEDULER
 

@@ -1,5 +1,5 @@
 (() => {
-        const scriptShared = window.octohubScriptShared || {};
+        const scriptShared = window.octohubsScriptShared || {};
         const {
             getCsrfToken = () => {
                 const el = document.querySelector('meta[name="csrf-token"]');
@@ -28,6 +28,12 @@
             openAlertDialog = () => Promise.resolve(null),
             openAlertDialogRich = () => Promise.resolve(null)
         } = scriptShared;
+        document.querySelectorAll('.event-bridge-server-icon[data-icon-color]').forEach((icon) => {
+            const color = icon.dataset.iconColor || '';
+            if (color) {
+                icon.style.color = color;
+            }
+        });
         const episodeToggle = document.getElementById('search_episode_variants');
         const skipSeasonToggle = document.getElementById('skip_season_query_when_episode_search');
         if (episodeToggle && skipSeasonToggle) {
@@ -470,7 +476,7 @@
                         })
                         .then(data => {
                             if (data.background) {
-                                window.octohubOperations?.notifyStarted?.();
+                                window.octohubsOperations?.notifyStarted?.();
                             }
                             if (statusLabel) statusLabel.textContent = data.message || 'Lista aggiornata';
                             if (refreshStatus) refreshStatus.textContent = data.message || 'Lista aggiornata';

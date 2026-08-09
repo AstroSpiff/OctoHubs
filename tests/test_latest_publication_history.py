@@ -1243,6 +1243,86 @@ class LatestPublicationHistoryTests(unittest.TestCase):
         self.assertEqual(["new_version"], [change.get("kind") for change in payload["series"][0]["changes"]])
         self.assertEqual([new_path], [change.get("path") for change in payload["series"][0]["changes"]])
 
+    def test_episode_split_items_after_gap_are_new_versions_on_empty_state(self):
+        db_state = _RecordingState({"server-a": {"movies": {"items": {}}, "series": {"items": {}}}})
+        db_cache = _RecordingCache()
+        old_episode = {
+            "Id": "episode-1-2160",
+            "Name": "Il libro di Giuditta",
+            "Type": "Episode",
+            "SeriesId": "series-1",
+            "SeriesName": "Ride or Die",
+            "SeriesProductionYear": 2026,
+            "ParentIndexNumber": 1,
+            "IndexNumber": 1,
+            "DateCreated": "2026-07-19T12:24:49+00:00",
+            "MediaSources": [
+                {
+                    "Id": "source-s01e01-2160",
+                    "Path": "/media/ride-or-die-s01e01-2160p.mkv",
+                    "Container": "mkv",
+                    "Size": 7540000000,
+                    "DateCreated": "2026-07-19T12:24:49+00:00",
+                }
+            ],
+        }
+        new_episode = {
+            "Id": "episode-1-1080",
+            "Name": "Il libro di Giuditta",
+            "Type": "Episode",
+            "SeriesId": "series-1",
+            "SeriesName": "Ride or Die",
+            "SeriesProductionYear": 2026,
+            "ParentIndexNumber": 1,
+            "IndexNumber": 1,
+            "DateCreated": "2026-07-19T13:45:57+00:00",
+            "MediaSources": [
+                {
+                    "Id": "source-s01e01-1080",
+                    "Path": "/media/ride-or-die-s01e01-1080p.mkv",
+                    "Container": "mkv",
+                    "Size": 2940000000,
+                    "DateCreated": "2026-07-19T13:45:57+00:00",
+                }
+            ],
+        }
+        series = {
+            "Id": "series-1",
+            "Name": "Ride or Die",
+            "Type": "Series",
+            "ProductionYear": 2026,
+            "DateCreated": "2026-07-19T10:24:11+00:00",
+        }
+
+        payload, error = _collect_with_mocks(
+            db_state,
+            db_cache,
+            episode_items=[old_episode, new_episode],
+            episode_catalog_items=[],
+            series_entries=[series],
+            batch_gap_minutes=10,
+        )
+
+        self.assertIsNone(error)
+        self.assertEqual(2, len(payload["series"]))
+        self.assertEqual(
+            ["Nuova versione", "Nuovi episodi"],
+            [entry.get("update_label") for entry in payload["series"]],
+        )
+        labels_by_path = {
+            change.get("path"): (entry.get("update_label"), change.get("kind"))
+            for entry in payload["series"]
+            for change in entry.get("changes", [])
+        }
+        self.assertEqual(
+            ("Nuovi episodi", "new_episode"),
+            labels_by_path.get("/media/ride-or-die-s01e01-2160p.mkv"),
+        )
+        self.assertEqual(
+            ("Nuova versione", "new_version"),
+            labels_by_path.get("/media/ride-or-die-s01e01-1080p.mkv"),
+        )
+
     def test_episode_notification_checkpoint_excludes_versions_already_notified_inside_gap(self):
         db_state = _RecordingState(
             {

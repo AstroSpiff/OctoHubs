@@ -1,4 +1,4 @@
-# Multi-stage Dockerfile for OctoHub
+# Multi-stage Dockerfile for OctoHubs
 # Stage 1: Builder - Install dependencies
 FROM python:3.11-alpine AS builder
 
@@ -34,8 +34,8 @@ RUN apk add --no-cache \
     openssl \
     ca-certificates \
     tzdata && \
-    addgroup -g 1000 octohub && \
-    adduser -D -u 1000 -G octohub octohub
+    addgroup -g 1000 octohubs && \
+    adduser -D -u 1000 -G octohubs octohubs
 
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv
@@ -44,34 +44,30 @@ COPY --from=builder /opt/venv /opt/venv
 WORKDIR /app
 
 # Copy application files
-COPY --chown=octohub:octohub . .
+COPY --chown=octohubs:octohubs . .
 
 # Set environment variables
 # Default paths match docker-compose.yml volume mappings
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    SECRET_KEY="" \
-    OCTOHUB_CONFIG_FILE="/config/config.json" \
-    OCTOHUB_RESULTS_FILE="/storage/last_results.json" \
-    OCTOHUB_DB_BACKUP_DIR="/storage/db-backups" \
-    AUTH_DATABASE_URL="sqlite:////storage/auth.db" \
+    OCTOHUBS_CONFIG_FILE="/config/config.json" \
+    OCTOHUBS_RESULTS_FILE="/storage/last_results.json" \
+    OCTOHUBS_DB_BACKUP_DIR="/storage/db-backups" \
     ADMIN_USERNAME="" \
-    ADMIN_PASSWORD="" \
     ADMIN_EMAIL="" \
-    WEBHOOK_SECRET="" \
     WEBHOOK_IP_WHITELIST="" \
     SESSION_TIMEOUT_MINUTES="60" \
     CSRF_TIME_LIMIT_SECONDS="3600"
 
 # Create directories for data persistence
 RUN mkdir -p /config /storage /storage/db-backups /app/logs && \
-    chown -R octohub:octohub /config /storage /app/logs
+    chown -R octohubs:octohubs /config /storage /app/logs
 
 RUN chmod +x /app/docker-entrypoint.sh
 
 # Switch to non-root user
-USER octohub
+USER octohubs
 
 # Expose port
 EXPOSE 5050

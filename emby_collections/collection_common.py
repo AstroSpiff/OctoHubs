@@ -25,7 +25,12 @@ COLLECTION_POSTER_MIME_TYPES = {
     "image/webp",
     "image/svg+xml",
 }
-OCTOHUB_COLLECTION_TAG = "OctoHub"
+OCTOHUBS_COLLECTION_TAG = "OctoHubs"
+LEGACY_OCTOHUB_COLLECTION_TAG = "OctoHub"
+OCTOHUBS_COLLECTION_TAGS = (
+    OCTOHUBS_COLLECTION_TAG,
+    LEGACY_OCTOHUB_COLLECTION_TAG,
+)
 
 
 def _now_iso() -> str:
@@ -41,18 +46,29 @@ def _server_map() -> Dict[str, Dict[str, Any]]:
     }
 
 
-def _octohub_id_tag(definition_id: str) -> str:
-    return f"{OCTOHUB_COLLECTION_TAG}:{definition_id}"
+def _octohubs_id_tag(definition_id: str, base_tag: str = OCTOHUBS_COLLECTION_TAG) -> str:
+    return f"{base_tag}:{definition_id}"
+
+
+def _is_octohubs_collection_tag(tag: str) -> bool:
+    return any(
+        tag == base_tag or tag.startswith(f"{base_tag}:")
+        for base_tag in OCTOHUBS_COLLECTION_TAGS
+    )
 
 
 def _build_collection_tags(definition: Dict[str, Any], existing_tags: Any) -> List[str]:
     tags = []
     if isinstance(existing_tags, list):
-        tags = [str(tag) for tag in existing_tags if tag]
+        tags = [
+            str(tag)
+            for tag in existing_tags
+            if tag and not _is_octohubs_collection_tag(str(tag))
+        ]
     definition_id = str(definition.get("id") or "").strip()
     if definition_id:
-        tags.append(OCTOHUB_COLLECTION_TAG)
-        tags.append(_octohub_id_tag(definition_id))
+        tags.append(OCTOHUBS_COLLECTION_TAG)
+        tags.append(_octohubs_id_tag(definition_id))
     # Dedup, preserve order
     return list(dict.fromkeys(tags))
 
@@ -66,13 +82,16 @@ def _normalize_pending_servers(value: Any) -> List[str]:
     return []
 
 
-def _extract_octohub_definition_id(tags: Any) -> str:
+def _extract_octohubs_definition_id(tags: Any) -> str:
     if not isinstance(tags, list):
         return ""
-    prefix = f"{OCTOHUB_COLLECTION_TAG}:"
     for tag in tags:
-        if isinstance(tag, str) and tag.startswith(prefix):
-            return tag[len(prefix):].strip()
+        if not isinstance(tag, str):
+            continue
+        for base_tag in OCTOHUBS_COLLECTION_TAGS:
+            prefix = f"{base_tag}:"
+            if tag.startswith(prefix):
+                return tag[len(prefix):].strip()
     return ""
 
 

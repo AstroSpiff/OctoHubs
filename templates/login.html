@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="{{ csrf_token() }}">
-    <title>Login - OctoHub</title>
+    <title>Login - OctoHubs</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
     <style>
         .login-container {
@@ -89,7 +89,7 @@
 <body>
     <div class="login-container">
         <div class="login-card">
-            <h1>OctoHub</h1>
+            <h1>OctoHubs</h1>
 
             {% with messages = get_flashed_messages(with_categories=true) %}
                 {% if messages %}
@@ -124,7 +124,7 @@
             </form>
 
             <div class="login-footer">
-                OctoHub v1.0 - Media Management System
+                OctoHubs v1.0 - Media Management System
             </div>
         </div>
     </div>

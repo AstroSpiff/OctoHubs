@@ -562,7 +562,8 @@ class StorageProbeMixin(_SessionProvider):
             "window_threshold": 0.90,
             "max_days": 60,
             "max_items": 2000,
-            "safety_margin_days": 7
+            "safety_margin_days": 7,
+            "probe_parallelism": 1
         }
         key = f"probe_recent_config:{server_id}"
         provider = cast(_KeyValueProvider, self)

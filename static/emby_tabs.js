@@ -1,5 +1,5 @@
 (() => {
-    const { csrfFetch } = window.octohubUtils;
+    const { csrfFetch } = window.octohubsUtils;
 
     const tabsContainer = document.querySelector('.tab-shell > .tabs');
     let tabButtons = tabsContainer ? tabsContainer.querySelectorAll('.tab-btn') : [];

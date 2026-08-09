@@ -161,6 +161,7 @@ class StorageMigrationTests(unittest.TestCase):
                 "0001_legacy_schema_alignment",
                 "0002_main_schema_bridge",
                 "0003_manual_search_history",
+                "0004_remove_rss_collection_storage",
             ],
         )
 
@@ -200,7 +201,13 @@ class StorageMigrationTests(unittest.TestCase):
                 migrations=default_migrations(lambda conn, url: None),
             )
 
-            self.assertEqual(result["applied"], ["0003_manual_search_history"])
+            self.assertEqual(
+                result["applied"],
+                [
+                    "0003_manual_search_history",
+                    "0004_remove_rss_collection_storage",
+                ],
+            )
             with engine.connect() as conn:
                 row = conn.execute(
                     text(
@@ -213,6 +220,59 @@ class StorageMigrationTests(unittest.TestCase):
                     )
                 ).first()
             self.assertIsNotNone(row)
+        finally:
+            engine.dispose()
+
+    def test_removed_rss_collection_storage_migration_drops_tables_and_settings(self):
+        from core.storage.migrations import apply_removed_rss_collection_storage_cleanup
+        from core.storage.storage_models import AppSettings
+
+        engine = create_engine("sqlite:///:memory:", future=True)
+        try:
+            AppSettings.__table__.create(engine)
+            with engine.begin() as conn:
+                conn.execute(text("CREATE TABLE rss_items (id INTEGER PRIMARY KEY, title TEXT)"))
+                conn.execute(
+                    text("CREATE TABLE category_blacklist (category_name TEXT PRIMARY KEY)")
+                )
+                conn.execute(text("CREATE TABLE category_hidden (category_name TEXT PRIMARY KEY)"))
+                conn.execute(
+                    AppSettings.__table__.insert().values(
+                        id=1,
+                        data={
+                            "RSS_IMPORT": {"ENABLED": True},
+                            "AUTO_TASKS": {
+                                "scan": {"enabled": True},
+                                "rss": {"enabled": True},
+                            },
+                            "EMBY": {"ENABLED": True},
+                        },
+                    )
+                )
+
+                apply_removed_rss_collection_storage_cleanup(conn, "sqlite:///:memory:")
+
+                remaining_tables = conn.execute(
+                    text(
+                        """
+                        SELECT name
+                        FROM sqlite_master
+                        WHERE type = 'table'
+                          AND name IN ('rss_items', 'category_blacklist', 'category_hidden')
+                        ORDER BY name
+                        """
+                    )
+                ).fetchall()
+                stored = conn.execute(AppSettings.__table__.select()).first()
+
+            self.assertEqual(remaining_tables, [])
+            self.assertEqual(
+                stored._mapping["data"],
+                {
+                    "AUTO_TASKS": {"scan": {"enabled": True}},
+                    "EMBY": {"ENABLED": True},
+                },
+            )
         finally:
             engine.dispose()
 
@@ -325,11 +385,11 @@ class StorageBackupTests(unittest.TestCase):
                 "DRIVER": "postgresql+psycopg2",
                 "HOST": "localhost",
                 "PORT": 5432,
-                "NAME": "jellychecker",
-                "USER": "jellychecker",
+                "NAME": "octohubs",
+                "USER": "octohubs",
                 "PASSWORD": "secret",
             }
-            with patch.dict("os.environ", {"OCTOHUB_PG_DUMP": str(fake_pg_dump)}):
+            with patch.dict("os.environ", {"OCTOHUBS_PG_DUMP": str(fake_pg_dump)}):
                 result = create_database_backup(
                     settings,
                     ["0001_legacy_schema_alignment"],

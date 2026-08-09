@@ -1,5 +1,5 @@
 /**
- * Shared utility functions for OctoHub frontend
+ * Shared utility functions for OctoHubs frontend
  * Common functions used across multiple JavaScript files
  */
 
@@ -7,7 +7,7 @@
     'use strict';
 
     // Prevent multiple initializations
-    if (window.octohubUtils && window.octohubUtils.__initialized) {
+    if (window.octohubsUtils && window.octohubsUtils.__initialized) {
         return;
     }
 
@@ -383,7 +383,7 @@
     };
 
     // Export utilities to global scope
-    window.octohubUtils = {
+    window.octohubsUtils = {
         __initialized: true,
         getCsrfToken,
         csrfFetch,
@@ -399,5 +399,5 @@
         showMessage
     };
 
-    console.log('[OctoHub Utils] Shared utilities loaded');
+    console.log('[OctoHubs Utils] Shared utilities loaded');
 })();

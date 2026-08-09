@@ -4,7 +4,7 @@ Docs: [README](../README.md) | [Docker Deploy](DOCKER_DEPLOY.md) | [Deployment](
 
 # Emby Tools
 
-This document covers Emby-related tools in OctoHub.
+This document covers Emby-related tools in OctoHubs.
 
 ## Manual setup
 - Add Emby servers in `config.json` with an admin API key.
@@ -25,7 +25,7 @@ STRM Extract is an Emby task that rebuilds or refreshes STRM files.
 
 How it works:
 - You can start it manually from the Emby dashboard.
-- If a server has `strm_task_id`, OctoHub uses it when triggering the task.
+- If a server has `strm_task_id`, OctoHubs uses it when triggering the task.
 
 ## STRM Guard
 STRM Guard starts STRM Extract only when the server has no active streams.

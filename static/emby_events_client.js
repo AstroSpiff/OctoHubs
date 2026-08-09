@@ -1,5 +1,5 @@
 (() => {
-    const { ensureCsrfInForms, ensureNextInForms } = window.octohubUtils;
+    const { ensureCsrfInForms, ensureNextInForms } = window.octohubsUtils;
     ensureCsrfInForms();
     ensureNextInForms();
 

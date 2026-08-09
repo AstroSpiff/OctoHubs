@@ -1391,6 +1391,6 @@
         };
     };
 
-    window.octohubEmbyLibraries = window.octohubEmbyLibraries || {};
-    window.octohubEmbyLibraries.init = init;
+    window.octohubsEmbyLibraries = window.octohubsEmbyLibraries || {};
+    window.octohubsEmbyLibraries.init = init;
 })();

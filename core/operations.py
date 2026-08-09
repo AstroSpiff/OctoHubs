@@ -21,12 +21,13 @@ class OperationTracker:
     def __init__(
         self,
         storage,
-        key: str = "octohub_operations:v1",
+        key: str = "octohubs_operations:v1",
         now: Optional[Callable[[], Any]] = None,
         max_recent: int = 40,
     ):
         self.storage = storage
         self.key = key
+        self.legacy_key = key.replace("octohubs_", "octohub_", 1) if key.startswith("octohubs_") else ""
         self._now = now
         self.max_recent = max(1, int(max_recent or 40))
         self._lock = threading.RLock()
@@ -156,6 +157,25 @@ class OperationTracker:
             self._save(kept)
         return removed
 
+    def interrupt_active(self, message: str = "Operazione interrotta") -> int:
+        """Mark every persisted active operation as interrupted."""
+        with self._lock:
+            registry = self._load()
+            now = self._timestamp()
+            interrupted = 0
+            for operation in registry.values():
+                if operation.get("status") not in ACTIVE_STATUSES:
+                    continue
+                operation["status"] = "interrupted"
+                operation["message"] = str(message or "Operazione interrotta")
+                operation["error"] = None
+                operation["updated_at"] = now
+                operation["finished_at"] = now
+                interrupted += 1
+            if interrupted:
+                self._save(registry)
+        return interrupted
+
     def _complete(
         self,
         operation_id: str,
@@ -182,7 +202,10 @@ class OperationTracker:
             return dict(operation)
 
     def _load(self) -> Dict[str, Dict[str, Any]]:
-        raw = self.storage.get_key_value(self.key) or {}
+        raw = self.storage.get_key_value(self.key)
+        if raw is None and self.legacy_key:
+            raw = self.storage.get_key_value(self.legacy_key)
+        raw = raw or {}
         if not isinstance(raw, dict):
             return {}
         operations = raw.get("operations")

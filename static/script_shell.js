@@ -1,7 +1,7 @@
 // Shared dashboard shell utilities and top-level UI wiring for script.js.
 
 (() => {
-    const utils = window.octohubUtils || {
+    const utils = window.octohubsUtils || {
         getCsrfToken: () => {
             const el = document.querySelector('meta[name="csrf-token"]');
             return el ? el.getAttribute('content') : '';
@@ -57,8 +57,8 @@
     window.showToast = showToast;
 
     const openConfirmDialog = (message, title = 'Conferma') => {
-        if (window.octohubUtils && typeof window.octohubUtils.openConfirmModal === 'function') {
-            return window.octohubUtils.openConfirmModal(title, message);
+        if (window.octohubsUtils && typeof window.octohubsUtils.openConfirmModal === 'function') {
+            return window.octohubsUtils.openConfirmModal(title, message);
         }
         const fallbackMsg = message || 'Modale non disponibile: azione annullata.';
         if (typeof window.showToast === 'function') {
@@ -70,8 +70,8 @@
     };
 
     const openAlertDialog = (message, title = 'Messaggio') => {
-        if (window.octohubUtils && typeof window.octohubUtils.openAlertModal === 'function') {
-            return window.octohubUtils.openAlertModal(title, message);
+        if (window.octohubsUtils && typeof window.octohubsUtils.openAlertModal === 'function') {
+            return window.octohubsUtils.openAlertModal(title, message);
         }
         if (typeof window.showToast === 'function') {
             window.showToast(message, 'error');
@@ -82,8 +82,8 @@
     };
 
     const openAlertDialogRich = (title, messageNode, fallbackMessage = '') => {
-        if (window.octohubUtils && typeof window.octohubUtils.openAlertModalRich === 'function') {
-            return window.octohubUtils.openAlertModalRich(title, messageNode);
+        if (window.octohubsUtils && typeof window.octohubsUtils.openAlertModalRich === 'function') {
+            return window.octohubsUtils.openAlertModalRich(title, messageNode);
         }
         const fallbackText = fallbackMessage || (messageNode ? messageNode.textContent : '') || title || 'Messaggio';
         if (typeof window.showToast === 'function') {
@@ -247,7 +247,7 @@
                 mainTabPanels.forEach((panel) => {
                     panel.classList.toggle('active', panel.dataset.tabPanel === target);
                 });
-                document.dispatchEvent(new CustomEvent('octohub:main-tab-changed', {
+                document.dispatchEvent(new CustomEvent('octohubs:main-tab-changed', {
                     detail: { tab: target }
                 }));
                 if (updateHash) {
@@ -418,7 +418,7 @@
         });
     }
 
-    window.octohubScriptShared = {
+    window.octohubsScriptShared = {
         getCsrfToken,
         csrfFetch,
         readJsonResponse,

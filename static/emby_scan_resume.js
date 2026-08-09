@@ -1,5 +1,5 @@
 (() => {
-    const { csrfFetch } = window.octohubUtils;
+    const { csrfFetch } = window.octohubsUtils;
 
     async function resumeActiveScans() {
         try {

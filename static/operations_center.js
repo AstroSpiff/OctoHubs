@@ -1,17 +1,17 @@
-// Global persistent operation center for OctoHub actions.
+// Global persistent operation center for OctoHubs actions.
 
 (() => {
     'use strict';
 
-    if (window.octohubOperations && window.octohubOperations.__initialized) {
-        window.embyUsersOperations = window.octohubOperations;
+    if (window.octohubsOperations && window.octohubsOperations.__initialized) {
+        window.embyUsersOperations = window.octohubsOperations;
         return;
     }
 
     const ACTIVE_STATUSES = new Set(['queued', 'running']);
     const POLL_ACTIVE_MS = 2000;
     const POLL_IDLE_MS = 12000;
-    const STORAGE_KEY = 'octohub.operations.open';
+    const STORAGE_KEY = 'octohubs.operations.open';
 
     const state = {
         root: null,
@@ -33,7 +33,7 @@
     };
 
     const apiFetch = (url, options = {}) => {
-        const utils = window.octohubUtils;
+        const utils = window.octohubsUtils;
         if (utils && typeof utils.csrfFetch === 'function') {
             return utils.csrfFetch(url, options);
         }
@@ -84,6 +84,7 @@
         collections_mdblist_lists: 'fa-list-ul',
         collection_sync: 'fa-layer-group',
         collections_sync_all: 'fa-arrows-rotate',
+        transcode_guard: 'fa-shield-halved',
     };
 
     const workflowStepIcons = {
@@ -192,7 +193,7 @@
             const previousIsActive = isActiveOperation(previous);
             const nextIsActive = isActiveOperation(operation);
             if (previousIsActive && !nextIsActive) {
-                document.dispatchEvent(new CustomEvent('octohub:operation-completed', {
+                document.dispatchEvent(new CustomEvent('octohubs:operation-completed', {
                     detail: { operation, previous },
                 }));
             }
@@ -451,6 +452,10 @@
         if (details.target_count) chips.push(`Target: ${details.target_count}`);
         if (details.mode) chips.push(`Modo: ${details.mode}`);
         if (details.workflow_type) chips.push(`Workflow: ${details.workflow_type}`);
+        if (details.server) chips.push(`Server: ${details.server}`);
+        if (details.user) chips.push(`Utente: ${details.user}`);
+        if (details.action) chips.push(`Azione: ${details.action}`);
+        if (details.source_height) chips.push(`Sorgente: ${details.source_height}p`);
         if (!chips.length) return null;
 
         const wrap = document.createElement('div');
@@ -504,7 +509,7 @@
         });
     }
 
-    window.octohubOperations = {
+    window.octohubsOperations = {
         __initialized: true,
         refresh,
         refreshSoon,
@@ -516,7 +521,7 @@
             refreshSoon(300);
         },
     };
-    window.embyUsersOperations = window.octohubOperations;
+    window.embyUsersOperations = window.octohubsOperations;
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', () => refreshSoon(0), { once: true });

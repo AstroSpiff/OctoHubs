@@ -1,8 +1,8 @@
-# OctoHub WebSocket Real-Time System
+# OctoHubs WebSocket Real-Time System
 
 ## Overview
 
-Sistema di comunicazione real-time bidirezionale tra OctoHub e i server Emby, eliminando il polling tradizionale e implementando event-driven architecture.
+Sistema di comunicazione real-time bidirezionale tra OctoHubs e i server Emby, eliminando il polling tradizionale e implementando event-driven architecture.
 
 ## Architettura
 
@@ -416,4 +416,4 @@ wscat -c "ws://localhost:5050/ws/events"
 
 **Version**: 1.0
 **Date**: 2026-01-09
-**Author**: OctoHub Development Team
+**Author**: OctoHubs Development Team

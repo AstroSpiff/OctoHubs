@@ -1,5 +1,5 @@
 (() => {
-        const scriptShared = window.octohubScriptShared || {};
+        const scriptShared = window.octohubsScriptShared || {};
         const {
             getCsrfToken = () => {
                 const el = document.querySelector('meta[name="csrf-token"]');

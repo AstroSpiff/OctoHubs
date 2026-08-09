@@ -1,10 +1,10 @@
 (() => {
-    if (window.octohubActions && window.octohubActions.__initialized) {
+    if (window.octohubsActions && window.octohubsActions.__initialized) {
         return;
     }
 
     // Use shared utilities from shared-utils.js
-    const { getCsrfToken, csrfFetch, readJsonResponse, showMessage } = window.octohubUtils;
+    const { getCsrfToken, csrfFetch, readJsonResponse, showMessage } = window.octohubsUtils;
 
     const normalizeMagnet = (value) => {
         if (typeof value !== 'string') return '';
@@ -190,8 +190,8 @@
     };
 
     const bind = () => {
-        if (window.__octohubActionsBound) return;
-        window.__octohubActionsBound = true;
+        if (window.__octohubsActionsBound) return;
+        window.__octohubsActionsBound = true;
         document.addEventListener('click', async (event) => {
             const qbBtn = event.target.closest('.qb-button');
             if (qbBtn) {
@@ -229,7 +229,7 @@
         });
     };
 
-    window.octohubActions = {
+    window.octohubsActions = {
         __initialized: true,
         bind,
         handleBatchAction,

@@ -50,7 +50,7 @@ Expected: FAIL because `emby_users.operation_tracker` is missing.
 
 - [ ] **Step 3: Implement tracker**
 
-Use key `octohub_operations:v1`, keep active and recent operations together, prune old completed operations, and guard mutations with `threading.RLock`.
+Use key `octohubs_operations:v1`, keep active and recent operations together, prune old completed operations, and guard mutations with `threading.RLock`.
 
 - [ ] **Step 4: Run tracker tests**
 

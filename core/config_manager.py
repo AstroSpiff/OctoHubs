@@ -17,13 +17,11 @@ from core.config import (
     _merge_emby_settings,
     _merge_justwatch_settings,
     _merge_resolution_settings,
-    _merge_rss_import_settings,
     _merge_trakt_settings,
     _normalize_auto_settings,
     _normalize_sort_settings,
 )
 from core.storage import DatabaseStorage, StorageError
-from core.utils import get_nested
 from emby_users.registry import refresh_emby_user_manager_config
 from search.indexers import _jackett_configured, _prowlarr_configured
 
@@ -195,7 +193,6 @@ def load_config() -> Tuple[Optional[Dict[str, Any]], bool]:
     search_rules = _normalize_sort_settings(search_rules)
     resolution_rules = _merge_resolution_settings(app_settings.get("RESOLUTION_RULES"))
     auto_settings = _normalize_auto_settings(app_settings.get("AUTO_TASKS"))
-    rss_import_settings = _merge_rss_import_settings(app_settings.get("RSS_IMPORT"))
     collection_settings = _merge_collection_settings(app_settings.get("COLLECTIONS"))
 
     if need_save or not app_settings or "AUTO_TASKS" not in app_settings:
@@ -207,7 +204,6 @@ def load_config() -> Tuple[Optional[Dict[str, Any]], bool]:
                 "SEARCH_RULES": search_rules,
                 "RESOLUTION_RULES": resolution_rules,
                 "AUTO_TASKS": auto_settings,
-                "RSS_IMPORT": rss_import_settings,
                 "TRAKT": merged["TRAKT"],
                 "JUSTWATCH": merged["JUSTWATCH"],
                 "EMBY": merged["EMBY"],
@@ -236,20 +232,7 @@ def load_config() -> Tuple[Optional[Dict[str, Any]], bool]:
     merged["RESOLUTION_RULES"] = resolution_rules
     merged["REQUEST_RULES"] = request_rules or {}
     merged["AUTO_TASKS"] = auto_settings
-    merged["RSS_IMPORT"] = rss_import_settings
     merged["COLLECTIONS"] = collection_settings
-
-    rss_auto_enabled = get_nested(auto_settings, "rss", "enabled", default=False)
-    rss_import_enabled = rss_import_settings.get("ENABLED", False)
-    if rss_auto_enabled != rss_import_enabled:
-        print(f"   -> Auto-sync: RSS_IMPORT.ENABLED {rss_import_enabled} → {rss_auto_enabled}")
-        rss_import_settings["ENABLED"] = rss_auto_enabled
-        merged["RSS_IMPORT"] = rss_import_settings
-        try:
-            app_settings["RSS_IMPORT"] = rss_import_settings
-            backend.save_app_settings(app_settings)
-        except Exception as exc:
-            print(f"   -> Errore salvataggio sync RSS_IMPORT: {exc}")
 
     jellyseerr_ok = bool(merged.get("JELLYSEERR_URL") and merged.get("JELLYSEERR_API_KEY"))
     prowlarr_ok = _prowlarr_configured(merged)

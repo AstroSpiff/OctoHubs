@@ -4,7 +4,7 @@ Docs: [README](../README.md) | [Docker Deploy](DOCKER_DEPLOY.md) | [Deployment](
 
 # Docker Deploy
 
-Guide for installing OctoHub with Docker Compose and Portainer.
+Guide for installing OctoHubs with Docker Compose and Portainer.
 
 ## Prerequisites
 - Docker 20.10+
@@ -17,11 +17,11 @@ Default host paths in `docker-compose.yml`:
 ```text
 /mnt/shared/
 |-- config/
-|   `-- octohub/
+|   `-- octohubs/
 |       |-- config.json
 |       `-- nginx/ssl/
 `-- applications/
-    `-- octohub/
+    `-- octohubs/
         |-- auth.db
         |-- last_results.json
         |-- logs/
@@ -42,7 +42,7 @@ If your storage differs, update the `/mnt/shared/...` paths in `docker-compose.y
 7. **First run**:
    - If you set admin ENV variables: you'll see the login page immediately.
    - Otherwise: you'll see the `/setup` wizard to create admin and configure DB (optional).
-8. After initial setup, edit `/mnt/shared/config/octohub/config.json` with your Emby server and integrations.
+8. After initial setup, edit `/mnt/shared/config/octohubs/config.json` with your Emby server and integrations.
 9. Restart the `app` container to apply changes.
 
 ## CLI quick start
@@ -79,7 +79,7 @@ ADMIN_EMAIL=admin@example.com
 ```
 
 ## config.json
-File location: `/mnt/shared/config/octohub/config.json`.
+File location: `/mnt/shared/config/octohubs/config.json`.
 For the full reference, see `CONFIGURATION.md`.
 
 Minimal example:
@@ -102,7 +102,7 @@ Minimal example:
 
 ## PostgreSQL (optional)
 Two separate data stores:
-- Users: SQLite at `/mnt/shared/applications/octohub/auth.db` (default).
+- Users: SQLite at `/mnt/shared/applications/octohubs/auth.db` (default).
 - App data: PostgreSQL if you enable `DATABASE` in `config.json`.
 
 Example `DATABASE` block:
@@ -112,9 +112,9 @@ Example `DATABASE` block:
     "ENABLED": true,
     "HOST": "postgres",
     "PORT": 5432,
-    "NAME": "octohub",
-    "USER": "octohub",
-    "PASSWORD": "octohub_password",
+    "NAME": "octohubs",
+    "USER": "octohubs",
+    "PASSWORD": "octohubs_password",
     "DRIVER": "postgresql+psycopg2"
   }
 }
@@ -126,7 +126,7 @@ If you do not need PostgreSQL, comment the `postgres` service in `docker-compose
 The Nginx service is commented by default.
 
 To enable HTTPS:
-1. Place certs in `/mnt/shared/config/octohub/nginx/ssl`.
+1. Place certs in `/mnt/shared/config/octohubs/nginx/ssl`.
 2. Ensure `nginx.conf` is available (from repo or mounted).
 3. Uncomment the `nginx` block in `docker-compose.yml`.
 4. Start with `docker compose up -d --build`.

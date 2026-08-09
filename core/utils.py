@@ -85,7 +85,7 @@ def get_nested(obj, *keys, default=None):
     Examples:
         >>> get_nested(config, "EMBY", "SERVERS", default=[])
         [...]
-        >>> get_nested(auto_settings, "rss", "enabled", default=False)
+        >>> get_nested(auto_settings, "scan", "enabled", default=False)
         False
         >>> get_nested(server, "status", "server_id")
         'uuid-1234'

@@ -271,9 +271,8 @@ function renderEmbyUsers(data) {
                 const search = searchFilter;
                 const uName = u.name.toLowerCase();
                 const gName = group.name ? group.name.toLowerCase() : '';
-                const sName = (u.server_alias || u.server_name).toLowerCase();
 
-                if (!uName.includes(search) && !gName.includes(search) && !sName.includes(search)) return false;
+                if (!uName.includes(search) && !gName.includes(search)) return false;
             }
 
             if (!isAllProfiles) {

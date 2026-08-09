@@ -12,6 +12,7 @@ from emby_runtime.api_clients import _call_emby_api
 
 from .constants import PROBE_SCOPE_LIBRARIES
 from .display import _format_probe_display_name
+from .utils import _coerce_int_range
 from .recent import RecentProbeMixin
 from .libraries import LibrariesProbeMixin
 from .combo import ComboProbeMixin
@@ -73,6 +74,17 @@ class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
         if not entry:
             return 0
         return int(entry.get("retry_count") or 0)
+
+    def _get_probe_parallelism(self, server: Dict[str, Any], server_id: str) -> int:
+        raw_value = server.get("probe_parallelism") if isinstance(server, dict) else None
+        if raw_value is None and self._db_getter:
+            try:
+                config = self._db_getter().get_recent_scan_config(server_id)
+                if isinstance(config, dict):
+                    raw_value = config.get("probe_parallelism")
+            except Exception:
+                raw_value = None
+        return _coerce_int_range(raw_value, 1, 1, 8)
 
     def _update_status(
         self,

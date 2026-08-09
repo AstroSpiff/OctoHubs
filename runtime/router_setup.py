@@ -17,14 +17,18 @@ from emby_latest.ui_routes import init_emby_latest_ui_routes, router as emby_lat
 from emby_libraries.routes import init_emby_library_routes, router as emby_libraries_router
 from emby_libraries.ui_routes import init_emby_library_ui_routes, router as emby_library_ui_router
 from emby_probe.routes import init_emby_probe_routes, router as emby_probe_router
+from emby_runtime.event_bridge_routes import init_event_bridge_routes, router as event_bridge_router
+from emby_runtime.event_bridge_settings import event_bridge_settings_for_server, normalize_event_bridge_config
 from emby_runtime.routes import init_emby_runtime_routes, router as emby_runtime_router
 from emby_runtime.server_routes import init_emby_server_routes, router as emby_server_router
+from emby_runtime.transcode_guard_routes import (
+    init_transcode_guard_routes,
+    router as transcode_guard_router,
+)
 from emby_users.routes import init_emby_user_routes, router as emby_users_router
 from emby_users.icon_routes import init_emby_icon_routes, router as emby_icon_router
 from realtime.routes import init_realtime_routes, router as realtime_router
-from rss.routes import init_rss_routes, router as rss_router
 from search.routes import init_search_routes, router as search_router
-from services.app_settings import _update_app_settings_overrides
 from services.operations_routes import init_operations_routes, router as operations_router
 from services.requests_routes import init_requests_routes, router as requests_router
 from services.routes import init_service_routes, router as services_router
@@ -83,15 +87,6 @@ def register_routes(app: FastAPI, templates: Jinja2Templates, logger: logging.Lo
         load_config,
     )
     app.include_router(services_router)
-    init_rss_routes(
-        _require_auth,
-        validate_csrf,
-        flash,
-        _resolve_next_url,
-        load_config,
-        _update_app_settings_overrides,
-    )
-    app.include_router(rss_router)
     init_search_routes(
         _require_auth,
         _ensure_db_backend,
@@ -105,6 +100,18 @@ def register_routes(app: FastAPI, templates: Jinja2Templates, logger: logging.Lo
         _require_auth,
     )
     app.include_router(emby_runtime_router)
+    init_transcode_guard_routes(
+        _require_auth,
+        validate_csrf,
+    )
+    app.include_router(transcode_guard_router)
+    def _event_bridge_settings(server_id: str | None = None):
+        config = load_config()[0] or {}
+        bridge_config = normalize_event_bridge_config(config.get("EVENT_BRIDGE", {}))
+        return event_bridge_settings_for_server(bridge_config, server_id)
+
+    init_event_bridge_routes(get_settings=_event_bridge_settings)
+    app.include_router(event_bridge_router)
     init_emby_collections_routes(
         get_current_user_optional,
         require_user,

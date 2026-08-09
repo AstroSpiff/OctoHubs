@@ -218,8 +218,33 @@ class RecentProbeMixin(ProbeManagerProtocol):
         mode: str
     ) -> None:
         if mode == "smart":
-            # Smart mode: round-robin processing, skip servers with active streams
-            self._smart_processing_all_servers(servers, stop_flag, "recent")
+            enabled_servers = [s for s in servers if s and s.get("enabled") and s.get("id")]
+            for server in enabled_servers:
+                if stop_flag.is_set():
+                    break
+                server_id = server.get("id")
+                if server_id:
+                    self.start_recent_processing(server, server_id, mode)
+
+            while not stop_flag.is_set():
+                active_workers = []
+                for server in enabled_servers:
+                    server_id = server.get("id")
+                    if not server_id:
+                        continue
+                    worker = self._workers.get(server_id, {}).get("recent_processing")
+                    if worker and worker.is_alive():
+                        active_workers.append(worker)
+                if not active_workers:
+                    break
+                if stop_flag.wait(1):
+                    break
+
+            if stop_flag.is_set():
+                for server in enabled_servers:
+                    server_id = server.get("id")
+                    if server_id:
+                        self.stop_recent_processing(server_id)
         else:
             # Forced mode: sequential processing
             enabled_servers = [s for s in servers if s and s.get("enabled") and s.get("id")]

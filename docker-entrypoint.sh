@@ -2,15 +2,18 @@
 set -e
 
 # Default paths match docker-compose.yml volume mappings
-if [ -z "$OCTOHUB_CONFIG_FILE" ]; then
-  export OCTOHUB_CONFIG_FILE="/config/config.json"
+if [ -z "$OCTOHUBS_CONFIG_FILE" ]; then
+  export OCTOHUBS_CONFIG_FILE="${OCTOHUB_CONFIG_FILE:-/config/config.json}"
 fi
-if [ -z "$OCTOHUB_RESULTS_FILE" ]; then
-  export OCTOHUB_RESULTS_FILE="/storage/last_results.json"
+if [ -z "$OCTOHUBS_RESULTS_FILE" ]; then
+  export OCTOHUBS_RESULTS_FILE="${OCTOHUB_RESULTS_FILE:-/storage/last_results.json}"
+fi
+if [ -z "$AUTH_DATABASE_URL" ]; then
+  export AUTH_DATABASE_URL="sqlite:////storage/auth.db"
 fi
 
-CONFIG_FILE="$OCTOHUB_CONFIG_FILE"
-RESULTS_FILE="$OCTOHUB_RESULTS_FILE"
+CONFIG_FILE="$OCTOHUBS_CONFIG_FILE"
+RESULTS_FILE="$OCTOHUBS_RESULTS_FILE"
 DEFAULT_CONFIG_SOURCE="/app/config.json"
 DEFAULT_RESULTS_SOURCE="/app/last_results.json"
 

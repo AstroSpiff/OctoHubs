@@ -144,20 +144,18 @@ class AutoScheduler:
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._settings = _default_auto_tasks()
-        self._next_run: Dict[str, Optional[datetime]] = {"scan": None, "refresh": None, "workflow": None, "sync": None, "rss": None}
+        self._next_run: Dict[str, Optional[datetime]] = {"scan": None, "refresh": None, "workflow": None, "sync": None}
         self._config = None
         self._refresh_running = False
-        self._rss_running = False
         self._scan_manager = scan_manager_instance
         self._summarize_func = None
         self._save_overview_func = None
         self._process_requests_func = None
         self._sync_users_func = None
-        self._rss_poll_func = None
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
 
-    def set_callbacks(self, summarize_func, save_overview_func, process_requests_func, sync_users_func=None, rss_poll_func=None):
+    def set_callbacks(self, summarize_func, save_overview_func, process_requests_func, sync_users_func=None):
         """
         Set callback functions to avoid circular imports.
 
@@ -166,13 +164,11 @@ class AutoScheduler:
             save_overview_func: Function to save cached overview
             process_requests_func: Function to process requests
             sync_users_func: Function to sync users
-            rss_poll_func: Function to poll RSS feeds
         """
         self._summarize_func = summarize_func
         self._save_overview_func = save_overview_func
         self._process_requests_func = process_requests_func
         self._sync_users_func = sync_users_func
-        self._rss_poll_func = rss_poll_func
 
     def update_config(self, config):
         with self._lock:
@@ -185,13 +181,11 @@ class AutoScheduler:
             # IMPORTANT: Only reset next_run if tasks are newly enabled or config structure changed
             # Otherwise preserve existing scheduled times to avoid infinite postponement
             if not hasattr(self, '_next_run') or self._next_run is None:
-                self._next_run = {"scan": None, "refresh": None, "workflow": None, "sync": None, "rss": None}
+                self._next_run = {"scan": None, "refresh": None, "workflow": None, "sync": None}
             if "workflow" not in self._next_run:
                 self._next_run["workflow"] = None
             if "sync" not in self._next_run:
                 self._next_run["sync"] = None
-            if "rss" not in self._next_run:
-                self._next_run["rss"] = None
             settings_snapshot = copy.deepcopy(self._settings)
         self._wake.set()
         # Only log next runs on initial config or when explicitly changed
@@ -217,7 +211,7 @@ class AutoScheduler:
     def _log_next_runs(self, settings, reference=None):
         """Log the next scheduled runs for enabled tasks."""
         ref = reference or datetime.now()
-        for kind in ("scan", "refresh", "workflow", "sync", "rss"):
+        for kind in ("scan", "refresh", "workflow", "sync"):
             entry = settings.get(kind) or {}
             if not entry.get("enabled"):
                 print(f"   -> AutoScheduler: {kind} disabilitato.")
@@ -251,7 +245,7 @@ class AutoScheduler:
             return 120
         now = datetime.now()
         min_wait = None
-        for kind in ("scan", "refresh", "workflow", "sync", "rss"):
+        for kind in ("scan", "refresh", "workflow", "sync"):
             entry = self._settings.get(kind)
             if not entry or not entry.get("enabled"):
                 continue
@@ -266,10 +260,8 @@ class AutoScheduler:
                     executed = self._trigger_refresh(config)
                 elif kind == "workflow":
                     executed = self._trigger_workflow(config)
-                elif kind == "sync":
+                else:
                     executed = self._trigger_sync()
-                else:  # rss
-                    executed = self._trigger_rss(config)
                 self._next_run[kind] = self._calculate_next_run(entry, datetime.now())
                 if not executed and self._next_run[kind] is None:
                     # Ritenta dopo un minuto in caso di errore continuo
@@ -365,34 +357,6 @@ class AutoScheduler:
         else:
             print("   -> AutoScheduler: workflow non avviato (start ha ritornato False).")
         return started
-
-    def _trigger_rss(self, config):
-        """Trigger RSS polling."""
-        with self._lock:
-            if self._rss_running:
-                print("   -> AutoScheduler: RSS polling non avviato (polling già in esecuzione).")
-                return False
-            self._rss_running = True
-        try:
-            if not self._rss_poll_func:
-                print("   -> AutoScheduler: RSS polling non avviato (callback non impostata).")
-                return False
-            print("   -> AutoScheduler: avvio polling RSS automatico...")
-            result = self._rss_poll_func(config)
-            if result:
-                print(f"   -> AutoScheduler: polling RSS completato ({result.get('total', 0)} articoli processati).")
-            else:
-                print("   -> AutoScheduler: polling RSS completato (nessun risultato).")
-            return True
-        except Exception as exc:
-            print(f"   -> AutoScheduler: errore polling RSS: {exc}")
-            import traceback
-            traceback.print_exc()
-            return False
-        finally:
-            with self._lock:
-                self._rss_running = False
-
 
 class WorkflowManager:
     """Gestisce workflow di aggiornamento sequenziali (Scan -> Probe -> Cache -> Notify)."""

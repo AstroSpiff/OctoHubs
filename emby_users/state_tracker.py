@@ -48,7 +48,7 @@ class UserSyncStateTracker:
         server_id: str,
         user_id: str,
         snapshot: Dict[str, Any],
-        origin: str = "octohub"
+        origin: str = "octohubs"
     ) -> Dict[str, Any]:
         previous = self.load(domain, server_id, user_id)
         digest = self.hash_snapshot(snapshot)

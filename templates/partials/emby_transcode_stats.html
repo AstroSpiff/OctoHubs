@@ -1,0 +1,82 @@
+<div class="tab-panel" data-tab-panel="transcode-stats">
+    <div class="card transcode-stats-card" data-transcode-stats-panel>
+        <div class="page-card-header transcode-stats-header">
+            <div>
+                <h2>Statistiche stream utenti</h2>
+                <p class="tagline">Leggi al volo chi riproduce correttamente, chi corregge e dove nascono più problemi.</p>
+            </div>
+            <div class="page-card-actions transcode-stats-actions">
+                <label class="transcode-stats-filter compact">
+                    <span>Periodo</span>
+                    <select data-transcode-stats-period>
+                        <option value="24h">24 ore</option>
+                        <option value="7d" selected>7 giorni</option>
+                        <option value="30d">30 giorni</option>
+                        <option value="all">Tutto</option>
+                    </select>
+                </label>
+                <button class="btn secondary compact" type="button" data-action="transcode-stats-refresh">
+                    <i class="fa-solid fa-rotate"></i>
+                </button>
+            </div>
+        </div>
+
+        <div class="transcode-stats-filters">
+            <label>
+                <span>Server</span>
+                <select data-transcode-stats-server>
+                    <option value="">Tutti i server</option>
+                </select>
+            </label>
+            <label>
+                <span>Utente</span>
+                <select data-transcode-stats-user>
+                    <option value="">Tutti gli utenti</option>
+                </select>
+            </label>
+            <label>
+                <span>Client</span>
+                <select data-transcode-stats-client>
+                    <option value="">Tutti i client</option>
+                </select>
+            </label>
+            <label>
+                <span>Ordina</span>
+                <select data-transcode-stats-sort>
+                    <option value="issues_desc">Problemi</option>
+                    <option value="streams_desc">Stream</option>
+                    <option value="recent_desc">Recenti</option>
+                    <option value="user_asc">Utente A-Z</option>
+                </select>
+            </label>
+            <label class="transcode-stats-check">
+                <input type="checkbox" data-transcode-stats-issues-only checked>
+                <span>Nascondi corrette</span>
+            </label>
+        </div>
+
+        <div class="transcode-stats-summary" data-transcode-stats-summary>
+            <div class="empty-state">Statistiche in caricamento.</div>
+        </div>
+
+        <section class="transcode-stats-section">
+            <div class="transcode-stats-section-title">
+                <h3>Andamento utenti</h3>
+                <p class="tagline">Gli utenti con più problemi o stop salgono in cima.</p>
+            </div>
+            <div class="transcode-stats-users" data-transcode-stats-users>
+                <div class="empty-state">Nessun dato utente disponibile.</div>
+            </div>
+        </section>
+
+        <section class="transcode-stats-section">
+            <div class="transcode-stats-section-title">
+                <h3>Cronologia stream</h3>
+                <p class="tagline">Ultimi stream osservati con condizioni tecniche ed esito.</p>
+            </div>
+            <div class="transcode-stats-history" data-transcode-stats-history>
+                <div class="empty-state">Nessuna cronologia disponibile.</div>
+            </div>
+        </section>
+    </div>
+</div>

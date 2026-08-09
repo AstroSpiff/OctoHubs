@@ -27,7 +27,7 @@
 
             // Cloud & Network
             'cloud', 'cloud-arrow-up', 'cloud-arrow-down', 'cloud-bolt', 'globe', 'signal',
-            'tower-broadcast', 'rss', 'satellite',
+            'tower-broadcast', 'satellite',
             'diagram-project', 'sitemap', 'share-nodes',
 
             // Files & Folders

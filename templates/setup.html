@@ -4,12 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="{{ csrf_token() }}">
-    <title>Configurazione OctoHub</title>
+    <title>Configurazione OctoHubs</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='config.css') }}">
 </head>
 <body>
     <div class="container">
-        <h1>Configurazione OctoHub</h1>
+        <h1>Configurazione OctoHubs</h1>
         <div class="setup-steps">
             <div class="setup-step {% if step == 'user' %}active{% endif %}">1. Utente Admin</div>
             <div class="setup-step {% if step == 'db' %}active{% endif %}">2. Database Postgres</div>
@@ -51,10 +51,10 @@
                 <button class="help-trigger" type="button" aria-label="Istruzioni Database">i</button>
                 <div class="help-content">
                     <strong>Nota sicurezza:</strong> la password del DB non viene salvata nel file.
-                    <div class="tagline">Usa <code>OCTOHUB_DB_PASSWORD</code> o <code>OCTOHUB_DB_PASSWORD_FILE</code>.</div>
-                    <div class="tagline">Portainer: Stack -> Environment variables -> aggiungi <code>OCTOHUB_DB_PASSWORD</code>.</div>
-                    <div class="tagline">CLI: <code>export OCTOHUB_DB_PASSWORD="password"</code></div>
-                    <div class="tagline">URL completa: <code class="breakable">export OCTOHUB_DB_URL="postgresql+psycopg2://utente:<wbr>password@host:<wbr>5432/db"</code></div>
+                    <div class="tagline">Usa <code>OCTOHUBS_DB_PASSWORD</code> o <code>OCTOHUBS_DB_PASSWORD_FILE</code>.</div>
+                    <div class="tagline">Portainer: Stack -> Environment variables -> aggiungi <code>OCTOHUBS_DB_PASSWORD</code>.</div>
+                    <div class="tagline">CLI: <code>export OCTOHUBS_DB_PASSWORD="password"</code></div>
+                    <div class="tagline">URL completa: <code class="breakable">export OCTOHUBS_DB_URL="postgresql+psycopg2://utente:<wbr>password@host:<wbr>5432/db"</code></div>
                 </div>
             </div>
             <div class="tagline" style="margin-bottom:0.75rem;">Inserisci host, porta, user e nome DB.</div>

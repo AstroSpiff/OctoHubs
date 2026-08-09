@@ -1,5 +1,5 @@
 (() => {
-        const scriptShared = window.octohubScriptShared || {};
+        const scriptShared = window.octohubsScriptShared || {};
         const {
             getCsrfToken = () => {
                 const el = document.querySelector('meta[name="csrf-token"]');
@@ -204,8 +204,8 @@
                 return [iconHtml, nameHtml].filter(Boolean).join(' ');
             };
 
-            window.octohubTmdbEmbyShared = {
-                ...(window.octohubTmdbEmbyShared || {}),
+            window.octohubsTmdbEmbyShared = {
+                ...(window.octohubsTmdbEmbyShared || {}),
                 sanitizeText,
                 buildServerIconHtml,
                 buildServerLabelHtml

@@ -7,12 +7,13 @@ import os
 
 from app_state import get_operation_tracker, register_app_event_loop
 from core.config_manager import _db_enabled, _ensure_db_backend, load_config
+from core.env import octohubs_env
 from core.tasks import workflow_manager
 
 
 def load_config_env_file() -> None:
     """Load environment variables from /config/.env if present."""
-    config_dir = os.path.dirname(os.environ.get("OCTOHUB_CONFIG_FILE", "/config/config.json"))
+    config_dir = os.path.dirname(octohubs_env("OCTOHUBS_CONFIG_FILE", "/config/config.json"))
     env_file_path = os.path.join(config_dir, ".env")
     if os.path.exists(env_file_path):
         try:
@@ -22,12 +23,18 @@ def load_config_env_file() -> None:
             print(f"[STARTUP] Loaded environment variables from {env_file_path}")
         except Exception as exc:
             print(f"[STARTUP] Warning: Could not load {env_file_path}: {exc}")
+    try:
+        from services.runtime_env import load_runtime_env_file
+
+        load_runtime_env_file()
+    except Exception as exc:
+        print(f"[STARTUP] Warning: Could not load runtime secrets: {exc}")
 
 
 async def register_runtime_event_loop() -> None:
     """Memorizza l'event loop usato da FastAPI per scheduling esterni."""
     print("\n" + "=" * 100, flush=True)
-    print("🚀 OCTOHUB STARTUP - MEGA LOGGING ENABLED", flush=True)
+    print("🚀 OCTOHUBS STARTUP - MEGA LOGGING ENABLED", flush=True)
     print("=" * 100 + "\n", flush=True)
     register_app_event_loop(asyncio.get_event_loop())
 
@@ -48,6 +55,13 @@ def initialize_runtime_services() -> None:
 
     get_probe_manager().configure(_ensure_db_backend)
     _initialize_emby_websockets()
+    try:
+        from emby_runtime.transcode_guard import get_transcode_guard_service
+
+        get_transcode_guard_service().start()
+        print("[STARTUP] Transcode Guard monitor pronto.")
+    except Exception as exc:
+        print(f"[STARTUP] ⚠️ Transcode Guard non avviato: {exc}")
     workflow_manager.set_callbacks(
         trigger_scan_func=_wf_trigger_scan,
         check_scan_func=_wf_check_scan,

@@ -4,11 +4,11 @@ Documenti: [README](../README_ita.md) | [Docker Deploy](DOCKER_DEPLOY_ita.md) | 
 
 # Integrazioni
 
-Questa guida copre i servizi esterni e come abilitarli in OctoHub.
+Questa guida copre i servizi esterni e come abilitarli in OctoHubs.
 
 ## Passi manuali comuni
 - Recupera API key o token da ogni servizio.
-- Usa URL raggiungibili dal container OctoHub (evita `localhost` se il servizio non e nello stesso container).
+- Usa URL raggiungibili dal container OctoHubs (evita `localhost` se il servizio non e nello stesso container).
 - Dopo modifiche manuali a `config.json`, riavvia il container app.
 
 ## Jellyseerr
@@ -19,8 +19,8 @@ Campi config:
 - `JELLYSEERR_API_KEY`
 
 Note:
-- OctoHub deve raggiungere Jellyseerr via rete.
-- Se disabilitato, OctoHub puo comunque fare ricerche manuali.
+- OctoHubs deve raggiungere Jellyseerr via rete.
+- Se disabilitato, OctoHubs puo comunque fare ricerche manuali.
 
 Passi manuali:
 - Crea una API key in Jellyseerr (Settings > API).
@@ -112,7 +112,7 @@ Vedi `EMBY_TOOLS_ita.md` per i workflow STRM.
 
 Passi manuali:
 - Crea una API key Emby con permessi admin.
-- Usa il base URL raggiungibile dal container OctoHub.
+- Usa il base URL raggiungibile dal container OctoHubs.
 
 ## Webhook Emby
 Endpoint:
@@ -125,7 +125,7 @@ Sicurezza opzionale:
 
 Passi manuali:
 - Abilita il plugin Emby Webhook.
-- Aggiungi un webhook con URL OctoHub e header opzionale.
+- Aggiungi un webhook con URL OctoHubs e header opzionale.
 - Seleziona gli eventi di playback da inviare.
 
 Test:

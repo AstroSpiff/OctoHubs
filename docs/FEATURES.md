@@ -10,7 +10,6 @@ This guide summarizes the main workflows available in the UI and how they connec
 - Set `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`.
 - Add at least one Emby server in `config.json` with a valid API key.
 - Add integration URLs and API keys for the services you plan to use.
-- If you need RSS import or history, enable `DATABASE.ENABLED=true` and run Postgres.
 - After editing `config.json` outside the UI, restart the app container.
 
 ## Dashboard and scans
@@ -43,18 +42,6 @@ Manual steps:
 - Enable `AUTO_TASKS` and choose `interval` or `fixed` schedules.
 - For fixed times, ensure the host timezone is correct for your schedule.
 
-## RSS import
-- Configure RSS sources in the RSS tab.
-- Import from RSS feeds or JSON file.
-- Deduplicate existing items (keep newest/oldest).
-- Browse RSS archive inside the UI.
-
-Note: RSS import requires `DATABASE.ENABLED=true`.
-
-Manual steps:
-- Add at least one RSS source and enable it.
-- If you import JSON, the file must be reachable by the container (bind mount if needed).
-
 ## Emby management
 - Multi-server support with status, tasks, and active sessions.
 - Trigger Emby library scan and refresh tasks.
@@ -85,5 +72,5 @@ Manual steps:
 - Emby webhook details are in `INTEGRATIONS.md`.
 
 ## Storage overview
-- Users: SQLite auth DB by default (`/mnt/shared/applications/octohub/auth.db`).
+- Users: SQLite auth DB by default (`/mnt/shared/applications/octohubs/auth.db`).
 - App data: PostgreSQL when `DATABASE.ENABLED=true`.

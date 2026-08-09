@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI helper to manage OctoHub users."""
+"""CLI helper to manage OctoHubs users."""
 import argparse
 
 from core.auth import (
@@ -61,7 +61,7 @@ def _print_users():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="OctoHub user management")
+    parser = argparse.ArgumentParser(description="OctoHubs user management")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("list", help="Elenca tutti gli utenti")

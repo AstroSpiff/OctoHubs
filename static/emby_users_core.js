@@ -280,7 +280,7 @@ function renderServerChips(container, servers) {
 }
 
 function openConfirmModal(title, message, confirmText = 'Conferma', cancelText = 'Annulla') {
-    const utils = window.octohubUtils;
+    const utils = window.octohubsUtils;
     if (utils && typeof utils.openConfirmModal === 'function') {
         return utils.openConfirmModal(title, message, confirmText, cancelText);
     }
@@ -294,7 +294,7 @@ function openConfirmModal(title, message, confirmText = 'Conferma', cancelText =
 }
 
 function openAlertModal(title, message, confirmText = 'OK') {
-    const utils = window.octohubUtils;
+    const utils = window.octohubsUtils;
     if (utils && typeof utils.openAlertModal === 'function') {
         return utils.openAlertModal(title, message, confirmText);
     }
@@ -308,7 +308,7 @@ function openAlertModal(title, message, confirmText = 'OK') {
 }
 
 function openPromptModal(title, message, defaultValue = '', options = {}) {
-    const utils = window.octohubUtils;
+    const utils = window.octohubsUtils;
     if (utils && typeof utils.openPromptModal === 'function') {
         return utils.openPromptModal(title, message, defaultValue, options);
     }
@@ -322,7 +322,7 @@ function openPromptModal(title, message, defaultValue = '', options = {}) {
 }
 
 function openConfirmModalRich(title, messageNode, confirmText = 'Conferma', cancelText = 'Annulla') {
-    const utils = window.octohubUtils;
+    const utils = window.octohubsUtils;
     if (utils && typeof utils.openConfirmModalRich === 'function') {
         return utils.openConfirmModalRich(title, messageNode, confirmText, cancelText);
     }

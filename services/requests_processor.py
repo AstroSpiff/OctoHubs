@@ -1,5 +1,5 @@
 """
-Search and request processing pipeline for OctoHub.
+Search and request processing pipeline for OctoHubs.
 Extracted from the legacy monolith to reduce module size.
 """
 
@@ -115,7 +115,7 @@ def execute_search_with_variants(
 
 
 def process_requests(config, status_callback=None, stop_event=None, target_map=None):
-    print("--- Avvio OctoHub ---")
+    print("--- Avvio OctoHubs ---")
     requests_list = get_jellyseerr_requests(config)
     rules = config.get("SEARCH_RULES", {})
     previous_summary = load_results_file()

@@ -75,6 +75,7 @@ _JELLYSEERR_REFRESH_STATE: dict = {
 _EMBY_LIBRARIES_MANAGER = None
 _EMBY_LIBRARY_SCAN_MANAGER = None
 _OPERATION_TRACKER = None
+_OPERATION_TRACKER_RECOVERED = False
 
 
 def get_emby_user_manager():
@@ -87,11 +88,19 @@ def get_emby_user_manager():
 
 def get_operation_tracker():
     """Return the global persistent operation tracker."""
-    global _OPERATION_TRACKER
+    global _OPERATION_TRACKER, _OPERATION_TRACKER_RECOVERED
     if _OPERATION_TRACKER is None:
         from core.operations import OperationTracker
 
         _OPERATION_TRACKER = OperationTracker(_ensure_db_backend())
+    if not _OPERATION_TRACKER_RECOVERED:
+        _OPERATION_TRACKER_RECOVERED = True
+        try:
+            interrupted = _OPERATION_TRACKER.interrupt_active("Interrotta da riavvio OctoHubs")
+            if interrupted:
+                print(f"[OPERATIONS] {interrupted} operazioni attive marcate come interrotte dopo riavvio.")
+        except Exception as exc:
+            print(f"[OPERATIONS] Recovery operazioni non riuscita: {exc}")
     return _OPERATION_TRACKER
 
 

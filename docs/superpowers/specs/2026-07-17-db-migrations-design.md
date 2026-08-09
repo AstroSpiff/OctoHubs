@@ -1,10 +1,10 @@
 # DB Migrations Design
 
 ## Goal
-Add a lightweight, versioned database migration layer so OctoHub can safely align old databases to the current schema, validate schema health, and expose explicit CLI commands for status, dry-run, and upgrade.
+Add a lightweight, versioned database migration layer so OctoHubs can safely align old databases to the current schema, validate schema health, and expose explicit CLI commands for status, dry-run, and upgrade.
 
 ## Current State
-OctoHub currently initializes SQLAlchemy models with `Base.metadata.create_all()` and then runs a large compatibility pass in `StorageCoreMixin._apply_migrations()`. That pass adds missing columns, creates some missing tables and indexes, and backfills several legacy fields. Configuration values from old `config.json` files can also be seeded into the database through `_seed_db_from_legacy_config()`.
+OctoHubs currently initializes SQLAlchemy models with `Base.metadata.create_all()` and then runs a large compatibility pass in `StorageCoreMixin._apply_migrations()`. That pass adds missing columns, creates some missing tables and indexes, and backfills several legacy fields. Configuration values from old `config.json` files can also be seeded into the database through `_seed_db_from_legacy_config()`.
 
 This is useful, but it is not a formal porting system. There is no migration registry, no schema version table, no CLI status, and no dry-run path.
 

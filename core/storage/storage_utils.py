@@ -85,7 +85,7 @@ def _build_connection_url(settings: Dict[str, Any]) -> str:
     driver = settings.get("DRIVER") or "postgresql+psycopg2"
     host = settings.get("HOST") or "localhost"
     port = settings.get("PORT") or 5432
-    database = settings.get("NAME") or "jellychecker"
+    database = settings.get("NAME") or "octohubs"
     user = settings.get("USER") or ""
     password = settings.get("PASSWORD") or ""
     auth = ""

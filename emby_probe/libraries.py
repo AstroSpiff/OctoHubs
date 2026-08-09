@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, Optional
 from datetime import datetime, timezone
 import threading
@@ -487,6 +488,8 @@ class LibrariesProbeMixin(ProbeManagerProtocol):
 
             db = self._db_getter()
             pause_flag = self._get_libraries_pause_flag(server_id) if scope == PROBE_SCOPE_LIBRARIES else None
+            db_write_lock = threading.Lock()
+            probe_parallelism = self._get_probe_parallelism(server, server_id)
 
             def wait_if_paused() -> bool:
                 if not pause_flag or not pause_flag.is_set():
@@ -546,6 +549,8 @@ class LibrariesProbeMixin(ProbeManagerProtocol):
                     server_id,
                     status_key,
                     total=len(queue_items),
+                    probe_parallelism=probe_parallelism,
+                    active_slots=0,
                     last_log=f"Trovati {len(queue_items)} file da processare"
                 )
 
@@ -651,7 +656,8 @@ class LibrariesProbeMixin(ProbeManagerProtocol):
                         return False
 
                     # Remove from queue
-                    db.remove_from_probe_queue(server_id, item_id, media_source_id, scope=scope)
+                    with db_write_lock:
+                        db.remove_from_probe_queue(server_id, item_id, media_source_id, scope=scope)
 
                     status = "ERROR"
                     error_details = "Timeout o errore API"
@@ -686,7 +692,8 @@ class LibrariesProbeMixin(ProbeManagerProtocol):
                             status = "SUCCESS"
                             error_details = None
                             should_requeue = False
-                            db.remove_from_probe_blacklist(server_id, item_id, media_source_id, scope=scope)
+                            with db_write_lock:
+                                db.remove_from_probe_blacklist(server_id, item_id, media_source_id, scope=scope)
                         else:
                             # Verification failed after all polling attempts
                             # Either missing metadata or persistent API issues during verification
@@ -696,35 +703,37 @@ class LibrariesProbeMixin(ProbeManagerProtocol):
 
                     if status != "SUCCESS":
                         error_type = "INCOMPLETE" if status == "INCOMPLETE" else "ERROR"
-                        retry_count = db.update_probe_blacklist(
-                            server_id,
-                            item_id,
-                            item_display_name,
-                            error_details or "Errore probe",
-                            media_source_id=media_source_id,
-                            increment_retry=True,
-                            error_type=error_type,
-                            scope=scope,
-                            library_id=library_id,
-                            library_name=library_name
-                        )
+                        with db_write_lock:
+                            retry_count = db.update_probe_blacklist(
+                                server_id,
+                                item_id,
+                                item_display_name,
+                                error_details or "Errore probe",
+                                media_source_id=media_source_id,
+                                increment_retry=True,
+                                error_type=error_type,
+                                scope=scope,
+                                library_id=library_id,
+                                library_name=library_name
+                            )
                         if retry_count >= 3:
                             should_requeue = False
 
                     final_for_library = not should_requeue
 
                     # Add to history
-                    db.add_probe_history({
-                        "server_id": server_id,
-                        "item_id": item_id,
-                        "media_source_id": media_source_id,
-                        "scope": scope,
-                        "name": item_display_name,
-                        "library_name": library_name,
-                        "status": status,
-                        "error_details": error_details,
-                        "duration_ms": duration_ms
-                    })
+                    with db_write_lock:
+                        db.add_probe_history({
+                            "server_id": server_id,
+                            "item_id": item_id,
+                            "media_source_id": media_source_id,
+                            "scope": scope,
+                            "name": item_display_name,
+                            "library_name": library_name,
+                            "status": status,
+                            "error_details": error_details,
+                            "duration_ms": duration_ms
+                        })
 
                     if status == "SUCCESS":
                         if is_retry:
@@ -779,13 +788,83 @@ class LibrariesProbeMixin(ProbeManagerProtocol):
                             self._increment_processing_library_result(server_id, status_key, str(library_id), "errors")
 
                     if should_requeue and not stop_flag.is_set():
-                        db.add_to_probe_queue([queue_item])
+                        with db_write_lock:
+                            db.add_to_probe_queue([queue_item])
 
                     # Rate limiting
                     if stop_flag.wait(1):
                         return False
 
                     return True
+
+                def handle_queue_items(queue_items_to_process: list[Dict[str, Any]]) -> bool:
+                    if probe_parallelism <= 1:
+                        for queue_item in queue_items_to_process:
+                            if not handle_queue_item(queue_item):
+                                return False
+                        return True
+
+                    next_index = 0
+                    active_names: Dict[Any, str] = {}
+                    pool_ok = True
+
+                    def submit_next(executor: ThreadPoolExecutor, futures: Dict[Any, Dict[str, Any]]) -> None:
+                        nonlocal next_index
+                        if stop_flag.is_set() or next_index >= len(queue_items_to_process):
+                            return
+                        queue_item = queue_items_to_process[next_index]
+                        next_index += 1
+                        future = executor.submit(handle_queue_item, queue_item)
+                        futures[future] = queue_item
+                        active_names[future] = _format_display_name_from_queue(queue_item)
+                        names = list(active_names.values())
+                        self._update_status(
+                            server_id,
+                            status_key,
+                            current_item=", ".join(names[:3]),
+                            active_slots=len(active_names),
+                            probe_parallelism=probe_parallelism,
+                            last_log=f"Analisi parallela: {len(active_names)}/{probe_parallelism} slot attivi"
+                        )
+
+                    with ThreadPoolExecutor(max_workers=probe_parallelism) as executor:
+                        futures: Dict[Any, Dict[str, Any]] = {}
+                        while len(futures) < probe_parallelism and next_index < len(queue_items_to_process):
+                            submit_next(executor, futures)
+
+                        while futures and not stop_flag.is_set():
+                            for future in as_completed(list(futures)):
+                                queue_item = futures.pop(future)
+                                active_names.pop(future, None)
+                                try:
+                                    item_ok = future.result()
+                                except Exception as exc:
+                                    item_ok = False
+                                    item_name = _format_display_name_from_queue(queue_item)
+                                    self._update_status(
+                                        server_id,
+                                        status_key,
+                                        last_log=f"Errore analisi parallela: {item_name} ({exc})",
+                                        increment_errors=1
+                                    )
+                                if not item_ok:
+                                    pool_ok = False
+                                if pool_ok and not stop_flag.is_set():
+                                    submit_next(executor, futures)
+                                names = list(active_names.values())
+                                self._update_status(
+                                    server_id,
+                                    status_key,
+                                    current_item=", ".join(names[:3]) if names else None,
+                                    active_slots=len(active_names),
+                                    probe_parallelism=probe_parallelism
+                                )
+                                if not pool_ok:
+                                    break
+                            if not pool_ok:
+                                break
+                        self._update_status(server_id, status_key, active_slots=0)
+                    return pool_ok and not stop_flag.is_set()
 
                 if scope == PROBE_SCOPE_LIBRARIES:
                     library_order = [str(lib_id) for lib_id in (target_libraries or []) if lib_id]
@@ -821,17 +900,15 @@ class LibrariesProbeMixin(ProbeManagerProtocol):
                                 current_library_id=str(library_id),
                                 current_library_name=library_name
                             )
-                            for queue_item in library_processable:
-                                if not handle_queue_item(queue_item):
-                                    break
+                            if not handle_queue_items(library_processable):
+                                break
                             if stop_flag.is_set():
                                 break
                         if stop_flag.is_set():
                             break
                 else:
-                    for queue_item in processable:
-                        if not handle_queue_item(queue_item):
-                            break
+                    if not handle_queue_items(processable):
+                        break
 
                 if stop_flag.is_set():
                     break
@@ -880,6 +957,7 @@ class LibrariesProbeMixin(ProbeManagerProtocol):
                     self._status[server_id][status_key]["running"] = False
                     self._status[server_id][status_key]["current_library_id"] = None
                     self._status[server_id][status_key]["current_library_name"] = None
+                    self._status[server_id][status_key]["active_slots"] = 0
                 if scope == PROBE_SCOPE_LIBRARIES and status_key == "processing":
                     combo_key = f"combo_{PROBE_SCOPE_LIBRARIES}"
                     combo_status = self._status.get(server_id, {}).get(combo_key, {})

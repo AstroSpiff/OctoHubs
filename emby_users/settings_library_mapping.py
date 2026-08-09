@@ -24,7 +24,7 @@ def remap_library_config_for_server(
     """Map library-related configuration IDs to the target server.
 
     Emby stores some library preferences with IDs that are unique to a server.
-    OctoHub's library associations substitute their target counterparts.
+    OctoHubs' library associations substitute their target counterparts.
     """
     remapped = dict(config_patch or {})
     library_fields = {
