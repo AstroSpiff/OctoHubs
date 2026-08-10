@@ -43,10 +43,28 @@ async def test_event_bridge_manager_tracks_websocket_connections_and_pushes_conf
     assert status["servers"][0]["server_id"] == "green"
     assert status["servers"][0]["server_name"] == "Green"
     assert status["servers"][0]["transport"] == "websocket"
+    assert status["servers"][0]["last_config_ack_status"] == "pending"
+    assert status["servers"][0]["last_config_message_id"]
     assert websocket.sent[0]["type"] == "configure"
+    assert websocket.sent[0]["id"] == status["servers"][0]["last_config_message_id"]
     assert websocket.sent[0]["settings"]["useWebSocket"] is True
     assert websocket.sent[0]["settings"]["useHttpFallback"] is False
     assert websocket.sent[0]["settings"]["progressEventNames"] == "PlaybackStart\nQualityChange"
+
+    manager.record_config_ack(
+        websocket,
+        {
+            "type": "configure_ack",
+            "id": websocket.sent[0]["id"],
+            "serverId": "green",
+            "ok": True,
+            "applied": True,
+        },
+    )
+    status = manager.status()
+
+    assert status["servers"][0]["last_config_ack_status"] == "applied"
+    assert status["servers"][0]["last_config_ack_message_id"] == websocket.sent[0]["id"]
 
 
 @pytest.mark.anyio

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 from emby_runtime.event_bridge_payloads import event_bridge_payloads
 from emby_runtime.event_bridge_settings import build_plugin_settings_payload
@@ -20,6 +21,12 @@ class EventBridgeServerState:
     connected_at: str = ""
     last_seen_at: str = ""
     last_event_at: str = ""
+    last_config_sent_at: str = ""
+    last_config_ack_at: str = ""
+    last_config_ack_status: str = ""
+    last_config_ack_error: str = ""
+    last_config_message_id: str = ""
+    last_config_ack_message_id: str = ""
     received_count: int = 0
     websocket: Any = field(default=None, repr=False)
 
@@ -33,6 +40,12 @@ class EventBridgeServerState:
             "connected_at": self.connected_at,
             "last_seen_at": self.last_seen_at,
             "last_event_at": self.last_event_at,
+            "last_config_sent_at": self.last_config_sent_at,
+            "last_config_ack_at": self.last_config_ack_at,
+            "last_config_ack_status": self.last_config_ack_status,
+            "last_config_ack_error": self.last_config_ack_error,
+            "last_config_message_id": self.last_config_message_id,
+            "last_config_ack_message_id": self.last_config_ack_message_id,
             "received_count": self.received_count,
         }
 
@@ -69,20 +82,48 @@ class EventBridgeConnectionManager:
             state.last_seen_at = _utc_now()
 
     async def push_configuration(self, server_id: str | None, settings: dict[str, Any]) -> int:
-        payload = {
-            "type": "configure",
-            "sentAt": _utc_now(),
-            "settings": build_plugin_settings_payload(settings),
-        }
         pushed = 0
         for state in self._target_states(server_id):
             websocket = state.websocket
             if websocket is None:
                 continue
+            now = _utc_now()
+            message_id = f"cfg-{state.server_id}-{uuid4().hex}"
+            payload = {
+                "type": "configure",
+                "id": message_id,
+                "sentAt": now,
+                "settings": build_plugin_settings_payload(settings),
+            }
             await websocket.send_json(payload)
-            state.last_seen_at = _utc_now()
+            state.last_seen_at = now
+            state.last_config_sent_at = now
+            state.last_config_message_id = message_id
+            state.last_config_ack_status = "pending"
+            state.last_config_ack_error = ""
             pushed += 1
         return pushed
+
+    def record_config_ack(self, websocket: Any, payload: dict[str, Any]) -> EventBridgeServerState | None:
+        server_id = str(payload.get("serverId") or "").strip() or self._websocket_servers.get(id(websocket))
+        if not server_id:
+            return None
+
+        now = _utc_now()
+        state = self._servers.get(server_id) or EventBridgeServerState(server_id=server_id)
+        state.transport = "websocket"
+        state.connected = True
+        state.websocket = websocket
+        state.last_seen_at = now
+        state.last_config_ack_at = now
+        state.last_config_ack_message_id = str(payload.get("id") or payload.get("configureId") or "").strip()
+        ok = payload.get("ok")
+        applied = payload.get("applied")
+        state.last_config_ack_status = "applied" if ok is not False and applied is not False else "error"
+        state.last_config_ack_error = "" if state.last_config_ack_status == "applied" else str(payload.get("error") or "").strip()
+        self._servers[server_id] = state
+        self._websocket_servers[id(websocket)] = server_id
+        return state
 
     def record_http_event(self, payload: dict[str, Any]) -> None:
         payloads = event_bridge_payloads(payload)

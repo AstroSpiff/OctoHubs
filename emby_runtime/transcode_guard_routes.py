@@ -16,6 +16,7 @@ from emby_runtime.event_bridge_payloads import (
     mark_event_bridge_transport,
     validate_event_bridge_secret,
 )
+from emby_runtime.event_bridge_settings import build_plugin_settings_payload, normalize_event_bridge_settings
 from emby_runtime.transcode_guard import get_transcode_guard_service
 
 router = APIRouter()
@@ -23,17 +24,20 @@ router = APIRouter()
 _require_auth: Optional[Callable[[Request], Any]] = None
 _validate_csrf: Optional[Callable[[Request, Optional[str]], bool]] = None
 _get_service: Optional[Callable[[], Any]] = None
+_get_event_bridge_settings: Optional[Callable[..., dict[str, Any]]] = None
 
 
 def init_transcode_guard_routes(
     require_auth: Callable[[Request], Any],
     validate_csrf: Callable[[Request, Optional[str]], bool],
     get_service: Callable[[], Any] = get_transcode_guard_service,
+    get_event_bridge_settings: Optional[Callable[..., dict[str, Any]]] = None,
 ) -> None:
-    global _require_auth, _validate_csrf, _get_service
+    global _require_auth, _validate_csrf, _get_service, _get_event_bridge_settings
     _require_auth = require_auth
     _validate_csrf = validate_csrf
     _get_service = get_service
+    _get_event_bridge_settings = get_event_bridge_settings
 
 
 def _require_auth_dep(request: Request):
@@ -57,6 +61,35 @@ def _service():
     if _get_service is None:
         return get_transcode_guard_service()
     return _get_service()
+
+
+def _plugin_settings_response(payloads: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if _get_event_bridge_settings is None:
+        return None
+
+    server_id = _server_id_from_payloads(payloads)
+    try:
+        try:
+            raw_settings = _get_event_bridge_settings(server_id)
+        except TypeError:
+            raw_settings = _get_event_bridge_settings()
+    except Exception as exc:
+        print(f"[EVENT_BRIDGE] Impossibile includere settings nella risposta HTTP: {exc}")
+        return None
+    return build_plugin_settings_payload(normalize_event_bridge_settings(raw_settings or {}))
+
+
+def _server_id_from_payloads(payloads: list[dict[str, Any]]) -> str | None:
+    for item in payloads or []:
+        server = item.get("server") if isinstance(item, dict) else None
+        if isinstance(server, dict):
+            server_id = str(server.get("id") or "").strip()
+            if server_id:
+                return server_id
+        server_id = str(item.get("serverId") or "").strip() if isinstance(item, dict) else ""
+        if server_id:
+            return server_id
+    return None
 
 
 @router.post("/api/emby/event-bridge/events")
@@ -90,7 +123,11 @@ async def api_transcode_guard_plugin_event(request: Request):
         }
     else:
         result = results[0] if results else {"recorded": False}
-    return JSONResponse({"ok": True, "result": result or {"recorded": False}})
+    response_payload = {"ok": True, "result": result or {"recorded": False}}
+    settings_payload = _plugin_settings_response(payloads)
+    if settings_payload is not None:
+        response_payload["settings"] = settings_payload
+    return JSONResponse(response_payload)
 
 
 @router.get("/api/emby/transcode-guard/settings")

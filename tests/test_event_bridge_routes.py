@@ -43,6 +43,7 @@ class _FakeWebSocket:
 async def test_event_bridge_websocket_accepts_plugin_events(monkeypatch):
     from emby_runtime.event_bridge_routes import init_event_bridge_routes, router
     from emby_runtime.event_bridge_routes import api_event_bridge_websocket
+    from emby_runtime.event_bridge_manager import get_event_bridge_manager
 
     service = _Service()
     monkeypatch.setenv("WEBHOOK_SECRET", "bridge-secret")
@@ -68,6 +69,7 @@ async def test_event_bridge_websocket_accepts_plugin_events(monkeypatch):
     websocket = _FakeWebSocket(
         [
             {"type": "hello", "serverId": "green", "serverName": "Green"},
+            {"type": "configure_ack", "serverId": "green", "id": "cfg-green-test", "ok": True, "applied": True},
             {
                 "schema": "octohubs.emby.event.v1",
                 "server": {"id": "green", "name": "Green"},
@@ -86,6 +88,12 @@ async def test_event_bridge_websocket_accepts_plugin_events(monkeypatch):
     assert websocket.sent[1]["processed"] == 1
     assert service.payloads[0]["event"]["name"] == "PlaybackStart"
     assert service.payloads[0]["_eventBridgeTransport"] == "websocket"
+    status_by_id = {
+        item["server_id"]: item
+        for item in get_event_bridge_manager().status()["servers"]
+    }
+    assert status_by_id["green"]["last_config_ack_status"] == "applied"
+    assert status_by_id["green"]["last_config_ack_message_id"] == "cfg-green-test"
 
 
 def test_event_bridge_transport_marks_batched_events():

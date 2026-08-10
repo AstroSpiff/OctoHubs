@@ -76,6 +76,9 @@ async def api_event_bridge_websocket(websocket: WebSocket):
                     }
                 )
                 continue
+            if str(payload.get("type") or "").lower() == "configure_ack":
+                manager.record_config_ack(websocket, payload)
+                continue
             if not registered:
                 await manager.register(websocket, payload)
                 registered = True

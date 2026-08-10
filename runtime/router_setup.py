@@ -100,16 +100,18 @@ def register_routes(app: FastAPI, templates: Jinja2Templates, logger: logging.Lo
         _require_auth,
     )
     app.include_router(emby_runtime_router)
-    init_transcode_guard_routes(
-        _require_auth,
-        validate_csrf,
-    )
-    app.include_router(transcode_guard_router)
+
     def _event_bridge_settings(server_id: str | None = None):
         config = load_config()[0] or {}
         bridge_config = normalize_event_bridge_config(config.get("EVENT_BRIDGE", {}))
         return event_bridge_settings_for_server(bridge_config, server_id)
 
+    init_transcode_guard_routes(
+        _require_auth,
+        validate_csrf,
+        get_event_bridge_settings=_event_bridge_settings,
+    )
+    app.include_router(transcode_guard_router)
     init_event_bridge_routes(get_settings=_event_bridge_settings)
     app.include_router(event_bridge_router)
     init_emby_collections_routes(

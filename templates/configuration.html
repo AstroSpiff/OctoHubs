@@ -1078,6 +1078,7 @@
                                     {% set bridge_settings = bridge_server.settings %}
                                     {% set bridge_status = bridge_server.status %}
                                     {% set bridge_id = bridge_server.id | replace('-', '_') %}
+                                    {% set bridge_config_ack_status = bridge_status.last_config_ack_status if bridge_status else '' %}
                                     <details class="config-box event-bridge-server-card" open>
                                         <summary class="event-bridge-server-summary">
                                             <div class="event-bridge-server-heading">
@@ -1097,6 +1098,18 @@
                                                         Non visto
                                                     {% endif %}
                                                 </span>
+                                                {% if bridge_config_ack_status %}
+                                                    <span class="status-pill {% if bridge_config_ack_status == 'applied' %}status-ok{% elif bridge_config_ack_status == 'pending' %}status-skip{% else %}status-fail{% endif %}"
+                                                          title="{% if bridge_status.last_config_ack_error %}{{ bridge_status.last_config_ack_error }}{% elif bridge_status.last_config_ack_at %}{{ bridge_status.last_config_ack_at }}{% elif bridge_status.last_config_sent_at %}{{ bridge_status.last_config_sent_at }}{% endif %}">
+                                                        {% if bridge_config_ack_status == 'applied' %}
+                                                            Config applicata
+                                                        {% elif bridge_config_ack_status == 'pending' %}
+                                                            Config inviata
+                                                        {% else %}
+                                                            Config errore
+                                                        {% endif %}
+                                                    </span>
+                                                {% endif %}
                                                 <i class="fa-solid fa-chevron-down event-bridge-server-chevron" aria-hidden="true"></i>
                                             </div>
                                         </summary>

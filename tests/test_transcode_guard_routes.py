@@ -274,10 +274,21 @@ async def test_transcode_guard_plugin_event_route_uses_webhook_secret(monkeypatc
 async def test_transcode_guard_plugin_event_route_accepts_event_bridge_batches(monkeypatch):
     service = _Service()
     monkeypatch.setenv("WEBHOOK_SECRET", "bridge-secret")
+    seen_server_ids = []
+
+    def event_bridge_settings(server_id=None):
+        seen_server_ids.append(server_id)
+        return {
+            "WEBSOCKET_ENABLED": True,
+            "HTTP_FALLBACK_ENABLED": False,
+            "PLAYBACK_EVENT_NAMES": ["QualityChange"],
+        }
+
     init_transcode_guard_routes(
         require_auth=lambda _request: {"username": "admin"},
         validate_csrf=lambda _request, _token: True,
         get_service=lambda: service,
+        get_event_bridge_settings=event_bridge_settings,
     )
 
     response = await api_transcode_guard_plugin_event(_Request(
@@ -294,6 +305,10 @@ async def test_transcode_guard_plugin_event_route_accepts_event_bridge_batches(m
     payload = json.loads(response.body.decode("utf-8"))
     assert payload["ok"] is True
     assert [item["eventName"] for item in service.plugin_event_payloads] == ["Pause", "Unpause"]
+    assert seen_server_ids == ["green"]
+    assert payload["settings"]["useWebSocket"] is True
+    assert payload["settings"]["useHttpFallback"] is False
+    assert payload["settings"]["progressEventNames"] == "QualityChange"
 
 
 @pytest.mark.anyio
