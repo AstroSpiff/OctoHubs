@@ -22,6 +22,7 @@ from core.config import (
     _normalize_sort_settings,
 )
 from core.storage import DatabaseStorage, StorageError
+from emby_runtime.event_bridge_settings import normalize_event_bridge_config
 from emby_users.registry import refresh_emby_user_manager_config
 from search.indexers import _jackett_configured, _prowlarr_configured
 
@@ -149,6 +150,7 @@ def load_config() -> Tuple[Optional[Dict[str, Any]], bool]:
     legacy_trakt = file_config.get("TRAKT")
     legacy_justwatch = file_config.get("JUSTWATCH")
     legacy_emby = (file_config or {}).get("EMBY")
+    legacy_event_bridge = (file_config or {}).get("EVENT_BRIDGE")
     for key in CONNECTION_FIELDS:
         if key not in app_settings and key in file_config:
             app_settings[key] = file_config.get(key)
@@ -161,6 +163,9 @@ def load_config() -> Tuple[Optional[Dict[str, Any]], bool]:
         need_save = True
     if "EMBY" not in app_settings and isinstance(legacy_emby, dict):
         app_settings["EMBY"] = legacy_emby
+        need_save = True
+    if "EVENT_BRIDGE" not in app_settings and isinstance(legacy_event_bridge, dict):
+        app_settings["EVENT_BRIDGE"] = legacy_event_bridge
         need_save = True
 
     if legacy_rules and not app_settings.get("SEARCH_RULES"):
@@ -194,6 +199,7 @@ def load_config() -> Tuple[Optional[Dict[str, Any]], bool]:
     resolution_rules = _merge_resolution_settings(app_settings.get("RESOLUTION_RULES"))
     auto_settings = _normalize_auto_settings(app_settings.get("AUTO_TASKS"))
     collection_settings = _merge_collection_settings(app_settings.get("COLLECTIONS"))
+    event_bridge_config = normalize_event_bridge_config(app_settings.get("EVENT_BRIDGE"))
 
     if need_save or not app_settings or "AUTO_TASKS" not in app_settings:
         persisted = dict(app_settings)
@@ -208,6 +214,7 @@ def load_config() -> Tuple[Optional[Dict[str, Any]], bool]:
                 "JUSTWATCH": merged["JUSTWATCH"],
                 "EMBY": merged["EMBY"],
                 "COLLECTIONS": collection_settings,
+                "EVENT_BRIDGE": event_bridge_config,
             }
         )
         for key in CONNECTION_FIELDS:
@@ -233,6 +240,7 @@ def load_config() -> Tuple[Optional[Dict[str, Any]], bool]:
     merged["REQUEST_RULES"] = request_rules or {}
     merged["AUTO_TASKS"] = auto_settings
     merged["COLLECTIONS"] = collection_settings
+    merged["EVENT_BRIDGE"] = event_bridge_config
 
     jellyseerr_ok = bool(merged.get("JELLYSEERR_URL") and merged.get("JELLYSEERR_API_KEY"))
     prowlarr_ok = _prowlarr_configured(merged)
