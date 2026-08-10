@@ -192,16 +192,11 @@ async def update_event_bridge_route(
     current_config, _is_valid = load_config()
     current_bridge = normalize_event_bridge_config((current_config or {}).get("EVENT_BRIDGE", {}))
     server_ids = _form_list(form, "event_bridge_server_ids")
-    server_settings = {
+    submitted_server_settings = {
         server_id: normalize_event_bridge_settings(_event_bridge_settings_payload(form, f"event_bridge_{server_id}_"))
         for server_id in server_ids
     }
-    bridge_config = normalize_event_bridge_config(
-        {
-            "DEFAULT": current_bridge["DEFAULT"],
-            "SERVERS": server_settings,
-        }
-    )
+    bridge_config = _merged_event_bridge_config(current_bridge, submitted_server_settings)
     webhook_secret = str(form.get("webhook_secret") or "").strip()
     if webhook_secret:
         try:
@@ -221,8 +216,12 @@ async def update_event_bridge_route(
         http_pushed = 0
         http_failed: list[str] = []
         manager = get_event_bridge_manager()
-        connected_ids = {item.get("server_id") for item in manager.status().get("servers", [])}
-        target_ids = set(server_settings) | {str(item or "") for item in connected_ids if item}
+        connected_ids = {
+            item.get("server_id")
+            for item in manager.status().get("servers", [])
+            if isinstance(item, dict) and item.get("connected")
+        }
+        target_ids = set(submitted_server_settings) | {str(item or "") for item in connected_ids if item}
         raw_servers = _raw_emby_servers_by_id(current_config)
         websocket_target_ids = set(target_ids)
         for server_id in sorted(target_ids):
@@ -268,6 +267,25 @@ def _save_event_bridge_settings(settings: dict[str, Any]) -> None:
     app_settings = backend.load_app_settings() or {}
     app_settings["EVENT_BRIDGE"] = settings
     backend.save_app_settings(app_settings)
+
+
+def _merged_event_bridge_config(
+    current_bridge: dict[str, Any],
+    submitted_server_settings: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    current_bridge = normalize_event_bridge_config(current_bridge)
+    merged_servers = {
+        str(server_id): settings
+        for server_id, settings in (current_bridge.get("SERVERS") or {}).items()
+        if str(server_id or "").strip()
+    }
+    merged_servers.update(submitted_server_settings or {})
+    return normalize_event_bridge_config(
+        {
+            "DEFAULT": current_bridge["DEFAULT"],
+            "SERVERS": merged_servers,
+        }
+    )
 
 
 def _event_bridge_settings_payload(form: Any, prefix: str) -> dict[str, Any]:
@@ -326,9 +344,16 @@ def _event_bridge_servers_for_view(
                 "icon_color": server.get("icon_color") or "#3b82f6",
                 "settings": settings,
                 "status": status_by_id.get(server_id),
+                "settings_editable": _event_bridge_settings_editable(status_by_id.get(server_id)),
             }
         )
     return items
+
+
+def _event_bridge_settings_editable(status: dict[str, Any] | None) -> bool:
+    if not isinstance(status, dict):
+        return False
+    return bool(status.get("connected") or status.get("received_count"))
 
 
 def _form_list(form: Any, name: str) -> list[str]:

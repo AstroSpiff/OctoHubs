@@ -1499,6 +1499,15 @@
             padding-top: 1rem;
             border-top: 1px solid #e1e8f2;
         }
+        .event-bridge-plugin-empty {
+            display: grid;
+            gap: 0.25rem;
+            color: #64748b;
+            font-size: 0.92rem;
+        }
+        .event-bridge-plugin-empty strong {
+            color: #334155;
+        }
         .event-bridge-options {
             display: flex;
             flex-wrap: wrap;

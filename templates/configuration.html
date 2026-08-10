@@ -1079,7 +1079,7 @@
                                     {% set bridge_status = bridge_server.status %}
                                     {% set bridge_id = bridge_server.id | replace('-', '_') %}
                                     {% set bridge_config_ack_status = bridge_status.last_config_ack_status if bridge_status else '' %}
-                                    <details class="config-box event-bridge-server-card" open>
+                                    <details class="config-box event-bridge-server-card" {% if bridge_server.settings_editable %}open{% endif %}>
                                         <summary class="event-bridge-server-summary">
                                             <div class="event-bridge-server-heading">
                                                 <h4>
@@ -1115,71 +1115,78 @@
                                         </summary>
 
                                         <div class="event-bridge-server-body">
-                                            <input type="hidden" name="event_bridge_server_ids" value="{{ bridge_server.id }}">
-                                            <div class="event-bridge-options">
-                                                <label title="Abilita o disabilita Event Bridge per questo server">
-                                                    <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_enabled" {% if bridge_settings.ENABLED %}checked{% endif %}>
-                                                    Abilita
-                                                </label>
-                                                <label title="Usa WebSocket bidirezionale quando il plugin riesce a connettersi">
-                                                    <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_websocket_enabled" {% if bridge_settings.WEBSOCKET_ENABLED %}checked{% endif %}>
-                                                    WebSocket
-                                                </label>
-                                                <label title="Se WebSocket non è disponibile, consenti invio HTTP batch">
-                                                    <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_http_fallback_enabled" {% if bridge_settings.HTTP_FALLBACK_ENABLED %}checked{% endif %}>
-                                                    Fallback HTTP
-                                                </label>
-                                                <label title="Includi eventi playback: start, stop, progressi whitelist e cambi player">
-                                                    <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_capture_playback" {% if bridge_settings.CAPTURE_PLAYBACK_EVENTS %}checked{% endif %}>
-                                                    Playback
-                                                </label>
-                                                <label title="Includi eventi sessione Emby selezionati">
-                                                    <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_capture_session" {% if bridge_settings.CAPTURE_SESSION_EVENTS %}checked{% endif %}>
-                                                    Sessione
-                                                </label>
-                                                <label title="Includi eventi diagnostici generati dal plugin">
-                                                    <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_capture_plugin" {% if bridge_settings.CAPTURE_PLUGIN_EVENTS %}checked{% endif %}>
-                                                    Plugin
-                                                </label>
-                                                <label title="Invia payload grezzi compatti solo per diagnostica">
-                                                    <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_include_raw_payload" {% if bridge_settings.INCLUDE_RAW_PAYLOAD %}checked{% endif %}>
-                                                    Raw
-                                                </label>
-                                            </div>
+                                            {% if bridge_server.settings_editable %}
+                                                <input type="hidden" name="event_bridge_server_ids" value="{{ bridge_server.id }}">
+                                                <div class="event-bridge-options">
+                                                    <label title="Abilita o disabilita Event Bridge per questo server">
+                                                        <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_enabled" {% if bridge_settings.ENABLED %}checked{% endif %}>
+                                                        Abilita
+                                                    </label>
+                                                    <label title="Usa WebSocket bidirezionale quando il plugin riesce a connettersi">
+                                                        <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_websocket_enabled" {% if bridge_settings.WEBSOCKET_ENABLED %}checked{% endif %}>
+                                                        WebSocket
+                                                    </label>
+                                                    <label title="Se WebSocket non è disponibile, consenti invio HTTP batch">
+                                                        <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_http_fallback_enabled" {% if bridge_settings.HTTP_FALLBACK_ENABLED %}checked{% endif %}>
+                                                        Fallback HTTP
+                                                    </label>
+                                                    <label title="Includi eventi playback: start, stop, progressi whitelist e cambi player">
+                                                        <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_capture_playback" {% if bridge_settings.CAPTURE_PLAYBACK_EVENTS %}checked{% endif %}>
+                                                        Playback
+                                                    </label>
+                                                    <label title="Includi eventi sessione Emby selezionati">
+                                                        <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_capture_session" {% if bridge_settings.CAPTURE_SESSION_EVENTS %}checked{% endif %}>
+                                                        Sessione
+                                                    </label>
+                                                    <label title="Includi eventi diagnostici generati dal plugin">
+                                                        <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_capture_plugin" {% if bridge_settings.CAPTURE_PLUGIN_EVENTS %}checked{% endif %}>
+                                                        Plugin
+                                                    </label>
+                                                    <label title="Invia payload grezzi compatti solo per diagnostica">
+                                                        <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_include_raw_payload" {% if bridge_settings.INCLUDE_RAW_PAYLOAD %}checked{% endif %}>
+                                                        Raw
+                                                    </label>
+                                                </div>
 
-                                            <div class="event-bridge-number-grid">
-                                                <label for="event_bridge_{{ bridge_id }}_batch_interval_seconds">
-                                                    Batch secondi
-                                                    <input type="number" min="0" id="event_bridge_{{ bridge_id }}_batch_interval_seconds" name="event_bridge_{{ bridge_server.id }}_batch_interval_seconds" value="{{ bridge_settings.EVENT_BATCH_INTERVAL_SECONDS }}">
-                                                </label>
-                                                <label for="event_bridge_{{ bridge_id }}_ws_reconnect_seconds">
-                                                    Reconnect WS
-                                                    <input type="number" min="1" id="event_bridge_{{ bridge_id }}_ws_reconnect_seconds" name="event_bridge_{{ bridge_server.id }}_ws_reconnect_seconds" value="{{ bridge_settings.WEBSOCKET_RECONNECT_SECONDS }}">
-                                                </label>
-                                                <label for="event_bridge_{{ bridge_id }}_http_timeout_seconds">
-                                                    Timeout HTTP
-                                                    <input type="number" min="1" id="event_bridge_{{ bridge_id }}_http_timeout_seconds" name="event_bridge_{{ bridge_server.id }}_http_timeout_seconds" value="{{ bridge_settings.HTTP_TIMEOUT_SECONDS }}">
-                                                </label>
-                                                <label for="event_bridge_{{ bridge_id }}_retry_count">
-                                                    Retry HTTP
-                                                    <input type="number" min="0" id="event_bridge_{{ bridge_id }}_retry_count" name="event_bridge_{{ bridge_server.id }}_retry_count" value="{{ bridge_settings.RETRY_COUNT }}">
-                                                </label>
-                                            </div>
+                                                <div class="event-bridge-number-grid">
+                                                    <label for="event_bridge_{{ bridge_id }}_batch_interval_seconds">
+                                                        Batch secondi
+                                                        <input type="number" min="0" id="event_bridge_{{ bridge_id }}_batch_interval_seconds" name="event_bridge_{{ bridge_server.id }}_batch_interval_seconds" value="{{ bridge_settings.EVENT_BATCH_INTERVAL_SECONDS }}">
+                                                    </label>
+                                                    <label for="event_bridge_{{ bridge_id }}_ws_reconnect_seconds">
+                                                        Reconnect WS
+                                                        <input type="number" min="1" id="event_bridge_{{ bridge_id }}_ws_reconnect_seconds" name="event_bridge_{{ bridge_server.id }}_ws_reconnect_seconds" value="{{ bridge_settings.WEBSOCKET_RECONNECT_SECONDS }}">
+                                                    </label>
+                                                    <label for="event_bridge_{{ bridge_id }}_http_timeout_seconds">
+                                                        Timeout HTTP
+                                                        <input type="number" min="1" id="event_bridge_{{ bridge_id }}_http_timeout_seconds" name="event_bridge_{{ bridge_server.id }}_http_timeout_seconds" value="{{ bridge_settings.HTTP_TIMEOUT_SECONDS }}">
+                                                    </label>
+                                                    <label for="event_bridge_{{ bridge_id }}_retry_count">
+                                                        Retry HTTP
+                                                        <input type="number" min="0" id="event_bridge_{{ bridge_id }}_retry_count" name="event_bridge_{{ bridge_server.id }}_retry_count" value="{{ bridge_settings.RETRY_COUNT }}">
+                                                    </label>
+                                                </div>
 
-                                            <div class="event-bridge-events-grid">
-                                                <label for="event_bridge_{{ bridge_id }}_playback_event_names">
-                                                    Eventi playback progress
-                                                    <textarea id="event_bridge_{{ bridge_id }}_playback_event_names" name="event_bridge_{{ bridge_server.id }}_playback_event_names" rows="7">{% for event_name in bridge_settings.PLAYBACK_EVENT_NAMES %}{{ event_name }}{% if not loop.last %}&#10;{% endif %}{% endfor %}</textarea>
-                                                </label>
-                                                <label for="event_bridge_{{ bridge_id }}_session_event_names">
-                                                    Eventi sessione
-                                                    <textarea id="event_bridge_{{ bridge_id }}_session_event_names" name="event_bridge_{{ bridge_server.id }}_session_event_names" rows="7">{% for event_name in bridge_settings.SESSION_EVENT_NAMES %}{{ event_name }}{% if not loop.last %}&#10;{% endif %}{% endfor %}</textarea>
-                                                </label>
-                                                <label for="event_bridge_{{ bridge_id }}_plugin_event_names">
-                                                    Eventi plugin
-                                                    <textarea id="event_bridge_{{ bridge_id }}_plugin_event_names" name="event_bridge_{{ bridge_server.id }}_plugin_event_names" rows="7">{% for event_name in bridge_settings.PLUGIN_EVENT_NAMES %}{{ event_name }}{% if not loop.last %}&#10;{% endif %}{% endfor %}</textarea>
-                                                </label>
-                                            </div>
+                                                <div class="event-bridge-events-grid">
+                                                    <label for="event_bridge_{{ bridge_id }}_playback_event_names">
+                                                        Eventi playback progress
+                                                        <textarea id="event_bridge_{{ bridge_id }}_playback_event_names" name="event_bridge_{{ bridge_server.id }}_playback_event_names" rows="7">{% for event_name in bridge_settings.PLAYBACK_EVENT_NAMES %}{{ event_name }}{% if not loop.last %}&#10;{% endif %}{% endfor %}</textarea>
+                                                    </label>
+                                                    <label for="event_bridge_{{ bridge_id }}_session_event_names">
+                                                        Eventi sessione
+                                                        <textarea id="event_bridge_{{ bridge_id }}_session_event_names" name="event_bridge_{{ bridge_server.id }}_session_event_names" rows="7">{% for event_name in bridge_settings.SESSION_EVENT_NAMES %}{{ event_name }}{% if not loop.last %}&#10;{% endif %}{% endfor %}</textarea>
+                                                    </label>
+                                                    <label for="event_bridge_{{ bridge_id }}_plugin_event_names">
+                                                        Eventi plugin
+                                                        <textarea id="event_bridge_{{ bridge_id }}_plugin_event_names" name="event_bridge_{{ bridge_server.id }}_plugin_event_names" rows="7">{% for event_name in bridge_settings.PLUGIN_EVENT_NAMES %}{{ event_name }}{% if not loop.last %}&#10;{% endif %}{% endfor %}</textarea>
+                                                    </label>
+                                                </div>
+                                            {% else %}
+                                                <div class="event-bridge-plugin-empty">
+                                                    <strong>Plugin non connesso</strong>
+                                                    <span>Le impostazioni compariranno dopo il primo WebSocket connesso o evento HTTP ricevuto da questo server.</span>
+                                                </div>
+                                            {% endif %}
                                         </div>
                                     </details>
                                 {% endfor %}
