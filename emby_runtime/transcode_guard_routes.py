@@ -17,6 +17,7 @@ from emby_runtime.event_bridge_payloads import (
     validate_event_bridge_secret,
 )
 from emby_runtime.event_bridge_settings import build_plugin_settings_payload, normalize_event_bridge_settings
+from emby_runtime.event_bridge_settings import event_bridge_settings_from_plugin_payload
 from emby_runtime.transcode_guard import get_transcode_guard_service
 
 router = APIRouter()
@@ -61,6 +62,19 @@ def _service():
     if _get_service is None:
         return get_transcode_guard_service()
     return _get_service()
+
+
+def _reported_plugin_settings_response(payloads: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for item in payloads or []:
+        if not isinstance(item, dict):
+            continue
+        event = item.get("event") if isinstance(item.get("event"), dict) else {}
+        event_type = str(event.get("type") or item.get("eventType") or "").strip().lower()
+        plugin = item.get("plugin") if isinstance(item.get("plugin"), dict) else {}
+        if event_type == "plugin.config_saved" and plugin:
+            settings = event_bridge_settings_from_plugin_payload(plugin)
+            return build_plugin_settings_payload(settings)
+    return None
 
 
 def _plugin_settings_response(payloads: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -124,7 +138,7 @@ async def api_transcode_guard_plugin_event(request: Request):
     else:
         result = results[0] if results else {"recorded": False}
     response_payload = {"ok": True, "result": result or {"recorded": False}}
-    settings_payload = _plugin_settings_response(payloads)
+    settings_payload = _reported_plugin_settings_response(payloads) or _plugin_settings_response(payloads)
     if settings_payload is not None:
         response_payload["settings"] = settings_payload
     return JSONResponse(response_payload)

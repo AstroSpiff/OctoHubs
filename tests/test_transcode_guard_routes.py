@@ -312,6 +312,51 @@ async def test_transcode_guard_plugin_event_route_accepts_event_bridge_batches(m
 
 
 @pytest.mark.anyio
+async def test_transcode_guard_plugin_config_saved_response_echoes_reported_settings(monkeypatch):
+    service = _Service()
+    monkeypatch.setenv("WEBHOOK_SECRET", "bridge-secret")
+    monkeypatch.setattr(
+        "emby_runtime.transcode_guard_routes.apply_plugin_reported_settings",
+        lambda _payload: True,
+    )
+
+    def old_event_bridge_settings(server_id=None):
+        return {
+            "WEBSOCKET_ENABLED": True,
+            "HTTP_FALLBACK_ENABLED": True,
+            "PLAYBACK_EVENT_NAMES": ["PlaybackStart"],
+        }
+
+    init_transcode_guard_routes(
+        require_auth=lambda _request: {"username": "admin"},
+        validate_csrf=lambda _request, _token: True,
+        get_service=lambda: service,
+        get_event_bridge_settings=old_event_bridge_settings,
+    )
+
+    response = await api_transcode_guard_plugin_event(_Request(
+        {
+            "schema": "octohubs.emby.event.v1",
+            "server": {"id": "green", "name": "Green"},
+            "event": {"type": "plugin.config_saved", "name": "PluginConfigSaved"},
+            "plugin": {
+                "enabled": True,
+                "useWebSocket": False,
+                "useHttpFallback": False,
+                "playbackEventNames": ["Pause", "Unpause"],
+            },
+        },
+        headers={"X-Webhook-Secret": "bridge-secret"},
+    ))
+
+    payload = json.loads(response.body.decode("utf-8"))
+    assert payload["ok"] is True
+    assert payload["settings"]["useWebSocket"] is False
+    assert payload["settings"]["useHttpFallback"] is False
+    assert payload["settings"]["progressEventNames"] == "Pause\nUnpause"
+
+
+@pytest.mark.anyio
 async def test_transcode_guard_plugin_event_route_rejects_bad_webhook_secret(monkeypatch):
     service = _Service()
     monkeypatch.setenv("WEBHOOK_SECRET", "bridge-secret")
