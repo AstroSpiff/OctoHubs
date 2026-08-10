@@ -30,6 +30,7 @@ def test_event_bridge_plugin_source_files_exist():
         "PluginConfiguration.cs",
         "ServerEntryPoint.cs",
         "EventEnvelopeBuilder.cs",
+        "EventBridgeConfigurationService.cs",
         "EventPublisher.cs",
         "README.md",
     }
@@ -63,6 +64,16 @@ def test_event_bridge_plugin_posts_stable_webhook_envelope():
     assert '["event"] = new Dictionary<string, object?>' in builder
     assert 'envelope["session"]' in builder
     assert 'envelope["media"]' in builder
+
+
+def test_event_bridge_plugin_exposes_authenticated_configuration_endpoint():
+    source = read_plugin_file("EventBridgeConfigurationService.cs")
+
+    assert '"/OctoHubs/EventBridge/Configuration"' in source
+    assert "ApplyEventBridgeConfiguration" in source
+    assert "IReturn<EventBridgeConfigurationResponse>" in source
+    assert "Plugin.Instance" in source
+    assert "ApplyRemoteSettingsWithResult" in source
 
 
 def test_event_bridge_plugin_has_startup_and_send_diagnostics():

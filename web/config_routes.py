@@ -6,6 +6,7 @@ import copy
 from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, Request, Form
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 
@@ -18,6 +19,7 @@ from core.storage import StorageError
 from core.utils import _split_csv_field, _coerce_request_int
 from emby_actions import _prepare_emby_servers_for_view
 from emby_runtime.event_bridge_manager import get_event_bridge_manager
+from emby_runtime.event_bridge_plugin_client import push_event_bridge_settings_to_plugin
 from emby_runtime.event_bridge_settings import (
     event_bridge_settings_for_server,
     normalize_event_bridge_config,
@@ -216,10 +218,28 @@ async def update_event_bridge_route(
 
     try:
         pushed = 0
+        http_pushed = 0
+        http_failed: list[str] = []
         manager = get_event_bridge_manager()
         connected_ids = {item.get("server_id") for item in manager.status().get("servers", [])}
         target_ids = set(server_settings) | {str(item or "") for item in connected_ids if item}
+        raw_servers = _raw_emby_servers_by_id(current_config)
+        websocket_target_ids = set(target_ids)
         for server_id in sorted(target_ids):
+            settings = event_bridge_settings_for_server(bridge_config, server_id)
+            http_ok, http_error, _response = await run_in_threadpool(
+                push_event_bridge_settings_to_plugin,
+                raw_servers.get(server_id),
+                server_id,
+                settings,
+            )
+            if http_ok:
+                http_pushed += 1
+                websocket_target_ids.discard(server_id)
+            elif raw_servers.get(server_id):
+                http_failed.append(f"{server_id}: {http_error}")
+
+        for server_id in sorted(websocket_target_ids):
             pushed += await manager.push_configuration(
                 server_id,
                 event_bridge_settings_for_server(bridge_config, server_id),
@@ -227,8 +247,17 @@ async def update_event_bridge_route(
     except Exception as exc:
         _flash_dep(request, f"Event Bridge salvato, push WebSocket non riuscito: {exc}", "warning")
     else:
-        suffix = f" ({pushed} plugin aggiornati via WebSocket)" if pushed else ""
-        _flash_dep(request, f"Event Bridge aggiornato{suffix}", "success")
+        parts = []
+        if http_pushed:
+            parts.append(f"{http_pushed} plugin aggiornati via HTTP")
+        if pushed:
+            parts.append(f"{pushed} plugin aggiornati via WebSocket")
+        suffix = f" ({', '.join(parts)})" if parts else ""
+        if http_failed:
+            detail = "; ".join(http_failed[:3])
+            _flash_dep(request, f"Event Bridge salvato{suffix}, ma push HTTP plugin fallito: {detail}", "warning")
+        else:
+            _flash_dep(request, f"Event Bridge aggiornato{suffix}", "success")
     return RedirectResponse(url=next_url, status_code=303)
 
 
@@ -258,6 +287,18 @@ def _event_bridge_settings_payload(form: Any, prefix: str) -> dict[str, Any]:
         "SESSION_EVENT_NAMES": form.get(prefix + "session_event_names"),
         "PLUGIN_EVENT_NAMES": form.get(prefix + "plugin_event_names"),
     }
+
+
+def _raw_emby_servers_by_id(config: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    servers = ((config or {}).get("EMBY") or {}).get("SERVERS") or []
+    result: dict[str, dict[str, Any]] = {}
+    for server in servers:
+        if not isinstance(server, dict):
+            continue
+        server_id = str(server.get("id") or server.get("server_id") or "").strip()
+        if server_id:
+            result[server_id] = server
+    return result
 
 
 def _event_bridge_servers_for_view(
