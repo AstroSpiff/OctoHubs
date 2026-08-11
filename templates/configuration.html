@@ -67,6 +67,7 @@
                 <button class="tab-btn" data-tab="telegram" title="Configura i canali Telegram">Telegram</button>
                 <button class="tab-btn" data-tab="services" title="Servizi esterni e automazioni">Servizi &amp; Automazioni</button>
                 <button class="tab-btn" data-tab="event-bridge" title="Configura il plugin Event Bridge per server Emby">Event Bridge</button>
+                <button class="tab-btn" data-tab="system-status" title="Vista sintetica dello stato di OctoHubs">Stato Sistema</button>
             </div>
 
             <div class="tab-panel active" data-tab-panel="emby-servers">
@@ -1101,7 +1102,7 @@
                                                 </span>
                                                 <span class="status-pill {% if bridge_config_ack_status == 'applied' %}status-ok{% elif bridge_config_ack_status == 'pending' %}status-skip{% else %}status-fail{% endif %} {% if not bridge_config_ack_status %}is-hidden{% endif %}"
                                                       data-event-bridge-field="config-ack"
-                                                      title="{% if bridge_status and bridge_status.last_config_ack_error %}{{ bridge_status.last_config_ack_error }}{% elif bridge_status and bridge_status.last_config_ack_at %}{{ bridge_status.last_config_ack_at }}{% elif bridge_status and bridge_status.last_config_sent_at %}{{ bridge_status.last_config_sent_at }}{% endif %}">
+                                                      title="{% if bridge_diag.last_config_ack_error %}{{ bridge_diag.last_config_ack_error }}{% elif bridge_diag.last_config_ack_at %}{{ bridge_diag.last_config_ack_at }}{% elif bridge_diag.last_config_sent_at %}{{ bridge_diag.last_config_sent_at }}{% endif %}">
                                                     {% if bridge_config_ack_status == 'applied' %}
                                                         Config applicata
                                                     {% elif bridge_config_ack_status == 'pending' %}
@@ -1253,11 +1254,35 @@
                 </div>
             </div>
 
+            <div class="tab-panel" data-tab-panel="system-status" data-system-status-endpoint="/api/system/status">
+                <div class="card system-status-card">
+                    <div class="system-status-header">
+                        <div>
+                            <h2>Stato Sistema</h2>
+                            <p class="tagline">Sintesi read-only degli stati principali. I dettagli restano nelle sezioni operative.</p>
+                        </div>
+                        <div class="system-status-actions">
+                            <span class="status-pill status-skip" data-system-status-overall>In attesa</span>
+                            <button class="btn secondary compact" type="button" data-system-status-refresh>Aggiorna</button>
+                            <button class="btn ghost compact" type="button" data-system-status-check>Verifica servizi</button>
+                        </div>
+                    </div>
+                    <div class="system-status-meta">
+                        <span data-system-status-generated>Mai aggiornato</span>
+                        <span data-system-status-counts></span>
+                    </div>
+                    <div class="system-status-grid" data-system-status-sections>
+                        <div class="system-status-empty">Caricamento stato sistema...</div>
+                    </div>
+                </div>
+            </div>
+
         </div>
     </div>
     <div id="toast-container"></div>
     <script src="{{ url_for('static', filename='shared-utils.js') }}"></script>
     <script src="{{ url_for('static', filename='event_bridge_diagnostics.js') }}?v=20260811-live-diagnostics"></script>
+    <script src="{{ url_for('static', filename='system_status.js') }}?v=20260811-system-status"></script>
     <script src="{{ url_for('static', filename='operations_center.js') }}?v=20260720-operation-events"></script>
     <script src="{{ url_for('static', filename='actions.js') }}"></script>
     <script src="{{ url_for('static', filename='script_shell.js') }}?v=20260628-shell"></script>

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import copy
+import os
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, Request, Form
@@ -13,7 +16,7 @@ from fastapi.templating import Jinja2Templates
 from app_helpers import _get_total_blacklist_counts
 from app_state import _JELLYSEERR_REFRESH_STATE
 from core import config_manager as _config_manager
-from core.config import _default_auto_tasks, _default_emby_settings, _clean_sort_mode
+from core.config import CONFIG_FILE, _default_auto_tasks, _default_emby_settings, _clean_sort_mode
 from core.config_manager import load_config, _db_enabled
 from core.storage import StorageError
 from core.utils import _split_csv_field, _coerce_request_int
@@ -214,6 +217,15 @@ async def event_bridge_status_route(request: Request):
     )
 
 
+@router.get("/api/system/status")
+async def system_status_route(request: Request, check_services: bool = False):
+    """Return a read-only health rollup for the configuration system tab."""
+    _require_auth_dep(request)
+
+    payload = await run_in_threadpool(_build_system_status_snapshot, check_services)
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
 @router.post("/configuration/event-bridge")
 async def update_event_bridge_route(
     request: Request,
@@ -299,6 +311,692 @@ async def update_event_bridge_route(
         else:
             _flash_dep(request, f"Event Bridge aggiornato{suffix}", "success")
     return RedirectResponse(url=next_url, status_code=303)
+
+
+SYSTEM_SEVERITY_RANK = {
+    "ok": 0,
+    "unknown": 0,
+    "warning": 1,
+    "error": 2,
+}
+
+
+SYSTEM_SEVERITY_LABELS = {
+    "ok": "OK",
+    "unknown": "N/D",
+    "warning": "Avviso",
+    "error": "Errore",
+}
+
+
+SYSTEM_STATUS_LABELS = {
+    "ready": "Pronto",
+    "config_error": "Config errore",
+    "connected": "Connesso",
+    "disconnected": "Disconnesso",
+    "synced": "Allineato",
+    "pending": "In attesa",
+    "unknown": "Sconosciuto",
+    "check_failed": "Verifica fallita",
+    "online": "Online",
+    "offline": "Offline",
+    "not_configured": "Non configurato",
+    "configured": "Configurato",
+    "disabled": "Disattivato",
+    "not_seen": "Non visto",
+    "mismatch": "Disallineato",
+    "http_only": "Solo HTTP",
+    "running": "In esecuzione",
+    "stopped": "Fermo",
+    "recent_errors": "Errori recenti",
+    "idle": "In attesa",
+    "error": "In errore",
+    "skipped": "Saltato",
+    "done": "Completato",
+    "empty": "Vuoto",
+}
+
+
+SYSTEM_SERVICE_LABELS = {
+    "jellyseerr": "Jellyseerr",
+    "prowlarr": "Prowlarr",
+    "jackett": "Jackett",
+    "qbittorrent": "qBittorrent",
+    "mdblist": "MDBList",
+    "omdb": "OMDb",
+    "trakt": "Trakt",
+    "justwatch": "JustWatch",
+    "database": "Database",
+}
+
+
+def _build_system_status_snapshot(check_services: bool = False) -> dict[str, Any]:
+    config, is_valid = load_config()
+    sections = [
+        _system_app_section(config, is_valid),
+        _system_database_section(config, is_valid),
+        _system_services_section(config, check_services=check_services),
+        _system_emby_section(config),
+        _system_event_bridge_section(config),
+        _system_transcode_guard_section(),
+        _system_operations_section(),
+        _system_requests_section(),
+    ]
+    overall = _system_rollup_severity(sections)
+    return {
+        "ok": overall != "error",
+        "severity": overall,
+        "status_label": _system_severity_label(overall),
+        "generated_at": _event_bridge_timestamp_label(datetime.now(timezone.utc).isoformat()),
+        "summary": _system_summary_counts(sections),
+        "sections": sections,
+    }
+
+
+def _system_app_section(config: dict[str, Any] | None, is_valid: bool) -> dict[str, Any]:
+    severity = "ok" if config and is_valid else "error"
+    config_path = str(CONFIG_FILE)
+    return _system_section(
+        "app",
+        "Applicazione",
+        [
+            _system_item(
+                "octohubs",
+                "OctoHubs",
+                severity,
+                "Configurazione caricata" if severity == "ok" else "Configurazione non valida",
+                detail="" if severity == "ok" else "Controlla database e file di configurazione.",
+                href="/configuration#services",
+                status_code="ready" if severity == "ok" else "config_error",
+                metrics=[
+                    {"label": "Config", "value": config_path},
+                    {"label": "Webhook secret", "value": "Configurato" if runtime_secret_configured("WEBHOOK_SECRET") else "Non configurato"},
+                ],
+            )
+        ],
+    )
+
+
+def _system_database_section(config: dict[str, Any] | None, is_valid: bool) -> dict[str, Any]:
+    db_settings = ((config or {}).get("DATABASE") or {}) if isinstance(config, dict) else {}
+    items: list[dict[str, Any]] = []
+    if not db_settings.get("ENABLED"):
+        items.append(
+            _system_item(
+                "database-connection",
+                "Connessione database",
+                "error",
+                "Database non abilitato o non raggiungibile",
+                detail="OctoHubs ha bisogno del database per funzionare correttamente.",
+                href="/configuration#services",
+                status_code="disconnected",
+            )
+        )
+        return _system_section("database", "Database", items)
+
+    metrics = [
+        {"label": "Host", "value": db_settings.get("HOST") or "URL"},
+        {"label": "Nome DB", "value": db_settings.get("NAME") or "N/D"},
+        {"label": "Utente", "value": db_settings.get("USER") or "N/D"},
+    ]
+    items.append(
+        _system_item(
+            "database-connection",
+            "Connessione database",
+            "ok" if is_valid else "error",
+            "Connesso" if is_valid else "Connessione non disponibile",
+            href="/configuration#services",
+            status_code="connected" if is_valid else "disconnected",
+            metrics=metrics,
+        )
+    )
+
+    try:
+        backend = _config_manager._DB_BACKEND or _config_manager._ensure_db_backend()
+        migration_status = backend.get_migration_status()
+        pending = list(getattr(migration_status, "pending", []) or [])
+        unknown = list(getattr(migration_status, "unknown_applied", []) or [])
+        if pending:
+            migration_severity = "warning"
+            migration_summary = f"{len(pending)} migrazioni pendenti"
+        elif unknown:
+            migration_severity = "warning"
+            migration_summary = f"{len(unknown)} migrazioni sconosciute"
+        else:
+            migration_severity = "ok"
+            migration_summary = "Migrazioni allineate"
+        items.append(
+            _system_item(
+                "database-migrations",
+                "Migrazioni",
+                migration_severity,
+                migration_summary,
+                detail=", ".join((pending or unknown)[:4]),
+                href="/configuration#services",
+                status_code="synced" if migration_severity == "ok" else "pending",
+                metrics=[
+                    {"label": "Applicate", "value": str(len(getattr(migration_status, "applied", []) or []))},
+                    {"label": "Disponibili", "value": str(len(getattr(migration_status, "available", []) or []))},
+                ],
+            )
+        )
+    except Exception as exc:
+        items.append(
+            _system_item(
+                "database-migrations",
+                "Migrazioni",
+                "warning",
+                "Stato migrazioni non leggibile",
+                detail=str(exc),
+                href="/configuration#services",
+                status_code="unknown",
+            )
+        )
+
+    items.append(_system_backup_item())
+    return _system_section("database", "Database", items)
+
+
+def _system_services_section(config: dict[str, Any] | None, *, check_services: bool) -> dict[str, Any]:
+    statuses: dict[str, Any] = {}
+    check_error = ""
+    if check_services:
+        try:
+            from services.manager import _build_test_connections_snapshot
+
+            payload, _status_code = _build_test_connections_snapshot()
+            statuses = payload.get("statuses") if isinstance(payload, dict) else {}
+            if not isinstance(statuses, dict):
+                statuses = {}
+        except Exception as exc:
+            check_error = str(exc)
+
+    items: list[dict[str, Any]] = []
+    for key, label in SYSTEM_SERVICE_LABELS.items():
+        configured = _system_service_configured(config, key)
+        if check_error:
+            items.append(
+                _system_item(
+                    f"service-{key}",
+                    label,
+                    "warning",
+                    "Verifica non riuscita",
+                    detail=check_error,
+                    href="/configuration#services",
+                    status_code="check_failed",
+                )
+            )
+            continue
+        if check_services and key in statuses:
+            status = statuses.get(key) if isinstance(statuses.get(key), dict) else {}
+            status_configured = status.get("configured")
+            if status_configured is False:
+                configured = False
+            if key == "database" and status.get("enabled") is False:
+                configured = False
+            if not configured and key != "database":
+                severity = "unknown"
+                summary = "Non configurato"
+            elif status.get("ok"):
+                severity = "ok"
+                summary = "Online"
+            else:
+                severity = "error" if configured or key == "database" else "unknown"
+                summary = "Errore" if severity == "error" else "Non configurato"
+            items.append(
+                _system_item(
+                    f"service-{key}",
+                    label,
+                    severity,
+                    summary,
+                    detail=str(status.get("message") or ""),
+                    href="/configuration#services",
+                    status_code=(
+                        "online"
+                        if severity == "ok"
+                        else "error"
+                        if severity == "error"
+                        else "not_configured"
+                        if not configured
+                        else "unknown"
+                    ),
+                )
+            )
+            continue
+
+        items.append(
+            _system_item(
+                f"service-{key}",
+                label,
+                "unknown" if configured or key != "database" else "error",
+                "Configurato, non verificato" if configured else ("Non configurato" if key != "database" else "Non disponibile"),
+                href="/configuration#services",
+                status_code="configured" if configured else ("not_configured" if key != "database" else "disconnected"),
+            )
+        )
+    return _system_section("services", "Servizi esterni", items)
+
+
+def _system_emby_section(config: dict[str, Any] | None) -> dict[str, Any]:
+    servers = (((config or {}).get("EMBY") or {}).get("SERVERS") or []) if isinstance(config, dict) else []
+    if not servers:
+        return _system_section(
+            "emby",
+            "Server Emby",
+            [
+                _system_item(
+                    "emby-empty",
+                    "Server Emby",
+                    "warning",
+                    "Nessun server configurato",
+                    href="/configuration#emby-servers",
+                    status_code="not_configured",
+                )
+            ],
+        )
+
+    try:
+        from emby_runtime.snapshots import _build_emby_health_status_snapshot
+
+        payload, _status_code = _build_emby_health_status_snapshot()
+        server_statuses = payload.get("data") if isinstance(payload, dict) else []
+    except Exception as exc:
+        return _system_section(
+            "emby",
+            "Server Emby",
+            [
+                _system_item(
+                    "emby-health",
+                    "Health server",
+                    "warning",
+                    "Stato Emby non leggibile",
+                    detail=str(exc),
+                    href="/emby#actions",
+                    status_code="unknown",
+                )
+            ],
+        )
+
+    items: list[dict[str, Any]] = []
+    for server in server_statuses or []:
+        if not isinstance(server, dict):
+            continue
+        error = str(server.get("error") or "")
+        disabled = "disabilitato" in error.lower()
+        ok = bool(server.get("ok"))
+        severity = "ok" if ok else ("unknown" if disabled else "error")
+        items.append(
+            _system_item(
+                f"emby-{server.get('server_id') or server.get('name')}",
+                str(server.get("name") or "Server Emby"),
+                severity,
+                "Online" if ok else (error or "Errore"),
+                detail="" if ok else error,
+                href="/emby#actions",
+                status_code="online" if ok else ("disabled" if disabled else "offline"),
+                metrics=[
+                    {"label": "Versione", "value": server.get("version") or "N/D"},
+                    {"label": "Stream attivi", "value": str(server.get("active_streams") or 0)},
+                ],
+            )
+        )
+    return _system_section("emby", "Server Emby", items)
+
+
+def _system_event_bridge_section(config: dict[str, Any] | None) -> dict[str, Any]:
+    emby_config = (config or {}).get("EMBY") if isinstance(config, dict) else _default_emby_settings()
+    raw_servers = (emby_config.get("SERVERS") if emby_config else []) or []
+    emby_servers = _prepare_emby_servers_for_view(raw_servers, lazy=True)
+    bridge_config = normalize_event_bridge_config((config or {}).get("EVENT_BRIDGE", {}) if isinstance(config, dict) else {})
+    bridge_status = get_event_bridge_manager().status()
+    bridge_servers = _event_bridge_servers_for_view(emby_servers, bridge_config, bridge_status)
+    if not bridge_servers:
+        return _system_section(
+            "event-bridge",
+            "Event Bridge",
+            [
+                _system_item(
+                    "event-bridge-empty",
+                    "Plugin Event Bridge",
+                    "unknown",
+                    "Nessun server da mostrare",
+                    href="/configuration#event-bridge",
+                    status_code="not_configured",
+                )
+            ],
+        )
+
+    items: list[dict[str, Any]] = []
+    for server in bridge_servers:
+        diagnostics = server.get("diagnostics") or {}
+        status = server.get("status") if isinstance(server.get("status"), dict) else {}
+        sync_status = str(diagnostics.get("sync_status") or "unknown")
+        ack_status = str(diagnostics.get("last_config_ack_status") or "")
+        if ack_status and ack_status not in {"applied", "pending"}:
+            severity = "error"
+            status_code = "config_error"
+        elif sync_status == "mismatch":
+            severity = "warning"
+            status_code = "mismatch"
+        elif status.get("connected") and sync_status == "aligned":
+            severity = "ok"
+            status_code = "connected"
+        elif status.get("connected") or status.get("received_count"):
+            severity = "warning" if not status.get("connected") else "unknown"
+            status_code = "http_only" if not status.get("connected") else "connected"
+        else:
+            severity = "unknown"
+            status_code = "not_seen"
+
+        transport_label = _event_bridge_transport_payload(status).get("label") or "Non visto"
+        sync_label = diagnostics.get("sync_label") or "Report plugin assente"
+        items.append(
+            _system_item(
+                f"event-bridge-{server.get('id')}",
+                str(server.get("name") or "Server"),
+                severity,
+                f"{transport_label} · {sync_label}",
+                detail=str(diagnostics.get("last_config_ack_error") or ""),
+                href="/configuration#event-bridge",
+                status_code=status_code,
+                metrics=[
+                    {"label": "Plugin", "value": diagnostics.get("plugin_version") or "N/D"},
+                    {"label": "Ultimo evento", "value": diagnostics.get("last_event") or "Mai"},
+                    {"label": "Config confermata", "value": diagnostics.get("last_config_ack_at") or "Mai"},
+                ],
+            )
+        )
+    return _system_section("event-bridge", "Event Bridge", items)
+
+
+def _system_transcode_guard_section() -> dict[str, Any]:
+    try:
+        from emby_runtime.transcode_guard import get_transcode_guard_service
+
+        status = get_transcode_guard_service().get_status()
+    except Exception as exc:
+        return _system_section(
+            "transcode-guard",
+            "Transcode Guard",
+            [
+                _system_item(
+                    "transcode-guard-status",
+                    "Monitor",
+                    "warning",
+                    "Stato non leggibile",
+                    detail=str(exc),
+                    href="/emby#transcode-guard",
+                    status_code="unknown",
+                )
+            ],
+        )
+
+    settings = status.get("settings") if isinstance(status, dict) else {}
+    enabled = bool((settings or {}).get("enabled"))
+    running = bool(status.get("running")) if isinstance(status, dict) else False
+    active_violations = status.get("active_violations") if isinstance(status, dict) else []
+    if enabled and running:
+        severity = "warning" if active_violations else "ok"
+        summary = "Attivo"
+        status_code = "running"
+    elif enabled:
+        severity = "warning"
+        summary = "Abilitato ma non in esecuzione"
+        status_code = "stopped"
+    else:
+        severity = "unknown"
+        summary = "Disattivato"
+        status_code = "disabled"
+    last_result = status.get("last_result") if isinstance(status.get("last_result"), dict) else {}
+    return _system_section(
+        "transcode-guard",
+        "Transcode Guard",
+        [
+            _system_item(
+                "transcode-guard-status",
+                "Monitor",
+                severity,
+                summary,
+                detail=str(last_result.get("message") or last_result.get("error") or ""),
+                href="/emby#transcode-guard",
+                status_code=status_code,
+                metrics=[
+                    {"label": "Violazioni attive", "value": str(len(active_violations or []))},
+                    {"label": "Interventi recenti", "value": str(len(status.get("recent_events") or []))},
+                    {"label": "Stream registrati", "value": str(len(status.get("stream_history") or []))},
+                ],
+            )
+        ],
+    )
+
+
+def _system_operations_section() -> dict[str, Any]:
+    try:
+        from app_state import get_operation_tracker
+
+        operations = get_operation_tracker().list_operations()
+    except Exception as exc:
+        return _system_section(
+            "operations",
+            "Operazioni",
+            [
+                _system_item(
+                    "operations-status",
+                    "Centro operazioni",
+                    "warning",
+                    "Operazioni non leggibili",
+                    detail=str(exc),
+                    href="/emby#actions",
+                    status_code="unknown",
+                )
+            ],
+        )
+    active = [item for item in operations if item.get("status") in {"queued", "running"}]
+    failed = [item for item in operations if item.get("status") in {"error", "interrupted"}]
+    severity = "warning" if failed and not active else "ok"
+    status_code = "running" if active else ("recent_errors" if failed else "idle")
+    summary = f"{len(active)} attive"
+    if failed:
+        summary += f" · {len(failed)} con problemi recenti"
+    latest_failed = failed[0] if failed else {}
+    return _system_section(
+        "operations",
+        "Operazioni",
+        [
+            _system_item(
+                "operations-status",
+                "Centro operazioni",
+                severity,
+                summary,
+                detail=str(latest_failed.get("message") or latest_failed.get("error") or ""),
+                href="/emby#actions",
+                status_code=status_code,
+                metrics=[
+                    {"label": "Totali recenti", "value": str(len(operations))},
+                    {"label": "Ultimo update", "value": _event_bridge_timestamp_label((operations[0] or {}).get("updated_at")) if operations else "Mai"},
+                ],
+            )
+        ],
+    )
+
+
+def _system_requests_section() -> dict[str, Any]:
+    state = _JELLYSEERR_REFRESH_STATE
+    running = bool(state.get("running"))
+    last_status = str(state.get("last_status") or "")
+    if running:
+        severity = "ok"
+        summary = "Refresh richieste in corso"
+        status_code = "running"
+    elif last_status == "error":
+        severity = "warning"
+        summary = "Ultimo refresh in errore"
+        status_code = "error"
+    elif last_status == "skipped":
+        severity = "warning"
+        summary = "Ultimo refresh saltato"
+        status_code = "skipped"
+    elif last_status == "success":
+        severity = "ok"
+        summary = "Ultimo refresh completato"
+        status_code = "done"
+    else:
+        severity = "unknown"
+        summary = "Nessun refresh recente"
+        status_code = "idle"
+    return _system_section(
+        "requests",
+        "Richieste",
+        [
+            _system_item(
+                "requests-refresh",
+                "Aggiornamento richieste",
+                severity,
+                summary,
+                detail=str(state.get("last_error") or state.get("last_warning") or ""),
+                href="/dashboard#requests",
+                status_code=status_code,
+                metrics=[
+                    {"label": "Completato", "value": _event_bridge_timestamp_label(state.get("completed_at")) or "Mai"},
+                ],
+            )
+        ],
+    )
+
+
+def _system_backup_item() -> dict[str, Any]:
+    root = Path(os.environ.get("OCTOHUBS_DB_BACKUP_DIR") or "backups/db")
+    try:
+        files = [
+            item for item in root.glob("*")
+            if item.is_file() and item.suffix in {".dump", ".sqlite3", ".json"}
+        ] if root.exists() else []
+        files.sort(key=lambda item: item.stat().st_mtime, reverse=True)
+        if not root.exists():
+            return _system_item(
+                "database-backups",
+                "Backup database",
+                "unknown",
+                "Cartella backup non ancora presente",
+                detail=str(root),
+                href="/configuration#services",
+                status_code="empty",
+            )
+        latest = files[0] if files else None
+        return _system_item(
+            "database-backups",
+            "Backup database",
+            "ok" if latest else "unknown",
+            f"Ultimo backup: {latest.name}" if latest else "Nessun backup trovato",
+            detail=str(root),
+            href="/configuration#services",
+            status_code="ready" if latest else "empty",
+            metrics=[{"label": "File", "value": str(len(files))}],
+        )
+    except Exception as exc:
+        return _system_item(
+            "database-backups",
+            "Backup database",
+            "warning",
+            "Backup non leggibili",
+            detail=str(exc),
+            href="/configuration#services",
+            status_code="unknown",
+        )
+
+
+def _system_service_configured(config: dict[str, Any] | None, key: str) -> bool:
+    config = config or {}
+    if key == "jellyseerr":
+        return bool(config.get("JELLYSEERR_URL") and config.get("JELLYSEERR_API_KEY"))
+    if key == "prowlarr":
+        return bool(config.get("PROWLARR_URL") and config.get("PROWLARR_API_KEY"))
+    if key == "jackett":
+        return bool(config.get("JACKETT_URL") and config.get("JACKETT_API_KEY"))
+    if key == "qbittorrent":
+        return bool(config.get("QBITTORRENT_URL") and config.get("QBITTORRENT_USERNAME") and config.get("QBITTORRENT_PASSWORD"))
+    if key == "mdblist":
+        return bool(config.get("MDBLIST_API_KEYS"))
+    if key == "omdb":
+        return bool(config.get("OMDB_API_KEYS") or config.get("OMDB_API_KEY"))
+    if key == "trakt":
+        trakt = config.get("TRAKT") if isinstance(config.get("TRAKT"), dict) else {}
+        return bool(trakt.get("ENABLED") and trakt.get("ACCESS_TOKEN"))
+    if key == "justwatch":
+        justwatch = config.get("JUSTWATCH") if isinstance(config.get("JUSTWATCH"), dict) else {}
+        return bool(justwatch.get("ENABLED"))
+    if key == "database":
+        database = config.get("DATABASE") if isinstance(config.get("DATABASE"), dict) else {}
+        return bool(database.get("ENABLED"))
+    return False
+
+
+def _system_section(section_id: str, title: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+    severity = _system_rollup_severity(items)
+    return {
+        "id": section_id,
+        "title": title,
+        "severity": severity,
+        "status_code": severity,
+        "status_label": _system_severity_label(severity),
+        "items": items,
+    }
+
+
+def _system_item(
+    item_id: str,
+    label: str,
+    severity: str,
+    summary: str,
+    *,
+    detail: str = "",
+    href: str = "",
+    metrics: list[dict[str, Any]] | None = None,
+    status_label: str = "",
+    status_code: str = "",
+) -> dict[str, Any]:
+    severity = severity if severity in SYSTEM_SEVERITY_RANK else "unknown"
+    code = str(status_code or severity or "unknown").strip().lower().replace("-", "_").replace(" ", "_")
+    return {
+        "id": str(item_id or label),
+        "label": str(label or "Stato"),
+        "severity": severity,
+        "status_code": code,
+        "status_label": status_label or SYSTEM_STATUS_LABELS.get(code) or _system_severity_label(severity),
+        "summary": str(summary or ""),
+        "detail": str(detail or ""),
+        "href": str(href or ""),
+        "metrics": [
+            {"label": str(metric.get("label") or ""), "value": str(metric.get("value") or "")}
+            for metric in (metrics or [])
+            if isinstance(metric, dict)
+        ],
+    }
+
+
+def _system_rollup_severity(items_or_sections: list[dict[str, Any]]) -> str:
+    result = "unknown"
+    for item in items_or_sections or []:
+        severity = str(item.get("severity") or "unknown")
+        if severity == "ok" and result == "unknown":
+            result = "ok"
+            continue
+        if SYSTEM_SEVERITY_RANK.get(severity, 0) > SYSTEM_SEVERITY_RANK.get(result, 0):
+            result = severity
+    return result
+
+
+def _system_summary_counts(sections: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {"ok": 0, "warning": 0, "error": 0, "unknown": 0}
+    for section in sections or []:
+        for item in section.get("items") or []:
+            severity = str(item.get("severity") or "unknown")
+            counts[severity if severity in counts else "unknown"] += 1
+    return counts
+
+
+def _system_severity_label(severity: str) -> str:
+    return SYSTEM_SEVERITY_LABELS.get(severity, "N/D")
 
 
 def _save_event_bridge_settings(settings: dict[str, Any]) -> None:
@@ -447,8 +1145,8 @@ def _event_bridge_config_ack_payload(status: dict[str, Any]) -> dict[str, str]:
         "class_name": class_name,
         "title": str(
             status.get("last_config_ack_error")
-            or status.get("last_config_ack_at")
-            or status.get("last_config_sent_at")
+            or _event_bridge_timestamp_label(status.get("last_config_ack_at"))
+            or _event_bridge_timestamp_label(status.get("last_config_sent_at"))
             or ""
         ),
     }
@@ -549,11 +1247,11 @@ def _event_bridge_diagnostics(settings: dict[str, Any], status: dict[str, Any] |
         "target_count": target_count,
         "plugin_targets": plugin_targets,
         "last_event": last_event,
-        "last_seen_at": status.get("last_seen_at") or "",
-        "last_event_at": status.get("last_event_at") or "",
-        "last_plugin_settings_at": status.get("last_plugin_settings_at") or "",
-        "last_config_sent_at": status.get("last_config_sent_at") or "",
-        "last_config_ack_at": status.get("last_config_ack_at") or "",
+        "last_seen_at": _event_bridge_timestamp_label(status.get("last_seen_at")),
+        "last_event_at": _event_bridge_timestamp_label(status.get("last_event_at")),
+        "last_plugin_settings_at": _event_bridge_timestamp_label(status.get("last_plugin_settings_at")),
+        "last_config_sent_at": _event_bridge_timestamp_label(status.get("last_config_sent_at")),
+        "last_config_ack_at": _event_bridge_timestamp_label(status.get("last_config_ack_at")),
         "last_config_ack_status": status.get("last_config_ack_status") or "",
         "last_config_ack_error": status.get("last_config_ack_error") or "",
     }
@@ -603,6 +1301,35 @@ def _event_bridge_last_event_label(status: dict[str, Any]) -> str:
     if event_name and event_type and event_name.lower() != event_type.lower():
         return f"{event_name} ({event_type})"
     return event_name or event_type or ""
+
+
+def _event_bridge_timestamp_label(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return _event_bridge_trim_timestamp(text)
+
+    label = parsed.isoformat(sep=" ", timespec="seconds")
+    return label.replace("+00:00", " UTC")
+
+
+def _event_bridge_trim_timestamp(value: str) -> str:
+    text = value.replace("T", " ")
+    if "." not in text:
+        return text
+
+    prefix, suffix = text.split(".", 1)
+    for marker in ("+", "-"):
+        if marker in suffix:
+            timezone = suffix[suffix.find(marker):]
+            return f"{prefix}{timezone}".replace("+00:00", " UTC")
+    if "Z" in suffix:
+        return f"{prefix} UTC"
+    return prefix
 
 
 def _form_list(form: Any, name: str) -> list[str]:

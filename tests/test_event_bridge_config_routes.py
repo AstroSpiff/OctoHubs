@@ -53,6 +53,39 @@ def test_event_bridge_server_settings_are_hidden_until_plugin_seen():
     assert by_id["orange"]["settings_editable"] is True
 
 
+def test_system_status_items_use_english_codes_and_italian_labels():
+    from web.config_routes import _system_item, _system_rollup_severity, _system_section
+
+    item = _system_item(
+        "bridge-green",
+        "Green",
+        "warning",
+        "Config diversa",
+        status_code="mismatch",
+    )
+
+    assert item["status_code"] == "mismatch"
+    assert item["status_label"] == "Disallineato"
+    assert item["severity"] == "warning"
+    assert _system_rollup_severity([{"severity": "unknown"}]) == "unknown"
+    assert _system_rollup_severity([{"severity": "unknown"}, {"severity": "ok"}]) == "ok"
+
+    section = _system_section("event-bridge", "Event Bridge", [item])
+    assert section["status_code"] == "warning"
+    assert section["status_label"] == "Avviso"
+
+
+def test_configuration_template_exposes_system_status_tab():
+    from pathlib import Path
+
+    source = Path("templates/configuration.html").read_text(encoding="utf-8")
+
+    assert 'data-tab="system-status"' in source
+    assert 'data-tab-panel="system-status"' in source
+    assert 'data-system-status-endpoint="/api/system/status"' in source
+    assert "system_status.js" in source
+
+
 @pytest.mark.anyio
 async def test_event_bridge_status_route_returns_live_diagnostics(monkeypatch):
     from web import config_routes
@@ -129,6 +162,10 @@ async def test_event_bridge_status_route_returns_live_diagnostics(monkeypatch):
     assert server["settings"]["WEBSOCKET_RECONNECT_SECONDS"] == 3
     assert server["diagnostics"]["sync_label"] == "Config diversa"
     assert server["diagnostics"]["plugin_version_label"] == "Plugin 0.4.2"
+    assert server["diagnostics"]["last_seen_at"] == "2026-08-11 10:00:00 UTC"
+    assert server["diagnostics"]["last_event_at"] == "2026-08-11 10:00:01 UTC"
+    assert server["diagnostics"]["last_plugin_settings_at"] == "2026-08-11 10:00:02 UTC"
+    assert server["diagnostics"]["last_config_ack_at"] == "2026-08-11 10:00:03 UTC"
     assert server["diagnostics"]["target_count_label"] == "2"
     assert server["diagnostics"]["plugin_targets"][1]["url"] == "https://secondary.example"
     assert server["diagnostics"]["diffs"] == [

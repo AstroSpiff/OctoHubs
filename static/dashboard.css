@@ -1408,6 +1408,10 @@
             background: #fdecea;
             color: #c0392b;
         }
+        .status-warning {
+            background: #fff7ed;
+            color: #b45309;
+        }
         .status-skip {
             background: #f4f6f7;
             color: #5f6a6a;
@@ -1602,6 +1606,121 @@
         }
         .event-bridge-events-grid textarea {
             min-height: 8.5rem;
+        }
+        .system-status-card {
+            display: grid;
+            gap: 1rem;
+        }
+        .system-status-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        .system-status-header h2 {
+            margin-bottom: 0.2rem;
+        }
+        .system-status-actions {
+            display: inline-flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+        .system-status-meta {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            color: #64748b;
+            font-size: 0.85rem;
+        }
+        .system-status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1rem;
+        }
+        .system-status-section {
+            display: grid;
+            gap: 0.75rem;
+            min-width: 0;
+            border: 1px solid #e1e6f0;
+            border-radius: 10px;
+            padding: 0.9rem;
+            background: #fbfcff;
+        }
+        .system-status-section-head,
+        .system-status-item-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+        }
+        .system-status-section-head h3 {
+            margin: 0;
+            font-size: 1rem;
+        }
+        .system-status-items {
+            display: grid;
+            gap: 0.55rem;
+        }
+        .system-status-item {
+            display: grid;
+            gap: 0.35rem;
+            min-width: 0;
+            border-top: 1px solid #e5edf7;
+            padding-top: 0.6rem;
+        }
+        .system-status-item:first-child {
+            border-top: none;
+            padding-top: 0;
+        }
+        .system-status-summary,
+        .system-status-detail {
+            margin: 0;
+            overflow-wrap: anywhere;
+            font-size: 0.88rem;
+        }
+        .system-status-summary {
+            color: #334155;
+        }
+        .system-status-detail {
+            color: #64748b;
+        }
+        .system-status-metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+            gap: 0.35rem;
+        }
+        .system-status-metrics > div {
+            display: grid;
+            gap: 0.1rem;
+            min-width: 0;
+        }
+        .system-status-metrics span {
+            color: #64748b;
+            font-size: 0.74rem;
+        }
+        .system-status-metrics strong {
+            color: #0f172a;
+            font-size: 0.82rem;
+            overflow-wrap: anywhere;
+        }
+        .system-status-link {
+            justify-self: start;
+            color: #2563eb;
+            font-size: 0.84rem;
+            text-decoration: none;
+            font-weight: 650;
+        }
+        .system-status-link:hover {
+            text-decoration: underline;
+        }
+        .system-status-empty {
+            color: #64748b;
+            font-size: 0.9rem;
         }
         @media (min-width: 1180px) {
             .event-bridge-server-grid {
