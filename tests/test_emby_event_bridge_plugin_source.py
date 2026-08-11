@@ -80,12 +80,14 @@ def test_event_bridge_plugin_has_startup_and_send_diagnostics():
     entrypoint = read_plugin_file("ServerEntryPoint.cs")
     publisher = read_plugin_file("EventPublisher.cs")
     builder = read_plugin_file("EventEnvelopeBuilder.cs")
+    payload = read_plugin_file("PluginSettingsPayload.cs")
 
     assert '"plugin.start"' in entrypoint
     assert '"plugin.config_saved"' in entrypoint
     assert "PublishResult" in publisher
     assert "LastPublishStatus" in " ".join(read_plugin_file("PluginConfiguration.cs").split())
     assert "BuildPluginEnvelope" in builder
+    assert '"octoHubsTargets"' in payload
     assert "RecordPublishResult" in entrypoint
 
 

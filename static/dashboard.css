@@ -1499,6 +1499,10 @@
             padding-top: 1rem;
             border-top: 1px solid #e1e8f2;
         }
+        .event-bridge-settings-panel {
+            display: grid;
+            gap: 1rem;
+        }
         .event-bridge-plugin-empty {
             display: grid;
             gap: 0.25rem;
@@ -1507,6 +1511,72 @@
         }
         .event-bridge-plugin-empty strong {
             color: #334155;
+        }
+        .event-bridge-diagnostics {
+            display: grid;
+            gap: 0.75rem;
+            padding: 0.8rem;
+            border: 1px solid #e1e8f2;
+            border-radius: 10px;
+            background: #f8fafc;
+        }
+        .event-bridge-diagnostic-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        .event-bridge-muted {
+            color: #64748b;
+            font-size: 0.85rem;
+        }
+        .event-bridge-diagnostic-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.65rem;
+        }
+        .event-bridge-diagnostic-grid > div {
+            min-width: 0;
+            display: grid;
+            gap: 0.2rem;
+        }
+        .event-bridge-diagnostic-grid span,
+        .event-bridge-diagnostic-grid small {
+            color: #64748b;
+            font-size: 0.78rem;
+        }
+        .event-bridge-diagnostic-grid strong {
+            min-width: 0;
+            overflow-wrap: anywhere;
+            color: #0f172a;
+            font-size: 0.86rem;
+            font-weight: 650;
+        }
+        .event-bridge-target-list,
+        .event-bridge-diff-list {
+            display: grid;
+            gap: 0.35rem;
+        }
+        .event-bridge-target-list span {
+            color: #475569;
+            font-size: 0.82rem;
+            overflow-wrap: anywhere;
+        }
+        .event-bridge-diff-list {
+            padding-top: 0.5rem;
+            border-top: 1px solid #e2e8f0;
+        }
+        .event-bridge-diff-list > div {
+            display: grid;
+            grid-template-columns: minmax(110px, 0.8fr) minmax(0, 1fr) minmax(0, 1fr);
+            gap: 0.5rem;
+            align-items: start;
+            font-size: 0.82rem;
+        }
+        .event-bridge-diff-list span {
+            color: #64748b;
+            overflow-wrap: anywhere;
         }
         .event-bridge-options {
             display: flex;
@@ -1542,6 +1612,10 @@
         @media (max-width: 760px) {
             .event-bridge-number-grid {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+            .event-bridge-diagnostic-grid,
+            .event-bridge-diff-list > div {
+                grid-template-columns: 1fr;
             }
         }
         @media (max-width: 520px) {

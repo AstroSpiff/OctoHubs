@@ -7,7 +7,7 @@ from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, Request, Form
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import RedirectResponse, HTMLResponse
+from fastapi.responses import RedirectResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from app_helpers import _get_total_blacklist_counts
@@ -30,6 +30,23 @@ from services.runtime_env import runtime_secret_configured, save_runtime_secret
 from telegram import _default_telegram_settings, _load_telegram_settings, _build_telegram_alerts
 
 router = APIRouter()
+
+EVENT_BRIDGE_SETTING_LABELS = {
+    "ENABLED": "Abilita",
+    "WEBSOCKET_ENABLED": "WebSocket",
+    "HTTP_FALLBACK_ENABLED": "Fallback HTTP",
+    "WEBSOCKET_RECONNECT_SECONDS": "Reconnect WS",
+    "CAPTURE_PLAYBACK_EVENTS": "Playback",
+    "CAPTURE_SESSION_EVENTS": "Sessione",
+    "CAPTURE_PLUGIN_EVENTS": "Plugin",
+    "EVENT_BATCH_INTERVAL_SECONDS": "Batch secondi",
+    "HTTP_TIMEOUT_SECONDS": "Timeout HTTP",
+    "RETRY_COUNT": "Retry HTTP",
+    "INCLUDE_RAW_PAYLOAD": "Raw",
+    "PLAYBACK_EVENT_NAMES": "Eventi playback",
+    "SESSION_EVENT_NAMES": "Eventi sessione",
+    "PLUGIN_EVENT_NAMES": "Eventi plugin",
+}
 
 _require_auth: Optional[Callable[[Request], Any]] = None
 _validate_csrf: Optional[Callable[[Request, Optional[str]], bool]] = None
@@ -174,6 +191,29 @@ async def configuration_page(request: Request):
     )
 
 
+@router.get("/configuration/event-bridge/status")
+async def event_bridge_status_route(request: Request):
+    """Return live Event Bridge diagnostics for the configuration page."""
+    _require_auth_dep(request)
+
+    config, _is_valid = load_config()
+    emby_config = (config or {}).get("EMBY") if config else _default_emby_settings()
+    raw_servers = (emby_config.get("SERVERS") if emby_config else []) or []
+    emby_servers = _prepare_emby_servers_for_view(raw_servers, lazy=True)
+    event_bridge_config = normalize_event_bridge_config((config or {}).get("EVENT_BRIDGE", {}))
+    event_bridge_status = get_event_bridge_manager().status()
+    event_bridge_servers = _event_bridge_servers_for_view(emby_servers, event_bridge_config, event_bridge_status)
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "connected": event_bridge_status.get("connected", 0),
+            "servers": [_event_bridge_status_payload(item) for item in event_bridge_servers],
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.post("/configuration/event-bridge")
 async def update_event_bridge_route(
     request: Request,
@@ -234,6 +274,7 @@ async def update_event_bridge_route(
             )
             if http_ok:
                 http_pushed += 1
+                manager.record_plugin_configuration_response(server_id, _response)
                 websocket_target_ids.discard(server_id)
             elif raw_servers.get(server_id):
                 http_failed.append(f"{server_id}: {http_error}")
@@ -336,6 +377,7 @@ def _event_bridge_servers_for_view(
             continue
         name = server.get("alias") or server.get("original_name") or server.get("name") or server_id
         settings = event_bridge_settings_for_server(bridge_config, server_id)
+        diagnostics = _event_bridge_diagnostics(settings, status_by_id.get(server_id))
         items.append(
             {
                 "id": server_id,
@@ -345,6 +387,7 @@ def _event_bridge_servers_for_view(
                 "settings": settings,
                 "status": status_by_id.get(server_id),
                 "settings_editable": _event_bridge_settings_editable(status_by_id.get(server_id)),
+                "diagnostics": diagnostics,
             }
         )
     return items
@@ -353,7 +396,213 @@ def _event_bridge_servers_for_view(
 def _event_bridge_settings_editable(status: dict[str, Any] | None) -> bool:
     if not isinstance(status, dict):
         return False
-    return bool(status.get("connected") or status.get("received_count"))
+    return bool(
+        status.get("connected")
+        or status.get("received_count")
+        or status.get("plugin_settings")
+        or status.get("last_plugin_settings_at")
+        or status.get("last_config_ack_status")
+    )
+
+
+def _event_bridge_status_payload(bridge_server: dict[str, Any]) -> dict[str, Any]:
+    status = bridge_server.get("status") if isinstance(bridge_server.get("status"), dict) else {}
+    diagnostics = bridge_server.get("diagnostics") if isinstance(bridge_server.get("diagnostics"), dict) else {}
+    return {
+        "id": str(bridge_server.get("id") or ""),
+        "name": str(bridge_server.get("name") or ""),
+        "settings_editable": bool(bridge_server.get("settings_editable")),
+        "settings": normalize_event_bridge_settings(bridge_server.get("settings") or {}),
+        "transport": _event_bridge_transport_payload(status),
+        "config_ack": _event_bridge_config_ack_payload(status),
+        "diagnostics": _event_bridge_diagnostics_payload(diagnostics),
+    }
+
+
+def _event_bridge_transport_payload(status: dict[str, Any]) -> dict[str, str]:
+    if status.get("connected"):
+        return {"label": "WebSocket connesso", "class_name": "status-ok"}
+    if status.get("received_count"):
+        return {"label": "HTTP ricevuto", "class_name": "status-skip"}
+    return {"label": "Non visto", "class_name": "status-skip"}
+
+
+def _event_bridge_config_ack_payload(status: dict[str, Any]) -> dict[str, str]:
+    ack_status = str(status.get("last_config_ack_status") or "").strip()
+    if not ack_status:
+        return {"label": "", "class_name": "status-skip", "title": ""}
+
+    if ack_status == "applied":
+        label = "Config applicata"
+        class_name = "status-ok"
+    elif ack_status == "pending":
+        label = "Config inviata"
+        class_name = "status-skip"
+    else:
+        label = "Config errore"
+        class_name = "status-fail"
+
+    return {
+        "label": label,
+        "class_name": class_name,
+        "title": str(
+            status.get("last_config_ack_error")
+            or status.get("last_config_ack_at")
+            or status.get("last_config_sent_at")
+            or ""
+        ),
+    }
+
+
+def _event_bridge_diagnostics_payload(diagnostics: dict[str, Any]) -> dict[str, Any]:
+    plugin_version = str(diagnostics.get("plugin_version") or "").strip()
+    sync_status = str(diagnostics.get("sync_status") or "unknown").strip()
+    return {
+        "sync_status": sync_status,
+        "sync_label": str(diagnostics.get("sync_label") or "Report plugin assente"),
+        "sync_class": _event_bridge_sync_class(sync_status),
+        "plugin_version": plugin_version,
+        "plugin_version_label": f"Plugin {plugin_version}" if plugin_version else "Plugin non rilevato",
+        "last_seen_at": str(diagnostics.get("last_seen_at") or "Mai"),
+        "last_event": str(diagnostics.get("last_event") or "Mai"),
+        "last_event_at": str(diagnostics.get("last_event_at") or ""),
+        "last_config_sent_at": str(diagnostics.get("last_config_sent_at") or "Mai"),
+        "last_config_ack_at": str(diagnostics.get("last_config_ack_at") or "Mai"),
+        "last_config_ack_error": str(diagnostics.get("last_config_ack_error") or ""),
+        "last_plugin_settings_at": str(diagnostics.get("last_plugin_settings_at") or "Mai"),
+        "target_count": diagnostics.get("target_count"),
+        "target_count_label": (
+            str(diagnostics.get("target_count"))
+            if diagnostics.get("target_count") is not None
+            else "Non riportate"
+        ),
+        "plugin_targets": _event_bridge_targets_payload(diagnostics.get("plugin_targets")),
+        "diffs": _event_bridge_diffs_payload(diagnostics.get("diffs")),
+    }
+
+
+def _event_bridge_sync_class(sync_status: str) -> str:
+    if sync_status == "aligned":
+        return "status-ok"
+    if sync_status == "mismatch":
+        return "status-fail"
+    return "status-skip"
+
+
+def _event_bridge_targets_payload(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    targets: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url:
+            continue
+        targets.append({"name": str(item.get("name") or "OctoHubs").strip(), "url": url})
+    return targets
+
+
+def _event_bridge_diffs_payload(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    diffs: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        diffs.append(
+            {
+                "label": str(item.get("label") or ""),
+                "octohubs": str(item.get("octohubs") or ""),
+                "plugin": str(item.get("plugin") or ""),
+            }
+        )
+    return diffs
+
+
+def _event_bridge_diagnostics(settings: dict[str, Any], status: dict[str, Any] | None) -> dict[str, Any]:
+    status = status if isinstance(status, dict) else {}
+    plugin_settings = status.get("plugin_settings") if isinstance(status.get("plugin_settings"), dict) else {}
+    plugin_targets = status.get("plugin_targets") if isinstance(status.get("plugin_targets"), list) else []
+    diffs = _event_bridge_setting_differences(settings, plugin_settings)
+    if not plugin_settings:
+        sync_status = "unknown"
+        sync_label = "Report plugin assente"
+    elif diffs:
+        sync_status = "mismatch"
+        sync_label = "Config diversa"
+    else:
+        sync_status = "aligned"
+        sync_label = "Config allineata"
+
+    target_count = status.get("plugin_target_count")
+    if target_count is None and plugin_targets:
+        target_count = len(plugin_targets)
+
+    last_event = _event_bridge_last_event_label(status)
+    return {
+        "sync_status": sync_status,
+        "sync_label": sync_label,
+        "diffs": diffs,
+        "plugin_settings_seen": bool(plugin_settings),
+        "plugin_version": status.get("plugin_version") or "",
+        "target_count": target_count,
+        "plugin_targets": plugin_targets,
+        "last_event": last_event,
+        "last_seen_at": status.get("last_seen_at") or "",
+        "last_event_at": status.get("last_event_at") or "",
+        "last_plugin_settings_at": status.get("last_plugin_settings_at") or "",
+        "last_config_sent_at": status.get("last_config_sent_at") or "",
+        "last_config_ack_at": status.get("last_config_ack_at") or "",
+        "last_config_ack_status": status.get("last_config_ack_status") or "",
+        "last_config_ack_error": status.get("last_config_ack_error") or "",
+    }
+
+
+def _event_bridge_setting_differences(expected: dict[str, Any], reported: dict[str, Any]) -> list[dict[str, str]]:
+    if not isinstance(reported, dict) or not reported:
+        return []
+
+    expected = normalize_event_bridge_settings(expected)
+    reported = normalize_event_bridge_settings(reported)
+    diffs: list[dict[str, str]] = []
+    for key, label in EVENT_BRIDGE_SETTING_LABELS.items():
+        expected_value = expected.get(key)
+        reported_value = reported.get(key)
+        if _event_bridge_comparable_value(expected_value) == _event_bridge_comparable_value(reported_value):
+            continue
+        diffs.append(
+            {
+                "label": label,
+                "octohubs": _event_bridge_value_label(expected_value),
+                "plugin": _event_bridge_value_label(reported_value),
+            }
+        )
+    return diffs
+
+
+def _event_bridge_comparable_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return [str(item).strip().lower() for item in value]
+    return value
+
+
+def _event_bridge_value_label(value: Any) -> str:
+    if isinstance(value, bool):
+        return "Sì" if value else "No"
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value) if value else "vuoto"
+    if value is None or value == "":
+        return "vuoto"
+    return str(value)
+
+
+def _event_bridge_last_event_label(status: dict[str, Any]) -> str:
+    event_name = str(status.get("last_event_name") or "").strip()
+    event_type = str(status.get("last_event_type") or "").strip()
+    if event_name and event_type and event_name.lower() != event_type.lower():
+        return f"{event_name} ({event_type})"
+    return event_name or event_type or ""
 
 
 def _form_list(form: Any, name: str) -> list[str]:

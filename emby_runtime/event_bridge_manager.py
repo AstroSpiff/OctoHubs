@@ -8,7 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from emby_runtime.event_bridge_payloads import event_bridge_payloads
-from emby_runtime.event_bridge_settings import build_plugin_settings_payload
+from emby_runtime.event_bridge_settings import build_plugin_settings_payload, event_bridge_settings_from_plugin_payload
 
 
 @dataclass
@@ -27,6 +27,12 @@ class EventBridgeServerState:
     last_config_ack_error: str = ""
     last_config_message_id: str = ""
     last_config_ack_message_id: str = ""
+    last_plugin_settings_at: str = ""
+    plugin_settings: dict[str, Any] = field(default_factory=dict)
+    plugin_target_count: int | None = None
+    plugin_targets: list[dict[str, str]] = field(default_factory=list)
+    last_event_type: str = ""
+    last_event_name: str = ""
     received_count: int = 0
     websocket: Any = field(default=None, repr=False)
 
@@ -46,6 +52,12 @@ class EventBridgeServerState:
             "last_config_ack_error": self.last_config_ack_error,
             "last_config_message_id": self.last_config_message_id,
             "last_config_ack_message_id": self.last_config_ack_message_id,
+            "last_plugin_settings_at": self.last_plugin_settings_at,
+            "plugin_settings": dict(self.plugin_settings),
+            "plugin_target_count": self.plugin_target_count,
+            "plugin_targets": list(self.plugin_targets),
+            "last_event_type": self.last_event_type,
+            "last_event_name": self.last_event_name,
             "received_count": self.received_count,
         }
 
@@ -125,6 +137,38 @@ class EventBridgeConnectionManager:
         self._websocket_servers[id(websocket)] = server_id
         return state
 
+    def record_plugin_configuration_response(self, server_id: str | None, response: dict[str, Any] | None) -> None:
+        """Record settings returned by the Emby plugin configuration endpoint."""
+        if not server_id or not isinstance(response, dict):
+            return
+
+        now = _utc_now()
+        state = self._servers.get(server_id) or EventBridgeServerState(server_id=server_id)
+        state.server_name = str(response.get("ServerName") or response.get("serverName") or state.server_name or "")
+        state.plugin_version = str(
+            response.get("PluginVersion")
+            or response.get("pluginVersion")
+            or state.plugin_version
+            or ""
+        )
+        if not state.connected:
+            state.transport = "http"
+        state.last_seen_at = now
+        state.last_config_sent_at = now
+        state.last_config_ack_at = now
+        ok = response.get("Ok") if "Ok" in response else response.get("ok")
+        applied = response.get("Applied") if "Applied" in response else response.get("applied")
+        state.last_config_ack_status = "applied" if ok is not False and applied is not False else "error"
+        state.last_config_ack_error = (
+            ""
+            if state.last_config_ack_status == "applied"
+            else str(response.get("Error") or response.get("error") or "").strip()
+        )
+        settings = response.get("Settings") if "Settings" in response else response.get("settings")
+        if isinstance(settings, dict):
+            self._record_plugin_payload_state(state, settings)
+        self._servers[server_id] = state
+
     def record_http_event(self, payload: dict[str, Any]) -> None:
         payloads = event_bridge_payloads(payload)
         for item in payloads:
@@ -136,6 +180,10 @@ class EventBridgeConnectionManager:
             state.last_seen_at = _utc_now()
             state.last_event_at = state.last_seen_at
             state.received_count += 1
+            _record_event_identity(state, item)
+            plugin = item.get("plugin") if isinstance(item.get("plugin"), dict) else {}
+            if plugin:
+                self._record_plugin_payload_state(state, plugin)
             self._servers[server_id] = state
 
     def record_websocket_event(self, websocket: Any, payload: dict[str, Any]) -> None:
@@ -151,6 +199,10 @@ class EventBridgeConnectionManager:
             state.last_seen_at = _utc_now()
             state.last_event_at = state.last_seen_at
             state.received_count += 1
+            _record_event_identity(state, item)
+            plugin = item.get("plugin") if isinstance(item.get("plugin"), dict) else {}
+            if plugin:
+                self._record_plugin_payload_state(state, plugin)
             self._servers[key] = state
 
     def status(self) -> dict[str, Any]:
@@ -166,6 +218,13 @@ class EventBridgeConnectionManager:
             state = self._servers.get(server_id)
             return [state] if state else []
         return list(self._servers.values())
+
+    def _record_plugin_payload_state(self, state: EventBridgeServerState, plugin: dict[str, Any]) -> None:
+        state.plugin_settings = event_bridge_settings_from_plugin_payload(plugin)
+        state.last_plugin_settings_at = _utc_now()
+        state.plugin_version = str(plugin.get("version") or state.plugin_version or "")
+        state.plugin_target_count = _int_or_none(plugin.get("octoHubsTargetCount"))
+        state.plugin_targets = _plugin_targets(plugin.get("octoHubsTargets"))
 
 
 _manager = EventBridgeConnectionManager()
@@ -185,6 +244,35 @@ def _server_identity(payload: dict[str, Any]) -> tuple[str, str]:
     server_id = str(payload.get("serverId") or "").strip()
     server_name = str(payload.get("serverName") or "").strip()
     return server_id or server_name or "unknown", server_name
+
+
+def _record_event_identity(state: EventBridgeServerState, payload: dict[str, Any]) -> None:
+    event = payload.get("event") if isinstance(payload.get("event"), dict) else {}
+    state.last_event_type = str(event.get("type") or payload.get("eventType") or "").strip()
+    state.last_event_name = str(event.get("name") or payload.get("eventName") or "").strip()
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _plugin_targets(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+
+    targets: list[dict[str, str]] = []
+    for index, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or item.get("baseUrl") or "").strip()
+        if not url:
+            continue
+        name = str(item.get("name") or f"OctoHubs {index}").strip()
+        targets.append({"name": name, "url": url})
+    return targets
 
 
 def _utc_now() -> str:

@@ -1042,7 +1042,7 @@
                 </div>
             </div>
 
-            <div class="tab-panel" data-tab-panel="event-bridge">
+            <div class="tab-panel" data-tab-panel="event-bridge" data-event-bridge-live="/configuration/event-bridge/status">
                 <div class="card">
                     <div class="trakt-header">
                         <div>
@@ -1079,7 +1079,8 @@
                                     {% set bridge_status = bridge_server.status %}
                                     {% set bridge_id = bridge_server.id | replace('-', '_') %}
                                     {% set bridge_config_ack_status = bridge_status.last_config_ack_status if bridge_status else '' %}
-                                    <details class="config-box event-bridge-server-card" {% if bridge_server.settings_editable %}open{% endif %}>
+                                    {% set bridge_diag = bridge_server.diagnostics %}
+                                    <details class="config-box event-bridge-server-card" data-event-bridge-server="{{ bridge_server.id }}" {% if bridge_server.settings_editable %}open{% endif %}>
                                         <summary class="event-bridge-server-summary">
                                             <div class="event-bridge-server-heading">
                                                 <h4>
@@ -1089,7 +1090,7 @@
                                                 <div class="tagline">Server ID: <code>{{ bridge_server.id }}</code></div>
                                             </div>
                                             <div class="event-bridge-server-status">
-                                                <span class="status-pill {{ 'status-ok' if bridge_status and bridge_status.connected else 'status-skip' }}">
+                                                <span class="status-pill {{ 'status-ok' if bridge_status and bridge_status.connected else 'status-skip' }}" data-event-bridge-field="transport-status">
                                                     {% if bridge_status and bridge_status.connected %}
                                                         WebSocket connesso
                                                     {% elif bridge_status and bridge_status.received_count %}
@@ -1098,52 +1099,104 @@
                                                         Non visto
                                                     {% endif %}
                                                 </span>
-                                                {% if bridge_config_ack_status %}
-                                                    <span class="status-pill {% if bridge_config_ack_status == 'applied' %}status-ok{% elif bridge_config_ack_status == 'pending' %}status-skip{% else %}status-fail{% endif %}"
-                                                          title="{% if bridge_status.last_config_ack_error %}{{ bridge_status.last_config_ack_error }}{% elif bridge_status.last_config_ack_at %}{{ bridge_status.last_config_ack_at }}{% elif bridge_status.last_config_sent_at %}{{ bridge_status.last_config_sent_at }}{% endif %}">
-                                                        {% if bridge_config_ack_status == 'applied' %}
-                                                            Config applicata
-                                                        {% elif bridge_config_ack_status == 'pending' %}
-                                                            Config inviata
-                                                        {% else %}
-                                                            Config errore
-                                                        {% endif %}
-                                                    </span>
-                                                {% endif %}
+                                                <span class="status-pill {% if bridge_config_ack_status == 'applied' %}status-ok{% elif bridge_config_ack_status == 'pending' %}status-skip{% else %}status-fail{% endif %} {% if not bridge_config_ack_status %}is-hidden{% endif %}"
+                                                      data-event-bridge-field="config-ack"
+                                                      title="{% if bridge_status and bridge_status.last_config_ack_error %}{{ bridge_status.last_config_ack_error }}{% elif bridge_status and bridge_status.last_config_ack_at %}{{ bridge_status.last_config_ack_at }}{% elif bridge_status and bridge_status.last_config_sent_at %}{{ bridge_status.last_config_sent_at }}{% endif %}">
+                                                    {% if bridge_config_ack_status == 'applied' %}
+                                                        Config applicata
+                                                    {% elif bridge_config_ack_status == 'pending' %}
+                                                        Config inviata
+                                                    {% elif bridge_config_ack_status %}
+                                                        Config errore
+                                                    {% endif %}
+                                                </span>
                                                 <i class="fa-solid fa-chevron-down event-bridge-server-chevron" aria-hidden="true"></i>
                                             </div>
                                         </summary>
 
                                         <div class="event-bridge-server-body">
-                                            {% if bridge_server.settings_editable %}
+                                            <div class="event-bridge-diagnostics">
+                                                <div class="event-bridge-diagnostic-head">
+                                                    <span class="status-pill {% if bridge_diag.sync_status == 'aligned' %}status-ok{% elif bridge_diag.sync_status == 'mismatch' %}status-fail{% else %}status-skip{% endif %}" data-event-bridge-field="sync-status">
+                                                        {{ bridge_diag.sync_label }}
+                                                    </span>
+                                                    <span class="event-bridge-muted" data-event-bridge-field="plugin-version">
+                                                        {% if bridge_diag.plugin_version %}Plugin {{ bridge_diag.plugin_version }}{% else %}Plugin non rilevato{% endif %}
+                                                    </span>
+                                                </div>
+                                                <div class="event-bridge-diagnostic-grid">
+                                                    <div>
+                                                        <span>Ultimo contatto</span>
+                                                        <strong data-event-bridge-value="last_seen_at">{{ bridge_diag.last_seen_at or 'Mai' }}</strong>
+                                                    </div>
+                                                    <div>
+                                                        <span>Ultimo evento</span>
+                                                        <strong data-event-bridge-value="last_event">{{ bridge_diag.last_event or 'Mai' }}</strong>
+                                                        <small class="{% if not bridge_diag.last_event_at %}is-hidden{% endif %}" data-event-bridge-value="last_event_at">{{ bridge_diag.last_event_at }}</small>
+                                                    </div>
+                                                    <div>
+                                                        <span>Config inviata</span>
+                                                        <strong data-event-bridge-value="last_config_sent_at">{{ bridge_diag.last_config_sent_at or 'Mai' }}</strong>
+                                                    </div>
+                                                    <div>
+                                                        <span>Config confermata</span>
+                                                        <strong data-event-bridge-value="last_config_ack_at">{{ bridge_diag.last_config_ack_at or 'Mai' }}</strong>
+                                                        <small class="{% if not bridge_diag.last_config_ack_error %}is-hidden{% endif %}" data-event-bridge-value="last_config_ack_error">{{ bridge_diag.last_config_ack_error }}</small>
+                                                    </div>
+                                                    <div>
+                                                        <span>Report plugin</span>
+                                                        <strong data-event-bridge-value="last_plugin_settings_at">{{ bridge_diag.last_plugin_settings_at or 'Mai' }}</strong>
+                                                    </div>
+                                                    <div>
+                                                        <span>Destinazioni plugin</span>
+                                                        <strong data-event-bridge-value="target_count">{{ bridge_diag.target_count if bridge_diag.target_count is not none else 'Non riportate' }}</strong>
+                                                    </div>
+                                                </div>
+                                                <div class="event-bridge-target-list {% if not bridge_diag.plugin_targets %}is-hidden{% endif %}" data-event-bridge-target-list>
+                                                    {% for target in bridge_diag.plugin_targets %}
+                                                        <span>{{ target.name }}: {{ target.url }}</span>
+                                                    {% endfor %}
+                                                </div>
+                                                <div class="event-bridge-diff-list {% if not bridge_diag.diffs %}is-hidden{% endif %}" data-event-bridge-diff-list>
+                                                    {% for diff in bridge_diag.diffs %}
+                                                        <div>
+                                                            <strong>{{ diff.label }}</strong>
+                                                            <span>OctoHubs: {{ diff.octohubs }}</span>
+                                                            <span>Plugin: {{ diff.plugin }}</span>
+                                                        </div>
+                                                    {% endfor %}
+                                                </div>
+                                            </div>
+
+                                            <fieldset class="event-bridge-settings-panel {% if not bridge_server.settings_editable %}is-hidden{% endif %}" data-event-bridge-settings-panel {% if not bridge_server.settings_editable %}disabled{% endif %}>
                                                 <input type="hidden" name="event_bridge_server_ids" value="{{ bridge_server.id }}">
                                                 <div class="event-bridge-options">
                                                     <label title="Abilita o disabilita Event Bridge per questo server">
-                                                        <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_enabled" {% if bridge_settings.ENABLED %}checked{% endif %}>
+                                                        <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_enabled" data-event-bridge-setting="ENABLED" {% if bridge_settings.ENABLED %}checked{% endif %}>
                                                         Abilita
                                                     </label>
                                                     <label title="Usa WebSocket bidirezionale quando il plugin riesce a connettersi">
-                                                        <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_websocket_enabled" {% if bridge_settings.WEBSOCKET_ENABLED %}checked{% endif %}>
+                                                        <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_websocket_enabled" data-event-bridge-setting="WEBSOCKET_ENABLED" {% if bridge_settings.WEBSOCKET_ENABLED %}checked{% endif %}>
                                                         WebSocket
                                                     </label>
                                                     <label title="Se WebSocket non è disponibile, consenti invio HTTP batch">
-                                                        <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_http_fallback_enabled" {% if bridge_settings.HTTP_FALLBACK_ENABLED %}checked{% endif %}>
+                                                        <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_http_fallback_enabled" data-event-bridge-setting="HTTP_FALLBACK_ENABLED" {% if bridge_settings.HTTP_FALLBACK_ENABLED %}checked{% endif %}>
                                                         Fallback HTTP
                                                     </label>
                                                     <label title="Includi eventi playback: start, stop, progressi whitelist e cambi player">
-                                                        <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_capture_playback" {% if bridge_settings.CAPTURE_PLAYBACK_EVENTS %}checked{% endif %}>
+                                                        <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_capture_playback" data-event-bridge-setting="CAPTURE_PLAYBACK_EVENTS" {% if bridge_settings.CAPTURE_PLAYBACK_EVENTS %}checked{% endif %}>
                                                         Playback
                                                     </label>
                                                     <label title="Includi eventi sessione Emby selezionati">
-                                                        <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_capture_session" {% if bridge_settings.CAPTURE_SESSION_EVENTS %}checked{% endif %}>
+                                                        <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_capture_session" data-event-bridge-setting="CAPTURE_SESSION_EVENTS" {% if bridge_settings.CAPTURE_SESSION_EVENTS %}checked{% endif %}>
                                                         Sessione
                                                     </label>
                                                     <label title="Includi eventi diagnostici generati dal plugin">
-                                                        <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_capture_plugin" {% if bridge_settings.CAPTURE_PLUGIN_EVENTS %}checked{% endif %}>
+                                                        <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_capture_plugin" data-event-bridge-setting="CAPTURE_PLUGIN_EVENTS" {% if bridge_settings.CAPTURE_PLUGIN_EVENTS %}checked{% endif %}>
                                                         Plugin
                                                     </label>
                                                     <label title="Invia payload grezzi compatti solo per diagnostica">
-                                                        <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_include_raw_payload" {% if bridge_settings.INCLUDE_RAW_PAYLOAD %}checked{% endif %}>
+                                                        <input type="checkbox" name="event_bridge_{{ bridge_server.id }}_include_raw_payload" data-event-bridge-setting="INCLUDE_RAW_PAYLOAD" {% if bridge_settings.INCLUDE_RAW_PAYLOAD %}checked{% endif %}>
                                                         Raw
                                                     </label>
                                                 </div>
@@ -1151,42 +1204,41 @@
                                                 <div class="event-bridge-number-grid">
                                                     <label for="event_bridge_{{ bridge_id }}_batch_interval_seconds">
                                                         Batch secondi
-                                                        <input type="number" min="0" id="event_bridge_{{ bridge_id }}_batch_interval_seconds" name="event_bridge_{{ bridge_server.id }}_batch_interval_seconds" value="{{ bridge_settings.EVENT_BATCH_INTERVAL_SECONDS }}">
+                                                        <input type="number" min="0" id="event_bridge_{{ bridge_id }}_batch_interval_seconds" name="event_bridge_{{ bridge_server.id }}_batch_interval_seconds" data-event-bridge-setting="EVENT_BATCH_INTERVAL_SECONDS" value="{{ bridge_settings.EVENT_BATCH_INTERVAL_SECONDS }}">
                                                     </label>
                                                     <label for="event_bridge_{{ bridge_id }}_ws_reconnect_seconds">
                                                         Reconnect WS
-                                                        <input type="number" min="1" id="event_bridge_{{ bridge_id }}_ws_reconnect_seconds" name="event_bridge_{{ bridge_server.id }}_ws_reconnect_seconds" value="{{ bridge_settings.WEBSOCKET_RECONNECT_SECONDS }}">
+                                                        <input type="number" min="1" id="event_bridge_{{ bridge_id }}_ws_reconnect_seconds" name="event_bridge_{{ bridge_server.id }}_ws_reconnect_seconds" data-event-bridge-setting="WEBSOCKET_RECONNECT_SECONDS" value="{{ bridge_settings.WEBSOCKET_RECONNECT_SECONDS }}">
                                                     </label>
                                                     <label for="event_bridge_{{ bridge_id }}_http_timeout_seconds">
                                                         Timeout HTTP
-                                                        <input type="number" min="1" id="event_bridge_{{ bridge_id }}_http_timeout_seconds" name="event_bridge_{{ bridge_server.id }}_http_timeout_seconds" value="{{ bridge_settings.HTTP_TIMEOUT_SECONDS }}">
+                                                        <input type="number" min="1" id="event_bridge_{{ bridge_id }}_http_timeout_seconds" name="event_bridge_{{ bridge_server.id }}_http_timeout_seconds" data-event-bridge-setting="HTTP_TIMEOUT_SECONDS" value="{{ bridge_settings.HTTP_TIMEOUT_SECONDS }}">
                                                     </label>
                                                     <label for="event_bridge_{{ bridge_id }}_retry_count">
                                                         Retry HTTP
-                                                        <input type="number" min="0" id="event_bridge_{{ bridge_id }}_retry_count" name="event_bridge_{{ bridge_server.id }}_retry_count" value="{{ bridge_settings.RETRY_COUNT }}">
+                                                        <input type="number" min="0" id="event_bridge_{{ bridge_id }}_retry_count" name="event_bridge_{{ bridge_server.id }}_retry_count" data-event-bridge-setting="RETRY_COUNT" value="{{ bridge_settings.RETRY_COUNT }}">
                                                     </label>
                                                 </div>
 
                                                 <div class="event-bridge-events-grid">
                                                     <label for="event_bridge_{{ bridge_id }}_playback_event_names">
                                                         Eventi playback progress
-                                                        <textarea id="event_bridge_{{ bridge_id }}_playback_event_names" name="event_bridge_{{ bridge_server.id }}_playback_event_names" rows="7">{% for event_name in bridge_settings.PLAYBACK_EVENT_NAMES %}{{ event_name }}{% if not loop.last %}&#10;{% endif %}{% endfor %}</textarea>
+                                                        <textarea id="event_bridge_{{ bridge_id }}_playback_event_names" name="event_bridge_{{ bridge_server.id }}_playback_event_names" data-event-bridge-setting="PLAYBACK_EVENT_NAMES" rows="7">{% for event_name in bridge_settings.PLAYBACK_EVENT_NAMES %}{{ event_name }}{% if not loop.last %}&#10;{% endif %}{% endfor %}</textarea>
                                                     </label>
                                                     <label for="event_bridge_{{ bridge_id }}_session_event_names">
                                                         Eventi sessione
-                                                        <textarea id="event_bridge_{{ bridge_id }}_session_event_names" name="event_bridge_{{ bridge_server.id }}_session_event_names" rows="7">{% for event_name in bridge_settings.SESSION_EVENT_NAMES %}{{ event_name }}{% if not loop.last %}&#10;{% endif %}{% endfor %}</textarea>
+                                                        <textarea id="event_bridge_{{ bridge_id }}_session_event_names" name="event_bridge_{{ bridge_server.id }}_session_event_names" data-event-bridge-setting="SESSION_EVENT_NAMES" rows="7">{% for event_name in bridge_settings.SESSION_EVENT_NAMES %}{{ event_name }}{% if not loop.last %}&#10;{% endif %}{% endfor %}</textarea>
                                                     </label>
                                                     <label for="event_bridge_{{ bridge_id }}_plugin_event_names">
                                                         Eventi plugin
-                                                        <textarea id="event_bridge_{{ bridge_id }}_plugin_event_names" name="event_bridge_{{ bridge_server.id }}_plugin_event_names" rows="7">{% for event_name in bridge_settings.PLUGIN_EVENT_NAMES %}{{ event_name }}{% if not loop.last %}&#10;{% endif %}{% endfor %}</textarea>
+                                                        <textarea id="event_bridge_{{ bridge_id }}_plugin_event_names" name="event_bridge_{{ bridge_server.id }}_plugin_event_names" data-event-bridge-setting="PLUGIN_EVENT_NAMES" rows="7">{% for event_name in bridge_settings.PLUGIN_EVENT_NAMES %}{{ event_name }}{% if not loop.last %}&#10;{% endif %}{% endfor %}</textarea>
                                                     </label>
                                                 </div>
-                                            {% else %}
-                                                <div class="event-bridge-plugin-empty">
-                                                    <strong>Plugin non connesso</strong>
-                                                    <span>Le impostazioni compariranno dopo il primo WebSocket connesso o evento HTTP ricevuto da questo server.</span>
-                                                </div>
-                                            {% endif %}
+                                            </fieldset>
+                                            <div class="event-bridge-plugin-empty {% if bridge_server.settings_editable %}is-hidden{% endif %}" data-event-bridge-empty>
+                                                <strong>Plugin non connesso</strong>
+                                                <span>Le impostazioni compariranno dopo il primo WebSocket connesso o evento HTTP ricevuto da questo server.</span>
+                                            </div>
                                         </div>
                                     </details>
                                 {% endfor %}
@@ -1205,6 +1257,7 @@
     </div>
     <div id="toast-container"></div>
     <script src="{{ url_for('static', filename='shared-utils.js') }}"></script>
+    <script src="{{ url_for('static', filename='event_bridge_diagnostics.js') }}?v=20260811-live-diagnostics"></script>
     <script src="{{ url_for('static', filename='operations_center.js') }}?v=20260720-operation-events"></script>
     <script src="{{ url_for('static', filename='actions.js') }}"></script>
     <script src="{{ url_for('static', filename='script_shell.js') }}?v=20260628-shell"></script>

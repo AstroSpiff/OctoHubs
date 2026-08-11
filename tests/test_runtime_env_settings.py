@@ -106,5 +106,7 @@ def test_configuration_template_exposes_event_bridge_secret_field():
     assert "webhook_secret_configured" in template
     assert 'data-tab="event-bridge"' in template
     assert 'data-tab-panel="event-bridge"' in template
+    assert 'data-event-bridge-live="/configuration/event-bridge/status"' in template
+    assert "event_bridge_diagnostics.js" in template
     assert 'action="/configuration/event-bridge"' in template
     assert 'value=""' in template
