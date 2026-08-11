@@ -1607,9 +1607,10 @@
         .event-bridge-events-grid textarea {
             min-height: 8.5rem;
         }
-        .system-status-card {
+        .system-status-page {
             display: grid;
-            gap: 1rem;
+            gap: 1.25rem;
+            padding: 0.25rem 0;
         }
         .system-status-header {
             display: flex;
@@ -1639,17 +1640,24 @@
         }
         .system-status-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 1rem;
+            grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+            gap: 1.25rem 1.5rem;
         }
         .system-status-section {
             display: grid;
             gap: 0.75rem;
             min-width: 0;
-            border: 1px solid #e1e6f0;
-            border-radius: 10px;
-            padding: 0.9rem;
-            background: #fbfcff;
+            border-top: 3px solid #cbd5e1;
+            padding-top: 0.9rem;
+        }
+        .system-status-section--ok {
+            border-top-color: #22a06b;
+        }
+        .system-status-section--warning {
+            border-top-color: #d97706;
+        }
+        .system-status-section--error {
+            border-top-color: #dc2626;
         }
         .system-status-section-head,
         .system-status-item-head {
@@ -1661,6 +1669,25 @@
         .system-status-section-head h3 {
             margin: 0;
             font-size: 1rem;
+        }
+        .system-status-section-title {
+            display: grid;
+            gap: 0.18rem;
+        }
+        .system-status-section-meta {
+            margin: 0;
+            color: #64748b;
+            font-size: 0.8rem;
+        }
+        .system-status-section-actions {
+            display: inline-flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 0.4rem;
+            flex-wrap: wrap;
+        }
+        .system-status-section-action {
+            min-height: 2rem;
         }
         .system-status-items {
             display: grid;
@@ -1676,6 +1703,10 @@
         .system-status-item:first-child {
             border-top: none;
             padding-top: 0;
+        }
+        .system-status-item-head h4 {
+            margin: 0;
+            font-size: 0.9rem;
         }
         .system-status-summary,
         .system-status-detail {
@@ -1699,28 +1730,33 @@
             gap: 0.1rem;
             min-width: 0;
         }
-        .system-status-metrics span {
+        .system-status-metrics dt {
             color: #64748b;
             font-size: 0.74rem;
         }
-        .system-status-metrics strong {
+        .system-status-metrics dd {
+            margin: 0;
             color: #0f172a;
             font-size: 0.82rem;
             overflow-wrap: anywhere;
         }
-        .system-status-link {
-            justify-self: start;
+        .system-status-open-link {
             color: #2563eb;
             font-size: 0.84rem;
             text-decoration: none;
             font-weight: 650;
         }
-        .system-status-link:hover {
+        .system-status-open-link:hover {
             text-decoration: underline;
         }
         .system-status-empty {
             color: #64748b;
             font-size: 0.9rem;
+        }
+        .deep-link-focus {
+            outline: 3px solid #60a5fa;
+            outline-offset: 4px;
+            transition: outline-color 0.2s ease;
         }
         @media (min-width: 1180px) {
             .event-bridge-server-grid {
@@ -1735,6 +1771,13 @@
             .event-bridge-diagnostic-grid,
             .event-bridge-diff-list > div {
                 grid-template-columns: 1fr;
+            }
+            .system-status-section-head {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+            .system-status-section-actions {
+                justify-content: flex-start;
             }
         }
         @media (max-width: 520px) {

@@ -455,7 +455,7 @@ def _build_test_connections_snapshot():
     mdblist_ok, mdblist_msg, mdblist_configured = _ping_mdblist(config)
     omdb_ok, omdb_msg, omdb_configured = _ping_omdb(config)
 
-    return {
+    payload = {
         "success": True,
         "statuses": {
             "jellyseerr": {"ok": jelly_ok, "message": jelly_msg},
@@ -468,7 +468,11 @@ def _build_test_connections_snapshot():
             "justwatch": {"ok": justwatch_ok, "message": justwatch_msg, "configured": justwatch_configured},
             "database": {"ok": db_ok, "message": db_msg}
         }
-    }, 200
+    }
+    from app_state import set_connection_check_state
+
+    set_connection_check_state(payload["statuses"], datetime.now(timezone.utc).isoformat())
+    return payload, 200
 
 
 def _build_trakt_device_start_snapshot(payload):

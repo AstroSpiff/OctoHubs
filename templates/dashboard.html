@@ -7,7 +7,7 @@
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>Ricerche e richieste</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}?v=20260719-search-summary">
+    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}?v=20260811-system-status">
     <link rel="stylesheet" href="{{ url_for('static', filename='operations_center.css') }}?v=20260715-global-operations">
 </head>
 <body data-qb-available="{{ 'true' if qb_available else 'false' }}">
@@ -786,7 +786,7 @@
                 </div>
                 <div class="card">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
-                        <h2 style="margin: 0;">Richieste Jellyseerr monitorate</h2>
+                        <h2 id="requests-refresh" style="margin: 0;">Richieste Jellyseerr monitorate</h2>
                         {% if has_config %}
                             <div style="display: flex; align-items: center; gap: 0.5rem;">
                                 <button type="button"
@@ -1190,7 +1190,7 @@
     <script src="{{ url_for('static', filename='shared-utils.js') }}?v=20260719-search-summary"></script>
     <script src="{{ url_for('static', filename='operations_center.js') }}?v=20260720-operation-events"></script>
     <script src="{{ url_for('static', filename='actions.js') }}"></script>
-    <script src="{{ url_for('static', filename='script_shell.js') }}?v=20260628-shell"></script>
+    <script src="{{ url_for('static', filename='script_shell.js') }}?v=20260811-deep-links"></script>
     <script src="{{ url_for('static', filename='script_results.js') }}?v=20260719-search"></script>
     <script src="{{ url_for('static', filename='script_tmdb_emby.js') }}?v=20260719-search"></script>
     <script src="{{ url_for('static', filename='script_manual_search.js') }}?v=20260719-search"></script>

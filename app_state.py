@@ -6,6 +6,7 @@ Extracted from the legacy monolith to reduce module size.
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from typing import Optional
 
 from core.storage import StorageError
@@ -71,6 +72,27 @@ _JELLYSEERR_REFRESH_STATE: dict = {
     "completed_at": None,
     "counts": None,
 }
+
+# Latest result of the shared integrations check. It is intentionally ephemeral:
+# credentials and health details stay in the running application only.
+_CONNECTION_CHECK_STATE: dict = {
+    "checked_at": None,
+    "statuses": {},
+}
+
+
+def set_connection_check_state(statuses: dict | None, checked_at: str | None) -> None:
+    """Store the most recent integrations check for the configuration views."""
+    _CONNECTION_CHECK_STATE["checked_at"] = checked_at
+    _CONNECTION_CHECK_STATE["statuses"] = deepcopy(statuses or {})
+
+
+def get_connection_check_state() -> dict:
+    """Return a copy so callers cannot mutate shared health state."""
+    return {
+        "checked_at": _CONNECTION_CHECK_STATE.get("checked_at"),
+        "statuses": deepcopy(_CONNECTION_CHECK_STATE.get("statuses") or {}),
+    }
 
 _EMBY_LIBRARIES_MANAGER = None
 _EMBY_LIBRARY_SCAN_MANAGER = None

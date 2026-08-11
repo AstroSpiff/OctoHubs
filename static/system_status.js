@@ -7,7 +7,7 @@
     }
 
     const STATUS_CLASSES = ['status-ok', 'status-warning', 'status-fail', 'status-skip'];
-    const POLL_INTERVAL_MS = 10000;
+    const POLL_TICK_MS = 1000;
     const endpoint = root.dataset.systemStatusEndpoint || '/api/system/status';
     const utils = window.octohubsUtils || {};
 
@@ -16,16 +16,25 @@
     const counts = root.querySelector('[data-system-status-counts]');
     const sectionsRoot = root.querySelector('[data-system-status-sections]');
     const refreshButton = root.querySelector('[data-system-status-refresh]');
-    const checkButton = root.querySelector('[data-system-status-check]');
 
-    let refreshRunning = false;
+    const sectionsById = new Map();
+    const sectionRefreshAt = new Map();
+    const refreshingSections = new Set();
+    let fullRefreshRunning = false;
 
-    const fetchJson = async (checkServices = false) => {
+    const fetchJson = async ({ sectionId = '', checkServices = false } = {}) => {
         const fetcher = typeof utils.csrfFetch === 'function'
             ? utils.csrfFetch
             : (url, options) => fetch(url, { credentials: 'same-origin', ...(options || {}) });
-        const url = `${endpoint}${checkServices ? '?check_services=true' : ''}`;
-        const response = await fetcher(url, { method: 'GET' });
+        const params = new URLSearchParams();
+        if (sectionId) {
+            params.set('section', sectionId);
+        }
+        if (checkServices) {
+            params.set('check_services', 'true');
+        }
+        const suffix = params.size ? `?${params.toString()}` : '';
+        const response = await fetcher(`${endpoint}${suffix}`, { method: 'GET' });
         if (typeof utils.readJsonResponse === 'function') {
             return utils.readJsonResponse(response);
         }
@@ -51,7 +60,7 @@
         }
         element.classList.remove(...STATUS_CLASSES);
         element.classList.add(severityClass(severity));
-        element.textContent = label || 'N/D';
+        element.textContent = label || 'Da verificare';
     };
 
     const textNode = (tag, text, className = '') => {
@@ -64,13 +73,13 @@
     };
 
     const renderMetrics = (metrics) => {
-        const list = document.createElement('div');
+        const list = document.createElement('dl');
         list.className = 'system-status-metrics';
         (metrics || []).forEach((metric) => {
             const item = document.createElement('div');
             item.append(
-                textNode('span', metric.label || ''),
-                textNode('strong', metric.value || 'N/D')
+                textNode('dt', metric.label || ''),
+                textNode('dd', metric.value || 'N/D')
             );
             list.appendChild(item);
         });
@@ -84,9 +93,9 @@
 
         const head = document.createElement('div');
         head.className = 'system-status-item-head';
-        head.append(textNode('strong', item.label || 'Stato'));
-        const pill = textNode('span', item.status_label || 'N/D', 'status-pill');
-        setPill(pill, item.status_label || 'N/D', item.severity);
+        head.append(textNode('h4', item.label || 'Stato'));
+        const pill = textNode('span', item.status_label || 'Da verificare', 'status-pill');
+        setPill(pill, item.status_label, item.severity);
         head.appendChild(pill);
         row.appendChild(head);
 
@@ -97,34 +106,68 @@
         if (Array.isArray(item.metrics) && item.metrics.length) {
             row.appendChild(renderMetrics(item.metrics));
         }
-        if (item.href) {
-            const link = document.createElement('a');
-            link.className = 'system-status-link';
-            link.href = item.href;
-            link.textContent = 'Apri sezione';
-            row.appendChild(link);
-        }
         return row;
+    };
+
+    const sectionMetaText = (section) => {
+        const labels = [];
+        if (section.checked_at) {
+            labels.push(`Verificato ${section.checked_at}`);
+        } else if (section.updated_at) {
+            labels.push(`Aggiornato ${section.updated_at}`);
+        }
+        return labels.join(' · ');
+    };
+
+    const actionButton = (label, action, sectionId, style = 'ghost') => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `btn ${style} compact system-status-section-action`;
+        button.dataset.systemStatusAction = action;
+        button.dataset.systemStatusSection = sectionId;
+        button.textContent = label;
+        return button;
     };
 
     const renderSection = (section) => {
         const card = document.createElement('section');
         card.className = `system-status-section system-status-section--${section.severity || 'unknown'}`;
+        card.dataset.systemStatusSection = section.id || '';
         card.dataset.statusCode = section.status_code || section.severity || '';
 
-        const head = document.createElement('div');
+        const head = document.createElement('header');
         head.className = 'system-status-section-head';
-        head.appendChild(textNode('h3', section.title || 'Sezione'));
-        const pill = textNode('span', '', 'status-pill');
-        setPill(pill, section.status_label || '', section.severity);
-        head.appendChild(pill);
+        const titleBlock = document.createElement('div');
+        titleBlock.className = 'system-status-section-title';
+        titleBlock.appendChild(textNode('h3', section.title || 'Sezione'));
+        const meta = sectionMetaText(section);
+        if (meta) {
+            titleBlock.appendChild(textNode('p', meta, 'system-status-section-meta'));
+        }
+        head.appendChild(titleBlock);
+
+        const actions = document.createElement('div');
+        actions.className = 'system-status-section-actions';
+        const pill = textNode('span', section.status_label || 'Da verificare', 'status-pill');
+        setPill(pill, section.status_label, section.severity);
+        actions.appendChild(pill);
+        actions.appendChild(actionButton('Aggiorna area', 'refresh', section.id));
+        if (section.check_label) {
+            actions.appendChild(actionButton(section.check_label, 'check', section.id, 'secondary'));
+        }
+        if (section.href) {
+            const link = document.createElement('a');
+            link.className = 'system-status-open-link';
+            link.href = section.href;
+            link.textContent = 'Apri dettaglio';
+            actions.appendChild(link);
+        }
+        head.appendChild(actions);
         card.appendChild(head);
 
         const items = document.createElement('div');
         items.className = 'system-status-items';
-        (section.items || []).forEach((item) => {
-            items.appendChild(renderItem(item));
-        });
+        (section.items || []).forEach((item) => items.appendChild(renderItem(item)));
         if (!items.children.length) {
             items.appendChild(textNode('p', 'Nessuno stato disponibile.', 'system-status-empty'));
         }
@@ -132,73 +175,160 @@
         return card;
     };
 
-    const render = (payload) => {
-        if (!payload || payload.ok === false || !Array.isArray(payload.sections)) {
-            throw new Error(payload && payload.error ? payload.error : 'Payload stato sistema non valido');
-        }
-        setPill(overallPill, payload.status_label || 'N/D', payload.severity);
-        if (generatedAt) {
-            generatedAt.textContent = payload.generated_at ? `Aggiornato ${payload.generated_at}` : 'Aggiornato ora';
+    const renderSummary = (generated = '') => {
+        const summary = { error: 0, warning: 0, unknown: 0, ok: 0 };
+        sectionsById.forEach((section) => {
+            (section.items || []).forEach((item) => {
+                const severity = item.severity || 'unknown';
+                summary[severity] = (summary[severity] || 0) + 1;
+            });
+        });
+        const severity = summary.error ? 'error' : summary.warning ? 'warning' : summary.ok ? 'ok' : 'unknown';
+        const label = severity === 'error'
+            ? 'Errore'
+            : severity === 'warning'
+                ? 'Avviso'
+                : severity === 'ok'
+                    ? 'OK'
+                    : 'Da verificare';
+        setPill(overallPill, label, severity);
+        if (generatedAt && generated) {
+            generatedAt.textContent = `Aggiornato ${generated}`;
         }
         if (counts) {
-            const summary = payload.summary || {};
-            counts.textContent = `${summary.error || 0} errori · ${summary.warning || 0} avvisi · ${summary.ok || 0} ok`;
+            counts.textContent = `${summary.error} errori · ${summary.warning} avvisi · ${summary.unknown} da verificare · ${summary.ok} ok`;
         }
-        if (!sectionsRoot) {
-            return;
+    };
+
+    const renderAll = (payload) => {
+        if (!payload || !Array.isArray(payload.sections)) {
+            throw new Error(payload && payload.error ? payload.error : 'Payload stato sistema non valido');
         }
-        sectionsRoot.replaceChildren();
+        sectionsById.clear();
+        sectionsRoot?.replaceChildren();
         payload.sections.forEach((section) => {
-            sectionsRoot.appendChild(renderSection(section));
+            sectionsById.set(section.id, section);
+            sectionsRoot?.appendChild(renderSection(section));
         });
-    };
-
-    const shouldRefresh = () => {
-        if (document.visibilityState === 'hidden') {
-            return false;
+        if (!payload.sections.length && sectionsRoot) {
+            sectionsRoot.appendChild(textNode('p', 'Nessuno stato disponibile.', 'system-status-empty'));
         }
-        return root.classList.contains('active') || window.location.hash === '#system-status';
+        renderSummary(payload.generated_at || '');
     };
 
-    const refresh = async (checkServices = false) => {
-        if (refreshRunning || (!checkServices && !shouldRefresh())) {
+    const renderOne = (section, generated = '') => {
+        if (!section || !section.id || !sectionsRoot) {
+            throw new Error('Sezione stato sistema non valida');
+        }
+        sectionsById.set(section.id, section);
+        const replacement = renderSection(section);
+        const current = sectionsRoot.querySelector(`[data-system-status-section="${CSS.escape(section.id)}"]`);
+        if (current) {
+            current.replaceWith(replacement);
+        } else {
+            sectionsRoot.appendChild(replacement);
+        }
+        renderSummary(generated || section.updated_at || '');
+    };
+
+    const currentHashTab = () => {
+        const raw = window.location.hash ? window.location.hash.slice(1) : '';
+        return raw.split('?', 1)[0];
+    };
+
+    const shouldRefresh = () => (
+        document.visibilityState !== 'hidden'
+        && (root.classList.contains('active') || currentHashTab() === 'system-status')
+    );
+
+    const refreshAll = async () => {
+        if (fullRefreshRunning || !shouldRefresh()) {
             return;
         }
-        refreshRunning = true;
-        if (checkServices && checkButton) {
-            checkButton.disabled = true;
-        }
+        fullRefreshRunning = true;
         if (refreshButton) {
             refreshButton.disabled = true;
         }
         try {
-            render(await fetchJson(checkServices));
+            renderAll(await fetchJson());
+            const now = Date.now();
+            sectionsById.forEach((_section, sectionId) => sectionRefreshAt.set(sectionId, now));
         } catch (error) {
-            console.warn('[Stato Sistema] refresh failed', error);
+            console.warn('[Stato Sistema] full refresh failed', error);
             setPill(overallPill, 'Errore', 'error');
             if (sectionsRoot) {
-                sectionsRoot.replaceChildren(textNode('div', 'Stato sistema non disponibile.', 'system-status-empty'));
+                sectionsRoot.replaceChildren(textNode('p', 'Stato sistema non disponibile.', 'system-status-empty'));
             }
         } finally {
-            refreshRunning = false;
-            if (checkButton) {
-                checkButton.disabled = false;
-            }
+            fullRefreshRunning = false;
             if (refreshButton) {
                 refreshButton.disabled = false;
             }
         }
     };
 
-    refreshButton?.addEventListener('click', () => refresh(false));
-    checkButton?.addEventListener('click', () => refresh(true));
+    const setSectionButtonsDisabled = (sectionId, disabled) => {
+        sectionsRoot?.querySelectorAll(`[data-system-status-section="${CSS.escape(sectionId)}"] [data-system-status-action]`)
+            .forEach((button) => {
+                button.disabled = disabled;
+            });
+    };
+
+    const refreshSection = async (sectionId, checkServices = false) => {
+        if (!sectionId || refreshingSections.has(sectionId) || (!checkServices && !shouldRefresh())) {
+            return;
+        }
+        refreshingSections.add(sectionId);
+        setSectionButtonsDisabled(sectionId, true);
+        try {
+            const payload = await fetchJson({ sectionId, checkServices });
+            const section = payload.section || (payload.sections || [])[0];
+            renderOne(section, payload.generated_at || '');
+            sectionRefreshAt.set(sectionId, Date.now());
+        } catch (error) {
+            console.warn(`[Stato Sistema] section refresh failed: ${sectionId}`, error);
+            if (checkServices && typeof window.showToast === 'function') {
+                window.showToast('Verifica non riuscita. Riprova dalla sezione operativa.', 'error');
+            }
+        } finally {
+            refreshingSections.delete(sectionId);
+            setSectionButtonsDisabled(sectionId, false);
+        }
+    };
+
+    sectionsRoot?.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-system-status-action]');
+        if (!button) {
+            return;
+        }
+        const sectionId = button.dataset.systemStatusSection || '';
+        refreshSection(sectionId, button.dataset.systemStatusAction === 'check');
+    });
+
+    refreshButton?.addEventListener('click', refreshAll);
     document.addEventListener('octohubs:main-tab-changed', (event) => {
         if (event.detail && event.detail.tab === 'system-status') {
-            refresh(false);
+            refreshAll();
         }
     });
-    document.addEventListener('visibilitychange', () => refresh(false));
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState !== 'hidden') {
+            refreshAll();
+        }
+    });
 
-    setInterval(() => refresh(false), POLL_INTERVAL_MS);
-    refresh(false);
+    setInterval(() => {
+        if (!shouldRefresh()) {
+            return;
+        }
+        const now = Date.now();
+        sectionsById.forEach((section, sectionId) => {
+            const intervalMs = Number(section.refresh_interval_seconds || 0) * 1000;
+            if (intervalMs && now - (sectionRefreshAt.get(sectionId) || 0) >= intervalMs) {
+                refreshSection(sectionId);
+            }
+        });
+    }, POLL_TICK_MS);
+
+    refreshAll();
 })();

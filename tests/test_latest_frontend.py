@@ -64,7 +64,7 @@ class LatestFrontendTests(unittest.TestCase):
         source = pathlib.Path("templates/emby_dashboard.html").read_text(encoding="utf-8")
 
         self.assertIn("emby_latest.js') }}?v=20260720-latest-operation-refresh", source)
-        self.assertIn("script_shell.js') }}?v=20260718-main-tab-events", source)
+        self.assertIn("script_shell.js') }}?v=20260811-deep-links", source)
 
     def test_latest_refresh_notifies_global_operation_center(self):
         source = pathlib.Path("static/emby_latest.js").read_text(encoding="utf-8")

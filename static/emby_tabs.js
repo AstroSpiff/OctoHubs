@@ -118,13 +118,34 @@
                 applyTabOrder(order);
             }
             const getKnownTabs = () => Array.from(tabButtons).map(btn => btn.dataset.tab).filter(Boolean);
-            const normalizeHashTab = () => {
+            const parseHashLocation = () => {
                 const rawHash = window.location.hash ? window.location.hash.slice(1) : '';
+                const [rawTab, rawParams = ''] = rawHash.split('?', 2);
                 try {
-                    return decodeURIComponent(rawHash);
+                    return {
+                        tab: decodeURIComponent(rawTab),
+                        focus: new URLSearchParams(rawParams).get('focus') || ''
+                    };
                 } catch (err) {
-                    return rawHash;
+                    return { tab: rawTab, focus: new URLSearchParams(rawParams).get('focus') || '' };
                 }
+            };
+            const focusTabTarget = (targetId) => {
+                if (!targetId) {
+                    return;
+                }
+                window.requestAnimationFrame(() => {
+                    const target = document.getElementById(targetId);
+                    if (!target) {
+                        return;
+                    }
+                    if (target instanceof HTMLDetailsElement) {
+                        target.open = true;
+                    }
+                    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    target.classList.add('deep-link-focus');
+                    window.setTimeout(() => target.classList.remove('deep-link-focus'), 1800);
+                });
             };
             const setTab = (target, options = {}) => {
                 tabButtons.forEach(btn => {
@@ -149,18 +170,23 @@
                         });
                     }
                 }
+                focusTabTarget(options.focusTarget || '');
             };
             tabButtons.forEach(btn => {
                 btn.addEventListener('click', () => setTab(btn.dataset.tab));
             });
-            const hashTab = normalizeHashTab();
+            const hashLocation = parseHashLocation();
+            const hashTab = hashLocation.tab;
             const knownTabs = getKnownTabs();
             const initialTab = hashTab && knownTabs.includes(hashTab)
                 ? hashTab
                 : storedTab && knownTabs.includes(storedTab)
                 ? storedTab
                 : tabButtons[0].dataset.tab;
-            setTab(initialTab, { updateHash: Boolean(hashTab && knownTabs.includes(hashTab)) });
+            setTab(initialTab, {
+                updateHash: Boolean(hashTab && knownTabs.includes(hashTab)),
+                focusTarget: hashTab && knownTabs.includes(hashTab) ? hashLocation.focus : ''
+            });
             setupTabDragAndDrop();
         })();
     }

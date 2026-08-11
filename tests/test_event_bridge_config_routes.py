@@ -75,6 +75,60 @@ def test_system_status_items_use_english_codes_and_italian_labels():
     assert section["status_label"] == "Avviso"
 
 
+def test_system_services_reuse_the_last_native_connection_check():
+    from app_state import set_connection_check_state
+    from web.config_routes import _system_services_section
+
+    config = {
+        "JELLYSEERR_URL": "http://jellyseerr:5055",
+        "JELLYSEERR_API_KEY": "token",
+        "DATABASE": {"ENABLED": True},
+    }
+    set_connection_check_state(
+        {
+            "jellyseerr": {
+                "ok": True,
+                "message": "Jellyseerr raggiungibile (HTTP 200)",
+            }
+        },
+        "2026-08-11T11:30:45+00:00",
+    )
+    try:
+        section = _system_services_section(config, check_services=False)
+    finally:
+        set_connection_check_state({}, None)
+
+    jellyseerr = next(item for item in section["items"] if item["id"] == "service-jellyseerr")
+    assert jellyseerr["status_code"] == "online"
+    assert jellyseerr["summary"] == "Online"
+    assert jellyseerr["detail"] == "Jellyseerr raggiungibile (HTTP 200)"
+    assert section["checked_at"] == "2026-08-11 11:30:45 UTC"
+
+
+def test_system_status_can_return_one_operational_section(monkeypatch):
+    from web import config_routes
+
+    monkeypatch.setattr(config_routes, "load_config", lambda: ({"DATABASE": {}}, True))
+
+    payload = config_routes._build_system_status_snapshot(section_id="app")
+
+    assert payload["ok"] is True
+    assert [section["id"] for section in payload["sections"]] == ["app"]
+    assert payload["section"]["refresh_interval_seconds"] == 60
+
+
+def test_system_status_deep_links_target_real_sections():
+    from pathlib import Path
+
+    config_source = Path("templates/configuration.html").read_text(encoding="utf-8")
+    dashboard_source = Path("templates/dashboard.html").read_text(encoding="utf-8")
+
+    assert 'id="configuration-connections"' in config_source
+    assert 'id="configuration-database"' in config_source
+    assert 'id="event-bridge-configuration"' in config_source
+    assert 'id="requests-refresh"' in dashboard_source
+
+
 def test_configuration_template_exposes_system_status_tab():
     from pathlib import Path
 

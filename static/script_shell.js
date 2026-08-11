@@ -239,7 +239,38 @@
             if (order && order.length) {
                 applyMainTabOrder(order);
             }
-            const setMainTab = (target, updateHash = false) => {
+            const parseMainTabLocation = () => {
+                const rawHash = window.location.hash ? window.location.hash.slice(1) : '';
+                const [rawTab, rawParams = ''] = rawHash.split('?', 2);
+                let tab = rawTab;
+                try {
+                    tab = decodeURIComponent(rawTab);
+                } catch (err) {
+                    // Keep the raw hash when it is not URI encoded correctly.
+                }
+                return {
+                    tab,
+                    focus: new URLSearchParams(rawParams).get('focus') || ''
+                };
+            };
+            const focusMainTabTarget = (targetId) => {
+                if (!targetId) {
+                    return;
+                }
+                window.requestAnimationFrame(() => {
+                    const target = document.getElementById(targetId);
+                    if (!target) {
+                        return;
+                    }
+                    if (target instanceof HTMLDetailsElement) {
+                        target.open = true;
+                    }
+                    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    target.classList.add('deep-link-focus');
+                    window.setTimeout(() => target.classList.remove('deep-link-focus'), 1800);
+                });
+            };
+            const setMainTab = (target, updateHash = false, focusTarget = '') => {
                 if (!target) return;
                 mainTabButtons.forEach((btn) => {
                     btn.classList.toggle('active', btn.dataset.tab === target);
@@ -253,13 +284,15 @@
                 if (updateHash) {
                     window.history.replaceState(null, '', `#${target}`);
                 }
+                focusMainTabTarget(focusTarget);
             };
             mainTabButtons.forEach((btn) => {
                 btn.addEventListener('click', () => setMainTab(btn.dataset.tab, true));
             });
-            const initial = window.location.hash ? window.location.hash.slice(1) : mainTabButtons[0].dataset.tab;
+            const initialLocation = parseMainTabLocation();
+            const initial = initialLocation.tab || mainTabButtons[0].dataset.tab;
             if (initial && document.querySelector(`.tab-shell > .tabs > .tab-btn[data-tab="${initial}"]`)) {
-                setMainTab(initial);
+                setMainTab(initial, false, initialLocation.focus);
             } else {
                 setMainTab(mainTabButtons[0].dataset.tab);
             }

@@ -218,11 +218,19 @@ async def event_bridge_status_route(request: Request):
 
 
 @router.get("/api/system/status")
-async def system_status_route(request: Request, check_services: bool = False):
-    """Return a read-only health rollup for the configuration system tab."""
+async def system_status_route(
+    request: Request,
+    section: str = "",
+    check_services: bool = False,
+):
+    """Return all or one read-only health section for the configuration tab."""
     _require_auth_dep(request)
 
-    payload = await run_in_threadpool(_build_system_status_snapshot, check_services)
+    payload = await run_in_threadpool(
+        _build_system_status_snapshot,
+        check_services,
+        section.strip(),
+    )
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 
@@ -323,7 +331,7 @@ SYSTEM_SEVERITY_RANK = {
 
 SYSTEM_SEVERITY_LABELS = {
     "ok": "OK",
-    "unknown": "N/D",
+    "unknown": "Da verificare",
     "warning": "Avviso",
     "error": "Errore",
 }
@@ -336,24 +344,62 @@ SYSTEM_STATUS_LABELS = {
     "disconnected": "Disconnesso",
     "synced": "Allineato",
     "pending": "In attesa",
-    "unknown": "Sconosciuto",
+    "unknown": "Da verificare",
     "check_failed": "Verifica fallita",
     "online": "Online",
     "offline": "Offline",
     "not_configured": "Non configurato",
     "configured": "Configurato",
     "disabled": "Disattivato",
-    "not_seen": "Non visto",
+    "not_seen": "Nessun contatto",
     "mismatch": "Disallineato",
     "http_only": "Solo HTTP",
     "running": "In esecuzione",
     "stopped": "Fermo",
     "recent_errors": "Errori recenti",
-    "idle": "In attesa",
+    "idle": "Nessuna attivita recente",
     "error": "In errore",
     "skipped": "Saltato",
     "done": "Completato",
     "empty": "Vuoto",
+}
+
+
+SYSTEM_SECTION_META = {
+    "app": {
+        "href": "/configuration#services",
+        "refresh_interval_seconds": 60,
+    },
+    "database": {
+        "href": "/configuration#services?focus=configuration-database",
+        "refresh_interval_seconds": 60,
+    },
+    "services": {
+        "href": "/configuration#services?focus=configuration-connections",
+        "refresh_interval_seconds": 0,
+        "check_label": "Verifica integrazioni",
+    },
+    "emby": {
+        "href": "/emby#actions?focus=emby-operations",
+        "refresh_interval_seconds": 30,
+        "check_label": "Verifica server",
+    },
+    "event-bridge": {
+        "href": "/configuration#event-bridge?focus=event-bridge-configuration",
+        "refresh_interval_seconds": 5,
+    },
+    "transcode-guard": {
+        "href": "/emby#transcode-guard?focus=transcode-guard-panel",
+        "refresh_interval_seconds": 5,
+    },
+    "operations": {
+        "href": "/emby#actions?focus=emby-operations",
+        "refresh_interval_seconds": 10,
+    },
+    "requests": {
+        "href": "/dashboard#rules?focus=requests-refresh",
+        "refresh_interval_seconds": 10,
+    },
 }
 
 
@@ -370,20 +416,33 @@ SYSTEM_SERVICE_LABELS = {
 }
 
 
-def _build_system_status_snapshot(check_services: bool = False) -> dict[str, Any]:
+def _build_system_status_snapshot(
+    check_services: bool = False,
+    section_id: str = "",
+) -> dict[str, Any]:
     config, is_valid = load_config()
-    sections = [
-        _system_app_section(config, is_valid),
-        _system_database_section(config, is_valid),
-        _system_services_section(config, check_services=check_services),
-        _system_emby_section(config),
-        _system_event_bridge_section(config),
-        _system_transcode_guard_section(),
-        _system_operations_section(),
-        _system_requests_section(),
-    ]
+    builders = {
+        "app": lambda: _system_app_section(config, is_valid),
+        "database": lambda: _system_database_section(config, is_valid),
+        "services": lambda: _system_services_section(config, check_services=check_services),
+        "emby": lambda: _system_emby_section(config),
+        "event-bridge": lambda: _system_event_bridge_section(config),
+        "transcode-guard": _system_transcode_guard_section,
+        "operations": _system_operations_section,
+        "requests": _system_requests_section,
+    }
+    normalized_section_id = str(section_id or "").strip().lower()
+    if normalized_section_id and normalized_section_id not in builders:
+        return {
+            "ok": False,
+            "error": "Sezione stato non valida.",
+            "generated_at": _event_bridge_timestamp_label(datetime.now(timezone.utc).isoformat()),
+        }
+
+    selected_ids = [normalized_section_id] if normalized_section_id else list(builders)
+    sections = [builders[item_id]() for item_id in selected_ids]
     overall = _system_rollup_severity(sections)
-    return {
+    payload = {
         "ok": overall != "error",
         "severity": overall,
         "status_label": _system_severity_label(overall),
@@ -391,6 +450,9 @@ def _build_system_status_snapshot(check_services: bool = False) -> dict[str, Any
         "summary": _system_summary_counts(sections),
         "sections": sections,
     }
+    if normalized_section_id:
+        payload["section"] = sections[0]
+    return payload
 
 
 def _system_app_section(config: dict[str, Any] | None, is_valid: bool) -> dict[str, Any]:
@@ -500,16 +562,29 @@ def _system_database_section(config: dict[str, Any] | None, is_valid: bool) -> d
 def _system_services_section(config: dict[str, Any] | None, *, check_services: bool) -> dict[str, Any]:
     statuses: dict[str, Any] = {}
     check_error = ""
+    checked_at = ""
     if check_services:
         try:
             from services.manager import _build_test_connections_snapshot
 
             payload, _status_code = _build_test_connections_snapshot()
-            statuses = payload.get("statuses") if isinstance(payload, dict) else {}
+            payload_dict = payload if isinstance(payload, dict) else {}
+            if not payload_dict or payload_dict.get("success") is False:
+                check_error = str(payload_dict.get("message") or payload_dict.get("error") or "Verifica non riuscita")
+            statuses = payload_dict.get("statuses") or {}
             if not isinstance(statuses, dict):
                 statuses = {}
+            from app_state import get_connection_check_state
+
+            checked_at = str(get_connection_check_state().get("checked_at") or "")
         except Exception as exc:
             check_error = str(exc)
+    else:
+        from app_state import get_connection_check_state
+
+        last_check = get_connection_check_state()
+        statuses = last_check.get("statuses") if isinstance(last_check.get("statuses"), dict) else {}
+        checked_at = str(last_check.get("checked_at") or "")
 
     items: list[dict[str, Any]] = []
     for key, label in SYSTEM_SERVICE_LABELS.items():
@@ -527,7 +602,7 @@ def _system_services_section(config: dict[str, Any] | None, *, check_services: b
                 )
             )
             continue
-        if check_services and key in statuses:
+        if key in statuses:
             status = statuses.get(key) if isinstance(statuses.get(key), dict) else {}
             status_configured = status.get("configured")
             if status_configured is False:
@@ -574,7 +649,12 @@ def _system_services_section(config: dict[str, Any] | None, *, check_services: b
                 status_code="configured" if configured else ("not_configured" if key != "database" else "disconnected"),
             )
         )
-    return _system_section("services", "Servizi esterni", items)
+    return _system_section(
+        "services",
+        "Servizi e integrazioni",
+        items,
+        checked_at=checked_at,
+    )
 
 
 def _system_emby_section(config: dict[str, Any] | None) -> dict[str, Any]:
@@ -690,17 +770,23 @@ def _system_event_bridge_section(config: dict[str, Any] | None) -> dict[str, Any
 
         transport_label = _event_bridge_transport_payload(status).get("label") or "Non visto"
         sync_label = diagnostics.get("sync_label") or "Report plugin assente"
+        differences = diagnostics.get("diffs") if isinstance(diagnostics.get("diffs"), list) else []
+        difference_labels = [str(item.get("label") or "") for item in differences if isinstance(item, dict)]
+        detail_parts = [str(diagnostics.get("last_config_ack_error") or "")]
+        if difference_labels:
+            detail_parts.append(f"Differenze: {', '.join(label for label in difference_labels if label)}")
         items.append(
             _system_item(
                 f"event-bridge-{server.get('id')}",
                 str(server.get("name") or "Server"),
                 severity,
                 f"{transport_label} · {sync_label}",
-                detail=str(diagnostics.get("last_config_ack_error") or ""),
+                detail=" · ".join(part for part in detail_parts if part),
                 href="/configuration#event-bridge",
                 status_code=status_code,
                 metrics=[
                     {"label": "Plugin", "value": diagnostics.get("plugin_version") or "N/D"},
+                    {"label": "Ultimo contatto", "value": diagnostics.get("last_seen_at") or "Mai"},
                     {"label": "Ultimo evento", "value": diagnostics.get("last_event") or "Mai"},
                     {"label": "Config confermata", "value": diagnostics.get("last_config_ack_at") or "Mai"},
                 ],
@@ -931,8 +1017,15 @@ def _system_service_configured(config: dict[str, Any] | None, key: str) -> bool:
     return False
 
 
-def _system_section(section_id: str, title: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+def _system_section(
+    section_id: str,
+    title: str,
+    items: list[dict[str, Any]],
+    *,
+    checked_at: str = "",
+) -> dict[str, Any]:
     severity = _system_rollup_severity(items)
+    meta = SYSTEM_SECTION_META.get(section_id, {})
     return {
         "id": section_id,
         "title": title,
@@ -940,6 +1033,11 @@ def _system_section(section_id: str, title: str, items: list[dict[str, Any]]) ->
         "status_code": severity,
         "status_label": _system_severity_label(severity),
         "items": items,
+        "href": str(meta.get("href") or ""),
+        "check_label": str(meta.get("check_label") or ""),
+        "refresh_interval_seconds": int(meta.get("refresh_interval_seconds") or 0),
+        "updated_at": _event_bridge_timestamp_label(datetime.now(timezone.utc).isoformat()),
+        "checked_at": _event_bridge_timestamp_label(checked_at),
     }
 
 

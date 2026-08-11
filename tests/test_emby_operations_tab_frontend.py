@@ -444,7 +444,7 @@ class EmbyOperationsTabFrontendTests(unittest.TestCase):
     def test_transcode_guard_assets_have_current_cache_busters(self):
         dashboard_source = pathlib.Path("templates/emby_dashboard.html").read_text(encoding="utf-8")
 
-        self.assertIn("emby.css') }}?v=20260809-users-multiselect-84", dashboard_source)
+        self.assertIn("emby.css') }}?v=20260811-system-deep-links", dashboard_source)
         self.assertIn("emby_operations.js') }}?v=20260722-transcode-guard-message-ui", dashboard_source)
 
 

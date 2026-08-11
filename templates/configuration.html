@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>Configurazione</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='emby.css') }}">
-    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='emby.css') }}?v=20260811-system-status">
+    <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}?v=20260811-system-status">
     <link rel="stylesheet" href="{{ url_for('static', filename='operations_center.css') }}?v=20260715-global-operations">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css" integrity="sha512-Evv84Mr4kqVGRNSgIGL/F/aIDqQb7xQ2vcrdIwxfjThSH8CSR7PBEakCr51Ck+w+/U6swU2Im1vVX0SVk9ABhg==" crossorigin="anonymous" referrerpolicy="no-referrer">
     <link rel="stylesheet" href="{{ url_for('static', filename='icon-picker.css') }}">
@@ -920,7 +920,7 @@
                                     </div>
                                 </div>
                             </section>
-                            <section class="config-box">
+                            <section class="config-box" id="configuration-database">
                                 <h4>Database Postgres</h4>
                                 <div class="tagline" style="margin-bottom:0.5rem;">Connessione obbligatoria: inserisci host, porta, user e nome DB.</div>
                                 <div class="help-popover">
@@ -972,7 +972,7 @@
                         </div>
                         <button class="btn" type="submit">Salva Configurazione</button>
                     </form>
-                    <div style="margin-top: 1rem;">
+                    <div style="margin-top: 1rem;" id="configuration-connections">
                         <button class="btn secondary" type="button" id="test-connections-btn" {% if not has_config %}disabled{% endif %}>Verifica connessioni</button>
                         <div class="connection-status" id="connection-status">
                             <div class="connection-card">
@@ -1047,7 +1047,7 @@
                 <div class="card">
                     <div class="trakt-header">
                         <div>
-                            <h2>Event Bridge Emby</h2>
+                            <h2 id="event-bridge-configuration">Event Bridge Emby</h2>
                             <p class="tagline">Configura il plugin installato sui server Emby. Il secret è comune, le opzioni sono specifiche per ogni server.</p>
                         </div>
                         <span class="status-pill {{ 'status-ok' if webhook_secret_configured else 'status-skip' }}">
@@ -1081,7 +1081,7 @@
                                     {% set bridge_id = bridge_server.id | replace('-', '_') %}
                                     {% set bridge_config_ack_status = bridge_status.last_config_ack_status if bridge_status else '' %}
                                     {% set bridge_diag = bridge_server.diagnostics %}
-                                    <details class="config-box event-bridge-server-card" data-event-bridge-server="{{ bridge_server.id }}" {% if bridge_server.settings_editable %}open{% endif %}>
+                                    <details class="config-box event-bridge-server-card" id="event-bridge-server-{{ bridge_server.id }}" data-event-bridge-server="{{ bridge_server.id }}" {% if bridge_server.settings_editable %}open{% endif %}>
                                         <summary class="event-bridge-server-summary">
                                             <div class="event-bridge-server-heading">
                                                 <h4>
@@ -1255,16 +1255,15 @@
             </div>
 
             <div class="tab-panel" data-tab-panel="system-status" data-system-status-endpoint="/api/system/status">
-                <div class="card system-status-card">
+                <section class="system-status-page" aria-live="polite">
                     <div class="system-status-header">
                         <div>
                             <h2>Stato Sistema</h2>
-                            <p class="tagline">Sintesi read-only degli stati principali. I dettagli restano nelle sezioni operative.</p>
+                            <p class="tagline">Stato operativo per area. Le verifiche usano le stesse fonti delle relative sezioni di OctoHubs.</p>
                         </div>
                         <div class="system-status-actions">
                             <span class="status-pill status-skip" data-system-status-overall>In attesa</span>
-                            <button class="btn secondary compact" type="button" data-system-status-refresh>Aggiorna</button>
-                            <button class="btn ghost compact" type="button" data-system-status-check>Verifica servizi</button>
+                            <button class="btn secondary compact" type="button" data-system-status-refresh>Aggiorna tutto</button>
                         </div>
                     </div>
                     <div class="system-status-meta">
@@ -1274,7 +1273,7 @@
                     <div class="system-status-grid" data-system-status-sections>
                         <div class="system-status-empty">Caricamento stato sistema...</div>
                     </div>
-                </div>
+                </section>
             </div>
 
         </div>
@@ -1282,10 +1281,10 @@
     <div id="toast-container"></div>
     <script src="{{ url_for('static', filename='shared-utils.js') }}"></script>
     <script src="{{ url_for('static', filename='event_bridge_diagnostics.js') }}?v=20260811-live-diagnostics"></script>
-    <script src="{{ url_for('static', filename='system_status.js') }}?v=20260811-system-status"></script>
+    <script src="{{ url_for('static', filename='system_status.js') }}?v=20260811-system-status-v2"></script>
     <script src="{{ url_for('static', filename='operations_center.js') }}?v=20260720-operation-events"></script>
     <script src="{{ url_for('static', filename='actions.js') }}"></script>
-    <script src="{{ url_for('static', filename='script_shell.js') }}?v=20260628-shell"></script>
+    <script src="{{ url_for('static', filename='script_shell.js') }}?v=20260811-deep-links"></script>
     <script src="{{ url_for('static', filename='script_results.js') }}?v=20260719-search"></script>
     <script src="{{ url_for('static', filename='script_tmdb_emby.js') }}?v=20260719-search"></script>
     <script src="{{ url_for('static', filename='script_manual_search.js') }}?v=20260719-search"></script>

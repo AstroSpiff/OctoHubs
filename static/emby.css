@@ -569,6 +569,11 @@
         .tab-panel.active {
             display: block;
         }
+        .deep-link-focus {
+            outline: 3px solid #60a5fa;
+            outline-offset: 4px;
+            transition: outline-color 0.2s ease;
+        }
         .server-tabs {
             display: flex;
             flex-wrap: wrap;
