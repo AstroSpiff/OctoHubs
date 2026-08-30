@@ -116,8 +116,8 @@ class UserOpsManager:
         last_played_date = None
 
         if last_played_item:
-            ud = last_played_item.get("UserData", {})
-            last_played_date = ud.get("LastPlayedDate")
+            ud = last_played_item.get("UserData") or {}
+            last_played_date = ud.get("LastPlayedDate") or last_played_item.get("DatePlayed")
             name = last_played_item.get("Name")
             series = last_played_item.get("SeriesName")
             if series:

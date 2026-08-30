@@ -1,6 +1,24 @@
 import requests
 import time
 
+from core.log_sanitization import (
+    sanitize_download_reference_for_log,
+    sanitize_text_for_log,
+    sanitize_url_for_log,
+)
+
+
+def _download_log_value(value):
+    if not isinstance(value, str):
+        return value
+    if value.lower().startswith(("magnet:", "http://", "https://")):
+        return sanitize_download_reference_for_log(value)
+    return value
+
+
+def _info_log_value(value):
+    return sanitize_url_for_log(value) if value else value
+
 
 def search_prowlarr(query, media_type, config):
     """Cerca un titolo su Prowlarr usando la sua API."""
@@ -41,11 +59,11 @@ def search_prowlarr(query, media_type, config):
             if idx == 0:
                 print("      -> [DEBUG Prowlarr] Primo risultato RAW:")
                 print(f"         title: {title}")
-                print(f"         magnetUrl: {item.get('magnetUrl')}")
-                print(f"         magnetUri: {item.get('magnetUri')}")
-                print(f"         downloadUrl: {download_link}")
-                print(f"         infoUrl: {info_url}")
-                print(f"         guid: {guid_value}")
+                print(f"         magnetUrl: {_download_log_value(item.get('magnetUrl'))}")
+                print(f"         magnetUri: {_download_log_value(item.get('magnetUri'))}")
+                print(f"         downloadUrl: {_download_log_value(download_link)}")
+                print(f"         infoUrl: {_info_log_value(info_url)}")
+                print(f"         guid: {_download_log_value(guid_value)}")
 
             # Se magnetUrl/magnetUri è vuoto ma guid è un magnet, usa guid come magnet
             if not magnet_link and isinstance(guid_value, str) and guid_value.startswith("magnet:"):
@@ -98,14 +116,14 @@ def search_prowlarr(query, media_type, config):
             # Debug: stampa il primo risultato normalizzato
             if idx == 0:
                 print("      -> [DEBUG Prowlarr] Primo risultato NORMALIZZATO:")
-                print(f"         magnet: {result_dict['magnet']}")
-                print(f"         torrent: {result_dict['torrent']}")
-                print(f"         web: {result_dict['web']}")
+                print(f"         magnet: {_download_log_value(result_dict['magnet'])}")
+                print(f"         torrent: {_download_log_value(result_dict['torrent'])}")
+                print(f"         web: {_info_log_value(result_dict['web'])}")
 
             normalized.append(result_dict)
         return normalized
     except requests.exceptions.RequestException as e:
-        print(f"   -> Impossibile contattare Prowlarr: {e}")
+        print(f"   -> Impossibile contattare Prowlarr: {sanitize_text_for_log(e)}")
         return []
 
 
@@ -153,10 +171,10 @@ def search_jackett(query, media_type, config):
             if idx == 0:
                 print("      -> [DEBUG Jackett] Primo risultato RAW:")
                 print(f"         Title: {title}")
-                print(f"         MagnetUri: {magnet_link}")
-                print(f"         Link: {download_link}")
-                print(f"         Details: {details_link}")
-                print(f"         Guid: {guid_value}")
+                print(f"         MagnetUri: {_download_log_value(magnet_link)}")
+                print(f"         Link: {_download_log_value(download_link)}")
+                print(f"         Details: {_info_log_value(details_link)}")
+                print(f"         Guid: {_download_log_value(guid_value)}")
 
             # Se MagnetUri è vuoto ma Guid è un magnet, usa Guid come magnet
             if not magnet_link and isinstance(guid_value, str) and guid_value.startswith("magnet:"):
@@ -205,12 +223,12 @@ def search_jackett(query, media_type, config):
             # Debug: stampa il primo risultato normalizzato
             if idx == 0:
                 print("      -> [DEBUG Jackett] Primo risultato NORMALIZZATO:")
-                print(f"         magnet: {result_dict['magnet']}")
-                print(f"         torrent: {result_dict['torrent']}")
-                print(f"         web: {result_dict['web']}")
+                print(f"         magnet: {_download_log_value(result_dict['magnet'])}")
+                print(f"         torrent: {_download_log_value(result_dict['torrent'])}")
+                print(f"         web: {_info_log_value(result_dict['web'])}")
 
             normalized.append(result_dict)
         return normalized
     except requests.exceptions.RequestException as exc:
-        print(f"   -> Impossibile contattare Jackett: {exc}")
+        print(f"   -> Impossibile contattare Jackett: {sanitize_text_for_log(exc)}")
         return []

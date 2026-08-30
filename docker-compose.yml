@@ -12,42 +12,48 @@ services:
     image: octohubs:latest
     container_name: octohubs-app
     restart: unless-stopped
-    user: "${OCTOHUBS_UID:-0}:${OCTOHUBS_GID:-0}"
-    ports:
-      - "5050:5050"
+    user: "${OCTOHUBS_UID:-1000}:${OCTOHUBS_GID:-1000}"
+    expose:
+      - "5050"
     environment:
-      
       - SECRET_KEY=${SECRET_KEY:-change-this-secret-key}
+      - PASSWORD_SECRET=${PASSWORD_SECRET:-}
+      - PASSWORD_SECRET_PREVIOUS=${PASSWORD_SECRET_PREVIOUS:-}
       - OCTOHUBS_CONFIG_FILE=${OCTOHUBS_CONFIG_FILE:-/config/config.json}
       - OCTOHUBS_RESULTS_FILE=${OCTOHUBS_RESULTS_FILE:-/storage/last_results.json}
       - OCTOHUBS_DB_BACKUP_DIR=${OCTOHUBS_DB_BACKUP_DIR:-/storage/db-backups}
 
-      # Authentication Database (SQLite by default, PostgreSQL optional)
-      - AUTH_DATABASE_URL=${AUTH_DATABASE_URL:-sqlite:////storage/auth.db}
+      # Optional one-time source used to import the retired SQLite auth.db.
+      # It is never used as a runtime database.
+      - OCTOHUBS_LEGACY_AUTH_SQLITE_PATH=${OCTOHUBS_LEGACY_AUTH_SQLITE_PATH:-}
 
       # Admin iniziale (solo primo avvio, poi resta nel DB utenti)
       - ADMIN_USERNAME=${ADMIN_USERNAME:-}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
       - ADMIN_EMAIL=${ADMIN_EMAIL:-}
-      # - ADMIN_PASSWORD_FILE=/run/secrets/octohubs_admin_password
 
       # Webhook Security (optional)
-      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
       - WEBHOOK_IP_WHITELIST=${WEBHOOK_IP_WHITELIST:-}
+      # Safe with the bundled Nginx, which overwrites X-Real-IP.
+      - WEBHOOK_TRUST_PROXY_HEADERS=${WEBHOOK_TRUST_PROXY_HEADERS:-true}
 
       # Session & CSRF security
       - SESSION_TIMEOUT_MINUTES=${SESSION_TIMEOUT_MINUTES:-60}
       - CSRF_TIME_LIMIT_SECONDS=${CSRF_TIME_LIMIT_SECONDS:-3600}
-      # - SESSION_COOKIE_SECURE=true
+      - SESSION_COOKIE_SECURE=${SESSION_COOKIE_SECURE:-true}
+      - LOGIN_TRUST_PROXY_HEADERS=${LOGIN_TRUST_PROXY_HEADERS:-true}
+      - LOGIN_RATE_LIMIT_WINDOW_SECONDS=${LOGIN_RATE_LIMIT_WINDOW_SECONDS:-300}
+      - LOGIN_RATE_LIMIT_IP_ATTEMPTS=${LOGIN_RATE_LIMIT_IP_ATTEMPTS:-20}
+      - LOGIN_RATE_LIMIT_USERNAME_ATTEMPTS=${LOGIN_RATE_LIMIT_USERNAME_ATTEMPTS:-5}
 
-      # Application Database (PostgreSQL - required)
-      # Usare ENV/Secrets: non vengono salvate nel config.json
-      - OCTOHUBS_DB_HOST=${OCTOHUBS_DB_HOST:-}
-      - OCTOHUBS_DB_PORT=${OCTOHUBS_DB_PORT:-}
-      - OCTOHUBS_DB_NAME=${OCTOHUBS_DB_NAME:-}
-      - OCTOHUBS_DB_USER=${OCTOHUBS_DB_USER:-}
-      - OCTOHUBS_DB_PASSWORD=${OCTOHUBS_DB_PASSWORD:-}
-      # - OCTOHUBS_DB_PASSWORD_FILE=/run/secrets/octohubs_db_password
+      # Single application database: PostgreSQL is required for app data, users,
+      # sessions, preferences, tokens and audit logs.
+      - OCTOHUBS_DB_HOST=${OCTOHUBS_DB_HOST:-postgres}
+      - OCTOHUBS_DB_PORT=${OCTOHUBS_DB_PORT:-5432}
+      - OCTOHUBS_DB_NAME=${OCTOHUBS_DB_NAME:-octohubs}
+      - OCTOHUBS_DB_USER=${OCTOHUBS_DB_USER:-octohubs}
+      # docker-compose.secrets.yml replaces this value with the shared file secret.
+      - OCTOHUBS_DB_PASSWORD=${OCTOHUBS_DB_PASSWORD:-change-me-before-production}
       - OCTOHUBS_DB_DRIVER=${OCTOHUBS_DB_DRIVER:-}
       - OCTOHUBS_DB_URL=${OCTOHUBS_DB_URL:-}
       - OCTOHUBS_DB_PARAMS=${OCTOHUBS_DB_PARAMS:-}
@@ -58,6 +64,9 @@ services:
       - /mnt/shared/applications/octohubs/logs:/app/logs
     networks:
       - octohubs-network
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; sock = socket.create_connection(('127.0.0.1', 5050), timeout=5); sock.close()"]
       interval: 30s
@@ -65,58 +74,47 @@ services:
       retries: 3
       start_period: 40s
 
-  # PostgreSQL Database (Optional - for main app data)
-  # Usato per i dati applicativi (configurazioni/risultati) se lo abiliti in config.json
-  # NOTA: PostgreSQL è OPZIONALE. L'applicazione funziona perfettamente senza DB esterno.
-  # - AUTH (utenti/sessioni): usa sempre SQLite in /storage/auth.db
-  # - CONFIG/RESULTS: salvati in /config/config.json e /storage/last_results.json
-  # - Abilita PostgreSQL SOLO se vuoi storicizzare dati aggiuntivi (history, queue, etc.)
-  #
-  # Per abilitare PostgreSQL:
-  # 1. Decommenta questo servizio
-  # 2. Aggiungi il blocco DATABASE in config.json (vedi docs/CONFIGURATION_ita.md)
-  # 3. Riavvia i container
-  #
-  # postgres:
-  #   image: postgres:15-alpine
-  #   container_name: octohubs-postgres
-  #   restart: unless-stopped
-  #   environment:
-  #     - POSTGRES_DB=${POSTGRES_DB:-octohubs}
-  #     - POSTGRES_USER=${POSTGRES_USER:-octohubs}
-  #     - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-octohubs_password}
-  #   volumes:
-  #     - /mnt/shared/applications/octohubs/postgres:/var/lib/postgresql/data
-  #   networks:
-  #     - octohubs-network
-  #   healthcheck:
-  #     test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-octohubs}"]
-  #     interval: 10s
-  #     timeout: 5s
-  #     retries: 5
+  postgres:
+    image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+    container_name: octohubs-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${OCTOHUBS_DB_NAME:-octohubs}
+      - POSTGRES_USER=${OCTOHUBS_DB_USER:-octohubs}
+      - POSTGRES_PASSWORD=${OCTOHUBS_DB_PASSWORD:-change-me-before-production}
+    volumes:
+      - /mnt/shared/applications/octohubs/postgres:/var/lib/postgresql/data
+    networks:
+      - octohubs-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${OCTOHUBS_DB_USER:-octohubs} -d ${OCTOHUBS_DB_NAME:-octohubs}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  # Nginx Reverse Proxy (opzionale)
-  # Decommenta questo blocco per abilitarlo.
-  # nginx:
-  #   image: nginx:alpine
-  #   container_name: octohubs-nginx
-  #   restart: unless-stopped
-  #   ports:
-  #     - "80:80"
-  #     - "443:443"
-  #   volumes:
-  #     - ./nginx.conf:/etc/nginx/nginx.conf:ro
-  #     - /mnt/shared/config/octohubs/nginx/ssl:/etc/nginx/ssl:ro
-  #     - /mnt/shared/applications/octohubs/nginx/logs:/var/log/nginx
-  #   networks:
-  #     - octohubs-network
-  #   depends_on:
-  #     - app
-  #   healthcheck:
-  #     test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80/health" ]
-  #     interval: 30s
-  #     timeout: 10s
-  #     retries: 3
+  # Nginx Reverse Proxy (profilo production: docker compose --profile proxy up)
+  nginx:
+    image: nginx:alpine@sha256:db35bfc6b2951e7f8a72db5db120288c127ffaeeb4a6d4b95a26fead017d5913
+    container_name: octohubs-nginx
+    profiles: ["proxy"]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - /mnt/shared/config/octohubs/nginx/ssl:/etc/nginx/ssl:ro
+      - /mnt/shared/applications/octohubs/nginx/logs:/var/log/nginx
+    networks:
+      - octohubs-network
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 networks:
   octohubs-network:

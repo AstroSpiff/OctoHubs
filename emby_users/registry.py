@@ -15,7 +15,8 @@ _EMBY_USER_MANAGER: Optional[EmbyUserManager] = None
 def get_emby_user_manager(
     ensure_db_backend: Callable[[], Any],
     get_db_backend: Callable[[], Any],
-    get_active_config: Callable[[], Dict[str, Any]]
+    get_active_config: Callable[[], Dict[str, Any]],
+    get_operation_tracker: Optional[Callable[[], Any]] = None,
 ) -> Optional[EmbyUserManager]:
     """Return the singleton EmbyUserManager, initializing it if needed."""
     global _EMBY_USER_MANAGER
@@ -24,7 +25,12 @@ def get_emby_user_manager(
             ensure_db_backend()
             db_backend = get_db_backend()
             if db_backend:
-                _EMBY_USER_MANAGER = EmbyUserManager(db_backend, get_active_config())
+                tracker = get_operation_tracker() if get_operation_tracker else None
+                _EMBY_USER_MANAGER = EmbyUserManager(
+                    db_backend,
+                    get_active_config(),
+                    operation_tracker=tracker,
+                )
         except Exception as exc:
             logger.error("Failed to initialize EmbyUserManager: %s", exc)
             return None

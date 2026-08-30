@@ -5,23 +5,36 @@ from typing import Any, Callable, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from core.image_uploads import ImageUploadError
+from emby_users.routes import USERS_UPDATED_MESSAGE
+from emby_users.icon_api_models import (
+    IconBindingRequest,
+    IconProfileDeleteRequest,
+    IconProfileRequest,
+    IconRuleDeleteRequest,
+)
+from emby_users.response_models import (
+    UserApiSuccessResponse,
+    UserIconConfigResponse,
+    UserIconProfileMutationResponse,
+)
+from realtime.manager import publish_application_event
+from web.openapi_responses import binary_response
+
 router = APIRouter()
 
 _require_user: Optional[Callable[[Request], Any]] = None
-_get_current_user: Optional[Callable[[Request], Any]] = None
 _get_emby_user_manager: Optional[Callable[[], Any]] = None
 _validate_csrf: Optional[Callable[[Request, Optional[str]], bool]] = None
 
 
 def init_emby_icon_routes(
-    get_current_user: Callable[[Request], Any],
     require_user: Callable[[Request], Any],
     get_emby_user_manager: Callable[[], Any],
     validate_csrf: Callable[[Request, Optional[str]], bool],
 ) -> None:
-    global _require_user, _get_current_user, _get_emby_user_manager, _validate_csrf
+    global _require_user, _get_emby_user_manager, _validate_csrf
     _require_user = require_user
-    _get_current_user = get_current_user
     _get_emby_user_manager = get_emby_user_manager
     _validate_csrf = validate_csrf
 
@@ -30,12 +43,6 @@ def _require_user_dep(request: Request):
     if _require_user is None:
         raise RuntimeError("Emby icon routes not initialized: require_user missing")
     return _require_user(request)
-
-
-def _get_current_user_dep(request: Request):
-    if _get_current_user is None:
-        raise RuntimeError("Emby icon routes not initialized: get_current_user missing")
-    return _get_current_user(request)
 
 
 def _get_manager():
@@ -51,7 +58,16 @@ def _validate_csrf_dep(request: Request) -> None:
         raise HTTPException(status_code=403, detail="CSRF token non valido")
 
 
-@router.get("/api/emby/icons/config")
+def _publish_icons_updated() -> None:
+    """Refresh icon controls and user-group selectors in open React sessions."""
+    try:
+        publish_application_event(USERS_UPDATED_MESSAGE, {"scope": "icons"})
+    except Exception:
+        # Realtime delivery is an enhancement and must not invalidate an icon save.
+        pass
+
+
+@router.get("/api/emby/icons/config", responses={200: {"model": UserIconConfigResponse}})
 async def api_emby_icons_config(user=Depends(_require_user_dep)):
     manager = _get_manager()
     if not manager:
@@ -59,16 +75,16 @@ async def api_emby_icons_config(user=Depends(_require_user_dep)):
     return manager.icon_manager.get_icon_dashboard_data()
 
 
-@router.get("/api/emby/icons/image/{profile_id}/{column_key}")
+@router.get(
+    "/api/emby/icons/image/{profile_id}/{column_key}",
+    response_class=StreamingResponse,
+    responses={200: binary_response("image/*", "Immagine binaria dell'icona profilo richiesta.")},
+)
 async def api_emby_icons_image(
     profile_id: str,
     column_key: str,
-    request: Request
+    user=Depends(_require_user_dep),
 ):
-    user = _get_current_user_dep(request)
-    if not user:
-        return JSONResponse(status_code=401, content={"error": "Unauthorized"})
-
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
@@ -79,53 +95,59 @@ async def api_emby_icons_image(
 
     data, mime_type = data_tuple
     import io
-    return StreamingResponse(io.BytesIO(data), media_type=mime_type)
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type=mime_type,
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
-@router.post("/api/emby/icons/profile")
+@router.post("/api/emby/icons/profile", responses={200: {"model": UserIconProfileMutationResponse}})
 async def api_emby_icons_profile_save(
-    profile_id: str = Form(""),
-    label: str = Form(...),
-    is_group_profile: bool = Form(False),
+    payload: IconProfileRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
-    new_id = manager.icon_manager.save_icon_profile(label, is_group_profile, profile_id)
+    new_id = manager.icon_manager.save_icon_profile(payload.label, payload.is_group_profile, payload.profile_id)
+    _publish_icons_updated()
     return {"ok": True, "profile_id": new_id}
 
 
-@router.delete("/api/emby/icons/profile")
+@router.delete("/api/emby/icons/profile", responses={200: {"model": UserApiSuccessResponse}})
 async def api_emby_icons_profile_delete(
-    profile_id: str = Form(...),
+    payload: IconProfileDeleteRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
-    manager.icon_manager.delete_icon_profile(profile_id)
+    manager.icon_manager.delete_icon_profile(payload.profile_id)
+    _publish_icons_updated()
     return {"ok": True}
 
 
-@router.post("/api/emby/icons/binding")
+@router.post("/api/emby/icons/binding", responses={200: {"model": UserApiSuccessResponse}})
 async def api_emby_icons_binding_save(
-    target_type: str = Form(...),
-    target_id: str = Form(...),
-    profile_id: str = Form(""),
+    payload: IconBindingRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
-    manager.icon_manager.save_icon_binding(target_type, target_id, profile_id)
+    manager.icon_manager.save_icon_binding(payload.target_type, payload.target_id, payload.profile_id)
+    _publish_icons_updated()
     return {"ok": True}
 
 
-@router.post("/api/emby/icons/rule")
+@router.post("/api/emby/icons/rule", responses={200: {"model": UserApiSuccessResponse}})
 async def api_emby_icons_rule_save(
     profile_id: str = Form(...),
     column_key: str = Form(...),
@@ -137,19 +159,23 @@ async def api_emby_icons_rule_save(
     if not manager:
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
 
-    path = manager.icon_manager.save_icon_rule(profile_id, column_key, file)
+    try:
+        path = manager.icon_manager.save_icon_rule(profile_id, column_key, file)
+    except ImageUploadError as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    _publish_icons_updated()
     return {"ok": True, "icon_path": path}
 
 
-@router.delete("/api/emby/icons/rule")
+@router.delete("/api/emby/icons/rule", responses={200: {"model": UserApiSuccessResponse}})
 async def api_emby_icons_rule_delete(
-    profile_id: str = Form(...),
-    column_key: str = Form(...),
+    payload: IconRuleDeleteRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
-    manager.icon_manager.delete_icon_rule(profile_id, column_key)
+    manager.icon_manager.delete_icon_rule(payload.profile_id, payload.column_key)
+    _publish_icons_updated()
     return {"ok": True}

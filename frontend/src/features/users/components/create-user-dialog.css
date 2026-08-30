@@ -1,0 +1,96 @@
+.users-dialog-backdrop {
+  position: fixed;
+  z-index: 30;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: var(--color-backdrop);
+  padding: 20px;
+}
+
+.users-create-dialog {
+  display: grid;
+  width: min(460px, 100%);
+  max-height: calc(100dvh - 40px);
+  gap: 15px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-floating);
+  padding: 20px;
+}
+
+.users-create-dialog header h2 {
+  margin: 0;
+  color: var(--color-ink-strong);
+  font-size: 19px;
+}
+
+.users-create-dialog > label {
+  display: grid;
+  gap: 6px;
+  color: var(--color-ink);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.users-create-dialog input[type="text"],
+.users-create-dialog input[type="password"],
+.users-create-dialog select {
+  height: var(--control-height);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-raised);
+  color: var(--color-ink);
+  padding: 0 9px;
+}
+
+.users-create-dialog > label small {
+  color: var(--color-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.users-create-dialog fieldset {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-raised);
+  padding: 11px;
+}
+
+.users-create-dialog legend {
+  padding: 0 4px;
+  color: var(--color-ink);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.users-create-dialog fieldset label,
+.users-dialog-switch {
+  display: flex !important;
+  align-items: center;
+  gap: 7px;
+  color: var(--color-ink);
+  font-size: 13px !important;
+  font-weight: 650 !important;
+}
+
+.users-create-dialog .users-server-identity {
+  flex: 1 1 auto;
+}
+
+.users-create-dialog input[type="checkbox"] {
+  accent-color: var(--color-accent);
+}
+
+.users-create-dialog footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid var(--color-border);
+  padding-top: 15px;
+}

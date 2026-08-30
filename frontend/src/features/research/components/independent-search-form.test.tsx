@@ -1,0 +1,189 @@
+// @vitest-environment jsdom
+
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { getTmdbTvDetails } from "@/features/research/api";
+import { IndependentSearchForm } from "@/features/research/components/independent-search-form";
+import type {
+  ResearchOverview,
+  TmdbSearchResult,
+} from "@/features/research/types";
+
+vi.mock("@/features/research/api", () => ({
+  getTmdbTvDetails: vi.fn(),
+  requestFromJellyseerr: vi.fn(),
+}));
+
+vi.mock("@/features/research/components/tmdb-search-picker", () => ({
+  TmdbSearchPicker: ({
+    onSelect,
+  }: {
+    onSelect: (result: TmdbSearchResult) => void;
+  }) => (
+    <button
+      type="button"
+      data-testid="select-tv"
+      onClick={() =>
+        onSelect({ tmdb_id: 101, title: "Serie test", media_type: "tv" })
+      }
+    >
+      Seleziona serie
+    </button>
+  ),
+}));
+
+declare global {
+  var IS_REACT_ACT_ENVIRONMENT: boolean | undefined;
+}
+
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+};
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
+const overview = {
+  success: true,
+  has_config: true,
+  qbittorrent_available: false,
+  scan: {},
+  results: {},
+  requests: [],
+  movie_requests: [],
+  tv_requests: [],
+  search_rules: { use_prowlarr: true },
+  search_defaults: { target_languages: [], exclude_tags: [] },
+  movie_sort_options: [],
+  tv_sort_options: [],
+  auto_tasks: {},
+  probe_counts: { blacklist: 0, incomplete: 0 },
+} satisfies ResearchOverview;
+
+const tvDetails = {
+  success: true,
+  details: {
+    seasons: [
+      { season_number: 1 },
+      { season_number: 2 },
+      { season_number: 3 },
+    ],
+  },
+};
+
+describe("IndependentSearchForm", () => {
+  let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot>;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    window.localStorage.clear();
+    queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    queryClient.clear();
+    container.remove();
+    globalThis.IS_REACT_ACT_ENVIRONMENT = undefined;
+    vi.clearAllMocks();
+  });
+
+  it("preserves restored TV seasons when TMDB details arrive later", async () => {
+    const details = deferred<typeof tvDetails>();
+    vi.mocked(getTmdbTvDetails).mockReturnValue(details.promise);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IndependentSearchForm
+            overview={overview}
+            initialSearch={{
+              query: "Serie test",
+              mediaType: "tv",
+              indexers: ["prowlarr"],
+              tmdbId: 101,
+              seasons: [2],
+            }}
+            searching={false}
+            onSearch={vi.fn()}
+            onSearchStart={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+    });
+
+    await resolveDetails(details);
+    await waitForSelectedSeasons(container, ["S02"]);
+
+    expect(selectedSeasons(container)).toEqual(["S02"]);
+  });
+
+  it("selects every regular season by default for a new TV title", async () => {
+    const details = deferred<typeof tvDetails>();
+    vi.mocked(getTmdbTvDetails).mockReturnValue(details.promise);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IndependentSearchForm
+            overview={overview}
+            searching={false}
+            onSearch={vi.fn()}
+            onSearchStart={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+    });
+
+    act(() => {
+      container
+        .querySelector<HTMLButtonElement>("[data-testid='select-tv']")
+        ?.click();
+    });
+    await resolveDetails(details);
+    await waitForSelectedSeasons(container, ["S01", "S02", "S03"]);
+
+    expect(selectedSeasons(container)).toEqual(["S01", "S02", "S03"]);
+  });
+});
+
+async function resolveDetails(details: Deferred<typeof tvDetails>) {
+  await act(async () => {
+    details.resolve(tvDetails);
+    await details.promise;
+  });
+}
+
+async function waitForSelectedSeasons(
+  container: HTMLElement,
+  expected: string[],
+) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (JSON.stringify(selectedSeasons(container)) === JSON.stringify(expected)) return;
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+  }
+}
+
+function selectedSeasons(container: HTMLElement) {
+  return [...container.querySelectorAll<HTMLLabelElement>(".research-seasons label")]
+    .filter((label) => label.querySelector("input")?.checked)
+    .map((label) => label.textContent?.trim());
+}

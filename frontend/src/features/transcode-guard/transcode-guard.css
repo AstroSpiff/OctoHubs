@@ -1,0 +1,90 @@
+@import "./components/guard-activity-list.css";
+@import "./components/guard-stream-history.css";
+
+.guard-settings-panel .inline-alert { margin: 0; }
+
+.guard-controls {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.guard-controls-panel,
+.guard-cleanup-panel {
+  display: grid;
+  gap: 6px;
+  justify-items: end;
+}
+
+.guard-action-feedback {
+  max-width: 300px;
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: right;
+}
+
+.guard-action-feedback--error { color: var(--color-danger); }
+
+.guard-controls-toggle {
+  display: inline-flex;
+  min-height: var(--control-height-compact);
+  align-items: center;
+  gap: 7px;
+  color: var(--color-ink);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.guard-controls-toggle input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--color-accent);
+}
+
+.guard-controls-toggle input:focus-visible,
+.guard-cleanup-controls input:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.guard-cleanup-controls {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.guard-cleanup-controls label {
+  display: inline-flex;
+  min-height: var(--control-height-compact);
+  align-items: center;
+  gap: 5px;
+  color: var(--color-muted);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.guard-cleanup-controls input {
+  height: var(--control-height-compact);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-raised);
+  color: var(--color-ink);
+  padding: 0 5px;
+}
+
+@media (max-width: 680px) {
+  .guard-cleanup-controls { justify-content: flex-start; }
+  .guard-controls { justify-content: flex-start; }
+  .guard-controls-panel,
+  .guard-cleanup-panel { justify-items: start; }
+  .guard-action-feedback { text-align: left; }
+}

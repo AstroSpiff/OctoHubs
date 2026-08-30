@@ -103,7 +103,10 @@ class UsersDashboardManager:
             if not entry or not entry.get("password_enc"):
                 password_plain_map[group_id] = None
                 return None
-            password_plain_map[group_id] = self.password_manager.decrypt_password(entry["password_enc"])
+            password_plain_map[group_id] = self.password_manager.decrypt_saved_password(
+                group_id,
+                entry["password_enc"],
+            )
             return password_plain_map[group_id]
 
         # Load custom group names and settings
@@ -169,7 +172,7 @@ class UsersDashboardManager:
                     "max_width": 100,
                     "scope": "user"
                 }
-                image_url = f"/api/emby/image?{urlencode(query)}"
+                image_url = f"/api/v1/emby/image?{urlencode(query)}"
 
             is_user_disabled = policy.get("IsDisabled", False)
             enable_remote_access = policy.get("EnableRemoteAccess", True)

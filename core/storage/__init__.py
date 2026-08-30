@@ -9,6 +9,7 @@ from .storage_image_cache import StorageImageCacheMixin
 from .storage_jellyseerr import StorageJellyseerrMixin
 from .storage_justwatch import StorageJustWatchMixin
 from .storage_latest import StorageLatestMixin
+from .storage_latest_notifications import StorageLatestNotificationMixin
 from .storage_maintenance import StorageMaintenanceMixin
 from .storage_manual_search import StorageManualSearchMixin
 from .storage_probe import StorageProbeMixin
@@ -38,6 +39,7 @@ from .storage_models import (
     EmbyLatestStateEpisode,
     EmbyLatestStateSeriesGroup,
     EmbyLatestStateSeriesChange,
+    EmbyLatestNotificationDelivery,
     EmbyCollectionDefinition,
     EmbyCollectionPoster,
     EmbyCollectionBackdrop,
@@ -86,6 +88,7 @@ __all__ = [
     "StorageJellyseerrMixin",
     "StorageJustWatchMixin",
     "StorageLatestMixin",
+    "StorageLatestNotificationMixin",
     "StorageMaintenanceMixin",
     "StorageManualSearchMixin",
     "StorageProbeMixin",
@@ -113,6 +116,7 @@ __all__ = [
     "EmbyLatestStateEpisode",
     "EmbyLatestStateSeriesGroup",
     "EmbyLatestStateSeriesChange",
+    "EmbyLatestNotificationDelivery",
     "EmbyCollectionDefinition",
     "EmbyCollectionPoster",
     "EmbyCollectionBackdrop",

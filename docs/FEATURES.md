@@ -7,7 +7,7 @@ Docs: [README](../README.md) | [Docker Deploy](DOCKER_DEPLOY.md) | [Deployment](
 This guide summarizes the main workflows available in the UI and how they connect to the backend.
 
 ## Setup checklist (one-time)
-- Set `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`.
+- Bootstrap the initial administrator through Docker with `ADMIN_USERNAME`, `ADMIN_PASSWORD` or `ADMIN_PASSWORD_FILE`, and `ADMIN_EMAIL`; browser account creation is disabled.
 - Add at least one Emby server in `config.json` with a valid API key.
 - Add integration URLs and API keys for the services you plan to use.
 - After editing `config.json` outside the UI, restart the app container.
@@ -47,7 +47,7 @@ Manual steps:
 - Trigger Emby library scan and refresh tasks.
 - STRM Extract: start Emby task manually.
 - STRM Guard: start STRM Extract only when there are no active streams.
-- STRM Probe: analyze and monitor STRM items from the Emby Probe page.
+- Media Probe: analyze and monitor video files without MediaInfo from the Media Probe page.
 
 Manual steps:
 - Add Emby servers in `EMBY.SERVERS` with an admin API key.
@@ -62,7 +62,7 @@ Manual steps:
 - Use `manage_users.py` to list or create users.
 
 Manual steps:
-- Store auth data on persistent storage (`auth.db`) so users are not lost on restarts.
+- Keep PostgreSQL persistent storage available so users and application data survive restarts.
 - Use the CLI tool if you lose access to the admin account.
 
 ## Audit log
@@ -72,5 +72,4 @@ Manual steps:
 - Emby webhook details are in `INTEGRATIONS.md`.
 
 ## Storage overview
-- Users: SQLite auth DB by default (`/mnt/shared/applications/octohubs/auth.db`).
-- App data: PostgreSQL when `DATABASE.ENABLED=true`.
+- Users and application data: the shared PostgreSQL database managed by Alembic.

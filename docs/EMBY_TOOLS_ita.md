@@ -52,11 +52,14 @@ Note:
 - Il guard controlla periodicamente le sessioni attive.
 - Riprova con un breve cooldown se il server e occupato.
 
-## STRM Probe
-La pagina STRM Probe consente di ispezionare e analizzare gli STRM:
+## Media Probe
+La pagina Media Probe consente di ispezionare e analizzare file video senza MediaInfo:
+- per impostazione predefinita considera solo i file `.strm`;
+- dalla configurazione Probe per server puo includere tutti i file video senza MediaInfo;
+- la policy e condivisa fra Librerie e Ultimi aggiunti.
 - vedere sorgente e metadati
 - ispezionare coda e history (se DB abilitato)
-- verificare lo stato dei processi STRM
+- verificare lo stato dei processi Probe
 
 Passi manuali:
 - Abilita `DATABASE.ENABLED=true` se vuoi la history nella vista probe.

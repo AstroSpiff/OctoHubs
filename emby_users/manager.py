@@ -53,10 +53,15 @@ from .state_tracker import UserSyncStateTracker
 from .operation_tracker import OperationTracker
 
 class EmbyUserManager:
-    def __init__(self, storage: DatabaseStorage, config: Dict[str, Any]):
+    def __init__(
+        self,
+        storage: DatabaseStorage,
+        config: Dict[str, Any],
+        operation_tracker: Optional[OperationTracker] = None,
+    ):
         self.storage = storage
         self.config = config
-        self.operation_tracker = OperationTracker(self.storage)
+        self.operation_tracker = operation_tracker or OperationTracker(self.storage)
         self.group_user_resolver = GroupUserResolver(self.storage)
         self.settings_manager = SettingsManager(
             storage=self.storage,

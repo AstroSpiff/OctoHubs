@@ -17,6 +17,7 @@ from core.storage.storage_models import (
     EmbyLatestStateEpisode,
     EmbyLatestStateSeriesGroup,
     EmbyLatestStateSeriesChange,
+    EmbyLatestNotificationDelivery,
     EmbyLatestProgress,
     _utcnow,
 )
@@ -723,6 +724,7 @@ class StorageLatestMixin(_SessionProvider):
     def clear_latest_state(self) -> None:
         session = self._get_session()
         try:
+            session.query(EmbyLatestNotificationDelivery).delete(synchronize_session=False)
             session.query(EmbyLatestStateSeriesChange).delete(synchronize_session=False)
             session.query(EmbyLatestStateSeriesGroup).delete(synchronize_session=False)
             session.query(EmbyLatestStateEpisode).delete(synchronize_session=False)
@@ -740,6 +742,7 @@ class StorageLatestMixin(_SessionProvider):
             return
         session = self._get_session()
         try:
+            session.query(EmbyLatestNotificationDelivery).filter(EmbyLatestNotificationDelivery.server_id == server_id).delete(synchronize_session=False)  # type: ignore[attr-defined]
             groups = session.query(EmbyLatestStateSeriesGroup).filter(EmbyLatestStateSeriesGroup.server_id == server_id).all()  # type: ignore[attr-defined]
             group_ids = [row.id for row in groups]
             if group_ids:

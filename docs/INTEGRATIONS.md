@@ -116,27 +116,36 @@ Manual steps:
 
 ## Emby webhook
 Endpoint:
-- `http://HOST:5000/webhook/emby` (HTTP)
-- `https://YOUR_DOMAIN/webhook/emby` (HTTPS with Nginx)
+- `http://HOST:5050/api/emby/event-bridge/events` (direct HTTP override)
+- `https://YOUR_DOMAIN/api/emby/event-bridge/events` (HTTPS with Nginx)
 
 Optional security:
-- `WEBHOOK_SECRET` header: `X-Webhook-Secret: value`
-- `WEBHOOK_IP_WHITELIST` (comma-separated IPs)
+- `WEBHOOK_IP_WHITELIST` (comma-separated IPv4/IPv6 addresses or CIDRs)
+- `WEBHOOK_TRUST_PROXY_HEADERS=true` makes the allowlist use `X-Real-IP`; enable it
+  only behind a proxy that overwrites that header. The bundled Nginx does so.
+
+An invalid non-empty allowlist rejects Event Bridge requests until its configuration
+is corrected. With Portainer, configure the same variables on the app container.
 
 Manual steps:
-- Enable the Emby Webhook plugin.
-- Add a webhook with the OctoHubs URL and optional header.
-- Select playback events to send.
+- Install or update the OctoHubs Event Bridge plugin on the Emby server.
+- Configure the OctoHubs URL in the plugin.
+- Open Event Bridge in OctoHubs and select **Connect** for the server. OctoHubs
+  installs a generated per-server credential through the authenticated Emby API.
+- Repeat **Connect** to rotate a credential. The plaintext is never shown or stored
+  by OctoHubs; only its hash is retained.
 
-Test example:
-```bash
-curl -X POST http://HOST:5000/webhook/emby \
-  -H "Content-Type: application/json" \
-  -H "X-Webhook-Secret: your-secret" \
-  -d '{"Event":"playback.start"}'
-```
+The plugin sends `X-OctoHubs-Server-Id` and `X-Webhook-Secret` automatically. Generic
+curl calls and the former shared `WEBHOOK_SECRET` are intentionally unsupported.
+
+OctoHubs accepts at most 1 MiB per HTTP request or WebSocket frame and 500 events
+per batch. The official plugin emits batches of at most 100 events. Per-server
+quotas tolerate normal bursts and return `429` or close the WebSocket only when
+message frequency is abnormal.
 
 ## Troubleshooting
 - 401/403 from webhooks: check secret and IP whitelist.
+- 413 from webhooks: reduce raw payload data or batches sent by an unofficial client.
+- 429 from webhooks: the server is temporarily exceeding its Event Bridge quota.
 - Search not working: verify provider URL/API key and `SEARCH_RULES` flags.
 - JustWatch not working: verify package install and DB enabled.

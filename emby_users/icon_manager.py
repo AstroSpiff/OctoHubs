@@ -7,9 +7,19 @@ from typing import Dict, Any, Optional, Tuple, Callable
 import requests
 
 from emby_runtime.api_clients import _emby_base_url
+from core.image_uploads import ImageUploadError, sanitize_image_bytes, sanitize_image_file
 from core.utils import get_nested
 
 logger = logging.getLogger(__name__)
+
+
+def _versioned_icon_path(path: object) -> str:
+    """Return the public v1 URL for an icon path stored by older releases."""
+
+    normalized = str(path or "")
+    if normalized.startswith("/api/emby/icons/image/"):
+        return f"/api/v1{normalized.removeprefix('/api')}"
+    return normalized
 
 
 class IconManager:
@@ -38,12 +48,16 @@ class IconManager:
                             try:
                                 with open(full_path, "rb") as f:
                                     data = f.read()
-                                mime = "image/png"
-                                if full_path.lower().endswith(".jpg") or full_path.lower().endswith(".jpeg"):
-                                    mime = "image/jpeg"
+                                image = sanitize_image_bytes(data)
 
-                                new_path = f"/api/emby/icons/image/{rule['profile_id']}/{rule['column_key']}"
-                                self.storage.save_icon_rule(rule['profile_id'], rule['column_key'], new_path, data, mime)
+                                new_path = f"/api/v1/emby/icons/image/{rule['profile_id']}/{rule['column_key']}"
+                                self.storage.save_icon_rule(
+                                    rule['profile_id'],
+                                    rule['column_key'],
+                                    new_path,
+                                    image.data,
+                                    image.mime_type,
+                                )
                                 logger.info("Migrated icon to DB: %s", full_path)
                             except Exception as exc:
                                 logger.error("Failed to migrate icon %s: %s", full_path, exc)
@@ -63,7 +77,7 @@ class IconManager:
         for r in rules:
             if r["profile_id"] not in matrix:
                 matrix[r["profile_id"]] = {}
-            matrix[r["profile_id"]][r["column_key"]] = r["icon_path"]
+            matrix[r["profile_id"]][r["column_key"]] = _versioned_icon_path(r["icon_path"])
 
         binding_map = {}
         for b in bindings:
@@ -101,21 +115,17 @@ class IconManager:
         Saves an uploaded icon file to DB and creates the rule. Triggers sync.
         file_storage: FastAPI UploadFile or similar
         """
-        file_storage.file.seek(0)
-        data = file_storage.file.read()
+        image = sanitize_image_file(file_storage.file)
 
-        filename = file_storage.filename or "icon.png"
-        mime_type = file_storage.content_type or "image/png"
+        rel_path = f"/api/v1/emby/icons/image/{profile_id}/{column_key}"
 
-        ext = os.path.splitext(filename)[1].lower()
-        if ext in ['.jpg', '.jpeg']:
-            mime_type = "image/jpeg"
-        elif ext == '.png':
-            mime_type = "image/png"
-
-        rel_path = f"/api/emby/icons/image/{profile_id}/{column_key}"
-
-        self.storage.save_icon_rule(profile_id, column_key, rel_path, data, mime_type)
+        self.storage.save_icon_rule(
+            profile_id,
+            column_key,
+            rel_path,
+            image.data,
+            image.mime_type,
+        )
         self._sync_icons_for_rule(profile_id, column_key)
         return rel_path
 
@@ -130,7 +140,20 @@ class IconManager:
         """
         Retrieves the binary image data and mime type.
         """
-        return self.storage.get_icon_rule_data(profile_id, column_key)
+        stored = self.storage.get_icon_rule_data(profile_id, column_key)
+        if not stored:
+            return None
+        try:
+            image = sanitize_image_bytes(stored[0])
+        except ImageUploadError as exc:
+            logger.warning(
+                "Rejected unsafe stored icon %s/%s: %s",
+                profile_id,
+                column_key,
+                exc,
+            )
+            return None
+        return image.data, image.mime_type
 
     def _sync_icons_for_rule(self, profile_id: str, column_key: str) -> None:
         self._apply_icon_logic(filter_profile_id=profile_id, filter_column_key=column_key)

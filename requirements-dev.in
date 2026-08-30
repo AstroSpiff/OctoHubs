@@ -1,0 +1,4 @@
+# Test-only dependencies. Production constraints remain authoritative.
+-c requirements.txt
+
+pytest

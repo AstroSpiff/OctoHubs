@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import secrets
+import os
+import time
 from typing import Optional
 
 from fastapi import Request
 from jinja2 import pass_context
+
+
+_CSRF_TOKEN_KEY = "_csrf_token"
+_CSRF_ISSUED_AT_KEY = "_csrf_token_issued_at"
 
 
 def get_flash_messages(request: Request) -> list:
@@ -33,9 +39,7 @@ def url_for_fastapi(endpoint: str, **kwargs) -> str:
 
         # Dashboard routes
         "emby_dashboard": "/emby",
-        "emby_collections": "/emby/collections",
         "view_emby_users": "/emby/users",
-        "emby_probe": "/emby/probe",
 
         # Action routes
         "emby_save_server": "/emby/save-server",
@@ -71,7 +75,6 @@ def url_for_fastapi(endpoint: str, **kwargs) -> str:
         "emby_latest_state_clear": "/emby/latest/state/clear",
         "emby_latest_clear_state_route": "/emby/latest/state/clear",
         "emby_latest_reset_all_route": "/emby/latest/reset",
-        "emby_library_scan_state_clear_route": "/emby/library-scan-state/clear",
 
         # Static files
         "static": lambda filename: f"/static/{filename}",
@@ -88,16 +91,43 @@ def generate_csrf_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def _csrf_time_limit_seconds() -> int:
+    """Read a sensible CSRF lifetime without allowing an accidental zero lifetime."""
+    try:
+        configured = int(str(os.environ.get("CSRF_TIME_LIMIT_SECONDS", "3600")).strip())
+    except ValueError:
+        configured = 3600
+    return max(configured, 60)
+
+
+def _csrf_token_is_current(session: dict, now: float) -> bool:
+    token = session.get(_CSRF_TOKEN_KEY)
+    issued_at = session.get(_CSRF_ISSUED_AT_KEY)
+    if not token or issued_at is None:
+        return False
+    try:
+        age = now - float(issued_at)
+    except (TypeError, ValueError):
+        return False
+    return 0 <= age <= _csrf_time_limit_seconds()
+
+
 def get_csrf_token(request: Request) -> str:
-    """Get or create CSRF token from session."""
-    if "_csrf_token" not in request.session:
-        request.session["_csrf_token"] = generate_csrf_token()
-    return request.session["_csrf_token"]
+    """Get or rotate the CSRF token from the current session."""
+    now = time.time()
+    if not _csrf_token_is_current(request.session, now):
+        request.session[_CSRF_TOKEN_KEY] = generate_csrf_token()
+        request.session[_CSRF_ISSUED_AT_KEY] = now
+    return request.session[_CSRF_TOKEN_KEY]
 
 
 def validate_csrf(request: Request, form_token: Optional[str]) -> bool:
-    """Validate CSRF token from form."""
-    session_token = request.session.get("_csrf_token")
+    """Validate a current CSRF token from form data or request headers."""
+    if getattr(getattr(request, "state", None), "auth_method", "") == "api_token":
+        return True
+    if not _csrf_token_is_current(request.session, time.time()):
+        return False
+    session_token = request.session.get(_CSRF_TOKEN_KEY)
     header_token = request.headers.get("X-CSRFToken") or request.headers.get("X-CSRF-Token")
     token = form_token or header_token
     if not session_token or not token:

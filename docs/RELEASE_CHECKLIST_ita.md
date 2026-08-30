@@ -6,7 +6,7 @@ Documenti: [README](../README_ita.md) | [Docker Deploy](DOCKER_DEPLOY_ita.md) | 
 
 Questa checklist serve a capire se OctoHubs e pronto per essere usato come applicativo stabile.
 
-Usala prima di ogni release importante, dopo refactor estesi, o dopo modifiche a Utenti, Pubblicazioni, STRM Probe, Workflow, Operazioni o Librerie.
+Usala prima di ogni release importante, dopo refactor estesi, o dopo modifiche a Utenti, Pubblicazioni, Media Probe, Workflow, Operazioni o Librerie.
 
 Legenda:
 - **P0**: blocca la release se fallisce.
@@ -21,12 +21,15 @@ Per ogni riga compila:
 
 | Priorita | Area | Test | Procedura | Risultato atteso | Esito | Note |
 | --- | --- | --- | --- | --- | --- | --- |
-| P0 | Test suite | Unit/integration test | `./venv/bin/python -m unittest discover -s tests -v` | Tutti i test passano senza failure/error |  |  |
+| P0 | Test suite backend | Pytest completo | `./venv/bin/python -m pytest -q` | Tutti i test pytest, async, parametrizzati e unittest passano |  |  |
+| P0 | PostgreSQL 16 | Migrazioni e CRUD reali | `./scripts/run_postgresql_release_gate.sh` | Upgrade legacy valido e rifiuto dati ambigui passano su PostgreSQL 16 effimero, senza test saltati |  |  |
+| P0 | Test suite frontend | Vitest completo | `cd frontend && npm test -- --run` | Tutti i test frontend passano |  |  |
+| P0 | Frontend statico | Lint e build produzione | `cd frontend && npm run lint && npm run build` | Lint pulito e build completata |  |  |
 | P0 | Formattazione diff | Whitespace/check patch | `git diff --check` | Nessun errore |  |  |
 | P0 | Import/compile | Moduli principali | `./venv/bin/python -m py_compile asgi.py core/tasks.py services/workflows.py` | Exit code 0 |  |  |
 | P0 | Git | Stato worktree | `git status -sb` | Solo modifiche attese oppure working tree pulito |  |  |
 | P1 | Avvio app | Startup locale | `./start_dev.sh` | Uvicorn avviato, startup complete, nessun traceback |  |  |
-| P1 | API protette | Smoke senza login | `curl -i http://127.0.0.1:5050/emby/probe` | `401 Authentication required` oppure redirect/login coerente |  |  |
+| P1 | API Probe protette | Smoke senza login | `curl -i http://127.0.0.1:5050/api/v1/emby/probe/queue` | `401 Authentication required` |  |  |
 
 ## 2. Ambiente e dati di test
 
@@ -45,7 +48,7 @@ Per ogni riga compila:
 | --- | --- | --- | --- | --- | --- | --- |
 | P0 | Workflow | Avvio workflow completo | Avviare workflow completo dalla UI | Operazione appare in Operazioni, step avanzano in ordine |  |  |
 | P0 | Workflow | Stop durante scan | Avviare workflow e fermare durante scan | Stato interrotto, nessun processo appeso |  |  |
-| P0 | Workflow | Stop durante STRM Probe | Avviare workflow e fermare durante probe | Discovery/processing/combo recent fermati, nessun blocco successivo |  |  |
+| P0 | Workflow | Stop durante Media Probe | Avviare workflow e fermare durante probe | Discovery/processing/combo recent fermati, nessun blocco successivo |  |  |
 | P0 | Workflow | Stop durante Pubblicazioni | Fermare workflow durante refresh pubblicazioni | Stato coerente, aggiornamento non resta running |  |  |
 | P0 | Operazioni | Persistenza stato | Avviare operazione, ricaricare pagina | Operazione ancora visibile con data/ora e progress coerente |  |  |
 | P0 | Operazioni | Esiti finali | Completare, interrompere e far fallire operazioni controllate | Stati `success`, `interrupted`, `error` corretti |  |  |
@@ -68,8 +71,8 @@ Usare solo utenti `a_test*` per prove distruttive. Non modificare il provider au
 | P0 | Preset | Crea/aggiorna preset | Creare preset, caricarlo, modificarlo, aggiornarlo | Preset salvato e riutilizzabile |  |  |
 | P0 | Preset | Nome duplicato | Salvare nuovo preset con nome esistente | Errore inline, finestra resta aperta e nome correggibile |  |  |
 | P1 | Preset | Rinomina preset | Rinominare preset esistente | Nome aggiornato senza duplicati |  |  |
-| P0 | Sync utenti | Monodirezionale | Sync da utente A a B | Aggiunte e rimozioni propagate da A a B, non viceversa |  |  |
-| P0 | Sync utenti | Bidirezionale | Sync A <-> B | Merge coerente per visti, resume, preferiti, playlist |  |  |
+| P0 | Sync gruppi | Monodirezionale | Sincronizzare gruppo da leader verso target | Configurazione, librerie, visti, resume, preferiti e playlist rispettano le opzioni gruppo |  |  |
+| P0 | Sync gruppi | Merge iniziale | Primo sync gruppo con preferiti/playlist/visti | Merge coerente senza cancellazioni inattese; sync successivi applicano delta |  |  |
 | P0 | Playstate | Visti con data | Sincronizzare contenuto visto | Data visione preservata secondo regole definite |  |  |
 | P0 | Playstate | Resume visibili/nascosti | Nascondere da Continua a guardare e sincronizzare | Stato nascosto/visibile coerente sui target |  |  |
 | P0 | Playstate | Successivo | Verificare Next Up dopo sync episodi | Episodi successivi coerenti con Emby |  |  |
@@ -106,13 +109,13 @@ Usare solo utenti `a_test*` per prove distruttive. Non modificare il provider au
 | P1 | Arricchimenti | Skip dati verificati | Rieseguire verifica dati | Emby/Trakt/OMDb/MDBList non richiesti se gia verificati secondo regole |  |  |
 | P1 | Telegram | Preview e invio | Preview template, invio notifiche test | Messaggi corretti, immagini/token coerenti |  |  |
 
-## 7. STRM Probe
+## 7. Media Probe
 
 Non lanciare un probe completo reale su librerie grandi senza finestra di manutenzione.
 
 | Priorita | Area | Test | Procedura | Risultato atteso | Esito | Note |
 | --- | --- | --- | --- | --- | --- | --- |
-| P0 | STRM Probe | Caricamento tab | Aprire STRM Probe | UI caricata, API protette, nessun errore console |  |  |
+| P0 | Media Probe | Caricamento tab | Aprire Media Probe | UI caricata, API protette, nessun errore console |  |  |
 | P0 | Ultimi aggiunti | Discovery singolo | Avviare discovery recent su server test | Coda popolata solo con item recenti senza mediainfo |  |  |
 | P0 | Ultimi aggiunti | Processing smart | Avviare processing smart su coda test | Rispetta stream attivi, aggiorna history/blacklist |  |  |
 | P0 | Ultimi aggiunti | Processing forced | Avviare forced su coda test piccola | Probe eseguito senza attendere server libero |  |  |
@@ -146,8 +149,8 @@ Registrare tempi reali e dimensione dataset.
 | --- | --- | --- | --- | --- | --- | --- |
 | P1 | Pubblicazioni | Primo refresh | Misurare durata con N item/server | Durata accettabile e progress leggibile |  |  |
 | P1 | Pubblicazioni | Refresh incrementale | Misurare secondo refresh | Molto piu rapido del primo, senza scansione completa inutile |  |  |
-| P1 | STRM Probe | Recent | Misurare discovery+processing recent | Nessun blocco UI, consumo CPU/RAM accettabile |  |  |
-| P1 | STRM Probe | Completo libreria | Misurare libreria grande in manutenzione | Progress stabile, stop reattivo |  |  |
+| P1 | Media Probe | Recent | Misurare discovery+processing recent | Nessun blocco UI, consumo CPU/RAM accettabile |  |  |
+| P1 | Media Probe | Completo libreria | Misurare libreria grande in manutenzione | Progress stabile, stop reattivo |  |  |
 | P1 | Utenti | Sync grande | Sync gruppo con piu utenti/server | Progress chiaro, nessun timeout non gestito |  |  |
 | P2 | API | Numero chiamate Emby | Monitorare log/tempo per refresh | Niente chiamate ripetute inutili su dati verificati |  |  |
 
@@ -181,10 +184,11 @@ Ambiente:
 Server Emby coinvolti:
 Utenti test:
 Dataset Pubblicazioni:
-Dataset STRM Probe:
+Dataset Media Probe:
 
 Automatici:
-- unittest:
+- pytest:
+- PostgreSQL 16:
 - diff-check:
 - compile:
 
@@ -194,7 +198,7 @@ Manuali P0:
 - Utenti:
 - Librerie:
 - Pubblicazioni:
-- STRM Probe:
+- Media Probe:
 - Resilienza:
 - Sicurezza:
 

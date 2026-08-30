@@ -23,12 +23,6 @@ def load_config_env_file() -> None:
             print(f"[STARTUP] Loaded environment variables from {env_file_path}")
         except Exception as exc:
             print(f"[STARTUP] Warning: Could not load {env_file_path}: {exc}")
-    try:
-        from services.runtime_env import load_runtime_env_file
-
-        load_runtime_env_file()
-    except Exception as exc:
-        print(f"[STARTUP] Warning: Could not load runtime secrets: {exc}")
 
 
 async def register_runtime_event_loop() -> None:
@@ -37,10 +31,28 @@ async def register_runtime_event_loop() -> None:
     print("🚀 OCTOHUBS STARTUP - MEGA LOGGING ENABLED", flush=True)
     print("=" * 100 + "\n", flush=True)
     register_app_event_loop(asyncio.get_event_loop())
+    try:
+        from emby_runtime.library_poller import get_library_poller
+
+        storage = _ensure_db_backend()
+        poller = get_library_poller()
+        poller.configure(storage)
+        interrupted = await poller.finalize_interrupted_states()
+        if interrupted:
+            print(
+                f"[STARTUP] {interrupted} scan librerie interrotti dal precedente riavvio.",
+                flush=True,
+            )
+    except Exception as exc:
+        print(f"[STARTUP] ⚠️ Recovery stato scan librerie non riuscito: {exc}", flush=True)
 
 
 def initialize_runtime_services() -> None:
     """Initialize background services."""
+    from emby_users.password_crypto import (
+        PasswordCiphertextError,
+        rotate_stored_password_ciphertexts,
+    )
     from emby_probe import get_probe_manager
     from realtime.manager import _initialize_emby_websockets
     from services.workflows import (
@@ -101,6 +113,14 @@ def initialize_runtime_services() -> None:
                     print(f"[STARTUP] ⚠️ DatabaseStorage non disponibile per Latest: {exc}")
                     db_storage = None
             if db_storage is not None:
+                rotated_passwords = rotate_stored_password_ciphertexts(db_storage)
+                if rotated_passwords:
+                    print(
+                        f"[STARTUP] Ricifrate {rotated_passwords} password Emby "
+                        "con PASSWORD_SECRET corrente."
+                    )
                 get_latest_manager(config, db_storage)
+    except PasswordCiphertextError:
+        raise
     except Exception as exc:
         print(f"[STARTUP] Errore init runtime services: {exc}")

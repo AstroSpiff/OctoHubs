@@ -4,7 +4,6 @@ API handlers for Latest Publications endpoints.
 This module provides handler functions for API routes using the manager.
 """
 
-from datetime import datetime, timezone
 import threading
 from typing import Any, Dict, Tuple
 
@@ -60,13 +59,19 @@ def build_latest_snapshot_payload(
     Args:
         limit: Maximum items to return
         per_server_limit: Maximum items per server
-        force: Force refresh from Emby
-        cache_only: Return only cached data
+        force: Legacy refresh flag; rejected because GET is read-only
+        cache_only: Legacy cache preference retained for compatibility
         view: "feed" or "batch" mode
 
     Returns:
         Tuple of (payload_dict, http_status_code)
     """
+    if force:
+        return {
+            "success": False,
+            "message": "Il refresh richiede POST /api/emby/latest/refresh",
+        }, 400
+
     from emby_latest import get_manager
     from core.config_manager import load_config, _db_enabled
 
@@ -92,33 +97,6 @@ def build_latest_snapshot_payload(
     refreshing = snapshot.get("refreshing", False)
     progress = snapshot.get("progress", {})
 
-    # If force refresh requested
-    if force:
-        payload, error = manager.refresh_full(
-            limit=limit,
-            per_server_limit=per_server_limit,
-            fast_mode=False,
-            enrich=True,
-            force_omdb=True
-        )
-        if error:
-            return {"success": False, "message": error}, 400
-
-        fresh_snapshot = manager.get_snapshot(mode=normalized_view)
-        progress = fresh_snapshot.get("progress", progress)
-        refreshing = fresh_snapshot.get("refreshing", False)
-
-        return {
-            "success": True,
-            "movies": payload.get("movies", []) if payload else [],
-            "series": payload.get("series", []) if payload else [],
-            "errors": payload.get("errors", []) if payload else [],
-            "cached": False,
-            "cached_at": datetime.now(timezone.utc).isoformat(),
-            "refreshing": refreshing,
-            "progress": progress
-        }, 200
-
     # Return cached data if available
     if payload_data:
         from emby_latest.jellyseerr import _apply_jellyseerr_request_info
@@ -135,34 +113,8 @@ def build_latest_snapshot_payload(
             "progress": progress
         }, 200
 
-    # No cache - trigger initial load
-    if not cache_only:
-        payload, error = manager.refresh_full(
-            limit=limit,
-            per_server_limit=per_server_limit,
-            fast_mode=True,
-            enrich=True,
-            force_omdb=False
-        )
-        if error:
-            return {"success": False, "message": error}, 400
-
-        fresh_snapshot = manager.get_snapshot(mode=normalized_view)
-        progress = fresh_snapshot.get("progress", progress)
-        refreshing = fresh_snapshot.get("refreshing", refreshing)
-
-        return {
-            "success": True,
-            "movies": payload.get("movies", []) if payload else [],
-            "series": payload.get("series", []) if payload else [],
-            "errors": payload.get("errors", []) if payload else [],
-            "cached": False,
-            "cached_at": datetime.now(timezone.utc).isoformat(),
-            "refreshing": refreshing,
-            "progress": progress
-        }, 200
-
-    # Cache only but no data
+    # A read request never starts a refresh. Mutating clients must use the
+    # capability- and CSRF-protected POST /api/emby/latest/refresh endpoint.
     return {
         "success": False,
         "message": "Nessun dato Pubblicazioni salvato nel DB",

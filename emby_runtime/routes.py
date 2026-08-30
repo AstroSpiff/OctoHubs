@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from emby_runtime.snapshots import (
@@ -18,15 +18,30 @@ from emby_runtime.snapshots import (
     _build_emby_streams_snapshot,
     _build_emby_libraries_snapshot,
 )
+from emby_runtime.runtime_api_models import (
+    EmbyProbeLibrariesResponse,
+    EmbyRuntimeErrorResponse,
+    EmbyServerStatusResponse,
+    EmbyStreamsSnapshotResponse,
+    EmbyTaskStopResponse,
+    EmbyTaskStopRequest,
+)
+from web.openapi_requests import json_request_body
+from web.request_validation import validated_json_payload
 
 router = APIRouter()
 
 _require_auth: Optional[Callable[[Request], Any]] = None
+_validate_csrf: Optional[Callable[[Request, Optional[str]], bool]] = None
 
 
-def init_emby_runtime_routes(require_auth: Callable[[Request], Any]) -> None:
-    global _require_auth
+def init_emby_runtime_routes(
+    require_auth: Callable[[Request], Any],
+    validate_csrf: Callable[[Request, Optional[str]], bool],
+) -> None:
+    global _require_auth, _validate_csrf
     _require_auth = require_auth
+    _validate_csrf = validate_csrf
 
 
 def _require_auth_dep(request: Request):
@@ -35,86 +50,43 @@ def _require_auth_dep(request: Request):
     return _require_auth(request)
 
 
-@router.post("/emby/stop-task")
-async def emby_stop_task(request: Request):
-    _require_auth_dep(request)
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
-    data, status_code = _build_emby_stop_task_snapshot(payload)
-    return JSONResponse(data, status_code=status_code)
+def _validate_csrf_request(request: Request) -> None:
+    if _validate_csrf is None:
+        raise RuntimeError("Emby runtime routes not initialized: validate_csrf missing")
+    token = request.headers.get("X-CSRFToken") or request.headers.get("X-CSRF-Token")
+    if not _validate_csrf(request, token):
+        raise HTTPException(status_code=403, detail="CSRF token non valido")
 
 
-@router.post("/api/emby/stop-task")
+@router.post(
+    "/api/emby/stop-task",
+    responses={200: {"model": EmbyTaskStopResponse}, 400: {"model": EmbyRuntimeErrorResponse}},
+    openapi_extra=json_request_body(EmbyTaskStopRequest),
+)
 async def emby_stop_task_api(request: Request):
     _require_auth_dep(request)
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    _validate_csrf_request(request)
+    payload = await validated_json_payload(request, EmbyTaskStopRequest)
     data, status_code = _build_emby_stop_task_snapshot(payload)
     return JSONResponse(data, status_code=status_code)
 
 
-@router.get("/emby/streams")
-async def emby_streams(request: Request):
-    _require_auth_dep(request)
-    payload, status_code = _build_emby_streams_snapshot()
-    return JSONResponse(payload, status_code=status_code)
-
-
-@router.get("/api/emby/streams")
+@router.get("/api/emby/streams", response_model=EmbyStreamsSnapshotResponse)
 async def emby_streams_api(request: Request):
     _require_auth_dep(request)
     payload, status_code = _build_emby_streams_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
-@router.get("/emby/api/all/health-status")
-async def emby_health_status(request: Request):
-    _require_auth_dep(request)
-    payload, status_code = _build_emby_health_status_snapshot()
-    return JSONResponse(payload, status_code=status_code)
-
-
-@router.get("/emby/api/{server_id}/activity")
-async def emby_activity(request: Request, server_id: str):
-    _require_auth_dep(request)
-    payload, status_code = _build_emby_activity_snapshot(server_id)
-    return JSONResponse(payload, status_code=status_code)
-
-
-@router.get("/emby/api/{server_id}/tasks")
-async def emby_tasks(request: Request, server_id: str):
-    _require_auth_dep(request)
-    payload, status_code = _build_emby_tasks_snapshot(server_id)
-    return JSONResponse(payload, status_code=status_code)
-
-
-@router.get("/emby/api/{server_id}/users")
-async def emby_users(request: Request, server_id: str):
-    _require_auth_dep(request)
-    payload, status_code = _build_emby_users_snapshot(server_id)
-    return JSONResponse(payload, status_code=status_code)
-
-
-@router.get("/emby/api/{server_id}/plugins")
-async def emby_plugins(request: Request, server_id: str):
-    _require_auth_dep(request)
-    payload, status_code = _build_emby_plugins_snapshot(server_id)
-    return JSONResponse(payload, status_code=status_code)
-
-
-@router.get("/emby/libraries")
-async def emby_libraries(request: Request):
+@router.get("/api/emby/probe/libraries", response_model=EmbyProbeLibrariesResponse)
+async def emby_probe_libraries_api(request: Request):
     _require_auth_dep(request)
     payload, status_code = _build_emby_libraries_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
-@router.get("/emby/server-status/{server_id}")
-async def emby_server_status(server_id: str, request: Request):
+@router.get("/api/emby/server-status/{server_id}", response_model=EmbyServerStatusResponse)
+async def emby_server_status_api(server_id: str, request: Request):
     _require_auth_dep(request)
     payload, status_code = _build_emby_server_status_snapshot(server_id)
     return JSONResponse(payload, status_code=status_code)

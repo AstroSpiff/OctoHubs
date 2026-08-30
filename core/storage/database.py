@@ -15,6 +15,7 @@ from core.storage.storage_collections import StorageCollectionsMixin
 from core.storage.storage_justwatch import StorageJustWatchMixin
 from core.storage.storage_core import StorageCoreMixin
 from core.storage.storage_latest import StorageLatestMixin
+from core.storage.storage_latest_notifications import StorageLatestNotificationMixin
 from core.storage.storage_maintenance import StorageMaintenanceMixin
 from core.storage.storage_requests import StorageRequestsMixin
 from core.storage.storage_manual_search import StorageManualSearchMixin
@@ -32,6 +33,7 @@ class DatabaseStorage(
     StorageCoreMixin,
     StorageWorkflowMixin,
     StorageManualSearchMixin,
+    StorageLatestNotificationMixin,
     StorageLatestMixin,
     StorageJellyseerrMixin,
     StorageImageCacheMixin,
@@ -54,6 +56,7 @@ class DatabaseStorage(
         self._engine: Any = None
         self._Session: Any = None
         self._lock = threading.Lock()
+        self._app_settings_lock = threading.RLock()
 
     def _get_session(self) -> Any:
         if self._Session is None:

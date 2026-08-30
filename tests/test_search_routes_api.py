@@ -13,6 +13,7 @@ class SearchRouteTests(unittest.IsolatedAsyncioTestCase):
         init_search_routes(
             require_auth=lambda _request: {"id": "admin"},
             ensure_db_backend=lambda: (_ for _ in ()).throw(StorageError("tabella mancante")),
+            validate_csrf=lambda _request, _token: True,
         )
 
         response = await get_manual_search_history(object())

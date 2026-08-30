@@ -15,7 +15,7 @@ from emby_runtime.transcode_guard_rules import (
     classify_stream,
     normalize_transcode_guard_settings,
 )
-from emby_runtime.transcode_guard_stats import build_user_stream_stats
+from emby_runtime.transcode_guard_stats import build_user_stream_stats, get_stream_history_detail
 
 
 TRANSCODE_GUARD_SETTINGS_KEY = "octohubs_transcode_guard:settings:v1"
@@ -355,6 +355,9 @@ class TranscodeGuardService:
     def get_user_stats(self, filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return build_user_stream_stats(self._load_stream_rows(), filters or {})
 
+    def get_stream_history_detail(self, stream_id: str) -> Optional[Dict[str, Any]]:
+        return get_stream_history_detail(self._load_stream_rows(), stream_id)
+
     def decorate_streams(self, server_id: str, streams: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         settings = self.load_settings()
         decorated = []
@@ -364,6 +367,7 @@ class TranscodeGuardService:
             item = dict(stream)
             item["server_id"] = server_id
             decision = classify_stream(item, settings)
+            decision["enabled"] = bool(settings.get("enabled"))
             state = violations.get(self._violation_key(
                 server_id,
                 item.get("session_id") or "",
@@ -614,7 +618,7 @@ class TranscodeGuardService:
                 continue
             if str(row.get("session_id") or "") != session_id:
                 continue
-            if _last_action(row) in {"exit", "stop", "pause"}:
+            if _is_terminal_action(_last_action_entry(row)):
                 continue
             server = {
                 "id": row.get("server_id") or server_id,
@@ -1042,8 +1046,9 @@ class TranscodeGuardService:
             if row.get("playback_key") != playback_key:
                 continue
             same_resolution = _same_source_resolution(row, stream)
-            if _last_action(row) not in {"exit", "stop", "pause"}:
-                if stop_at_newer_closed_same_resolution and same_resolution and _last_action(row) in {"resolved", "resolved_later", "resolution_change"}:
+            last_action = _last_action(row)
+            if not _is_terminal_action(_last_action_entry(row)):
+                if stop_at_newer_closed_same_resolution and same_resolution and last_action in {"resolved", "resolved_later", "resolution_change"}:
                     return None
                 continue
             if not _terminal_row_has_open_problem(row):
@@ -1393,7 +1398,7 @@ class TranscodeGuardService:
         if not event_id:
             return
         event_row = next((item for item in self._load_event_rows() if item.get("id") == event_id), None)
-        if not event_row or _last_action(event_row) in {"exit", "stop", "pause"}:
+        if not event_row or _is_terminal_action(_last_action_entry(event_row)):
             return
         server = {
             "id": row.get("server_id") or "",
@@ -2149,28 +2154,44 @@ def _action_label(actions: List[Dict[str, Any]]) -> str:
 
 
 def _last_action(row: Dict[str, Any]) -> str:
+    action = _last_action_entry(row)
+    return str(action.get("action") or "") if action else str(row.get("action") or "")
+
+
+def _last_action_entry(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     actions = row.get("actions")
     if isinstance(actions, list) and actions:
         last = actions[-1]
         if isinstance(last, dict):
-            return str(last.get("action") or "")
-    return str(row.get("action") or "")
+            return last
+    return None
+
+
+def _is_player_playback_action(action: Dict[str, Any]) -> bool:
+    return str(action.get("source") or "guard").strip().lower() in {"player", "plugin", "proxy"}
+
+
+def _is_terminal_action(action: Optional[Dict[str, Any]]) -> bool:
+    if not action:
+        return False
+    key = str(action.get("action") or "")
+    return key in {"exit", "stop"} or (key == "pause" and not _is_player_playback_action(action))
 
 
 def _terminal_row_has_open_problem(row: Dict[str, Any]) -> bool:
     actions = row.get("actions")
     if not isinstance(actions, list) or not actions:
         return False
-    last_action = _last_action(row)
-    if last_action == "stop":
-        return True
-    if last_action not in {"exit", "pause"}:
+    last_action = _last_action_entry(row)
+    if not _is_terminal_action(last_action):
         return False
+    if str(last_action.get("action") or "") == "stop":
+        return True
     for action in reversed(actions[:-1]):
         if not isinstance(action, dict):
             continue
         key = str(action.get("action") or "")
-        if key in {"exit", "stop", "pause"}:
+        if _is_terminal_action(action):
             continue
         return key in {"warn", "warning_error", "relapse", "partial_resolved"}
     return False

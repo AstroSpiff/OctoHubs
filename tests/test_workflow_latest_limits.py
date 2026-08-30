@@ -150,7 +150,7 @@ class WorkflowLatestLimitsTests(unittest.TestCase):
             "services.latest_jellyseerr.refresh_latest_jellyseerr_requests",
             return_value=({"success": True}, 200),
         ) as refresh_lightweight, patch(
-            "services.manager._build_refresh_requests_snapshot",
+            "services.research_request_actions.refresh_requests",
             side_effect=AssertionError("full Jellyseerr dashboard refresh must not run"),
         ), patch(
             "threading.Thread",

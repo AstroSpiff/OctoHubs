@@ -23,6 +23,7 @@ from search.customization import (
     normalize_seasons,
 )
 from search.seasons import extract_request_seasons, get_episode_count_for_season, get_pending_episode_numbers
+from search.torrent_download import download_torrent
 from core.scanner import (
     build_search_queries,
     extract_title_and_year,
@@ -102,6 +103,10 @@ def _guess_torrent_filename(url: str, headers: Mapping[str, str]) -> str:
             filename = tail
     if not filename:
         filename = f"download_{int(time.time())}.torrent"
+    filename = os.path.basename(filename.replace("\\", "/"))
+    filename = filename.replace("\r", "_").replace("\n", "_").replace('"', "_")[:180]
+    if not filename:
+        filename = f"download_{int(time.time())}.torrent"
     if not filename.lower().endswith(".torrent"):
         filename = f"{filename}.torrent"
     return filename
@@ -111,13 +116,11 @@ def _download_torrent_file(url: str) -> Tuple[Optional[bytes], Optional[str], Op
     safe_url = _sanitize_download_url(url)
     if not safe_url:
         return None, None, "URL non valido"
-    try:
-        resp = requests.get(safe_url, timeout=30)
-        resp.raise_for_status()
-    except requests.exceptions.RequestException as exc:
-        return None, None, f"Errore download torrent: {exc}"
-    filename = _guess_torrent_filename(safe_url, resp.headers)
-    return resp.content, filename, None
+    download, error = download_torrent(safe_url)
+    if download is None:
+        return None, None, error or "Download torrent non riuscito"
+    filename = _guess_torrent_filename(download.final_url, download.headers)
+    return download.content, filename, None
 
 
 def _build_tmdb_search_snapshot(query, page=1) -> JsonResult:

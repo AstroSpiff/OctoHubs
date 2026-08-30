@@ -3,19 +3,15 @@
 from __future__ import annotations
 
 import logging
-import threading
-from queue import Queue, Full
 from typing import Dict, Optional
 
 from emby_runtime.websocket_manager import get_websocket_manager
+from realtime.external_change_feed import publish_external_change
+from realtime.subscribers import sse_subscribers, websocket_subscribers
 
 logger = logging.getLogger(__name__)
 
-# SSE/WS client management for broadcasting Emby WebSocket events
-_sse_event_queues: list[Queue] = []
-_sse_queues_lock = threading.Lock()
-_ws_event_queues: list[Queue] = []
-_ws_queues_lock = threading.Lock()
+CONFIGURATION_UPDATED_MESSAGE = "OctoHubsConfigurationUpdated"
 
 
 def _broadcast_sse_event(event_data: Dict):
@@ -23,36 +19,34 @@ def _broadcast_sse_event(event_data: Dict):
     Broadcast an event to all connected SSE and WebSocket clients.
     This is called by WebSocket event handlers to push events to frontend.
     """
-    with _sse_queues_lock:
-        disconnected = []
-        for queue in _sse_event_queues:
-            try:
-                queue.put_nowait(event_data)
-            except Full:
-                # Drop event if client is too slow.
-                continue
-            except Exception as e:
-                print(f"[SSE_BROADCAST] Error queuing event: {e}")
-                disconnected.append(queue)
+    # The external API receives a safe invalidation journal from this same
+    # emitter. Browser clients keep receiving the original event untouched.
+    try:
+        publish_external_change(event_data)
+    except Exception:
+        logger.exception("[REALTIME] Unable to record external change event")
 
-        # Remove disconnected queues
-        for queue in disconnected:
-            _sse_event_queues.remove(queue)
+    sse_subscribers.publish(event_data)
+    websocket_subscribers.publish(event_data)
 
-    with _ws_queues_lock:
-        disconnected = []
-        for queue in _ws_event_queues:
-            try:
-                queue.put_nowait(event_data)
-            except Full:
-                # Drop event if client is too slow.
-                continue
-            except Exception as e:
-                print(f"[WS_BROADCAST] Error queuing event: {e}")
-                disconnected.append(queue)
 
-        for queue in disconnected:
-            _ws_event_queues.remove(queue)
+def publish_application_event(message_type: str, data: Optional[Dict] = None) -> None:
+    """Publish an authenticated application state change to realtime clients."""
+    _broadcast_sse_event({
+        "MessageType": str(message_type or "ApplicationUpdated"),
+        "Data": data or {},
+    })
+
+
+def publish_configuration_update(scope: str) -> None:
+    """Notify open application views that one configuration domain changed."""
+    normalized_scope = str(scope or "").strip()
+    if not normalized_scope:
+        return
+    publish_application_event(
+        CONFIGURATION_UPDATED_MESSAGE,
+        {"scope": normalized_scope},
+    )
 
 
 def _fetch_single_library_data(server_id: str, library_id: str) -> Optional[Dict]:
@@ -356,6 +350,10 @@ def _initialize_emby_websockets():
         server_id = server.get("id")
         url = server.get("url")
         api_key = server.get("api_key")
+
+        if not server.get("enabled", True):
+            print(f"[WS_INIT] Skipping server {server_id}: disabled")
+            continue
 
         if not server_id or not url or not api_key:
             print(f"[WS_INIT] Skipping server {server_id}: missing required fields")

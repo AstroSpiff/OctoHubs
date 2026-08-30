@@ -4,10 +4,9 @@ import io
 import os
 import zipfile
 
-from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from core.storage import StorageError
@@ -23,20 +22,41 @@ from search.manager import (
     _build_tmdb_tv_details_snapshot,
 )
 from services.scan_result_cleanup import clean_scan_results_payload
+from web.research_api_models import (
+    LinkBatchPayload,
+    ManualSearchHistoryResponse,
+    ManualSearchPayload,
+    ResearchActionResponse,
+    ResearchAvailabilityResponse,
+    ResearchManualSearchResponse,
+    ResearchStreamResponse,
+    ResearchTmdbDetailsResponse,
+    ResearchTmdbSearchResponse,
+    ScanResultCleanupPayload,
+    TmdbAvailabilityPayload,
+    TorrentLinkPayload,
+    TorrentProxyPayload,
+)
+from web.openapi_requests import no_request_body
 
 router = APIRouter()
 
+_MAX_TORRENT_ARCHIVE_BYTES = 50 * 1024 * 1024
+
 _require_auth: Optional[Callable[[Request], Any]] = None
 _ensure_db_backend: Optional[Callable[[], Any]] = None
+_validate_csrf: Optional[Callable[[Request, Optional[str]], bool]] = None
 
 
 def init_search_routes(
     require_auth: Callable[[Request], Any],
     ensure_db_backend: Callable[[], Any],
+    validate_csrf: Callable[[Request, Optional[str]], bool],
 ) -> None:
-    global _require_auth, _ensure_db_backend
+    global _require_auth, _ensure_db_backend, _validate_csrf
     _require_auth = require_auth
     _ensure_db_backend = ensure_db_backend
+    _validate_csrf = validate_csrf
 
 
 def _require_auth_dep(request: Request):
@@ -49,6 +69,14 @@ def _ensure_db_backend_dep():
     if _ensure_db_backend is None:
         raise RuntimeError("Search routes not initialized: ensure_db_backend missing")
     return _ensure_db_backend()
+
+
+def _validate_csrf_dep(request: Request) -> None:
+    if _validate_csrf is None:
+        raise RuntimeError("Search routes not initialized: validate_csrf missing")
+    token = request.headers.get("X-CSRFToken") or request.headers.get("X-CSRF-Token")
+    if not _validate_csrf(request, token):
+        raise HTTPException(status_code=403, detail="CSRF token non valido")
 
 
 def _error_response(message: str, status_code: int = 400, **extra) -> JSONResponse:
@@ -70,34 +98,33 @@ def _available_request_ids_from_overview(backend: Any) -> set[str]:
     }
 
 
-@router.get("/api/tmdb/search")
-async def tmdb_search(request: Request):
+@router.get("/api/research/tmdb/search", response_model=ResearchTmdbSearchResponse)
+async def tmdb_search(request: Request, query: str = "", page: int = 1):
     _require_auth_dep(request)
-    query = request.query_params.get("query")
-    page = int(request.query_params.get("page", 1))
     payload, status_code = _build_tmdb_search_snapshot(query, page=page)
     return JSONResponse(payload, status_code=status_code)
 
 
-@router.get("/api/tmdb/tv/{tv_id}")
+@router.get("/api/research/tmdb/tv/{tv_id}", response_model=ResearchTmdbDetailsResponse)
 async def tmdb_tv_details(tv_id: int, request: Request):
     _require_auth_dep(request)
     payload, status_code = _build_tmdb_tv_details_snapshot(tv_id)
     return JSONResponse(payload, status_code=status_code)
 
 
-@router.post("/api/tmdb/check-availability")
-async def tmdb_check_availability(request: Request):
+@router.post("/api/research/tmdb/check-availability", response_model=ResearchAvailabilityResponse)
+async def tmdb_check_availability(request: Request, payload: TmdbAvailabilityPayload):
     _require_auth_dep(request)
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
-    data, status_code = _build_tmdb_check_availability_snapshot(payload)
+    _validate_csrf_dep(request)
+    data, status_code = _build_tmdb_check_availability_snapshot(payload.model_dump())
     return JSONResponse(data, status_code=status_code)
 
 
-@router.post("/api/search/stream")
+@router.post(
+    "/api/research/stream",
+    response_model=ResearchStreamResponse,
+    openapi_extra=no_request_body(),
+)
 async def start_search_stream(request: Request):
     """
     Avvia una ricerca streaming via WebSocket.
@@ -105,16 +132,17 @@ async def start_search_stream(request: Request):
     Returns:
         {"session_id": "uuid", "websocket_url": "/ws/search/uuid"}
     """
-    _require_auth_dep(request)
+    owner_id = _require_auth_dep(request)
+    _validate_csrf_dep(request)
 
-    import uuid
-    session_id = str(uuid.uuid4())
+    from search.state import SearchSessionLimitError, create_search_session
 
-    from search.state import _active_search_sessions
-    _active_search_sessions[session_id] = {
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "status": "pending",
-    }
+    try:
+        session_id = create_search_session(int(owner_id))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="Authentication required") from None
+    except SearchSessionLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
 
     return JSONResponse({
         "success": True,
@@ -123,108 +151,34 @@ async def start_search_stream(request: Request):
     }, status_code=200)
 
 
-@router.post("/api/search/manual")
-async def manual_search(request: Request):
+@router.post("/api/research/manual", response_model=ResearchManualSearchResponse)
+async def manual_search(request: Request, payload: ManualSearchPayload):
     _require_auth_dep(request)
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
-
-    form_payload = {}
-    try:
-        form = await request.form()
-    except Exception:
-        form = None
-    if form:
-        def get_str(key: str, default: str = "") -> str:
-            val = form.get(key)
-            if val is None:
-                return default
-            if isinstance(val, str):
-                return val
-            return default
-
-        query_val = get_str("query")
-        form_payload["query"] = query_val.strip() if query_val else ""
-        form_payload["media_type"] = get_str("media_type") or get_str("tmdb_type")
-        form_payload["indexers"] = form.getlist("indexer")
-        form_payload["use_jellyseerr_logic"] = bool(get_str("use_jellyseerr_logic") or get_str("use_jellyseerr_directives"))
-        form_payload["use_custom_rules"] = bool(get_str("use_custom_rules"))
-        form_payload["tmdb_id"] = get_str("tmdb_id")
-        seasons = []
-        for entry in form.getlist("seasons"):
-            try:
-                if isinstance(entry, str):
-                    seasons.append(int(entry))
-            except (TypeError, ValueError):
-                continue
-        if seasons:
-            form_payload["seasons"] = seasons
-        if form_payload.get("use_custom_rules"):
-            custom_rules = {}
-            include_filter_val = get_str("include_filter")
-            exclude_filter_val = get_str("exclude_filter")
-            include_filter = include_filter_val.strip() if include_filter_val else ""
-            exclude_filter = exclude_filter_val.strip() if exclude_filter_val else ""
-            if include_filter:
-                custom_rules["include_filter"] = include_filter
-            if exclude_filter:
-                custom_rules["exclude_filter"] = exclude_filter
-            min_size = get_str("min_size_gb")
-            max_size = get_str("max_size_gb")
-            if min_size not in (None, ""):
-                try:
-                    custom_rules["min_size_gb"] = float(min_size)
-                except ValueError:
-                    pass
-            if max_size not in (None, ""):
-                try:
-                    custom_rules["max_size_gb"] = float(max_size)
-                except ValueError:
-                    pass
-            quality = get_str("quality")
-            audio_language = get_str("audio_language")
-            edition = get_str("edition")
-            season_value = get_str("season")
-            episode_value = get_str("episode")
-            if quality:
-                custom_rules["quality"] = quality
-            if audio_language:
-                custom_rules["audio_language"] = audio_language
-            if edition:
-                custom_rules["edition"] = edition
-            if season_value not in (None, ""):
-                try:
-                    custom_rules["season"] = int(season_value)
-                except ValueError:
-                    pass
-            if episode_value not in (None, ""):
-                try:
-                    custom_rules["episode"] = int(episode_value)
-                except ValueError:
-                    pass
-            if custom_rules:
-                form_payload["custom_rules"] = custom_rules
-
-    data, status_code = _build_manual_search_snapshot(payload, form_payload)
+    _validate_csrf_dep(request)
+    data, status_code = _build_manual_search_snapshot(payload.model_dump())
     return JSONResponse(data, status_code=status_code)
 
 
-@router.post("/api/torrent/zip")
-async def torrent_zip_api(request: Request):
+@router.post(
+    "/api/research/torrents/archive",
+    response_class=Response,
+    responses={
+        200: {
+            "description": "Archivio ZIP dei torrent disponibili.",
+            "content": {"application/zip": {"schema": {"type": "string", "format": "binary"}}},
+        }
+    },
+)
+async def torrent_zip_api(request: Request, payload: LinkBatchPayload):
     _require_auth_dep(request)
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
-
-    links = payload.get("links") if isinstance(payload, dict) else None
+    _validate_csrf_dep(request)
+    links = payload.links
     if not isinstance(links, list) or not links:
         return _error_response("Lista link mancante", 400)
 
     zip_buffer = io.BytesIO()
     added = 0
+    total_bytes = 0
     errors = []
     used_names = set()
     with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -239,6 +193,9 @@ async def torrent_zip_api(request: Request):
             if not content or not filename:
                 errors.append({"link": link, "error": "Download torrent non valido"})
                 continue
+            if total_bytes + len(content) > _MAX_TORRENT_ARCHIVE_BYTES:
+                errors.append({"link": link, "error": "Archivio torrent troppo grande"})
+                continue
             base, ext = os.path.splitext(filename)
             candidate = filename
             counter = 1
@@ -248,6 +205,7 @@ async def torrent_zip_api(request: Request):
             used_names.add(candidate)
             zf.writestr(candidate, content)
             added += 1
+            total_bytes += len(content)
 
     if added == 0:
         message = "Nessun torrent disponibile per il download"
@@ -262,7 +220,7 @@ async def torrent_zip_api(request: Request):
     return StreamingResponse(zip_buffer, media_type="application/zip", headers=headers)
 
 
-@router.get("/api/search/manual/history")
+@router.get("/api/research/manual/history", response_model=ManualSearchHistoryResponse)
 async def get_manual_search_history(request: Request):
     _require_auth_dep(request)
     try:
@@ -288,9 +246,10 @@ async def get_manual_search_history(request: Request):
         }, status_code=500)
 
 
-@router.delete("/api/search/manual/history/{search_id}")
+@router.delete("/api/research/manual/history/{search_id}", response_model=ResearchActionResponse)
 async def delete_manual_search(request: Request, search_id: int):
     _require_auth_dep(request)
+    _validate_csrf_dep(request)
 
     try:
         backend = _ensure_db_backend_dep()
@@ -308,17 +267,12 @@ async def delete_manual_search(request: Request, search_id: int):
         }, status_code=500)
 
 
-@router.post("/api/search/results/cleanup")
-async def cleanup_search_results(request: Request):
+@router.post("/api/research/results/cleanup", response_model=ResearchActionResponse)
+async def cleanup_search_results(request: Request, payload: ScanResultCleanupPayload):
     _require_auth_dep(request)
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
-
-    mode = str(payload.get("mode") or "").strip().lower() if isinstance(payload, dict) else ""
-    if mode not in {"single", "resolved", "all"}:
-        return _error_response("Modalita pulizia risultati non valida", 400)
+    _validate_csrf_dep(request)
+    data = payload.model_dump()
+    mode = payload.mode
 
     try:
         backend = _ensure_db_backend_dep()
@@ -344,8 +298,8 @@ async def cleanup_search_results(request: Request):
         result = clean_scan_results_payload(
             current,
             mode=mode,
-            request_id=payload.get("request_id") if isinstance(payload, dict) else None,
-            season=payload.get("season") if isinstance(payload, dict) else None,
+            request_id=data.get("request_id"),
+            season=data.get("season"),
             available_ids=available_ids,
         )
         if result["removed"] > 0 or mode == "all":
@@ -372,7 +326,16 @@ async def cleanup_search_results(request: Request):
         }, status_code=500)
 
 
-@router.get("/api/torrent/proxy")
+@router.get(
+    "/api/research/torrents/proxy",
+    response_class=Response,
+    responses={
+        200: {
+            "description": "File torrent scaricato dalla fonte autorizzata.",
+            "content": {"application/x-bittorrent": {"schema": {"type": "string", "format": "binary"}}},
+        }
+    },
+)
 async def torrent_proxy_api(request: Request, url: str = ""):
     _require_auth_dep(request)
     content, filename, error = _download_torrent_file(url)
@@ -387,14 +350,20 @@ async def torrent_proxy_api(request: Request, url: str = ""):
     return Response(content, media_type="application/x-bittorrent", headers=headers)
 
 
-@router.post("/api/torrent/proxy")
-async def torrent_proxy_post_api(request: Request):
+@router.post(
+    "/api/research/torrents/proxy",
+    response_class=Response,
+    responses={
+        200: {
+            "description": "File torrent scaricato dalla fonte autorizzata.",
+            "content": {"application/x-bittorrent": {"schema": {"type": "string", "format": "binary"}}},
+        }
+    },
+)
+async def torrent_proxy_post_api(request: Request, payload: TorrentProxyPayload):
     _require_auth_dep(request)
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
-    url = str(payload.get("url") or "") if isinstance(payload, dict) else ""
+    _validate_csrf_dep(request)
+    url = payload.url
     content, filename, error = _download_torrent_file(url)
     if error:
         return _error_response(error, 502)
@@ -407,17 +376,12 @@ async def torrent_proxy_post_api(request: Request):
     return Response(content, media_type="application/x-bittorrent", headers=headers)
 
 
-@router.post("/send-torrent")
-async def send_torrent(request: Request):
+@router.post("/api/research/torrents/send", response_model=ResearchActionResponse)
+async def send_torrent_api(request: Request, payload: TorrentLinkPayload):
     _require_auth_dep(request)
+    _validate_csrf_dep(request)
     try:
-        payload = await request.json()
-    except Exception as exc:
-        print(f"   -> [API] Errore parsing JSON payload send-torrent: {exc}")
-        payload = {}
-
-    try:
-        data, status_code = _build_send_torrent_snapshot(payload)
+        data, status_code = _build_send_torrent_snapshot(payload.model_dump())
         return JSONResponse(data, status_code=status_code)
     except Exception as exc:
         print(f"   -> [API] [ERRORE] Eccezione non gestita in send-torrent: {type(exc).__name__} - {exc}")
@@ -429,61 +393,12 @@ async def send_torrent(request: Request):
         )
 
 
-@router.post("/send-torrent/batch")
-async def send_torrent_batch(request: Request):
+@router.post("/api/research/torrents/send-batch", response_model=ResearchActionResponse)
+async def send_torrent_batch_api(request: Request, payload: LinkBatchPayload):
     _require_auth_dep(request)
+    _validate_csrf_dep(request)
     try:
-        payload = await request.json()
-    except Exception as exc:
-        print(f"   -> [API] Errore parsing JSON payload send-torrent batch: {exc}")
-        payload = {}
-
-    try:
-        data, status_code = _build_send_torrent_batch_snapshot(payload)
-        return JSONResponse(data, status_code=status_code)
-    except Exception as exc:
-        print(f"   -> [API] [ERRORE] Eccezione non gestita in send-torrent batch: {type(exc).__name__} - {exc}")
-        import traceback
-        traceback.print_exc()
-        return JSONResponse(
-            {"success": False, "message": f"Errore interno: {str(exc)}"},
-            status_code=500,
-        )
-
-
-@router.post("/api/send-torrent")
-async def send_torrent_api(request: Request):
-    _require_auth_dep(request)
-    try:
-        payload = await request.json()
-    except Exception as exc:
-        print(f"   -> [API] Errore parsing JSON payload send-torrent: {exc}")
-        payload = {}
-
-    try:
-        data, status_code = _build_send_torrent_snapshot(payload)
-        return JSONResponse(data, status_code=status_code)
-    except Exception as exc:
-        print(f"   -> [API] [ERRORE] Eccezione non gestita in send-torrent: {type(exc).__name__} - {exc}")
-        import traceback
-        traceback.print_exc()
-        return JSONResponse(
-            {"success": False, "message": f"Errore interno: {str(exc)}"},
-            status_code=500,
-        )
-
-
-@router.post("/api/send-torrent/batch")
-async def send_torrent_batch_api(request: Request):
-    _require_auth_dep(request)
-    try:
-        payload = await request.json()
-    except Exception as exc:
-        print(f"   -> [API] Errore parsing JSON payload send-torrent batch: {exc}")
-        payload = {}
-
-    try:
-        data, status_code = _build_send_torrent_batch_snapshot(payload)
+        data, status_code = _build_send_torrent_batch_snapshot(payload.model_dump())
         return JSONResponse(data, status_code=status_code)
     except Exception as exc:
         print(f"   -> [API] [ERRORE] Eccezione non gestita in send-torrent batch: {type(exc).__name__} - {exc}")

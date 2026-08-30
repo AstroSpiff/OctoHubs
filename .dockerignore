@@ -24,6 +24,9 @@ ENV/
 *.md
 
 # Data files (will be volumes)
+# Environment files are deployment inputs and must never enter image layers.
+.env
+.env.*
 *.db
 *.json
 *.sql
@@ -58,3 +61,11 @@ certs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Frontend build output is produced in its dedicated Docker stage.
+frontend/node_modules/
+frontend/dist/
+
+# The generic data-file rule above excludes JSON. These are source manifests
+# required by the frontend build stage, not application data.
+!frontend/*.json

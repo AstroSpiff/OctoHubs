@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from app_state import _LIBRARY_SCAN_TRACKER
+from core.storage import StorageError
+from realtime.manager import publish_application_event
+from web.openapi_requests import no_request_body
+from emby_latest import settings as latest_settings_api
 from emby_libraries.scan_snapshots import (
     _build_active_library_scans_snapshot,
     _build_active_scans_snapshot,
@@ -29,36 +33,87 @@ from emby_libraries.snapshots import (
     _build_availability_snapshot,
 )
 from emby_libraries.image_snapshots import _build_emby_image_stream, _build_emby_image_cache_meta
+from emby_libraries.media_api_models import (
+    DebugVirtualFoldersResponse,
+    EmbyAvailabilityRequest,
+    EmbyAvailabilityResponse,
+    EmbyLookupResponse,
+    ItemDetailsResponse,
+    MovieVersionsResponse,
+    SeasonEpisodesResponse,
+    SeriesSeasonsResponse,
+    query_parameters,
+    request_body_schema as media_request_body_schema,
+)
+from emby_libraries.scan_api_models import (
+    ActiveEmbyScansResponse,
+    ActiveLibraryScansResponse,
+    ActiveScanJobsResponse,
+    GroupedLibrariesResponse,
+    LibraryAssociationsRequest,
+    LibraryAssociationsResponse,
+    LibraryGroupOrderRequest,
+    LibraryGroupOrderResponse,
+    LibraryScanActionResponse,
+    LibraryScanResetResponse,
+    LibraryMutationSuccessResponse,
+    ScanJobResponse,
+    ScanJobsResponse,
+    ScanLibraryRequest,
+    ServerOrderRequest,
+    TrackedGroupScanRequest,
+    TrackedScanLibraryRequest,
+    request_body_schema,
+)
 from emby_libraries.order_snapshots import (
     _build_server_order_snapshot,
     _build_group_order_get_snapshot,
     _build_group_order_post_snapshot,
-    _build_tab_order_get_snapshot,
-    _build_tab_order_post_snapshot,
 )
+from web.openapi_responses import binary_response
+from web.request_validation import validated_json_payload
 
 router = APIRouter()
 
+LIBRARIES_UPDATED_MESSAGE = "OctoHubsLibrariesUpdated"
+
 _require_auth: Optional[Callable[[Request], Any]] = None
+_validate_csrf: Optional[Callable[[Request, Optional[str]], bool]] = None
 _error_response: Optional[Callable[..., JSONResponse]] = None
 _success_response: Optional[Callable[..., JSONResponse]] = None
+_ensure_db_backend: Optional[Callable[[], Any]] = None
+_load_config: Optional[Callable[..., Any]] = None
 
 
 def init_emby_library_routes(
     require_auth: Callable[[Request], Any],
+    validate_csrf: Callable[[Request, Optional[str]], bool],
     error_response: Callable[..., JSONResponse],
     success_response: Callable[..., JSONResponse],
+    ensure_db_backend: Optional[Callable[[], Any]] = None,
+    load_config: Optional[Callable[..., Any]] = None,
 ) -> None:
-    global _require_auth, _error_response, _success_response
+    global _require_auth, _validate_csrf, _error_response, _success_response, _ensure_db_backend, _load_config
     _require_auth = require_auth
+    _validate_csrf = validate_csrf
     _error_response = error_response
     _success_response = success_response
+    _ensure_db_backend = ensure_db_backend
+    _load_config = load_config
 
 
 def _require_auth_dep(request: Request):
     if _require_auth is None:
         raise RuntimeError("Emby library routes not initialized: require_auth missing")
     return _require_auth(request)
+
+
+def _validate_csrf_request(request: Request) -> None:
+    if _validate_csrf is None:
+        raise RuntimeError("Emby library routes not initialized: validate_csrf missing")
+    token = request.headers.get("X-CSRFToken") or request.headers.get("X-CSRF-Token")
+    if not _validate_csrf(request, token):
+        raise HTTPException(status_code=403, detail="CSRF token non valido")
 
 
 def _error_response_dep(*args, **kwargs) -> JSONResponse:
@@ -73,14 +128,57 @@ def _success_response_dep(*args, **kwargs) -> JSONResponse:
     return _success_response(*args, **kwargs)
 
 
-@router.get("/api/emby/active-library-scans")
+def _ensure_db_backend_dep() -> Any:
+    if _ensure_db_backend is None:
+        raise RuntimeError("Emby library routes not initialized: ensure_db_backend missing")
+    return _ensure_db_backend()
+
+
+def _load_config_dep():
+    if _load_config is None:
+        raise RuntimeError("Emby library routes not initialized: load_config missing")
+    return _load_config()
+
+
+def _publish_libraries_update(scope: str) -> None:
+    """Notify open library views after a successful local mutation."""
+    publish_application_event(
+        LIBRARIES_UPDATED_MESSAGE,
+        {"scope": str(scope or "groups")},
+    )
+
+
+def _publish_libraries_update_on_success(
+    payload: dict[str, Any],
+    status_code: int,
+    scope: str,
+) -> None:
+    if status_code < 400 and isinstance(payload, dict) and payload.get("success", True):
+        _publish_libraries_update(scope)
+
+
+async def _clear_library_scan_state() -> None:
+    from emby_runtime.library_poller import get_library_poller
+
+    await get_library_poller().clear_states()
+    _LIBRARY_SCAN_TRACKER.clear_jobs()
+    latest_settings_api._clear_latest_state()
+
+
+@router.get(
+    "/api/emby/active-library-scans",
+    responses={200: {"model": ActiveLibraryScansResponse}},
+)
 async def active_library_scans(request: Request):
     _require_auth_dep(request)
     payload = _build_active_library_scans_snapshot()
     return JSONResponse(payload)
 
 
-@router.get("/api/emby/scan-job/{job_id}")
+@router.get(
+    "/api/emby/scan-job/{job_id}",
+    responses={200: {"model": ScanJobResponse}},
+)
 async def scan_job_status(job_id: str, request: Request):
     _require_auth_dep(request)
     job = _LIBRARY_SCAN_TRACKER.get_job(job_id)
@@ -89,14 +187,20 @@ async def scan_job_status(job_id: str, request: Request):
     return _success_response_dep(job=job)
 
 
-@router.get("/api/emby/scan-jobs")
+@router.get(
+    "/api/emby/scan-jobs",
+    responses={200: {"model": ScanJobsResponse}},
+)
 async def scan_jobs(request: Request):
     _require_auth_dep(request)
     jobs = _LIBRARY_SCAN_TRACKER.get_all_jobs()
     return _success_response_dep(jobs=jobs)
 
 
-@router.get("/api/emby/scan-jobs/history")
+@router.get(
+    "/api/emby/scan-jobs/history",
+    responses={200: {"model": ScanJobsResponse}},
+)
 async def scan_jobs_history(request: Request):
     _require_auth_dep(request)
     all_jobs = _LIBRARY_SCAN_TRACKER.get_all_jobs()
@@ -111,7 +215,35 @@ async def scan_jobs_history(request: Request):
     return _success_response_dep(jobs=completed_jobs)
 
 
-@router.get("/api/emby/active-scan-jobs")
+@router.post(
+    "/api/emby/scan-jobs/reset",
+    responses={200: {"model": LibraryScanResetResponse}},
+    openapi_extra=no_request_body(),
+)
+async def scan_jobs_reset(request: Request):
+    _require_auth_dep(request)
+    _validate_csrf_request(request)
+
+    config, is_valid = _load_config_dep()
+    if not is_valid or not config:
+        return JSONResponse({"success": False, "message": "Config non valida"}, status_code=400)
+    try:
+        _ensure_db_backend_dep()
+    except StorageError as exc:
+        return JSONResponse({"success": False, "message": f"Errore DB: {exc}"}, status_code=500)
+
+    try:
+        await _clear_library_scan_state()
+    except Exception as exc:
+        return JSONResponse({"success": False, "message": f"Impossibile azzerare lo stato: {exc}"}, status_code=500)
+    _publish_libraries_update("history")
+    return JSONResponse({"success": True, "message": "Stato scansioni e metadata azzerato."})
+
+
+@router.get(
+    "/api/emby/active-scan-jobs",
+    responses={200: {"model": ActiveScanJobsResponse}},
+)
 async def active_scan_jobs(request: Request):
     """
     Restituisce tutte le scansioni attualmente attive o in coda.
@@ -143,38 +275,51 @@ async def active_scan_jobs(request: Request):
     })
 
 
-@router.delete("/api/emby/scan-job/{job_id}")
+@router.delete(
+    "/api/emby/scan-job/{job_id}",
+    responses={200: {"model": LibraryScanResetResponse}},
+)
 async def delete_scan_job(job_id: str, request: Request):
     _require_auth_dep(request)
+    _validate_csrf_request(request)
     _LIBRARY_SCAN_TRACKER.delete_job(job_id)
+    _publish_libraries_update("history")
     return _success_response_dep(message="Job eliminato")
 
 
-@router.get("/api/emby/active-scans")
+@router.get(
+    "/api/emby/active-scans",
+    responses={200: {"model": ActiveEmbyScansResponse}},
+)
 async def active_scans(request: Request):
     _require_auth_dep(request)
     payload, status_code = _build_active_scans_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
-@router.post("/api/emby/scan-library")
+@router.post(
+    "/api/emby/scan-library",
+    responses={200: {"model": LibraryScanActionResponse}},
+    openapi_extra=request_body_schema(ScanLibraryRequest),
+)
 async def scan_library(request: Request):
     _require_auth_dep(request)
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    _validate_csrf_request(request)
+    payload = await validated_json_payload(request, ScanLibraryRequest)
     data, status_code = _build_scan_library_snapshot(payload)
+    _publish_libraries_update_on_success(data, status_code, "scan")
     return JSONResponse(data, status_code=status_code)
 
 
-@router.post("/api/emby/scan-library-tracked")
+@router.post(
+    "/api/emby/scan-library-tracked",
+    responses={200: {"model": LibraryScanActionResponse}},
+    openapi_extra=request_body_schema(TrackedScanLibraryRequest),
+)
 async def scan_library_tracked(request: Request):
     _require_auth_dep(request)
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    _validate_csrf_request(request)
+    payload = await validated_json_payload(request, TrackedScanLibraryRequest)
 
     # Prova ad acquisire lock (opzionale: disabilitato per permettere scan multiple)
     # Se vuoi abilitare lock esclusivo, decomment:
@@ -187,6 +332,7 @@ async def scan_library_tracked(request: Request):
 
     try:
         data, status_code = _build_scan_library_tracked_snapshot(payload)
+        _publish_libraries_update_on_success(data, status_code, "scan")
         return JSONResponse(data, status_code=status_code)
     finally:
         # Rilascia lock se acquisito (opzionale)
@@ -195,23 +341,18 @@ async def scan_library_tracked(request: Request):
         pass
 
 
-@router.post("/api/emby/scan-group-tracked")
+@router.post(
+    "/api/emby/scan-group-tracked",
+    responses={200: {"model": LibraryScanActionResponse}},
+    openapi_extra=request_body_schema(TrackedGroupScanRequest),
+)
 async def scan_group_tracked(request: Request):
-    print("\n" + "=" * 100, flush=True)
-    print("[API] /api/emby/scan-group-tracked CALLED", flush=True)
-    print("=" * 100 + "\n", flush=True)
-
     _require_auth_dep(request)
-    try:
-        payload = await request.json()
-        print(f"[API] Payload received: {payload}", flush=True)
-    except Exception as exc:
-        print(f"[API] Error parsing JSON: {exc}", flush=True)
-        payload = {}
+    _validate_csrf_request(request)
+    payload = await validated_json_payload(request, TrackedGroupScanRequest)
 
-    print("[API] Calling _build_scan_group_tracked_snapshot...", flush=True)
     data, status_code = _build_scan_group_tracked_snapshot(payload)
-    print(f"[API] Response status: {status_code}", flush=True)
+    _publish_libraries_update_on_success(data, status_code, "scan")
     return JSONResponse(data, status_code=status_code)
 
 
@@ -222,46 +363,58 @@ async def scan_status_api(request: Request):
     return JSONResponse(payload, status_code=status_code)
 
 
-@router.get("/scan-status")
-async def scan_status(request: Request):
-    _require_auth_dep(request)
-    payload, status_code = _build_scan_status_snapshot()
-    return JSONResponse(payload, status_code=status_code)
-
-
-@router.get("/api/emby/associations")
+@router.get(
+    "/api/emby/associations",
+    responses={200: {"model": LibraryAssociationsResponse}},
+)
 async def emby_associations_get(request: Request):
     _require_auth_dep(request)
     payload, status_code = _build_associations_get_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
-@router.post("/api/emby/associations")
+@router.post(
+    "/api/emby/associations",
+    responses={200: {"model": LibraryAssociationsResponse}},
+    openapi_extra=request_body_schema(LibraryAssociationsRequest),
+)
 async def emby_associations_post(request: Request):
     _require_auth_dep(request)
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
+    _validate_csrf_request(request)
+    payload = await validated_json_payload(request, LibraryAssociationsRequest)
     data, status_code = _build_associations_post_snapshot(payload)
+    _publish_libraries_update_on_success(data, status_code, "associations")
     return JSONResponse(data, status_code=status_code)
 
 
-@router.get("/api/emby/debug-vf-query")
+@router.get(
+    "/api/emby/debug-vf-query",
+    responses={200: {"model": DebugVirtualFoldersResponse}},
+)
 async def debug_vf_query(request: Request):
     _require_auth_dep(request)
     payload, status_code = _build_debug_vf_query_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
-@router.get("/api/emby/grouped-libraries")
+@router.get(
+    "/api/emby/grouped-libraries",
+    responses={200: {"model": GroupedLibrariesResponse}},
+)
 async def grouped_libraries(request: Request):
     _require_auth_dep(request)
     payload, status_code = _build_grouped_libraries_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
-@router.get("/api/emby/movie-versions")
+@router.get(
+    "/api/emby/movie-versions",
+    responses={200: {"model": MovieVersionsResponse}},
+    openapi_extra=query_parameters(
+        ("server_id", True, "string"),
+        ("tmdb_id", True, "string"),
+    ),
+)
 async def movie_versions(request: Request):
     _require_auth_dep(request)
     server_id = request.query_params.get("server_id") or ""
@@ -270,7 +423,14 @@ async def movie_versions(request: Request):
     return JSONResponse(payload, status_code=status_code)
 
 
-@router.get("/api/emby/series-seasons")
+@router.get(
+    "/api/emby/series-seasons",
+    responses={200: {"model": SeriesSeasonsResponse}},
+    openapi_extra=query_parameters(
+        ("server_id", True, "string"),
+        ("series_id", True, "string"),
+    ),
+)
 async def series_seasons(request: Request):
     _require_auth_dep(request)
     server_id = request.query_params.get("server_id") or ""
@@ -279,7 +439,14 @@ async def series_seasons(request: Request):
     return JSONResponse(payload, status_code=status_code)
 
 
-@router.get("/api/emby/season-episodes")
+@router.get(
+    "/api/emby/season-episodes",
+    responses={200: {"model": SeasonEpisodesResponse}},
+    openapi_extra=query_parameters(
+        ("server_id", True, "string"),
+        ("season_id", True, "string"),
+    ),
+)
 async def season_episodes(request: Request):
     _require_auth_dep(request)
     server_id = request.query_params.get("server_id") or ""
@@ -288,7 +455,14 @@ async def season_episodes(request: Request):
     return JSONResponse(payload, status_code=status_code)
 
 
-@router.get("/api/emby/lookup")
+@router.get(
+    "/api/emby/lookup",
+    responses={200: {"model": EmbyLookupResponse}},
+    openapi_extra=query_parameters(
+        ("title", True, "string"),
+        ("year", False, "integer"),
+    ),
+)
 async def emby_lookup(request: Request):
     _require_auth_dep(request)
     title = request.query_params.get("title") or ""
@@ -297,7 +471,14 @@ async def emby_lookup(request: Request):
     return JSONResponse(payload, status_code=status_code)
 
 
-@router.get("/api/emby/item-details")
+@router.get(
+    "/api/emby/item-details",
+    responses={200: {"model": ItemDetailsResponse}},
+    openapi_extra=query_parameters(
+        ("server_id", True, "string"),
+        ("item_id", True, "string"),
+    ),
+)
 async def emby_item_details(request: Request):
     _require_auth_dep(request)
     server_id = request.query_params.get("server_id") or ""
@@ -306,18 +487,33 @@ async def emby_item_details(request: Request):
     return JSONResponse(payload, status_code=status_code)
 
 
-@router.post("/api/emby/availability")
+@router.post(
+    "/api/emby/availability",
+    responses={200: {"model": EmbyAvailabilityResponse}},
+    openapi_extra=media_request_body_schema(EmbyAvailabilityRequest),
+)
 async def emby_availability(request: Request):
     _require_auth_dep(request)
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
+    _validate_csrf_request(request)
+    body = await validated_json_payload(request, EmbyAvailabilityRequest)
     payload, status_code = _build_availability_snapshot(body)
     return JSONResponse(payload, status_code=status_code)
 
 
-@router.get("/api/emby/image")
+@router.get(
+    "/api/emby/image",
+    response_class=StreamingResponse,
+    responses={200: binary_response("image/*", "Immagine Emby richiesta, con cache ETag quando disponibile.")},
+    openapi_extra=query_parameters(
+        ("server_id", True, "string"),
+        ("item_id", True, "string"),
+        ("type", False, "string"),
+        ("max_width", False, "integer"),
+        ("max_height", False, "integer"),
+        ("tag", False, "string"),
+        ("scope", False, "string"),
+    ),
+)
 async def emby_image(request: Request):
     _require_auth_dep(request)
     server_id = request.query_params.get("server_id")
@@ -364,49 +560,39 @@ async def emby_image(request: Request):
     return StreamingResponse(stream, media_type=content_type, headers=headers)  # type: ignore[arg-type]
 
 
-@router.post("/api/emby/server-order")
+@router.post(
+    "/api/emby/server-order",
+    responses={200: {"model": LibraryMutationSuccessResponse}},
+    openapi_extra=request_body_schema(ServerOrderRequest),
+)
 async def emby_server_order(request: Request):
     _require_auth_dep(request)
-    try:
-        body = await request.json()
-    except Exception:
-        body = None
+    _validate_csrf_request(request)
+    body = await validated_json_payload(request, ServerOrderRequest)
     payload, status_code = _build_server_order_snapshot(body)
+    _publish_libraries_update_on_success(payload, status_code, "servers")
     return JSONResponse(payload, status_code=status_code)
 
 
-@router.get("/api/emby/group-order")
+@router.get(
+    "/api/emby/group-order",
+    responses={200: {"model": LibraryGroupOrderResponse}},
+)
 async def emby_group_order_get(request: Request):
     _require_auth_dep(request)
     payload, status_code = _build_group_order_get_snapshot()
     return JSONResponse(payload, status_code=status_code)
 
 
-@router.post("/api/emby/group-order")
+@router.post(
+    "/api/emby/group-order",
+    responses={200: {"model": LibraryGroupOrderResponse}},
+    openapi_extra=request_body_schema(LibraryGroupOrderRequest),
+)
 async def emby_group_order_post(request: Request):
     _require_auth_dep(request)
-    try:
-        body = await request.json()
-    except Exception:
-        body = None
+    _validate_csrf_request(request)
+    body = await validated_json_payload(request, LibraryGroupOrderRequest)
     payload, status_code = _build_group_order_post_snapshot(body)
-    return JSONResponse(payload, status_code=status_code)
-
-
-@router.get("/api/ui/tab-order")
-async def ui_tab_order_get(request: Request):
-    _require_auth_dep(request)
-    page = request.query_params.get("page") or ""
-    payload, status_code = _build_tab_order_get_snapshot(page)
-    return JSONResponse(payload, status_code=status_code)
-
-
-@router.post("/api/ui/tab-order")
-async def ui_tab_order_post(request: Request):
-    _require_auth_dep(request)
-    try:
-        body = await request.json()
-    except Exception:
-        body = None
-    payload, status_code = _build_tab_order_post_snapshot(body)
+    _publish_libraries_update_on_success(payload, status_code, "groups")
     return JSONResponse(payload, status_code=status_code)

@@ -4,11 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import logging
 from typing import Any
 from uuid import uuid4
 
 from emby_runtime.event_bridge_payloads import event_bridge_payloads
 from emby_runtime.event_bridge_settings import build_plugin_settings_payload, event_bridge_settings_from_plugin_payload
+
+logger = logging.getLogger(__name__)
+
+EVENT_BRIDGE_UPDATED_MESSAGE = "OctoHubsEventBridgeUpdated"
 
 
 @dataclass
@@ -23,6 +28,7 @@ class EventBridgeServerState:
     last_event_at: str = ""
     last_config_sent_at: str = ""
     last_config_ack_at: str = ""
+    last_config_transport: str = ""
     last_config_ack_status: str = ""
     last_config_ack_error: str = ""
     last_config_message_id: str = ""
@@ -48,6 +54,7 @@ class EventBridgeServerState:
             "last_event_at": self.last_event_at,
             "last_config_sent_at": self.last_config_sent_at,
             "last_config_ack_at": self.last_config_ack_at,
+            "last_config_transport": self.last_config_transport,
             "last_config_ack_status": self.last_config_ack_status,
             "last_config_ack_error": self.last_config_ack_error,
             "last_config_message_id": self.last_config_message_id,
@@ -70,6 +77,11 @@ class EventBridgeConnectionManager:
     async def register(self, websocket: Any, hello: dict[str, Any] | None = None) -> EventBridgeServerState:
         hello = hello or {}
         server_id, server_name = _server_identity(hello)
+        previous_server_id = self._websocket_servers.get(id(websocket))
+        if previous_server_id and previous_server_id != server_id:
+            disconnected_server_id = self._detach_websocket(websocket)
+            if disconnected_server_id:
+                self._publish_update([disconnected_server_id], "disconnected")
         now = _utc_now()
         state = self._servers.get(server_id) or EventBridgeServerState(server_id=server_id)
         state.server_name = server_name or state.server_name
@@ -81,17 +93,40 @@ class EventBridgeConnectionManager:
         state.websocket = websocket
         self._servers[server_id] = state
         self._websocket_servers[id(websocket)] = server_id
+        self._publish_update([server_id], "connected")
         return state
 
     async def disconnect(self, websocket: Any) -> None:
+        server_id = self._detach_websocket(websocket)
+        if server_id:
+            self._publish_update([server_id], "disconnected")
+
+    async def close_server_connection(self, server_id: str, code: int = 1008) -> bool:
+        """Close the current transport after a credential rotation."""
+        state = self._servers.get(str(server_id or "").strip())
+        websocket = state.websocket if state else None
+        if websocket is None:
+            return False
+        try:
+            await websocket.close(code=code)
+        finally:
+            detached_server_id = self._detach_websocket(websocket)
+            if detached_server_id:
+                self._publish_update([detached_server_id], "credential_rotated")
+        return True
+
+    def _detach_websocket(self, websocket: Any) -> str | None:
+        """Remove only the state still owned by this exact WebSocket instance."""
         server_id = self._websocket_servers.pop(id(websocket), None)
         if not server_id:
-            return
+            return None
         state = self._servers.get(server_id)
         if state and state.websocket is websocket:
             state.connected = False
             state.websocket = None
             state.last_seen_at = _utc_now()
+            return server_id
+        return None
 
     async def push_configuration(self, server_id: str | None, settings: dict[str, Any]) -> int:
         pushed = 0
@@ -110,14 +145,16 @@ class EventBridgeConnectionManager:
             await websocket.send_json(payload)
             state.last_seen_at = now
             state.last_config_sent_at = now
+            state.last_config_transport = "websocket"
             state.last_config_message_id = message_id
             state.last_config_ack_status = "pending"
             state.last_config_ack_error = ""
             pushed += 1
+            self._publish_update([state.server_id], "configuration_sent")
         return pushed
 
     def record_config_ack(self, websocket: Any, payload: dict[str, Any]) -> EventBridgeServerState | None:
-        server_id = str(payload.get("serverId") or "").strip() or self._websocket_servers.get(id(websocket))
+        server_id = self._websocket_servers.get(id(websocket)) or str(payload.get("serverId") or "").strip()
         if not server_id:
             return None
 
@@ -128,6 +165,7 @@ class EventBridgeConnectionManager:
         state.websocket = websocket
         state.last_seen_at = now
         state.last_config_ack_at = now
+        state.last_config_transport = "websocket"
         state.last_config_ack_message_id = str(payload.get("id") or payload.get("configureId") or "").strip()
         ok = payload.get("ok")
         applied = payload.get("applied")
@@ -135,6 +173,7 @@ class EventBridgeConnectionManager:
         state.last_config_ack_error = "" if state.last_config_ack_status == "applied" else str(payload.get("error") or "").strip()
         self._servers[server_id] = state
         self._websocket_servers[id(websocket)] = server_id
+        self._publish_update([server_id], "configuration_acknowledged")
         return state
 
     def record_plugin_configuration_response(self, server_id: str | None, response: dict[str, Any] | None) -> None:
@@ -156,6 +195,7 @@ class EventBridgeConnectionManager:
         state.last_seen_at = now
         state.last_config_sent_at = now
         state.last_config_ack_at = now
+        state.last_config_transport = "http"
         ok = response.get("Ok") if "Ok" in response else response.get("ok")
         applied = response.get("Applied") if "Applied" in response else response.get("applied")
         state.last_config_ack_status = "applied" if ok is not False and applied is not False else "error"
@@ -168,6 +208,7 @@ class EventBridgeConnectionManager:
         if isinstance(settings, dict):
             self._record_plugin_payload_state(state, settings)
         self._servers[server_id] = state
+        self._publish_update([server_id], "configuration_applied")
 
     def record_http_event(self, payload: dict[str, Any]) -> None:
         payloads = event_bridge_payloads(payload)
@@ -185,12 +226,15 @@ class EventBridgeConnectionManager:
             if plugin:
                 self._record_plugin_payload_state(state, plugin)
             self._servers[server_id] = state
+        self._publish_update(_event_server_ids(payloads), "event_received")
 
     def record_websocket_event(self, websocket: Any, payload: dict[str, Any]) -> None:
         server_id = self._websocket_servers.get(id(websocket))
-        for item in event_bridge_payloads(payload):
+        payloads = event_bridge_payloads(payload)
+        updated_server_ids: list[str] = []
+        for item in payloads:
             event_server_id, event_server_name = _server_identity(item)
-            key = event_server_id if event_server_id != "unknown" else server_id or event_server_id
+            key = server_id or event_server_id
             state = self._servers.get(key) or EventBridgeServerState(server_id=key)
             state.server_name = event_server_name or state.server_name
             state.transport = "websocket"
@@ -204,6 +248,9 @@ class EventBridgeConnectionManager:
             if plugin:
                 self._record_plugin_payload_state(state, plugin)
             self._servers[key] = state
+            if key and key != "unknown" and key not in updated_server_ids:
+                updated_server_ids.append(key)
+        self._publish_update(updated_server_ids, "event_received")
 
     def status(self) -> dict[str, Any]:
         servers = sorted(self._servers.values(), key=lambda item: (item.server_name or item.server_id).lower())
@@ -225,6 +272,20 @@ class EventBridgeConnectionManager:
         state.plugin_version = str(plugin.get("version") or state.plugin_version or "")
         state.plugin_target_count = _int_or_none(plugin.get("octoHubsTargetCount"))
         state.plugin_targets = _plugin_targets(plugin.get("octoHubsTargets"))
+
+    def _publish_update(self, server_ids: list[str], reason: str) -> None:
+        try:
+            from realtime.manager import publish_application_event
+
+            publish_application_event(
+                EVENT_BRIDGE_UPDATED_MESSAGE,
+                {
+                    "server_ids": [server_id for server_id in server_ids if server_id],
+                    "reason": reason,
+                },
+            )
+        except Exception:
+            logger.debug("Impossibile pubblicare aggiornamento Event Bridge", exc_info=True)
 
 
 _manager = EventBridgeConnectionManager()
@@ -250,6 +311,15 @@ def _record_event_identity(state: EventBridgeServerState, payload: dict[str, Any
     event = payload.get("event") if isinstance(payload.get("event"), dict) else {}
     state.last_event_type = str(event.get("type") or payload.get("eventType") or "").strip()
     state.last_event_name = str(event.get("name") or payload.get("eventName") or "").strip()
+
+
+def _event_server_ids(payloads: list[dict[str, Any]]) -> list[str]:
+    ids = []
+    for item in payloads:
+        server_id, _server_name = _server_identity(item)
+        if server_id and server_id != "unknown" and server_id not in ids:
+            ids.append(server_id)
+    return ids
 
 
 def _int_or_none(value: Any) -> int | None:

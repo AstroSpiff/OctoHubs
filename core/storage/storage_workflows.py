@@ -41,10 +41,18 @@ class StorageWorkflowMixin(_SessionProvider):
                 WorkflowExecution.id == workflow_id
             ).first()
             if execution:
+                terminal_statuses = {"completed", "failed"}
+                if execution.status in terminal_statuses:
+                    # First terminal result wins. Repeated finalization must not
+                    # move completed_at or overwrite the original failure.
+                    if execution.completed_at is None:
+                        execution.completed_at = _utcnow()
+                        session.commit()
+                    return
                 execution.status = status
-                if error:
+                if error is not None:
                     execution.error = error
-                if status in ("completed", "failed"):
+                if status in terminal_statuses:
                     execution.completed_at = _utcnow()
                 session.commit()
         except SQLAlchemyError as exc:

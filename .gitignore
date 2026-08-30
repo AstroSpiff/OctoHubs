@@ -11,6 +11,7 @@ env/
 .env/
 .env
 *.log
+docs/terminal_log_*.txt
 *.sql
 *.csv
 *.sqlite3
@@ -36,6 +37,8 @@ docker-compose.override.yml
 .pytest_cache/
 .coverage
 htmlcov/
+frontend/node_modules/
+frontend/dist/
 *.bak
 static/test-*.txt
 static/test-cache.txt

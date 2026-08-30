@@ -11,6 +11,7 @@ from .constants import PROBE_SCOPE_RECENT
 from .protocols import ProbeManagerProtocol
 from .utils import _parse_emby_date, _coerce_int_range, _coerce_threshold
 from .display import _format_probe_display_name, _format_display_name_from_queue
+from .media_policy import is_probe_media_candidate, normalize_media_policy
 
 class RecentProbeMixin(ProbeManagerProtocol):
     """Mixin for probe workflows."""
@@ -586,7 +587,7 @@ class RecentProbeMixin(ProbeManagerProtocol):
 
             config = {}
             try:
-                config = db.get_recent_scan_config(server_id)
+                config = db.get_probe_config(server_id)
             except Exception:
                 config = {}
 
@@ -595,6 +596,7 @@ class RecentProbeMixin(ProbeManagerProtocol):
             MAX_DAYS = _coerce_int_range(config.get("max_days"), 60, 7, 365)
             MAX_ITEMS = _coerce_int_range(config.get("max_items"), 2000, 500, 10000)
             SAFETY_MARGIN_DAYS = _coerce_int_range(config.get("safety_margin_days"), 7, 1, 30)
+            media_policy = normalize_media_policy(config.get("media_policy"))
 
             now = datetime.now(timezone.utc)
             max_days_cutoff = now - timedelta(days=MAX_DAYS)
@@ -779,8 +781,7 @@ class RecentProbeMixin(ProbeManagerProtocol):
 
                     item_path = item.get("Path", "")
 
-                    # Filter: only .strm files (same logic as library discovery)
-                    if not item_path.lower().endswith(".strm"):
+                    if not is_probe_media_candidate(item_path, media_policy):
                         continue
 
                     # Extract metadata

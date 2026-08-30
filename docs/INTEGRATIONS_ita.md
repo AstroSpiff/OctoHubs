@@ -1,10 +1,12 @@
 [Italiano](INTEGRATIONS_ita.md) | [English](INTEGRATIONS.md)
 
-Documenti: [README](../README_ita.md) | [Docker Deploy](DOCKER_DEPLOY_ita.md) | [Deployment](DEPLOYMENT_ita.md) | [Configurazione](CONFIGURATION_ita.md) | [Funzionalita](FEATURES_ita.md) | [Integrazioni](INTEGRATIONS_ita.md) | [Strumenti Emby](EMBY_TOOLS_ita.md)
+Documenti: [README](../README_ita.md) | [Docker Deploy](DOCKER_DEPLOY_ita.md) | [Deployment](DEPLOYMENT_ita.md) | [Configurazione](CONFIGURATION_ita.md) | [Funzionalita](FEATURES_ita.md) | [Integrazioni](INTEGRATIONS_ita.md) | [API esterna](API_EXTERNAL_ACCESS_ita.md) | [Strumenti Emby](EMBY_TOOLS_ita.md)
 
 # Integrazioni
 
 Questa guida copre i servizi esterni e come abilitarli in OctoHubs.
+
+Per script, automazioni, agenti IA o altre app che devono controllare OctoHubs via API, vedi [Accesso API esterno](API_EXTERNAL_ACCESS_ita.md).
 
 ## Passi manuali comuni
 - Recupera API key o token da ogni servizio.
@@ -116,27 +118,37 @@ Passi manuali:
 
 ## Webhook Emby
 Endpoint:
-- `http://HOST:5000/webhook/emby` (HTTP)
-- `https://TUO_DOMINIO/webhook/emby` (HTTPS con Nginx)
+- `http://HOST:5050/api/emby/event-bridge/events` (override HTTP diretto)
+- `https://TUO_DOMINIO/api/emby/event-bridge/events` (HTTPS con Nginx)
 
 Sicurezza opzionale:
-- header `WEBHOOK_SECRET`: `X-Webhook-Secret: valore`
-- `WEBHOOK_IP_WHITELIST` (IP separati da virgola)
+- `WEBHOOK_IP_WHITELIST` (indirizzi IPv4/IPv6 o CIDR separati da virgola)
+- `WEBHOOK_TRUST_PROXY_HEADERS=true` fa usare `X-Real-IP` alla allowlist; abilitalo
+  soltanto dietro un proxy che sovrascrive tale header. Nginx incluso lo fa.
+
+Una allowlist non vuota ma non valida rifiuta le richieste Event Bridge finché la
+configurazione non viene corretta. Con Portainer, imposta le stesse variabili sul
+container dell'app.
 
 Passi manuali:
-- Abilita il plugin Emby Webhook.
-- Aggiungi un webhook con URL OctoHubs e header opzionale.
-- Seleziona gli eventi di playback da inviare.
+- Installa o aggiorna il plugin OctoHubs Event Bridge sul server Emby.
+- Configura nel plugin l'URL di OctoHubs.
+- Apri Event Bridge in OctoHubs e premi **Collega** sul server. OctoHubs installa
+  una credenziale per-server tramite l'API Emby autenticata.
+- Premi nuovamente **Collega** per ruotarla. OctoHubs non mostra né salva il valore
+  in chiaro: conserva soltanto l'hash.
 
-Test:
-```bash
-curl -X POST http://HOST:5000/webhook/emby \
-  -H "Content-Type: application/json" \
-  -H "X-Webhook-Secret: tuo-segreto" \
-  -d '{"Event":"playback.start"}'
-```
+Il plugin invia automaticamente `X-OctoHubs-Server-Id` e `X-Webhook-Secret`. Le
+chiamate curl generiche e il precedente `WEBHOOK_SECRET` condiviso non sono supportati.
+
+OctoHubs accetta al massimo 1 MiB per richiesta o frame WebSocket e 500 eventi per
+batch. Il plugin ufficiale produce batch di massimo 100 eventi. Quote per-server
+tollerano i normali picchi e rispondono `429` o chiudono il WebSocket soltanto in
+caso di frequenza anomala.
 
 ## Troubleshooting
 - 401/403 webhook: controlla segreto e whitelist IP.
+- 413 webhook: riduci il payload raw o il batch inviato da un client non ufficiale.
+- 429 webhook: il server sta superando temporaneamente la quota Event Bridge.
 - Ricerca non funziona: verifica URL/API key e flag in `SEARCH_RULES`.
 - JustWatch non funziona: verifica installazione pacchetto e DB abilitato.

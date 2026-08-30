@@ -131,7 +131,7 @@ def _build_emby_latest_item(item: Dict[str, Any], server: Optional[Dict[str, Any
         }
         if image_tags.get("Primary"):
             query["tag"] = image_tags.get("Primary")
-        image_url = f"/api/emby/image?{urlencode(query)}"
+        image_url = f"/api/v1/emby/image?{urlencode(query)}"
 
         base_url = (server.get("url") or "").strip().rstrip("/")
         token = (server.get("api_key") or "").strip()

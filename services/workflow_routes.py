@@ -8,6 +8,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from core.tasks import workflow_manager
+from services.workflow_api_models import WorkflowErrorResponse, WorkflowStartRequest, WorkflowSuccessResponse
+from web.openapi_requests import no_request_body
 
 router = APIRouter()
 
@@ -45,17 +47,19 @@ def _success_response_dep(*args, **kwargs) -> JSONResponse:
     return _success_response(*args, **kwargs)
 
 
-@router.post("/api/workflow/start")
-async def workflow_start(request: Request):
+@router.post(
+    "/api/workflow/start",
+    responses={
+        200: {"model": WorkflowSuccessResponse},
+        400: {"model": WorkflowErrorResponse},
+        409: {"model": WorkflowErrorResponse},
+        500: {"model": WorkflowErrorResponse},
+    },
+)
+async def workflow_start(request: Request, payload: WorkflowStartRequest):
     _require_auth_dep(request)
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
-    workflow_type = (payload or {}).get("type", "full")
-    context = (payload or {}).get("context") or {}
-    if workflow_type not in ("full", "smart", "library"):
-        return _error_response_dep("Tipo workflow non valido", 400)
+    workflow_type = payload.type
+    context = payload.context
     if workflow_manager.is_running():
         return _error_response_dep("Un workflow è già in esecuzione", 409)
     started = workflow_manager.start(workflow_type=workflow_type, context=context)
@@ -64,7 +68,11 @@ async def workflow_start(request: Request):
     return _error_response_dep("Impossibile avviare il workflow", 500)
 
 
-@router.post("/api/workflow/stop")
+@router.post(
+    "/api/workflow/stop",
+    responses={200: {"model": WorkflowSuccessResponse}, 400: {"model": WorkflowErrorResponse}},
+    openapi_extra=no_request_body(),
+)
 async def workflow_stop(request: Request):
     _require_auth_dep(request)
     if not workflow_manager.is_running():

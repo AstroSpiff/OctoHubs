@@ -1,0 +1,99 @@
+name: Release gate
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-quality:
+    name: Frontend tests, lint, and production build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install locked frontend dependencies
+        run: npm ci
+
+      - name: Run the complete Vitest suite
+        run: npm test
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Build production frontend
+        run: npm run build
+
+  backend-postgresql:
+    name: Backend and PostgreSQL 16
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OCTOHUBS_REQUIRE_POSTGRES_TESTS: "1"
+      OCTOHUBS_TEST_POSTGRES_URL: postgresql://octohubs_test:octohubs_test@127.0.0.1:5432/octohubs_test
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+        env:
+          POSTGRES_DB: octohubs_test
+          POSTGRES_USER: octohubs_test
+          POSTGRES_PASSWORD: octohubs_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U octohubs_test -d octohubs_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install backend and test dependencies
+        run: |
+          python -m pip install pip==26.2.1
+          python -m pip install --require-hashes -r requirements.txt
+          python -m pip install --require-hashes -r requirements-dev.txt
+
+      - name: Run the complete backend suite against PostgreSQL 16
+        run: python -m pytest -q
+
+      - name: Validate Compose ingress variants
+        run: |
+          docker compose --env-file .env.example config --quiet
+          docker compose --env-file .env.example \
+            -f docker-compose.yml -f docker-compose.direct.yml config --quiet
+          docker compose --env-file .env.example --profile proxy config --quiet
+
+      - name: Compare two clean production-build inventories
+        run: ./scripts/verify_reproducible_build.sh octohubs:release-gate
+
+      - name: Verify the production runtime identity
+        run: |
+          docker run --rm --entrypoint sh octohubs:release-gate -c '
+            test "$(id -u)" = "1000"
+            test "$(id -g)" = "1000"
+          '

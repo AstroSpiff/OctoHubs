@@ -1,0 +1,102 @@
+.workspace-tabs {
+  display: flex;
+  min-width: 0;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--color-border);
+  scrollbar-width: thin;
+}
+
+.workspace-tabs > :is(a, button) {
+  position: relative;
+  display: inline-flex;
+  min-height: var(--control-height);
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  padding: 0 13px;
+  color: var(--color-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 750;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: grab;
+}
+
+.workspace-tabs > :is(a, button):hover {
+  background: var(--color-surface-muted);
+  color: var(--color-ink-strong);
+}
+
+.workspace-tabs > :is(a, button):focus-visible {
+  z-index: 1;
+  outline: 3px solid var(--color-focus);
+  outline-offset: -3px;
+}
+
+.workspace-tabs > :is(a, button).is-active,
+.workspace-tabs > :is(a, button)[aria-selected="true"] {
+  border-bottom-color: var(--color-accent);
+  color: var(--color-accent-strong);
+}
+
+.workspace-tabs > :is(a, button):active {
+  cursor: grabbing;
+}
+
+.workspace-tabs > :is(a, button).is-dragging {
+  opacity: 0.42;
+}
+
+/* Contextual tabs use the same navigation language without reordering. */
+.workspace-tabs--context > :is(a, button) {
+  min-height: var(--control-height-compact);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.workspace-tabs--context > :is(a, button):active {
+  cursor: pointer;
+}
+
+.workspace-tabs .tab-reorder-grip {
+  flex: 0 0 auto;
+  opacity: 0;
+  transition: opacity var(--motion-fast);
+}
+
+.workspace-tabs > :is(a, button):hover .tab-reorder-grip,
+.workspace-tabs > :is(a, button):focus-visible .tab-reorder-grip {
+  opacity: 0.8;
+}
+
+@media (max-width: 680px) {
+  .workspace-tabs {
+    scrollbar-width: none;
+    scroll-snap-type: x proximity;
+  }
+
+  .workspace-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .workspace-tabs > :is(a, button) {
+    min-height: var(--control-height);
+    scroll-snap-align: center;
+    gap: 0;
+    padding-inline: 10px;
+    font-size: 12px;
+  }
+
+  .workspace-tabs--context > :is(a, button) {
+    min-height: var(--control-height-compact);
+  }
+
+  .workspace-tabs .tab-reorder-grip {
+    display: none;
+  }
+}

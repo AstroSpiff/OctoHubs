@@ -67,6 +67,21 @@ def build_user_stream_stats(
     }
 
 
+def get_stream_history_detail(
+    rows: Iterable[Dict[str, Any]],
+    stream_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Return one normalized monitored stream without duplicating the stats contract."""
+
+    wanted_id = str(stream_id or "").strip()
+    if not wanted_id:
+        return None
+    for row in rows or []:
+        if isinstance(row, dict) and str(row.get("id") or "") == wanted_id:
+            return _history_row(row)
+    return None
+
+
 def _filter_rows(rows: List[Dict[str, Any]], filters: Dict[str, Any], now: datetime) -> List[Dict[str, Any]]:
     period = str(filters.get("period") or "7d")
     threshold = None if period == "all" else now - PERIODS.get(period, PERIODS["7d"])
@@ -174,6 +189,15 @@ def _sort_users(users: List[Dict[str, Any]], mode: str) -> List[Dict[str, Any]]:
 
 
 def _history_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    action_records = [
+        {
+            "action": str(item.get("action") or ""),
+            "source": str(item.get("source") or ""),
+            "at": str(item.get("at") or ""),
+        }
+        for item in row.get("actions") or []
+        if isinstance(item, dict) and str(item.get("action") or "").strip()
+    ]
     return {
         "id": str(row.get("id") or ""),
         "at": str(row.get("updated_at") or row.get("last_seen_at") or row.get("started_at") or ""),
@@ -189,14 +213,18 @@ def _history_row(row: Dict[str, Any]) -> Dict[str, Any]:
         "outcome": _row_outcome(row),
         "tags": list(row.get("tags") or []),
         "violations_committed": list(row.get("violations_committed") or []),
-        "actions": [str(item.get("action") or "") for item in row.get("actions") or [] if isinstance(item, dict)],
+        "actions": [item["action"] for item in action_records],
+        "action_records": action_records,
         "duration_seconds": _to_number(row.get("duration_seconds")),
         "playback_percent": _to_number(row.get("playback_percent")),
+        "rule_name": str(row.get("last_rule_name") or ""),
+        "reason": str(row.get("last_decision_reason") or ""),
     }
 
 
 def _trend_item(row: Dict[str, Any]) -> Dict[str, Any]:
     return {
+        "id": str(row.get("id") or ""),
         "status": _row_outcome(row),
         "label": _outcome_label(_row_outcome(row)),
         "at": str(row.get("updated_at") or row.get("started_at") or ""),
@@ -277,14 +305,14 @@ def _outcome_label(outcome: str) -> str:
     return {
         "correct": "Corretto",
         "warning": "Avviso",
-        "stop": "Stop",
+        "stop": "Stop del Guard",
         "resolved": "Risolto",
-        "resolution_change": "Cambio Ris.",
-        "partial": "Risolto Parz.",
+        "resolution_change": "Cambio risoluzione",
+        "partial": "Risolto parzialmente",
         "exit": "Uscito",
         "relapse": "Ricaduta",
         "error": "Errore",
-        "issue": "Problema",
+        "issue": "Problema rilevato",
         "observed": "Osservato",
     }.get(outcome, outcome or "Osservato")
 

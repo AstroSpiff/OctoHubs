@@ -14,6 +14,7 @@ from core.storage.storage_models import (
     EmbyProbeRecentScan,
     EmbyUserLink,
     EmbyUserBackup,
+    EmbyLatestNotificationDelivery,
     EmbyIconRule,
     EmbyIconBinding,
     KeyValueEntry,
@@ -30,6 +31,9 @@ class StorageMaintenanceMixin(_SessionProvider):
         """Remove all Emby-related records tied to a server_id."""
         session = self._get_session()
         try:
+            session.query(EmbyLatestNotificationDelivery).filter(  # type: ignore[attr-defined]
+                EmbyLatestNotificationDelivery.server_id == server_id
+            ).delete(synchronize_session=False)
             session.query(LibraryAssociation).filter(  # type: ignore[attr-defined]
                 LibraryAssociation.server_id == server_id
             ).delete(synchronize_session=False)

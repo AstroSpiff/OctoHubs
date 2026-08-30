@@ -1,6 +1,12 @@
 import requests
 import time
 
+from core.log_sanitization import (
+    sanitize_download_reference_for_log,
+    sanitize_text_for_log,
+    sanitize_url_for_log,
+)
+
 
 def _normalize_download_url(link: str) -> str:
     if not link or not isinstance(link, str):
@@ -51,7 +57,7 @@ def send_to_qbittorrent(link, config, max_retries=2):
     if not (is_magnet or is_url):
         return False, f"Link non valido: deve essere un magnet link o URL HTTP(S). Ricevuto: {link[:50]}..."
 
-    print(f"   -> [QB] Invio torrent a qBittorrent: {link[:80]}...")
+    print(f"   -> [QB] Invio torrent a qBittorrent: {sanitize_download_reference_for_log(link)}")
 
     session = requests.Session()
     base_url = qb_url.rstrip('/')
@@ -119,7 +125,7 @@ def send_to_qbittorrent(link, config, max_retries=2):
                         pass
 
                 print("   -> [QB] ⚠️ qBittorrent ha accettato il link, ma nessun torrent trovato nella lista")
-                print(f"   -> [QB] Link inviato: {link}")
+                print(f"   -> [QB] Link inviato: {sanitize_download_reference_for_log(link)}")
                 return True, "Link inviato a qBittorrent (verificare manualmente)"
 
             # Errore nell'aggiunta
@@ -144,7 +150,7 @@ def send_to_qbittorrent(link, config, max_retries=2):
             return False, f"{error_msg}: {exc}"
 
         except requests.exceptions.ConnectionError as exc:
-            error_msg = f"Impossibile connettersi a qBittorrent ({qb_url})"
+            error_msg = f"Impossibile connettersi a qBittorrent ({sanitize_url_for_log(qb_url)})"
             if attempt < max_retries:
                 print(f"   -> [QB] {error_msg}, ritento...")
                 time.sleep(2)
@@ -158,7 +164,7 @@ def send_to_qbittorrent(link, config, max_retries=2):
                 print(f"   -> [QB] {error_msg} ({type(exc).__name__}), ritento...")
                 time.sleep(1)
                 continue
-            print(f"   -> [QB] ✗ {error_msg}: {type(exc).__name__} - {exc}")
+            print(f"   -> [QB] ✗ {error_msg}: {type(exc).__name__} - {sanitize_text_for_log(exc)}")
             return False, f"{error_msg}: {exc}"
 
     return False, f"Fallito dopo {max_retries + 1} tentativi"
@@ -280,7 +286,7 @@ def send_to_qbittorrent_batch(links, config, max_retries=2):
             return False, f"{error_msg}: {exc}", {"sent": 0, "failed": failed, "total": len(valid_links) + len(failed)}
 
         except requests.exceptions.ConnectionError as exc:
-            error_msg = f"Impossibile connettersi a qBittorrent ({qb_url})"
+            error_msg = f"Impossibile connettersi a qBittorrent ({sanitize_url_for_log(qb_url)})"
             if attempt < max_retries:
                 print(f"   -> [QB] {error_msg}, ritento...")
                 time.sleep(2)

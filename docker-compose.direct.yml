@@ -1,0 +1,6 @@
+services:
+  app:
+    environment:
+      - WEBHOOK_TRUST_PROXY_HEADERS=false
+    ports:
+      - "${OCTOHUBS_DIRECT_BIND_ADDRESS:-127.0.0.1}:${OCTOHUBS_DIRECT_PORT:-5050}:5050"

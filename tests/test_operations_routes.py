@@ -9,6 +9,12 @@ from services.operations_routes import (
     api_operations,
     api_operations_clear_completed,
     init_operations_routes,
+    router,
+)
+from services.operations_api_models import (
+    ClearCompletedOperationsResponse,
+    OperationsSnapshotResponse,
+    OperationsUnavailableResponse,
 )
 
 
@@ -28,6 +34,18 @@ class _Tracker:
 
 
 class OperationRouteTests(unittest.IsolatedAsyncioTestCase):
+    def test_operations_routes_publish_their_response_contracts(self):
+        routes = {route.path: route for route in router.routes}
+
+        operations_responses = routes["/api/operations"].responses
+        assert operations_responses[200]["model"] is OperationsSnapshotResponse
+        assert operations_responses[500]["model"] is OperationsUnavailableResponse
+        assert operations_responses[503]["model"] is OperationsUnavailableResponse
+        assert (
+            routes["/api/operations/clear-completed"].responses[200]["model"]
+            is ClearCompletedOperationsResponse
+        )
+
     async def test_global_operations_route_returns_operations_and_active_count(self):
         tracker = _Tracker()
         init_operations_routes(

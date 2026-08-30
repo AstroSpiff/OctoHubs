@@ -11,6 +11,12 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from emby_latest.messages import build_message
+from emby_latest.notification_delivery import (
+    claim_delivery,
+    complete_delivery,
+    fail_delivery,
+    notification_dispatch_slot,
+)
 
 
 def _telegram_api_request(bot_token: str, method: str, params: Dict[str, Any]) -> Tuple[bool, str, Dict[str, Any]]:
@@ -50,6 +56,30 @@ def send_notifications(
     server_filter: Optional[str] = None,
     config: Optional[Dict[str, Any]] = None,
     db_storage=None
+) -> Dict[str, Any]:
+    """Run one Latest notification dispatch at a time in this process."""
+    with notification_dispatch_slot() as acquired:
+        if not acquired:
+            return {
+                "success": True,
+                "message": "Un invio notifiche è già in corso.",
+                "sent": 0,
+                "failed": 0,
+                "errors": [],
+            }
+        return _send_notifications_unlocked(
+            per_server_limit=per_server_limit,
+            server_filter=server_filter,
+            config=config,
+            db_storage=db_storage,
+        )
+
+
+def _send_notifications_unlocked(
+    per_server_limit: int,
+    server_filter: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
+    db_storage=None,
 ) -> Dict[str, Any]:
     """
     Send notifications for latest publications.
@@ -540,6 +570,7 @@ def send_notifications(
     # Send notifications
     sent = 0
     failed = 0
+    delivery_claim_skips = 0
     notification_state_updates: Dict[str, Dict[str, Any]] = {}
 
     # Deduplicate deliveries by item and Telegram destination, not by item only.
@@ -614,6 +645,22 @@ def send_notifications(
                     print(f"   -> [NOTIFY] Skip duplicato: {item.get('title', 'Unknown')} (già notificato al destinatario)")
                     continue
 
+                try:
+                    delivery_claim = claim_delivery(
+                        db_storage,
+                        publication_signature=item_signature,
+                        destination_key=destination_key,
+                        server_id=str(item.get("server_id") or ""),
+                    )
+                except Exception as exc:
+                    failed += 1
+                    errors.append(f"Errore prenotazione notifica: {exc}")
+                    continue
+
+                if not delivery_claim.acquired:
+                    delivery_claim_skips += 1
+                    continue
+
                 _throttle_send()
                 payload: dict = {}
                 preview_enabled: bool = False
@@ -651,6 +698,10 @@ def send_notifications(
                             })
 
                 if ok:
+                    try:
+                        complete_delivery(db_storage, delivery_claim)
+                    except Exception as exc:
+                        errors.append(f"Notifica inviata ma claim non completato: {exc}")
                     sent += 1
                     update_entry["delivered"][destination_key] = {
                         "bot_id": str(bot_id),
@@ -658,6 +709,10 @@ def send_notifications(
                     }
                     sent_delivery_signatures.add(delivery_signature)
                 else:
+                    try:
+                        fail_delivery(db_storage, delivery_claim, str(err or "Errore Telegram"))
+                    except Exception as exc:
+                        errors.append(f"Errore rilascio claim notifica: {exc}")
                     failed += 1
                     if err:
                         errors.append(err)
@@ -830,13 +885,15 @@ def send_notifications(
 
     # Build summary message
     summary = f"Notifiche inviate: {sent}." if sent else "Nessuna notifica inviata."
+    if delivery_claim_skips and not sent and not failed and not errors:
+        summary = "Nessuna notifica da inviare: consegne già registrate o in corso."
     if failed:
         summary = f"{summary} Errori: {failed}."
     if errors:
         summary = f"{summary} Avvisi: {len(errors)}."
 
     return {
-        "success": True if sent else False,
+        "success": bool(sent or (delivery_claim_skips and not failed and not errors)),
         "message": summary,
         "sent": sent,
         "failed": failed,

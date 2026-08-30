@@ -102,24 +102,29 @@ class ScanManager:
                     "message": f"{done}/{total}"
                 })
 
-        # Call the process_requests function that was passed in
-        if self._process_requests_func:
-            summary = self._process_requests_func(
-                config,
-                status_callback=_progress_callback,
-                stop_event=self._stop_event,
-                target_map=targets
-            )
-        else:
-            summary = None
-
-        with self._lock:
-            self._status["running"] = False
-            self._status["last_summary"] = summary
-            self._status["message"] = "Ricerca completata" if not self._stop_event.is_set() else "Ricerca interrotta"
-            self._status["current_title"] = None
-            self._status["season"] = None
-            self._status["target_map"] = None
+        summary = None
+        error = None
+        try:
+            if self._process_requests_func:
+                summary = self._process_requests_func(
+                    config,
+                    status_callback=_progress_callback,
+                    stop_event=self._stop_event,
+                    target_map=targets
+                )
+        except Exception as exc:  # Keep the manager reusable after worker failures.
+            error = exc
+        finally:
+            with self._lock:
+                self._status["running"] = False
+                self._status["last_summary"] = summary
+                if error is not None:
+                    self._status["message"] = "Ricerca non riuscita"
+                else:
+                    self._status["message"] = "Ricerca completata" if not self._stop_event.is_set() else "Ricerca interrotta"
+                self._status["current_title"] = None
+                self._status["season"] = None
+                self._status["target_map"] = None
 
     def get_status(self):
         with self._lock:
@@ -172,20 +177,21 @@ class AutoScheduler:
 
     def update_config(self, config):
         with self._lock:
+            previous_settings = self._settings
             if config and config.get("AUTO_TASKS"):
-                self._settings = _normalize_auto_settings(config.get("AUTO_TASKS"))
+                updated_settings = _normalize_auto_settings(config.get("AUTO_TASKS"))
                 self._config = copy.deepcopy(config)
             else:
-                self._settings = _default_auto_tasks()
+                updated_settings = _default_auto_tasks()
                 self._config = None
-            # IMPORTANT: Only reset next_run if tasks are newly enabled or config structure changed
-            # Otherwise preserve existing scheduled times to avoid infinite postponement
+
+            self._settings = updated_settings
             if not hasattr(self, '_next_run') or self._next_run is None:
                 self._next_run = {"scan": None, "refresh": None, "workflow": None, "sync": None}
-            if "workflow" not in self._next_run:
-                self._next_run["workflow"] = None
-            if "sync" not in self._next_run:
-                self._next_run["sync"] = None
+            for kind in ("scan", "refresh", "workflow", "sync"):
+                self._next_run.setdefault(kind, None)
+                if previous_settings.get(kind) != updated_settings.get(kind):
+                    self._next_run[kind] = None
             settings_snapshot = copy.deepcopy(self._settings)
         self._wake.set()
         # Only log next runs on initial config or when explicitly changed
@@ -386,6 +392,7 @@ class WorkflowManager:
         self._notify_func = None
         self._db_storage = None  # DatabaseStorage instance
         self._operation_tracker = None
+        self._finalized_workflow_id = None
 
     def set_callbacks(self, trigger_scan_func, check_scan_func,
                      trigger_probe_func, check_probe_func,
@@ -507,8 +514,10 @@ class WorkflowManager:
         except Exception as exc:
             print(f"[WORKFLOW] ⚠️ Errore aggiornamento operazione workflow: {exc}")
 
-    def _complete_workflow_operation(self, completion_status, message):
+    def _complete_workflow_operation(self, completion_status, message, workflow_id=None):
         with self._lock:
+            if workflow_id is not None and not self._is_current_workflow_locked(workflow_id):
+                return
             operation_id = self._status.get("operation_id")
             operation_tracker = self._operation_tracker
             details = self._workflow_operation_details_locked()
@@ -532,6 +541,43 @@ class WorkflowManager:
         except Exception as exc:
             print(f"[WORKFLOW] ⚠️ Errore chiusura operazione workflow: {exc}")
 
+    def _finalize_workflow(
+        self,
+        workflow_id,
+        workflow_status,
+        error,
+        completion_status,
+        completion_message,
+    ):
+        """Terminalize memory, persistence, and operation tracking exactly once."""
+        with self._lock:
+            if not self._is_current_workflow_locked(workflow_id):
+                return False
+            if self._finalized_workflow_id == workflow_id:
+                return False
+            self._finalized_workflow_id = workflow_id
+            self._status["status"] = workflow_status
+            self._status["error"] = error
+            db_storage = self._db_storage
+
+        if db_storage:
+            try:
+                db_storage.update_workflow_execution(
+                    workflow_id=workflow_id,
+                    status=workflow_status,
+                    error=error,
+                )
+                print(f"[WORKFLOW] Stato workflow ({workflow_status}) salvato su database")
+            except Exception as db_exc:
+                print(f"[WORKFLOW] ⚠️ Errore aggiornamento workflow su DB: {db_exc}")
+
+        self._complete_workflow_operation(
+            completion_status,
+            completion_message,
+            workflow_id,
+        )
+        return True
+
     def start(self, workflow_type="full", context=None):
         """
         Avvia un workflow in background.
@@ -544,7 +590,10 @@ class WorkflowManager:
             bool: True se avviato con successo, False se già in esecuzione
         """
         with self._lock:
-            if self._status["status"] == "running":
+            current_thread = self._thread
+            if self._status["status"] in ("running", "stopping") or (
+                current_thread is not None and current_thread.is_alive()
+            ):
                 return False
 
             # Genera UUID per questo workflow
@@ -572,7 +621,9 @@ class WorkflowManager:
                 "operation_id": None,
                 "context": copy.deepcopy(context or {})
             }
-            self._stop_event.clear()
+            self._finalized_workflow_id = None
+            stop_event = threading.Event()
+            self._stop_event = stop_event
 
             # Crea record su database se disponibile
             if self._db_storage:
@@ -595,17 +646,29 @@ class WorkflowManager:
 
             self._start_operation_tracking_locked(context or {})
 
-        self._thread = threading.Thread(
-            target=self._run_workflow,
-            args=(context or {},),
-            daemon=True
-        )
-        self._thread.start()
+            thread = threading.Thread(
+                target=self._run_workflow,
+                args=(context or {}, workflow_id, stop_event),
+                daemon=True,
+            )
+            self._thread = thread
+
+        try:
+            thread.start()
+        except RuntimeError as exc:
+            error_message = f"Impossibile avviare il thread workflow: {exc}"
+            self._finalize_workflow(
+                workflow_id,
+                "failed",
+                error_message,
+                "error",
+                error_message,
+            )
+            return False
         return True
 
     def stop(self):
         """Richiede l'interruzione del workflow corrente."""
-        self._stop_event.set()
         operation_id = None
         operation_tracker = None
         operation_details = None
@@ -613,6 +676,7 @@ class WorkflowManager:
         stop_probe_context = None
         with self._lock:
             if self._status["status"] in ("running", "stopping"):
+                self._stop_event.set()
                 self._status["status"] = "stopping"
                 operation_id = self._status.get("operation_id")
                 operation_tracker = self._operation_tracker
@@ -646,7 +710,12 @@ class WorkflowManager:
     def is_running(self):
         """Verifica se un workflow è in esecuzione."""
         with self._lock:
-            return self._status["status"] in ("running", "stopping")
+            thread_alive = self._thread is not None and self._thread.is_alive()
+            return self._status["status"] in ("running", "stopping") or thread_alive
+
+    def _is_current_workflow_locked(self, workflow_id):
+        """Treat the workflow UUID as a generation token for worker updates."""
+        return self._status.get("workflow_id") == workflow_id
 
     def _initialize_steps(self, workflow_type):
         """
@@ -669,7 +738,7 @@ class WorkflowManager:
             },
             {
                 "id": "probe",
-                "label": "STRM Probe Ultimi Aggiunti",
+                "label": "Media Probe Ultimi Aggiunti",
                 "status": "pending",
                 "progress": 0,
                 "details": "In attesa...",
@@ -697,48 +766,66 @@ class WorkflowManager:
         # Per ora ritorniamo sempre tutti gli step
         return base_steps
 
-    def _run_workflow(self, context):
+    def _run_workflow(self, context, workflow_id, stop_event):
         """
         Esegue il workflow sequenziale nel thread in background.
 
         Args:
             context: Dizionario con contesto per i vari step
         """
+        workflow_status = "failed"
+        workflow_error = "Workflow terminato in modo inatteso"
+        completion_status = "error"
+        completion_message = workflow_error
         try:
-            steps = self._get_steps()
+            steps = self._get_steps(workflow_id)
 
             for i, step in enumerate(steps):
                 print(f"[WORKFLOW] [DEBUG] ===== Starting step {i}: {step['id']} =====")
 
                 # Verifica se è stato richiesto lo stop
-                if self._stop_event.is_set():
+                if stop_event.is_set():
                     print(f"[WORKFLOW] [DEBUG] Stop event is set, skipping step {i}")
-                    self._update_step_status(i, "skipped", "Interrotto dall'utente", 100)
+                    self._update_step_status(
+                        i,
+                        "skipped",
+                        "Interrotto dall'utente",
+                        100,
+                        workflow_id=workflow_id,
+                    )
                     continue
 
                 # Aggiorna lo step corrente
                 print(f"[WORKFLOW] [DEBUG] Updating current_step_index to {i}")
                 with self._lock:
+                    if not self._is_current_workflow_locked(workflow_id):
+                        return
                     self._status["current_step_index"] = i
 
                 # Marca lo step come in esecuzione
                 print(f"[WORKFLOW] [DEBUG] Marking step {i} as running")
-                self._update_step_status(i, "running", "In esecuzione...", 0)
+                self._update_step_status(
+                    i,
+                    "running",
+                    "In esecuzione...",
+                    0,
+                    workflow_id=workflow_id,
+                )
                 step_start_time = datetime.now()
 
                 try:
                     # Esegue la logica specifica dello step
                     if step["id"] == "scan":
-                        self._execute_scan_step(i, context)
+                        self._execute_scan_step(i, context, workflow_id, stop_event)
                         print("[WORKFLOW] [DEBUG] _execute_scan_step returned successfully")
                     elif step["id"] == "probe":
-                        self._execute_probe_step(i, context)
+                        self._execute_probe_step(i, context, workflow_id, stop_event)
                         print("[WORKFLOW] [DEBUG] _execute_probe_step returned successfully")
                     elif step["id"] == "cache":
-                        self._execute_cache_step(i, context)
+                        self._execute_cache_step(i, context, workflow_id)
                         print("[WORKFLOW] [DEBUG] _execute_cache_step returned successfully")
                     elif step["id"] == "notify":
-                        self._execute_notify_step(i, context)
+                        self._execute_notify_step(i, context, workflow_id)
                         print("[WORKFLOW] [DEBUG] _execute_notify_step returned successfully")
 
                     # Calcola la durata
@@ -749,86 +836,99 @@ class WorkflowManager:
                     # Marca lo step come completato se non è stato già marcato come failed
                     print(f"[WORKFLOW] [DEBUG] Acquiring lock to mark step {i} as done")
                     with self._lock:
+                        if not self._is_current_workflow_locked(workflow_id):
+                            return
                         if self._status["steps"][i]["status"] != "failed":
                             done_details = "Completato"
                             if step["id"] == "notify":
                                 current_details = self._status["steps"][i].get("details")
                                 if current_details and current_details not in ("In esecuzione...", "Invio notifiche in corso..."):
                                     done_details = current_details
-                            self._update_step_status(i, "done", done_details, 100, duration)
+                            self._update_step_status(
+                                i,
+                                "done",
+                                done_details,
+                                100,
+                                duration,
+                                workflow_id=workflow_id,
+                            )
                             print(f"[WORKFLOW] [DEBUG] Step {i} ({step['id']}) marked as done")
 
                 except Exception as exc:
                     duration = (datetime.now() - step_start_time).total_seconds()
-                    error_msg = f"Errore: {str(exc)}"
-                    self._update_step_status(i, "failed", error_msg, 0, duration)
-
-                    # Segna il workflow come fallito e interrompi
-                    with self._lock:
-                        self._status["status"] = "failed"
-                        self._status["error"] = error_msg
+                    interrupted = stop_event.is_set()
+                    if interrupted:
+                        workflow_status = "completed"
+                        workflow_error = "Workflow interrotto dall'utente"
+                        completion_status = "interrupted"
+                        completion_message = workflow_error
+                        self._update_step_status(
+                            i,
+                            "skipped",
+                            "Interrotto dall'utente",
+                            100,
+                            duration,
+                            workflow_id=workflow_id,
+                        )
+                    else:
+                        workflow_error = f"Errore: {str(exc)}"
+                        completion_message = workflow_error
+                        self._update_step_status(
+                            i,
+                            "failed",
+                            workflow_error,
+                            0,
+                            duration,
+                            workflow_id=workflow_id,
+                        )
 
                     # Marca gli step rimanenti come skipped
                     for j in range(i + 1, len(steps)):
-                        self._update_step_status(j, "skipped", "Saltato per errore precedente", 0)
-
-                    self._complete_workflow_operation("error", error_msg)
+                        self._update_step_status(
+                            j,
+                            "skipped",
+                            "Interrotto dall'utente" if interrupted else "Saltato per errore precedente",
+                            100 if interrupted else 0,
+                            workflow_id=workflow_id,
+                        )
                     return
 
             # Workflow completato con successo
-            completion_status = "success"
-            completion_message = "Workflow completato"
             with self._lock:
-                if self._stop_event.is_set():
-                    self._status["status"] = "completed"
-                    self._status["error"] = "Workflow interrotto dall'utente"
+                if not self._is_current_workflow_locked(workflow_id):
+                    return
+                if stop_event.is_set():
+                    workflow_status = "completed"
+                    workflow_error = "Workflow interrotto dall'utente"
                     completion_status = "interrupted"
-                    completion_message = "Workflow interrotto dall'utente"
+                    completion_message = workflow_error
                     print("[WORKFLOW] Workflow interrotto dall'utente")
                 else:
-                    self._status["status"] = "completed"
+                    workflow_status = "completed"
+                    workflow_error = None
+                    completion_status = "success"
                     completion_message = "Workflow completato"
                     print("[WORKFLOW] ===== Workflow completato con successo =====")
                     print("[WORKFLOW] Tutti i processi sono stati eseguiti correttamente:"
                           "\n  1. Scansione file librerie completata"
-                          "\n  2. STRM Probe Ultimi Aggiunti completato"
+                          "\n  2. Media Probe Ultimi Aggiunti completato"
                           "\n  3. Aggiornamento pubblicazioni completato"
                           "\n  4. Notifiche Telegram inviate")
 
-                # Aggiorna stato su database
-                if self._db_storage and self._status.get("workflow_id"):
-                    try:
-                        self._db_storage.update_workflow_execution(
-                            workflow_id=self._status["workflow_id"],
-                            status="completed",
-                            error=self._status.get("error")
-                        )
-                        print("[WORKFLOW] Stato workflow salvato su database")
-                    except Exception as db_exc:
-                        print(f"[WORKFLOW] ⚠️ Errore aggiornamento workflow su DB: {db_exc}")
-            self._complete_workflow_operation(completion_status, completion_message)
-
         except Exception as exc:
             # Errore inaspettato nel loop principale
-            critical_error = f"Errore critico: {str(exc)}"
-            with self._lock:
-                self._status["status"] = "failed"
-                self._status["error"] = critical_error
+            workflow_error = f"Errore critico: {str(exc)}"
+            completion_message = workflow_error
+        finally:
+            self._finalize_workflow(
+                workflow_id,
+                workflow_status,
+                workflow_error,
+                completion_status,
+                completion_message,
+            )
 
-                # Aggiorna stato su database
-                if self._db_storage and self._status.get("workflow_id"):
-                    try:
-                        self._db_storage.update_workflow_execution(
-                            workflow_id=self._status["workflow_id"],
-                            status="failed",
-                            error=str(exc)
-                        )
-                        print("[WORKFLOW] Stato workflow (failed) salvato su database")
-                    except Exception as db_exc:
-                        print(f"[WORKFLOW] ⚠️ Errore aggiornamento workflow su DB: {db_exc}")
-            self._complete_workflow_operation("error", critical_error)
-
-    def _execute_scan_step(self, step_index, context):
+    def _execute_scan_step(self, step_index, context, workflow_id, stop_event):
         """
         Esegue lo step di scansione Emby con polling.
 
@@ -840,7 +940,13 @@ class WorkflowManager:
             raise Exception("Callback scan non configurate")
 
         # Avvia la scansione usando il sistema di scan gruppo esistente
-        self._update_step_status(step_index, "running", "Avvio scansione file librerie...", 10)
+        self._update_step_status(
+            step_index,
+            "running",
+            "Avvio scansione file librerie...",
+            10,
+            workflow_id=workflow_id,
+        )
         print("[WORKFLOW] [SCAN] Avvio scansione file librerie...")
         success = self._trigger_scan_func(context)
 
@@ -850,13 +956,21 @@ class WorkflowManager:
         # Espone eventuali job_id del workflow per la UI (SSE)
         if isinstance(context, dict):
             with self._lock:
+                if not self._is_current_workflow_locked(workflow_id):
+                    return
                 job_ids = context.get("workflow_job_ids") or context.get("workflow_job_id") or []
                 if isinstance(job_ids, (str, int)):
                     job_ids = [job_ids]
                 self._status["workflow_job_ids"] = job_ids
 
         # Il progress viene mostrato nelle barre individuali delle librerie nella dashboard
-        self._update_step_status(step_index, "running", "Scansione file in corso...", 30)
+        self._update_step_status(
+            step_index,
+            "running",
+            "Scansione file in corso...",
+            30,
+            workflow_id=workflow_id,
+        )
         print("[WORKFLOW] [SCAN] Scansione file avviata con successo, attesa completamento...")
 
         import time
@@ -864,7 +978,7 @@ class WorkflowManager:
         max_timeout = 7200  # 2 ore
         start_time = time.time()
 
-        while not self._stop_event.is_set():
+        while not stop_event.is_set():
             # Check timeout
             elapsed = time.time() - start_time
             if elapsed > max_timeout:
@@ -873,19 +987,25 @@ class WorkflowManager:
             if self._check_scan_func(context):
                 # Scansione completata
                 print("[WORKFLOW] [SCAN] Scansione file completata con successo")
-                self._update_step_status(step_index, "running", "Scansione file completata", 90)
+                self._update_step_status(
+                    step_index,
+                    "running",
+                    "Scansione file completata",
+                    90,
+                    workflow_id=workflow_id,
+                )
                 break
 
             # Wait con timeout invece di sleep - permette interruzione immediata
-            self._stop_event.wait(timeout=10)
+            stop_event.wait(timeout=10)
 
-        if self._stop_event.is_set():
+        if stop_event.is_set():
             print("[WORKFLOW] [SCAN] Scansione interrotta dall'utente")
             raise Exception("Scansione interrotta")
 
         print("[WORKFLOW] [SCAN] Step completato, passaggio al prossimo step")
 
-    def _execute_probe_step(self, step_index, context):
+    def _execute_probe_step(self, step_index, context, workflow_id, stop_event):
         """
         Esegue lo step di probe con polling.
 
@@ -897,16 +1017,28 @@ class WorkflowManager:
             raise Exception("Callback probe non configurate")
 
         # Avvia il probe
-        self._update_step_status(step_index, "running", "Avvio STRM Probe Ultimi Aggiunti...", 10)
-        print("[WORKFLOW] [PROBE] Avvio STRM Probe su tutti i server coinvolti...")
+        self._update_step_status(
+            step_index,
+            "running",
+            "Avvio Media Probe Ultimi Aggiunti...",
+            10,
+            workflow_id=workflow_id,
+        )
+        print("[WORKFLOW] [PROBE] Avvio Media Probe su tutti i server coinvolti...")
         success = self._trigger_probe_func(context)
 
         if not success:
             raise Exception("Impossibile avviare il probe")
 
         # Polling fino al completamento
-        self._update_step_status(step_index, "running", "STRM Probe in corso...", 30)
-        print("[WORKFLOW] [PROBE] STRM Probe avviato con successo, attesa completamento...")
+        self._update_step_status(
+            step_index,
+            "running",
+            "Media Probe in corso...",
+            30,
+            workflow_id=workflow_id,
+        )
+        print("[WORKFLOW] [PROBE] Media Probe avviato con successo, attesa completamento...")
 
         import time
         # Delay iniziale per dare tempo ai worker di avviarsi (evita race condition)
@@ -917,7 +1049,7 @@ class WorkflowManager:
         max_timeout = 7200  # 2 ore
         start_time = time.time()
 
-        while not self._stop_event.is_set():
+        while not stop_event.is_set():
             # Check timeout
             elapsed = time.time() - start_time
             if elapsed > max_timeout:
@@ -925,20 +1057,26 @@ class WorkflowManager:
 
             if self._check_probe_func(context):
                 # Probe completato
-                print("[WORKFLOW] [PROBE] STRM Probe completato con successo")
-                self._update_step_status(step_index, "running", "STRM Probe completato", 90)
+                print("[WORKFLOW] [PROBE] Media Probe completato con successo")
+                self._update_step_status(
+                    step_index,
+                    "running",
+                    "Media Probe completato",
+                    90,
+                    workflow_id=workflow_id,
+                )
                 break
 
             # Wait con timeout invece di sleep - permette interruzione immediata
-            self._stop_event.wait(timeout=10)
+            stop_event.wait(timeout=10)
 
-        if self._stop_event.is_set():
-            print("[WORKFLOW] [PROBE] STRM Probe interrotto dall'utente")
+        if stop_event.is_set():
+            print("[WORKFLOW] [PROBE] Media Probe interrotto dall'utente")
             raise Exception("Probe interrotto")
 
         print("[WORKFLOW] [PROBE] Step completato, passaggio al prossimo step")
 
-    def _execute_cache_step(self, step_index, context):
+    def _execute_cache_step(self, step_index, context, workflow_id):
         """
         Esegue lo step di aggiornamento cache.
 
@@ -949,17 +1087,35 @@ class WorkflowManager:
         if not self._refresh_cache_func:
             raise Exception("Callback cache non configurata")
 
-        self._update_step_status(step_index, "running", "Avvio aggiornamento Ultimi Aggiunti...", 10)
+        self._update_step_status(
+            step_index,
+            "running",
+            "Avvio aggiornamento Ultimi Aggiunti...",
+            10,
+            workflow_id=workflow_id,
+        )
         print("[WORKFLOW] [CACHE] Avvio aggiornamento pubblicazioni Ultimi Aggiunti...")
 
         # Chiama la funzione di refresh cache (include polling interno)
-        self._update_step_status(step_index, "running", "Aggiornamento pubblicazioni in corso...", 50)
+        self._update_step_status(
+            step_index,
+            "running",
+            "Aggiornamento pubblicazioni in corso...",
+            50,
+            workflow_id=workflow_id,
+        )
         self._refresh_cache_func(context)
 
         print("[WORKFLOW] [CACHE] Pubblicazioni Ultimi Aggiunti aggiornate con successo")
-        self._update_step_status(step_index, "running", "Pubblicazioni aggiornate", 90)
+        self._update_step_status(
+            step_index,
+            "running",
+            "Pubblicazioni aggiornate",
+            90,
+            workflow_id=workflow_id,
+        )
 
-    def _execute_notify_step(self, step_index, context):
+    def _execute_notify_step(self, step_index, context, workflow_id):
         """
         Esegue lo step di notifica.
 
@@ -970,11 +1126,23 @@ class WorkflowManager:
         if not self._notify_func:
             raise Exception("Callback notifiche non configurata")
 
-        self._update_step_status(step_index, "running", "Avvio invio notifiche Telegram...", 10)
+        self._update_step_status(
+            step_index,
+            "running",
+            "Avvio invio notifiche Telegram...",
+            10,
+            workflow_id=workflow_id,
+        )
         print("[WORKFLOW] [NOTIFY] Avvio invio notifiche Telegram secondo configurazione...")
 
         # Chiama la funzione di notifica
-        self._update_step_status(step_index, "running", "Invio notifiche in corso...", 50)
+        self._update_step_status(
+            step_index,
+            "running",
+            "Invio notifiche in corso...",
+            50,
+            workflow_id=workflow_id,
+        )
         result = self._notify_func(context)
 
         is_noop = isinstance(result, dict) and _is_notification_noop_result(result)
@@ -996,14 +1164,31 @@ class WorkflowManager:
                 details = "Notifiche Telegram: " + ", ".join(detail_parts)
 
         print("[WORKFLOW] [NOTIFY] Notifiche Telegram inviate con successo")
-        self._update_step_status(step_index, "running", details, 90)
+        self._update_step_status(
+            step_index,
+            "running",
+            details,
+            90,
+            workflow_id=workflow_id,
+        )
 
-    def _get_steps(self):
+    def _get_steps(self, workflow_id=None):
         """Restituisce una copia degli step correnti."""
         with self._lock:
+            if workflow_id is not None and not self._is_current_workflow_locked(workflow_id):
+                return []
             return list(self._status["steps"])
 
-    def _update_step_status(self, step_index, status, details, progress, duration=None):
+    def _update_step_status(
+        self,
+        step_index,
+        status,
+        details,
+        progress,
+        duration=None,
+        *,
+        workflow_id=None,
+    ):
         """
         Aggiorna lo stato di uno step specifico (in memoria e su database).
 
@@ -1015,6 +1200,8 @@ class WorkflowManager:
             duration: Durata in secondi (opzionale)
         """
         with self._lock:
+            if workflow_id is not None and not self._is_current_workflow_locked(workflow_id):
+                return False
             if 0 <= step_index < len(self._status["steps"]):
                 step = self._status["steps"][step_index]
                 step["status"] = status
@@ -1037,6 +1224,8 @@ class WorkflowManager:
                         print(f"[WORKFLOW] ⚠️ Errore aggiornamento step su DB: {exc}")
                 step_label = step.get("label") or step.get("id") or "Workflow"
                 self._update_workflow_operation_locked(f"{step_label}: {details}")
+                return True
+            return False
 
 
 # Istanza globale singleton

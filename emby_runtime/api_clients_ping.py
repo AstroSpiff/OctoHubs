@@ -1,5 +1,6 @@
 import requests
 
+from core.http_error_messages import safe_http_error_message
 from emby_runtime.api_client_urls import build_jellyseerr_api_url
 
 
@@ -21,7 +22,7 @@ def _ping_api_service(url, headers=None, params=None, timeout=10):
         response.raise_for_status()
         return True, "Connessione OK"
     except requests.exceptions.RequestException as exc:
-        return False, str(exc)
+        return False, safe_http_error_message(exc)
 
 
 def _ping_jellyseerr(config):
@@ -54,6 +55,8 @@ def _ping_qbittorrent(config):
         )
         if login_resp.status_code == 200 and login_resp.text.strip() == "Ok.":
             return True, "Connessione OK"
-        return False, login_resp.text.strip() or "Login fallito"
+        if login_resp.status_code != 200:
+            return False, f"Autenticazione non riuscita (HTTP {login_resp.status_code})"
+        return False, "Autenticazione non riuscita"
     except requests.exceptions.RequestException as exc:
-        return False, str(exc)
+        return False, safe_http_error_message(exc)

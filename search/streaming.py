@@ -57,6 +57,13 @@ async def search_streaming_parallel(
     from search.indexers import _jackett_configured, _prowlarr_configured
     from search.library_index import _load_emby_library_title_index
     from search.rules import _compose_request_search_rules, _get_request_rule
+    from search.outbound_execution import create_search_semaphore, run_outbound_search
+    from search.stream_limits import (
+        MAX_SEARCH_QUERY_LENGTH,
+        MAX_SEARCH_TASKS,
+        SearchClientDisconnected,
+        SearchWorkloadLimitError,
+    )
     from core.config_manager import _ensure_db_backend
     from search.seasons import extract_request_seasons, get_episode_count_for_season, get_pending_episode_numbers
     from core.scanner import filter_results
@@ -81,6 +88,10 @@ async def search_streaming_parallel(
             # Connessione chiusa o errore - silenzioso
             return False
 
+    async def send_json_or_disconnect(data):
+        if not await safe_send_json(data):
+            raise SearchClientDisconnected("Client WebSocket disconnesso")
+
     start_time = time.time()
     total_results = 0
     completed_queries = 0
@@ -88,6 +99,7 @@ async def search_streaming_parallel(
     seen_results = set()  # Deduplica globale
     all_results = []  # Lista di tutti i risultati per salvataggio finale
     query_attempts = []  # Lista delle query provate
+    outbound_semaphore = create_search_semaphore()
 
     def normalize_search_types(raw_types):
         normalized = []
@@ -243,34 +255,49 @@ async def search_streaming_parallel(
 
     # Prepara tutte le combinazioni di ricerca
     search_tasks = []
+
+    def add_search_task(*, indexer, query, media_type, func):
+        if len(search_tasks) >= MAX_SEARCH_TASKS:
+            raise SearchWorkloadLimitError(
+                f"La ricerca supera il limite di {MAX_SEARCH_TASKS} combinazioni"
+            )
+        search_tasks.append(
+            {
+                "indexer": indexer,
+                "query": query,
+                "media_type": media_type,
+                "func": func,
+            }
+        )
+
     for query_variant in actual_query_variants:
         normalized_query = (query_variant or "").strip()
         if not normalized_query:
             continue
+        if len(normalized_query) > MAX_SEARCH_QUERY_LENGTH:
+            raise SearchWorkloadLimitError(
+                f"Le query non possono superare {MAX_SEARCH_QUERY_LENGTH} caratteri"
+            )
         for search_type in search_types:
             if "prowlarr" in selected_indexers and _prowlarr_configured(config):
-                search_tasks.append(
-                    {
-                        "indexer": "prowlarr",
-                        "query": normalized_query,
-                        "media_type": search_type,
-                        "func": search_prowlarr,
-                    }
+                add_search_task(
+                    indexer="prowlarr",
+                    query=normalized_query,
+                    media_type=search_type,
+                    func=search_prowlarr,
                 )
             if "jackett" in selected_indexers and _jackett_configured(config):
-                search_tasks.append(
-                    {
-                        "indexer": "jackett",
-                        "query": normalized_query,
-                        "media_type": search_type,
-                        "func": search_jackett,
-                    }
+                add_search_task(
+                    indexer="jackett",
+                    query=normalized_query,
+                    media_type=search_type,
+                    func=search_jackett,
                 )
 
     total_queries = len(search_tasks)
 
     if total_queries == 0:
-        await safe_send_json({"type": "error", "message": "Nessuna query da eseguire"})
+        await send_json_or_disconnect({"type": "error", "message": "Nessuna query da eseguire"})
         return {"total_results": 0, "total_duration": 0}
 
     # Funzione wrapper per eseguire singola ricerca e inviare risultati via WebSocket
@@ -285,7 +312,7 @@ async def search_streaming_parallel(
         query_start = time.time()
 
         # Notifica inizio query
-        await safe_send_json(
+        await send_json_or_disconnect(
             {
                 "type": "query_started",
                 "query": query,
@@ -297,7 +324,13 @@ async def search_streaming_parallel(
 
         # Esegui ricerca (bloccante, ma in thread separato)
         try:
-            results = await asyncio.get_event_loop().run_in_executor(None, search_func, query, media_type, config)
+            results = await run_outbound_search(
+                outbound_semaphore,
+                search_func,
+                query,
+                media_type,
+                config,
+            )
 
             query_duration = time.time() - query_start
             result_count = len(results) if results else 0
@@ -328,18 +361,17 @@ async def search_streaming_parallel(
                     result["normalized_title"] = normalized_title
                     result["in_library"] = bool(library_index and normalized_title in library_index)
 
-                    # Deduplica basata su title normalizzato + size
+                    # Manteniamo tutte le fonti per il raggruppamento finale. Durante
+                    # lo streaming mostriamo comunque una sola riga per risultato.
                     result_key = build_dedupe_key(result)
+                    all_results.append(result)
 
                     if result_key not in seen_results:
                         seen_results.add(result_key)
                         total_results += 1
 
-                        # Aggiungi a lista risultati per salvataggio finale
-                        all_results.append(result)
-
                         # Invia risultato via WebSocket
-                        await safe_send_json(
+                        await send_json_or_disconnect(
                             {
                                 "type": "result",
                                 "data": result,
@@ -363,7 +395,7 @@ async def search_streaming_parallel(
 
             # Notifica completamento query
             completed_queries += 1
-            await safe_send_json(
+            await send_json_or_disconnect(
                 {
                     "type": "query_completed",
                     "query": query,
@@ -376,9 +408,16 @@ async def search_streaming_parallel(
                 }
             )
 
+        except SearchClientDisconnected:
+            raise
         except Exception as exc:
             query_duration = time.time() - query_start
             completed_queries += 1
+            error_message = (
+                "Timeout durante la ricerca sull'indexer"
+                if isinstance(exc, TimeoutError)
+                else str(exc)
+            )
 
             # Traccia query fallita
             query_attempts.append(
@@ -388,25 +427,33 @@ async def search_streaming_parallel(
                     "media_type": media_type,
                     "results_found": 0,
                     "duration": round(query_duration, 2),
-                    "error": str(exc),
+                    "error": error_message,
                 }
             )
 
-            print(f"[STREAM] Errore ricerca {indexer} per '{query}': {exc}")
-            await safe_send_json(
+            print(f"[STREAM] Errore ricerca {indexer} per '{query}': {error_message}")
+            await send_json_or_disconnect(
                 {
                     "type": "error",
                     "query": query,
                     "indexer": indexer,
                     "media_type": media_type,
-                    "error": str(exc),
+                    "error": error_message,
                     "duration": round(query_duration, 2),
                     "timestamp": datetime.now().isoformat(),
                 }
             )
 
     # Esegui tutte le ricerche in parallelo con asyncio.gather
-    await asyncio.gather(*[execute_and_stream(task) for task in search_tasks])
+    running_tasks = [asyncio.create_task(execute_and_stream(task)) for task in search_tasks]
+    try:
+        await asyncio.gather(*running_tasks)
+    except BaseException:
+        for running_task in running_tasks:
+            if not running_task.done():
+                running_task.cancel()
+        await asyncio.gather(*running_tasks, return_exceptions=True)
+        raise
 
     # Invia messaggio di completamento finale
     total_duration = time.time() - start_time
@@ -418,7 +465,11 @@ async def search_streaming_parallel(
 
     print(f"[STREAM] Risultati già filtrati durante lo streaming: {len(all_results)} totali")
 
-    # Merge duplicati (raggruppa fonti multiple per stesso torrent)
+    # Ordiniamo prima di raggruppare, così la fonte principale rispetta le
+    # stesse regole delle ricerche automatiche e le altre restano disponibili.
+    search_rules = effective_config.get("SEARCH_RULES", {})
+    media_type_for_sort = search_types[0] if len(search_types) == 1 else None
+    all_results = sort_results(all_results, search_rules, media_type=media_type_for_sort)
     all_results = merge_duplicate_results(all_results)
     print(f"[STREAM] Dopo merge duplicati: {len(all_results)} risultati unici")
 
@@ -433,12 +484,6 @@ async def search_streaming_parallel(
     # Aggiorna il conteggio dopo merge
     total_results = len(all_results)
 
-    # Ordina i risultati usando le regole di ordinamento configurate
-    # SEMPRE applicato per garantire consistenza con le ricerche automatiche
-    search_rules = effective_config.get("SEARCH_RULES", {})
-    media_type_for_sort = search_types[0] if len(search_types) == 1 else None
-    all_results = sort_results(all_results, search_rules, media_type=media_type_for_sort)
-
     # Salva ricerca nel database (stesso formato delle ricerche automatiche)
     try:
         backend = _ensure_db_backend()
@@ -446,10 +491,21 @@ async def search_streaming_parallel(
         # Estrai dati dalla prima variante di query
         original_query = query_variants[0] if query_variants else "Ricerca Manuale"
         media_type_str = search_types[0] if len(search_types) == 1 else "mixed"
+        search_context = {
+            "query": str(original_query),
+            "media_type": "unknown" if media_type_str == "mixed" else media_type_str,
+            "indexers": sorted(str(indexer) for indexer in selected_indexers),
+            "seasons": selected_seasons,
+        }
+        if tmdb_id not in (None, ""):
+            search_context["tmdb_id"] = tmdb_id
+        if use_custom_rules and isinstance(custom_rules, dict):
+            search_context["custom_rules"] = custom_rules
 
         # Crea payload compatibile con le ricerche automatiche
         search_payload = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
+            "search_context": search_context,
             "total_requests": 1,
             "checked_requests": 1,
             "found": 1 if total_results > 0 else 0,
@@ -488,7 +544,7 @@ async def search_streaming_parallel(
     if filters_applied:
         final_message["filtered_results"] = all_results
 
-    await safe_send_json(final_message)
+    await send_json_or_disconnect(final_message)
 
     return {
         "total_results": total_results,

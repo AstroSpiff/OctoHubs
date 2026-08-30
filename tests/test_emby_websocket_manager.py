@@ -1,5 +1,7 @@
+import asyncio
 import json
 
+from emby_runtime import websocket_manager
 from emby_runtime.websocket_manager import EmbyWebSocketConnection, EmbyWebSocketManager, _is_stream_session_event
 
 
@@ -83,3 +85,71 @@ def test_emby_websocket_unsubscribes_from_session_updates_on_stop():
 
     assert fake_ws.sent[0] == {"MessageType": "SessionsStop"}
     assert fake_ws.closed is True
+
+
+def test_upsert_server_replaces_changed_connection_without_duplicates(monkeypatch):
+    created = []
+
+    class FakeConnection:
+        def __init__(self, server_id, server_url, api_key, event_callback):
+            self.server_id = server_id
+            self.server_url = server_url
+            self.api_key = api_key
+            self.event_callback = event_callback
+            self.started = False
+            self.stopped = False
+            created.append(self)
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr(websocket_manager, "EmbyWebSocketConnection", FakeConnection)
+    manager = EmbyWebSocketManager()
+
+    assert manager.upsert_server("green", "http://green:8096/", "first-key") is True
+    first = manager.get_connection("green")
+    assert first is not None
+    assert first.started is True
+    assert first.server_url == "http://green:8096"
+
+    assert manager.upsert_server("green", "http://green:8096", "second-key") is True
+    replacement = manager.get_connection("green")
+    assert replacement is not first
+    assert first.stopped is True
+    assert replacement is not None
+    assert replacement.started is True
+    assert replacement.api_key == "second-key"
+
+    assert manager.upsert_server("green", "http://green:8096", "second-key") is False
+    assert manager.get_connection("green") is replacement
+    assert len(created) == 2
+
+
+def test_refresh_progress_is_scheduled_on_the_registered_app_loop(monkeypatch):
+    manager = EmbyWebSocketManager()
+    class _Loop:
+        def is_running(self):
+            return True
+
+    loop = _Loop()
+    scheduled = []
+
+    monkeypatch.setattr("app_state.get_app_event_loop", lambda: loop)
+    monkeypatch.setattr(
+        asyncio,
+        "run_coroutine_threadsafe",
+        lambda coroutine, target_loop: scheduled.append((coroutine, target_loop)),
+    )
+
+    manager.setup_scan_progress_forwarding()
+    manager._handle_event(
+        "green",
+        {"MessageType": "RefreshProgress", "Data": {"ItemId": "library-1", "Progress": 20}},
+    )
+
+    assert len(scheduled) == 1
+    assert scheduled[0][1] is loop
+    scheduled[0][0].close()

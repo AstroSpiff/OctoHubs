@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from app_state import _JELLYSEERR_REFRESH_STATE
-from services.manager import _build_refresh_requests_snapshot
+from services.research_request_actions import refresh_requests
 
 
 class RefreshRequestsSnapshotTests(unittest.TestCase):
@@ -29,7 +29,7 @@ class RefreshRequestsSnapshotTests(unittest.TestCase):
             "emby_runtime.api_clients.get_jellyseerr_requests",
             side_effect=AssertionError("refresh should not call Jellyseerr twice"),
         ):
-            payload, status_code = _build_refresh_requests_snapshot()
+            payload, status_code = refresh_requests()
 
         self.assertEqual(200, status_code)
         self.assertTrue(payload["success"])

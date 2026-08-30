@@ -1,4 +1,4 @@
-"""STRM Probe manager stop semantics."""
+"""Media Probe manager stop semantics."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ class _ParallelProbeDB:
         ]
         self.history = []
 
-    def get_recent_scan_config(self, server_id):
+    def get_probe_config(self, server_id):
         return {"probe_parallelism": self.parallelism}
 
     def get_probe_queue(self, server_id, library_ids=None, scope="libraries"):

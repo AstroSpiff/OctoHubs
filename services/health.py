@@ -7,6 +7,7 @@ import requests
 
 from core.config import DEFAULT_CONFIG, _merge_database_settings, _merge_trakt_settings, _merge_justwatch_settings
 from core.config_manager import _db_enabled, _get_db_backend
+from core.http_error_messages import safe_http_error_message
 from core.integrations import (
     TraktAPIError,
     _get_trakt_client,
@@ -79,8 +80,10 @@ def _ping_trakt(config):
     try:
         client.ping()
         return True, "Connessione OK", True
-    except TraktAPIError as exc:
-        return False, str(exc), True
+    except TraktAPIError:
+        return False, "Verifica Trakt non riuscita", True
+    except Exception:
+        return False, "Verifica Trakt non riuscita", True
 
 
 def _ping_justwatch(config):
@@ -122,7 +125,7 @@ def _ping_mdblist(config):
                 continue
             if payload.get("error"):
                 failed_keys += 1
-                last_error = f"Errore: {payload.get('error')}"
+                last_error = "Richiesta rifiutata dal servizio"
                 continue
             title = payload.get("title")
             if not title:
@@ -132,10 +135,10 @@ def _ping_mdblist(config):
             working_keys += 1
         except requests.RequestException as exc:
             failed_keys += 1
-            last_error = f"Errore connessione: {exc}"
-        except Exception as exc:
+            last_error = f"Errore connessione: {safe_http_error_message(exc)}"
+        except Exception:
             failed_keys += 1
-            last_error = f"Errore: {exc}"
+            last_error = "Errore inatteso durante la verifica"
 
     if working_keys == 0:
         return False, f"Tutte le chiavi fallite. Ultimo errore: {last_error}", True
@@ -176,9 +179,8 @@ def _ping_omdb(config):
                 last_error = "Risposta API non valida"
                 continue
             if payload.get("Response") == "False":
-                error = payload.get("Error", "Errore sconosciuto")
                 failed_keys += 1
-                last_error = f"Errore OMDB: {error}"
+                last_error = "Richiesta rifiutata dal servizio"
                 continue
             title = payload.get("Title")
             if not title:
@@ -188,10 +190,10 @@ def _ping_omdb(config):
             working_keys += 1
         except requests.RequestException as exc:
             failed_keys += 1
-            last_error = f"Errore connessione: {exc}"
-        except Exception as exc:
+            last_error = f"Errore connessione: {safe_http_error_message(exc)}"
+        except Exception:
             failed_keys += 1
-            last_error = f"Errore: {exc}"
+            last_error = "Errore inatteso durante la verifica"
 
     if working_keys == 0:
         return False, f"Tutte le chiavi fallite. Ultimo errore: {last_error}", True
@@ -265,14 +267,14 @@ def _check_database_connection(config):
         backend = _get_db_backend(settings)
         if not backend:
             return True
-        ok, message = backend.test_connection()
+        ok, _message = backend.test_connection()
         if not ok:
-            print(f"   -> Database non raggiungibile: {message}")
+            print("   -> Database non raggiungibile.")
         else:
             print("   -> Database raggiungibile.")
         return ok
-    except StorageError as exc:
-        print(f"   -> Database non utilizzabile: {exc}")
+    except StorageError:
+        print("   -> Database non utilizzabile.")
         return False
 
 
@@ -284,7 +286,7 @@ def _ping_database(config):
         backend = _get_db_backend(settings)
         if not backend:
             return False, "Database non disponibile", True
-        ok, message = backend.test_connection()
-        return ok, message or "Connessione OK", True
-    except StorageError as exc:
-        return False, str(exc), True
+        ok, _message = backend.test_connection()
+        return ok, "Connessione OK" if ok else "Connessione database non riuscita", True
+    except StorageError:
+        return False, "Connessione database non riuscita", True

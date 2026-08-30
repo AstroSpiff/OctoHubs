@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import hmac
-import os
 from typing import Any, Mapping
-
-from fastapi import HTTPException
 
 
 EVENT_BRIDGE_SCHEMA = "octohubs.emby.event.v1"
@@ -27,15 +23,6 @@ def header_value(headers: Mapping[str, Any], name: str) -> str:
             if str(key).lower() == normalized:
                 return str(value or "").strip()
     return ""
-
-
-def validate_event_bridge_secret(headers: Mapping[str, Any]) -> None:
-    expected = (os.getenv("WEBHOOK_SECRET") or "").strip()
-    if not expected:
-        raise HTTPException(status_code=503, detail="WEBHOOK_SECRET non configurato")
-    provided = header_value(headers, "X-Webhook-Secret")
-    if not provided or not hmac.compare_digest(provided, expected):
-        raise HTTPException(status_code=403, detail="Event Bridge secret non valido")
 
 
 def event_bridge_payloads(payload: dict[str, Any]) -> list[dict[str, Any]]:

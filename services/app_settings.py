@@ -17,9 +17,7 @@ def _update_app_settings_overrides(data):
     # Salva nel database
     try:
         backend = _ensure_db_backend()
-        app_settings = backend.load_app_settings() or {}
-        app_settings.update(data)
-        backend.save_app_settings(app_settings)
+        backend.update_app_settings(data)
     except StorageError:
         raise
 

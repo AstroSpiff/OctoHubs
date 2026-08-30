@@ -58,13 +58,13 @@ def list_collection_definitions() -> List[Dict[str, Any]]:
         definition_id = entry.get("id")
         if definition_id and definition_id in poster_ids:
             entry["poster_uploaded"] = True
-            entry["poster_blob_url"] = f"/api/emby/collections/{definition_id}/poster"
+            entry["poster_blob_url"] = f"/api/v1/emby/collections/{definition_id}/poster"
         else:
             entry["poster_uploaded"] = False
             entry["poster_blob_url"] = ""
         if definition_id and definition_id in backdrop_ids:
             entry["background_uploaded"] = True
-            entry["background_blob_url"] = f"/api/emby/collections/{definition_id}/backdrop"
+            entry["background_blob_url"] = f"/api/v1/emby/collections/{definition_id}/backdrop"
         else:
             entry["background_uploaded"] = False
             entry["background_blob_url"] = ""

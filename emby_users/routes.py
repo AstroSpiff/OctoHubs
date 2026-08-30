@@ -1,36 +1,70 @@
 """FastAPI routes for Emby user management."""
 
-import json
 from typing import Any, Callable, Dict, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse
 
+from realtime.manager import publish_application_event
+from web.session_auth import has_mutation_capability
+from web.openapi_requests import no_request_body
 from web.http_responses import error_response, success_response
 from emby_users.sync_state_refresh import refresh_sync_states
+from emby_users.api_models import (
+    AccessToggleRequest,
+    BulkSettingsApplyRequest,
+    CheckUserRequest,
+    CloneUserRequest,
+    CreateUsersRequest,
+    DeleteGroupUsersRequest,
+    DeleteUserRequest,
+    GroupIdRequest,
+    GroupPasswordRequest,
+    GroupSettingsRequest,
+    GroupSyncSettingsRequest,
+    LinkUsersRequest,
+    RenameGroupRequest,
+    RenameUserRequest,
+    ServerUserTarget,
+    SettingsPresetDuplicateRequest,
+    SettingsPresetRequest,
+    UserPasswordRequest,
+    UserSettingsRequest,
+)
+from emby_users.response_models import (
+    ClearCompletedOperationsResponse,
+    EmbyUsersDashboardResponse,
+    OperationsSnapshotResponse,
+    OperationsUnavailableResponse,
+    UserApiErrorResponse,
+    UserApiSuccessResponse,
+    UserExistsResponse,
+    UserGroupLinkResponse,
+    UserDetailsResponse,
+    UserPasswordInfoResponse,
+    UserSettingsInfoResponse,
+    UserSettingsSchemaResponse,
+    UserSettingsPresetListResponse,
+    UserSettingsPresetResponse,
+)
 
 router = APIRouter()
+USERS_UPDATED_MESSAGE = "OctoHubsUsersUpdated"
 
 _require_user: Optional[Callable[[Request], Any]] = None
-_get_current_user_optional: Optional[Callable[[Request], Any]] = None
 _get_emby_user_manager: Optional[Callable[[], Any]] = None
 _validate_csrf: Optional[Callable[[Request, Optional[str]], bool]] = None
-_templates: Any = None
 
 
 def init_emby_user_routes(
-    get_current_user_optional: Callable[[Request], Any],
     require_user: Callable[[Request], Any],
     get_emby_user_manager: Callable[[], Any],
-    templates: Any,
     validate_csrf: Callable[[Request, Optional[str]], bool],
 ) -> None:
-    global _require_user, _get_current_user_optional, _get_emby_user_manager, _templates, _validate_csrf
+    global _require_user, _get_emby_user_manager, _validate_csrf
     _require_user = require_user
-    _get_current_user_optional = get_current_user_optional
     _get_emby_user_manager = get_emby_user_manager
-    _templates = templates
     _validate_csrf = validate_csrf
 
 
@@ -38,12 +72,6 @@ def _require_user_dep(request: Request):
     if _require_user is None:
         raise RuntimeError("Emby user routes not initialized: require_user missing")
     return _require_user(request)
-
-
-def _get_current_user_optional_dep(request: Request):
-    if _get_current_user_optional is None:
-        raise RuntimeError("Emby user routes not initialized: get_current_user_optional missing")
-    return _get_current_user_optional(request)
 
 
 def _get_manager():
@@ -106,14 +134,19 @@ def _server_label(manager, server_id: str) -> str:
     return server.get("alias") or server.get("name") or server.get("id") or server_id
 
 
-@router.get("/emby/users", response_class=HTMLResponse)
-async def view_emby_users(request: Request, user=Depends(_get_current_user_optional_dep)):
-    if not user:
-        return RedirectResponse(url="/login")
-    return RedirectResponse(url="/emby#users", status_code=303)
+def _publish_users_updated(scope: str = "dashboard") -> None:
+    """Refresh open user-management views after an OctoHubs-side mutation."""
+    try:
+        publish_application_event(USERS_UPDATED_MESSAGE, {"scope": scope})
+    except Exception:
+        # An unavailable realtime listener must never make a user action fail.
+        pass
 
 
-@router.get("/api/emby/users/list")
+@router.get(
+    "/api/emby/users/list",
+    responses={200: {"model": EmbyUsersDashboardResponse}, 503: {"model": UserApiErrorResponse}},
+)
 async def api_emby_users_list(user=Depends(_require_user_dep)):
     manager = _get_manager()
     if not manager:
@@ -122,7 +155,10 @@ async def api_emby_users_list(user=Depends(_require_user_dep)):
     return data
 
 
-@router.get("/api/emby/users/operations")
+@router.get(
+    "/api/emby/users/operations",
+    responses={200: {"model": OperationsSnapshotResponse}, 503: {"model": OperationsUnavailableResponse}},
+)
 async def api_emby_users_operations(user=Depends(_require_user_dep)):
     manager = _get_manager()
     if not manager:
@@ -135,7 +171,11 @@ async def api_emby_users_operations(user=Depends(_require_user_dep)):
     return {"ok": True, "operations": operations, "active_count": active_count}
 
 
-@router.post("/api/emby/users/operations/clear-completed")
+@router.post(
+    "/api/emby/users/operations/clear-completed",
+    responses={200: {"model": ClearCompletedOperationsResponse}, 503: {"model": OperationsUnavailableResponse}},
+    openapi_extra=no_request_body(),
+)
 async def api_emby_users_operations_clear_completed(
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
@@ -147,107 +187,91 @@ async def api_emby_users_operations_clear_completed(
     if not tracker:
         return {"ok": True, "removed": 0}
     removed = await run_in_threadpool(tracker.clear_completed)
+    if removed:
+        _publish_users_updated("operations")
     return {"ok": True, "removed": removed}
 
 
-@router.post("/api/emby/users/toggle")
-async def api_emby_users_toggle(
-    server_id: str = Form(...),
-    user_id: str = Form(...),
-    active: bool = Form(...),
-    _csrf=Depends(_validate_csrf_dep),
-    user=Depends(_require_user_dep)
-):
-    manager = _get_manager()
-    if not manager:
-        return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    success = manager.user_ops_manager.toggle_user_active(server_id, user_id, active)
-    return {"ok": success}
-
-
-@router.post("/api/emby/users/toggle-remote")
+@router.post("/api/emby/users/toggle-remote", responses={200: {"model": UserApiSuccessResponse}})
 async def api_emby_users_toggle_remote(
-    server_id: str = Form(...),
-    user_id: str = Form(...),
-    enable: bool = Form(...),
+    payload: AccessToggleRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    success = manager.user_ops_manager.toggle_remote_access(server_id, user_id, enable)
+    success = manager.user_ops_manager.toggle_remote_access(payload.server_id, payload.user_id, payload.enable)
+    if success:
+        _publish_users_updated()
     return {"ok": success}
 
 
-@router.post("/api/emby/users/toggle-download")
+@router.post("/api/emby/users/toggle-download", responses={200: {"model": UserApiSuccessResponse}})
 async def api_emby_users_toggle_download(
-    server_id: str = Form(...),
-    user_id: str = Form(...),
-    enable: bool = Form(...),
+    payload: AccessToggleRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    success = manager.user_ops_manager.toggle_download_permissions(server_id, user_id, enable)
+    success = manager.user_ops_manager.toggle_download_permissions(payload.server_id, payload.user_id, payload.enable)
+    if success:
+        _publish_users_updated()
     return {"ok": success}
 
 
-@router.post("/api/emby/users/link")
+@router.post("/api/emby/users/link", responses={200: {"model": UserGroupLinkResponse}})
 async def api_emby_users_link(
-    links_json: str = Form(...),
-    group_id: Optional[str] = Form(None),
+    payload: LinkUsersRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
-    try:
-        links = json.loads(links_json)
-    except json.JSONDecodeError:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Invalid JSON"})
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    group_id = manager.group_manager.link_users(links, group_id=group_id)
+    group_id = manager.group_manager.link_users(
+        [link.model_dump() for link in payload.links],
+        group_id=payload.group_id or None,
+    )
+    _publish_users_updated()
     return {"ok": True, "group_id": group_id, "group_health": manager.group_manager.get_group_health(group_id)}
 
 
-@router.post("/api/emby/users/unlink")
+@router.post("/api/emby/users/unlink", responses={200: {"model": UserApiSuccessResponse}})
 async def api_emby_users_unlink(
-    server_id: str = Form(...),
-    user_id: str = Form(...),
+    payload: ServerUserTarget,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    manager.group_manager.unlink_user(server_id, user_id)
+    manager.group_manager.unlink_user(payload.server_id, payload.user_id)
+    _publish_users_updated()
     return {"ok": True}
 
 
-@router.post("/api/emby/users/group/rename")
+@router.post("/api/emby/users/group/rename", responses={200: {"model": UserApiSuccessResponse}})
 async def api_emby_users_group_rename(
-    group_id: str = Form(...),
-    new_name: str = Form(...),
+    payload: RenameGroupRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    success = manager.group_manager.rename_group(group_id, new_name)
+    success = manager.group_manager.rename_group(payload.group_id, payload.new_name)
     if not success:
         return JSONResponse(status_code=400, content={"ok": False, "error": "Failed to rename group"})
+    _publish_users_updated()
     return {"ok": True}
 
 
-@router.post("/api/emby/users/rename")
+@router.post("/api/emby/users/rename", responses={200: {"model": UserApiSuccessResponse}})
 async def api_emby_users_rename(
-    server_id: str = Form(...),
-    user_id: str = Form(...),
-    new_name: str = Form(...),
+    payload: RenameUserRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
@@ -255,17 +279,16 @@ async def api_emby_users_rename(
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
 
-    success = manager.user_ops_manager.rename_user(server_id, user_id, new_name)
+    success = manager.user_ops_manager.rename_user(payload.server_id, payload.user_id, payload.new_name)
     if not success:
         return JSONResponse(status_code=400, content={"ok": False, "error": "Rename failed"})
+    _publish_users_updated()
     return {"ok": True}
 
 
-@router.post("/api/emby/users/password")
+@router.post("/api/emby/users/password", responses={200: {"model": UserApiSuccessResponse}})
 async def api_emby_users_password(
-    server_id: str = Form(...),
-    user_id: str = Form(...),
-    new_password: str = Form(""),
+    payload: UserPasswordRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
@@ -273,16 +296,16 @@ async def api_emby_users_password(
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
 
-    result = manager.password_manager.update_user_password(server_id, user_id, new_password)
+    result = manager.password_manager.update_user_password(payload.server_id, payload.user_id, payload.new_password)
     if not result.get("ok"):
         return JSONResponse(status_code=400, content={"ok": False, "error": "Password update failed", "details": result})
+    _publish_users_updated("settings")
     return {"ok": True, "result": result}
 
 
-@router.post("/api/emby/users/password-group")
+@router.post("/api/emby/users/password-group", responses={200: {"model": UserApiSuccessResponse}})
 async def api_emby_users_password_group(
-    group_id: str = Form(...),
-    new_password: str = Form(""),
+    payload: GroupPasswordRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
@@ -290,14 +313,19 @@ async def api_emby_users_password_group(
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
 
-    result = manager.password_manager.set_group_password(group_id, new_password)
+    result = manager.password_manager.set_group_password(payload.group_id, payload.new_password)
     if not result.get("ok"):
         return JSONResponse(status_code=400, content={"ok": False, "error": "Password update failed", "details": result})
+    _publish_users_updated("settings")
     return {"ok": True, "result": result}
 
 
-@router.get("/api/emby/users/password")
+@router.get(
+    "/api/emby/users/password",
+    responses={200: {"model": UserPasswordInfoResponse}, 400: {"model": UserApiErrorResponse}, 503: {"model": UserApiErrorResponse}},
+)
 async def api_emby_users_password_get(
+    request: Request,
     group_id: Optional[str] = None,
     server_id: Optional[str] = None,
     user_id: Optional[str] = None,
@@ -307,13 +335,24 @@ async def api_emby_users_password_get(
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
 
-    result = manager.password_manager.get_password_info(group_id=group_id, server_id=server_id, user_id=user_id)
+    include_password = has_mutation_capability(request, user, "write:users")
+    result = manager.password_manager.get_password_info(
+        group_id=group_id,
+        server_id=server_id,
+        user_id=user_id,
+        include_password=include_password,
+    )
     if not result.get("ok"):
         return JSONResponse(status_code=400, content=result)
+    if not include_password:
+        result.pop("password", None)
     return result
 
 
-@router.get("/api/emby/users/settings-schema")
+@router.get(
+    "/api/emby/users/settings-schema",
+    responses={200: {"model": UserSettingsSchemaResponse}, 503: {"model": UserApiErrorResponse}},
+)
 async def api_emby_users_settings_schema(user=Depends(_require_user_dep)):
     manager = _get_manager()
     if not manager:
@@ -322,7 +361,7 @@ async def api_emby_users_settings_schema(user=Depends(_require_user_dep)):
     return result
 
 
-@router.get("/api/emby/users/settings-presets")
+@router.get("/api/emby/users/settings-presets", responses={200: {"model": UserSettingsPresetListResponse}})
 async def api_emby_users_settings_presets(user=Depends(_require_user_dep)):
     manager = _get_manager()
     if not manager:
@@ -331,7 +370,10 @@ async def api_emby_users_settings_presets(user=Depends(_require_user_dep)):
     return {"ok": True, "presets": presets}
 
 
-@router.get("/api/emby/users/settings-presets/{preset_id}")
+@router.get(
+    "/api/emby/users/settings-presets/{preset_id}",
+    responses={200: {"model": UserSettingsPresetResponse}, 404: {"model": UserApiErrorResponse}},
+)
 async def api_emby_users_settings_preset_get(preset_id: str, user=Depends(_require_user_dep)):
     manager = _get_manager()
     if not manager:
@@ -342,23 +384,20 @@ async def api_emby_users_settings_preset_get(preset_id: str, user=Depends(_requi
     return {"ok": True, "preset": preset}
 
 
-@router.post("/api/emby/users/settings-presets")
+@router.post("/api/emby/users/settings-presets", responses={200: {"model": UserSettingsPresetResponse}})
 async def api_emby_users_settings_preset_save(
-    request: Request,
+    payload: SettingsPresetRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    payload = await request.json()
-    preset_id = payload.get("id") or payload.get("preset_id")
-    label = payload.get("label") or payload.get("name")
-    description = payload.get("description") or ""
-    settings = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
-    apply_libraries = payload.get("apply_libraries")
-    if apply_libraries is not None:
-        apply_libraries = bool(apply_libraries)
+    preset_id = payload.id or None
+    label = payload.label
+    description = payload.description
+    settings = payload.settings
+    apply_libraries = payload.apply_libraries
     if preset_id and not label:
         existing = await run_in_threadpool(manager.settings_preset_manager.get_preset, preset_id)
         if existing:
@@ -374,31 +413,32 @@ async def api_emby_users_settings_preset_save(
     )
     if not result.get("ok"):
         return JSONResponse(status_code=400, content=result)
+    _publish_users_updated("presets")
     return result
 
 
-@router.post("/api/emby/users/settings-presets/{preset_id}/duplicate")
+@router.post("/api/emby/users/settings-presets/{preset_id}/duplicate", responses={200: {"model": UserSettingsPresetResponse}})
 async def api_emby_users_settings_preset_duplicate(
     preset_id: str,
-    request: Request,
+    payload: SettingsPresetDuplicateRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    payload = await request.json()
     result = await run_in_threadpool(
         manager.settings_preset_manager.duplicate_preset,
         preset_id,
-        payload.get("label") or payload.get("name")
+        payload.label or None,
     )
     if not result.get("ok"):
         return JSONResponse(status_code=404, content=result)
+    _publish_users_updated("presets")
     return result
 
 
-@router.post("/api/emby/users/settings-presets/{preset_id}/delete")
+@router.post("/api/emby/users/settings-presets/{preset_id}/delete", responses={200: {"model": UserApiSuccessResponse}})
 async def api_emby_users_settings_preset_delete_post(
     preset_id: str,
     _csrf=Depends(_validate_csrf_dep),
@@ -410,10 +450,14 @@ async def api_emby_users_settings_preset_delete_post(
     result = await run_in_threadpool(manager.settings_preset_manager.delete_preset, preset_id)
     if not result.get("ok"):
         return JSONResponse(status_code=404, content=result)
+    _publish_users_updated("presets")
     return result
 
 
-@router.get("/api/emby/users/settings")
+@router.get(
+    "/api/emby/users/settings",
+    responses={200: {"model": UserSettingsInfoResponse}, 400: {"model": UserApiErrorResponse}, 503: {"model": UserApiErrorResponse}},
+)
 async def api_emby_users_settings_get(
     group_id: Optional[str] = None,
     server_id: Optional[str] = None,
@@ -429,64 +473,50 @@ async def api_emby_users_settings_get(
     return result
 
 
-@router.post("/api/emby/users/settings")
+@router.post("/api/emby/users/settings", responses={200: {"model": UserApiSuccessResponse}})
 async def api_emby_users_settings_update(
-    request: Request,
+    payload: UserSettingsRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    payload = await request.json()
-    server_id = payload.get("server_id")
-    user_id = payload.get("user_id")
-    settings = payload.get("settings")
-    if not server_id or not user_id:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Missing target"})
-    result = manager.settings_manager.update_user_settings(server_id, user_id, settings or {})
+    result = manager.settings_manager.update_user_settings(payload.server_id, payload.user_id, payload.settings)
     if not result.get("ok"):
         return JSONResponse(status_code=400, content={"ok": False, "error": "Settings update failed", "details": result})
+    _publish_users_updated("settings")
     return {"ok": True, "result": result}
 
 
-@router.post("/api/emby/users/settings-group")
+@router.post("/api/emby/users/settings-group", responses={200: {"model": UserApiSuccessResponse}})
 async def api_emby_users_settings_group_update(
-    request: Request,
+    payload: GroupSettingsRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    payload = await request.json()
-    group_id = payload.get("group_id")
-    settings = payload.get("settings")
-    if not group_id:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Missing group_id"})
-    result = manager.settings_manager.set_group_settings(group_id, settings or {})
+    result = manager.settings_manager.set_group_settings(payload.group_id, payload.settings)
     if not result.get("ok"):
         return JSONResponse(status_code=400, content={"ok": False, "error": "Settings update failed", "details": result})
+    _publish_users_updated("settings")
     return {"ok": True, "result": result}
 
 
-@router.post("/api/emby/users/settings-apply")
+@router.post("/api/emby/users/settings-apply", responses={200: {"model": UserApiSuccessResponse}})
 async def api_emby_users_settings_apply(
-    request: Request,
+    payload: BulkSettingsApplyRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    payload = await request.json()
-    targets = payload.get("targets")
-    settings = payload.get("settings")
-    apply_libraries = bool(payload.get("apply_libraries"))
-    if not isinstance(targets, list) or not targets:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Missing targets"})
-    if not isinstance(settings, dict):
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Missing settings"})
+    targets = [target.model_dump() for target in payload.targets]
+    settings = payload.settings
+    apply_libraries = payload.apply_libraries
     tracker = _get_operation_tracker(manager)
     operation = None
     if tracker:
@@ -516,123 +546,50 @@ async def api_emby_users_settings_apply(
         else:
             tracker.fail(operation["id"], message, result=result)
     status = 200 if result.get("success") else 400
+    if result.get("success"):
+        _publish_users_updated("settings")
+        _publish_users_updated("operations")
     return JSONResponse(status_code=status, content={"ok": bool(result.get("success")), "result": result})
 
 
-@router.post("/api/emby/users/group/settings")
+@router.post("/api/emby/users/group/settings", responses={200: {"model": UserApiSuccessResponse}})
 async def api_emby_users_group_settings(
-    request: Request,
+    payload: GroupSyncSettingsRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
-    try:
-        data = await request.json()
-    except Exception:
-        return error_response("Invalid JSON", 400)
-
-    group_id = data.get("group_id")
-    # Handle boolean conversion safely.
-    auto_sync = data.get("auto_sync")
-    if isinstance(auto_sync, str):
-        auto_sync = auto_sync.lower() in ("true", "1", "yes")
-    else:
-        auto_sync = bool(auto_sync)
-
-    sync_type = data.get("sync_type", "merge")
-    sync_resume = data.get("sync_resume")
-    if isinstance(sync_resume, str):
-        sync_resume = sync_resume.lower() in ("true", "1", "yes")
-    else:
-        sync_resume = bool(sync_resume)
-    sync_playstate = data.get("sync_playstate", True)
-    if isinstance(sync_playstate, str):
-        sync_playstate = sync_playstate.lower() in ("true", "1", "yes")
-    else:
-        sync_playstate = bool(sync_playstate)
-    sync_config = data.get("sync_config", False)
-    if isinstance(sync_config, str):
-        sync_config = sync_config.lower() in ("true", "1", "yes")
-    else:
-        sync_config = bool(sync_config)
-    sync_library_access = data.get("sync_library_access", False)
-    if isinstance(sync_library_access, str):
-        sync_library_access = sync_library_access.lower() in ("true", "1", "yes")
-    else:
-        sync_library_access = bool(sync_library_access)
-    sync_favorites = data.get("sync_favorites", False)
-    if isinstance(sync_favorites, str):
-        sync_favorites = sync_favorites.lower() in ("true", "1", "yes")
-    else:
-        sync_favorites = bool(sync_favorites)
-    sync_playlists = data.get("sync_playlists", False)
-    if isinstance(sync_playlists, str):
-        sync_playlists = sync_playlists.lower() in ("true", "1", "yes")
-    else:
-        sync_playlists = bool(sync_playlists)
-    config_categories = data.get("config_categories")
-    if not isinstance(config_categories, list):
-        config_categories = []
-    config_categories = [str(item) for item in config_categories if item]
-    playstate_bootstrap_done = data.get("playstate_bootstrap_done", False)
-    if isinstance(playstate_bootstrap_done, str):
-        playstate_bootstrap_done = playstate_bootstrap_done.lower() in ("true", "1", "yes")
-    else:
-        playstate_bootstrap_done = bool(playstate_bootstrap_done)
-    favorites_bootstrap_done = data.get("favorites_bootstrap_done", False)
-    if isinstance(favorites_bootstrap_done, str):
-        favorites_bootstrap_done = favorites_bootstrap_done.lower() in ("true", "1", "yes")
-    else:
-        favorites_bootstrap_done = bool(favorites_bootstrap_done)
-    playlists_bootstrap_done = data.get("playlists_bootstrap_done", False)
-    if isinstance(playlists_bootstrap_done, str):
-        playlists_bootstrap_done = playlists_bootstrap_done.lower() in ("true", "1", "yes")
-    else:
-        playlists_bootstrap_done = bool(playlists_bootstrap_done)
-
-    if not group_id:
-        return error_response("Missing group_id", 400)
-
     manager = _get_manager()
     if not manager:
         return error_response("Manager not available", 500)
 
     success = manager.group_manager.save_group_settings(
-        group_id,
-        auto_sync,
-        sync_type,
-        sync_resume,
-        sync_playstate,
-        sync_config,
-        sync_library_access,
-        sync_favorites,
-        sync_playlists,
-        config_categories,
-        playstate_bootstrap_done,
-        favorites_bootstrap_done,
-        playlists_bootstrap_done,
+        payload.group_id,
+        payload.auto_sync,
+        payload.sync_type,
+        payload.sync_resume,
+        payload.sync_playstate,
+        payload.sync_config,
+        payload.sync_library_access,
+        payload.sync_favorites,
+        payload.sync_playlists,
+        payload.config_categories,
+        payload.playstate_bootstrap_done,
+        payload.favorites_bootstrap_done,
+        payload.playlists_bootstrap_done,
     )
     if success:
+        _publish_users_updated("sync")
         return success_response()
     return error_response("Failed to save", 500)
 
 
-@router.post("/api/emby/users/group/sync-now")
+@router.post("/api/emby/users/group/sync-now", responses={200: {"model": UserApiSuccessResponse}})
 async def api_emby_users_group_sync_now(
-    request: Request,
+    payload: GroupIdRequest,
     background_tasks: BackgroundTasks,
+    _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
-    try:
-        data = await request.json()
-    except Exception:
-        return error_response("Invalid JSON", 400)
-
-    _validate_csrf_request(request, data.get("csrf_token"))
-
-    group_id = data.get("group_id")
-    if not group_id:
-        return error_response("Missing group_id", 400)
-
     manager = _get_manager()
     if not manager:
         return error_response("Manager not available", 500)
@@ -643,21 +600,23 @@ async def api_emby_users_group_sync_now(
         operation = tracker.start(
             "group_sync",
             "Sync gruppo utenti",
-            summary=f"Gruppo {group_id}",
-            details={"group_id": group_id},
+            summary=f"Gruppo {payload.group_id}",
+            details={"group_id": payload.group_id},
             total=1,
         )
     manager.group_manager.mark_group_sync_result(
-        group_id,
+        payload.group_id,
         "running",
         "Sincronizzazione manuale avviata",
         {},
     )
     background_tasks.add_task(
         manager.auto_sync_manager.run_group_sync,
-        group_id,
+        payload.group_id,
         operation.get("id") if operation else None,
     )
+    _publish_users_updated("sync")
+    _publish_users_updated("operations")
     return {
         "ok": True,
         "result": {
@@ -667,7 +626,10 @@ async def api_emby_users_group_sync_now(
     }
 
 
-@router.get("/api/emby/users/{server_id}/{user_id}/details")
+@router.get(
+    "/api/emby/users/{server_id}/{user_id}/details",
+    responses={200: {"model": UserDetailsResponse}, 503: {"model": UserApiErrorResponse}},
+)
 async def api_emby_user_details(
     server_id: str,
     user_id: str,
@@ -681,286 +643,9 @@ async def api_emby_user_details(
     return details
 
 
-@router.post("/api/emby/users/sync")
-async def api_emby_users_sync(
-    source_server_id: str = Form(None),
-    source_user_id: str = Form(None),
-    targets_json: str = Form(...),
-    sync_config: bool = Form(False),
-    sync_playstate: bool = Form(False),
-    sync_resume: bool = Form(False),
-    sync_library_access: bool = Form(False),
-    sync_favorites: bool = Form(False),
-    sync_playlists: bool = Form(False),
-    config_categories_json: Optional[str] = Form(None),
-    mode: str = Form("copy"),
-    _csrf=Depends(_validate_csrf_dep),
-    user=Depends(_require_user_dep)
-):
-    try:
-        # Expected targets: [{"server_id": "...", "user_id": "..."}]
-        targets_raw = json.loads(targets_json)
-        targets = [(t["server_id"], t["user_id"]) for t in targets_raw]
-    except json.JSONDecodeError:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Invalid JSON"})
-    config_categories = None
-    if config_categories_json:
-        try:
-            parsed_categories = json.loads(config_categories_json)
-            if isinstance(parsed_categories, list):
-                config_categories = [str(item) for item in parsed_categories if item]
-        except json.JSONDecodeError:
-            return JSONResponse(status_code=400, content={"ok": False, "error": "Invalid config categories JSON"})
-
-    manager = _get_manager()
-    if not manager:
-        return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    results = {}
-
-    def _all_participants() -> list[tuple]:
-        all_items = []
-        if source_server_id and source_user_id:
-            all_items.append((source_server_id, source_user_id))
-        for pair in targets:
-            if pair not in all_items:
-                all_items.append(pair)
-        return all_items
-
-    def _latest_source(domain: str, participants: list[tuple]):
-        state = manager.state_tracker.choose_latest(domain, participants)
-        if not state:
-            return None, []
-        source_pair = (state.get("server_id"), state.get("user_id"))
-        target_pairs = [pair for pair in participants if pair != source_pair]
-        return state, target_pairs
-
-    def _find_selected_group(participants: list[tuple]) -> Optional[dict]:
-        selected_pairs = set(participants)
-        dashboard = manager.dashboard_manager.get_users_dashboard_data()
-        for group in dashboard.get("groups", []):
-            group_pairs = {
-                (item.get("server_id"), item.get("user_id"))
-                for item in group.get("users", [])
-            }
-            if selected_pairs and selected_pairs.issubset(group_pairs):
-                return group
-        return None
-
-    enabled_labels = [
-        label for label, enabled in [
-            ("impostazioni", sync_config),
-            ("visti", sync_playstate),
-            ("librerie", sync_library_access),
-            ("preferiti", sync_favorites),
-            ("playlist", sync_playlists),
-        ]
-        if enabled
-    ]
-    total_steps = len(enabled_labels) + 1
-    tracker = _get_operation_tracker(manager)
-    operation = None
-    if tracker:
-        operation = tracker.start(
-            "user_sync",
-            "Sync utenti",
-            summary=", ".join(enabled_labels) if enabled_labels else "Nessun dominio",
-            details={
-                "source_server_id": source_server_id,
-                "source_user_id": source_user_id,
-                "mode": mode,
-                "target_count": len(targets),
-            },
-            total=total_steps,
-        )
-
-    def _mark_operation(stage: str, message: str, current: int) -> None:
-        if tracker and operation:
-            tracker.update(
-                operation["id"],
-                message=message,
-                current=current,
-                total=total_steps,
-                details={"stage": stage},
-            )
-
-    step_index = 0
-
-    if sync_config:
-        step_index += 1
-        _mark_operation("config", "Sincronizzazione impostazioni in corso", step_index - 1)
-        if mode == "merge":
-            participants = _all_participants()
-            state, latest_targets = await run_in_threadpool(_latest_source, "settings", participants)
-            if state and latest_targets:
-                results["config"] = await run_in_threadpool(
-                    manager.sync_manager.sync_user_config,
-                    state["server_id"],
-                    state["user_id"],
-                    latest_targets,
-                    config_categories
-                )
-                results["config"]["latest_source"] = {
-                    "server_id": state["server_id"],
-                    "user_id": state["user_id"],
-                    "updated_at": state.get("updated_at")
-                }
-        elif source_server_id:
-            results["config"] = await run_in_threadpool(
-                manager.sync_manager.sync_user_config,
-                source_server_id,
-                source_user_id,
-                targets,
-                config_categories
-            )
-        _mark_operation("config", "Sincronizzazione impostazioni completata", step_index)
-
-    if sync_playstate:
-        step_index += 1
-        _mark_operation("playstate", "Sincronizzazione visti in corso", step_index - 1)
-        if mode == "merge":
-            participants = _all_participants()
-            group = await run_in_threadpool(_find_selected_group, participants)
-            if not group:
-                if tracker and operation:
-                    tracker.fail(operation["id"], "Merge consentito solo tra utenti dello stesso gruppo")
-                return JSONResponse(status_code=400, content={"ok": False, "error": "Merge consentito solo tra utenti dello stesso gruppo"})
-            if group.get("playstate_bootstrap_done"):
-                results["playstate"] = await run_in_threadpool(
-                    manager.auto_sync_manager._run_playstate_delta_sync,
-                    participants,
-                    sync_resume,
-                )
-            else:
-                results["playstate"] = await run_in_threadpool(
-                    manager.playstate_manager.sync_merge_playstate,
-                    participants,
-                    sync_resume,
-                )
-                manager.group_manager.mark_group_bootstrap_done(group["id"], "playstate")
-                results["playstate"]["bootstrap"] = "additive"
-        elif source_server_id:
-            # Unidirectional exact sync: source is authoritative, including removals.
-            results["playstate"] = await run_in_threadpool(
-                manager.playstate_manager.sync_user_playstate_exact,
-                source_server_id,
-                source_user_id,
-                targets,
-                sync_resume
-            )
-        _mark_operation("playstate", "Sincronizzazione visti completata", step_index)
-
-    if sync_library_access:
-        step_index += 1
-        _mark_operation("library_access", "Sincronizzazione librerie in corso", step_index - 1)
-        if mode == "merge":
-            participants = _all_participants()
-            state, latest_targets = await run_in_threadpool(_latest_source, "settings", participants)
-            if state and latest_targets:
-                results["library_access"] = await run_in_threadpool(
-                    manager.settings_manager.sync_library_access,
-                    state["server_id"],
-                    state["user_id"],
-                    latest_targets
-                )
-                results["library_access"]["latest_source"] = {
-                    "server_id": state["server_id"],
-                    "user_id": state["user_id"],
-                    "updated_at": state.get("updated_at")
-                }
-        elif source_server_id:
-            results["library_access"] = await run_in_threadpool(
-                manager.settings_manager.sync_library_access,
-                source_server_id,
-                source_user_id,
-                targets
-            )
-        _mark_operation("library_access", "Sincronizzazione librerie completata", step_index)
-
-    if sync_favorites:
-        step_index += 1
-        _mark_operation("favorites", "Sincronizzazione preferiti in corso", step_index - 1)
-        if mode == "merge":
-            participants = _all_participants()
-            group = await run_in_threadpool(_find_selected_group, participants)
-            if not group:
-                if tracker and operation:
-                    tracker.fail(operation["id"], "Merge consentito solo tra utenti dello stesso gruppo")
-                return JSONResponse(status_code=400, content={"ok": False, "error": "Merge consentito solo tra utenti dello stesso gruppo"})
-            if group.get("favorites_bootstrap_done"):
-                results["favorites"] = await run_in_threadpool(
-                    manager.auto_sync_manager._run_favorites_delta_sync,
-                    participants,
-                )
-            else:
-                results["favorites"] = await run_in_threadpool(
-                    manager.favorites_manager.sync_merge_favorites,
-                    participants,
-                )
-                manager.group_manager.mark_group_bootstrap_done(group["id"], "favorites")
-                results["favorites"]["bootstrap"] = "additive"
-        elif source_server_id:
-            results["favorites"] = await run_in_threadpool(
-                manager.favorites_manager.sync_user_favorites_exact,
-                source_server_id,
-                source_user_id,
-                targets
-            )
-        _mark_operation("favorites", "Sincronizzazione preferiti completata", step_index)
-
-    if sync_playlists:
-        step_index += 1
-        _mark_operation("playlists", "Sincronizzazione playlist in corso", step_index - 1)
-        if mode == "merge":
-            participants = _all_participants()
-            group = await run_in_threadpool(_find_selected_group, participants)
-            if not group:
-                if tracker and operation:
-                    tracker.fail(operation["id"], "Merge consentito solo tra utenti dello stesso gruppo")
-                return JSONResponse(status_code=400, content={"ok": False, "error": "Merge consentito solo tra utenti dello stesso gruppo"})
-            if group.get("playlists_bootstrap_done"):
-                results["playlists"] = await run_in_threadpool(
-                    manager.auto_sync_manager._run_playlists_delta_sync,
-                    participants,
-                )
-            else:
-                results["playlists"] = await run_in_threadpool(
-                    manager.playlists_manager.sync_merge_playlists,
-                    participants,
-                )
-                manager.group_manager.mark_group_bootstrap_done(group["id"], "playlists")
-                results["playlists"]["bootstrap"] = "additive"
-        elif source_server_id:
-            results["playlists"] = await run_in_threadpool(
-                manager.playlists_manager.sync_user_playlists_exact,
-                source_server_id,
-                source_user_id,
-                targets
-            )
-        _mark_operation("playlists", "Sincronizzazione playlist completata", step_index)
-
-    state_refresh_targets = _all_participants()
-    _mark_operation("snapshot", "Aggiornamento snapshot sync", total_steps - 1)
-    await run_in_threadpool(
-        refresh_sync_states,
-        manager.state_tracker,
-        state_refresh_targets,
-        "sync",
-        sync_config=sync_config,
-        sync_library_access=sync_library_access,
-        sync_playstate=sync_playstate,
-        sync_favorites=sync_favorites,
-        sync_playlists=sync_playlists,
-    )
-    if tracker and operation:
-        tracker.finish(operation["id"], "Sync utenti completato", result=results)
-
-    return {"ok": True, "results": results}
-
-
-@router.post("/api/emby/users/check")
+@router.post("/api/emby/users/check", responses={200: {"model": UserExistsResponse}})
 async def api_emby_users_check(
-    server_id: str = Form(...),
-    username: str = Form(...),
+    payload: CheckUserRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
@@ -968,36 +653,29 @@ async def api_emby_users_check(
     if not manager:
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
 
-    exists = await run_in_threadpool(manager.user_ops_manager.check_user_exists, server_id, username)
+    exists = await run_in_threadpool(manager.user_ops_manager.check_user_exists, payload.server_id, payload.username)
     return {"exists": exists}
 
 
-@router.post("/api/emby/users/create")
+@router.post("/api/emby/users/create", responses={200: {"model": UserApiSuccessResponse}})
 async def api_emby_users_create(
-    request: Request,
+    payload: CreateUsersRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    payload = await request.json()
-    targets = payload.get("targets")
-    if not isinstance(targets, list) or not targets:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Missing targets"})
-
-    settings = payload.get("settings")
-    preset_id = payload.get("preset_id")
-    apply_libraries = bool(payload.get("apply_libraries"))
-    if preset_id and not isinstance(settings, dict):
+    targets = [target.model_dump() for target in payload.targets]
+    settings = payload.settings
+    preset_id = payload.preset_id
+    apply_libraries = payload.apply_libraries
+    if preset_id and not settings:
         preset = await run_in_threadpool(manager.settings_preset_manager.get_preset, preset_id)
         if not preset:
             return JSONResponse(status_code=404, content={"ok": False, "error": "Preset non trovato"})
         settings = preset.get("settings") or {}
         apply_libraries = bool(preset.get("apply_libraries"))
-    if not isinstance(settings, dict):
-        settings = {}
-
     tracker = _get_operation_tracker(manager)
     operation = None
     if tracker:
@@ -1016,9 +694,9 @@ async def api_emby_users_create(
             targets,
             settings,
             apply_libraries,
-            str(payload.get("password") or ""),
-            bool(payload.get("link_group")),
-            str(payload.get("group_name") or ""),
+            payload.password,
+            payload.link_group,
+            payload.group_name,
             callback,
         )
     except Exception as exc:
@@ -1032,49 +710,44 @@ async def api_emby_users_create(
         else:
             tracker.fail(operation["id"], message, result=result)
     status = 200 if result.get("created") else 400
+    if result.get("created"):
+        _publish_users_updated()
+        _publish_users_updated("operations")
     return JSONResponse(status_code=status, content={"ok": bool(result.get("ok")), "result": result})
 
 
-@router.post("/api/emby/users/delete")
+@router.post("/api/emby/users/delete", responses={200: {"model": UserApiSuccessResponse}})
 async def api_emby_users_delete(
-    request: Request,
+    payload: DeleteUserRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    payload = await request.json()
-    server_id = payload.get("server_id")
-    user_id = payload.get("user_id")
-    if not server_id or not user_id:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Missing target"})
     result = await run_in_threadpool(
         manager.user_lifecycle_manager.delete_single_user,
-        server_id,
-        user_id,
-        str(payload.get("expected_name") or payload.get("confirm_name") or "")
+        payload.server_id,
+        payload.user_id,
+        payload.expected_name,
     )
     if not result.get("ok"):
         return JSONResponse(status_code=400, content=result)
+    _publish_users_updated()
     return result
 
 
-@router.post("/api/emby/users/group/delete-users")
+@router.post("/api/emby/users/group/delete-users", responses={200: {"model": UserApiSuccessResponse}})
 async def api_emby_users_group_delete_users(
-    request: Request,
+    payload: DeleteGroupUsersRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    payload = await request.json()
-    group_id = payload.get("group_id")
-    if not group_id:
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Missing group_id"})
-
-    expected_name = str(payload.get("expected_name") or payload.get("confirm_name") or "").strip()
+    group_id = payload.group_id
+    expected_name = payload.expected_name
     if expected_name:
         dashboard = await run_in_threadpool(manager.dashboard_manager.get_users_dashboard_data)
         group = next((item for item in dashboard.get("groups", []) if item.get("id") == group_id), None)
@@ -1089,37 +762,31 @@ async def api_emby_users_group_delete_users(
     )
     if not result.get("ok"):
         return JSONResponse(status_code=400, content=result)
+    _publish_users_updated()
     return result
 
 
-@router.post("/api/emby/users/clone")
+@router.post("/api/emby/users/clone", responses={200: {"model": UserApiSuccessResponse}})
 async def api_emby_users_clone(
-    source_server_id: str = Form(...),
-    source_user_id: str = Form(...),
-    target_server_id: str = Form(...),
-    new_username: Optional[str] = Form(None),
-    sync_config: bool = Form(True),
-    sync_playstate: bool = Form(True),
-    sync_resume: bool = Form(False),
-    sync_library_access: bool = Form(False),
-    sync_favorites: bool = Form(False),
-    sync_playlists: bool = Form(False),
-    config_categories_json: Optional[str] = Form(None),
-    link_group: bool = Form(False),
+    payload: CloneUserRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
-    config_categories = None
-    if config_categories_json:
-        try:
-            parsed_categories = json.loads(config_categories_json)
-            if isinstance(parsed_categories, list):
-                config_categories = [str(item) for item in parsed_categories if item]
-        except json.JSONDecodeError:
-            return JSONResponse(status_code=400, content={"ok": False, "error": "Invalid config categories JSON"})
+    source_server_id = payload.source_server_id
+    source_user_id = payload.source_user_id
+    target_server_id = payload.target_server_id
+    new_username = payload.new_username or None
+    sync_config = payload.sync_config
+    sync_playstate = payload.sync_playstate
+    sync_resume = payload.sync_resume
+    sync_library_access = payload.sync_library_access
+    sync_favorites = payload.sync_favorites
+    sync_playlists = payload.sync_playlists
+    link_group = payload.link_group
+    config_categories = payload.config_categories
 
     tracker = _get_operation_tracker(manager)
     operation = None
@@ -1189,4 +856,6 @@ async def api_emby_users_clone(
     if tracker and operation:
         tracker.finish(operation["id"], "Clonazione completata", result=result)
 
+    _publish_users_updated()
+    _publish_users_updated("operations")
     return {"ok": True, "result": result}

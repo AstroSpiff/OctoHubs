@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+import threading
 from typing import Optional
 
 from core.storage import StorageError
@@ -73,6 +74,19 @@ _JELLYSEERR_REFRESH_STATE: dict = {
     "counts": None,
 }
 
+
+def get_jellyseerr_refresh_state() -> dict:
+    """Return the current request-refresh state for operational views."""
+    return {
+        "running": bool(_JELLYSEERR_REFRESH_STATE.get("running")),
+        "last_status": _JELLYSEERR_REFRESH_STATE.get("last_status"),
+        "last_warning": _JELLYSEERR_REFRESH_STATE.get("last_warning"),
+        "last_warning_at": _JELLYSEERR_REFRESH_STATE.get("last_warning_at"),
+        "last_error": _JELLYSEERR_REFRESH_STATE.get("last_error"),
+        "completed_at": _JELLYSEERR_REFRESH_STATE.get("completed_at"),
+    }
+
+
 # Latest result of the shared integrations check. It is intentionally ephemeral:
 # credentials and health details stay in the running application only.
 _CONNECTION_CHECK_STATE: dict = {
@@ -98,6 +112,7 @@ _EMBY_LIBRARIES_MANAGER = None
 _EMBY_LIBRARY_SCAN_MANAGER = None
 _OPERATION_TRACKER = None
 _OPERATION_TRACKER_RECOVERED = False
+_OPERATION_TRACKER_LOCK = threading.Lock()
 
 
 def get_emby_user_manager():
@@ -105,24 +120,26 @@ def get_emby_user_manager():
         _ensure_db_backend,
         lambda: config_manager._DB_BACKEND,
         lambda: config_manager._ACTIVE_CONFIG or {},
+        get_operation_tracker,
     )
 
 
 def get_operation_tracker():
     """Return the global persistent operation tracker."""
     global _OPERATION_TRACKER, _OPERATION_TRACKER_RECOVERED
-    if _OPERATION_TRACKER is None:
-        from core.operations import OperationTracker
+    with _OPERATION_TRACKER_LOCK:
+        if _OPERATION_TRACKER is None:
+            from core.operations import OperationTracker
 
-        _OPERATION_TRACKER = OperationTracker(_ensure_db_backend())
-    if not _OPERATION_TRACKER_RECOVERED:
-        _OPERATION_TRACKER_RECOVERED = True
-        try:
-            interrupted = _OPERATION_TRACKER.interrupt_active("Interrotta da riavvio OctoHubs")
-            if interrupted:
-                print(f"[OPERATIONS] {interrupted} operazioni attive marcate come interrotte dopo riavvio.")
-        except Exception as exc:
-            print(f"[OPERATIONS] Recovery operazioni non riuscita: {exc}")
+            _OPERATION_TRACKER = OperationTracker(_ensure_db_backend())
+        if not _OPERATION_TRACKER_RECOVERED:
+            _OPERATION_TRACKER_RECOVERED = True
+            try:
+                interrupted = _OPERATION_TRACKER.interrupt_active("Interrotta da riavvio OctoHubs")
+                if interrupted:
+                    print(f"[OPERATIONS] {interrupted} operazioni attive marcate come interrotte dopo riavvio.")
+            except Exception as exc:
+                print(f"[OPERATIONS] Recovery operazioni non riuscita: {exc}")
     return _OPERATION_TRACKER
 
 

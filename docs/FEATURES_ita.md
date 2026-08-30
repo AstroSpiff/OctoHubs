@@ -7,7 +7,7 @@ Documenti: [README](../README_ita.md) | [Docker Deploy](DOCKER_DEPLOY_ita.md) | 
 Questa guida riassume i principali workflow disponibili nella UI e il loro legame con il backend.
 
 ## Setup iniziale (una volta sola)
-- Imposta `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EMAIL`.
+- Crea l'amministratore iniziale tramite Docker con `ADMIN_USERNAME`, `ADMIN_PASSWORD` oppure `ADMIN_PASSWORD_FILE` e `ADMIN_EMAIL`; la creazione account dal browser è disabilitata.
 - Aggiungi almeno un server Emby in `config.json` con API key valida.
 - Inserisci URL e API key delle integrazioni che vuoi usare.
 - Dopo modifiche manuali a `config.json`, riavvia il container app.
@@ -47,7 +47,7 @@ Passi manuali:
 - Avvio task Emby per scan e refresh librerie.
 - STRM Extract: avvio manuale del task Emby.
 - STRM Guard: avvio STRM Extract solo senza stream attivi.
-- STRM Probe: analisi e monitoraggio STRM dalla pagina Emby Probe.
+- Media Probe: analisi e monitoraggio dei file video senza MediaInfo dalla pagina Media Probe.
 
 Passi manuali:
 - Aggiungi i server Emby in `EMBY.SERVERS` con API key admin.
@@ -58,11 +58,13 @@ Passi manuali:
 
 ## Utenti e ruoli
 - Ruoli: `admin`, `user`, `viewer`.
+- `viewer` e un profilo in sola lettura: puo consultare dashboard, dati e stato in tempo reale, ma non puo inviare richieste che modificano configurazioni, utenti o servizi, ne avviare ricerche manuali.
+- `admin` e `user` mantengono le normali operazioni disponibili nell'applicazione.
 - Admin di default creato al primo avvio con env vars.
 - Usa `manage_users.py` per lista e creazione utenti.
 
 Passi manuali:
-- Mantieni `auth.db` su storage persistente per non perdere gli utenti.
+- Mantieni persistente lo storage PostgreSQL per non perdere utenti e dati applicativi.
 - Usa la CLI se perdi l'accesso all'account admin.
 
 ## Audit log
@@ -72,5 +74,4 @@ Passi manuali:
 - Dettagli webhook Emby in `INTEGRATIONS_ita.md`.
 
 ## Storage
-- Utenti: SQLite di default (`/mnt/shared/applications/octohubs/auth.db`).
-- Dati app: PostgreSQL quando `DATABASE.ENABLED=true`.
+- Utenti e dati applicativi: il database PostgreSQL condiviso, gestito da Alembic.

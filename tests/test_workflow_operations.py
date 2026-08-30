@@ -156,6 +156,110 @@ class WorkflowOperationTests(unittest.TestCase):
         self.assertFalse(manager._thread.is_alive())
         self.assertEqual([{"server_id": "server-a"}], stopped_contexts)
 
+    def test_start_is_rejected_until_stopping_thread_has_exited(self):
+        manager = WorkflowManager()
+        scan_started = threading.Event()
+        release_scan = threading.Event()
+
+        def trigger_scan(_context):
+            scan_started.set()
+            release_scan.wait(timeout=3)
+            return True
+
+        manager.set_callbacks(
+            trigger_scan_func=trigger_scan,
+            check_scan_func=lambda _context: True,
+            trigger_probe_func=lambda _context: True,
+            check_probe_func=lambda _context: True,
+            refresh_cache_func=lambda _context: None,
+            notify_func=lambda _context: None,
+        )
+
+        with patch("time.sleep", lambda _seconds: None):
+            self.assertTrue(manager.start("full"))
+            first_thread = manager._thread
+            first_event = manager._stop_event
+            first_workflow_id = manager.get_status()["workflow_id"]
+            self.assertTrue(scan_started.wait(timeout=2))
+
+            manager.stop()
+
+            self.assertEqual("stopping", manager.get_status()["status"])
+            self.assertFalse(manager.start("smart"))
+            self.assertIs(first_thread, manager._thread)
+            self.assertIs(first_event, manager._stop_event)
+            self.assertEqual(first_workflow_id, manager.get_status()["workflow_id"])
+
+            release_scan.set()
+            first_thread.join(timeout=3)
+            self.assertFalse(first_thread.is_alive())
+
+            self.assertTrue(manager.start("smart"))
+            second_thread = manager._thread
+            second_event = manager._stop_event
+            second_workflow_id = manager.get_status()["workflow_id"]
+            second_thread.join(timeout=3)
+
+        self.assertFalse(second_thread.is_alive())
+        self.assertIsNot(first_event, second_event)
+        self.assertFalse(second_event.is_set())
+        self.assertNotEqual(first_workflow_id, second_workflow_id)
+        self.assertEqual("completed", manager.get_status()["status"])
+
+    def test_start_is_rejected_while_completed_thread_finishes_tracking(self):
+        manager = WorkflowManager()
+        completion_started = threading.Event()
+        release_completion = threading.Event()
+        manager.set_callbacks(
+            trigger_scan_func=lambda _context: True,
+            check_scan_func=lambda _context: True,
+            trigger_probe_func=lambda _context: True,
+            check_probe_func=lambda _context: True,
+            refresh_cache_func=lambda _context: None,
+            notify_func=lambda _context: None,
+        )
+
+        def block_completion(_completion_status, _message, _workflow_id=None):
+            completion_started.set()
+            release_completion.wait(timeout=3)
+
+        manager._complete_workflow_operation = block_completion
+
+        with patch("time.sleep", lambda _seconds: None):
+            self.assertTrue(manager.start("full"))
+            first_thread = manager._thread
+            first_workflow_id = manager.get_status()["workflow_id"]
+            self.assertTrue(completion_started.wait(timeout=2))
+
+            self.assertEqual("completed", manager.get_status()["status"])
+            self.assertTrue(first_thread.is_alive())
+            self.assertTrue(manager.is_running())
+            self.assertFalse(manager.start("smart"))
+            self.assertEqual(first_workflow_id, manager.get_status()["workflow_id"])
+
+            release_completion.set()
+            first_thread.join(timeout=3)
+
+        self.assertFalse(first_thread.is_alive())
+        self.assertFalse(manager.is_running())
+
+    def test_stale_workflow_generation_cannot_update_current_steps(self):
+        manager = WorkflowManager()
+        with manager._lock:
+            manager._status["workflow_id"] = "current-workflow"
+            manager._status["steps"] = manager._initialize_steps("full")
+
+        updated = manager._update_step_status(
+            0,
+            "done",
+            "Aggiornamento obsoleto",
+            100,
+            workflow_id="previous-workflow",
+        )
+
+        self.assertFalse(updated)
+        self.assertEqual("pending", manager.get_status()["steps"][0]["status"])
+
 
 if __name__ == "__main__":
     unittest.main()

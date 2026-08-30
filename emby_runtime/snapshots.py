@@ -67,7 +67,7 @@ def _build_emby_stop_task_snapshot(payload):
     success, response = _stop_emby_task(target, str(task_id))
     print(f"[DEBUG] _stop_emby_task ritornato: success={success}, response={response}")
     if success:
-        return json_success()
+        return json_success("Richiesta di arresto inviata a Emby.")
     return json_error(f"Errore stop task: {response}", 500)
 
 
@@ -283,8 +283,26 @@ def _build_emby_status_stream_payload():
         server_id = server.get("id")
         if not server_id:
             continue
+        server_meta = {
+            "id": server_id,
+            "name": _emby_display_name(server),
+            "enabled": bool(server.get("enabled")),
+            "icon": str(server.get("icon") or "fa-server"),
+            "icon_color": str(server.get("icon_color") or "#3b82f6"),
+            "icon_style": str(server.get("icon_style") or "solid"),
+        }
+        if server.get("url"):
+            server_meta["url"] = str(server.get("url"))
+        last_action = server.get("last_action")
+        if isinstance(last_action, dict) and last_action.get("name"):
+            server_meta["last_action"] = {
+                "name": str(last_action.get("name")),
+                "timestamp": str(last_action.get("timestamp") or ""),
+                "result": str(last_action.get("result") or ""),
+            }
         if not server.get("enabled"):
             data[server_id] = {
+                "server": server_meta,
                 "status": {"ok": False, "error": "Server disabilitato"},
                 "running_tasks": [],
                 "tasks_error": None,
@@ -304,6 +322,7 @@ def _build_emby_status_stream_payload():
 
         probe_status = get_probe_manager().get_status(server_id)
         data[server_id] = {
+            "server": server_meta,
             "status": status,
             "running_tasks": running,
             "tasks_error": error,

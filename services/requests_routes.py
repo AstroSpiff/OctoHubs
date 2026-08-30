@@ -4,22 +4,32 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from emby_runtime.jellyseerr_snapshots import (
     _build_media_details_snapshot,
     _build_jellyseerr_request_snapshot,
 )
+from web.research_api_models import (
+    JellyseerrRequestPayload,
+    ResearchActionResponse,
+    ResearchMediaDetailsResponse,
+)
 
 router = APIRouter()
 
 _require_auth: Optional[Callable[[Request], Any]] = None
+_validate_csrf: Optional[Callable[[Request, Optional[str]], bool]] = None
 
 
-def init_requests_routes(require_auth: Callable[[Request], Any]) -> None:
-    global _require_auth
+def init_requests_routes(
+    require_auth: Callable[[Request], Any],
+    validate_csrf: Callable[[Request, Optional[str]], bool],
+) -> None:
+    global _require_auth, _validate_csrf
     _require_auth = require_auth
+    _validate_csrf = validate_csrf
 
 
 def _require_auth_dep(request: Request):
@@ -28,21 +38,28 @@ def _require_auth_dep(request: Request):
     return _require_auth(request)
 
 
-@router.get("/api/media/details")
-async def media_details(request: Request):
+def _validate_csrf_dep(request: Request) -> None:
+    if _validate_csrf is None:
+        raise RuntimeError("Request routes not initialized: validate_csrf missing")
+    token = request.headers.get("X-CSRFToken") or request.headers.get("X-CSRF-Token")
+    if not _validate_csrf(request, token):
+        raise HTTPException(status_code=403, detail="CSRF token non valido")
+
+
+@router.get("/api/research/media/details", response_model=ResearchMediaDetailsResponse)
+async def media_details(
+    request: Request,
+    tmdb_id: int | str | None = None,
+    media_type: str = "",
+):
     _require_auth_dep(request)
-    tmdb_id = request.query_params.get("tmdb_id")
-    media_type = request.query_params.get("media_type")
     payload, status_code = _build_media_details_snapshot(tmdb_id, media_type)
     return JSONResponse(payload, status_code=status_code)
 
 
-@router.post("/api/jellyseerr/request")
-async def jellyseerr_request(request: Request):
+@router.post("/api/research/requests/create", response_model=ResearchActionResponse)
+async def jellyseerr_request(request: Request, payload: JellyseerrRequestPayload):
     _require_auth_dep(request)
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
-    data, status_code = _build_jellyseerr_request_snapshot(payload)
+    _validate_csrf_dep(request)
+    data, status_code = _build_jellyseerr_request_snapshot(payload.model_dump(by_alias=True))
     return JSONResponse(data, status_code=status_code)

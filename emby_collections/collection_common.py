@@ -7,6 +7,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Dict, List
 
 from core.emby_servers import _get_emby_servers_from_config
+from core.image_uploads import MAX_IMAGE_UPLOAD_BYTES, SAFE_IMAGE_MIME_TYPES
 from .sources import SOURCE_TYPE_MAP, build_source_link
 
 SYNC_STATE_FIELDS = (
@@ -18,13 +19,8 @@ SYNC_STATE_FIELDS = (
     "last_sync_per_server",
 )
 COLLECTION_BATCH_SIZE = 50
-COLLECTION_POSTER_MAX_BYTES = 5 * 1024 * 1024
-COLLECTION_POSTER_MIME_TYPES = {
-    "image/jpeg",
-    "image/png",
-    "image/webp",
-    "image/svg+xml",
-}
+COLLECTION_POSTER_MAX_BYTES = MAX_IMAGE_UPLOAD_BYTES
+COLLECTION_POSTER_MIME_TYPES = set(SAFE_IMAGE_MIME_TYPES)
 OCTOHUBS_COLLECTION_TAG = "OctoHubs"
 LEGACY_OCTOHUB_COLLECTION_TAG = "OctoHub"
 OCTOHUBS_COLLECTION_TAGS = (
@@ -171,6 +167,7 @@ def _enrich_definition(
     normalized["server_ids"] = server_ids
     normalized["server_id"] = server_ids[0] if server_ids else ""
     server_labels: List[str] = []
+    server_summaries: List[Dict[str, Any]] = []
     for server_id in server_ids:
         server = servers.get(server_id)
         label = (
@@ -184,7 +181,17 @@ def _enrich_definition(
         )
         if label:
             server_labels.append(label)
+        server_summaries.append(
+            {
+                "id": server_id,
+                "name": label or server_id,
+                "icon": str((server or {}).get("icon") or "fa-server"),
+                "icon_color": str((server or {}).get("icon_color") or "#3b82f6"),
+                "icon_style": str((server or {}).get("icon_style") or "solid"),
+            }
+        )
     normalized["server_labels"] = server_labels
+    normalized["servers"] = server_summaries
     if server_labels:
         normalized["server_display"] = " · ".join(server_labels)
     else:

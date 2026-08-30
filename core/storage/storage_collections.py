@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Protocol, Tuple
+import copy
+from typing import Any, Callable, Dict, Optional, Protocol, Tuple
 
 from core.storage.storage_errors import StorageError
 from core.storage.storage_models import (
@@ -14,6 +15,7 @@ from core.storage.storage_models import (
     EmbyCollectionDefinition,
     EmbyCollectionPoster,
     EmbyCollectionBackdrop,
+    text,
 )
 
 
@@ -142,6 +144,45 @@ class StorageCollectionsMixin(_SessionProvider):
         try:
             entry = session.get(KeyValueEntry, key)
             return entry.value if entry else None
+        finally:
+            session.close()
+
+    def update_key_value(self, key: str, updater: Callable[[Any], Any]) -> Any:
+        """Atomically transform one key-value entry and return the stored value."""
+        if not isinstance(key, str) or not key or not callable(updater):
+            raise StorageError("Aggiornamento key-value non valido")
+
+        session = self._get_session()
+        try:
+            bind = session.get_bind()
+            if bind.dialect.name == "postgresql":
+                # The transaction-scoped advisory lock also serializes creation
+                # when no row exists yet, where SELECT FOR UPDATE cannot lock.
+                session.execute(
+                    text("SELECT pg_advisory_xact_lock(1868787059, hashtext(:key))"),
+                    {"key": key},
+                )
+            entry = (
+                session.query(KeyValueEntry)
+                .filter(KeyValueEntry.key == key)  # type: ignore[attr-defined]
+                .with_for_update()
+                .one_or_none()
+            )
+            current = copy.deepcopy(entry.value) if entry is not None else None
+            updated = copy.deepcopy(updater(current))
+            if entry is None:
+                entry = KeyValueEntry(key=key, value=updated)
+            else:
+                entry.value = updated  # type: ignore[assignment]
+            session.add(entry)
+            session.commit()
+            return copy.deepcopy(updated)
+        except SQLAlchemyError as exc:  # pragma: no cover - runtime guard
+            session.rollback()
+            raise StorageError(f"Errore aggiornamento key-value: {exc}") from exc
+        except Exception:
+            session.rollback()
+            raise
         finally:
             session.close()
 

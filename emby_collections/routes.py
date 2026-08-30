@@ -6,11 +6,12 @@ from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, Request, Depends, UploadFile, File
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse, Response, RedirectResponse, HTMLResponse
+from fastapi.responses import JSONResponse, Response
 
 from app_helpers import _get_total_blacklist_counts
 from core.config import _default_emby_settings, DEFAULT_CONFIG
 from core.config_manager import load_config, _ensure_db_backend
+from core.image_uploads import ImageUploadError, sanitize_image_bytes, sanitize_image_file
 from core.integrations import _active_trakt_settings, _trakt_enabled
 from core.storage import StorageError
 from emby_actions import _prepare_emby_servers_for_view
@@ -28,8 +29,6 @@ from emby_collections import (
     get_collection_backdrop_blob,
     save_collection_backdrop_blob,
     delete_collection_backdrop_blob,
-    COLLECTION_POSTER_MIME_TYPES,
-    COLLECTION_POSTER_MAX_BYTES,
 )
 from emby_collections.sources import SOURCE_TYPES, list_trakt_lists, list_mdblist_user_lists, is_mdblist_enabled
 from emby_collections.operations import (
@@ -42,15 +41,33 @@ from emby_collections.source_inventory import (
     list_source_inventory,
     remove_source_inventory_item,
 )
+from emby_collections.api_models import (
+    CollectionBackgroundOperationResponse,
+    CollectionDefinitionRequest,
+    CollectionEnabledRequest,
+    CollectionErrorResponse,
+    CollectionMutationResponse,
+    CollectionSourceInventoryResponse,
+    CollectionSourceInventoryRequest,
+    CollectionSourceListsResponse,
+    CollectionSuccessResponse,
+    CollectionSyncDetailsResponse,
+    CollectionSyncResponse,
+    CollectionsListResponse,
+    CollectionsOptionsResponse,
+)
+from realtime.manager import publish_application_event
+from web.openapi_requests import json_request_body, query_parameters
+from web.openapi_responses import binary_response
+from web.request_validation import validated_json_payload
 
 
 router = APIRouter()
 
-_get_current_user_optional: Optional[Callable[[Request], Any]] = None
+COLLECTIONS_UPDATED_MESSAGE = "OctoHubsCollectionsUpdated"
+
 _require_user: Optional[Callable[[Request], Any]] = None
-_templates: Optional[Any] = None
 _logger: Optional[Any] = None
-_get_csrf_token: Optional[Callable[[Request], str]] = None
 
 
 def _wants_background(request: Request) -> bool:
@@ -58,18 +75,12 @@ def _wants_background(request: Request) -> bool:
 
 
 def init_emby_collections_routes(
-    get_current_user_optional: Callable[[Request], Any],
     require_user: Callable[[Request], Any],
-    templates: Any,
     logger: Any,
-    get_csrf_token: Callable[[Request], str],
 ) -> None:
-    global _get_current_user_optional, _require_user, _templates, _logger, _get_csrf_token
-    _get_current_user_optional = get_current_user_optional
+    global _require_user, _logger
     _require_user = require_user
-    _templates = templates
     _logger = logger
-    _get_csrf_token = get_csrf_token
 
 
 def _require_user_dep(request: Request):
@@ -78,80 +89,42 @@ def _require_user_dep(request: Request):
     return _require_user(request)
 
 
-def _get_current_user_optional_dep(request: Request):
-    if _get_current_user_optional is None:
-        raise RuntimeError("Emby collections routes not initialized: get_current_user_optional missing")
-    return _get_current_user_optional(request)
-
-
-def _templates_dep():
-    if _templates is None:
-        raise RuntimeError("Emby collections routes not initialized: templates missing")
-    return _templates
-
-
 def _logger_dep():
     if _logger is None:
         raise RuntimeError("Emby collections routes not initialized: logger missing")
     return _logger
 
 
-def _get_csrf_token_dep():
-    if _get_csrf_token is None:
-        raise RuntimeError("Emby collections routes not initialized: get_csrf_token missing")
-    return _get_csrf_token
+async def _sanitize_collection_upload(file: UploadFile):
+    return await run_in_threadpool(sanitize_image_file, file.file)
 
 
-@router.get("/emby/collections", response_class=HTMLResponse)
-async def view_emby_collections(request: Request, user=Depends(_get_current_user_optional_dep)):
-    if not user:
-        return RedirectResponse(url="/login")
-
-    logger = _logger_dep()
-    get_csrf_token = _get_csrf_token_dep()
-    templates = _templates_dep()
-
-    actor = user if user else {}
-    actor_id = actor.get("username") if isinstance(actor, dict) else getattr(actor, "username", None)
-    logger.info("Rendering collections page for user %s", actor_id or "unknown")
-
-    config, _ = load_config()
-    emby_config = (config or {}).get("EMBY") if config else _default_emby_settings()
-    raw_servers = (emby_config.get("SERVERS") if emby_config else []) or []
-    emby_servers = _prepare_emby_servers_for_view(raw_servers, lazy=True)
-    trakt_enabled = _trakt_enabled(_active_trakt_settings())
-    total_blacklist_count, total_incomplete_count = _get_total_blacklist_counts()
-    collections_config = (config or {}).get("COLLECTIONS") or DEFAULT_CONFIG["COLLECTIONS"]
-    collection_settings = {
-        "trakt_enabled": bool(trakt_enabled),
-        "mdblist_enabled": bool(is_mdblist_enabled()),
-        "auto_refresh_enabled": bool(collections_config.get("AUTO_REFRESH_ENABLED")),
-        "auto_refresh_interval_minutes": int(
-            collections_config.get("AUTO_REFRESH_INTERVAL_MINUTES")
-            or DEFAULT_CONFIG["COLLECTIONS"]["AUTO_REFRESH_INTERVAL_MINUTES"]
-        ),
+async def _stored_collection_image_response(blob: Any) -> Response:
+    headers = {
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
     }
-
-    return templates.TemplateResponse(
-        request,
-        "emby_collections.html",
-        {
-            "request": request,
-            "user": user,
-            "page": "emby_collections",
-            "active_page": "emby_collections",
-            "emby_servers": emby_servers,
-            "collection_source_types": SOURCE_TYPES,
-            "trakt_enabled": trakt_enabled,
-            "collection_settings": collection_settings,
-            "total_blacklist_count": total_blacklist_count,
-            "total_incomplete_count": total_incomplete_count,
-            "csrf_token": get_csrf_token(request),
-        },
-    )
+    if not isinstance(blob, dict):
+        return Response(status_code=404, headers=headers)
+    try:
+        image = await run_in_threadpool(sanitize_image_bytes, blob.get("data"))
+    except ImageUploadError:
+        return Response(status_code=404, headers=headers)
+    return Response(content=image.data, media_type=image.mime_type, headers=headers)
 
 
-@router.get("/api/emby/collections")
+def _publish_collections_update(scope: str, collection_id: str = "") -> None:
+    """Refresh only collection views affected by a successful mutation."""
+    payload = {"scope": str(scope or "definitions")}
+    if collection_id:
+        payload["collection_id"] = str(collection_id)
+    publish_application_event(COLLECTIONS_UPDATED_MESSAGE, payload)
+
+
+@router.get(
+    "/api/emby/collections",
+    responses={200: {"model": CollectionsListResponse}, 500: {"model": CollectionErrorResponse}},
+)
 async def api_emby_collections_list(user=Depends(_require_user_dep)):
     logger = _logger_dep()
     actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
@@ -163,17 +136,46 @@ async def api_emby_collections_list(user=Depends(_require_user_dep)):
         return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
 
 
-@router.post("/api/emby/collections")
+@router.get("/api/emby/collections/options", responses={200: {"model": CollectionsOptionsResponse}})
+async def api_emby_collections_options(user=Depends(_require_user_dep)):
+    """Expose the collection editor's supported sources and safe server labels."""
+    config, _ = load_config()
+    emby_config = (config or {}).get("EMBY") if config else _default_emby_settings()
+    raw_servers = (emby_config.get("SERVERS") if emby_config else []) or []
+    servers = []
+    for server in raw_servers:
+        if not isinstance(server, dict) or not server.get("id"):
+            continue
+        label = server.get("alias") or server.get("original_name") or server.get("name") or server.get("id")
+        servers.append({
+            "id": str(server["id"]),
+            "name": str(label),
+            "icon": str(server.get("icon") or "fa-server"),
+            "icon_color": str(server.get("icon_color") or "#3b82f6"),
+            "icon_style": str(server.get("icon_style") or "solid"),
+        })
+    return {
+        "success": True,
+        "source_types": SOURCE_TYPES,
+        "servers": servers,
+        "trakt_enabled": bool(_trakt_enabled(_active_trakt_settings())),
+        "mdblist_enabled": bool(is_mdblist_enabled()),
+    }
+
+
+@router.post(
+    "/api/emby/collections",
+    responses={200: {"model": CollectionMutationResponse}, 400: {"model": CollectionErrorResponse}, 500: {"model": CollectionErrorResponse}},
+    openapi_extra=json_request_body(CollectionDefinitionRequest),
+)
 async def api_emby_collections_save(request: Request, user=Depends(_require_user_dep)):
     logger = _logger_dep()
     actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
     logger.info("User %s saving collection definition", actor_id or "unknown")
-    try:
-        payload = await request.json()
-    except ValueError:
-        return JSONResponse(status_code=400, content={"success": False, "error": "JSON non valido"})
+    payload = await validated_json_payload(request, CollectionDefinitionRequest)
     try:
         collection = save_collection_definition(payload)
+        _publish_collections_update("definitions", str(collection.get("id") or ""))
         return {"success": True, "collection": collection}
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
@@ -181,7 +183,7 @@ async def api_emby_collections_save(request: Request, user=Depends(_require_user
         return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
 
 
-@router.post("/api/emby/collections/{collection_id}/poster")
+@router.post("/api/emby/collections/{collection_id}/poster", responses={200: {"model": CollectionSuccessResponse}})
 async def api_emby_collections_upload_poster(
     collection_id: str,
     file: UploadFile = File(...),
@@ -189,39 +191,33 @@ async def api_emby_collections_upload_poster(
 ):
     if not file or not file.filename:
         return JSONResponse(status_code=400, content={"success": False, "error": "File mancante"})
-    content_type = (file.content_type or "").strip().lower()
-    if content_type not in COLLECTION_POSTER_MIME_TYPES:
-        return JSONResponse(status_code=400, content={"success": False, "error": "Formato poster non supportato"})
-    data = await file.read()
-    if not data:
-        return JSONResponse(status_code=400, content={"success": False, "error": "File vuoto"})
-    if len(data) > COLLECTION_POSTER_MAX_BYTES:
-        return JSONResponse(status_code=400, content={"success": False, "error": "Poster troppo grande"})
+    try:
+        image = await _sanitize_collection_upload(file)
+    except ImageUploadError as exc:
+        return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
     backend = _ensure_db_backend()
     existing = backend.get_emby_collection_definition(collection_id)
     if not existing:
         return JSONResponse(status_code=404, content={"success": False, "error": "Collezione non trovata"})
     try:
-        save_collection_poster_blob(collection_id, content_type, data)
+        save_collection_poster_blob(collection_id, image.mime_type, image.data)
+        _publish_collections_update("media", collection_id)
         return {"success": True}
     except StorageError as exc:
         return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
 
 
-@router.get("/api/emby/collections/{collection_id}/poster")
-async def api_emby_collections_get_poster(collection_id: str):
+@router.get(
+    "/api/emby/collections/{collection_id}/poster",
+    response_class=Response,
+    responses={200: binary_response("image/*", "Poster della collezione nel formato immagine salvato.")},
+)
+async def api_emby_collections_get_poster(collection_id: str, user=Depends(_require_user_dep)):
     poster = get_collection_poster_blob(collection_id)
-    if not poster:
-        return Response(status_code=404)
-    media_type = poster.get("mime_type") or "application/octet-stream"
-    return Response(
-        content=poster.get("data") or b"",
-        media_type=media_type,
-        headers={"Cache-Control": "no-store"},
-    )
+    return await _stored_collection_image_response(poster)
 
 
-@router.post("/api/emby/collections/{collection_id}/poster/delete")
+@router.post("/api/emby/collections/{collection_id}/poster/delete", responses={200: {"model": CollectionSuccessResponse}})
 async def api_emby_collections_delete_poster(collection_id: str, user=Depends(_require_user_dep)):
     backend = _ensure_db_backend()
     existing = backend.get_emby_collection_definition(collection_id)
@@ -229,12 +225,13 @@ async def api_emby_collections_delete_poster(collection_id: str, user=Depends(_r
         return JSONResponse(status_code=404, content={"success": False, "error": "Collezione non trovata"})
     try:
         delete_collection_poster_blob(collection_id)
+        _publish_collections_update("media", collection_id)
         return {"success": True}
     except StorageError as exc:
         return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
 
 
-@router.post("/api/emby/collections/{collection_id}/backdrop")
+@router.post("/api/emby/collections/{collection_id}/backdrop", responses={200: {"model": CollectionSuccessResponse}})
 async def api_emby_collections_upload_backdrop(
     collection_id: str,
     file: UploadFile = File(...),
@@ -242,39 +239,33 @@ async def api_emby_collections_upload_backdrop(
 ):
     if not file or not file.filename:
         return JSONResponse(status_code=400, content={"success": False, "error": "File mancante"})
-    content_type = (file.content_type or "").strip().lower()
-    if content_type not in COLLECTION_POSTER_MIME_TYPES:
-        return JSONResponse(status_code=400, content={"success": False, "error": "Formato backdrop non supportato"})
-    data = await file.read()
-    if not data:
-        return JSONResponse(status_code=400, content={"success": False, "error": "File vuoto"})
-    if len(data) > COLLECTION_POSTER_MAX_BYTES:
-        return JSONResponse(status_code=400, content={"success": False, "error": "Backdrop troppo grande"})
+    try:
+        image = await _sanitize_collection_upload(file)
+    except ImageUploadError as exc:
+        return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
     backend = _ensure_db_backend()
     existing = backend.get_emby_collection_definition(collection_id)
     if not existing:
         return JSONResponse(status_code=404, content={"success": False, "error": "Collezione non trovata"})
     try:
-        save_collection_backdrop_blob(collection_id, content_type, data)
+        save_collection_backdrop_blob(collection_id, image.mime_type, image.data)
+        _publish_collections_update("media", collection_id)
         return {"success": True}
     except StorageError as exc:
         return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
 
 
-@router.get("/api/emby/collections/{collection_id}/backdrop")
-async def api_emby_collections_get_backdrop(collection_id: str):
+@router.get(
+    "/api/emby/collections/{collection_id}/backdrop",
+    response_class=Response,
+    responses={200: binary_response("image/*", "Backdrop della collezione nel formato immagine salvato.")},
+)
+async def api_emby_collections_get_backdrop(collection_id: str, user=Depends(_require_user_dep)):
     backdrop = get_collection_backdrop_blob(collection_id)
-    if not backdrop:
-        return Response(status_code=404)
-    media_type = backdrop.get("mime_type") or "application/octet-stream"
-    return Response(
-        content=backdrop.get("data") or b"",
-        media_type=media_type,
-        headers={"Cache-Control": "no-store"},
-    )
+    return await _stored_collection_image_response(backdrop)
 
 
-@router.post("/api/emby/collections/{collection_id}/backdrop/delete")
+@router.post("/api/emby/collections/{collection_id}/backdrop/delete", responses={200: {"model": CollectionSuccessResponse}})
 async def api_emby_collections_delete_backdrop(collection_id: str, user=Depends(_require_user_dep)):
     backend = _ensure_db_backend()
     existing = backend.get_emby_collection_definition(collection_id)
@@ -282,23 +273,26 @@ async def api_emby_collections_delete_backdrop(collection_id: str, user=Depends(
         return JSONResponse(status_code=404, content={"success": False, "error": "Collezione non trovata"})
     try:
         delete_collection_backdrop_blob(collection_id)
+        _publish_collections_update("media", collection_id)
         return {"success": True}
     except StorageError as exc:
         return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
 
 
-@router.post("/api/emby/collections/{collection_id}/toggle")
+@router.post(
+    "/api/emby/collections/{collection_id}/toggle",
+    responses={200: {"model": CollectionMutationResponse}},
+    openapi_extra=json_request_body(CollectionEnabledRequest),
+)
 async def api_emby_collections_toggle(collection_id: str, request: Request, user=Depends(_require_user_dep)):
     logger = _logger_dep()
     actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
     logger.info("User %s toggling collection %s", actor_id or "unknown", collection_id)
-    try:
-        payload = await request.json()
-    except ValueError:
-        return JSONResponse(status_code=400, content={"success": False, "error": "JSON non valido"})
-    enabled = bool(payload.get("enabled", False))
+    payload = await validated_json_payload(request, CollectionEnabledRequest)
+    enabled = payload["enabled"]
     try:
         collection = set_collection_enabled(collection_id, enabled)
+        _publish_collections_update("definitions", collection_id)
         return {"success": True, "collection": collection}
     except KeyError as exc:
         return JSONResponse(status_code=404, content={"success": False, "error": str(exc)})
@@ -306,13 +300,14 @@ async def api_emby_collections_toggle(collection_id: str, request: Request, user
         return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
 
 
-@router.post("/api/emby/collections/{collection_id}/delete")
+@router.post("/api/emby/collections/{collection_id}/delete", responses={200: {"model": CollectionMutationResponse}})
 async def api_emby_collections_delete(collection_id: str, request: Request, user=Depends(_require_user_dep)):
     logger = _logger_dep()
     actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
     logger.info("User %s deleting collection %s", actor_id or "unknown", collection_id)
     try:
         result = remove_collection_definition(collection_id)
+        _publish_collections_update("definitions", collection_id)
         return {"success": True, "collection": result}
     except KeyError as exc:
         return JSONResponse(status_code=404, content={"success": False, "error": str(exc)})
@@ -320,7 +315,16 @@ async def api_emby_collections_delete(collection_id: str, request: Request, user
         return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
 
 
-@router.post("/api/emby/collections/{collection_id}/sync")
+@router.post(
+    "/api/emby/collections/{collection_id}/sync",
+    responses={
+        200: {"model": CollectionSyncResponse},
+        202: {"model": CollectionBackgroundOperationResponse},
+        400: {"model": CollectionErrorResponse},
+        404: {"model": CollectionErrorResponse},
+        500: {"model": CollectionErrorResponse},
+    },
+)
 async def api_emby_collections_sync(collection_id: str, request: Request, user=Depends(_require_user_dep)):
     logger = _logger_dep()
     actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
@@ -331,6 +335,7 @@ async def api_emby_collections_sync(collection_id: str, request: Request, user=D
                 collection_id=collection_id,
                 runner=run_collection_sync,
             )
+            _publish_collections_update("sync", collection_id)
             return JSONResponse(
                 status_code=202,
                 content={
@@ -344,6 +349,7 @@ async def api_emby_collections_sync(collection_id: str, request: Request, user=D
             return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
     try:
         result = await run_in_threadpool(run_collection_sync, collection_id)
+        _publish_collections_update("sync", collection_id)
         return {"success": True, "collection": result.get("collection"), "details": result.get("details")}
     except KeyError as exc:
         return JSONResponse(status_code=404, content={"success": False, "error": str(exc)})
@@ -353,7 +359,10 @@ async def api_emby_collections_sync(collection_id: str, request: Request, user=D
         return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
 
 
-@router.get("/api/emby/collections/{collection_id}/sync-details")
+@router.get(
+    "/api/emby/collections/{collection_id}/sync-details",
+    responses={200: {"model": CollectionSyncDetailsResponse}, 404: {"model": CollectionErrorResponse}},
+)
 async def api_emby_collections_sync_details(collection_id: str, request: Request, user=Depends(_require_user_dep)):
     logger = _logger_dep()
     actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
@@ -367,7 +376,11 @@ async def api_emby_collections_sync_details(collection_id: str, request: Request
         return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
 
 
-@router.post("/api/emby/collections/sync-all")
+@router.post(
+    "/api/emby/collections/sync-all",
+    responses={200: {"model": CollectionSuccessResponse}, 202: {"model": CollectionBackgroundOperationResponse}},
+    openapi_extra=query_parameters(("background", False, "boolean")),
+)
 async def api_emby_collections_sync_all(request: Request, user=Depends(_require_user_dep)):
     logger = _logger_dep()
     actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
@@ -375,6 +388,7 @@ async def api_emby_collections_sync_all(request: Request, user=Depends(_require_
     if _wants_background(request):
         try:
             operation = start_collection_sync_all_operation(runner=sync_all_collections)
+            _publish_collections_update("sync")
             return JSONResponse(
                 status_code=202,
                 content={
@@ -388,6 +402,7 @@ async def api_emby_collections_sync_all(request: Request, user=Depends(_require_
             return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
     try:
         result = await run_in_threadpool(sync_all_collections)
+        _publish_collections_update("sync")
         return {"success": True, "summary": result.get("summary", {})}
     except StorageError as exc:
         return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
@@ -395,7 +410,10 @@ async def api_emby_collections_sync_all(request: Request, user=Depends(_require_
         return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
 
 
-@router.get("/api/emby/collections/trakt-lists")
+@router.get(
+    "/api/emby/collections/trakt-lists",
+    responses={200: {"model": CollectionSourceListsResponse}, 202: {"model": CollectionBackgroundOperationResponse}},
+)
 async def api_emby_collections_trakt_lists(request: Request, user=Depends(_require_user_dep)):
     logger = _logger_dep()
     actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
@@ -427,7 +445,10 @@ async def api_emby_collections_trakt_lists(request: Request, user=Depends(_requi
         return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
 
 
-@router.get("/api/emby/collections/mdblist-lists")
+@router.get(
+    "/api/emby/collections/mdblist-lists",
+    responses={200: {"model": CollectionSourceListsResponse}, 202: {"model": CollectionBackgroundOperationResponse}},
+)
 async def api_emby_collections_mdblist_lists(request: Request, user=Depends(_require_user_dep)):
     logger = _logger_dep()
     actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
@@ -459,7 +480,7 @@ async def api_emby_collections_mdblist_lists(request: Request, user=Depends(_req
         return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
 
 
-@router.get("/api/emby/collections/source-inventory")
+@router.get("/api/emby/collections/source-inventory", responses={200: {"model": CollectionSourceInventoryResponse}})
 async def api_emby_collections_source_inventory(user=Depends(_require_user_dep)):
     logger = _logger_dep()
     actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
@@ -470,17 +491,19 @@ async def api_emby_collections_source_inventory(user=Depends(_require_user_dep))
         return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
 
 
-@router.post("/api/emby/collections/source-inventory")
+@router.post(
+    "/api/emby/collections/source-inventory",
+    responses={200: {"model": CollectionSourceInventoryResponse}},
+    openapi_extra=json_request_body(CollectionSourceInventoryRequest),
+)
 async def api_emby_collections_source_inventory_save(request: Request, user=Depends(_require_user_dep)):
     logger = _logger_dep()
     actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
     logger.info("User %s saving collection source inventory item", actor_id or "unknown")
-    try:
-        payload = await request.json()
-    except ValueError:
-        return JSONResponse(status_code=400, content={"success": False, "error": "JSON non valido"})
+    payload = await validated_json_payload(request, CollectionSourceInventoryRequest)
     try:
         item = add_source_inventory_item(payload, origin="manual")
+        _publish_collections_update("sources")
         return {"success": True, "item": item, "items": list_source_inventory()}
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
@@ -488,7 +511,7 @@ async def api_emby_collections_source_inventory_save(request: Request, user=Depe
         return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})
 
 
-@router.post("/api/emby/collections/source-inventory/{item_id}/delete")
+@router.post("/api/emby/collections/source-inventory/{item_id}/delete", responses={200: {"model": CollectionSourceInventoryResponse}})
 async def api_emby_collections_source_inventory_delete(item_id: str, user=Depends(_require_user_dep)):
     logger = _logger_dep()
     actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
@@ -497,6 +520,7 @@ async def api_emby_collections_source_inventory_delete(item_id: str, user=Depend
         removed = remove_source_inventory_item(item_id)
         if not removed:
             return JSONResponse(status_code=404, content={"success": False, "error": "Lista non trovata"})
+        _publish_collections_update("sources")
         return {"success": True, "items": list_source_inventory()}
     except StorageError as exc:
         return JSONResponse(status_code=500, content={"success": False, "error": str(exc)})

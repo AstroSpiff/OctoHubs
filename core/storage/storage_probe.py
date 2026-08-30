@@ -24,6 +24,7 @@ class _SessionProvider(Protocol):
 class _KeyValueProvider(Protocol):
     def get_key_value(self, key: str) -> Optional[Any]: ...
     def set_key_value(self, key: str, value: Any) -> None: ...
+    def delete_key(self, key: str) -> None: ...
 
 
 class StorageProbeMixin(_SessionProvider):
@@ -40,6 +41,18 @@ class StorageProbeMixin(_SessionProvider):
         if normalized == "libraries":
             return query.filter(or_(model.scope == normalized, model.scope.is_(None)))  # type: ignore[attr-defined]
         return query.filter(model.scope == normalized)  # type: ignore[attr-defined]
+
+    def _normalize_probe_media_source_id(self, media_source_id: Optional[str]) -> Optional[str]:
+        value = str(media_source_id or "").strip()
+        return value or None
+
+    def _apply_media_source_filter(self, query, model, media_source_id: Optional[str]):
+        normalized = self._normalize_probe_media_source_id(media_source_id)
+        if normalized is None:
+            return query.filter(
+                or_(model.media_source_id.is_(None), model.media_source_id == "")  # type: ignore[attr-defined]
+            )
+        return query.filter(model.media_source_id == normalized)  # type: ignore[attr-defined]
 
     def load_probe_blacklist(self, server_id: str, scope: Optional[str] = None) -> Dict[str, Any]:
         session = self._get_session()
@@ -83,17 +96,25 @@ class StorageProbeMixin(_SessionProvider):
         session = self._get_session()
         try:
             scope_value = self._normalize_probe_scope(scope)
-            entry = session.query(EmbyProbeBlacklist).filter(
+            media_source_value = self._normalize_probe_media_source_id(media_source_id)
+            query = session.query(EmbyProbeBlacklist).filter(
                 EmbyProbeBlacklist.server_id == server_id,  # type: ignore[attr-defined]
                 EmbyProbeBlacklist.item_id == item_id  # type: ignore[attr-defined]
-            ).first()
+            )
+            query = self._apply_scope_filter(query, EmbyProbeBlacklist, scope_value)
+            query = self._apply_media_source_filter(
+                query,
+                EmbyProbeBlacklist,
+                media_source_value,
+            )
+            entry = query.first()
 
             if entry:
                 entry.scope = scope_value  # type: ignore[assignment]
                 entry.item_name = name  # type: ignore[assignment]
                 entry.reason = reason  # type: ignore[assignment]
                 entry.failed_at = _utcnow()  # type: ignore[assignment]
-                entry.media_source_id = media_source_id  # type: ignore[assignment]
+                entry.media_source_id = media_source_value  # type: ignore[assignment]
                 entry.library_id = library_id  # type: ignore[assignment]
                 entry.library_name = library_name  # type: ignore[assignment]
                 entry.error_type = error_type or entry.error_type  # type: ignore[assignment]
@@ -106,7 +127,7 @@ class StorageProbeMixin(_SessionProvider):
                     server_id=server_id,
                     item_id=item_id,
                     scope=scope_value,
-                    media_source_id=media_source_id,
+                    media_source_id=media_source_value,
                     library_id=library_id,
                     library_name=library_name,
                     item_name=name,
@@ -134,11 +155,17 @@ class StorageProbeMixin(_SessionProvider):
     ) -> None:
         session = self._get_session()
         try:
+            scope_value = self._normalize_probe_scope(scope)
             query = session.query(EmbyProbeBlacklist).filter(
                 EmbyProbeBlacklist.server_id == server_id,  # type: ignore[attr-defined]
                 EmbyProbeBlacklist.item_id == item_id  # type: ignore[attr-defined]
             )
-            query = self._apply_scope_filter(query, EmbyProbeBlacklist, scope)
+            query = self._apply_scope_filter(query, EmbyProbeBlacklist, scope_value)
+            query = self._apply_media_source_filter(
+                query,
+                EmbyProbeBlacklist,
+                media_source_id,
+            )
             query.delete()
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
@@ -553,21 +580,29 @@ class StorageProbeMixin(_SessionProvider):
         finally:
             session.close()
 
-    # --- Emby Probe Recent Scan Config ---
+    # --- Emby Probe Configuration ---
 
-    def get_recent_scan_config(self, server_id: str) -> Dict[str, Any]:
-        """Get discovery configuration parameters for a server."""
+    def get_probe_config(self, server_id: str) -> Dict[str, Any]:
+        """Get the shared Probe configuration for one server."""
         defaults = {
             "window_size": 500,
             "window_threshold": 0.90,
             "max_days": 60,
             "max_items": 2000,
             "safety_margin_days": 7,
-            "probe_parallelism": 1
+            "probe_parallelism": 1,
+            "media_policy": "strm_only",
         }
-        key = f"probe_recent_config:{server_id}"
+        key = f"probe_config:{server_id}"
         provider = cast(_KeyValueProvider, self)
         value = provider.get_key_value(key)
+        if not isinstance(value, dict):
+            legacy_key = f"probe_recent_config:{server_id}"
+            legacy_value = provider.get_key_value(legacy_key)
+            if isinstance(legacy_value, dict):
+                value = legacy_value
+                provider.set_key_value(key, legacy_value)
+                provider.delete_key(legacy_key)
         if isinstance(value, dict):
             merged = defaults.copy()
             for field in defaults:
@@ -576,10 +611,10 @@ class StorageProbeMixin(_SessionProvider):
             return merged
         return defaults
 
-    def save_recent_scan_config(self, server_id: str, config: Dict[str, Any]) -> None:
-        """Save discovery configuration parameters for a server."""
+    def save_probe_config(self, server_id: str, config: Dict[str, Any]) -> None:
+        """Save the shared Probe configuration for one server."""
         if not isinstance(config, dict):
-            raise StorageError("Config recente non valida")
-        key = f"probe_recent_config:{server_id}"
+            raise StorageError("Configurazione Probe non valida")
+        key = f"probe_config:{server_id}"
         provider = cast(_KeyValueProvider, self)
         provider.set_key_value(key, config)

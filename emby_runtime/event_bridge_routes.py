@@ -7,13 +7,25 @@ from typing import Any, Callable, Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
 
+from emby_runtime.event_bridge_auth import (
+    authenticate_event_bridge,
+    validate_event_bridge_payload_identity,
+)
 from emby_runtime.event_bridge_manager import get_event_bridge_manager
 from emby_runtime.event_bridge_config_store import apply_plugin_reported_settings
+from emby_runtime.event_bridge_limits import (
+    EventBridgeInvalidJson,
+    EventBridgePayloadShapeError,
+    EventBridgePayloadTooLarge,
+    consume_event_bridge_ingress,
+    receive_event_bridge_websocket_json,
+    validate_event_bridge_payload_shape,
+)
 from emby_runtime.event_bridge_payloads import (
     event_bridge_payloads,
     mark_event_bridge_transport,
-    validate_event_bridge_secret,
 )
+from emby_runtime.event_bridge_network_policy import validate_event_bridge_source
 from emby_runtime.event_bridge_settings import build_plugin_settings_payload, normalize_event_bridge_settings
 from emby_runtime.transcode_guard import get_transcode_guard_service
 
@@ -51,20 +63,37 @@ def _settings(server_id: str | None = None) -> dict[str, Any]:
 @router.websocket("/ws/emby/event-bridge")
 async def api_event_bridge_websocket(websocket: WebSocket):
     try:
-        validate_event_bridge_secret(getattr(websocket, "headers", {}) or {})
+        validate_event_bridge_source(websocket)
+        principal = await run_in_threadpool(
+            authenticate_event_bridge,
+            getattr(websocket, "headers", {}) or {},
+        )
     except Exception:
         await websocket.close(code=1008)
         return
 
-    await websocket.accept()
     manager = get_event_bridge_manager()
     registered = False
     try:
+        await websocket.accept()
         while True:
-            payload = await websocket.receive_json()
-            if not isinstance(payload, dict):
-                await websocket.send_json({"type": "error", "error": "Payload evento non valido"})
-                continue
+            try:
+                payload = await receive_event_bridge_websocket_json(websocket)
+                payload = validate_event_bridge_payload_shape(payload)
+            except EventBridgePayloadTooLarge:
+                await websocket.close(code=1009)
+                return
+            except (EventBridgeInvalidJson, EventBridgePayloadShapeError):
+                await websocket.close(code=1008)
+                return
+            try:
+                validate_event_bridge_payload_identity(principal, payload)
+            except Exception:
+                await websocket.close(code=1008)
+                return
+            if not consume_event_bridge_ingress(principal.server_id, payload):
+                await websocket.close(code=1008)
+                return
             if payload.get("type") == "hello":
                 state = await manager.register(websocket, payload)
                 registered = True
@@ -84,8 +113,8 @@ async def api_event_bridge_websocket(websocket: WebSocket):
                 registered = True
 
             payload = mark_event_bridge_transport(payload, "websocket")
-            manager.record_websocket_event(websocket, payload)
             results = await run_in_threadpool(_record_payloads, payload)
+            manager.record_websocket_event(websocket, payload)
             await websocket.send_json(
                 {
                     "type": "event_ack",
@@ -94,6 +123,8 @@ async def api_event_bridge_websocket(websocket: WebSocket):
                 }
             )
     except WebSocketDisconnect:
+        pass
+    finally:
         await manager.disconnect(websocket)
 
 

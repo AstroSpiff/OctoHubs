@@ -10,6 +10,7 @@ from emby_runtime.api_clients import _call_emby_api, _fetch_emby_active_sessions
 
 from .constants import PROBE_SCOPE_LIBRARIES, PROBE_SCOPE_RECENT
 from .display import _format_probe_display_name, _format_display_name_from_queue
+from .media_policy import is_probe_media_candidate, normalize_media_policy
 from .protocols import ProbeManagerProtocol
 
 class LibrariesProbeMixin(ProbeManagerProtocol):
@@ -205,6 +206,12 @@ class LibrariesProbeMixin(ProbeManagerProtocol):
                 return
 
             db = self._db_getter()
+            probe_config = {}
+            try:
+                probe_config = db.get_probe_config(server_id)
+            except Exception:
+                probe_config = {}
+            media_policy = normalize_media_policy(probe_config.get("media_policy"))
 
             # Fetch all libraries from Emby
             self._update_status(
@@ -325,8 +332,7 @@ class LibrariesProbeMixin(ProbeManagerProtocol):
 
                         item_path = item.get("Path", "")
 
-                        # Filter: only .strm files
-                        if not item_path.lower().endswith(".strm"):
+                        if not is_probe_media_candidate(item_path, media_policy):
                             continue
 
                         # Extract metadata

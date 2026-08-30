@@ -15,13 +15,15 @@ def push_event_bridge_settings_to_plugin(
     server: dict[str, Any] | None,
     server_id: str,
     settings: dict[str, Any],
+    *,
+    webhook_secret: str = "",
 ) -> tuple[bool, str, dict[str, Any] | None]:
     """Apply settings through the authenticated Emby plugin API."""
     if not isinstance(server, dict):
         return False, "Server Emby non trovato", None
 
     plugin_payload = build_plugin_settings_payload(settings)
-    payload = _plugin_configuration_payload(server_id, plugin_payload)
+    payload = _plugin_configuration_payload(server_id, plugin_payload, webhook_secret)
     success, response = _call_emby_api(
         server,
         PLUGIN_CONFIGURATION_PATH,
@@ -46,8 +48,12 @@ def push_event_bridge_settings_to_plugin(
     return True, "", None
 
 
-def _plugin_configuration_payload(server_id: str, settings: dict[str, Any]) -> dict[str, Any]:
-    return {
+def _plugin_configuration_payload(
+    server_id: str,
+    settings: dict[str, Any],
+    webhook_secret: str = "",
+) -> dict[str, Any]:
+    payload = {
         "ServerId": server_id,
         "Enabled": settings["enabled"],
         "UseWebSocket": settings["useWebSocket"],
@@ -65,3 +71,6 @@ def _plugin_configuration_payload(server_id: str, settings: dict[str, Any]) -> d
         "SessionEventNames": settings["sessionEventNames"],
         "PluginEventNames": settings["pluginEventNames"],
     }
+    if webhook_secret:
+        payload["WebhookSecret"] = webhook_secret
+    return payload

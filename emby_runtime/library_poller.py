@@ -21,7 +21,19 @@ from typing import Dict, Set, Optional
 from datetime import datetime
 import copy
 
+from emby_runtime.library_poller_terminal import (
+    RESTART_INTERRUPTION_MESSAGE,
+    TerminalLibraryUpdate,
+    interrupt_persisted_state,
+    missing_target_update,
+    polling_failure_update,
+)
+
 logger = logging.getLogger(__name__)
+
+
+class _PersistedScanChanged(RuntimeError):
+    """Abort startup recovery when the persisted scan was replaced concurrently."""
 
 
 def _get_library_tracker():
@@ -190,25 +202,64 @@ class EmbyLibraryPoller:
         Interroga /Library/VirtualFolders periodicamente.
         """
         error_count = 0
+        failed_library_ids: list[str] = []
 
-        while True:
-            try:
-                due_libraries = await self._collect_due_libraries(server_id)
-                if due_libraries:
-                    await self._fetch_and_update_libraries(server_id, emby_client, target_libraries=due_libraries)
-                error_count = 0
-                sleep_time = await self._calculate_sleep_for_server(server_id)
-                await asyncio.sleep(sleep_time)
-            except asyncio.CancelledError:
-                logger.info(f"[LibPoller] Polling cancelled for server {server_id}")
-                break
-            except Exception as e:
-                error_count += 1
-                logger.error(f"[LibPoller] Error polling server {server_id}: {e} (error {error_count}/{self.max_errors})")
-                if error_count >= self.max_errors:
-                    logger.error(f"[LibPoller] Too many errors, stopping polling for server {server_id}")
+        try:
+            while True:
+                try:
+                    due_libraries = await self._collect_due_libraries(server_id)
+                    if due_libraries:
+                        await self._fetch_and_update_libraries(server_id, emby_client, target_libraries=due_libraries)
+                    error_count = 0
+                    sleep_time = await self._calculate_sleep_for_server(server_id)
+                    await asyncio.sleep(sleep_time)
+                except asyncio.CancelledError:
+                    logger.info(f"[LibPoller] Polling cancelled for server {server_id}")
                     break
-                await asyncio.sleep(min(self.active_poll_interval * (2 ** error_count), 60))
+                except Exception as e:
+                    error_count += 1
+                    logger.error(f"[LibPoller] Error polling server {server_id}: {e} (error {error_count}/{self.max_errors})")
+                    if error_count >= self.max_errors:
+                        logger.error(f"[LibPoller] Too many errors, stopping polling for server {server_id}")
+                        failed_library_ids = await self._fail_tracked_libraries(
+                            server_id,
+                            f"Library polling stopped after {error_count} consecutive errors",
+                        )
+                        break
+                    await asyncio.sleep(min(self.active_poll_interval * (2 ** error_count), 60))
+        finally:
+            current_task = asyncio.current_task()
+            async with self._lock:
+                if self._polling_tasks.get(server_id) is current_task:
+                    self._polling_tasks.pop(server_id, None)
+            for library_id in failed_library_ids:
+                await self.stop_tracking_library(server_id, library_id)
+
+    async def _fail_tracked_libraries(self, server_id: str, message: str) -> list[str]:
+        updates: list[TerminalLibraryUpdate] = []
+        now = datetime.now()
+        async with self._lock:
+            for library_id in list(self._tracked_libraries.get(server_id) or set()):
+                state_key = f"{server_id}:{library_id}"
+                state = self._library_states.get(state_key)
+                if not state:
+                    continue
+                update = polling_failure_update(state_key, state, message, now)
+                if update:
+                    updates.append(update)
+
+        await self._notify_terminal_updates(updates)
+        return [update.library_id for update in updates]
+
+    async def _notify_terminal_updates(self, updates: list[TerminalLibraryUpdate]) -> None:
+        for update in updates:
+            await self._update_tracker_status(
+                update.state_key,
+                update.tracker_status,
+                update.progress,
+                update.message,
+                metadata=update.metadata,
+            )
 
     async def _calculate_sleep_for_server(self, server_id: str) -> float:
         """Compute how long to wait before polling the next due library."""
@@ -252,7 +303,7 @@ class EmbyLibraryPoller:
         if state == "running":
             return now + self.active_poll_interval
 
-        if state in ("completed", "error", "timeout"):
+        if state in ("idle", "completed", "error", "timeout", "interrupted"):
             cleanup = library_state.get("cleanup_scheduled")
             if not cleanup:
                 cleanup = now + 300.0
@@ -351,11 +402,15 @@ class EmbyLibraryPoller:
                 "/Library/VirtualFolders"
             )
 
-            if not response or not isinstance(response, list):
-                logger.warning(f"[LibPoller] Invalid response from /Library/VirtualFolders: {type(response)}")
-                return
+            if not isinstance(response, list):
+                raise ValueError(
+                    "Invalid response from /Library/VirtualFolders: "
+                    f"expected list, got {type(response).__name__}"
+                )
 
-            target_set = {str(lib) for lib in target_libraries} if target_libraries else None
+            target_set = {str(lib) for lib in target_libraries} if target_libraries is not None else None
+            seen_target_ids: set[str] = set()
+            terminal_updates: list[TerminalLibraryUpdate] = []
             # Processa ogni virtual folder
             async with self._lock:
                 for vfolder in response:
@@ -378,6 +433,7 @@ class EmbyLibraryPoller:
                     state_key = f"{server_id}:{library_id}"
                     if state_key not in self._library_states:
                         continue
+                    seen_target_ids.add(library_id)
 
                     # Analizza RefreshProgress (campo NON documentato ma presente)
                     refresh_progress = vfolder.get("RefreshProgress")
@@ -544,6 +600,34 @@ class EmbyLibraryPoller:
                         else:
                             logger.debug(f"[LibPoller] Library {library_id}: skipping broadcast (no significant change)")
 
+                for library_id in (target_set or set()) - seen_target_ids:
+                    if library_id not in (self._tracked_libraries.get(server_id) or set()):
+                        continue
+                    state_key = f"{server_id}:{library_id}"
+                    state = self._library_states.get(state_key)
+                    if not state:
+                        continue
+                    update = missing_target_update(
+                        state_key,
+                        state,
+                        now=datetime.now(),
+                        progress_detection_timeout=self.progress_detection_timeout,
+                        max_scan_duration=self.max_scan_duration,
+                    )
+                    if update:
+                        terminal_updates.append(update)
+                    else:
+                        state["next_poll_time"] = (
+                            self._calculate_next_poll_time(state)
+                            or time.time() + self.idle_poll_interval
+                        )
+
+            await self._notify_terminal_updates(terminal_updates)
+            for update in terminal_updates:
+                asyncio.create_task(
+                    self._schedule_tracking_cleanup(update.server_id, update.library_id)
+                )
+
         except Exception as e:
             logger.error(f"[LibPoller] Error fetching virtual folders for {server_id}: {e}", exc_info=True)
             raise
@@ -674,57 +758,58 @@ class EmbyLibraryPoller:
         async with self._lock:
             return copy.deepcopy(self._library_states.get(state_key))
 
-    async def restore_from_db(self):
-        """
-        Recupera stati scan in corso dal database dopo restart.
-        Da chiamare all'avvio dell'applicazione per riprendere scan interrotti.
-        """
+    async def finalize_interrupted_states(self, now: Optional[datetime] = None) -> int:
+        """Mark persisted active scans as interrupted during application startup."""
         if not self.storage:
-            return
+            return 0
 
+        interrupted = 0
+        recovery_time = now or datetime.now()
         try:
-            from datetime import datetime as dt
-
-            # Cerca tutte le chiavi di stato salvate
             all_keys = await asyncio.to_thread(self.storage.get_keys_by_prefix, "library_scan_state:")
-
             for key in all_keys:
                 try:
                     persist_data = await asyncio.to_thread(self.storage.get_key_value, key)
-                    if not persist_data:
+                    if not isinstance(persist_data, dict) or persist_data.get("state") not in ("running", "waiting"):
                         continue
+                    changed = False
+                    expected_identity = (
+                        persist_data.get("job_id"),
+                        persist_data.get("scan_requested_at"),
+                    )
 
-                    # Ricostruisci datetime da ISO strings
-                    state_data = {
-                        "server_id": persist_data["server_id"],
-                        "library_id": persist_data["library_id"],
-                        "job_id": persist_data["job_id"],
-                        "state": persist_data["state"],
-                        "progress": persist_data["progress"],
-                        "scan_requested_at": dt.fromisoformat(persist_data["scan_requested_at"]),
-                        "first_progress_seen_at": dt.fromisoformat(persist_data["first_progress_seen_at"]) if persist_data.get("first_progress_seen_at") else None,
-                        "started_at": dt.fromisoformat(persist_data["started_at"]) if persist_data.get("started_at") else None,
-                        "last_seen_at": dt.fromisoformat(persist_data["last_seen_at"]),
-                        "ever_seen_progress": persist_data["ever_seen_progress"],
-                        "progress_source": persist_data["progress_source"],
-                        "scan_stage": persist_data.get("scan_stage", "file"), # Default to file for old entries
-                        "completed_at": dt.fromisoformat(persist_data["completed_at"]) if persist_data.get("completed_at") else None
-                    }
+                    def terminalize(current):
+                        nonlocal changed
+                        if not isinstance(current, dict) or (
+                            current.get("job_id"),
+                            current.get("scan_requested_at"),
+                        ) != expected_identity:
+                            raise _PersistedScanChanged
+                        updated, changed = interrupt_persisted_state(current, recovery_time)
+                        return updated
 
-                    # Solo ripristina stati "active" - gli altri sono già conclusi
-                    if state_data["state"] in ("running", "waiting"):
-                        state_key = f"{state_data['server_id']}:{state_data['library_id']}"
-                        async with self._lock:
-                            self._library_states[state_key] = state_data
-                        logger.info(f"[LibPoller] Restored state for {state_key}: {state_data['state']} ({state_data['progress']:.1%})")
+                    update_key_value = getattr(self.storage, "update_key_value", None)
+                    if callable(update_key_value):
+                        try:
+                            await asyncio.to_thread(update_key_value, key, terminalize)
+                        except _PersistedScanChanged:
+                            continue
+                    else:
+                        updated, changed = terminalize(persist_data)
+                        if changed:
+                            await asyncio.to_thread(self.storage.set_key_value, key, updated)
+                    if changed:
+                        interrupted += 1
+                        logger.info("[LibPoller] %s: %s", key, RESTART_INTERRUPTION_MESSAGE)
+                except Exception as exc:
+                    logger.warning(f"[LibPoller] Could not finalize state from {key}: {exc}")
+        except Exception as exc:
+            logger.error(f"[LibPoller] Error finalizing persisted states: {exc}")
+        return interrupted
 
-                except Exception as e:
-                    logger.warning(f"[LibPoller] Could not restore state from {key}: {e}")
-
-            logger.info(f"[LibPoller] Restored {len(self._library_states)} active scan states from DB")
-
-        except Exception as e:
-            logger.error(f"[LibPoller] Error restoring states from DB: {e}")
+    async def restore_from_db(self) -> int:
+        """Compatibility alias: orphaned scans are terminalized, never resumed."""
+        return await self.finalize_interrupted_states()
 
     async def cleanup_completed_states(self):
         """Rimuovi stati completati/errore dal DB dopo un certo tempo."""
@@ -742,7 +827,7 @@ class EmbyLibraryPoller:
                         continue
 
                     # Rimuovi stati completati/errore più vecchi di 1 ora
-                    if persist_data["state"] in ("idle", "error", "completed"):
+                    if persist_data["state"] in ("idle", "error", "completed", "timeout", "interrupted"):
                         last_seen = datetime.fromisoformat(persist_data["last_seen_at"])
                         if (now - last_seen).total_seconds() > 3600:
                             await asyncio.to_thread(self.storage.delete_key, key)

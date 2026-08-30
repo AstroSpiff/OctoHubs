@@ -272,6 +272,21 @@ if SQLALCHEMY_AVAILABLE:
         audio_langs = Column(Text)  # type: ignore[assignment]
         subtitle_langs = Column(Text)  # type: ignore[assignment]
 
+    class EmbyLatestNotificationDelivery(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "emby_latest_notification_deliveries"
+        delivery_key = Column(String(64), primary_key=True)  # type: ignore[assignment]
+        server_id = Column(String(36), nullable=False, index=True)  # type: ignore[assignment]
+        publication_key = Column(Text, nullable=False)  # type: ignore[assignment]
+        destination_key = Column(String(255), nullable=False)  # type: ignore[assignment]
+        status = Column(String(20), nullable=False, index=True)  # type: ignore[assignment]
+        claim_token = Column(String(32), nullable=False)  # type: ignore[assignment]
+        claimed_at = Column(DateTime, nullable=False)  # type: ignore[assignment]
+        sent_at = Column(DateTime)  # type: ignore[assignment]
+        failed_at = Column(DateTime)  # type: ignore[assignment]
+        last_error = Column(Text)  # type: ignore[assignment]
+        created_at = Column(DateTime, default=_utcnow, nullable=False)  # type: ignore[assignment]
+        updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)  # type: ignore[assignment]
+
     class EmbyCollectionDefinition(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "emby_collection_definitions"
         id = Column(String(50), primary_key=True)  # type: ignore[assignment]
@@ -346,6 +361,17 @@ if SQLALCHEMY_AVAILABLE:
 
     class EmbyProbeBlacklist(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "emby_probe_blacklist"
+        __table_args__ = (
+            Index(
+                "uq_emby_probe_blacklist_identity",
+                "server_id",
+                "item_id",
+                "scope",
+                "media_source_id",
+                unique=True,
+                postgresql_nulls_not_distinct=True,
+            ),
+        )
         id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
         item_id = Column(String(36), index=True)  # type: ignore[assignment]
         item_name = Column(String(500))  # type: ignore[assignment]
@@ -500,7 +526,7 @@ if SQLALCHEMY_AVAILABLE:
 
 else:
     _PLACEHOLDER = object
-    AppSettings = EmbyLatestCacheMeta = EmbyLatestCacheItem = JellyseerrRequest = EmbyLatestCacheChange = EmbyLatestCacheError = EmbyImageCache = EmbyLatestStateMovie = EmbyLatestStateSeries = EmbyLatestStateEpisode = EmbyLatestStateSeriesGroup = EmbyLatestStateSeriesChange = EmbyCollectionDefinition = EmbyCollectionPoster = EmbyCollectionBackdrop = RequestRuleEntry = ScanResultEntry = RequestCacheEntry = EmbyLatestProgress = LibraryAssociation = LibraryGroupOrder = TabOrder = EmbyProbeBlacklist = EmbyProbeQueue = EmbyProbeHistory = JustWatchCache = EmbyProbeRecentScan = KeyValueEntry = EmbyUserLink = EmbyUserBackup = EmbyIconProfile = EmbyIconRule = EmbyIconBinding = EmbyGroupPassword = WorkflowExecution = ManualSearchHistory = WorkflowStep = _PLACEHOLDER  # type: ignore[assignment]
+    AppSettings = EmbyLatestCacheMeta = EmbyLatestCacheItem = JellyseerrRequest = EmbyLatestCacheChange = EmbyLatestCacheError = EmbyImageCache = EmbyLatestStateMovie = EmbyLatestStateSeries = EmbyLatestStateEpisode = EmbyLatestStateSeriesGroup = EmbyLatestStateSeriesChange = EmbyLatestNotificationDelivery = EmbyCollectionDefinition = EmbyCollectionPoster = EmbyCollectionBackdrop = RequestRuleEntry = ScanResultEntry = RequestCacheEntry = EmbyLatestProgress = LibraryAssociation = LibraryGroupOrder = TabOrder = EmbyProbeBlacklist = EmbyProbeQueue = EmbyProbeHistory = JustWatchCache = EmbyProbeRecentScan = KeyValueEntry = EmbyUserLink = EmbyUserBackup = EmbyIconProfile = EmbyIconRule = EmbyIconBinding = EmbyGroupPassword = WorkflowExecution = ManualSearchHistory = WorkflowStep = _PLACEHOLDER  # type: ignore[assignment]
 
 
 __all__ = [
@@ -525,6 +551,7 @@ __all__ = [
     "EmbyLatestStateEpisode",
     "EmbyLatestStateSeriesGroup",
     "EmbyLatestStateSeriesChange",
+    "EmbyLatestNotificationDelivery",
     "EmbyCollectionDefinition",
     "EmbyCollectionPoster",
     "EmbyCollectionBackdrop",

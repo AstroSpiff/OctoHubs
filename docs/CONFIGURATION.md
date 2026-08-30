@@ -9,7 +9,7 @@ This document describes the `config.json` structure and the main options used by
 ## Location
 - File: `/mnt/shared/config/octohubs/config.json`
 - Created automatically on first start if missing.
-- When `DATABASE.ENABLED=true`, OctoHubs stores app settings in PostgreSQL and merges them with `config.json`.
+- OctoHubs stores application data, users, sessions, preferences, API tokens and audit logs in one PostgreSQL database. `config.json` is only the bootstrap source for non-secret configuration.
 
 ## Editing workflow
 - Prefer the UI for settings that are available there.
@@ -69,15 +69,15 @@ Supported fields:
 - `alt_titles_language`
 - `year_variance`
 
-## DATABASE (app data)
-Controls PostgreSQL storage for app data (not auth users).
+## DATABASE (shared application database)
+Controls the required PostgreSQL database shared by every OctoHubs feature.
 
 Fields:
 - `ENABLED`, `HOST`, `PORT`, `NAME`, `USER`, `PASSWORD`
 - `DRIVER` (default `postgresql+psycopg2`)
 - `URL` and `PARAMS` (optional)
 
-Note: the auth database for users is configured via `AUTH_DATABASE_URL` in the environment, not in `config.json`.
+Runtime credentials should be supplied with `OCTOHUBS_DB_*` environment variables or their `*_FILE` variants. Docker deployments can use the shared database-password secret documented in [Docker Deploy](DOCKER_DEPLOY.md#database-password-via-compose-secret). Alembic applies the schema automatically at startup. `AUTH_DATABASE_URL` is retired as a runtime setting; when it points to SQLite it is considered only once as a legacy import source.
 
 ## TRAKT
 - `ENABLED`

@@ -9,6 +9,12 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from core.storage import StorageError
+from services.operations_api_models import (
+    ClearCompletedOperationsResponse,
+    OperationsSnapshotResponse,
+    OperationsUnavailableResponse,
+)
+from web.openapi_requests import no_request_body
 
 router = APIRouter()
 
@@ -47,7 +53,14 @@ def _get_tracker():
     return _get_operation_tracker()
 
 
-@router.get("/api/operations")
+@router.get(
+    "/api/operations",
+    responses={
+        200: {"model": OperationsSnapshotResponse},
+        500: {"model": OperationsUnavailableResponse},
+        503: {"model": OperationsUnavailableResponse},
+    },
+)
 async def api_operations(request: Request):
     _require_auth_dep(request)
     try:
@@ -68,7 +81,11 @@ async def api_operations(request: Request):
     return {"ok": True, "operations": operations, "active_count": active_count}
 
 
-@router.post("/api/operations/clear-completed")
+@router.post(
+    "/api/operations/clear-completed",
+    responses={200: {"model": ClearCompletedOperationsResponse}},
+    openapi_extra=no_request_body(),
+)
 async def api_operations_clear_completed(request: Request):
     _require_auth_dep(request)
     _validate_csrf_request(request)

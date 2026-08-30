@@ -13,6 +13,13 @@ logger = logging.getLogger(__name__)
 
 ACTIVE_STATUSES = {"queued", "running"}
 TERMINAL_STATUSES = {"success", "error", "skipped", "interrupted"}
+_REGISTRY_LOCKS_GUARD = threading.Lock()
+_REGISTRY_LOCKS: Dict[str, threading.RLock] = {}
+
+
+def _registry_lock(key: str) -> threading.RLock:
+    with _REGISTRY_LOCKS_GUARD:
+        return _REGISTRY_LOCKS.setdefault(key, threading.RLock())
 
 
 class OperationTracker:
@@ -30,7 +37,9 @@ class OperationTracker:
         self.legacy_key = key.replace("octohubs_", "octohub_", 1) if key.startswith("octohubs_") else ""
         self._now = now
         self.max_recent = max(1, int(max_recent or 40))
-        self._lock = threading.RLock()
+        self._lock = _registry_lock(self.key)
+        self._legacy_checked = False
+        self._legacy_snapshot: Any = None
 
     def start(
         self,
@@ -58,11 +67,11 @@ class OperationTracker:
             "updated_at": now,
             "finished_at": None,
         }
-        with self._lock:
-            registry = self._load()
+        def add_operation(registry: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
             registry[operation["id"]] = operation
-            self._save(registry)
-        return dict(operation)
+            return dict(operation)
+
+        return self._mutate_registry(add_operation)
 
     def update(
         self,
@@ -74,8 +83,8 @@ class OperationTracker:
         status: Optional[str] = None,
         details: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
-        with self._lock:
-            registry = self._load()
+        def update_operation(registry: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+            resolved_progress = progress
             operation = registry.get(operation_id)
             if not operation:
                 return None
@@ -89,18 +98,19 @@ class OperationTracker:
                 operation["total"] = self._positive_int(total)
             if current is not None:
                 operation["current"] = max(0, int(current))
-            if progress is None:
-                progress = self._progress_from_counts(operation.get("current"), operation.get("total"))
-            if progress is not None:
-                operation["progress"] = self._normalize_progress(progress)
+            if resolved_progress is None:
+                resolved_progress = self._progress_from_counts(operation.get("current"), operation.get("total"))
+            if resolved_progress is not None:
+                operation["progress"] = self._normalize_progress(resolved_progress)
             if details:
                 merged = dict(operation.get("details") or {})
                 merged.update(details)
                 operation["details"] = merged
             operation["updated_at"] = self._timestamp()
             registry[operation_id] = operation
-            self._save(registry)
             return dict(operation)
+
+        return self._mutate_registry(update_operation)
 
     def finish(
         self,
@@ -146,21 +156,22 @@ class OperationTracker:
         return sum(1 for item in self.list_operations() if item.get("status") in ACTIVE_STATUSES)
 
     def clear_completed(self) -> int:
-        with self._lock:
-            registry = self._load()
+        def clear(registry: Dict[str, Dict[str, Any]]) -> int:
             kept = {
                 operation_id: operation
                 for operation_id, operation in registry.items()
                 if operation.get("status") in ACTIVE_STATUSES
             }
             removed = len(registry) - len(kept)
-            self._save(kept)
-        return removed
+            registry.clear()
+            registry.update(kept)
+            return removed
+
+        return self._mutate_registry(clear)
 
     def interrupt_active(self, message: str = "Operazione interrotta") -> int:
         """Mark every persisted active operation as interrupted."""
-        with self._lock:
-            registry = self._load()
+        def interrupt(registry: Dict[str, Dict[str, Any]]) -> int:
             now = self._timestamp()
             interrupted = 0
             for operation in registry.values():
@@ -172,9 +183,9 @@ class OperationTracker:
                 operation["updated_at"] = now
                 operation["finished_at"] = now
                 interrupted += 1
-            if interrupted:
-                self._save(registry)
-        return interrupted
+            return interrupted
+
+        return self._mutate_registry(interrupt)
 
     def _complete(
         self,
@@ -184,8 +195,7 @@ class OperationTracker:
         result: Optional[Dict[str, Any]] = None,
         error: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        with self._lock:
-            registry = self._load()
+        def complete(registry: Dict[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
             operation = registry.get(operation_id)
             if not operation:
                 return None
@@ -198,13 +208,17 @@ class OperationTracker:
             operation["updated_at"] = now
             operation["finished_at"] = now
             registry[operation_id] = operation
-            self._save(registry)
             return dict(operation)
+
+        return self._mutate_registry(complete)
 
     def _load(self) -> Dict[str, Dict[str, Any]]:
         raw = self.storage.get_key_value(self.key)
         if raw is None and self.legacy_key:
             raw = self.storage.get_key_value(self.legacy_key)
+        return self._registry_from_raw(raw)
+
+    def _registry_from_raw(self, raw: Any) -> Dict[str, Dict[str, Any]]:
         raw = raw or {}
         if not isinstance(raw, dict):
             return {}
@@ -217,16 +231,45 @@ class OperationTracker:
             if isinstance(operation, dict)
         }
 
+    def _mutate_registry(self, mutator: Callable[[Dict[str, Dict[str, Any]]], Any]) -> Any:
+        with self._lock:
+            legacy_snapshot = self._legacy_snapshot_once()
+            update_key_value = getattr(self.storage, "update_key_value", None)
+            if callable(update_key_value):
+                outcome: List[Any] = []
+
+                def update(raw: Any) -> Dict[str, Any]:
+                    registry = self._registry_from_raw(raw if raw is not None else legacy_snapshot)
+                    outcome.append(mutator(registry))
+                    return self._payload(registry)
+
+                update_key_value(self.key, update)
+                return outcome[0]
+
+            registry = self._load()
+            result = mutator(registry)
+            self._save(registry)
+            return result
+
+    def _legacy_snapshot_once(self) -> Any:
+        if not self._legacy_checked:
+            self._legacy_snapshot = (
+                self.storage.get_key_value(self.legacy_key)
+                if self.legacy_key
+                else None
+            )
+            self._legacy_checked = True
+        return self._legacy_snapshot
+
+    def _payload(self, registry: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+        return {
+            "version": 1,
+            "updated_at": self._timestamp(),
+            "operations": self._prune(registry),
+        }
+
     def _save(self, registry: Dict[str, Dict[str, Any]]) -> None:
-        operations = self._prune(registry)
-        self.storage.set_key_value(
-            self.key,
-            {
-                "version": 1,
-                "updated_at": self._timestamp(),
-                "operations": operations,
-            },
-        )
+        self.storage.set_key_value(self.key, self._payload(registry))
 
     def _prune(self, registry: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         active = {

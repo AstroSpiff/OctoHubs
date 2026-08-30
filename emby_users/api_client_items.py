@@ -61,7 +61,8 @@ def _fetch_emby_user_last_playback(server, user_id):
         "SortOrder": "Descending",
         "Filters": "IsPlayed",
         "IncludeItemTypes": "Movie,Episode",
-        "Fields": "DatePlayed,Name,SeriesName"
+        # LastPlayedDate lives inside UserData in Emby's item response.
+        "Fields": "UserData,SeriesName",
     }
 
     success, payload = _call_emby_api(server, f"Users/{user_id}/Items", params=params)

@@ -1,0 +1,12 @@
+@import "./components/users-toolbar.css";
+@import "./components/users-group-list.css";
+@import "./components/create-user-dialog.css";
+@import "./components/group-sync-settings-dialog.css";
+@import "./components/user-management-dialogs.css";
+
+.users-leader-symbol {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 1px;
+  vertical-align: -3px;
+}

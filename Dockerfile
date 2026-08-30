@@ -1,12 +1,25 @@
 # Multi-stage Dockerfile for OctoHubs
-# Stage 1: Builder - Install dependencies
-FROM python:3.11-alpine AS builder
+# Stage 1: Compile the isolated React frontend.
+FROM node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf AS frontend-builder
+
+WORKDIR /frontend
+
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+COPY frontend/ ./
+RUN npm run build
+
+# Stage 2: Install Python dependencies.
+FROM python:3.11-alpine@sha256:6857d2dae63e052057f2db389a7061188ac9a92a3fa8d402bde68f36df6fada1 AS builder
 
 # Install build dependencies
 RUN apk add --no-cache \
     build-base \
-    git \
     postgresql-dev \
+    libjpeg-turbo-dev \
+    libwebp-dev \
+    zlib-dev \
     libffi-dev \
     openssl-dev \
     pkgconf \
@@ -20,16 +33,18 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --no-cache-dir --require-hashes -r requirements.txt
 
-# Stage 2: Runtime - Minimal production image
-FROM python:3.11-alpine
+# Stage 3: Runtime - Minimal production image
+FROM python:3.11-alpine@sha256:6857d2dae63e052057f2db389a7061188ac9a92a3fa8d402bde68f36df6fada1
 
 # Install runtime dependencies only
 RUN apk add --no-cache \
     libpq \
     postgresql-client \
+    libjpeg-turbo \
+    libwebp \
+    zlib \
     libffi \
     openssl \
     ca-certificates \
@@ -46,6 +61,9 @@ WORKDIR /app
 # Copy application files
 COPY --chown=octohubs:octohubs . .
 
+# Copy only compiled browser assets into the production image.
+COPY --from=frontend-builder --chown=octohubs:octohubs /frontend/dist /app/frontend/dist
+
 # Set environment variables
 # Default paths match docker-compose.yml volume mappings
 ENV PATH="/opt/venv/bin:$PATH" \
@@ -58,7 +76,8 @@ ENV PATH="/opt/venv/bin:$PATH" \
     ADMIN_EMAIL="" \
     WEBHOOK_IP_WHITELIST="" \
     SESSION_TIMEOUT_MINUTES="60" \
-    CSRF_TIME_LIMIT_SECONDS="3600"
+    CSRF_TIME_LIMIT_SECONDS="3600" \
+    SESSION_COOKIE_SECURE="true"
 
 # Create directories for data persistence
 RUN mkdir -p /config /storage /storage/db-backups /app/logs && \
@@ -79,4 +98,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 # Run with Uvicorn ASGI server
 # Using single worker for SSE compatibility, relying on async for concurrency
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
-CMD ["uvicorn", "asgi:app", "--host", "0.0.0.0", "--port", "5050", "--workers", "1", "--timeout-keep-alive", "300"]
+CMD ["uvicorn", "asgi:app", "--host", "0.0.0.0", "--port", "5050", "--workers", "1", "--timeout-keep-alive", "300", "--ws-max-size", "1048576", "--ws-max-queue", "16"]

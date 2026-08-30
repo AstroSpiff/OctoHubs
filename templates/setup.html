@@ -3,109 +3,27 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>Configurazione OctoHubs</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='config.css') }}">
 </head>
 <body>
     <div class="container">
         <h1>Configurazione OctoHubs</h1>
-        <div class="setup-steps">
-            <div class="setup-step {% if step == 'user' %}active{% endif %}">1. Utente Admin</div>
-            <div class="setup-step {% if step == 'db' %}active{% endif %}">2. Database Postgres</div>
+        <div class="alert">
+            <strong>Amministratore non ancora configurato.</strong>
+            La creazione degli account e la configurazione del database dal browser
+            sono disabilitate per impedire che il primo visitatore possa assumere il
+            controllo dell'installazione.
         </div>
-
-        {% with messages = get_flashed_messages() %}
-            {% if messages %}
-                <div class="alert">
-                    {% for msg in messages %}
-                        <div>{{ msg }}</div>
-                    {% endfor %}
-                </div>
-            {% endif %}
-        {% endwith %}
-
-        {% if step == 'user' %}
-            <form action="/setup/user" method="post">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <div class="form-group">
-                    <label for="username">Username admin</label>
-                    <input type="text" id="username" name="username" required>
-                </div>
-                <div class="form-group">
-                    <label for="email">Email (opzionale)</label>
-                    <input type="text" id="email" name="email">
-                </div>
-                <div class="form-group">
-                    <label for="password">Password</label>
-                    <input type="password" id="password" name="password" required>
-                </div>
-                <div class="form-group">
-                    <label for="password_confirm">Conferma password</label>
-                    <input type="password" id="password_confirm" name="password_confirm" required>
-                </div>
-                <button type="submit" class="btn">Salva utente admin</button>
-            </form>
-        {% elif step == 'db' %}
-            <div class="help-popover">
-                <button class="help-trigger" type="button" aria-label="Istruzioni Database">i</button>
-                <div class="help-content">
-                    <strong>Nota sicurezza:</strong> la password del DB non viene salvata nel file.
-                    <div class="tagline">Usa <code>OCTOHUBS_DB_PASSWORD</code> o <code>OCTOHUBS_DB_PASSWORD_FILE</code>.</div>
-                    <div class="tagline">Portainer: Stack -> Environment variables -> aggiungi <code>OCTOHUBS_DB_PASSWORD</code>.</div>
-                    <div class="tagline">CLI: <code>export OCTOHUBS_DB_PASSWORD="password"</code></div>
-                    <div class="tagline">URL completa: <code class="breakable">export OCTOHUBS_DB_URL="postgresql+psycopg2://utente:<wbr>password@host:<wbr>5432/db"</code></div>
-                </div>
-            </div>
-            <div class="tagline" style="margin-bottom:0.75rem;">Inserisci host, porta, user e nome DB.</div>
-            <form action="/setup/db" method="post">
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <div class="form-group">
-                    <label for="db_host">Host</label>
-                    <input type="text" id="db_host" name="db_host" value="{{ db.HOST if db and db.HOST else '' }}" required>
-                </div>
-                <div class="form-group">
-                    <label for="db_port">Porta</label>
-                    <input type="number" id="db_port" name="db_port" value="{{ db.PORT if db and db.PORT not in (None, '') else '' }}" placeholder="5432">
-                </div>
-                <div class="form-group">
-                    <label for="db_name">Nome DB</label>
-                    <input type="text" id="db_name" name="db_name" value="{{ db.NAME if db and db.NAME else '' }}" required>
-                </div>
-                <div class="form-group">
-                    <label for="db_user">Username</label>
-                    <input type="text" id="db_user" name="db_user" value="{{ db.USER if db and db.USER else '' }}" required>
-                </div>
-                <div class="form-group">
-                    <label for="db_password">Password (ENV/Secret)</label>
-                    <input type="password" id="db_password" name="db_password" value="" placeholder="Impostala via ENV/Secret">
-                </div>
-                <div class="form-group">
-                    <label for="db_driver">Driver SQLAlchemy</label>
-                    <input type="text" id="db_driver" name="db_driver" value="{{ db.DRIVER if db and db.DRIVER else 'postgresql+psycopg2' }}">
-                </div>
-                <div class="form-group">
-                    <label for="db_url">Connection URL (opzionale)</label>
-                    <input type="text" id="db_url" name="db_url" value="" placeholder="postgresql+psycopg2://user:pass@host:5432/dbname">
-                </div>
-                <div class="form-group">
-                    <label for="db_params">Parametri extra</label>
-                    <input type="text" id="db_params" name="db_params" value="{{ db.PARAMS if db and db.PARAMS else '' }}" placeholder="sslmode=require">
-                </div>
-                <button type="submit" class="btn">Verifica e salva DB</button>
-            </form>
-        {% else %}
-            <div class="success-message">
-                <h2>Configurazione completata!</h2>
-                <p>La connessione al database è stata verificata e la password è stata salvata nel file .env.</p>
-                <p><strong>Importante:</strong> Riavvia il container per applicare le variabili d'ambiente:</p>
-                <div style="background: #f5f5f5; padding: 10px; margin: 10px 0; border-radius: 4px; font-family: monospace;">
-                    <code>docker compose restart app</code>
-                </div>
-                <p>Oppure in Portainer: vai alla stack e clicca "Restart".</p>
-                <a class="btn primary" href="/login">Vai all'app</a>
-            </div>
-        {% endif %}
+        <p>Configura nel deploy Docker o nella stack Portainer:</p>
+        <ul>
+            <li><code>OCTOHUBS_DB_URL</code> oppure le variabili <code>OCTOHUBS_DB_*</code></li>
+            <li><code>ADMIN_USERNAME</code></li>
+            <li><code>ADMIN_PASSWORD_FILE</code> (consigliato) oppure <code>ADMIN_PASSWORD</code></li>
+            <li><code>ADMIN_EMAIL</code> (opzionale)</li>
+        </ul>
+        <p>Riavvia quindi il container <code>app</code>. L'account verrà creato
+            soltanto se il database utenti è ancora vuoto.</p>
     </div>
 </body>
 </html>

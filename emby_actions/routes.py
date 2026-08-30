@@ -6,8 +6,8 @@ import copy
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
-from fastapi import APIRouter, Request, Form
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
 from core.emby_servers import (
     EMBY_SERVER_DISABLED_MESSAGE,
@@ -18,8 +18,15 @@ from core.emby_servers import (
 from core.storage import StorageError
 from core.config import _normalize_emby_server
 from emby_actions import EMBY_ACTIONS, _execute_emby_action
+from emby_actions.api_models import (
+    EmbyActionRequest,
+    EmbyActionResponse,
+    EmbyActionTargetsResponse,
+    request_body_schema,
+)
 from emby_runtime.settings_manager import _load_emby_settings_from_db, _save_emby_settings_to_db
 from core.utils import get_nested
+from web.request_validation import validated_json_payload
 
 router = APIRouter()
 
@@ -75,127 +82,113 @@ def _load_config_dep():
     return _load_config()
 
 
-@router.post("/emby/action")
-async def emby_action_post(
-    request: Request,
-    server_id: str = Form(...),
-    action: str = Form(...),
-    csrf_token: str = Form(None, alias="csrf_token"),
-):
-    """Execute action on Emby server (POST form handler)."""
-    _require_auth_dep(request)
+def _api_error(message: str, status_code: int = 400) -> JSONResponse:
+    return JSONResponse({"success": False, "message": message}, status_code=status_code)
 
-    # Validate CSRF token
+
+def _api_action_targets() -> list[dict[str, str]]:
+    emby_section = _load_emby_settings_from_db()
+    servers = emby_section.get("SERVERS") or []
+    return [
+        {
+            "id": str(server.get("id") or ""),
+            "name": _emby_display_name(server),
+            "url": str(server.get("url") or ""),
+            "icon": str(server.get("icon") or "fa-server"),
+            "icon_style": str(server.get("icon_style") or "solid"),
+            "icon_color": str(server.get("icon_color") or "#3b82f6"),
+        }
+        for server in servers
+        if server.get("id") and _emby_server_is_enabled(server)
+    ]
+
+
+@router.get(
+    "/api/emby/actions/targets",
+    responses={200: {"model": EmbyActionTargetsResponse}},
+)
+async def emby_action_targets(request: Request):
+    """Return the enabled Emby servers available to the React operations UI."""
+    _require_auth_dep(request)
+    return JSONResponse({
+        "success": True,
+        "actions": [
+            {"id": key, "label": str(value.get("label") or key)}
+            for key, value in EMBY_ACTIONS.items()
+            if key in {"refresh_libraries", "refresh_metadata"}
+        ],
+        "servers": _api_action_targets(),
+    })
+
+
+@router.post(
+    "/api/emby/actions",
+    responses={200: {"model": EmbyActionResponse}},
+    openapi_extra=request_body_schema(EmbyActionRequest),
+)
+async def emby_action_api(request: Request):
+    """Run a library maintenance operation for one enabled server or all of them."""
+    _require_auth_dep(request)
+    csrf_token = request.headers.get("X-CSRF-Token")
     if not _validate_csrf_dep(request, csrf_token):
-        _flash_dep(request, "CSRF token non valido.")
-        return RedirectResponse(url="/emby", status_code=303)
+        return _api_error("CSRF token non valido", 403)
+
+    payload = await validated_json_payload(request, EmbyActionRequest)
+
+    action = str(payload.get("action") or "")
+    requested_server_id = str(payload.get("server_id") or "")
+    if action not in {"restart_server", "refresh_libraries", "refresh_metadata"}:
+        return _api_error("Azione non supportata")
 
     try:
         _ensure_db_backend_dep()
     except StorageError as exc:
-        _flash_dep(request, f"Errore DB: {exc}")
-        return RedirectResponse(url="/emby", status_code=303)
+        return _api_error(f"Errore DB: {exc}", 500)
 
     emby_section = _load_emby_settings_from_db()
     servers = copy.deepcopy(emby_section.get("SERVERS") or [])
+    selected = [
+        (index, server)
+        for index, server in enumerate(servers)
+        if _emby_server_is_enabled(server)
+        and (not requested_server_id or str(server.get("id") or "") == requested_server_id)
+    ]
+    if requested_server_id and not selected:
+        return _api_error("Server Emby non trovato o disabilitato", 404)
+    if not selected:
+        return _api_error("Nessun server Emby abilitato")
 
-    if not server_id or not action:
-        _flash_dep(request, "Azione non valida per Emby.")
-        return RedirectResponse(url="/emby", status_code=303)
-
-    server_index, server_entry = _find_emby_server_with_index(servers, server_id)
-
-    if server_entry is None:
-        _flash_dep(request, "Server Emby non trovato.")
-        return RedirectResponse(url="/emby", status_code=303)
-
-    if server_index is None:
-        _flash_dep(request, "Indice server Emby non valido.")
-        return RedirectResponse(url="/emby", status_code=303)
-
-    if not _emby_server_is_enabled(server_entry):
-        disabled_label = EMBY_SERVER_DISABLED_MESSAGE.removeprefix("Server ").lower()
-        _flash_dep(request, f"Server Emby {disabled_label}.")
-        return RedirectResponse(url="/emby", status_code=303)
-
-    # Execute action
-    success, response = _execute_emby_action(server_entry, action)
-    timestamp = datetime.now(timezone.utc).astimezone().isoformat()
-    action_label = get_nested(EMBY_ACTIONS, action, "label") or action
-
-    server_entry["last_action"] = {
-        "name": action_label,
-        "timestamp": timestamp,
-        "result": "OK" if success else str(response),
-    }
-
-    servers[server_index] = _normalize_emby_server(server_entry)
-    _save_emby_settings_to_db({"SERVERS": servers})
-    _load_config_dep()
-
-    if success:
-        _flash_dep(request, f"{action_label} inviata a {_emby_display_name(server_entry)}.")
-    else:
-        _flash_dep(request, f"{action_label} non riuscita su {_emby_display_name(server_entry)}: {response}")
-
-    return RedirectResponse(url="/emby", status_code=303)
-
-
-@router.post("/emby/action-all")
-async def emby_action_all_post(
-    request: Request,
-    action: str = Form(...),
-    csrf_token: str = Form(None, alias="csrf_token"),
-):
-    """Execute action on all enabled Emby servers (POST form handler)."""
-    _require_auth_dep(request)
-
-    # Validate CSRF token
-    if not _validate_csrf_dep(request, csrf_token):
-        _flash_dep(request, "CSRF token non valido.")
-        return RedirectResponse(url="/emby", status_code=303)
-
-    try:
-        _ensure_db_backend_dep()
-    except StorageError as exc:
-        _flash_dep(request, f"Errore DB: {exc}")
-        return RedirectResponse(url="/emby", status_code=303)
-
-    emby_section = _load_emby_settings_from_db()
-    servers = copy.deepcopy(emby_section.get("SERVERS") or [])
-
-    if not action:
-        _flash_dep(request, "Azione non valida per Emby.")
-        return RedirectResponse(url="/emby", status_code=303)
-
-    action_label = get_nested(EMBY_ACTIONS, action, "label") or action
-    success_count = 0
-    failure_count = 0
-
-    for idx, server_entry in enumerate(servers):
-        if not server_entry.get("enabled"):
-            continue
-        success, response = _execute_emby_action(server_entry, action)
+    action_label = str(get_nested(EMBY_ACTIONS, action, "label") or action)
+    results = []
+    for index, server in selected:
+        success, response = _execute_emby_action(server, action)
         timestamp = datetime.now(timezone.utc).astimezone().isoformat()
-        server_entry["last_action"] = {
+        server["last_action"] = {
             "name": action_label,
             "timestamp": timestamp,
             "result": "OK" if success else str(response),
         }
-        servers[idx] = _normalize_emby_server(server_entry)
-        if success:
-            success_count += 1
-        else:
-            failure_count += 1
+        servers[index] = _normalize_emby_server(server)
+        results.append({
+            "server_id": str(server.get("id") or ""),
+            "server_name": _emby_display_name(server),
+            "success": success,
+            "message": "Operazione inviata" if success else str(response),
+        })
 
     _save_emby_settings_to_db({"SERVERS": servers})
     _load_config_dep()
-
-    if failure_count == 0 and success_count > 0:
-        _flash_dep(request, f"{action_label} inviata a {success_count} server.")
-    elif success_count == 0:
-        _flash_dep(request, f"{action_label} fallita su tutti i server.")
+    failed = [result for result in results if not result["success"]]
+    succeeded = len(results) - len(failed)
+    if failed and succeeded:
+        message = f"{action_label}: inviata a {succeeded} server, non riuscita su {len(failed)}."
+    elif failed:
+        message = f"{action_label}: non riuscita su tutti i server selezionati."
     else:
-        _flash_dep(request, f"{action_label} inviata a {success_count} server, fallita su {failure_count}.")
-
-    return RedirectResponse(url="/emby", status_code=303)
+        message = f"{action_label} inviata a {succeeded} server."
+    return JSONResponse({
+        "success": not failed,
+        "partial": bool(failed and succeeded),
+        "message": message,
+        "results": results,
+    })

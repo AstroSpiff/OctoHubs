@@ -10,6 +10,8 @@ import websocket
 from typing import Dict, Callable, Optional, Any, List
 import logging
 
+from core.log_sanitization import sanitize_text_for_log, sanitize_url_for_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -125,7 +127,7 @@ class EmbyWebSocketConnection:
                 self._send_sessions_stop()
                 self.ws.close()
             except Exception as e:
-                logger.error(f"[WS:{self.server_id}] Error closing WebSocket: {e}")
+                logger.error("[WS:%s] Error closing WebSocket: %s", self.server_id, sanitize_text_for_log(e))
 
         self.state = self.STATE_DISCONNECTED
 
@@ -135,7 +137,7 @@ class EmbyWebSocketConnection:
             try:
                 self._connect()
             except Exception as e:
-                logger.error(f"[WS:{self.server_id}] Connection error: {e}")
+                logger.error("[WS:%s] Connection error: %s", self.server_id, sanitize_text_for_log(e))
                 self.state = self.STATE_RECONNECTING
             finally:
                 if self.should_reconnect and self.state != self.STATE_CONNECTED:
@@ -146,7 +148,7 @@ class EmbyWebSocketConnection:
         self.state = self.STATE_CONNECTING
         self.connection_attempts += 1
 
-        logger.info(f"[WS:{self.server_id}] Connecting to {self.get_websocket_url()}")
+        logger.info("[WS:%s] Connecting to %s", self.server_id, sanitize_url_for_log(self.get_websocket_url()))
 
         # Create WebSocket with callbacks
         self.ws = websocket.WebSocketApp(
@@ -201,7 +203,7 @@ class EmbyWebSocketConnection:
 
     def _on_error(self, ws, error):
         """Called when WebSocket encounters an error."""
-        logger.error(f"[WS:{self.server_id}] Error: {error}")
+        logger.error("[WS:%s] Error: %s", self.server_id, sanitize_text_for_log(error))
         self.state = self.STATE_RECONNECTING
 
     def _on_close(self, ws, close_status_code, close_msg):
@@ -307,6 +309,37 @@ class EmbyWebSocketManager:
             conn.start()
 
             logger.info(f"[WSManager] Added server {server_id}")
+
+    def upsert_server(self, server_id: str, server_url: str, api_key: str) -> bool:
+        """Create or replace a server connection when its endpoint changes."""
+        normalized_url = str(server_url or "").rstrip("/")
+        normalized_key = str(api_key or "")
+        if not server_id or not normalized_url or not normalized_key:
+            raise ValueError("Server ID, URL e API key sono necessari per il WebSocket Emby.")
+
+        with self._lock:
+            existing = self.connections.get(server_id)
+            if (
+                existing is not None
+                and existing.server_url == normalized_url
+                and existing.api_key == normalized_key
+            ):
+                return False
+
+            if existing is not None:
+                existing.stop()
+
+            connection = EmbyWebSocketConnection(
+                server_id=server_id,
+                server_url=normalized_url,
+                api_key=normalized_key,
+                event_callback=self._handle_event,
+            )
+            self.connections[server_id] = connection
+
+        connection.start()
+        logger.info(f"[WSManager] Synchronized server {server_id}")
+        return True
 
     def remove_server(self, server_id: str):
         """Remove an Emby server and close WebSocket connection."""
@@ -435,13 +468,16 @@ class EmbyWebSocketManager:
         def sync_handler(server_id: str, event_data: Dict):
             """Handler sincrono che crea task async per forward."""
             try:
-                # Crea task async in event loop corrente
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.create_task(forward_refresh_progress(server_id, event_data))
+                from app_state import get_app_event_loop
+
+                loop = get_app_event_loop()
+                if loop and loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        forward_refresh_progress(server_id, event_data),
+                        loop,
+                    )
                 else:
-                    # Fallback se non c'è event loop
-                    logger.warning("[WSManager] No event loop running, cannot forward progress")
+                    logger.warning("[WSManager] App event loop not running, cannot forward progress")
             except Exception as e:
                 logger.error(f"[WSManager] Error creating async task: {e}")
 

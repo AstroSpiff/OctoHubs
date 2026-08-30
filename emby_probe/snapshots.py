@@ -32,13 +32,14 @@ def _probe_select_server(servers, server_id):
     return target_server, None
 
 
-_RECENT_PROBE_CONFIG_DEFAULTS = {
+_PROBE_CONFIG_DEFAULTS = {
     "window_size": 500,
     "window_threshold": 0.90,
     "max_days": 60,
     "max_items": 2000,
     "safety_margin_days": 7,
-    "probe_parallelism": 1
+    "probe_parallelism": 1,
+    "media_policy": "strm_only",
 }
 
 
@@ -58,19 +59,24 @@ def _parse_recent_window_threshold(value: Any, default: float) -> float:
     return threshold
 
 
-def _normalize_recent_probe_config(payload: Dict[str, Any]) -> Dict[str, Any]:
-    defaults = _RECENT_PROBE_CONFIG_DEFAULTS
+def _normalize_probe_config(payload: Dict[str, Any]) -> Dict[str, Any]:
+    defaults = _PROBE_CONFIG_DEFAULTS
     return {
         "window_size": _coerce_request_int(payload.get("window_size"), defaults["window_size"], 100, 2000),
         "window_threshold": _parse_recent_window_threshold(payload.get("window_threshold"), defaults["window_threshold"]),
         "max_days": _coerce_request_int(payload.get("max_days"), defaults["max_days"], 7, 365),
         "max_items": _coerce_request_int(payload.get("max_items"), defaults["max_items"], 500, 10000),
         "safety_margin_days": _coerce_request_int(payload.get("safety_margin_days"), defaults["safety_margin_days"], 1, 30),
-        "probe_parallelism": _coerce_request_int(payload.get("probe_parallelism"), defaults["probe_parallelism"], 1, 8)
+        "probe_parallelism": _coerce_request_int(payload.get("probe_parallelism"), defaults["probe_parallelism"], 1, 8),
+        "media_policy": (
+            "missing_media_info"
+            if str(payload.get("media_policy") or "").strip().lower() == "missing_media_info"
+            else "strm_only"
+        ),
     }
 
 
-def _probe_recent_config_get_snapshot(server_id: Optional[str]):
+def _probe_config_get_snapshot(server_id: Optional[str]):
     if not server_id:
         return json_error("server_id mancante")
     if server_id == "all":
@@ -83,14 +89,14 @@ def _probe_recent_config_get_snapshot(server_id: Optional[str]):
         return error
     try:
         backend = _ensure_db_backend()
-        config = backend.get_recent_scan_config(server_id)
+        config = backend.get_probe_config(server_id)
     except StorageError as exc:
         return json_error(f"Errore DB: {exc}", 500)
-    normalized = _normalize_recent_probe_config(config or {})
+    normalized = _normalize_probe_config(config or {})
     return {"success": True, "config": normalized}, 200
 
 
-def _probe_recent_config_save_snapshot(payload: Dict[str, Any]):
+def _probe_config_save_snapshot(payload: Dict[str, Any]):
     if not isinstance(payload, dict):
         return json_error("Formato non valido")
     server_id = payload.get("server_id")
@@ -109,10 +115,10 @@ def _probe_recent_config_save_snapshot(payload: Dict[str, Any]):
         raw_config = payload
     if not isinstance(raw_config, dict):
         return json_error("Config non valida")
-    normalized = _normalize_recent_probe_config(raw_config)
+    normalized = _normalize_probe_config(raw_config)
     try:
         backend = _ensure_db_backend()
-        backend.save_recent_scan_config(server_id, normalized)
+        backend.save_probe_config(server_id, normalized)
     except StorageError as exc:
         return json_error(f"Errore DB: {exc}", 500)
     return {"success": True, "config": normalized}, 200

@@ -1,0 +1,30 @@
+@import "./components/live-action-result.css";
+@import "./components/live-server-list.css";
+@import "./components/live-stream-list.css";
+
+.emby-live-page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.emby-live-page-actions button {
+  min-height: 30px;
+  padding-inline: 9px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.emby-live-page-actions button:last-child {
+  border-color: var(--color-danger-border);
+  background: var(--color-danger-soft);
+  color: var(--color-danger-strong);
+}
+
+@media (max-width: 680px) {
+  .emby-live-page-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}

@@ -1,0 +1,16 @@
+.stream-stats-filters { border: 1px solid var(--color-border); border-radius: var(--radius-panel); background: var(--color-surface-muted); box-shadow: var(--shadow-control); padding: 13px; }
+.stream-stats-filter-group .workspace-toolbar-label { display: inline-flex; align-items: center; gap: 6px; }
+.stream-stats-filter-group .workspace-toolbar-group-content { gap: 10px; }
+.stream-stats-field { min-width: 118px; }
+.stream-stats-period { min-width: 104px; }
+.stream-stats-sort { min-width: 132px; }
+.stream-stats-check { display: flex; min-height: var(--workspace-toolbar-control-height); align-items: center; gap: 7px; padding: 0 4px; color: var(--color-ink); font-size: 12px; font-weight: 750; white-space: nowrap; }
+.stream-stats-check input { accent-color: var(--color-accent-strong); }
+.stream-stats-check input:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+
+@media (max-width: 680px) {
+  .stream-stats-filter-row,
+  .stream-stats-filter-group .workspace-toolbar-group-content { display: grid; width: 100%; }
+  .stream-stats-field,
+  .stream-stats-sort { width: 100%; }
+}

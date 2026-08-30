@@ -58,6 +58,9 @@ def test_event_bridge_plugin_posts_stable_webhook_envelope():
 
     assert '"/api/emby/event-bridge/events"' in publisher
     assert '"X-Webhook-Secret"' in publisher
+    assert '"X-OctoHubs-Server-Id"' in publisher
+    websocket = read_plugin_file("EventBridgeWebSocketClient.cs")
+    assert '"X-OctoHubs-Server-Id"' in websocket
     assert any(header in publisher for header in ('"X-OctoHubs-Event-Bridge"', '"X-OctoHub-Event-Bridge"'))
     assert any(schema in builder for schema in ('"octohubs.emby.event.v1"', '"octohub.emby.event.v1"'))
     assert any(source in builder for source in ('"OctoHubs.EventBridge"', '"OctoHub.EventBridge"'))
@@ -66,14 +69,25 @@ def test_event_bridge_plugin_posts_stable_webhook_envelope():
     assert 'envelope["media"]' in builder
 
 
+def test_event_bridge_plugin_batch_size_stays_below_server_limit():
+    from emby_runtime.event_bridge_limits import EVENT_BRIDGE_MAX_BATCH_EVENTS
+
+    dispatcher = read_plugin_file("EventDispatchQueue.cs")
+
+    assert "DefaultMaxBatchSize = 100;" in dispatcher
+    assert EVENT_BRIDGE_MAX_BATCH_EVENTS >= 100
+
+
 def test_event_bridge_plugin_exposes_authenticated_configuration_endpoint():
     source = read_plugin_file("EventBridgeConfigurationService.cs")
 
     assert '"/OctoHubs/EventBridge/Configuration"' in source
+    assert "[Authenticated]" in source
     assert "ApplyEventBridgeConfiguration" in source
     assert "IReturn<EventBridgeConfigurationResponse>" in source
     assert "Plugin.Instance" in source
     assert "ApplyRemoteSettingsWithResult" in source
+    assert "ApplyProvisionedCredentialWithResult" in source
 
 
 def test_event_bridge_plugin_has_startup_and_send_diagnostics():

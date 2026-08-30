@@ -61,6 +61,25 @@ class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
         with self._lock:
             return self._status.get(server_id, {})
 
+    def is_worker_running(
+        self,
+        worker_key: str,
+        server_ids: list[str],
+        *,
+        global_key: str | None = None,
+    ) -> bool:
+        """Return whether a named local or global Probe worker is still alive."""
+        with self._lock:
+            if global_key:
+                global_worker = self._global_workers.get(global_key)
+                if global_worker and global_worker.is_alive():
+                    return True
+            return any(
+                (worker := self._workers.get(server_id, {}).get(worker_key))
+                and worker.is_alive()
+                for server_id in server_ids
+            )
+
     def _wait_for_worker(self, worker: Optional[threading.Thread], stop_flag: threading.Event) -> None:
         while worker and worker.is_alive():
             if stop_flag.is_set():
@@ -79,7 +98,7 @@ class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
         raw_value = server.get("probe_parallelism") if isinstance(server, dict) else None
         if raw_value is None and self._db_getter:
             try:
-                config = self._db_getter().get_recent_scan_config(server_id)
+                config = self._db_getter().get_probe_config(server_id)
                 if isinstance(config, dict):
                     raw_value = config.get("probe_parallelism")
             except Exception:

@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from core.config_manager import load_config
+from core.log_sanitization import sanitize_url_for_log
 from core.utils import _normalize_media_type
 from .sources_common import PROVIDER_LABEL_MAP, _extract_year
 
@@ -52,7 +53,7 @@ class MdblistClient:
             url = f"{endpoint}?{'&'.join(query_params)}&apikey={urllib.parse.quote_plus(self.api_key)}"
             response = self._request(url)
             if not response.text:
-                logger.warning("MDBList endpoint non ha risposto: %s", url)
+                logger.warning("MDBList endpoint non ha risposto: %s", sanitize_url_for_log(url))
                 return None
             try:
                 result = response.json()
@@ -97,12 +98,12 @@ class MdblistClient:
             normalized = normalized + "/json"
         response = self._request(normalized)
         if not response.text:
-            logger.warning("MDBList URL %s non ha risposto", url)
+            logger.warning("MDBList URL %s non ha risposto", sanitize_url_for_log(url))
             return None
         try:
             data = response.json()
         except ValueError as exc:
-            logger.warning("MDBList URL %s risposta non JSON: %s", url, exc)
+            logger.warning("MDBList URL %s risposta non JSON: %s", sanitize_url_for_log(url), exc)
             return None
         if isinstance(data, dict) and "movies" in data:
             items = (data.get("movies") or []) + (data.get("shows") or [])

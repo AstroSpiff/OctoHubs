@@ -4,6 +4,18 @@ from typing import Dict, Any, List, Callable
 from emby_users.sync_state_refresh import refresh_sync_states
 
 logger = logging.getLogger(__name__)
+USERS_UPDATED_MESSAGE = "OctoHubsUsersUpdated"
+
+
+def _publish_users_sync_updated() -> None:
+    try:
+        from realtime.manager import publish_application_event
+
+        publish_application_event(USERS_UPDATED_MESSAGE, {"scope": "sync"})
+        publish_application_event(USERS_UPDATED_MESSAGE, {"scope": "operations"})
+    except Exception:
+        # Realtime delivery is optional and cannot affect a completed sync.
+        pass
 
 
 class AutoSyncManager:
@@ -468,6 +480,8 @@ class AutoSyncManager:
             if operation_id and self._operation_tracker:
                 self._operation_tracker.fail(operation_id, str(e))
             return {"ok": False, "error": str(e)}
+        finally:
+            _publish_users_sync_updated()
 
     def run_auto_sync(self) -> None:
         """
@@ -479,10 +493,12 @@ class AutoSyncManager:
         groups = dashboard_data.get("groups", [])
 
         count = 0
+        attempted = False
         for group in groups:
             if not group.get("auto_sync"):
                 continue
 
+            attempted = True
             result = self._sync_group(group)
             if result.get("status") == "ignored":
                 continue
@@ -490,6 +506,8 @@ class AutoSyncManager:
                 count += 1
 
         logger.info(f"[AUTO_SYNC] Completed. Processed {count} groups.")
+        if attempted:
+            _publish_users_sync_updated()
 
     def _sync_group(self, group: Dict[str, Any], operation_id: str | None = None) -> Dict[str, Any]:
         gid = group["id"]

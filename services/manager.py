@@ -1,7 +1,5 @@
 import os
 import json
-import copy
-import threading
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict
 
@@ -156,272 +154,6 @@ def _save_app_settings_snapshot(settings):
         return False
 
 
-def _build_update_request_rules_snapshot(payload):
-    from core.config_manager import load_config, _ensure_db_backend
-    from core.config import _default_search_rules, _coerce_request_bool, _normalize_alt_language, _coerce_request_int
-    from core.utils import _sanitize_terms_list
-    from services.app_settings import _refresh_request_overview_rules
-    from core.config import DEFAULT_CONFIG as _DEFAULT_CONFIG
-    from core import config_manager as _config_manager
-
-    config, is_valid = load_config()
-    if not is_valid or not config:
-        return json_error("Config non valida")
-    payload = payload or {}
-    if not isinstance(payload, dict):
-        payload = {}
-    rules_payload = payload.get("rules")
-    if not isinstance(rules_payload, list):
-        return json_error("Formato non valido")
-    base_req_rules = config.get("REQUEST_RULES") or {}
-    request_rules = base_req_rules.copy()
-    base_search_rules = config.get("SEARCH_RULES") or _default_search_rules()
-    for entry in rules_payload:
-        req_id = entry.get("request_id")
-        if req_id is None:
-            continue
-        key = str(req_id)
-        query_terms = _sanitize_terms_list(entry.get("query_terms"))
-        filter_terms = _sanitize_terms_list(entry.get("filter_terms"))
-        exclude_terms = _sanitize_terms_list(entry.get("exclude_terms"))
-        enabled = entry.get("enabled")
-        if isinstance(enabled, str):
-            enabled = enabled.lower() not in ("false", "0", "no")
-        elif enabled is None:
-            enabled = True if (query_terms or filter_terms or exclude_terms) else True
-        else:
-            enabled = bool(enabled)
-        use_original_title = _coerce_request_bool(entry.get("use_original_title"), base_search_rules.get("use_original_title", True))
-        use_alt_titles_original = _coerce_request_bool(entry.get("use_alt_titles_original"), base_search_rules.get("use_alt_titles_original", True))
-        use_alt_titles_language = _coerce_request_bool(entry.get("use_alt_titles_language"), base_search_rules.get("use_alt_titles_language", False))
-        alt_lang_default = (base_search_rules.get("alt_titles_language") or "all").lower()
-        alt_titles_language = _normalize_alt_language(entry.get("alt_titles_language"), alt_lang_default)
-        if not use_alt_titles_language:
-            alt_titles_language = alt_lang_default
-        year_variance = _coerce_request_int(entry.get("year_variance"), 0, 0, 10)
-
-        has_custom = bool(
-            query_terms or filter_terms or exclude_terms or not enabled or
-            use_original_title != base_search_rules.get("use_original_title", True) or
-            use_alt_titles_original != base_search_rules.get("use_alt_titles_original", True) or
-            use_alt_titles_language != base_search_rules.get("use_alt_titles_language", False) or
-            (use_alt_titles_language and alt_titles_language != alt_lang_default) or
-            year_variance > 0
-        )
-
-        if not has_custom:
-            if key in request_rules:
-                del request_rules[key]
-            continue
-
-        request_rules[key] = {
-            "enabled": enabled,
-            "query_terms": query_terms,
-            "filter_terms": filter_terms,
-            "exclude_terms": exclude_terms,
-            "use_original_title": use_original_title,
-            "use_alt_titles_original": use_alt_titles_original,
-            "use_alt_titles_language": use_alt_titles_language,
-            "alt_titles_language": alt_titles_language,
-            "year_variance": year_variance
-        }
-    try:
-        backend = _ensure_db_backend()
-        backend.save_request_rules(request_rules)
-    except StorageError as exc:
-        return json_error(f"Errore DB: {exc}", 500)
-    if _config_manager._ACTIVE_CONFIG is None:
-        _config_manager._ACTIVE_CONFIG = copy.deepcopy(_DEFAULT_CONFIG)
-    _config_manager._ACTIVE_CONFIG["REQUEST_RULES"] = request_rules
-    _refresh_request_overview_rules(config)
-    return {"success": True, "message": "Regole per le richieste aggiornate"}, 200
-
-
-def _build_refresh_requests_snapshot(*, reserved: bool = False, operation_tracker=None, operation_id=None):
-    from app_state import _JELLYSEERR_REFRESH_STATE
-
-    if _JELLYSEERR_REFRESH_STATE.get("running") and not reserved:
-        return {"success": True, "message": "Aggiornamento richieste gia in corso."}, 200
-
-    from core.config_manager import load_config, _ensure_db_backend
-    from emby_runtime.api_clients import get_jellyseerr_requests
-    from services.requests_cache import _save_cached_requests_overview
-    from services.requests_summary import _summarize_requests_for_dashboard
-
-    if not reserved:
-        _JELLYSEERR_REFRESH_STATE["running"] = True
-        _JELLYSEERR_REFRESH_STATE["last_error"] = None
-        _JELLYSEERR_REFRESH_STATE["last_warning"] = None
-        _JELLYSEERR_REFRESH_STATE["last_warning_at"] = None
-
-    try:
-        config, is_valid = load_config()
-        if not is_valid:
-            _JELLYSEERR_REFRESH_STATE["running"] = False
-            _JELLYSEERR_REFRESH_STATE["last_status"] = "error"
-            _JELLYSEERR_REFRESH_STATE["last_error"] = "Config non valida"
-            return json_error("Config non valida")
-
-        print("   -> [REFRESH] Inizio aggiornamento lista richieste Jellyseerr...")
-        if operation_tracker and operation_id:
-            operation_tracker.update(
-                operation_id,
-                message="Lettura richieste da Jellyseerr",
-                progress=15,
-                details={"current_step_label": "Lettura Jellyseerr"},
-            )
-        requests_data, ok = get_jellyseerr_requests(config, silent=True, return_status=True)
-        if not ok:
-            warning = "Jellyseerr non risponde: refresh richieste saltato."
-            _JELLYSEERR_REFRESH_STATE["running"] = False
-            _JELLYSEERR_REFRESH_STATE["last_status"] = "skipped"
-            _JELLYSEERR_REFRESH_STATE["last_warning"] = warning
-            _JELLYSEERR_REFRESH_STATE["last_warning_at"] = datetime.now(timezone.utc).isoformat()
-            _JELLYSEERR_REFRESH_STATE["completed_at"] = datetime.now(timezone.utc).isoformat()
-            print(f"   -> [REFRESH] [WARNING] {warning}")
-            return {"success": False, "message": warning}, 200
-
-        if operation_tracker and operation_id:
-            operation_tracker.update(
-                operation_id,
-                message="Analisi richieste e disponibilita",
-                progress=45,
-                details={"current_step_label": "Analisi richieste"},
-            )
-        overview = _summarize_requests_for_dashboard(config, requests_data=requests_data)
-
-        try:
-            if operation_tracker and operation_id:
-                operation_tracker.update(
-                    operation_id,
-                    message="Salvataggio cache richieste",
-                    progress=75,
-                    details={"current_step_label": "Salvataggio cache"},
-                )
-            _save_cached_requests_overview(overview)
-            print(f"   -> [REFRESH] Cache aggiornata con successo: {len(overview)} richieste salvate")
-        except Exception as exc:
-            print(f"   -> [ERRORE] Impossibile salvare cache richieste: {exc}")
-            import traceback
-            traceback.print_exc()
-            _JELLYSEERR_REFRESH_STATE["running"] = False
-            _JELLYSEERR_REFRESH_STATE["last_status"] = "error"
-            _JELLYSEERR_REFRESH_STATE["last_error"] = str(exc)
-            _JELLYSEERR_REFRESH_STATE["completed_at"] = datetime.now(timezone.utc).isoformat()
-            return json_error(f"Errore salvataggio cache: {exc}", 500)
-
-        try:
-            from services.latest_jellyseerr import save_latest_jellyseerr_requests
-            saved = save_latest_jellyseerr_requests(requests_data, backend=_ensure_db_backend())
-            print(f"   -> [REFRESH] Jellyseerr requests salvate su DB: {saved.get('entries', 0)}")
-        except Exception as exc:
-            print(f"   -> [REFRESH] [WARNING] Salvataggio Jellyseerr requests fallito: {exc}")
-
-        tv_list = [req for req in overview if (req.get("media_type") or "").lower() == "tv"]
-        movies_list = [req for req in overview if (req.get("media_type") or "").lower() in ("movie", "movies", "film", "")]
-
-        tv_with_seasons = [req for req in tv_list if req.get("season_status")]
-        tv_without_seasons = [req for req in tv_list if not req.get("season_status")]
-        if tv_list:
-            print(f"   -> [REFRESH] Serie TV totali: {len(tv_list)}")
-            print(f"   -> [REFRESH] Serie TV con dettagli stagioni: {len(tv_with_seasons)}")
-            if tv_without_seasons:
-                print(f"   -> [REFRESH] [WARNING] Serie TV SENZA dettagli stagioni: {len(tv_without_seasons)}")
-                for req in tv_without_seasons[:5]:
-                    print(f"   -> [REFRESH]   - ID {req.get('id')}: {req.get('title', 'N/D')}")
-
-        counts = {
-            "total": len(overview),
-            "tv": len(tv_list),
-            "movies": len(movies_list)
-        }
-        if operation_tracker and operation_id:
-            operation_tracker.update(
-                operation_id,
-                message=f"Richieste elaborate: {counts['total']}",
-                progress=95,
-                details={
-                    "current_step_label": "Completamento",
-                    "total": counts["total"],
-                    "movies": counts["movies"],
-                    "tv": counts["tv"],
-                },
-            )
-        print(f"   -> [REFRESH] Aggiornamento completato: {len(movies_list)} film, {len(tv_list)} serie TV")
-
-        _JELLYSEERR_REFRESH_STATE["running"] = False
-        _JELLYSEERR_REFRESH_STATE["last_status"] = "success"
-        _JELLYSEERR_REFRESH_STATE["counts"] = counts
-        _JELLYSEERR_REFRESH_STATE["completed_at"] = datetime.now(timezone.utc).isoformat()
-
-        return {
-            "success": True,
-            "message": "Lista aggiornata da Jellyseerr.",
-            "counts": counts
-        }, 200
-    except Exception as exc:
-        print(f"   -> [ERRORE] Aggiornamento richieste fallito: {exc}")
-        import traceback
-        traceback.print_exc()
-        _JELLYSEERR_REFRESH_STATE["running"] = False
-        _JELLYSEERR_REFRESH_STATE["last_status"] = "error"
-        _JELLYSEERR_REFRESH_STATE["last_error"] = str(exc)
-        _JELLYSEERR_REFRESH_STATE["completed_at"] = datetime.now(timezone.utc).isoformat()
-        return json_error(f"Errore aggiornamento richieste: {exc}", 500)
-
-
-def _build_refresh_requests_background_snapshot():
-    from app_state import _JELLYSEERR_REFRESH_STATE, get_operation_tracker
-
-    if _JELLYSEERR_REFRESH_STATE.get("running"):
-        return {
-            "success": True,
-            "background": True,
-            "operation_id": _JELLYSEERR_REFRESH_STATE.get("operation_id"),
-            "message": "Aggiornamento richieste gia in corso.",
-        }, 200
-
-    tracker = get_operation_tracker()
-    operation = tracker.start(
-        "requests_refresh",
-        "Aggiornamento Richieste Jellyseerr",
-        summary="Ricerca",
-        details={"current_step_label": "Avvio refresh"},
-    )
-    operation_id = operation.get("id")
-    _JELLYSEERR_REFRESH_STATE["running"] = True
-    _JELLYSEERR_REFRESH_STATE["operation_id"] = operation_id
-    _JELLYSEERR_REFRESH_STATE["last_status"] = "running"
-    _JELLYSEERR_REFRESH_STATE["last_error"] = None
-    _JELLYSEERR_REFRESH_STATE["last_warning"] = None
-    _JELLYSEERR_REFRESH_STATE["last_warning_at"] = None
-
-    def _do_refresh():
-        data, status_code = _build_refresh_requests_snapshot(
-            reserved=True,
-            operation_tracker=tracker,
-            operation_id=operation_id,
-        )
-        message = str((data or {}).get("message") or "Aggiornamento richieste completato")
-        try:
-            if status_code >= 400:
-                tracker.fail(operation_id, message, result=data)
-            elif data.get("success") is False:
-                tracker.skip(operation_id, message, result=data)
-            else:
-                tracker.finish(operation_id, message, result=data)
-        finally:
-            _JELLYSEERR_REFRESH_STATE.pop("operation_id", None)
-
-    threading.Thread(target=_do_refresh, daemon=True).start()
-    return {
-        "success": True,
-        "background": True,
-        "operation_id": operation_id,
-        "message": "Aggiornamento richieste avviato in Operazioni.",
-    }, 202
-
-
 def _build_test_connections_snapshot():
     from core.config_manager import load_config
     from services.health import (
@@ -516,6 +248,12 @@ def _build_trakt_device_poll_snapshot(payload):
         client_id = (payload.get("client_id") or "").strip()
         client_secret = (payload.get("client_secret") or "").strip()
         device_code = (payload.get("device_code") or "").strip()
+        app_settings = _load_app_settings_snapshot()
+        saved_trakt = app_settings.get("TRAKT", {})
+        if not isinstance(saved_trakt, dict):
+            saved_trakt = {}
+        client_id = client_id or str(saved_trakt.get("CLIENT_ID") or "").strip()
+        client_secret = client_secret or str(saved_trakt.get("CLIENT_SECRET") or "").strip()
         if not client_id or not client_secret or not device_code:
             return json_error("Parametri mancanti")
 
@@ -546,7 +284,6 @@ def _build_trakt_device_poll_snapshot(payload):
 
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
         try:
-            app_settings = _load_app_settings_snapshot()
             trakt_config = app_settings.get("TRAKT", {})
             if not isinstance(trakt_config, dict):
                 trakt_config = {}
@@ -567,7 +304,6 @@ def _build_trakt_device_poll_snapshot(payload):
 
         return {
             "status": "authorized",
-            "access_token": access_token,
             "expires_at": expires_at.isoformat()
         }, 200
     except Exception as exc:
@@ -592,19 +328,3 @@ def _build_trakt_clear_snapshot():
     except Exception as exc:
         print(f"   -> Errore rimozione token Trakt: {exc}")
         return json_error(str(exc), 500)
-
-
-def _build_refresh_requests_status_snapshot():
-    """
-    Return the current refresh state without triggering a new refresh.
-    The frontend polls this endpoint while waiting for the POST refresh to complete.
-    """
-    from app_state import _JELLYSEERR_REFRESH_STATE
-    return {
-        "running": _JELLYSEERR_REFRESH_STATE.get("running", False),
-        "last_status": _JELLYSEERR_REFRESH_STATE.get("last_status"),
-        "last_warning": _JELLYSEERR_REFRESH_STATE.get("last_warning"),
-        "last_error": _JELLYSEERR_REFRESH_STATE.get("last_error"),
-        "counts": _JELLYSEERR_REFRESH_STATE.get("counts"),
-        "completed_at": _JELLYSEERR_REFRESH_STATE.get("completed_at"),
-    }

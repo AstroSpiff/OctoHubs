@@ -5,16 +5,19 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timezone
-from queue import Queue, Empty
 from typing import Any, Callable, Optional
+from urllib.parse import urlparse
 
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response, StreamingResponse
 
 from app_helpers import DateTimeEncoder
 from emby_runtime.snapshots import _build_emby_status_stream_payload
+from emby_runtime.runtime_api_models import EmbyStatusSnapshotResponse
 from core.tasks import workflow_manager
-from realtime.manager import _sse_event_queues, _sse_queues_lock, _ws_event_queues, _ws_queues_lock
+from realtime.external_api_models import ExternalRealtimeChangesResponse
+from realtime.external_change_feed import EXTERNAL_CHANGE_RETENTION, read_external_changes
+from realtime.subscribers import sse_subscribers, websocket_subscribers
 from emby_runtime.scan_websocket_manager import get_scan_connection_manager
 
 router = APIRouter()
@@ -27,18 +30,48 @@ def init_realtime_routes(require_auth: Callable[[Request], Any]) -> None:
     _require_auth = require_auth
 
 
-def _require_auth_dep(request: Request):
+def _require_auth_dep(request: Request | WebSocket):
     if _require_auth is None:
         raise RuntimeError("Realtime routes not initialized: require_auth missing")
     return _require_auth(request)
 
 
+@router.get(
+    "/api/realtime/changes",
+    response_model=ExternalRealtimeChangesResponse,
+    summary="Read external realtime changes",
+)
+async def external_realtime_changes_api(
+    request: Request,
+    after: int = Query(default=0, ge=0, description="Cursor returned by the preceding response."),
+    limit: int = Query(default=100, ge=1, le=EXTERNAL_CHANGE_RETENTION, description="Maximum changes to return."),
+):
+    """Return safe invalidations; reread the relevant canonical v1 resource."""
+    _require_auth_dep(request)
+    return read_external_changes(after=after, limit=limit)
+
+
+async def _authorize_websocket(websocket: WebSocket) -> Any | None:
+    """Reject realtime sockets that do not originate from an authenticated session."""
+    origin = websocket.headers.get("origin")
+    host = websocket.headers.get("host")
+    if origin and urlparse(origin).netloc.lower() != str(host or "").lower():
+        await websocket.close(code=1008)
+        return None
+
+    try:
+        return _require_auth_dep(websocket)
+    except HTTPException:
+        await websocket.close(code=1008)
+        return None
+
+
 @router.websocket("/ws/events")
 async def ws_events(websocket: WebSocket):
+    if not await _authorize_websocket(websocket):
+        return
     await websocket.accept()
-    client_queue: Queue = Queue(maxsize=100)
-    with _ws_queues_lock:
-        _ws_event_queues.append(client_queue)
+    subscriber = websocket_subscribers.subscribe(maxsize=100)
     try:
         await websocket.send_json({
             "MessageType": "Connected",
@@ -46,9 +79,9 @@ async def ws_events(websocket: WebSocket):
         })
         while True:
             try:
-                event_data = await asyncio.to_thread(client_queue.get, True, 20)
+                event_data = await subscriber.get(timeout=20)
                 await websocket.send_json(event_data)
-            except Empty:
+            except asyncio.TimeoutError:
                 await websocket.send_json({
                     "MessageType": "KeepAlive",
                     "Data": {"timestamp": datetime.now(timezone.utc).isoformat()},
@@ -56,9 +89,7 @@ async def ws_events(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
-        with _ws_queues_lock:
-            if client_queue in _ws_event_queues:
-                _ws_event_queues.remove(client_queue)
+        websocket_subscribers.unsubscribe(subscriber)
 
 
 @router.websocket("/ws/scan/{client_id}")
@@ -77,12 +108,14 @@ async def websocket_scan_endpoint(websocket: WebSocket, client_id: str):
     Messaggi ricevuti dal client:
         - {"action": "subscribe", "job_id": "..."}
         - {"action": "unsubscribe", "job_id": "..."}
-        - {"action": "cancel", "job_id": "..."}
 
     Args:
         websocket: Istanza WebSocket FastAPI
         client_id: ID univoco client (generato dal frontend)
     """
+    if not await _authorize_websocket(websocket):
+        return
+
     manager = get_scan_connection_manager()
     await manager.connect(client_id, websocket)
 
@@ -118,18 +151,6 @@ async def websocket_scan_endpoint(websocket: WebSocket, client_id: str):
                     {
                         "type": "unsubscribed",
                         "job_id": job_id,
-                    },
-                )
-
-            elif action == "cancel" and job_id:
-                # TODO: Implementare cancellazione job
-                # Richiede integrazione con LibraryScanTracker
-                await manager.send_personal_message(
-                    client_id,
-                    {
-                        "type": "cancel_requested",
-                        "job_id": job_id,
-                        "message": "Cancellazione job non ancora implementata",
                     },
                 )
 
@@ -177,107 +198,17 @@ async def websocket_search_endpoint(websocket: WebSocket, session_id: str):
         websocket: Istanza WebSocket FastAPI
         session_id: ID univoco sessione di ricerca
     """
-    await websocket.accept()
+    from search.websocket import handle_search_websocket
 
-    try:
-        await websocket.send_json(
-            {
-                "type": "connected",
-                "session_id": session_id,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
-        )
-
-        # Attendi parametri di ricerca dal client
-        data = await websocket.receive_json()
-        action = data.get("action")
-
-        if action == "start_search":
-            # Estrai parametri di ricerca
-            query_variants = data.get("query_variants", [])
-            search_types = data.get("search_types", [])
-            selected_indexers = set(data.get("indexers", []))
-            use_jellyseerr_logic = bool(data.get("use_jellyseerr_logic", False))
-            use_custom_rules = bool(data.get("use_custom_rules", False))
-            tmdb_id = data.get("tmdb_id", "")
-            custom_rules = data.get("custom_rules")
-            seasons = data.get("seasons")
-
-            print(
-                f"[WebSocket /ws/search/{session_id}] Avvio ricerca: {len(query_variants)} variants, "
-                f"{len(selected_indexers)} indexers, jellyseerr={use_jellyseerr_logic}"
-            )
-
-            # Carica config
-            from core.config_manager import load_config
-            from search.streaming import search_streaming_parallel
-
-            config, is_valid = load_config()
-
-            if not is_valid or not config:
-                await websocket.send_json(
-                    {
-                        "type": "error",
-                        "message": "Configurazione non valida",
-                    }
-                )
-                return
-
-            # Esegui ricerca streaming
-            stats = await search_streaming_parallel(
-                query_variants=query_variants,
-                search_types=search_types,
-                selected_indexers=selected_indexers,
-                config=config,
-                websocket=websocket,
-                session_id=session_id,
-                use_jellyseerr_logic=use_jellyseerr_logic,
-                use_custom_rules=use_custom_rules,
-                tmdb_id=tmdb_id,
-                custom_rules=custom_rules,
-                seasons=seasons,
-            )
-
-            print(f"[WebSocket /ws/search/{session_id}] Ricerca completata: {stats}")
-
-        # Mantieni connessione aperta per keepalive
-        while True:
-            try:
-                data = await websocket.receive_json()
-                action = data.get("action")
-
-                if action == "ping":
-                    await websocket.send_json(
-                        {
-                            "type": "pong",
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
-
-            except Exception as e:
-                print(f"[WebSocket /ws/search/{session_id}] Receive error: {e}")
-                break
-
-    except WebSocketDisconnect:
-        print(f"[WebSocket /ws/search/{session_id}] Client disconnected")
-    except Exception as e:
-        print(f"[WebSocket /ws/search/{session_id}] Error: {e}")
-        import traceback
-
-        traceback.print_exc()
-    finally:
-        # Cleanup se necessario
-        pass
+    await handle_search_websocket(websocket, session_id, _authorize_websocket)
 
 
-@router.get("/emby/events-stream")
-async def emby_events_stream(request: Request):
+@router.get("/api/emby/events-stream")
+async def emby_events_stream_api(request: Request):
     _require_auth_dep(request)
 
     async def event_stream():
-        client_queue: Queue = Queue(maxsize=50)
-        with _sse_queues_lock:
-            _sse_event_queues.append(client_queue)
+        subscriber = sse_subscribers.subscribe(maxsize=50)
 
         initial_event = {
             "MessageType": "Connected",
@@ -288,15 +219,13 @@ async def emby_events_stream(request: Request):
         try:
             while True:
                 try:
-                    event_data = await asyncio.to_thread(client_queue.get, True, 20)
+                    event_data = await subscriber.get(timeout=20)
                     msg = f"data: {json.dumps(event_data, cls=DateTimeEncoder)}\n\n"
                     yield msg
-                except Empty:
+                except asyncio.TimeoutError:
                     yield ": keepalive\n\n"
         finally:
-            with _sse_queues_lock:
-                if client_queue in _sse_event_queues:
-                    _sse_event_queues.remove(client_queue)
+            sse_subscribers.unsubscribe(subscriber)
 
     return StreamingResponse(
         event_stream(),
@@ -308,13 +237,8 @@ async def emby_events_stream(request: Request):
     )
 
 
-@router.get("/api/emby/events-stream")
-async def emby_events_stream_api(request: Request):
-    return await emby_events_stream(request)
-
-
-@router.get("/emby/status-stream")
-async def emby_status_stream(request: Request):
+@router.get("/api/emby/status-stream")
+async def emby_status_stream_api(request: Request):
     _require_auth_dep(request)
 
     async def event_stream():
@@ -337,9 +261,15 @@ async def emby_status_stream(request: Request):
     )
 
 
-@router.get("/api/emby/status-stream")
-async def emby_status_stream_api(request: Request):
-    return await emby_status_stream(request)
+@router.get("/api/emby/status", response_model=EmbyStatusSnapshotResponse)
+async def emby_status_snapshot_api(request: Request):
+    """Return one complete status snapshot when the SSE feed is unavailable."""
+    _require_auth_dep(request)
+    payload = await asyncio.to_thread(_build_emby_status_stream_payload)
+    return Response(
+        content=json.dumps(payload, cls=DateTimeEncoder),
+        media_type="application/json",
+    )
 
 
 @router.get("/api/workflow/events")

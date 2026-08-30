@@ -1,0 +1,99 @@
+.emby-live-action-result {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-control);
+  padding: 11px 13px;
+}
+
+.emby-live-action-result--ok {
+  border-color: var(--color-success-border);
+  background: var(--color-success-soft);
+}
+
+.emby-live-action-result--warning {
+  border-color: var(--color-warning-border);
+  background: var(--color-warning-soft);
+}
+
+.emby-live-action-result--error {
+  border-color: var(--color-danger-border);
+  background: var(--color-danger-soft);
+}
+
+.emby-live-action-result-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.emby-live-action-result-summary > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.emby-live-action-result-summary > div {
+  min-width: 0;
+  flex: 1;
+}
+
+.emby-live-action-result-summary strong,
+.emby-live-action-result-summary span {
+  display: block;
+}
+
+.emby-live-action-result-summary strong {
+  color: var(--color-ink);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.emby-live-action-result-summary span {
+  margin-top: 2px;
+  color: var(--color-muted);
+  font-size: 11px;
+}
+
+.emby-live-action-result-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.emby-live-action-result-list li {
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--color-muted);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-raised);
+  padding: 7px 8px;
+}
+
+.emby-live-action-result-list li.is-success { border-left-color: var(--color-success); }
+.emby-live-action-result-list li.is-error { border-left-color: var(--color-danger); }
+
+.emby-live-action-result-list strong,
+.emby-live-action-result-list span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.emby-live-action-result-list strong {
+  color: var(--color-ink);
+  font-size: 11px;
+}
+
+.emby-live-action-result-list span {
+  margin-top: 2px;
+  color: var(--color-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+@media (max-width: 680px) {
+  .emby-live-action-result-summary { flex-wrap: wrap; }
+  .emby-live-action-result-list { grid-template-columns: 1fr; }
+}

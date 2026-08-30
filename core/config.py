@@ -336,7 +336,13 @@ def _merge_trakt_settings(user_settings: Optional[Dict]) -> Dict[str, Any]:
     # Debug logging
     missing_fields = [field for field in required_fields if not merged.get(field)]
     if missing_fields:
-        logger.warning(f"Trakt missing fields: {missing_fields}. Current merged config: {merged}")
+        from core.log_sanitization import redact_mapping_for_log
+
+        logger.warning(
+            "Trakt missing fields: %s. Current merged config: %s",
+            missing_fields,
+            redact_mapping_for_log(merged),
+        )
 
     if has_all_credentials:
         merged["ENABLED"] = bool(merged.get("ENABLED"))

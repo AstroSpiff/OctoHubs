@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
-import pathlib
+from io import BytesIO
 import unittest
 from unittest.mock import patch
+
+from PIL import Image
 
 from emby_collections.collection_common import (
     _build_collection_tags,
@@ -25,6 +27,9 @@ from emby_collections.source_inventory import (
 )
 from emby_collections.collection_sync import run_collection_sync
 from emby_collections.routes import (
+    api_emby_collections_get_backdrop,
+    api_emby_collections_get_poster,
+    api_emby_collections_save,
     api_emby_collections_mdblist_lists,
     api_emby_collections_sync,
     api_emby_collections_sync_all,
@@ -38,6 +43,14 @@ from emby_collections.sources_mdblist import (
 )
 from emby_collections.sources_tmdb import _extract_tmdb_identifier, _fetch_tmdb_list_items
 from emby_collections.sources_trakt import _parse_trakt_list_reference
+
+
+def _test_image_bytes(image_format):
+    mode = "RGB"
+    image = Image.new(mode, (2, 2), (40, 90, 140))
+    output = BytesIO()
+    image.save(output, format=image_format)
+    return output.getvalue()
 
 
 class _CollectionStorage:
@@ -97,8 +110,8 @@ class _CollectionStorage:
 
 def _servers():
     return {
-        "server-a": {"id": "server-a", "name": "Alpha"},
-        "server-b": {"id": "server-b", "alias": "Beta"},
+        "server-a": {"id": "server-a", "name": "Alpha", "icon": "fa-server", "icon_color": "#19a36f"},
+        "server-b": {"id": "server-b", "alias": "Beta", "icon": "fa-film", "icon_color": "#8B5CF6", "icon_style": "regular"},
     }
 
 
@@ -531,6 +544,10 @@ class CollectionStoreTests(unittest.TestCase):
 
         self.assertEqual(["server-b"], saved["server_ids"])
         self.assertEqual("Beta", saved["server_display"])
+        self.assertEqual(
+            [{"id": "server-b", "name": "Beta", "icon": "fa-film", "icon_color": "#8B5CF6", "icon_style": "regular"}],
+            saved["servers"],
+        )
         self.assertEqual(100, saved["auto_frequency"])
         self.assertEqual("success", backend.saved[-1]["last_sync_status"])
         self.assertEqual(1, len(listed))
@@ -676,174 +693,83 @@ class CollectionSyncTests(unittest.TestCase):
         self.assertEqual("partial", result["collection"]["last_sync_status"])
 
 
-class CollectionFrontendTests(unittest.TestCase):
-    def test_toggle_checks_api_error_before_refreshing_collection_list(self):
-        source = pathlib.Path("static/emby_collections.js").read_text(encoding="utf-8")
-        start = source.index("const handleToggle = async")
-        end = source.index("const handleSync = async", start)
-        block = source[start:end]
-
-        self.assertIn("const response = await baseCsrfFetch", block)
-        self.assertIn("const data = await response.json()", block)
-        self.assertIn("if (!response.ok || data.success === false)", block)
-        self.assertIn("throw new Error(data.error || 'Errore aggiornamento stato.')", block)
-
-    def test_background_preview_uses_backdrop_aspect_ratio(self):
-        template = pathlib.Path("templates/emby_collections.html").read_text(encoding="utf-8")
-        start = template.index(".collection-media-preview--background")
-        end = template.index(".collection-media-preview img", start)
-        block = template[start:end]
-
-        self.assertIn("aspect-ratio: 16 / 9;", block)
-
-    def test_trakt_parser_preserves_supported_query_parameters(self):
-        source = pathlib.Path("static/emby_collections.js").read_text(encoding="utf-8")
-        start = source.index("const parseTraktListToken =")
-        end = source.index("const detectTraktListValue =", start)
-        block = source[start:end]
-
-        self.assertNotIn("split('?', 1)", block)
-        self.assertIn("querySuffix", block)
-        self.assertIn("return `${directMatch[1].toLowerCase()}/${directMatch[2]}${querySuffix}`", block)
-        self.assertIn("return `${userMatch[1].toLowerCase()}/${userMatch[2]}${querySuffix}`", block)
-
-    def test_save_form_requires_server_selection_before_api_call(self):
-        source = pathlib.Path("static/emby_collections.js").read_text(encoding="utf-8")
-        start = source.index("const handleSave = async")
-        end = source.index("const handleToggle = async", start)
-        block = source[start:end]
-
-        self.assertIn("if (!payload.server_ids.length)", block)
-        self.assertIn("Seleziona almeno un server Emby.", block)
-
-    def test_mdblist_rows_escape_link_and_source_attributes(self):
-        source = pathlib.Path("static/emby_collections.js").read_text(encoding="utf-8")
-        start = source.index("const buildMdblistRow =")
-        end = source.index("const renderMdblistLists =", start)
-        block = source[start:end]
-
-        self.assertIn("const link = escapeHtml(entry.link || '')", block)
-        self.assertIn("const sourceValue = escapeHtml(entry.source_value || '')", block)
-
-    def test_service_list_errors_are_shown_in_panel_status(self):
-        source = pathlib.Path("static/emby_collections.js").read_text(encoding="utf-8")
-        mdblist_start = source.index("const fetchMdblistLists =")
-        mdblist_end = source.index("const parseTraktListToken =", mdblist_start)
-        mdblist_block = source[mdblist_start:mdblist_end]
-        trakt_start = source.index("const fetchTraktLists =")
-        trakt_end = source.index("const fetchCollections =", trakt_start)
-        trakt_block = source[trakt_start:trakt_end]
-
-        self.assertIn("updateMdblistStatus(error.message || 'Errore caricamento liste MDBList.')", mdblist_block)
-        self.assertIn("updateTraktStatus(error.message || 'Errore caricamento liste Trakt.')", trakt_block)
-
-    def test_frontend_no_longer_detects_imdb_sources(self):
-        source = pathlib.Path("static/emby_collections.js").read_text(encoding="utf-8")
-        detect_start = source.index("const detectSourceTypeFromValue =")
-        detect_end = source.index("const handleSourceValueUpdate =", detect_start)
-        detect_block = source[detect_start:detect_end]
-        start = source.index("const handleSourceValueUpdate =")
-        end = source.index("const getSourceLabel =", start)
-        block = source[start:end]
-
-        self.assertNotIn("imdb.com/", detect_block)
-        self.assertNotIn("imdb_mdblist", block)
-        self.assertNotIn("imdb_list", block)
-        self.assertNotIn("parseImdbSourceValue", block)
-
-    def test_source_inventory_panel_is_below_personal_service_lists(self):
-        template = pathlib.Path("templates/emby_collections.html").read_text(encoding="utf-8")
-        mdblist_index = template.index('id="mdblist-lists-card"')
-        inventory_index = template.index('id="source-inventory-card"')
-
-        self.assertGreater(inventory_index, mdblist_index)
-        self.assertIn('id="source-inventory-name"', template)
-        self.assertIn('id="source-inventory-body"', template)
-
-    def test_collection_source_column_has_clear_personal_list_heading(self):
-        template = pathlib.Path("templates/emby_collections.html").read_text(encoding="utf-8")
-        pane_start = template.index('id="trakt-lists-card"')
-        sidebar_start = template.rindex('<div class="collection-modal__pane">', 0, pane_start)
-        sidebar_end = template.index('id="source-inventory-card"', pane_start)
-        block = template[sidebar_start:sidebar_end]
-
-        self.assertIn('class="collection-sources-heading"', block)
-        self.assertIn('title="Fonti personali e liste salvate usabili per creare o sincronizzare collezioni Emby."', block)
-        self.assertIn(">Fonti liste<", block)
-        self.assertIn(">Liste Trakt personali<", block)
-        self.assertIn(">Liste MDBList personali<", block)
-        self.assertNotIn(">Liste Trakt<", block)
-        self.assertNotIn(">Liste MDBList<", block)
-
-    def test_source_inventory_form_uses_two_rows(self):
-        template = pathlib.Path("templates/emby_collections.html").read_text(encoding="utf-8")
-        css_start = template.index(".source-inventory-form")
-        css_end = template.index(".source-inventory-form label", css_start)
-        css_block = template[css_start:css_end]
-
-        self.assertIn("grid-template-columns: minmax(10rem, 1fr) minmax(9rem, 13rem);", css_block)
-        self.assertIn("grid-template-areas:", css_block)
-        self.assertIn('"name type"', css_block)
-        self.assertIn('"value add"', css_block)
-        self.assertIn(".source-inventory-field--value", template)
-
-    def test_source_inventory_frontend_uses_inventory_api(self):
-        source = pathlib.Path("static/emby_collections.js").read_text(encoding="utf-8")
-
-        self.assertIn("const sourceInventoryApiUrl = '/api/emby/collections/source-inventory'", source)
-        self.assertIn("const fetchSourceInventory = async", source)
-        self.assertIn("const handleSourceInventoryAdd = async", source)
-        self.assertIn("const handleSourceInventoryActions = async", source)
-        self.assertIn("await fetchSourceInventory()", source)
-
-    def test_source_inventory_actions_wrap_inside_panel(self):
-        template = pathlib.Path("templates/emby_collections.html").read_text(encoding="utf-8")
-        source = pathlib.Path("static/emby_collections.js").read_text(encoding="utf-8")
-        row_start = source.index("const buildSourceInventoryRow =")
-        row_end = source.index("const renderSourceInventory =", row_start)
-        row_block = source[row_start:row_end]
-
-        self.assertIn('class="collection-source-table__actions"', row_block)
-        self.assertIn('class="collection-source-actions"', row_block)
-        self.assertNotIn('style="white-space: nowrap;"', row_block)
-        self.assertIn(".collection-source-actions", template)
-        self.assertIn("flex-wrap: wrap;", template)
-
-    def test_personal_list_refreshes_run_through_operations(self):
-        source = pathlib.Path("static/emby_collections.js").read_text(encoding="utf-8")
-
-        self.assertIn("'/api/emby/collections/trakt-lists?background=1'", source)
-        self.assertIn("'/api/emby/collections/mdblist-lists?background=1'", source)
-        self.assertIn("window.octohubsOperations?.notifyStarted?.();", source)
-        self.assertIn("window.octohubsOperations?.waitFor", source)
-
-    def test_collection_sync_actions_run_through_operations(self):
-        source = pathlib.Path("static/emby_collections.js").read_text(encoding="utf-8")
-
-        self.assertIn("}/sync?background=1`", source)
-        self.assertIn("}/sync-all?background=1`", source)
-        self.assertIn("waitForBackgroundOperationResult(initialData, 'sincronizzazione collezione')", source)
-        self.assertIn("waitForBackgroundOperationResult(initialData, 'sincronizzazione globale')", source)
-
-    def test_personal_service_import_marks_source_origin(self):
-        source = pathlib.Path("static/emby_collections.js").read_text(encoding="utf-8")
-        trakt_start = source.index("const buildTraktRow =")
-        trakt_end = source.index("const renderTraktLists =", trakt_start)
-        mdblist_start = source.index("const buildMdblistRow =")
-        mdblist_end = source.index("const renderMdblistLists =", mdblist_start)
-        save_start = source.index("const handleSave = async")
-        save_end = source.index("const handleToggle = async", save_start)
-
-        self.assertIn('data-source-origin="personal"', source[trakt_start:trakt_end])
-        self.assertIn('data-source-origin="personal"', source[mdblist_start:mdblist_end])
-        self.assertIn('data-source-type="${sourceType}"', source[mdblist_start:mdblist_end])
-        self.assertIn("source_origin: form?.dataset.sourceOrigin || 'manual'", source[save_start:save_end])
-
-
 class CollectionRoutesTests(unittest.IsolatedAsyncioTestCase):
     class _Request:
         def __init__(self, params):
             self.query_params = params
+
+    class _JsonRequest:
+        query_params = {}
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        async def json(self):
+            return self.payload
+
+    async def test_saving_a_collection_publishes_a_scoped_realtime_update(self):
+        class _Logger:
+            def info(self, *_args, **_kwargs):
+                pass
+
+        with patch(
+            "emby_collections.routes._logger_dep",
+            return_value=_Logger(),
+        ), patch(
+            "emby_collections.routes.save_collection_definition",
+            return_value={"id": "collection-1", "name": "Film"},
+        ), patch("emby_collections.routes.publish_application_event") as publish:
+            response = await api_emby_collections_save(
+                self._JsonRequest(
+                    {
+                        "name": "Film",
+                        "source_type": "trakt",
+                        "source_value": "popular",
+                        "server_ids": ["server-1"],
+                    }
+                ),
+                user={"username": "tester"},
+            )
+
+        self.assertEqual({"success": True, "collection": {"id": "collection-1", "name": "Film"}}, response)
+        publish.assert_called_once_with(
+            "OctoHubsCollectionsUpdated",
+            {"scope": "definitions", "collection_id": "collection-1"},
+        )
+
+    async def test_collection_poster_requires_authenticated_route_context(self):
+        poster = _test_image_bytes("PNG")
+        with patch(
+            "emby_collections.routes.get_collection_poster_blob",
+            return_value={"mime_type": "image/png", "data": poster},
+        ) as getter:
+            response = await api_emby_collections_get_poster(
+                "collection-1",
+                user={"username": "tester"},
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("image/png", response.headers["content-type"])
+        with Image.open(BytesIO(response.body)) as decoded:
+            self.assertEqual((2, 2), decoded.size)
+        getter.assert_called_once_with("collection-1")
+
+    async def test_collection_backdrop_requires_authenticated_route_context(self):
+        backdrop = _test_image_bytes("JPEG")
+        with patch(
+            "emby_collections.routes.get_collection_backdrop_blob",
+            return_value={"mime_type": "image/jpeg", "data": backdrop},
+        ) as getter:
+            response = await api_emby_collections_get_backdrop(
+                "collection-1",
+                user={"username": "tester"},
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("image/jpeg", response.headers["content-type"])
+        with Image.open(BytesIO(response.body)) as decoded:
+            self.assertEqual((2, 2), decoded.size)
+        getter.assert_called_once_with("collection-1")
 
     async def test_trakt_lists_can_start_background_operation(self):
         class _Logger:
@@ -906,7 +832,9 @@ class CollectionRoutesTests(unittest.IsolatedAsyncioTestCase):
         ), patch(
             "emby_collections.routes.start_collection_sync_operation",
             return_value={"id": "operation-3", "title": "Sincronizzazione collezione"},
-        ) as starter, patch("emby_collections.routes.run_collection_sync") as sync_now:
+        ) as starter, patch("emby_collections.routes.run_collection_sync") as sync_now, patch(
+            "emby_collections.routes.publish_application_event",
+        ) as publish:
             response = await api_emby_collections_sync(
                 "collection-1",
                 self._Request({"background": "1"}),
@@ -920,6 +848,10 @@ class CollectionRoutesTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("operation-3", payload["operation_id"])
         starter.assert_called_once()
         sync_now.assert_not_called()
+        publish.assert_called_once_with(
+            "OctoHubsCollectionsUpdated",
+            {"scope": "sync", "collection_id": "collection-1"},
+        )
 
     async def test_collection_sync_all_can_start_background_operation(self):
         class _Logger:

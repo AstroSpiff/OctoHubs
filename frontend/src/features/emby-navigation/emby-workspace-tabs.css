@@ -1,0 +1,14 @@
+.emby-workspace-tab--legacy {
+  color: var(--color-warning);
+}
+
+@media (min-width: 900px) {
+  .emby-workspace-tabs--sidebar {
+    display: none;
+  }
+
+  .emby-workspace-header--sidebar {
+    border-bottom: 1px solid var(--color-border);
+    padding-bottom: var(--space-tab-content);
+  }
+}

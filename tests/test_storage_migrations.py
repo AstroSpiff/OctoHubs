@@ -1,405 +1,216 @@
-"""Versioned storage migration tests."""
+"""Tests for the unified Alembic database lifecycle."""
 
 from __future__ import annotations
 
-import unittest
-from pathlib import Path
-from tempfile import TemporaryDirectory
-from unittest.mock import patch
-
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 
 
-class StorageMigrationTests(unittest.TestCase):
-    def test_dry_run_reports_pending_without_writing_registry(self):
-        from core.storage.migrations import Migration, apply_pending_migrations
+def test_alembic_config_preserves_percent_encoded_database_urls():
+    from core.database_migrations import alembic_config
 
-        engine = create_engine("sqlite:///:memory:", future=True)
-        try:
-            migration = Migration(
-                "9999_test",
-                "test migration",
-                lambda conn, url: conn.execute(text("CREATE TABLE sample (id INTEGER)")),
-            )
+    database_url = "postgresql://user:p%40ss@localhost/db?options=-csearch_path%3Dlegacy"
 
-            result = apply_pending_migrations(
-                engine,
-                "sqlite:///:memory:",
-                migrations=[migration],
-                dry_run=True,
-            )
+    assert alembic_config(database_url).get_main_option("sqlalchemy.url") == database_url
 
-            self.assertEqual(result["pending"], ["9999_test"])
-            with engine.connect() as conn:
-                names = conn.execute(
-                    text("SELECT name FROM sqlite_master WHERE type='table'")
-                ).fetchall()
-            self.assertNotIn(("schema_migrations",), names)
-            self.assertNotIn(("sample",), names)
-        finally:
-            engine.dispose()
 
-    def test_upgrade_records_applied_migration_and_status(self):
-        from core.storage.migrations import (
-            Migration,
-            apply_pending_migrations,
-            get_migration_status,
-            validate_migrations,
-        )
+def test_dry_run_reports_uninitialized_database_without_writing(tmp_path):
+    from core.database_migrations import upgrade_database
 
-        engine = create_engine("sqlite:///:memory:", future=True)
-        try:
-            migration = Migration(
-                "9999_test",
-                "test migration",
-                lambda conn, url: conn.execute(text("CREATE TABLE sample (id INTEGER)")),
-            )
+    database_url = f"sqlite:///{tmp_path / 'dry-run.db'}"
 
-            result = apply_pending_migrations(
-                engine,
-                "sqlite:///:memory:",
-                migrations=[migration],
-            )
-            status = get_migration_status(
-                engine,
-                "sqlite:///:memory:",
-                migrations=[migration],
-            )
-            validation = validate_migrations(
-                engine,
-                "sqlite:///:memory:",
-                migrations=[migration],
-            )
+    result = upgrade_database(database_url, dry_run=True)
 
-            self.assertEqual(result["applied"], ["9999_test"])
-            self.assertEqual(result["pending"], ["9999_test"])
-            self.assertEqual(status.applied, ["9999_test"])
-            self.assertEqual(status.pending, [])
-            self.assertIs(validation["ok"], True)
-        finally:
-            engine.dispose()
+    assert result["dry_run"] is True
+    assert result["pending"] == [
+        "20260829_01",
+        "20260829_02",
+        "20260829_03",
+        "20260829_04",
+        "20260829_05",
+        "20260830_06",
+    ]
+    engine = create_engine(database_url, future=True)
+    try:
+        assert inspect(engine).has_table("alembic_version") is False
+    finally:
+        engine.dispose()
 
-    def test_backup_runs_before_schema_changes_when_migrations_are_pending(self):
-        from core.storage.migrations import Migration, apply_pending_migrations
 
-        engine = create_engine("sqlite:///:memory:", future=True)
-        events = []
-        try:
-            migration = Migration(
-                "9999_test",
-                "test migration",
-                lambda conn, url: events.append("migration"),
-            )
+def test_upgrade_records_the_unified_alembic_baseline(tmp_path):
+    from core.database_migrations import get_migration_status, upgrade_database, validate_migrations
 
-            def backup(status, pending):
-                events.append("backup")
-                self.assertEqual(status.pending, ["9999_test"])
-                self.assertEqual([migration.id for migration in pending], ["9999_test"])
-                with engine.connect() as conn:
-                    names = conn.execute(
-                        text("SELECT name FROM sqlite_master WHERE type='table'")
-                    ).fetchall()
-                self.assertNotIn(("sample",), names)
-                return {"path": "/tmp/pre-migration.dump"}
+    database_url = f"sqlite:///{tmp_path / 'schema.db'}"
 
-            def create_schema_table():
-                events.append("create_all")
-                with engine.begin() as conn:
-                    conn.execute(text("CREATE TABLE sample (id INTEGER)"))
+    result = upgrade_database(database_url)
+    status = get_migration_status(database_url)
+    validation = validate_migrations(database_url)
 
-            result = apply_pending_migrations(
-                engine,
-                "sqlite:///:memory:",
-                migrations=[migration],
-                backup_before_apply=backup,
-                before_apply=create_schema_table,
-            )
+    assert result["applied"] == [
+        "20260829_01",
+        "20260829_02",
+        "20260829_03",
+        "20260829_04",
+        "20260829_05",
+        "20260830_06",
+    ]
+    assert status.applied == [
+        "20260829_01",
+        "20260829_02",
+        "20260829_03",
+        "20260829_04",
+        "20260829_05",
+        "20260830_06",
+    ]
+    assert status.pending == []
+    assert validation["ok"] is True
 
-            self.assertEqual(events, ["backup", "create_all", "migration"])
-            self.assertEqual(result["backup"], {"path": "/tmp/pre-migration.dump"})
-        finally:
-            engine.dispose()
+    engine = create_engine(database_url, future=True)
+    try:
+        names = set(inspect(engine).get_table_names())
+        assert {
+            "alembic_version",
+            "users",
+            "api_tokens",
+            "audit_logs",
+            "emby_latest_notification_deliveries",
+        }.issubset(names)
+        assert "schema_migrations" not in names
+    finally:
+        engine.dispose()
 
-    def test_backup_failure_blocks_pending_migrations(self):
-        from core.storage.migrations import Migration, apply_pending_migrations
-        from core.storage.storage_errors import StorageError
 
-        engine = create_engine("sqlite:///:memory:", future=True)
-        events = []
-        try:
-            migration = Migration(
-                "9999_test",
-                "test migration",
-                lambda conn, url: events.append("migration"),
-            )
+def test_baseline_bridges_existing_auth_preferences_schema(tmp_path):
+    from core.database_migrations import upgrade_database
 
-            def backup(status, pending):
-                events.append("backup")
-                raise StorageError("backup failed")
-
-            with self.assertRaises(StorageError):
-                apply_pending_migrations(
-                    engine,
-                    "sqlite:///:memory:",
-                    migrations=[migration],
-                    backup_before_apply=backup,
-                    before_apply=lambda: events.append("create_all"),
+    database_url = f"sqlite:///{tmp_path / 'legacy-auth.db'}"
+    engine = create_engine(database_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("""
+                CREATE TABLE user_interface_preferences (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL UNIQUE,
+                    primary_navigation VARCHAR(20) NOT NULL,
+                    secondary_navigation VARCHAR(20) NOT NULL,
+                    updated_at DATETIME NOT NULL
                 )
+            """))
+        upgrade_database(database_url)
+        columns = {column["name"] for column in inspect(engine).get_columns("user_interface_preferences")}
+        assert "navigation_order" in columns
+    finally:
+        engine.dispose()
 
-            self.assertEqual(events, ["backup"])
-        finally:
-            engine.dispose()
 
-    def test_default_migration_catalog_contains_legacy_baseline(self):
-        from core.storage.migrations import default_migrations
+def test_reconciliation_repairs_probe_columns_and_preserves_legacy_rows(tmp_path):
+    from core.database_migrations import upgrade_database
 
-        migrations = default_migrations()
-
-        self.assertEqual(
-            [migration.id for migration in migrations],
-            [
-                "0001_legacy_schema_alignment",
-                "0002_main_schema_bridge",
-                "0003_manual_search_history",
-                "0004_remove_rss_collection_storage",
-            ],
-        )
-
-    def test_manual_search_history_migration_repairs_already_migrated_database(self):
-        from core.storage.migrations import apply_pending_migrations, default_migrations
-
-        engine = create_engine("sqlite:///:memory:", future=True)
-        try:
-            with engine.begin() as conn:
-                conn.execute(
-                    text(
-                        """
-                        CREATE TABLE schema_migrations (
-                            id VARCHAR(255) PRIMARY KEY,
-                            name VARCHAR(255) NOT NULL,
-                            applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-                        )
-                        """
-                    )
+    database_url = f"sqlite:///{tmp_path / 'legacy-probe.db'}"
+    engine = create_engine(database_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("""
+                CREATE TABLE emby_probe_queue (
+                    id INTEGER PRIMARY KEY,
+                    item_id VARCHAR(36),
+                    server_id VARCHAR(36),
+                    item_name VARCHAR(500),
+                    added_at DATETIME
                 )
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO schema_migrations (id, name)
-                        VALUES (:id, :name)
-                        """
-                    ),
-                    [
-                        {"id": "0001_legacy_schema_alignment", "name": "Legacy schema alignment"},
-                        {"id": "0002_main_schema_bridge", "name": "Bridge legacy GitHub main schema table names"},
-                    ],
+            """))
+            connection.execute(text("""
+                INSERT INTO emby_probe_queue (id, item_id, server_id, item_name, added_at)
+                VALUES (1, 'item-1', 'green', 'Legacy title', CURRENT_TIMESTAMP)
+            """))
+
+        upgrade_database(database_url)
+
+        columns = {column["name"] for column in inspect(engine).get_columns("emby_probe_queue")}
+        with engine.connect() as connection:
+            row = connection.execute(
+                text("SELECT name, scope FROM emby_probe_queue WHERE id=1")
+            ).one()
+        assert {"name", "scope", "media_source_id", "library_id"}.issubset(columns)
+        assert row == ("Legacy title", "libraries")
+    finally:
+        engine.dispose()
+
+
+def test_reconciliation_bridges_legacy_table_names_without_hiding_data(tmp_path):
+    from core.database_migrations import upgrade_database
+
+    database_url = f"sqlite:///{tmp_path / 'legacy-data.db'}"
+    engine = create_engine(database_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("CREATE TABLE request_rules (request_id VARCHAR(50) PRIMARY KEY, data TEXT NOT NULL, updated_at DATETIME)"))
+            connection.execute(text("INSERT INTO request_rules VALUES ('42', '{\"enabled\": true}', CURRENT_TIMESTAMP)"))
+            connection.execute(text("CREATE TABLE request_rule_entries (request_id VARCHAR(50) PRIMARY KEY, rules TEXT NOT NULL, updated_at DATETIME)"))
+            connection.execute(text("CREATE TABLE request_overview (id INTEGER PRIMARY KEY, payload TEXT NOT NULL, updated_at DATETIME)"))
+            connection.execute(text("INSERT INTO request_overview VALUES (7, '{\"items\": [1]}', CURRENT_TIMESTAMP)"))
+            connection.execute(text("CREATE TABLE request_cache (id INTEGER PRIMARY KEY, request_id VARCHAR(50), payload TEXT NOT NULL, updated_at DATETIME)"))
+            connection.execute(text("CREATE TABLE emby_probe_recent_scan (server_id VARCHAR(36) PRIMARY KEY, oldest_scanned_timestamp DATETIME, last_scan_at DATETIME)"))
+            connection.execute(text("INSERT INTO emby_probe_recent_scan VALUES ('green', '2026-01-01', '2026-01-02')"))
+            connection.execute(text("""
+                CREATE TABLE emby_probe_recent_scans (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    server_id VARCHAR(36), library_id VARCHAR(36),
+                    oldest_scanned_timestamp DATETIME, last_scan_at DATETIME,
+                    payload TEXT NOT NULL
                 )
+            """))
 
-            result = apply_pending_migrations(
-                engine,
-                "sqlite:///:memory:",
-                migrations=default_migrations(lambda conn, url: None),
-            )
+        upgrade_database(database_url)
 
-            self.assertEqual(
-                result["applied"],
-                [
-                    "0003_manual_search_history",
-                    "0004_remove_rss_collection_storage",
-                ],
-            )
-            with engine.connect() as conn:
-                row = conn.execute(
-                    text(
-                        """
-                        SELECT 1
-                        FROM sqlite_master
-                        WHERE type = 'table' AND name = 'manual_search_history'
-                        LIMIT 1
-                        """
-                    )
-                ).first()
-            self.assertIsNotNone(row)
-        finally:
-            engine.dispose()
+        with engine.connect() as connection:
+            rules = connection.execute(text("SELECT request_id, rules FROM request_rule_entries")).all()
+            cache = connection.execute(text("SELECT id, payload FROM request_cache")).all()
+            recent = connection.execute(text("SELECT server_id, library_id FROM emby_probe_recent_scans")).all()
+        assert rules == [("42", '{"enabled": true}')]
+        assert cache == [(7, '{"items": [1]}')]
+        assert recent == [("green", "__all__")]
+    finally:
+        engine.dispose()
 
-    def test_removed_rss_collection_storage_migration_drops_tables_and_settings(self):
-        from core.storage.migrations import apply_removed_rss_collection_storage_cleanup
-        from core.storage.storage_models import AppSettings
 
-        engine = create_engine("sqlite:///:memory:", future=True)
-        try:
-            AppSettings.__table__.create(engine)
-            with engine.begin() as conn:
-                conn.execute(text("CREATE TABLE rss_items (id INTEGER PRIMARY KEY, title TEXT)"))
-                conn.execute(
-                    text("CREATE TABLE category_blacklist (category_name TEXT PRIMARY KEY)")
+def test_reconciliation_runs_for_database_already_marked_at_broken_baseline(tmp_path):
+    from core.database_migrations import upgrade_database
+
+    database_url = f"sqlite:///{tmp_path / 'already-baselined.db'}"
+    engine = create_engine(database_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)"))
+            connection.execute(text("INSERT INTO alembic_version VALUES ('20260829_02')"))
+            connection.execute(text("""
+                CREATE TABLE emby_probe_history (
+                    id INTEGER PRIMARY KEY,
+                    item_id VARCHAR(36),
+                    server_id VARCHAR(36),
+                    item_name VARCHAR(500),
+                    processed_at DATETIME
                 )
-                conn.execute(text("CREATE TABLE category_hidden (category_name TEXT PRIMARY KEY)"))
-                conn.execute(
-                    AppSettings.__table__.insert().values(
-                        id=1,
-                        data={
-                            "RSS_IMPORT": {"ENABLED": True},
-                            "AUTO_TASKS": {
-                                "scan": {"enabled": True},
-                                "rss": {"enabled": True},
-                            },
-                            "EMBY": {"ENABLED": True},
-                        },
-                    )
-                )
+            """))
 
-                apply_removed_rss_collection_storage_cleanup(conn, "sqlite:///:memory:")
+        result = upgrade_database(database_url)
 
-                remaining_tables = conn.execute(
-                    text(
-                        """
-                        SELECT name
-                        FROM sqlite_master
-                        WHERE type = 'table'
-                          AND name IN ('rss_items', 'category_blacklist', 'category_hidden')
-                        ORDER BY name
-                        """
-                    )
-                ).fetchall()
-                stored = conn.execute(AppSettings.__table__.select()).first()
-
-            self.assertEqual(remaining_tables, [])
-            self.assertEqual(
-                stored._mapping["data"],
-                {
-                    "AUTO_TASKS": {"scan": {"enabled": True}},
-                    "EMBY": {"ENABLED": True},
-                },
-            )
-        finally:
-            engine.dispose()
-
-    def test_request_rule_entry_exposes_data_attribute_for_rules_column(self):
-        from core.storage.storage_models import RequestRuleEntry
-
-        self.assertEqual(RequestRuleEntry.data.property.columns[0].name, "rules")
-
-    def test_main_schema_bridge_copies_legacy_main_tables(self):
-        from core.storage.migrations import apply_main_schema_bridge
-
-        engine = create_engine("sqlite:///:memory:", future=True)
-        try:
-            with engine.begin() as conn:
-                conn.execute(text("CREATE TABLE request_rules (request_id VARCHAR(32) PRIMARY KEY, data TEXT NOT NULL, updated_at DATETIME)"))
-                conn.execute(text("INSERT INTO request_rules (request_id, data, updated_at) VALUES ('42', '{\"enabled\": true}', '2026-01-01 10:00:00')"))
-                conn.execute(text("CREATE TABLE request_rule_entries (request_id VARCHAR(50) PRIMARY KEY, rules TEXT NOT NULL, updated_at DATETIME)"))
-
-                conn.execute(text("CREATE TABLE request_overview (id INTEGER PRIMARY KEY, payload TEXT NOT NULL, updated_at DATETIME)"))
-                conn.execute(text("INSERT INTO request_overview (id, payload, updated_at) VALUES (1, '{\"items\": [1]}', '2026-01-02 10:00:00')"))
-                conn.execute(text("CREATE TABLE request_cache (id INTEGER PRIMARY KEY AUTOINCREMENT, request_id VARCHAR(50), payload TEXT NOT NULL, updated_at DATETIME)"))
-
-                conn.execute(text("CREATE TABLE emby_probe_recent_scan (server_id VARCHAR(36) PRIMARY KEY, oldest_scanned_timestamp DATETIME, last_scan_at DATETIME)"))
-                conn.execute(text("INSERT INTO emby_probe_recent_scan (server_id, oldest_scanned_timestamp, last_scan_at) VALUES ('server-a', '2026-01-03 10:00:00', '2026-01-04 10:00:00')"))
-                conn.execute(text("CREATE TABLE emby_probe_recent_scans (server_id VARCHAR(36), library_id VARCHAR(36), oldest_scanned_timestamp DATETIME, last_scan_at DATETIME, payload TEXT, PRIMARY KEY (server_id, library_id))"))
-
-                apply_main_schema_bridge(conn, "sqlite:///:memory:")
-
-                rules = conn.execute(text("SELECT request_id, rules FROM request_rule_entries")).fetchall()
-                overview = conn.execute(text("SELECT id, payload FROM request_cache")).fetchall()
-                recent = conn.execute(text("SELECT server_id, library_id, oldest_scanned_timestamp FROM emby_probe_recent_scans")).fetchall()
-
-            self.assertEqual(rules, [("42", '{"enabled": true}')])
-            self.assertEqual(overview, [(1, '{"items": [1]}')])
-            self.assertEqual(recent, [("server-a", "__all__", "2026-01-03 10:00:00")])
-        finally:
-            engine.dispose()
-
-    def test_parse_db_status_args(self):
-        from cli import parse_args
-
-        args = parse_args(["db", "status"])
-
-        self.assertEqual(args.command, "db")
-        self.assertEqual(args.db_command, "status")
-
-    def test_parse_db_upgrade_dry_run_args(self):
-        from cli import parse_args
-
-        args = parse_args(["db", "upgrade", "--dry-run"])
-
-        self.assertEqual(args.command, "db")
-        self.assertEqual(args.db_command, "upgrade")
-        self.assertIs(args.dry_run, True)
+        columns = {column["name"] for column in inspect(engine).get_columns("emby_probe_history")}
+        assert result["applied"] == [
+            "20260829_03",
+            "20260829_04",
+            "20260829_05",
+            "20260830_06",
+        ]
+        assert {"name", "scope", "error_details"}.issubset(columns)
+    finally:
+        engine.dispose()
 
 
-class StorageBackupTests(unittest.TestCase):
-    def test_sqlite_backup_copies_database_and_writes_manifest(self):
-        from core.storage.backups import create_database_backup
+def test_parse_db_upgrade_dry_run_args():
+    from cli import parse_args
 
-        with TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "source.db"
-            backup_root = Path(tmpdir) / "backups"
-            engine = create_engine(f"sqlite:///{db_path}", future=True)
-            try:
-                with engine.begin() as conn:
-                    conn.execute(text("CREATE TABLE sample (id INTEGER PRIMARY KEY, name TEXT)"))
-                    conn.execute(text("INSERT INTO sample (name) VALUES ('before')"))
-            finally:
-                engine.dispose()
+    args = parse_args(["db", "upgrade", "--dry-run"])
 
-            result = create_database_backup(
-                {"URL": f"sqlite:///{db_path}"},
-                ["0001_legacy_schema_alignment"],
-                backup_root=backup_root,
-            )
-
-            dump_path = Path(result["path"])
-            manifest_path = Path(result["manifest_path"])
-            self.assertTrue(dump_path.exists())
-            self.assertTrue(manifest_path.exists())
-            self.assertEqual(result["pending_migrations"], ["0001_legacy_schema_alignment"])
-
-            copied = create_engine(f"sqlite:///{dump_path}", future=True)
-            try:
-                with copied.connect() as conn:
-                    rows = conn.execute(text("SELECT name FROM sample")).fetchall()
-                self.assertEqual(rows, [("before",)])
-            finally:
-                copied.dispose()
-
-    def test_postgres_backup_uses_configured_pg_dump_path(self):
-        from core.storage.backups import create_database_backup
-
-        with TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            fake_pg_dump = root / "pg_dump"
-            fake_pg_dump.write_text(
-                "#!/bin/sh\n"
-                "while [ \"$1\" != \"\" ]; do\n"
-                "  if [ \"$1\" = \"--file\" ]; then shift; echo dump > \"$1\"; exit 0; fi\n"
-                "  shift\n"
-                "done\n"
-                "exit 1\n",
-                encoding="utf-8",
-            )
-            fake_pg_dump.chmod(0o755)
-
-            settings = {
-                "DRIVER": "postgresql+psycopg2",
-                "HOST": "localhost",
-                "PORT": 5432,
-                "NAME": "octohubs",
-                "USER": "octohubs",
-                "PASSWORD": "secret",
-            }
-            with patch.dict("os.environ", {"OCTOHUBS_PG_DUMP": str(fake_pg_dump)}):
-                result = create_database_backup(
-                    settings,
-                    ["0001_legacy_schema_alignment"],
-                    backup_root=root / "backups",
-                )
-
-            self.assertTrue(Path(result["path"]).exists())
-            self.assertEqual(Path(result["path"]).read_text(encoding="utf-8").strip(), "dump")
-            self.assertTrue(Path(result["manifest_path"]).exists())
-
-
-if __name__ == "__main__":
-    unittest.main()
+    assert args.command == "db"
+    assert args.db_command == "upgrade"
+    assert args.dry_run is True

@@ -55,3 +55,24 @@ def test_push_event_bridge_settings_to_plugin_reports_plugin_errors(monkeypatch)
     assert ok is False
     assert error == "SaveOptions failed"
     assert response == {"Ok": False, "Applied": False, "Error": "SaveOptions failed"}
+
+
+def test_plugin_configuration_can_provision_a_server_credential(monkeypatch):
+    from emby_runtime import event_bridge_plugin_client as client
+
+    payloads = []
+    monkeypatch.setattr(
+        client,
+        "_call_emby_api",
+        lambda *_args, **kwargs: (payloads.append(kwargs["json_payload"]) or True, {"Ok": True}),
+    )
+
+    ok, _error, _response = client.push_event_bridge_settings_to_plugin(
+        {"id": "green"},
+        "green",
+        {},
+        webhook_secret="generated-secret",
+    )
+
+    assert ok is True
+    assert payloads[0]["WebhookSecret"] == "generated-secret"

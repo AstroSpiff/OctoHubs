@@ -11,6 +11,7 @@ from emby_runtime.transcode_guard import (
     TRANSCODE_GUARD_SETTINGS_KEY,
     TRANSCODE_GUARD_STREAM_LOG_KEY,
     TranscodeGuardService,
+    _terminal_row_has_open_problem,
     classify_stream,
     normalize_transcode_guard_settings,
 )
@@ -260,8 +261,22 @@ def test_decorated_stream_does_not_inherit_stopped_state_when_current_decision_i
 
     assert decision["category"] == "container_remux"
     assert decision["should_enforce"] is False
+    assert decision["enabled"] is True
     assert "state" not in decision
     assert "stopped_at" not in decision
+
+
+def test_decorated_stream_exposes_when_transcode_guard_is_disabled():
+    service = TranscodeGuardService(storage_provider=_Storage)
+    decision = service.decorate_streams("server-a", [{
+        "session_id": "session-1",
+        "title": "Direct Play",
+        "video_mode": "diretta",
+        "audio_mode": "diretta",
+    }])[0]["transcode_guard"]
+
+    assert decision["enabled"] is False
+    assert decision["category"] == "direct"
 
 
 def test_policy_does_not_block_unknown_height_by_default():
@@ -3508,6 +3523,15 @@ def test_service_builds_user_stream_stats_from_shared_stream_history():
     ]
     assert stats["history"][0]["title"] == "Dragon Trainer"
     assert stats["history"][0]["outcome"] == "stop"
+    assert stats["history"][0]["duration_seconds"] == 180.0
+    assert stats["history"][0]["action_records"] == [
+        {"action": "warn", "source": "guard", "at": "2026-07-22T10:01:00+00:00"},
+        {"action": "stop", "source": "guard", "at": "2026-07-22T10:03:00+00:00"},
+    ]
+    detail = service.get_stream_history_detail("row-stop")
+    assert detail is not None
+    assert detail["id"] == "row-stop"
+    assert service.get_stream_history_detail("missing") is None
 
 
 def test_service_user_stream_stats_support_filters_and_issue_only_history():
@@ -3616,3 +3640,87 @@ def test_service_user_stream_stats_does_not_count_plain_exit_as_issue():
     assert stats["history"][1]["outcome"] == "warning"
     assert issue_stats["summary"]["streams"] == 2
     assert [row["id"] for row in issue_stats["history"]] == ["row-warn-exit", "row-stop"]
+
+
+def test_service_user_stream_stats_uses_shared_readable_outcome_labels():
+    storage = _Storage()
+    storage.set_key_value(TRANSCODE_GUARD_STREAM_LOG_KEY, [
+        {
+            "id": "row-resolution-change",
+            "title": "Resolution Change",
+            "user": "Roy",
+            "client": "Infuse",
+            "server_id": "green",
+            "server_name": "Green",
+            "started_at": "2026-07-22T10:00:00+00:00",
+            "updated_at": "2026-07-22T10:00:00+00:00",
+            "actions": [
+                {"action": "resolution_change", "outcome": "Cambio risoluzione", "success": True},
+            ],
+        },
+        {
+            "id": "row-partial",
+            "title": "Partial",
+            "user": "Roy",
+            "client": "Infuse",
+            "server_id": "green",
+            "server_name": "Green",
+            "started_at": "2026-07-22T09:00:00+00:00",
+            "updated_at": "2026-07-22T09:00:00+00:00",
+            "actions": [
+                {"action": "partial_resolved", "outcome": "Risolto parzialmente", "success": True},
+            ],
+        },
+        {
+            "id": "row-stop",
+            "title": "Stop",
+            "user": "Roy",
+            "client": "Infuse",
+            "server_id": "green",
+            "server_name": "Green",
+            "started_at": "2026-07-22T08:00:00+00:00",
+            "updated_at": "2026-07-22T08:00:00+00:00",
+            "actions": [
+                {"action": "stop", "outcome": "Sessione fermata", "success": True},
+            ],
+        },
+        {
+            "id": "row-issue",
+            "title": "Issue",
+            "user": "Roy",
+            "client": "Infuse",
+            "server_id": "green",
+            "server_name": "Green",
+            "started_at": "2026-07-22T07:00:00+00:00",
+            "updated_at": "2026-07-22T07:00:00+00:00",
+            "violations_committed": ["video_transcode"],
+        },
+    ])
+    service = TranscodeGuardService(storage_provider=lambda: storage)
+
+    stats = service.get_user_stats({"period": "all", "issues_only": "false"})
+
+    assert [item["label"] for item in stats["users"][0]["trend"]] == [
+        "Cambio risoluzione",
+        "Risolto parzialmente",
+        "Stop del Guard",
+        "Problema rilevato",
+    ]
+
+
+def test_player_pause_is_not_a_guard_terminal_intervention():
+    player_pause = {
+        "actions": [
+            {"action": "warn", "source": "guard"},
+            {"action": "pause", "source": "plugin"},
+        ],
+    }
+    guard_pause = {
+        "actions": [
+            {"action": "warn", "source": "guard"},
+            {"action": "pause", "source": "guard"},
+        ],
+    }
+
+    assert _terminal_row_has_open_problem(player_pause) is False
+    assert _terminal_row_has_open_problem(guard_pause) is True

@@ -85,10 +85,13 @@ def _wf_latest_refresh_timeout_seconds(latest_settings: Dict[str, Any] | None = 
 
 def _wf_trigger_sync() -> bool:
     """Wrapper per avviare la sincronizzazione utenti."""
+    from app_state import get_operation_tracker
+
     manager = _get_emby_user_manager(
         _ensure_db_backend,
         lambda: config_manager._DB_BACKEND,
         lambda: config_manager._ACTIVE_CONFIG or {},
+        get_operation_tracker,
     )
     if manager:
         manager.auto_sync_manager.run_auto_sync()
@@ -115,6 +118,8 @@ def _wf_trigger_scan(context: Dict[str, Any]) -> bool:
     group_name = context.get("group_name")
     scan_type = context.get("scan_type", "content")
     libraries = context.get("libraries")
+    server_id_filter = str(context.get("server_id") or "")
+    library_id_filter = str(context.get("library_id") or "")
 
     # Se ci sono librerie nel context, usale (scan di gruppo specifico)
     if libraries and isinstance(libraries, list) and len(libraries) > 0:
@@ -137,8 +142,12 @@ def _wf_trigger_scan(context: Dict[str, Any]) -> bool:
             print(f"[WORKFLOW] [SCAN] ✗ Errore: {result.get('message', 'Unknown')}")
             return False
 
-    # Altrimenti, scan globale di TUTTE le librerie
-    print("[WORKFLOW] [SCAN] Modalità globale: tutte le librerie")
+    # Altrimenti, recupera le librerie nell'ambito richiesto: una libreria,
+    # un server, oppure tutti i server. Il legacy passava server_id ma veniva
+    # ignorato qui, rendendo una scansione per server involontariamente globale.
+    if library_id_filter and not server_id_filter:
+        print("[WORKFLOW] [SCAN] library_id senza server_id")
+        return False
 
     config, is_valid = load_config()
     if not is_valid or not config:
@@ -148,11 +157,17 @@ def _wf_trigger_scan(context: Dict[str, Any]) -> bool:
     servers = get_emby_servers(config)
     enabled_servers = [s for s in servers if isinstance(s, dict) and s.get("enabled")]
 
+    if server_id_filter:
+        enabled_servers = [
+            server for server in enabled_servers
+            if str(server.get("id") or "") == server_id_filter
+        ]
+
     if not enabled_servers:
         print("[WORKFLOW] [SCAN] Nessun server abilitato")
         return False
 
-    # Costruisci payload per scan gruppo con TUTTE le librerie
+    # Costruisci il payload per lo scope richiesto.
     all_libraries = []
     for server in enabled_servers:
         server_id = str(server.get("id", ""))
@@ -166,7 +181,7 @@ def _wf_trigger_scan(context: Dict[str, Any]) -> bool:
 
         for lib in libs_data:
             library_id = lib.get("ItemId")
-            if library_id:
+            if library_id and (not library_id_filter or str(library_id) == library_id_filter):
                 all_libraries.append({
                     "server_id": server_id,
                     "library_id": str(library_id),
@@ -177,12 +192,12 @@ def _wf_trigger_scan(context: Dict[str, Any]) -> bool:
         return False
 
     payload = {
-        "group_name": "Workflow-Global",
+        "group_name": group_name or ("Workflow-Global" if not server_id_filter else "Workflow-Server"),
         "scan_type": scan_type,
         "libraries": all_libraries,
     }
 
-    print(f"[WORKFLOW] [SCAN] Lancio scan gruppo globale con {len(all_libraries)} librerie")
+    print(f"[WORKFLOW] [SCAN] Lancio scan workflow con {len(all_libraries)} librerie")
 
     # Chiama la funzione esistente
     result, status_code = _build_scan_group_tracked_snapshot(payload)

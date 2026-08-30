@@ -180,29 +180,26 @@ class LatestApiHandlerTests(unittest.TestCase):
                 self.assertEqual(f"{expected_mode}-ts", payload["cached_at"])
                 self.assertEqual([expected_mode], manager.calls)
 
-    def test_latest_snapshot_force_refresh_returns_fresh_progress(self):
+    def test_latest_snapshot_force_query_is_rejected_without_refresh(self):
         manager = _RefreshingSnapshotManager(
             initial_payload={"movies": [{"title": "old"}], "series": [], "errors": []}
         )
 
-        with patch("emby_latest.get_manager", return_value=manager), patch(
-            "core.config_manager.load_config",
-            return_value=({"DATABASE": {"ENABLED": True}}, True),
-        ), patch("core.config_manager._db_enabled", return_value=True):
-            payload, status_code = build_latest_snapshot_payload(
-                limit=10,
-                per_server_limit=5,
-                force=True,
-                cache_only=False,
-                view="batch",
-            )
+        payload, status_code = build_latest_snapshot_payload(
+            limit=10,
+            per_server_limit=5,
+            force=True,
+            cache_only=False,
+            view="batch",
+        )
 
-        self.assertEqual(200, status_code)
-        self.assertTrue(payload["success"])
-        self.assertEqual({"state": "done", "completed": 1, "total": 1}, payload["progress"])
-        self.assertEqual("refreshed movie", payload["movies"][0]["title"])
+        self.assertEqual(400, status_code)
+        self.assertFalse(payload["success"])
+        self.assertIn("POST /api/emby/latest/refresh", payload["message"])
+        self.assertFalse(manager.refreshed)
+        self.assertEqual([], manager.calls)
 
-    def test_latest_snapshot_initial_load_returns_fresh_progress(self):
+    def test_latest_snapshot_cache_miss_never_triggers_refresh(self):
         manager = _RefreshingSnapshotManager(initial_payload=None)
 
         with patch("emby_latest.get_manager", return_value=manager), patch(
@@ -217,10 +214,12 @@ class LatestApiHandlerTests(unittest.TestCase):
                 view="batch",
             )
 
-        self.assertEqual(200, status_code)
-        self.assertTrue(payload["success"])
-        self.assertEqual({"state": "done", "completed": 1, "total": 1}, payload["progress"])
+        self.assertEqual(404, status_code)
+        self.assertFalse(payload["success"])
+        self.assertEqual("Nessun dato Pubblicazioni salvato nel DB", payload["message"])
         self.assertFalse(payload["refreshing"])
+        self.assertFalse(manager.refreshed)
+        self.assertEqual([("snapshot", "batch")], manager.calls)
 
     def test_latest_snapshot_cache_only_without_data_uses_database_message(self):
         manager = _RefreshingSnapshotManager(initial_payload=None)
