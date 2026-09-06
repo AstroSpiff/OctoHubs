@@ -9,7 +9,9 @@ describe("CollectionsList", () => {
       <CollectionsList
         collections={[{ id: "watchlist", name: "Watchlist", enabled: true }]}
         syncingAll={false}
+        isChangingCollection={() => false}
         isSyncingCollection={() => false}
+        collectionActionError={() => undefined}
         onToggle={() => undefined}
         onSync={() => undefined}
         onEdit={() => undefined}

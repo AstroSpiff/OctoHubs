@@ -4,6 +4,7 @@ import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from emby_users.item_matching import get_item_sync_keys, is_provider_key
+from core.log_sanitization import sanitize_diagnostic_text
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +71,17 @@ class FavoritesManager:
                 results["failed"].append(f"Server {target_server_id} not found")
                 continue
 
-            target_label = target_server.get("alias") or target_server.get("name") or target_server.get("id")
+            target_label = str(
+                target_server.get("alias")
+                or target_server.get("name")
+                or target_server.get("id")
+                or target_server_id
+            )
             matched_items = []
+            fallback_lookup_errors = []
             provider_err = None
             if provider_keys:
-                logger.warning("[SYNC][FAVORITES] target %s provider lookup start keys=%s", target_label, len(provider_keys))
+                logger.warning("[SYNC][FAVORITES] target %s provider lookup start keys=%s", sanitize_diagnostic_text(target_label), len(provider_keys))
                 matched_items, provider_err = self._fetch_items_by_provider_ids(
                     target_server,
                     target_user_id,
@@ -83,9 +90,9 @@ class FavoritesManager:
                     include_item_types="Movie,Episode,Series",
                 )
                 if provider_err:
-                    logger.warning("[SYNC][FAVORITES] provider lookup failed on %s: %s", target_label, provider_err)
+                    logger.warning("[SYNC][FAVORITES] provider lookup failed on %s: %s", sanitize_diagnostic_text(target_label), sanitize_diagnostic_text(provider_err))
                 else:
-                    logger.warning("[SYNC][FAVORITES] target %s provider lookup done items=%s", target_label, len(matched_items))
+                    logger.warning("[SYNC][FAVORITES] target %s provider lookup done items=%s", sanitize_diagnostic_text(target_label), len(matched_items))
 
             matched_ids = {item.get("Id") for item in matched_items if item.get("Id")}
             if provider_err:
@@ -109,7 +116,8 @@ class FavoritesManager:
                     source_item,
                 )
                 if fallback_err:
-                    logger.warning("[SYNC][FAVORITES] fallback lookup failed on %s: %s", target_label, fallback_err)
+                    logger.warning("[SYNC][FAVORITES] fallback lookup failed on %s: %s", sanitize_diagnostic_text(target_label), sanitize_diagnostic_text(fallback_err))
+                    fallback_lookup_errors.append(str(fallback_err))
                     continue
                 for item in fallback_items:
                     item_id = item.get("Id")
@@ -118,6 +126,7 @@ class FavoritesManager:
                         matched_ids.add(item_id)
 
             updated = 0
+            write_errors = []
             for item in matched_items:
                 item_id = item.get("Id")
                 if not item_id:
@@ -129,19 +138,43 @@ class FavoritesManager:
                 if ok:
                     updated += 1
                 else:
-                    logger.warning("[SYNC][FAVORITES] failed setting favorite %s on %s: %s", item_id, target_label, set_err)
+                    logger.warning("[SYNC][FAVORITES] failed setting favorite %s on %s: %s", sanitize_diagnostic_text(item_id), sanitize_diagnostic_text(target_label), sanitize_diagnostic_text(set_err))
+                    write_errors.append(f"{item_id}: {set_err or 'write failed'}")
 
-            results["success"].append(target_label)
+            self._record_target_outcome(
+                results,
+                target_label,
+                fallback_lookup_errors,
+                write_errors,
+            )
             results["counts"][target_label] = updated
             results["missing_counts"][target_label] = max(0, len(source_items) - len(matched_ids))
             logger.warning(
                 "[SYNC][FAVORITES] target %s done updated=%s missing=%s",
-                target_label,
+                sanitize_diagnostic_text(target_label),
                 updated,
                 results["missing_counts"][target_label],
             )
 
         return results
+
+    @staticmethod
+    def _record_target_outcome(
+        results: Dict[str, Any],
+        target_label: str,
+        lookup_errors: List[str],
+        write_errors: List[str],
+    ) -> None:
+        if lookup_errors:
+            results["failed"].append(
+                f"{target_label}: {len(lookup_errors)} fallback lookup(s) failed"
+            )
+        if write_errors:
+            results["failed"].append(
+                f"{target_label}: {len(write_errors)} update(s) failed"
+            )
+        if not lookup_errors and not write_errors:
+            results["success"].append(target_label)
 
     def sync_user_favorites_exact(
         self,
@@ -181,7 +214,7 @@ class FavoritesManager:
             lookup_keys = sorted(favorite_keys | target_keys)
             matched_items = []
             if lookup_keys:
-                logger.warning("[SYNC][FAVORITES][EXACT] target %s provider lookup start keys=%s", target_label, len(lookup_keys))
+                logger.warning("[SYNC][FAVORITES][EXACT] target %s provider lookup start keys=%s", sanitize_diagnostic_text(target_label), len(lookup_keys))
                 matched_items, lookup_err = self._fetch_items_by_provider_ids(
                     target_server,
                     target_user_id,
@@ -191,12 +224,13 @@ class FavoritesManager:
                 )
                 if lookup_err:
                     results["failed"].append(f"{target_label}: Provider lookup error")
-                    logger.warning("[SYNC][FAVORITES][EXACT] provider lookup failed on %s: %s", target_label, lookup_err)
+                    logger.warning("[SYNC][FAVORITES][EXACT] provider lookup failed on %s: %s", sanitize_diagnostic_text(target_label), sanitize_diagnostic_text(lookup_err))
                     continue
-                logger.warning("[SYNC][FAVORITES][EXACT] target %s provider lookup done items=%s", target_label, len(matched_items))
+                logger.warning("[SYNC][FAVORITES][EXACT] target %s provider lookup done items=%s", sanitize_diagnostic_text(target_label), len(matched_items))
 
             updated = 0
             cleared = 0
+            write_errors = []
             matched_source_keys = set()
             for item in matched_items:
                 item_id = item.get("Id")
@@ -216,15 +250,19 @@ class FavoritesManager:
                     if not should_favorite:
                         cleared += 1
                 else:
-                    logger.warning("[SYNC][FAVORITES] failed updating favorite %s on %s: %s", item_id, target_label, set_err)
+                    logger.warning("[SYNC][FAVORITES] failed updating favorite %s on %s: %s", sanitize_diagnostic_text(item_id), sanitize_diagnostic_text(target_label), sanitize_diagnostic_text(set_err))
+                    write_errors.append(f"{item_id}: {set_err or 'write failed'}")
 
-            results["success"].append(target_label)
+            if write_errors:
+                results["failed"].append(f"{target_label}: {len(write_errors)} update(s) failed")
+            else:
+                results["success"].append(target_label)
             results["counts"][target_label] = updated
             results["cleared_counts"][target_label] = cleared
             results["missing_counts"][target_label] = max(0, len(favorite_keys - matched_source_keys))
             logger.warning(
                 "[SYNC][FAVORITES][EXACT] target %s done updated=%s cleared=%s missing=%s",
-                target_label,
+                sanitize_diagnostic_text(target_label),
                 updated,
                 cleared,
                 results["missing_counts"][target_label],
@@ -262,7 +300,7 @@ class FavoritesManager:
             lookup_keys = sorted(favorite_keys | target_keys)
             matched_items = []
             if lookup_keys:
-                logger.warning("[SYNC][FAVORITES][KEYS] target %s provider lookup start keys=%s", target_label, len(lookup_keys))
+                logger.warning("[SYNC][FAVORITES][KEYS] target %s provider lookup start keys=%s", sanitize_diagnostic_text(target_label), len(lookup_keys))
                 matched_items, lookup_err = self._fetch_items_by_provider_ids(
                     target_server,
                     target_user_id,
@@ -272,12 +310,13 @@ class FavoritesManager:
                 )
                 if lookup_err:
                     results["failed"].append(f"{target_label}: Provider lookup error")
-                    logger.warning("[SYNC][FAVORITES][KEYS] provider lookup failed on %s: %s", target_label, lookup_err)
+                    logger.warning("[SYNC][FAVORITES][KEYS] provider lookup failed on %s: %s", sanitize_diagnostic_text(target_label), sanitize_diagnostic_text(lookup_err))
                     continue
-                logger.warning("[SYNC][FAVORITES][KEYS] target %s provider lookup done items=%s", target_label, len(matched_items))
+                logger.warning("[SYNC][FAVORITES][KEYS] target %s provider lookup done items=%s", sanitize_diagnostic_text(target_label), len(matched_items))
 
             updated = 0
             cleared = 0
+            write_errors = []
             matched_desired_keys = set()
             for item in matched_items:
                 item_id = item.get("Id")
@@ -297,15 +336,19 @@ class FavoritesManager:
                     if not should_favorite:
                         cleared += 1
                 else:
-                    logger.warning("[SYNC][FAVORITES][KEYS] failed updating favorite %s on %s: %s", item_id, target_label, set_err)
+                    logger.warning("[SYNC][FAVORITES][KEYS] failed updating favorite %s on %s: %s", sanitize_diagnostic_text(item_id), sanitize_diagnostic_text(target_label), sanitize_diagnostic_text(set_err))
+                    write_errors.append(f"{item_id}: {set_err or 'write failed'}")
 
-            results["success"].append(target_label)
+            if write_errors:
+                results["failed"].append(f"{target_label}: {len(write_errors)} update(s) failed")
+            else:
+                results["success"].append(target_label)
             results["counts"][target_label] = updated
             results["cleared_counts"][target_label] = cleared
             results["missing_counts"][target_label] = max(0, len(favorite_keys - matched_desired_keys))
             logger.warning(
                 "[SYNC][FAVORITES][KEYS] target %s done updated=%s cleared=%s missing=%s",
-                target_label,
+                sanitize_diagnostic_text(target_label),
                 updated,
                 cleared,
                 results["missing_counts"][target_label],
@@ -319,23 +362,24 @@ class FavoritesManager:
         fallback_items = []
         results = {"success": [], "failed": [], "counts": {}, "missing_counts": {}}
         logger.warning("[SYNC][FAVORITES][MERGE] start targets=%s", len(targets))
+        source_failures = []
         for index, (source_server_id, source_user_id) in enumerate(targets, start=1):
             source_server = self._get_server_by_id(source_server_id)
             if not source_server:
-                results["failed"].append(f"Server {source_server_id} not found")
+                source_failures.append(f"Server {source_server_id} not found")
                 continue
             source_label = source_server.get("alias") or source_server.get("name") or source_server.get("id")
             logger.warning(
                 "[SYNC][FAVORITES][MERGE] source %s/%s fetch start: %s user=%s",
                 index,
                 len(targets),
-                source_label,
-                source_user_id,
+                sanitize_diagnostic_text(source_label),
+                sanitize_diagnostic_text(source_user_id),
             )
             source_items, err = self._fetch_favorites(source_server, source_user_id)
             if err:
-                results["failed"].append(f"{source_label}: Fetch error")
-                logger.warning("[SYNC][FAVORITES][MERGE] source %s/%s failed: %s", index, len(targets), err)
+                source_failures.append(f"{source_label}: Fetch error")
+                logger.warning("[SYNC][FAVORITES][MERGE] source %s/%s failed: %s", index, len(targets), sanitize_diagnostic_text(err))
                 continue
             source_keys, source_fallback_items = self._collect_source_keys(source_items)
             favorite_keys.update(source_keys)
@@ -349,6 +393,13 @@ class FavoritesManager:
                 len(source_fallback_items),
             )
 
+        if source_failures:
+            return {
+                **results,
+                "failed": source_failures,
+                "error": "Favorites bootstrap aborted: incomplete source snapshot",
+            }
+
         logger.warning(
             "[SYNC][FAVORITES][MERGE] union done keys=%s fallback_items=%s",
             len(favorite_keys),
@@ -360,5 +411,9 @@ class FavoritesManager:
         results["success"] = applied.get("success", [])
         results["counts"] = applied.get("counts", {})
         results["missing_counts"] = applied.get("missing_counts", {})
-        logger.warning("[SYNC][FAVORITES][MERGE] done results=%s", results)
+        logger.warning(
+            "[SYNC][FAVORITES][MERGE] done success=%s failed=%s",
+            len(results["success"]),
+            len(results["failed"]),
+        )
         return results

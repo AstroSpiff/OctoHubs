@@ -11,7 +11,9 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from core.config_manager import load_config
-from core.log_sanitization import sanitize_url_for_log
+from core.http_error_messages import safe_http_error_message
+from core.log_sanitization import format_exception_for_log, sanitize_url_for_log
+from core.pagination import MAX_PROVIDER_ITEMS, MAX_PROVIDER_PAGES, PaginationGuard
 from core.utils import _normalize_media_type
 from .sources_common import PROVIDER_LABEL_MAP, _extract_year
 
@@ -32,7 +34,14 @@ class MdblistClient:
         return f"{path}{separator}apikey={urllib.parse.quote_plus(self.api_key)}"
 
     def _request(self, url: str) -> requests.Response:
-        return requests.get(url, timeout=20)
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme != "https" or parsed.hostname != "api.mdblist.com":
+            raise ValueError("MDBList endpoint non valido")
+        try:
+            return requests.get(url, timeout=20, allow_redirects=False)
+        except requests.RequestException as exc:
+            logger.warning("MDBList request failed: %s", safe_http_error_message(exc))
+            raise RuntimeError("Servizio MDBList temporaneamente non disponibile") from None
 
     def _get_items_from_endpoint(
         self,
@@ -44,6 +53,7 @@ class MdblistClient:
     ) -> Optional[List[Dict[str, Any]]]:
         all_items: List[Dict[str, Any]] = []
         current_offset = offset
+        guard = PaginationGuard(MAX_PROVIDER_PAGES, MAX_PROVIDER_ITEMS)
         while True:
             query_params = [
                 *params,
@@ -58,7 +68,7 @@ class MdblistClient:
             try:
                 result = response.json()
             except ValueError as exc:
-                logger.warning("MDBList endpoint risposta non JSON: %s", exc)
+                logger.warning("MDBList endpoint risposta non JSON:\n%s", format_exception_for_log(exc))
                 return None
             items = []
             for key in ("movies", "shows"):
@@ -68,6 +78,7 @@ class MdblistClient:
                 items.extend(value)
             if not isinstance(items, list):
                 return None
+            guard.observe(items)
             all_items.extend(items)
             if max_items is not None and len(all_items) >= max_items:
                 return all_items[:max_items]
@@ -92,29 +103,6 @@ class MdblistClient:
         endpoint = f"{self.BASE_URL}/external/lists/{list_id}/items"
         return self._get_items_from_endpoint(endpoint, [], limit=limit, offset=offset, max_items=max_items)
 
-    def get_list_using_url(self, url: str) -> Optional[List[Dict[str, Any]]]:
-        normalized = url.rstrip("/")
-        if not normalized.endswith("/json"):
-            normalized = normalized + "/json"
-        response = self._request(normalized)
-        if not response.text:
-            logger.warning("MDBList URL %s non ha risposto", sanitize_url_for_log(url))
-            return None
-        try:
-            data = response.json()
-        except ValueError as exc:
-            logger.warning("MDBList URL %s risposta non JSON: %s", sanitize_url_for_log(url), exc)
-            return None
-        if isinstance(data, dict) and "movies" in data:
-            items = (data.get("movies") or []) + (data.get("shows") or [])
-        elif isinstance(data, list):
-            items = data
-        else:
-            items = []
-        if not isinstance(items, list):
-            return None
-        return items
-
     def get_my_lists(self) -> Optional[List[Dict[str, Any]]]:
         response = self._request(self.my_lists_url)
         if not response.text:
@@ -123,7 +111,7 @@ class MdblistClient:
         try:
             data = response.json()
         except ValueError as exc:
-            logger.warning("MDBList user lists risposta non JSON: %s", exc)
+            logger.warning("MDBList user lists risposta non JSON:\n%s", format_exception_for_log(exc))
             return None
         if isinstance(data, list):
             return data
@@ -137,7 +125,7 @@ class MdblistClient:
         try:
             data = response.json()
         except ValueError as exc:
-            logger.warning("MDBList external user lists risposta non JSON: %s", exc)
+            logger.warning("MDBList external user lists risposta non JSON:\n%s", format_exception_for_log(exc))
             return None
         if isinstance(data, list):
             return data
@@ -223,10 +211,57 @@ def _extract_external_list_id_from_value(value: str) -> Optional[str]:
     prefixed = re.fullmatch(r"external:(\d+)", text, re.IGNORECASE)
     if prefixed:
         return prefixed.group(1)
-    url_match = re.search(r"(?:/external/lists/|/external/)(\d+)\b", text, re.IGNORECASE)
-    if url_match:
-        return url_match.group(1)
+    parsed = _parse_mdblist_url(text)
+    if parsed and parsed[0] == "external":
+        return parsed[1]
     return None
+
+
+def _parse_mdblist_url(value: str) -> Optional[tuple[str, str]]:
+    """Return the safe MDBList kind/id encoded by a supported public URL."""
+    text = str(value or "").strip()
+    if not text.lower().startswith(("http://", "https://")):
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(text)
+        port = parsed.port
+    except ValueError:
+        return None
+    host = (parsed.hostname or "").rstrip(".").lower()
+    if (
+        parsed.scheme.lower() != "https"
+        or host not in {"mdblist.com", "www.mdblist.com", "api.mdblist.com"}
+        or parsed.username
+        or parsed.password
+        or port not in (None, 443)
+    ):
+        return None
+    path = re.sub(r"/+", "/", parsed.path or "/").rstrip("/")
+    patterns = (
+        ("external", r"/(?:external/lists|lists/[^/]+/external)/(\d+)(?:/items)?"),
+        ("list", r"/(?:list|lists)/(\d+)(?:/items)?"),
+        ("list", r"/lists/(\d+)/items"),
+    )
+    for kind, pattern in patterns:
+        match = re.fullmatch(pattern, path, re.IGNORECASE)
+        if match:
+            return kind, match.group(1)
+    return None
+
+
+def _parse_mdblist_source(value: str) -> tuple[str, str]:
+    text = str(value or "").strip()
+    external = re.fullmatch(r"external:(\d+)", text, re.IGNORECASE)
+    if external:
+        return "external", external.group(1)
+    if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", text):
+        return "list", text
+    parsed_url = _parse_mdblist_url(text)
+    if parsed_url:
+        return parsed_url
+    raise RuntimeError(
+        "Valore MDBList non valido: usa un ID lista, external:<id> o una URL HTTPS MDBList con ID"
+    )
 
 
 def _fetch_mdblist_items(value: str, max_items: Optional[int] = None) -> List[Dict[str, Any]]:
@@ -234,17 +269,15 @@ def _fetch_mdblist_items(value: str, max_items: Optional[int] = None) -> List[Di
     trimmed = value.strip()
     if not trimmed:
         raise RuntimeError("Valore MDBList non valido")
-    external_list_id = _extract_external_list_id_from_value(trimmed)
-    if external_list_id:
-        entries = client.get_external_list(external_list_id, max_items=max_items)
-    elif trimmed.lower().startswith("http"):
-        entries = client.get_list_using_url(trimmed)
+    source_kind, source_id = _parse_mdblist_source(trimmed)
+    if source_kind == "external":
+        entries = client.get_external_list(source_id, max_items=max_items)
     else:
-        entries = client.get_list(trimmed, max_items=max_items)
+        entries = client.get_list(source_id, max_items=max_items)
     if entries is None:
         raise RuntimeError("Impossibile recuperare la lista MDBList fornita")
     normalized = _normalize_mdblist_entries(entries)
-    logger.info("MDBList %s restituisce %d elementi", trimmed, len(normalized))
+    logger.info("MDBList %s:%s restituisce %d elementi", source_kind, source_id, len(normalized))
     return normalized
 
 
@@ -305,36 +338,37 @@ def list_mdblist_user_lists() -> List[Dict[str, Any]]:
             if not isinstance(entry, dict):
                 continue
             list_id = entry.get("id") or entry.get("list_id")
-            if not list_id:
+            list_id_text = str(list_id or "").strip()
+            if not re.fullmatch(r"\d{1,20}", list_id_text):
                 continue
-            user_name = entry.get("user_name") or entry.get("user_id") or ""
-            name = entry.get("name") or f"External List MDBList {list_id}"
-            source_url = (
-                entry.get("source_url")
-                or entry.get("url")
-                or entry.get("external_url")
-                or entry.get("source")
-                or ""
+            user_name = str(entry.get("user_name") or entry.get("user_id") or "").strip()
+            safe_user_name = (
+                user_name if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", user_name) else ""
             )
-            description = entry.get("description") or source_url or ""
+            name = entry.get("name") or f"External List MDBList {list_id_text}"
+            # Provider-supplied source URLs may contain credentials and are not
+            # an authenticated navigation target.  Keep description textual.
+            description = entry.get("description") or ""
             item_count = entry.get("items") or entry.get("item_count") or 0
-            link = entry.get("link") or entry.get("mdblist_url") or ""
-            if not link and user_name:
-                link = f"https://mdblist.com/lists/{user_name}/external/{list_id}"
-            elif not link:
-                link = f"https://mdblist.com/external/lists/{list_id}"
-            dedupe_key = ("external", str(list_id), str(user_name))
+            if safe_user_name:
+                link = (
+                    "https://mdblist.com/lists/"
+                    f"{urllib.parse.quote(safe_user_name, safe='')}/external/{list_id_text}"
+                )
+            else:
+                link = f"https://mdblist.com/external/lists/{list_id_text}"
+            dedupe_key = ("external", list_id_text, safe_user_name)
             if dedupe_key in seen:
                 continue
             seen.add(dedupe_key)
             normalized.append({
                 "name": name,
                 "description": description,
-                "list_id": str(list_id),
+                "list_id": list_id_text,
                 "slug": entry.get("slug") or "",
-                "user_name": user_name,
+                "user_name": safe_user_name,
                 "source_type": "mdblist",
-                "source_value": f"external:{list_id}",
+                "source_value": f"external:{list_id_text}",
                 "item_count": item_count,
                 "link": link,
                 "dynamic": True,
@@ -347,6 +381,8 @@ def list_mdblist_user_lists() -> List[Dict[str, Any]]:
     return normalized
 
 
-def is_mdblist_enabled() -> bool:
-    config, _ = load_config()
-    return bool(_collect_mdblist_api_keys(config))
+def is_mdblist_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
+    source_config = config
+    if source_config is None:
+        source_config, _ = load_config()
+    return bool(_collect_mdblist_api_keys(source_config or {}))

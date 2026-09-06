@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, cast
+import logging
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from core.config_manager import _db_enabled
+from core.log_sanitization import format_exception_for_log
+from core.storage import StorageError
 from realtime.manager import publish_configuration_update
 from telegram.api_models import (
     TelegramActionRequest,
@@ -21,9 +25,11 @@ from telegram.actions import (
     ensure_telegram_ready,
     run_telegram_configuration_action,
 )
+from telegram.limits import TelegramSettingsLimitError
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _require_auth: Optional[Callable[[Request], Any]] = None
 _validate_csrf: Optional[Callable[[Request, Optional[str]], bool]] = None
@@ -90,8 +96,8 @@ def _ensure_db_backend_dep() -> Any:
 
 @router.get("/api/telegram/settings", response_model=TelegramSettingsResponse)
 async def telegram_settings_api_route(request: Request):
-    _require_auth_dep(request)
-    return JSONResponse(_telegram_snapshot())
+    await run_in_threadpool(_require_auth_dep, request)
+    return JSONResponse(await run_in_threadpool(_telegram_snapshot))
 
 
 @router.post(
@@ -100,24 +106,38 @@ async def telegram_settings_api_route(request: Request):
     openapi_extra=request_body_schema(TelegramActionRequest),
 )
 async def telegram_action_api_route(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validated_csrf_token(request)
-    payload = await validated_json_payload(request, TelegramActionRequest)
-    config, is_valid = _load_config_dep()
+    payload = cast(
+        dict[str, Any],
+        await validated_json_payload(request, TelegramActionRequest),
+    )
+    config, is_valid = await run_in_threadpool(_load_config_dep)
     try:
-        ensure_telegram_ready(config, is_valid, _ensure_db_backend_dep)
-    except TelegramActionError as exc:
+        await run_in_threadpool(ensure_telegram_ready, config, is_valid, _ensure_db_backend_dep)
+    except (TelegramActionError, TelegramSettingsLimitError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     action = str(payload.get("action") or "").strip()
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    raw_data = payload.get("data")
+    data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
     try:
-        category, message = run_telegram_configuration_action(action, data)
-    except TelegramActionError as exc:
+        category, message = await run_in_threadpool(run_telegram_configuration_action, action, data)
+    except (TelegramActionError, TelegramSettingsLimitError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except StorageError as exc:
+        logger.error(
+            "Salvataggio configurazione Telegram non riuscito:\n%s",
+            format_exception_for_log(exc),
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Impossibile salvare la configurazione Telegram",
+        ) from exc
     if category == "error":
         raise HTTPException(status_code=400, detail=message or "Operazione Telegram non riuscita")
     publish_configuration_update("telegram")
-    return JSONResponse({**_telegram_snapshot(), "message": message or "Configurazione Telegram aggiornata"})
+    snapshot = await run_in_threadpool(_telegram_snapshot)
+    return JSONResponse({**snapshot, "message": message or "Configurazione Telegram aggiornata"})
 
 
 def _bot_snapshot(item: Any) -> dict[str, Any]:

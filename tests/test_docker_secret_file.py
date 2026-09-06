@@ -8,24 +8,28 @@ from core.env import octohubs_secret
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_compose_secret_is_shared_without_plain_password_environment():
+def test_compose_secret_is_mounted_only_in_the_application():
     override = (PROJECT_ROOT / "docker-compose.secrets.yml").read_text(
         encoding="utf-8"
     )
 
     assert 'OCTOHUBS_DB_PASSWORD: ""' in override
     assert "OCTOHUBS_DB_PASSWORD_FILE: /run/secrets/octohubs_db_password" in override
-    assert 'POSTGRES_PASSWORD: ""' in override
-    assert "POSTGRES_PASSWORD_FILE: /run/secrets/octohubs_db_password" in override
-    assert override.count("- octohubs_db_password") == 2
+    assert "POSTGRES_PASSWORD" not in override
+    assert override.count("- octohubs_db_password") == 1
     assert "file: ${OCTOHUBS_DB_PASSWORD_FILE:?" in override
 
-    smoke = (PROJECT_ROOT / "scripts/run_compose_secret_smoke.sh").read_text(
+
+def test_release_gate_validates_compose_secrets():
+    workflow = (PROJECT_ROOT / ".github/workflows/release-gate.yml").read_text(
         encoding="utf-8"
     )
-    assert "docker-compose.secrets.yml" in smoke
-    assert "docker-compose.secret-smoke.yml" in smoke
-    assert "down --volumes --remove-orphans" in smoke
+
+    assert "OCTOHUBS_DB_PASSWORD_FILE=/dev/null" in workflow
+    assert "docker-compose.secrets.yml config --quiet" in workflow
+    assert "ADMIN_PASSWORD_FILE=/dev/null" in workflow
+    assert "docker-compose.admin-bootstrap.yml config --quiet" in workflow
+    assert "run_compose_secret_smoke.sh" not in workflow
 
 
 def test_application_prefers_the_mounted_database_password_file(monkeypatch, tmp_path):

@@ -5,6 +5,8 @@ from __future__ import annotations
 import secrets
 from collections.abc import Callable, Mapping
 
+from core.secret_strength import MIN_SECRET_BYTES, is_strong_secret
+
 
 _INSECURE_SESSION_SECRETS = frozenset(
     {
@@ -14,11 +16,16 @@ _INSECURE_SESSION_SECRETS = frozenset(
         "cambia_questo",
     }
 )
+MIN_SESSION_SECRET_BYTES = MIN_SECRET_BYTES
 
 
 def is_insecure_session_secret(value: object) -> bool:
-    """Recognize empty and documented placeholder session secrets."""
-    return str(value or "").strip().lower() in _INSECURE_SESSION_SECRETS
+    """Recognize missing, documented placeholders, and trivially weak secrets."""
+    normalized = str(value or "").strip()
+    return (
+        normalized.lower() in _INSECURE_SESSION_SECRETS
+        or not is_strong_secret(normalized)
+    )
 
 
 def resolved_session_secret(
@@ -27,9 +34,13 @@ def resolved_session_secret(
 ) -> tuple[str, bool]:
     """Return the configured secret or a safe ephemeral replacement and its origin."""
     configured = str(environment.get("SECRET_KEY") or "").strip()
-    if not is_insecure_session_secret(configured):
-        return configured, False
-    return token_factory(48), True
+    if not configured or configured.lower() in _INSECURE_SESSION_SECRETS:
+        return token_factory(48), True
+    if is_insecure_session_secret(configured):
+        raise ValueError(
+            f"SECRET_KEY deve contenere almeno {MIN_SESSION_SECRET_BYTES} byte non banali"
+        )
+    return configured, False
 
 
 def environment_flag(environment: Mapping[str, str], key: str, default: bool = False) -> bool:

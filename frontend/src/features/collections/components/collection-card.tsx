@@ -1,17 +1,19 @@
 import { Bot, CalendarRange, CircleEllipsis, Database, ExternalLink, ListChecks, Pencil, RefreshCw, Server, ToggleLeft, ToggleRight, Trash2 } from "@/components/ui/icons";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { collectionMarkers, collectionPosterUrl, collectionSyncLabel, collectionSyncSeverity, formatCollectionDate } from "@/features/collections/presentation";
 import { EmbyServerIcon } from "@/features/emby-live/components/emby-server-icon";
 import type { CollectionServer, CollectionSyncDetail, EmbyCollection } from "@/features/collections/types";
+import { safeExternalHttpUrl } from "@/lib/external-url";
 
 type CollectionCardProps = {
   collection: EmbyCollection;
   changing: boolean;
   syncing: boolean;
   syncingAll: boolean;
+  actionError?: string;
   onToggle: (collection: EmbyCollection) => void;
   onSync: (collection: EmbyCollection) => void;
   onEdit: (collection: EmbyCollection) => void;
@@ -35,8 +37,10 @@ type CollectionElementRow = {
   missing: number | null;
 };
 
-function CollectionCard({ collection, changing, syncing, syncingAll, onToggle, onSync, onEdit, onDetails, onDelete }: CollectionCardProps) {
+function CollectionCard({ collection, changing, syncing, syncingAll, actionError, onToggle, onSync, onEdit, onDetails, onDelete }: CollectionCardProps) {
   const [flipped, setFlipped] = useState(false);
+  const frontRef = useRef<HTMLButtonElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
   const poster = collectionPosterUrl(collection);
   const status = collection.delete_pending ? "Da rimuovere" : collection.enabled ? collectionSyncLabel(collection.last_sync_status) : "Disabilitata";
   const severity = collection.delete_pending || !collection.enabled ? "neutral" : collectionSyncSeverity(collection.last_sync_status);
@@ -51,29 +55,58 @@ function CollectionCard({ collection, changing, syncing, syncingAll, onToggle, o
   const sourceLabel = collection.source_label || collection.source_display || "Non disponibile";
   const sortTitle = collection.sort_name || collection.collection_sort_name || collection.name;
 
+  function openDetails() {
+    setFlipped(true);
+    window.requestAnimationFrame(() => closeRef.current?.focus());
+  }
+
+  function closeDetails() {
+    setFlipped(false);
+    window.requestAnimationFrame(() => frontRef.current?.focus());
+  }
+
   return (
     <article className={`collection-card ${collection.enabled ? "" : "is-disabled"} ${flipped ? "is-flipped" : ""}`}>
-      <div className="collection-card-flip" onPointerLeave={() => setFlipped(false)}>
+      <div
+        className="collection-card-flip"
+        onPointerLeave={() => {
+          if (!document.activeElement || !closeRef.current?.closest(".collection-card-back")?.contains(document.activeElement)) {
+            setFlipped(false);
+          }
+        }}
+      >
         <div className="collection-card-inner">
           <button
+            ref={frontRef}
             type="button"
             className="collection-card-front"
-            onClick={() => setFlipped(true)}
+            onClick={openDetails}
             aria-label={`Apri dettagli di ${collection.name}`}
             aria-expanded={flipped}
+            aria-hidden={flipped || undefined}
+            inert={flipped ? true : undefined}
           >
             <StatusBadge severity={severity}>{status}</StatusBadge>
             {poster ? <img src={poster} alt="" loading="lazy" onError={(event) => { event.currentTarget.hidden = true; }} /> : null}
             {poster ? null : <span className="collection-card-poster-placeholder"><Database size={42} aria-hidden="true" /></span>}
           </button>
 
-          <section className="collection-card-back" aria-label={`Azioni e dettagli di ${collection.name}`}>
+          <section
+            className="collection-card-back"
+            aria-label={`Azioni e dettagli di ${collection.name}`}
+            aria-hidden={!flipped || undefined}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") closeDetails();
+            }}
+            inert={!flipped ? true : undefined}
+          >
             <header>
               <div>
                 <span>Sort title</span>
                 <h2>{sortTitle}</h2>
               </div>
               <div className="collection-card-heading-actions">
+                <Button ref={closeRef} type="button" variant="ghost" size="compact" onClick={closeDetails}>Chiudi</Button>
                 <Button type="button" requiresWriteAccess variant="ghost" size="icon" title="Modifica collezione" aria-label={`Modifica ${collection.name}`} onClick={() => onEdit(collection)} disabled={actionsDisabled}><Pencil size={15} aria-hidden="true" /></Button>
                 <Button type="button" variant="ghost" size="icon" title="Dettagli sincronizzazione" aria-label={`Dettagli sincronizzazione ${collection.name}`} onClick={() => onDetails(collection)}><CircleEllipsis size={16} aria-hidden="true" /></Button>
                 <Button type="button" requiresWriteAccess variant="ghost" size="icon" title="Elimina collezione" aria-label={`Elimina ${collection.name}`} onClick={() => onDelete(collection)} disabled={actionsDisabled}><Trash2 size={15} aria-hidden="true" /></Button>
@@ -86,8 +119,8 @@ function CollectionCard({ collection, changing, syncing, syncingAll, onToggle, o
               <dt>Fonte</dt>
               <dd className="collection-source-summary">
                 <span>{sourceLabel}</span>
-                {collection.source_link ? (
-                  <a href={collection.source_link} target="_blank" rel="noreferrer" title={collection.source_display || collection.source_value || sourceLabel} aria-label={`Apri fonte ${sourceLabel}`}>
+                {safeExternalHttpUrl(collection.source_link) ? (
+                  <a href={safeExternalHttpUrl(collection.source_link) || undefined} target="_blank" rel="noreferrer" title={collection.source_display || collection.source_value || sourceLabel} aria-label={`Apri fonte ${sourceLabel}`}>
                     <ExternalLink size={13} aria-hidden="true" />
                   </a>
                 ) : null}
@@ -129,6 +162,7 @@ function CollectionCard({ collection, changing, syncing, syncingAll, onToggle, o
 
           {showSyncMessage ? <p className="collection-card-message">{collection.last_sync_message}</p> : null}
           {syncing ? <p className="collection-card-operation-status" role="status">{syncingAll ? "Sincronizzazione globale in corso..." : "Sincronizzazione in corso..."}</p> : null}
+          {actionError ? <p className="collection-card-message inline-alert inline-alert--error" role="alert">{actionError}</p> : null}
           <footer className="collection-card-actions">
             <Button type="button" requiresWriteAccess variant="secondary" size="compact" onClick={() => onToggle(collection)} disabled={actionsDisabled}>
               {collection.enabled ? <ToggleRight size={17} aria-hidden="true" /> : <ToggleLeft size={17} aria-hidden="true" />}

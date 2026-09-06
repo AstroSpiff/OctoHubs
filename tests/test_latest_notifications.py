@@ -46,7 +46,7 @@ class LatestNotificationTests(unittest.TestCase):
         }
         storage = _ExplicitNotificationStorage(cache_payload)
         latest_settings = {
-            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{title}"}],
+            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{{ title }}"}],
             "NOTIFICATION_RULES": [
                 {
                     "id": "rule-a",
@@ -114,7 +114,7 @@ class LatestNotificationTests(unittest.TestCase):
             }
         }
         latest_settings = {
-            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{title}"}],
+            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{{ title }}"}],
             "ACTIVE_PRESET_ID": "preset-a",
             "TELEGRAM_PRESET_IDS": ["telegram-a"],
             "NOTIFICATION_RULES": [
@@ -204,7 +204,7 @@ class LatestNotificationTests(unittest.TestCase):
             }
         }
         latest_settings = {
-            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{title}"}],
+            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{{ title }}"}],
             "NOTIFICATION_RULES": [
                 {
                     "id": "rule-a",
@@ -349,7 +349,7 @@ class LatestNotificationTests(unittest.TestCase):
             }
         }
         latest_settings = {
-            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{title}"}],
+            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{{ title }}"}],
             "ACTIVE_PRESET_ID": "preset-a",
             "TELEGRAM_PRESET_IDS": ["telegram-a"],
             "NOTIFICATION_RULES": [
@@ -445,7 +445,7 @@ class LatestNotificationTests(unittest.TestCase):
             }
         }
         latest_settings = {
-            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{title}"}],
+            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{{ title }}"}],
             "NOTIFICATION_RULES": [
                 {
                     "id": "rule-a",
@@ -517,7 +517,7 @@ class LatestNotificationTests(unittest.TestCase):
             }
         }
         latest_settings = {
-            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{title}"}],
+            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{{ title }}"}],
             "ACTIVE_PRESET_ID": "preset-a",
             "TELEGRAM_PRESET_IDS": [],
             "NOTIFICATION_RULES": [
@@ -619,7 +619,7 @@ class LatestNotificationTests(unittest.TestCase):
             }
         }
         latest_settings = {
-            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{title}"}],
+            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{{ title }}"}],
             "ACTIVE_PRESET_ID": "preset-a",
             "TELEGRAM_PRESET_IDS": [],
             "NOTIFICATION_RULES": [
@@ -693,7 +693,8 @@ class LatestNotificationTests(unittest.TestCase):
             for started_patch in reversed(common_patches):
                 started_patch.stop()
 
-        self.assertTrue(first["success"])
+        self.assertFalse(first["success"])
+        self.assertEqual("partial", first["status"])
         self.assertEqual(1, first["sent"])
         self.assertEqual(1, first["failed"])
         self.assertTrue(second["success"])
@@ -738,13 +739,17 @@ class LatestNotificationTests(unittest.TestCase):
                             "item_id": "movie-1",
                             "signature": "server-a:tmdb:1",
                             "title": "Movie 1",
-                            "notified": True,
-                            "notified_at": "2026-07-15T10:02:00+00:00",
-                            "notified_destinations": {
-                                "bot-a:chat-a": {
-                                    "bot_id": "bot-a",
-                                    "chat_id": "chat-a",
+                            "notified_publications": {
+                                "::2026-07-15T10:00:00+00:00": {
+                                    "notified": True,
                                     "notified_at": "2026-07-15T10:02:00+00:00",
+                                    "notified_destinations": {
+                                        "bot-a:chat-a": {
+                                            "bot_id": "bot-a",
+                                            "chat_id": "chat-a",
+                                            "notified_at": "2026-07-15T10:02:00+00:00",
+                                        }
+                                    },
                                 }
                             },
                         }
@@ -754,7 +759,7 @@ class LatestNotificationTests(unittest.TestCase):
             }
         }
         latest_settings = {
-            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{title}"}],
+            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{{ title }}"}],
             "ACTIVE_PRESET_ID": "preset-a",
             "TELEGRAM_PRESET_IDS": [],
             "NOTIFICATION_RULES": [
@@ -844,13 +849,17 @@ class LatestNotificationTests(unittest.TestCase):
                             "item_id": "movie-old",
                             "signature": "server-a:tmdb:old",
                             "title": "Old Movie",
-                            "notified": True,
-                            "notified_at": "2026-07-15T10:02:00+00:00",
-                            "notified_destinations": {
-                                "bot-a:chat-a": {
-                                    "bot_id": "bot-a",
-                                    "chat_id": "chat-a",
+                            "notified_publications": {
+                                "::2026-07-15T10:00:00+00:00": {
+                                    "notified": True,
                                     "notified_at": "2026-07-15T10:02:00+00:00",
+                                    "notified_destinations": {
+                                        "bot-a:chat-a": {
+                                            "bot_id": "bot-a",
+                                            "chat_id": "chat-a",
+                                            "notified_at": "2026-07-15T10:02:00+00:00",
+                                        }
+                                    },
                                 }
                             },
                         }
@@ -860,7 +869,7 @@ class LatestNotificationTests(unittest.TestCase):
             }
         }
         latest_settings = {
-            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{title}"}],
+            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{{ title }}"}],
             "ACTIVE_PRESET_ID": "preset-a",
             "TELEGRAM_PRESET_IDS": [],
             "NOTIFICATION_RULES": [
@@ -943,7 +952,7 @@ class LatestNotificationTests(unittest.TestCase):
             }
         }
         latest_settings = {
-            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{title}"}],
+            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{{ title }}"}],
             "ACTIVE_PRESET_ID": "preset-a",
             "TELEGRAM_PRESET_IDS": ["telegram-a"],
             "NOTIFICATION_RULES": [
@@ -1030,7 +1039,7 @@ class LatestNotificationTests(unittest.TestCase):
             }
         }
         latest_settings = {
-            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{title}"}],
+            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{{ title }}"}],
             "ACTIVE_PRESET_ID": "preset-a",
             "TELEGRAM_PRESET_IDS": ["telegram-a"],
             "NOTIFICATION_RULES": [
@@ -1109,7 +1118,7 @@ class LatestNotificationTests(unittest.TestCase):
             }
         }
         latest_settings = {
-            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{title}"}],
+            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{{ title }}"}],
             "ACTIVE_PRESET_ID": "preset-a",
             "TELEGRAM_PRESET_IDS": ["telegram-a"],
             "NOTIFICATION_RULES": [],

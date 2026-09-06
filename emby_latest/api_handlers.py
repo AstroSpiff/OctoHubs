@@ -4,12 +4,20 @@ API handlers for Latest Publications endpoints.
 This module provides handler functions for API routes using the manager.
 """
 
+import logging
 import threading
-from typing import Any, Dict, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
+from core.log_sanitization import format_exception_for_log
+
+
+logger = logging.getLogger(__name__)
 
 _latest_refresh_request_lock = threading.Lock()
 _latest_refresh_request_reserved = False
+_latest_refresh_worker_lock = threading.Lock()
+_latest_refresh_thread: Optional[threading.Thread] = None
+_latest_refresh_stop_event: Optional[threading.Event] = None
 
 
 def _reserve_latest_refresh_request(manager) -> bool:
@@ -27,6 +35,55 @@ def _release_latest_refresh_request() -> None:
     global _latest_refresh_request_reserved
     with _latest_refresh_request_lock:
         _latest_refresh_request_reserved = False
+
+
+def _start_latest_refresh_worker(target: Callable[[threading.Event], None]) -> bool:
+    """Start and retain the process-owned Latest refresh worker."""
+    global _latest_refresh_thread, _latest_refresh_stop_event
+    stop_event = threading.Event()
+    worker: threading.Thread
+
+    def _run() -> None:
+        global _latest_refresh_thread, _latest_refresh_stop_event
+        try:
+            target(stop_event)
+        finally:
+            with _latest_refresh_worker_lock:
+                if _latest_refresh_thread is worker:
+                    _latest_refresh_thread = None
+                    _latest_refresh_stop_event = None
+            _release_latest_refresh_request()
+
+    worker = threading.Thread(target=_run, daemon=False)
+    with _latest_refresh_worker_lock:
+        if _latest_refresh_thread is not None:
+            return False
+        _latest_refresh_thread = worker
+        _latest_refresh_stop_event = stop_event
+    try:
+        worker.start()
+    except Exception:
+        with _latest_refresh_worker_lock:
+            if _latest_refresh_thread is worker:
+                _latest_refresh_thread = None
+                _latest_refresh_stop_event = None
+        raise
+    return True
+
+
+def shutdown_latest_refresh(timeout_seconds: float = 5.0) -> bool:
+    """Signal and join the active Latest refresh before shared DB pools close."""
+    with _latest_refresh_worker_lock:
+        worker = _latest_refresh_thread
+        stop_event = _latest_refresh_stop_event
+    if worker is None:
+        return True
+    if stop_event is not None:
+        stop_event.set()
+    if worker is threading.current_thread():
+        return False
+    worker.join(timeout=max(0.0, float(timeout_seconds)))
+    return not worker.is_alive()
 
 
 def _latest_manager_unavailable_payload() -> Tuple[Dict[str, Any], int]:
@@ -59,8 +116,8 @@ def build_latest_snapshot_payload(
     Args:
         limit: Maximum items to return
         per_server_limit: Maximum items per server
-        force: Legacy refresh flag; rejected because GET is read-only
-        cache_only: Legacy cache preference retained for compatibility
+        force: Refresh flag rejected because GET is read-only
+        cache_only: Prefer the current cached snapshot
         view: "feed" or "batch" mode
 
     Returns:
@@ -166,7 +223,7 @@ def build_latest_refresh_payload(
     )
 
     # Start background refresh
-    def _do_refresh():
+    def _do_refresh(stop_event: threading.Event):
         progress_tracker = make_latest_operation_progress_tracker(
             manager.progress_tracker,
             operation_tracker,
@@ -176,6 +233,13 @@ def build_latest_refresh_payload(
             per_server_limit=per_server_limit,
         )
         try:
+            if stop_event.is_set():
+                fail_latest_refresh_operation(
+                    operation_tracker,
+                    operation_id,
+                    "Aggiornamento interrotto durante lo shutdown",
+                )
+                return
             if full_refresh:
                 payload, error = manager.refresh_full(
                     limit,
@@ -191,18 +255,22 @@ def build_latest_refresh_payload(
             finish_latest_refresh_operation(operation_tracker, operation_id, payload, error)
         except Exception as exc:
             fail_latest_refresh_operation(operation_tracker, operation_id, exc)
-            import traceback
-
-            traceback.print_exc()
-        finally:
-            _release_latest_refresh_request()
-
-    thread = threading.Thread(target=_do_refresh, daemon=True)
+            logger.error(
+                "Aggiornamento Pubblicazioni fallito:\n%s",
+                format_exception_for_log(exc),
+            )
     try:
-        thread.start()
+        worker_started = _start_latest_refresh_worker(_do_refresh)
     except Exception:
         _release_latest_refresh_request()
         raise
+    if not worker_started:
+        _release_latest_refresh_request()
+        return {
+            "success": False,
+            "message": "Refresh già in corso",
+            "refreshing": True,
+        }, 409
 
     return {
         "success": True,
@@ -288,11 +356,12 @@ def build_preview_snapshot(body: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
                 "error": error
             }
         except Exception as exc:
+            logger.error("Creazione anteprima Latest non riuscita:\n%s", format_exception_for_log(exc))
             previews[key] = {
                 "message": "",
                 "image_url": "",
                 "image_enabled": image_enabled,
-                "error": str(exc)
+                "error": "Anteprima non disponibile"
             }
 
     return {
@@ -351,7 +420,8 @@ def build_enrich_snapshot(body: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
     try:
         enriched = manager.enrich_item(item, force_omdb=force_omdb)
     except Exception as exc:
-        return {"success": False, "message": f"Errore enrichment: {exc}"}, 500
+        logger.error("Enrichment Latest non riuscito:\n%s", format_exception_for_log(exc))
+        return {"success": False, "message": "Errore enrichment"}, 500
 
     return {
         "success": True,
@@ -387,6 +457,6 @@ def build_notify_snapshot(body: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
         server_filter=server_filter
     )
 
-    status_code = 200 if result.get("success") else 400
+    status_code = 200 if result.get("success") or result.get("status") == "partial" else 400
 
     return result, status_code

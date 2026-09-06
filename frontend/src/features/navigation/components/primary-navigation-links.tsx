@@ -98,6 +98,7 @@ function PrimaryNavigationLinks({
           </div>
         );
       })}
+      <span className="sr-only" aria-live="polite">{primaryOrder.announcement}</span>
     </nav>
   );
 }
@@ -143,6 +144,7 @@ function SecondaryNavigationMenu({
           </NavLink>
         );
       })}
+      <span className="sr-only" aria-live="polite">{submenuOrder.announcement}</span>
     </div>
   );
 }

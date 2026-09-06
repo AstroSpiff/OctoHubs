@@ -272,6 +272,45 @@ class LatestApiHandlerTests(unittest.TestCase):
         self.assertIn("progress_tracker", manager.calls[0][2])
         self.assertEqual("operation-1", tracker.finished[-1]["operation_id"])
 
+    def test_latest_background_refresh_redacts_exception_credentials(self):
+        secret = "CANARY_LATEST_PASSWORD"
+        manager = _BackgroundRefreshManager()
+        tracker = _RecordingOperationTracker()
+
+        def fail_refresh(*_args, **_kwargs):
+            raise RuntimeError(
+                f"postgresql://octohubs:{secret}@database/octohubs"
+            )
+
+        manager.refresh_incremental = fail_refresh
+
+        class _StopEvent:
+            def is_set(self):
+                return False
+
+        def run_worker(target):
+            target(_StopEvent())
+            return True
+
+        handler_globals = build_latest_refresh_payload.__globals__
+        with patch("emby_latest.get_manager", return_value=manager), patch(
+            "app_state.get_operation_tracker", return_value=tracker
+        ), patch.dict(
+            handler_globals,
+            {
+                "_reserve_latest_refresh_request": lambda _manager: True,
+                "_start_latest_refresh_worker": run_worker,
+            },
+        ), patch.object(handler_globals["logger"], "error") as logged_error:
+            payload, status_code = build_latest_refresh_payload(25, 5, False)
+
+        self.assertEqual(202, status_code)
+        self.assertTrue(payload["success"])
+        logged_error.assert_called_once()
+        rendered = "\n".join(str(value) for value in logged_error.call_args.args)
+        self.assertNotIn(secret, rendered)
+        self.assertIn("RuntimeError", rendered)
+
     def test_latest_background_refresh_rejects_second_request_before_thread_sets_refreshing(self):
         manager = _BackgroundRefreshManager()
         tracker = _RecordingOperationTracker()
@@ -345,9 +384,9 @@ class LatestApiHandlerTests(unittest.TestCase):
 
     def test_preview_snapshot_handles_malformed_payload_shapes(self):
         cases = (
-            ({"template": "{title}", "payload": "bad"}, 200, True, {}),
-            ({"template": "{title}", "payload": ["bad"]}, 200, True, {}),
-            ({"template": "{title}", "items": "bad"}, 200, True, {}),
+            ({"template": "{{ title }}", "payload": "bad"}, 200, True, {}),
+            ({"template": "{{ title }}", "payload": ["bad"]}, 200, True, {}),
+            ({"template": "{{ title }}", "items": "bad"}, 200, True, {}),
             ({"template": 123, "items": {"movie": {"title": "Movie"}}}, 400, False, None),
         )
 
@@ -388,7 +427,7 @@ class LatestApiHandlerTests(unittest.TestCase):
         for token, expected_url in cases:
             with self.subTest(token=token):
                 payload, status_code = build_preview_snapshot(
-                    {"template": "{" + token + "}\n{title}", "items": {"movie": item}}
+                    {"template": "{{ " + token + " }}\n{{ title }}", "items": {"movie": item}}
                 )
                 preview = payload["previews"]["movie"]
 
@@ -461,6 +500,24 @@ class LatestApiHandlerTests(unittest.TestCase):
         self.assertEqual(200, status_code)
         self.assertTrue(payload["success"])
         self.assertNotIn("limit", manager.calls[0])
+
+    def test_notify_snapshot_preserves_partial_outcome_without_marking_success(self):
+        manager = _RecordingManager()
+        manager.send_notifications = lambda **_kwargs: {
+            "success": False,
+            "status": "partial",
+            "message": "Una destinazione non raggiunta",
+            "sent": 1,
+            "failed": 1,
+            "errors": ["failed"],
+        }
+
+        with patch("emby_latest.get_manager", return_value=manager):
+            payload, status_code = build_notify_snapshot({"per_server_limit": 10})
+
+        self.assertEqual(200, status_code)
+        self.assertFalse(payload["success"])
+        self.assertEqual("partial", payload["status"])
 
 
 if __name__ == "__main__":

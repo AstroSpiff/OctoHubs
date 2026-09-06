@@ -118,10 +118,22 @@ function shouldRefreshCollectionEditorDraft(
   );
 }
 
+function promoteNewCollectionEditorDraft(
+  draft: CollectionEditorState,
+  saved: CollectionEditorState,
+): CollectionEditorState {
+  return {
+    ...saved,
+    poster: draft.poster,
+    backdrop: draft.backdrop,
+  };
+}
+
 export {
   collectionEditorState,
   collectionEditorStateMatches,
   emptyCollectionEditorState,
+  promoteNewCollectionEditorDraft,
   shouldRefreshCollectionEditorDraft,
   type CollectionEditorState,
 };

@@ -1,5 +1,5 @@
-import asyncio
 import json
+import threading
 
 from emby_runtime import websocket_manager
 from emby_runtime.websocket_manager import EmbyWebSocketConnection, EmbyWebSocketManager, _is_stream_session_event
@@ -128,6 +128,91 @@ def test_upsert_server_replaces_changed_connection_without_duplicates(monkeypatc
     assert len(created) == 2
 
 
+def test_replaced_or_removed_connection_cannot_dispatch_stale_events(monkeypatch):
+    created = []
+
+    class FakeConnection:
+        def __init__(self, server_id, server_url, api_key, event_callback):
+            self.server_id = server_id
+            self.server_url = server_url
+            self.api_key = api_key
+            self.event_callback = event_callback
+            created.append(self)
+
+        def start(self):
+            return None
+
+        def stop(self):
+            return None
+
+    monkeypatch.setattr(websocket_manager, "EmbyWebSocketConnection", FakeConnection)
+    manager = EmbyWebSocketManager()
+    events = []
+    manager.register_event_handler(
+        "RefreshProgress",
+        lambda server_id, event: events.append((server_id, event["Data"])),
+    )
+
+    manager.upsert_server("green", "http://first:8096", "first-key")
+    first = created[-1]
+    manager.upsert_server("green", "http://second:8096", "second-key")
+    second = created[-1]
+
+    first.event_callback("green", {"MessageType": "RefreshProgress", "Data": "stale"})
+    second.event_callback("green", {"MessageType": "RefreshProgress", "Data": "current"})
+    manager.remove_server("green")
+    second.event_callback("green", {"MessageType": "RefreshProgress", "Data": "removed"})
+
+    assert events == [("green", "current")]
+
+
+def test_stop_all_cannot_lose_an_upsert_that_is_starting(monkeypatch):
+    start_entered = threading.Event()
+    release_start = threading.Event()
+    stopped = threading.Event()
+
+    class DeferredConnection:
+        def __init__(self, server_id, server_url, api_key, event_callback):
+            self.server_id = server_id
+            self.server_url = server_url
+            self.api_key = api_key
+            self.event_callback = event_callback
+            self.was_stopped = False
+
+        def start(self):
+            start_entered.set()
+            assert release_start.wait(2)
+
+        def stop(self):
+            self.was_stopped = True
+            stopped.set()
+
+        def wait_stopped(self, _timeout):
+            return self.was_stopped
+
+    monkeypatch.setattr(websocket_manager, "EmbyWebSocketConnection", DeferredConnection)
+    manager = EmbyWebSocketManager()
+    upsert = threading.Thread(
+        target=lambda: manager.upsert_server("green", "http://green:8096", "key")
+    )
+    upsert.start()
+    assert start_entered.wait(2)
+
+    stop_result = []
+    shutdown = threading.Thread(target=lambda: stop_result.append(manager.stop_all(2)))
+    shutdown.start()
+    assert not stopped.wait(0.05)
+
+    release_start.set()
+    upsert.join(2)
+    shutdown.join(2)
+
+    assert stop_result == [True]
+    assert stopped.is_set()
+    assert manager.connections == {}
+    assert manager.upsert_server("late", "http://late:8096", "key") is False
+
+
 def test_refresh_progress_is_scheduled_on_the_registered_app_loop(monkeypatch):
     manager = EmbyWebSocketManager()
     class _Loop:
@@ -137,11 +222,19 @@ def test_refresh_progress_is_scheduled_on_the_registered_app_loop(monkeypatch):
     loop = _Loop()
     scheduled = []
 
+    class _ScanManager:
+        def schedule_broadcast(self, target_loop, job_id, message):
+            scheduled.append((target_loop, job_id, message))
+            return True
+
     monkeypatch.setattr("app_state.get_app_event_loop", lambda: loop)
     monkeypatch.setattr(
-        asyncio,
-        "run_coroutine_threadsafe",
-        lambda coroutine, target_loop: scheduled.append((coroutine, target_loop)),
+        "app_state._LIBRARY_SCAN_TRACKER.find_jobs_by_library",
+        lambda server_id, library_id: [f"{server_id}:{library_id}"],
+    )
+    monkeypatch.setattr(
+        "emby_runtime.scan_websocket_manager.get_scan_connection_manager",
+        lambda: _ScanManager(),
     )
 
     manager.setup_scan_progress_forwarding()
@@ -151,5 +244,6 @@ def test_refresh_progress_is_scheduled_on_the_registered_app_loop(monkeypatch):
     )
 
     assert len(scheduled) == 1
-    assert scheduled[0][1] is loop
-    scheduled[0][0].close()
+    assert scheduled[0][0] is loop
+    assert scheduled[0][1] == "green:library-1"
+    assert scheduled[0][2]["progress"] == 0.2

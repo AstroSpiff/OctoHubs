@@ -19,5 +19,7 @@ describe("ProbeRecordList", () => {
     expect(markup).toContain("Storico esecuzioni Media Probe");
     expect(markup).toContain('data-label="Titolo"');
     expect(markup).toContain('data-label="Stato"');
+    expect(markup.match(/role="columnheader"/g)).toHaveLength(5);
+    expect(markup.match(/role="cell"/g)).toHaveLength(5);
   });
 });

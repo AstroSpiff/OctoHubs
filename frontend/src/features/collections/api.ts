@@ -1,5 +1,5 @@
 import { request } from "@/lib/http";
-import { getOperations } from "@/features/operations/api";
+import { getOperationsWithSignal } from "@/features/operations/api";
 import { isActiveOperation } from "@/features/operations/presentation";
 import type { Operation } from "@/features/operations/types";
 import type { CollectionAction, CollectionEditorInput, CollectionOptions, CollectionSourceInventoryInput, CollectionSourceInventoryItem, CollectionSyncDetail, CollectionsPayload, PersonalCollectionList } from "@/features/collections/types";
@@ -41,37 +41,76 @@ type CollectionListResponse = {
   operation_id?: string;
 };
 
-export async function getTraktLists(): Promise<{ success: boolean; lists: PersonalCollectionList[] }> {
-  const response = await request<CollectionListResponse>("/api/v1/emby/collections/trakt-lists?background=1");
-  return waitForCollectionLists(response, "Trakt");
+export async function getTraktLists(signal?: AbortSignal): Promise<{ success: boolean; lists: PersonalCollectionList[] }> {
+  const response = await request<CollectionListResponse>("/api/v1/emby/collections/trakt-lists", {
+    method: "POST",
+    signal,
+  });
+  return waitForCollectionLists(response, "Trakt", signal);
 }
 
-export async function getMdbListLists(): Promise<{ success: boolean; lists: PersonalCollectionList[] }> {
-  const response = await request<CollectionListResponse>("/api/v1/emby/collections/mdblist-lists?background=1");
-  return waitForCollectionLists(response, "MDBList");
+export async function getMdbListLists(signal?: AbortSignal): Promise<{ success: boolean; lists: PersonalCollectionList[] }> {
+  const response = await request<CollectionListResponse>("/api/v1/emby/collections/mdblist-lists", {
+    method: "POST",
+    signal,
+  });
+  return waitForCollectionLists(response, "MDBList", signal);
 }
 
 async function waitForCollectionLists(
   response: CollectionListResponse,
   label: string,
+  signal?: AbortSignal,
 ): Promise<{ success: boolean; lists: PersonalCollectionList[] }> {
   if (!response.background) return { success: response.success, lists: response.lists || [] };
   if (!response.operation_id) throw new Error(`Operazione ${label} non disponibile.`);
   return collectionListsFromOperation(
-    await waitForCollectionOperation(response.operation_id),
+    await waitForCollectionOperation(response.operation_id, signal),
     label,
   );
 }
 
-async function waitForCollectionOperation(operationId: string): Promise<Operation> {
+async function waitForCollectionOperation(operationId: string, signal?: AbortSignal): Promise<Operation> {
   const timeoutAt = Date.now() + 240_000;
   while (Date.now() < timeoutAt) {
-    const snapshot = await getOperations();
-    const operation = snapshot.operations.find((item) => item.id === operationId);
-    if (operation && !isActiveOperation(operation)) return operation;
-    await new Promise<void>((resolve) => window.setTimeout(resolve, 1_500));
+    const snapshot = await getOperationsWithSignal(signal);
+    const operation = collectionOperationFromSnapshot(snapshot.operations, operationId);
+    if (!isActiveOperation(operation)) return operation;
+    await waitForCollectionPoll(signal);
   }
   throw new Error("Tempo massimo di attesa dell'operazione superato.");
+}
+
+export function collectionOperationFromSnapshot(
+  operations: Operation[],
+  operationId: string,
+): Operation {
+  const operation = operations.find((item) => item.id === operationId);
+  if (!operation) {
+    throw new Error(
+      "L'operazione non è più disponibile nel registro. Aggiorna le liste e riprova.",
+    );
+  }
+  return operation;
+}
+
+function waitForCollectionPoll(signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortReason(signal));
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = () => {
+      window.clearTimeout(timeout);
+      reject(abortReason(signal));
+    };
+    const timeout = window.setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, 1_500);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function abortReason(signal?: AbortSignal): unknown {
+  return signal?.reason || new DOMException("Operazione annullata", "AbortError");
 }
 
 export function collectionListsFromOperation(

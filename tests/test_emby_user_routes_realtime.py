@@ -1,4 +1,6 @@
 import asyncio
+import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -22,6 +24,38 @@ from emby_users.routes import (
 
 
 class EmbyUserRoutesRealtimeTests(unittest.TestCase):
+    def test_group_sync_is_single_flight(self):
+        manager = object.__new__(AutoSyncManager)
+        manager._active_groups = set()
+        manager._active_groups_lock = threading.Lock()
+        manager._state_tracker = SimpleNamespace(storage=None)
+        manager._mark_group_sync_result = lambda *args: True
+        entered = threading.Event()
+        release = threading.Event()
+
+        def sync_group(_group, operation_id=None):
+            entered.set()
+            release.wait(1)
+            return {"status": "success"}
+
+        manager._sync_group = sync_group
+        first_result = []
+        worker = threading.Thread(
+            target=lambda: first_result.append(
+                manager._sync_group_singleflight({"id": "group-1"})
+            )
+        )
+        worker.start()
+        self.assertTrue(entered.wait(1))
+
+        second = manager._sync_group_singleflight({"id": "group-1"})
+        time.sleep(0.01)
+        release.set()
+        worker.join(1)
+
+        self.assertEqual(second["reason"], "already_running")
+        self.assertEqual(first_result[0]["status"], "success")
+
     def test_json_request_contracts_are_exposed_in_openapi(self):
         app = FastAPI()
         app.include_router(emby_users_router)

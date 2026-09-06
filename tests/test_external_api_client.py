@@ -3,7 +3,11 @@ from urllib import error
 
 import pytest
 
-from scripts.octohubs_api_client import OctoHubsApiClient, OctoHubsApiError
+from scripts.octohubs_api_client import (
+    OctoHubsApiClient,
+    OctoHubsApiError,
+    _SameOriginRedirectHandler,
+)
 
 
 class _FakeResponse:
@@ -31,7 +35,7 @@ def test_client_sends_bearer_token_and_decodes_json(monkeypatch):
         observed["accept"] = request.get_header("Accept")
         return _FakeResponse(200, b'{"ok":true}')
 
-    monkeypatch.setattr("scripts.octohubs_api_client.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("scripts.octohubs_api_client._open_url", fake_urlopen)
 
     response = OctoHubsApiClient("https://octohubs.example.test", "ohs_secret", timeout=4).get_status()
 
@@ -53,7 +57,7 @@ def test_client_reads_the_scope_filtered_external_catalog(monkeypatch):
         observed["auth"] = request.get_header("Authorization")
         return _FakeResponse(200, b'{"paths":{"/api/v1/system/status":{}}}')
 
-    monkeypatch.setattr("scripts.octohubs_api_client.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("scripts.octohubs_api_client._open_url", fake_urlopen)
 
     response = OctoHubsApiClient("https://octohubs.example.test", "ohs_secret").get_catalog()
 
@@ -74,7 +78,7 @@ def test_expect_denied_accepts_only_403(monkeypatch):
             fp=io.BytesIO(b'{"detail":"API token senza permesso richiesto: write:configuration"}'),
         )
 
-    monkeypatch.setattr("scripts.octohubs_api_client.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("scripts.octohubs_api_client._open_url", fake_urlopen)
 
     response = OctoHubsApiClient("https://octohubs.example.test", "ohs_secret").expect_denied(
         "POST",
@@ -88,7 +92,7 @@ def test_expect_denied_accepts_only_403(monkeypatch):
 
 def test_expect_denied_fails_when_request_is_allowed(monkeypatch):
     monkeypatch.setattr(
-        "scripts.octohubs_api_client.request.urlopen",
+        "scripts.octohubs_api_client._open_url",
         lambda _request, timeout: _FakeResponse(200, b'{"success":true}'),
     )
 
@@ -115,7 +119,7 @@ def test_call_documented_checks_the_scope_filtered_catalog_before_calling(monkey
             )
         return _FakeResponse(200, b'{"success":true}')
 
-    monkeypatch.setattr("scripts.octohubs_api_client.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("scripts.octohubs_api_client._open_url", fake_urlopen)
 
     response = OctoHubsApiClient("https://octohubs.example.test", "ohs_secret").call_documented(
         "PUT",
@@ -136,7 +140,7 @@ def test_call_documented_checks_the_scope_filtered_catalog_before_calling(monkey
 
 def test_call_documented_refuses_an_operation_not_visible_to_the_token(monkeypatch):
     monkeypatch.setattr(
-        "scripts.octohubs_api_client.request.urlopen",
+        "scripts.octohubs_api_client._open_url",
         lambda _request, timeout: _FakeResponse(200, b'{"paths":{"/api/v1/system/status":{"get":{}}}}'),
     )
 
@@ -161,7 +165,7 @@ def test_verify_control_plane_only_calls_safe_reads_and_discovers_operations(mon
             }}''')
         return _FakeResponse(200, b'{"ok":true}')
 
-    monkeypatch.setattr("scripts.octohubs_api_client.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("scripts.octohubs_api_client._open_url", fake_urlopen)
 
     result = OctoHubsApiClient("https://octohubs.example.test", "ohs_secret").verify_control_plane()
 
@@ -179,9 +183,52 @@ def test_verify_control_plane_only_calls_safe_reads_and_discovers_operations(mon
 
 def test_verify_control_plane_requires_the_status_scope(monkeypatch):
     monkeypatch.setattr(
-        "scripts.octohubs_api_client.request.urlopen",
+        "scripts.octohubs_api_client._open_url",
         lambda _request, timeout: _FakeResponse(200, b'{"paths":{"/api/v1/emby/streams":{"get":{}}}}'),
     )
 
     with pytest.raises(OctoHubsApiError, match="system/status"):
         OctoHubsApiClient("https://octohubs.example.test", "ohs_secret").verify_control_plane()
+
+
+def test_redirect_handler_preserves_authorization_only_on_the_same_origin():
+    from urllib import request
+
+    original = request.Request(
+        "https://octohubs.example.test/api/v1/system/status",
+        headers={"Authorization": "Bearer canary"},
+    )
+    handler = _SameOriginRedirectHandler()
+
+    redirected = handler.redirect_request(
+        original,
+        None,
+        302,
+        "Found",
+        {},
+        "/api/v1/system/health",
+    )
+
+    assert redirected is not None
+    assert redirected.full_url == "https://octohubs.example.test/api/v1/system/health"
+    assert redirected.get_header("Authorization") == "Bearer canary"
+
+    with pytest.raises(OctoHubsApiError, match="cross-origin"):
+        handler.redirect_request(
+            original,
+            None,
+            302,
+            "Found",
+            {},
+            "https://attacker.example.test/capture",
+        )
+
+    with pytest.raises(OctoHubsApiError, match="cross-origin"):
+        handler.redirect_request(
+            original,
+            None,
+            302,
+            "Found",
+            {},
+            "http://octohubs.example.test/capture",
+        )

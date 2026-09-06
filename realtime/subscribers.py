@@ -39,8 +39,16 @@ class RealtimeSubscriber:
         try:
             self._queue.put_nowait(event)
         except asyncio.QueueFull:
-            # Preserve the existing behavior: a slow client loses new events.
-            pass
+            # Keep the newest canonical signal. In particular, a terminal
+            # success/error must not remain hidden behind stale progress events.
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            try:
+                self._queue.put_nowait(event)
+            except asyncio.QueueFull:
+                return
 
 
 class RealtimeSubscriberRegistry:
@@ -81,6 +89,14 @@ class RealtimeSubscriberRegistry:
             for subscriber in disconnected:
                 if subscriber in self._subscribers:
                     self._subscribers.remove(subscriber)
+
+    def close_all(self) -> None:
+        """Deactivate and release every subscriber during application shutdown."""
+        with self._lock:
+            subscribers = tuple(self._subscribers)
+            self._subscribers.clear()
+        for subscriber in subscribers:
+            subscriber.close()
 
 
 sse_subscribers = RealtimeSubscriberRegistry()

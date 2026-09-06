@@ -13,6 +13,11 @@ class _FakeWebSocket:
         self.sent.append(payload)
 
 
+class _ClosableWebSocket(_FakeWebSocket):
+    async def close(self, code=1000):
+        self.close_code = code
+
+
 @pytest.mark.anyio
 async def test_event_bridge_manager_tracks_websocket_connections_and_pushes_config():
     from emby_runtime.event_bridge_manager import EventBridgeConnectionManager
@@ -110,12 +115,31 @@ async def test_disconnect_from_replaced_socket_preserves_the_current_connection(
 
 
 @pytest.mark.anyio
-async def test_credential_rotation_closes_the_current_server_socket():
+async def test_socket_replacement_waits_for_inflight_side_effect_dispatch():
+    import asyncio
+
     from emby_runtime.event_bridge_manager import EventBridgeConnectionManager
 
-    class _ClosableWebSocket(_FakeWebSocket):
-        async def close(self, code=1000):
-            self.close_code = code
+    manager = EventBridgeConnectionManager()
+    previous_socket = _FakeWebSocket()
+    current_socket = _FakeWebSocket()
+    await manager.register(previous_socket, {"serverId": "green"})
+
+    async with manager.websocket_dispatch(previous_socket) as current:
+        assert current is True
+        replacement = asyncio.create_task(
+            manager.register(current_socket, {"serverId": "green"})
+        )
+        await asyncio.sleep(0)
+        assert replacement.done() is False
+
+    await replacement
+    assert manager.status()["servers"][0]["generation"] == 2
+
+
+@pytest.mark.anyio
+async def test_credential_rotation_closes_the_current_server_socket():
+    from emby_runtime.event_bridge_manager import EventBridgeConnectionManager
 
     manager = EventBridgeConnectionManager()
     websocket = _ClosableWebSocket()
@@ -125,6 +149,56 @@ async def test_credential_rotation_closes_the_current_server_socket():
 
     assert closed is True
     assert websocket.close_code == 1008
+    assert manager.status()["connected"] == 0
+
+
+@pytest.mark.anyio
+async def test_shutdown_closes_admission_and_discards_loop_bound_state():
+    from emby_runtime.event_bridge_manager import EventBridgeConnectionManager
+
+    manager = EventBridgeConnectionManager()
+    websocket = _ClosableWebSocket()
+    await manager.register(websocket, {"serverId": "green"})
+
+    await manager.shutdown()
+
+    assert websocket.close_code == 1001
+    assert manager.status()["servers"] == []
+    assert manager._dispatch_locks == {}
+    manager.record_http_event({"serverId": "late"})
+    assert manager.status()["servers"] == []
+    with pytest.raises(RuntimeError, match="shutting down"):
+        await manager.register(_FakeWebSocket(), {"serverId": "blue"})
+
+
+def test_new_lifespan_replaces_event_bridge_manager_without_reusing_locks():
+    from emby_runtime import event_bridge_manager
+
+    previous = event_bridge_manager.initialize_event_bridge_manager()
+    previous_lock = previous._dispatch_lock("green")
+    current = event_bridge_manager.initialize_event_bridge_manager()
+
+    assert current is event_bridge_manager.get_event_bridge_manager()
+    assert current is not previous
+    assert current._dispatch_lock("green") is not previous_lock
+
+
+@pytest.mark.anyio
+async def test_credential_rotation_detaches_socket_when_close_never_finishes(monkeypatch):
+    import asyncio
+
+    from emby_runtime import event_bridge_manager
+
+    class _StalledWebSocket(_FakeWebSocket):
+        async def close(self, code=1000):
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(event_bridge_manager, "EVENT_BRIDGE_SEND_TIMEOUT_SECONDS", 0.01)
+    manager = event_bridge_manager.EventBridgeConnectionManager()
+    websocket = _StalledWebSocket()
+    await manager.register(websocket, {"serverId": "green"})
+
+    assert await asyncio.wait_for(manager.close_server_connection("green"), 0.2) is True
     assert manager.status()["connected"] == 0
 
 
@@ -252,6 +326,34 @@ def test_event_bridge_manager_tracks_plugin_reported_settings_and_targets():
     assert status["last_event_name"] == "PluginConfigSaved"
 
 
+def test_event_bridge_public_status_redacts_plugin_urls_and_ack_errors():
+    from emby_runtime.event_bridge_manager import EventBridgeConnectionManager
+
+    canary = "EVENT_BRIDGE_CANARY_SECRET"
+    manager = EventBridgeConnectionManager()
+    manager.record_http_event(
+        {
+            "server": {"id": "green"},
+            "event": {"type": "plugin.config_saved"},
+            "plugin": {
+                "octoHubsTargets": [
+                    {"name": "Primary", "url": f"https://user:{canary}@example.test/hook?token={canary}"}
+                ]
+            },
+        }
+    )
+    manager.record_plugin_configuration_response(
+        "green",
+        {"Ok": False, "Error": f"failed https://example.test/hook?token={canary}"},
+    )
+
+    public = manager.status()["servers"][0]
+
+    assert canary not in str(public)
+    assert "[REDACTED]" in public["plugin_targets"][0]["url"]
+    assert "[REDACTED]" in public["last_config_ack_error"]
+
+
 def test_event_bridge_manager_records_http_configuration_response():
     from emby_runtime.event_bridge_manager import EventBridgeConnectionManager
 
@@ -287,21 +389,18 @@ def test_event_bridge_manager_records_http_configuration_response():
     assert status["plugin_target_count"] == 1
 
 
-def test_event_bridge_manager_tracks_legacy_octohub_http_batches():
-    from emby_runtime.event_bridge_manager import EventBridgeConnectionManager
+def test_event_bridge_rejects_removed_octohub_batch_schema():
+    import pytest
+    from emby_runtime.event_bridge_limits import (
+        EventBridgePayloadShapeError,
+        validate_event_bridge_payload_shape,
+    )
 
-    manager = EventBridgeConnectionManager()
-
-    manager.record_http_event(
-        {
+    with pytest.raises(EventBridgePayloadShapeError, match="non supportato"):
+        validate_event_bridge_payload_shape({
             "schema": "octohub.emby.event_batch.v1",
             "events": [
                 {"server": {"id": "green", "name": "Green"}, "event": {"type": "playback.start"}},
                 {"server": {"id": "green", "name": "Green"}, "event": {"type": "playback.stop"}},
             ],
-        }
-    )
-    status = manager.status()
-
-    assert status["servers"][0]["server_id"] == "green"
-    assert status["servers"][0]["received_count"] == 2
+        })

@@ -4,8 +4,15 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel
+from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator, model_validator
 
+from core.emby_identifiers import OpaqueEmbyIdentifier, OpaqueEmbyServerIdentifier
+from emby_libraries.scan_limits import (
+    MAX_SCAN_LIBRARIES_PER_REQUEST,
+    MAX_SCAN_LIBRARIES_PER_SERVER,
+    normalize_group_libraries,
+    normalize_library_ids,
+)
 from web.request_validation import StrictRequestModel
 
 
@@ -101,26 +108,45 @@ class ActiveEmbyScansResponse(LibraryScanApiModel):
 
 
 class ScanLibraryRequest(StrictRequestModel):
-    server_id: str
-    library_id: str
+    server_id: OpaqueEmbyServerIdentifier
+    library_id: OpaqueEmbyIdentifier
 
 
 class TrackedScanLibraryRequest(StrictRequestModel):
-    server_id: str
-    library_ids: list[str] = Field(min_length=1)
+    server_id: OpaqueEmbyServerIdentifier
+    library_ids: list[OpaqueEmbyIdentifier] = Field(
+        min_length=1,
+        max_length=MAX_SCAN_LIBRARIES_PER_SERVER,
+    )
     group_name: str | None = None
     scan_type: Literal["content", "metadata"] = "content"
 
+    @field_validator("library_ids")
+    @classmethod
+    def deduplicate_library_ids(cls, values: list[str]) -> list[str]:
+        return normalize_library_ids(values)
+
 
 class GroupScanLibrary(StrictRequestModel):
-    server_id: str
-    library_id: str
+    server_id: OpaqueEmbyServerIdentifier
+    library_id: OpaqueEmbyIdentifier
 
 
 class TrackedGroupScanRequest(StrictRequestModel):
     group_name: str
-    libraries: list[GroupScanLibrary] = Field(min_length=1)
+    libraries: list[GroupScanLibrary] = Field(
+        min_length=1,
+        max_length=MAX_SCAN_LIBRARIES_PER_REQUEST,
+    )
     scan_type: Literal["content", "metadata"] = "content"
+
+    @model_validator(mode="after")
+    def enforce_scan_quotas(self) -> "TrackedGroupScanRequest":
+        normalized = normalize_group_libraries(
+            [entry.model_dump() for entry in self.libraries]
+        )
+        self.libraries = [GroupScanLibrary.model_validate(entry) for entry in normalized]
+        return self
 
 
 class LibraryScanActionResponse(LibraryScanApiModel):

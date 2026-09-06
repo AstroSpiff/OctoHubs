@@ -15,6 +15,11 @@
   padding-bottom: 16px;
 }
 
+.users-toolbar-primary--read-only {
+  grid-template-areas: "search actions";
+  grid-template-columns: minmax(100px, 400px) max-content;
+}
+
 .users-search-group { grid-area: search; }
 .users-selection-group { grid-area: selection; }
 .users-actions-group { grid-area: actions; }
@@ -253,6 +258,9 @@
       "selection actions";
     grid-template-columns: minmax(0, 1fr) max-content;
   }
+  .users-toolbar-primary--read-only {
+    grid-template-areas: "search actions";
+  }
 }
 
 @container users-toolbar (max-width: 500px) {
@@ -262,6 +270,11 @@
       "selection"
       "actions";
     grid-template-columns: minmax(0, 1fr);
+  }
+  .users-toolbar-primary--read-only {
+    grid-template-areas:
+      "search"
+      "actions";
   }
   .users-filter-controls {
     grid-template-columns: 1fr;

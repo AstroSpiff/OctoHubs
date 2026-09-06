@@ -33,9 +33,6 @@ PLUGIN_SOURCE_ALIASES = {
     "octohubs_plugin",
     "octohubs_event_bridge",
     "octohubs.eventbridge",
-    "octohub_plugin",
-    "octohub_event_bridge",
-    "octohub.eventbridge",
     "event_bridge",
 }
 

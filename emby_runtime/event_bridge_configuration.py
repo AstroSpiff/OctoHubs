@@ -8,7 +8,8 @@ from typing import Any
 from fastapi.concurrency import run_in_threadpool
 
 from core import config_manager as _config_manager
-from core.storage import StorageError
+from core.configuration_redaction import public_connection_url
+from core.log_sanitization import sanitize_text_for_log
 from emby_runtime.event_bridge_manager import get_event_bridge_manager
 from emby_runtime.event_bridge_plugin_client import push_event_bridge_settings_to_plugin
 from emby_runtime.event_bridge_settings import (
@@ -35,11 +36,23 @@ EVENT_BRIDGE_SETTING_LABELS = {
 }
 
 
-def _save_event_bridge_settings(settings: dict[str, Any]) -> None:
-    if _config_manager._ACTIVE_CONFIG is not None:
-        _config_manager._ACTIVE_CONFIG["EVENT_BRIDGE"] = settings
+@_config_manager.serialized_config_update
+def _save_event_bridge_settings(
+    submitted_server_settings: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Atomically merge submitted servers, then publish the committed value."""
     backend = _config_manager._ensure_db_backend()
-    backend.update_app_settings({"EVENT_BRIDGE": settings})
+
+    def merge_current(current: Any) -> dict[str, Any]:
+        return _merged_event_bridge_config(
+            normalize_event_bridge_config(current if isinstance(current, dict) else {}),
+            submitted_server_settings,
+        )
+
+    persisted = backend.update_app_settings_section("EVENT_BRIDGE", merge_current)
+    bridge_config = normalize_event_bridge_config(persisted.get("EVENT_BRIDGE"))
+    _config_manager.publish_active_config_updates({"EVENT_BRIDGE": bridge_config})
+    return bridge_config
 
 
 def _empty_event_bridge_push_result() -> dict[str, Any]:
@@ -277,7 +290,7 @@ def _event_bridge_diagnostics_payload(diagnostics: dict[str, Any]) -> dict[str, 
         "last_config_transport_label": _event_bridge_config_transport_label(
             diagnostics.get("last_config_transport")
         ),
-        "last_config_ack_error": str(diagnostics.get("last_config_ack_error") or ""),
+        "last_config_ack_error": sanitize_text_for_log(diagnostics.get("last_config_ack_error") or ""),
         "last_plugin_settings_at": str(diagnostics.get("last_plugin_settings_at") or "Mai"),
         "target_count": diagnostics.get("target_count"),
         "target_count_label": (
@@ -317,7 +330,10 @@ def _event_bridge_targets_payload(value: Any) -> list[dict[str, str]]:
         url = str(item.get("url") or "").strip()
         if not url:
             continue
-        targets.append({"name": str(item.get("name") or "OctoHubs").strip(), "url": url})
+        targets.append({
+            "name": str(item.get("name") or "OctoHubs").strip(),
+            "url": public_connection_url(url),
+        })
     return targets
 
 
@@ -374,7 +390,7 @@ def _event_bridge_diagnostics(settings: dict[str, Any], status: dict[str, Any] |
         "last_config_ack_at": _event_bridge_timestamp_label(status.get("last_config_ack_at")),
         "last_config_transport": status.get("last_config_transport") or "",
         "last_config_ack_status": status.get("last_config_ack_status") or "",
-        "last_config_ack_error": status.get("last_config_ack_error") or "",
+        "last_config_ack_error": sanitize_text_for_log(status.get("last_config_ack_error") or ""),
     }
 
 

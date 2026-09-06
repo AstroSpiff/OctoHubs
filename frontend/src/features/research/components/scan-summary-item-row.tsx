@@ -11,6 +11,7 @@ function ScanSummaryItemRow({
   checked,
   qbittorrentAvailable,
   disabled,
+  selectable = true,
   onToggle,
   onQuickSearch,
   onCleanup,
@@ -20,6 +21,7 @@ function ScanSummaryItemRow({
   checked: boolean;
   qbittorrentAvailable: boolean;
   disabled: boolean;
+  selectable?: boolean;
   onToggle: () => void;
   onQuickSearch: () => void;
   onCleanup: () => void;
@@ -30,7 +32,7 @@ function ScanSummaryItemRow({
 
   return <article className={item.is_stale ? "scan-summary-item is-stale" : "scan-summary-item"}>
     <header>
-      <label><input type="checkbox" checked={checked} disabled={disabled} onChange={onToggle} aria-label={`Seleziona ${item.title || "richiesta"}`} /></label>
+      {selectable ? <label><input type="checkbox" checked={checked} disabled={disabled} onChange={onToggle} aria-label={`Seleziona ${item.title || "richiesta"}`} /></label> : null}
       <button type="button" className="scan-summary-toggle" aria-expanded={open} onClick={() => setOpen((current) => !current)}>
         <span>
           <strong>{item.title || "Titolo non disponibile"}{item.year ? ` (${item.year})` : ""}</strong>
@@ -45,7 +47,7 @@ function ScanSummaryItemRow({
     </header>
     {open ? <div className="scan-summary-item-details">
       {item.queries?.length ? <details><summary>Query provate ({item.queries.length})</summary><ul>{item.queries.map((query, index) => <li key={`${query.query || "query"}-${index}`}>{query.query || "Query"} <span>{query.results_found || 0}</span></li>)}</ul></details> : null}
-      {results.length ? <SearchResultTable results={results} qbittorrentAvailable={qbittorrentAvailable} onAddTerm={onAddTerm} /> : <p>Nessun risultato accettato per questa richiesta.</p>}
+      {results.length ? <SearchResultTable results={results} qbittorrentAvailable={qbittorrentAvailable} onAddTerm={disabled ? undefined : onAddTerm} /> : <p>Nessun risultato accettato per questa richiesta.</p>}
       {item.excluded?.length ? <details><summary>Risultati esclusi ({item.excluded.length})</summary><ul>{item.excluded.map((excluded, index) => <li key={`${excluded.title || "result"}-${index}`}>{excluded.title || "Titolo"} · {excluded.reason || "escluso"}{excluded.indexer ? ` (${excluded.indexer})` : ""}</li>)}</ul></details> : null}
     </div> : null}
   </article>;

@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from web.request_validation import StrictRequestModel
+from emby_latest.templates import MAX_TEMPLATE_SOURCE_LENGTH
 
 
 class LatestApiModel(BaseModel):
@@ -110,13 +111,13 @@ class LatestEnrichResponse(LatestMessageResponse):
 class LatestNotifyResponse(LatestMessageResponse):
     sent: int | None = None
     failed: int | None = None
-    results: list[dict[str, Any]] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
 
 
 class LatestPresetRequest(StrictRequestModel):
     id: str | None = None
-    name: str
-    template: str
+    name: str = Field(max_length=200)
+    template: str = Field(max_length=MAX_TEMPLATE_SOURCE_LENGTH)
 
 
 class LatestRuleRequest(StrictRequestModel):
@@ -132,7 +133,7 @@ class LatestRuleEnabledRequest(StrictRequestModel):
 
 
 class LatestPreviewRequest(StrictRequestModel):
-    template: str
+    template: str = Field(max_length=MAX_TEMPLATE_SOURCE_LENGTH)
     payload: dict[str, Any] = Field(default_factory=dict)
     items: dict[str, dict[str, Any]] = Field(default_factory=dict)
 

@@ -194,8 +194,15 @@ def _response_headers(response: http.client.HTTPResponse) -> dict[str, str]:
     return {name.lower(): value for name, value in response.getheaders()}
 
 
-def download_torrent(url: str) -> tuple[TorrentDownload | None, str | None]:
+def download_torrent(
+    url: str,
+    *,
+    max_bytes: int = MAX_TORRENT_BYTES,
+) -> tuple[TorrentDownload | None, str | None]:
     """Download a bounded response from the validated IP behind each URL hop."""
+    effective_max_bytes = min(MAX_TORRENT_BYTES, max(0, int(max_bytes)))
+    if effective_max_bytes <= 0:
+        return None, "Budget download esaurito"
     current_url = url
     for redirect_count in range(MAX_REDIRECTS + 1):
         target = _resolve_public_target(current_url)
@@ -225,7 +232,7 @@ def download_torrent(url: str) -> tuple[TorrentDownload | None, str | None]:
                     return None, "Dimensione download non valida"
                 if declared_size < 0:
                     return None, "Dimensione download non valida"
-                if declared_size > MAX_TORRENT_BYTES:
+                if declared_size > effective_max_bytes:
                     return None, "File torrent troppo grande"
 
             chunks: list[bytes] = []
@@ -235,7 +242,7 @@ def download_torrent(url: str) -> tuple[TorrentDownload | None, str | None]:
                 if not chunk:
                     break
                 total += len(chunk)
-                if total > MAX_TORRENT_BYTES:
+                if total > effective_max_bytes:
                     return None, "File torrent troppo grande"
                 chunks.append(chunk)
             return TorrentDownload(b"".join(chunks), current_url, headers), None

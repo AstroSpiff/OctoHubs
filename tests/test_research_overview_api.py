@@ -80,6 +80,48 @@ def test_research_api_surface_uses_only_canonical_paths():
     }
 
 
+def test_request_rule_update_patches_only_submitted_ids(monkeypatch):
+    from core import config_manager
+    from services import research_request_actions
+
+    observed = {}
+
+    class _Backend:
+        def load_request_overview(self):
+            return ([{"request_id": "request-0"}, {"request_id": "request-1"}], None)
+
+        def patch_request_rules(self, updates, deletions):
+            observed["updates"] = updates
+            observed["deletions"] = deletions
+            return {
+                "request-0": {"enabled": True, "query_terms": ["existing"]},
+                **updates,
+            }
+
+    config = {
+        "SEARCH_RULES": {},
+        "REQUEST_RULES": {
+            "request-0": {"enabled": True, "query_terms": ["existing"]},
+        },
+    }
+    monkeypatch.setattr(config_manager, "load_config", lambda: (config, True))
+    monkeypatch.setattr(config_manager, "_ensure_db_backend", lambda: _Backend())
+    monkeypatch.setattr(config_manager, "_ACTIVE_CONFIG", {})
+
+    payload, status = research_request_actions.update_request_rules(
+        {"rules": [{"request_id": "request-1", "query_terms": ["new"]}]},
+    )
+
+    assert status == 200
+    assert payload["success"] is True
+    assert set(observed["updates"]) == {"request-1"}
+    assert observed["deletions"] == set()
+    assert set(config_manager._ACTIVE_CONFIG["REQUEST_RULES"]) == {
+        "request-0",
+        "request-1",
+    }
+
+
 def test_research_routes_publish_typed_overview_tmdb_and_request_contracts():
     from fastapi import FastAPI
     from search.routes import router as search_router
@@ -101,6 +143,8 @@ def test_research_routes_publish_typed_overview_tmdb_and_request_contracts():
     assert response_schema("/api/research/media/details", "get")["$ref"] == "#/components/schemas/ResearchMediaDetailsResponse"
     assert response_schema("/api/research/requests/create", "post")["$ref"] == "#/components/schemas/ResearchActionResponse"
     assert response_schema("/api/research/requests/refresh-status", "get")["$ref"] == "#/components/schemas/ResearchRefreshStatusResponse"
+    refresh_status_schema = app.openapi()["components"]["schemas"]["ResearchRefreshStatusResponse"]
+    assert {"last_warning", "last_warning_at"} <= set(refresh_status_schema["properties"])
 
     refresh = paths["/api/research/requests/refresh"]["post"]
     assert {item["name"] for item in refresh["parameters"]} == {"background"}
@@ -112,7 +156,7 @@ async def test_research_overview_api_requires_auth(monkeypatch):
 
     observed = []
     research_api_routes.init_research_api_routes(
-        require_auth=lambda request: observed.append(request),
+        require_auth=lambda request: observed.append(request) or 41,
         validate_csrf=lambda request, token: True,
         load_config=lambda: ({"SEARCH_RULES": {}}, True),
     )

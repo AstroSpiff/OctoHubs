@@ -10,10 +10,14 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from alembic import op
-from sqlalchemy import BigInteger, Integer, String, Text, UniqueConstraint, inspect, text
+from sqlalchemy import BigInteger, Integer, String, Text, inspect, text
 
-from core.auth import Base as AuthBase
-from core.storage.storage_models import Base as StorageBase
+from core.database_baseline_20260829 import (
+    REVISION_04_INDEX_NAMES,
+    REVISION_04_METADATA,
+    REVISION_04_TABLE_COLUMNS,
+    REVISION_04_UNIQUE_COLUMN_SETS,
+)
 
 
 revision = "20260829_04"
@@ -41,8 +45,15 @@ def _quoted(bind, identifier: str) -> str:
 
 
 def _metadata_tables() -> Iterable:
-    for metadata in (StorageBase.metadata, AuthBase.metadata):
-        yield from metadata.sorted_tables
+    yield from REVISION_04_METADATA.sorted_tables
+
+
+def _revision_columns(table):
+    return [
+        table.c[column_name]
+        for column_name in REVISION_04_TABLE_COLUMNS.get(table.name, ())
+        if column_name in table.c
+    ]
 
 
 def _table_names(bind) -> set[str]:
@@ -139,7 +150,7 @@ def _normalize_widening_types(bind) -> None:
         if table.name not in tables:
             continue
         actual_columns = _columns(bind, table.name)
-        for expected in table.columns:
+        for expected in _revision_columns(table):
             actual = actual_columns.get(expected.name)
             if actual is None:
                 continue
@@ -273,7 +284,7 @@ def _normalize_nullability(bind) -> None:
         if table.name not in tables:
             continue
         actual_columns = _columns(bind, table.name)
-        for expected in table.columns:
+        for expected in _revision_columns(table):
             actual = actual_columns.get(expected.name)
             if actual is None or expected.primary_key:
                 continue
@@ -309,7 +320,7 @@ def _relax_obsolete_legacy_columns(bind) -> None:
         model_columns = set()
         for table in _metadata_tables():
             if table.name == table_name:
-                model_columns = set(table.c.keys())
+                model_columns = set(REVISION_04_TABLE_COLUMNS.get(table.name, ()))
                 break
         for column_name in legacy_columns:
             actual = actual_columns.get(column_name)
@@ -324,12 +335,12 @@ def _relax_obsolete_legacy_columns(bind) -> None:
 
 
 def _desired_unique_sets(table) -> set[tuple[str, ...]]:
-    desired: set[tuple[str, ...]] = set()
-    for constraint in table.constraints:
-        if isinstance(constraint, UniqueConstraint):
-            desired.add(tuple(column.name for column in constraint.columns))
+    desired: set[tuple[str, ...]] = set(
+        REVISION_04_UNIQUE_COLUMN_SETS.get(table.name, ())
+    )
+    allowed_indexes = set(REVISION_04_INDEX_NAMES.get(table.name, ()))
     for index in table.indexes:
-        if index.unique:
+        if index.name in allowed_indexes and index.unique:
             desired.add(tuple(column.name for column in index.columns))
     return {columns for columns in desired if columns}
 
@@ -369,7 +380,8 @@ def _validate_schema_contract(bind) -> None:
             errors.append(f"missing table {table.name}")
             continue
         actual_columns = _columns(bind, table.name)
-        missing = set(table.c.keys()) - set(actual_columns)
+        expected_columns = set(REVISION_04_TABLE_COLUMNS.get(table.name, ()))
+        missing = expected_columns - set(actual_columns)
         if missing:
             errors.append(f"{table.name}: missing columns {sorted(missing)}")
         desired_pk = tuple(column.name for column in table.primary_key.columns)
@@ -378,7 +390,7 @@ def _validate_schema_contract(bind) -> None:
         )
         if actual_pk != desired_pk:
             errors.append(f"{table.name}: primary key {actual_pk}, expected {desired_pk}")
-        for column in table.columns:
+        for column in _revision_columns(table):
             actual = actual_columns.get(column.name)
             if actual is not None and not column.nullable and actual["nullable"]:
                 errors.append(f"{table.name}.{column.name}: unexpectedly nullable")

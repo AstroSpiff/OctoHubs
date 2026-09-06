@@ -41,7 +41,6 @@ FROM python:3.11-alpine@sha256:6857d2dae63e052057f2db389a7061188ac9a92a3fa8d402b
 # Install runtime dependencies only
 RUN apk add --no-cache \
     libpq \
-    postgresql-client \
     libjpeg-turbo \
     libwebp \
     zlib \
@@ -69,9 +68,7 @@ COPY --from=frontend-builder --chown=octohubs:octohubs /frontend/dist /app/front
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    OCTOHUBS_CONFIG_FILE="/config/config.json" \
-    OCTOHUBS_RESULTS_FILE="/storage/last_results.json" \
-    OCTOHUBS_DB_BACKUP_DIR="/storage/db-backups" \
+    OCTOHUBS_CONFIG_DIR="/config" \
     ADMIN_USERNAME="" \
     ADMIN_EMAIL="" \
     WEBHOOK_IP_WHITELIST="" \
@@ -79,9 +76,8 @@ ENV PATH="/opt/venv/bin:$PATH" \
     CSRF_TIME_LIMIT_SECONDS="3600" \
     SESSION_COOKIE_SECURE="true"
 
-# Create directories for data persistence
-RUN mkdir -p /config /storage /storage/db-backups /app/logs && \
-    chown -R octohubs:octohubs /config /storage /app/logs
+# Create the only application-managed persistent directory.
+RUN mkdir -p /config && chown -R octohubs:octohubs /config
 
 RUN chmod +x /app/docker-entrypoint.sh
 
@@ -93,9 +89,9 @@ EXPOSE 5050
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import socket; sock = socket.create_connection(('127.0.0.1', 5050), timeout=5); sock.close()" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5050/health/ready', timeout=5).read()" || exit 1
 
 # Run with Uvicorn ASGI server
 # Using single worker for SSE compatibility, relying on async for concurrency
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
-CMD ["uvicorn", "asgi:app", "--host", "0.0.0.0", "--port", "5050", "--workers", "1", "--timeout-keep-alive", "300", "--ws-max-size", "1048576", "--ws-max-queue", "16"]
+CMD ["uvicorn", "asgi:app", "--host", "0.0.0.0", "--port", "5050", "--workers", "1", "--timeout-keep-alive", "300", "--ws-max-size", "1048576", "--ws-max-queue", "16", "--no-proxy-headers"]

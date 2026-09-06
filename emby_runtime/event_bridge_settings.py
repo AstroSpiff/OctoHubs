@@ -77,28 +77,20 @@ def normalize_event_bridge_settings(value: dict[str, Any] | None = None) -> dict
 
 
 def normalize_event_bridge_config(value: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Normalize the Event Bridge config container.
-
-    Legacy configs stored a single flat settings dict. New configs keep a
-    DEFAULT profile plus optional per-server overrides.
-    """
+    """Normalize the canonical DEFAULT/SERVERS Event Bridge container."""
     source = value or {}
-    if _is_structured_config(source):
-        default_settings = normalize_event_bridge_settings(source.get("DEFAULT") or {})
-        servers_source = source.get("SERVERS") or {}
-        servers: dict[str, dict[str, Any]] = {}
-        if isinstance(servers_source, dict):
-            for server_id, raw_settings in servers_source.items():
-                key = str(server_id or "").strip()
-                if not key or not isinstance(raw_settings, dict):
-                    continue
-                servers[key] = normalize_event_bridge_settings({**default_settings, **raw_settings})
-        return {"DEFAULT": default_settings, "SERVERS": servers}
-
-    return {
-        "DEFAULT": normalize_event_bridge_settings(source),
-        "SERVERS": {},
-    }
+    if not _is_structured_config(source):
+        source = {}
+    default_settings = normalize_event_bridge_settings(source.get("DEFAULT") or {})
+    servers_source = source.get("SERVERS") or {}
+    servers: dict[str, dict[str, Any]] = {}
+    if isinstance(servers_source, dict):
+        for server_id, raw_settings in servers_source.items():
+            key = str(server_id or "").strip()
+            if not key or not isinstance(raw_settings, dict):
+                continue
+            servers[key] = normalize_event_bridge_settings({**default_settings, **raw_settings})
+    return {"DEFAULT": default_settings, "SERVERS": servers}
 
 
 def event_bridge_settings_for_server(config: dict[str, Any] | None, server_id: str | None = None) -> dict[str, Any]:

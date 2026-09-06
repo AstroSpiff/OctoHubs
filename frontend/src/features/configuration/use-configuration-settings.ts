@@ -13,6 +13,7 @@ import type {
   TelegramAction,
 } from "@/features/configuration/types";
 import { useConfigurationRealtime } from "@/features/configuration/use-configuration-realtime";
+import { useSensitiveMutation } from "@/lib/use-sensitive-mutation";
 
 function useConfigurationSettings() {
   const client = useQueryClient();
@@ -31,11 +32,11 @@ function useConfigurationSettings() {
     mutationFn: (automations: ConfigurationAutomations) => saveConfigurationAutomations(automations),
     onSuccess: (payload) => client.setQueryData(["configuration", "settings"], payload),
   });
-  const telegramAction = useMutation({
+  const telegramAction = useSensitiveMutation({
     mutationFn: (action: TelegramAction) => runTelegramAction(action),
     onSuccess: (payload) => client.setQueryData(["configuration", "telegram"], payload),
   });
-  const saveServices = useMutation({
+  const saveServices = useSensitiveMutation({
     mutationFn: (services: ServiceSettingsInput) => saveConfigurationServices(services),
     onSuccess: (payload) => client.setQueryData(["configuration", "settings"], payload),
   });

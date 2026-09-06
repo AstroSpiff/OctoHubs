@@ -6,6 +6,7 @@ import logging
 from typing import Any, Awaitable, Callable
 
 from core.auth_session_scope import begin_auth_request_scope, end_auth_request_scope
+from core.log_sanitization import format_exception_for_log
 
 
 logger = logging.getLogger(__name__)
@@ -24,8 +25,8 @@ def _remove_auth_session() -> None:
         return
     try:
         registry.remove()
-    except Exception:
-        logger.exception("Impossibile chiudere la sessione DB di autenticazione")
+    except Exception as exc:
+        logger.error("Impossibile chiudere la sessione DB di autenticazione:\n%s", format_exception_for_log(exc))
 
 
 class AuthDatabaseSessionMiddleware:

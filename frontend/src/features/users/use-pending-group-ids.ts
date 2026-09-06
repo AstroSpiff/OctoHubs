@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 
-function usePendingGroupIds() {
+function usePendingIds() {
   const pendingRef = useRef(new Set<string>());
   const [pendingIds, setPendingIds] = useState<Set<string>>(() => new Set());
 
@@ -24,4 +24,6 @@ function usePendingGroupIds() {
   return { pendingIds, begin, finish };
 }
 
-export { usePendingGroupIds };
+const usePendingGroupIds = usePendingIds;
+
+export { usePendingGroupIds, usePendingIds };

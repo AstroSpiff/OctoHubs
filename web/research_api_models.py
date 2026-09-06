@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+
+from search.rule_contracts import (
+    CustomSearchRulesInput,
+    RequestRulesPayloadInput,
+    SearchRulesPayloadInput,
+)
+from search.stream_limits import MAX_SEARCH_QUERY_LENGTH
+
+
+ManualSearchQuery = Annotated[str, StringConstraints(max_length=MAX_SEARCH_QUERY_LENGTH)]
 
 
 class ResearchPayload(BaseModel):
@@ -19,14 +29,14 @@ class TmdbAvailabilityPayload(ResearchPayload):
 
 
 class ManualSearchPayload(ResearchPayload):
-    query: str = ""
+    query: ManualSearchQuery = ""
     media_type: str = "unknown"
     indexers: list[Literal["prowlarr", "jackett"]] = Field(default_factory=list)
     tmdb_id: int | None = None
     seasons: list[int] = Field(default_factory=list)
     use_jellyseerr_logic: bool = False
     use_custom_rules: bool = False
-    custom_rules: dict[str, Any] | None = None
+    custom_rules: CustomSearchRulesInput | None = None
 
 
 class LinkBatchPayload(ResearchPayload):
@@ -39,6 +49,11 @@ class TorrentLinkPayload(ResearchPayload):
 
 class TorrentProxyPayload(ResearchPayload):
     url: str = Field(default="", max_length=4096)
+    reference: str = Field(default="", max_length=8192)
+
+
+class MagnetReferencesPayload(ResearchPayload):
+    references: list[str] = Field(default_factory=list, max_length=25)
 
 
 class ScanResultCleanupPayload(ResearchPayload):
@@ -47,14 +62,12 @@ class ScanResultCleanupPayload(ResearchPayload):
     season: int | None = None
 
 
-class RequestRulesPayload(ResearchPayload):
-    rules: list[dict[str, Any]] = Field(default_factory=list)
+class RequestRulesPayload(RequestRulesPayloadInput):
+    pass
 
 
-class SearchRulesPayload(ResearchPayload):
-    search_rules: dict[str, Any] = Field(default_factory=dict)
-    target_languages: list[str] = Field(default_factory=list)
-    exclude_tags: list[str] = Field(default_factory=list)
+class SearchRulesPayload(SearchRulesPayloadInput):
+    pass
 
 
 class ScanStartPayload(ResearchPayload):
@@ -133,6 +146,11 @@ class ManualSearchHistoryResponse(ResearchPayload):
     message: str | None = None
 
 
+class MagnetReferencesResponse(ResearchPayload):
+    success: Literal[True]
+    magnets: list[str] = Field(default_factory=list)
+
+
 class ResearchMediaSeason(ResearchPayload):
     season_number: int
     episode_count: int | None = None
@@ -151,6 +169,8 @@ class ResearchRefreshStatusResponse(ResearchPayload):
     running: bool = False
     last_status: str | None = None
     last_error: str | None = None
+    last_warning: str | None = None
+    last_warning_at: str | None = None
     completed_at: str | None = None
     counts: dict[str, int] | None = None
 
@@ -159,6 +179,8 @@ __all__ = [
     "JellyseerrRequestPayload",
     "LinkBatchPayload",
     "ManualSearchPayload",
+    "MagnetReferencesPayload",
+    "MagnetReferencesResponse",
     "RequestRulesPayload",
     "ScanResultCleanupPayload",
     "ScanStartPayload",

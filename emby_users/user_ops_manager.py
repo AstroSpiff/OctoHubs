@@ -1,5 +1,7 @@
 from typing import Dict, Any, Optional, Tuple, List, Callable
 
+from .mutation_coordinator import UserMutationCoordinator, user_mutation_keys
+
 
 class UserOpsManager:
     def __init__(
@@ -10,6 +12,7 @@ class UserOpsManager:
         update_user_policy: Callable[[Dict[str, Any], str, Dict[str, Any]], Tuple[bool, Optional[str]]],
         rename_user: Callable[[Dict[str, Any], str, str], Tuple[bool, Optional[str]]],
         fetch_user_last_playback: Callable[[Dict[str, Any], str], Optional[Dict[str, Any]]],
+        mutation_coordinator: UserMutationCoordinator | None = None,
     ):
         self._get_server_by_id = get_server_by_id
         self._fetch_user_details = fetch_user_details
@@ -17,12 +20,24 @@ class UserOpsManager:
         self._update_user_policy = update_user_policy
         self._rename_user = rename_user
         self._fetch_user_last_playback = fetch_user_last_playback
+        self._mutation_coordinator = mutation_coordinator or UserMutationCoordinator(None)
+
+    def _mutate_user(self, server_id: str, user_id: str, callback: Callable[[], bool]) -> bool:
+        with self._mutation_coordinator.guard(user_mutation_keys(server_id, user_id)) as acquired:
+            return callback() if acquired else False
 
     def toggle_user_active(self, server_id: str, user_id: str, active: bool) -> bool:
         """
         Enables or Disables a user on a specific server.
         active=True -> IsDisabled=False
         """
+        return self._mutate_user(
+            server_id,
+            user_id,
+            lambda: self._toggle_user_active_guarded(server_id, user_id, active),
+        )
+
+    def _toggle_user_active_guarded(self, server_id: str, user_id: str, active: bool) -> bool:
         server = self._get_server_by_id(server_id)
         if not server:
             return False
@@ -42,6 +57,13 @@ class UserOpsManager:
         Toggles download permissions for a user.
         Controls: EnableContentDownloading, EnableContentDownloadingWithTranscoding, EnableSyncTranscoding.
         """
+        return self._mutate_user(
+            server_id,
+            user_id,
+            lambda: self._toggle_download_permissions_guarded(server_id, user_id, enable),
+        )
+
+    def _toggle_download_permissions_guarded(self, server_id: str, user_id: str, enable: bool) -> bool:
         server = self._get_server_by_id(server_id)
         if not server:
             return False
@@ -62,6 +84,13 @@ class UserOpsManager:
         """
         Toggles remote access for a user (EnableRemoteAccess).
         """
+        return self._mutate_user(
+            server_id,
+            user_id,
+            lambda: self._toggle_remote_access_guarded(server_id, user_id, enable),
+        )
+
+    def _toggle_remote_access_guarded(self, server_id: str, user_id: str, enable: bool) -> bool:
         server = self._get_server_by_id(server_id)
         if not server:
             return False
@@ -80,12 +109,14 @@ class UserOpsManager:
         """
         Renames a user on the specified server.
         """
-        server = self._get_server_by_id(server_id)
-        if not server:
-            return False
+        def rename_guarded() -> bool:
+            server = self._get_server_by_id(server_id)
+            if not server:
+                return False
+            success, _ = self._rename_user(server, user_id, new_name)
+            return success
 
-        success, _ = self._rename_user(server, user_id, new_name)
-        return success
+        return self._mutate_user(server_id, user_id, rename_guarded)
 
     def check_user_exists(self, server_id: str, username: str) -> bool:
         """

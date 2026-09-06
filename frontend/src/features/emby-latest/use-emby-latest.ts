@@ -30,7 +30,9 @@ import {
   isLatestRealtimeEvent,
   latestRealtimeTargets,
 } from "@/features/emby-latest/latest-realtime";
-import type { LatestItem } from "@/features/emby-latest/types";
+import type {
+  LatestPreviewRequest,
+} from "@/features/emby-latest/types";
 import { useApplicationEventRefresh } from "@/lib/use-application-event";
 
 const latestConfigurationMutationKey = ["emby-latest-configuration-mutation"];
@@ -138,13 +140,8 @@ function useEmbyLatest() {
     onSuccess: refreshConfiguration,
   });
   const preview = useMutation({
-    mutationFn: ({
-      template,
-      items,
-    }: {
-      template: string;
-      items: Partial<Record<"movie" | "series", LatestItem>>;
-    }) => previewLatest(template, items),
+    mutationFn: ({ template, items }: LatestPreviewRequest) =>
+      previewLatest(template, items),
   });
   const enrich = useMutation({
     mutationFn: enrichLatest,

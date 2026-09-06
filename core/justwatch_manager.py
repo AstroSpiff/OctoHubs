@@ -11,6 +11,8 @@ import urllib.parse
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
+from core.log_sanitization import format_exception_for_log, sanitize_diagnostic_text
+
 if TYPE_CHECKING:
     from justwatch import JustWatch
     from core.storage import DatabaseStorage
@@ -26,6 +28,7 @@ TV_EPISODE_CACHE_SUFFIX = "::episode-v2"
 JW_HEADERS = {
     "User-Agent": "Mozilla/5.0"
 }
+JW_HTTP_TIMEOUT = (3.05, 15.0)
 JW_GRAPHQL_URL = "https://apis.justwatch.com/graphql"
 JW_SEARCH_QUERY = """
 query GetSearchTitles($searchTitlesFilter: TitleFilter!, $country: Country!, $language: Language!, $first: Int!, $filter: OfferFilter!) {
@@ -123,6 +126,14 @@ class JustWatchError(RuntimeError):
     """Raised when JustWatch operations fail."""
 
 
+class _TimeoutSession(requests.Session):
+    """Requests session that makes a missing timeout impossible."""
+
+    def request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        kwargs.setdefault("timeout", JW_HTTP_TIMEOUT)
+        return super().request(method, url, **kwargs)
+
+
 def is_justwatch_available() -> bool:
     """Check if JustWatch library is available."""
     return JUSTWATCH_AVAILABLE
@@ -148,6 +159,7 @@ class JustWatchManager:
         self.language = locale.split("_")[0].lower()
         self.country = locale.split("_")[1].upper()  # IT from it_IT
         self.jw = JustWatch(country=self.country)
+        self.jw.requests = _TimeoutSession()
         self._last_request_time: Optional[float] = None
         self._min_request_interval = 1.0  # Minimum 1 second between requests
         self._provider_map: Optional[Dict[int, str]] = None
@@ -255,7 +267,7 @@ class JustWatchManager:
             }
             results = self._graphql_post(payload)
         except JustWatchError as exc:
-            logger.error(f"Errore ricerca JustWatch per '{title}': {exc}")
+            logger.error("Errore ricerca JustWatch per %r:\n%s", sanitize_diagnostic_text(title), format_exception_for_log(exc))
             self._show_cache[cache_key] = None
             return None
         edges = (
@@ -264,7 +276,7 @@ class JustWatchManager:
             .get("edges", [])
         )
         if not edges:
-            logger.warning(f"Titolo '{title}' non trovato su JustWatch")
+            logger.warning("Titolo '%s' non trovato su JustWatch", sanitize_diagnostic_text(title))
             self._show_cache[cache_key] = None
             return None
 
@@ -304,7 +316,7 @@ class JustWatchManager:
             }
             response = self._graphql_post(payload)
         except JustWatchError as exc:
-            logger.error(f"Errore recupero show {node_id}: {exc}")
+            logger.error("Errore recupero show %s:\n%s", node_id, format_exception_for_log(exc))
             self._show_details_cache[node_id] = None
             return None
         node = response.get("data", {}).get("node")
@@ -355,7 +367,7 @@ class JustWatchManager:
             }
             response = self._graphql_post(payload)
         except JustWatchError as exc:
-            logger.error(f"Errore recupero offerte {node_id}: {exc}")
+            logger.error("Errore recupero offerte %s:\n%s", node_id, format_exception_for_log(exc))
             return []
         node = response.get("data", {}).get("node")
         if not isinstance(node, dict):
@@ -409,8 +421,10 @@ class JustWatchManager:
 
         except Exception as exc:
             logger.error(
-                f"Errore recupero season_id per S{season_num} "
-                f"di show_id={show_id}: {exc}"
+                "Errore recupero season_id per S%s di show_id=%s:\n%s",
+                season_num,
+                show_id,
+                format_exception_for_log(exc),
             )
             return None
 
@@ -420,20 +434,24 @@ class JustWatchManager:
             return self.jw.get_title(title_id=show_id, content_type="show")
         except requests.exceptions.HTTPError as exc:
             if exc.response is None or exc.response.status_code != 404:
-                logger.error(f"Errore dettagli show_id={show_id}: {exc}")
+                logger.error("Errore dettagli show_id=%s:\n%s", show_id, format_exception_for_log(exc))
                 return None
             try:
                 path = f"titles/show/{show_id}/locale/{self.country}"
                 api_url = self.jw.api_base_template.format(path=path)
                 self._rate_limit()
-                response = self.jw.requests.get(api_url, headers=JW_HEADERS)
+                response = self.jw.requests.get(
+                    api_url,
+                    headers=JW_HEADERS,
+                    timeout=JW_HTTP_TIMEOUT,
+                )
                 response.raise_for_status()
                 return response.json()
             except Exception as fallback_exc:
-                logger.error(f"Errore dettagli show_id={show_id}: {fallback_exc}")
+                logger.error("Errore dettagli show_id=%s:\n%s", show_id, format_exception_for_log(fallback_exc))
                 return None
         except Exception as exc:
-            logger.error(f"Errore dettagli show_id={show_id}: {exc}")
+            logger.error("Errore dettagli show_id=%s:\n%s", show_id, format_exception_for_log(exc))
             return None
 
     def _get_season_details(self, season_id: int) -> Optional[Dict[str, Any]]:
@@ -442,7 +460,7 @@ class JustWatchManager:
             return self.jw.get_season(season_id)
         except requests.exceptions.HTTPError as exc:
             if exc.response is None or exc.response.status_code != 404:
-                logger.error(f"Errore dati stagione season_id={season_id}: {exc}")
+                logger.error("Errore dati stagione season_id=%s:\n%s", season_id, format_exception_for_log(exc))
                 return None
             try:
                 api_url = (
@@ -450,16 +468,18 @@ class JustWatchManager:
                     f"{season_id}/locale/{self.country}"
                 )
                 self._rate_limit()
-                response = self.jw.requests.get(api_url, headers=JW_HEADERS)
+                response = self.jw.requests.get(
+                    api_url,
+                    headers=JW_HEADERS,
+                    timeout=JW_HTTP_TIMEOUT,
+                )
                 response.raise_for_status()
                 return response.json()
             except Exception as fallback_exc:
-                logger.error(
-                    f"Errore dati stagione season_id={season_id}: {fallback_exc}"
-                )
+                logger.error("Errore dati stagione season_id=%s:\n%s", season_id, format_exception_for_log(fallback_exc))
                 return None
         except Exception as exc:
-            logger.error(f"Errore dati stagione season_id={season_id}: {exc}")
+            logger.error("Errore dati stagione season_id=%s:\n%s", season_id, format_exception_for_log(exc))
             return None
 
     def _get_provider_map(self) -> Dict[int, str]:
@@ -475,19 +495,23 @@ class JustWatchManager:
                     path = f"providers/locale/{self.country}"
                     api_url = self.jw.api_base_template.format(path=path)
                     self._rate_limit()
-                    response = self.jw.requests.get(api_url, headers=JW_HEADERS)
+                    response = self.jw.requests.get(
+                        api_url,
+                        headers=JW_HEADERS,
+                        timeout=JW_HTTP_TIMEOUT,
+                    )
                     response.raise_for_status()
                     providers = response.json()
                 except Exception as fallback_exc:
-                    logger.error(f"Errore recupero provider JustWatch: {fallback_exc}")
+                    logger.error("Errore recupero provider JustWatch:\n%s", format_exception_for_log(fallback_exc))
                     self._provider_map = {}
                     return self._provider_map
             else:
-                logger.error(f"Errore recupero provider JustWatch: {exc}")
+                logger.error("Errore recupero provider JustWatch:\n%s", format_exception_for_log(exc))
                 self._provider_map = {}
                 return self._provider_map
         except Exception as exc:
-            logger.error(f"Errore recupero provider JustWatch: {exc}")
+            logger.error("Errore recupero provider JustWatch:\n%s", format_exception_for_log(exc))
             self._provider_map = {}
             return self._provider_map
         mapping: Dict[int, str] = {}
@@ -572,8 +596,11 @@ class JustWatchManager:
 
         except Exception as exc:
             logger.error(
-                f"Errore recupero episodio S{season_num}E{episode_num} "
-                f"per show_id={show_id}: {exc}"
+                "Errore recupero episodio S%sE%s per show_id=%s:\n%s",
+                season_num,
+                episode_num,
+                show_id,
+                format_exception_for_log(exc),
             )
             return None
 
@@ -755,15 +782,15 @@ class JustWatchManager:
             force_refresh = not providers
 
             if is_available and not force_refresh:
-                logger.debug(f"Cache HIT (movie disponibile): {title}")
+                logger.debug("Cache HIT (movie disponibile): %s", sanitize_diagnostic_text(title))
                 return True, providers
 
             age = datetime.now(timezone.utc) - last_checked
             if age < timedelta(hours=24) and not force_refresh:
-                logger.debug(f"Cache HIT (movie non disponibile, recente): {title}")
+                logger.debug("Cache HIT (movie non disponibile, recente): %s", sanitize_diagnostic_text(title))
                 return False, providers
 
-        logger.info(f"Verifico disponibilita JustWatch: {title} (movie)")
+        logger.info("Verifico disponibilita JustWatch: %s (movie)", sanitize_diagnostic_text(title))
 
         movie_data = self._search_movie(title, year)
         if not movie_data:

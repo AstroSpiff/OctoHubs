@@ -6,6 +6,7 @@ import logging
 from typing import Any, Dict, Optional, Callable
 
 from .manager import EmbyUserManager
+from core.log_sanitization import format_exception_for_log
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +33,7 @@ def get_emby_user_manager(
                     operation_tracker=tracker,
                 )
         except Exception as exc:
-            logger.error("Failed to initialize EmbyUserManager: %s", exc)
+            logger.error("Failed to initialize EmbyUserManager:\n%s", format_exception_for_log(exc))
             return None
 
     active_config = get_active_config()

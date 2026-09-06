@@ -7,9 +7,10 @@ from typing import Any, Callable, Mapping, Optional
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, ConfigDict, Field
 
-from web.api_versioning import is_external_api_path, versioned_external_api_path
+from web.api_versioning import versioned_external_api_path
 from web.session_auth import has_api_scope, required_api_scope
 
 
@@ -218,7 +219,7 @@ def build_external_openapi(
 @router.get("/api/external/openapi.json", response_model=ExternalOpenApiDocument)
 async def external_openapi_route(request: Request):
     """Return the external API contract filtered to the current token scopes."""
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     state = getattr(request, "state", None)
     token_scopes = getattr(state, "api_token_scopes", None) if state is not None else None
     schema = build_external_openapi(request.app.openapi(), token_scopes)

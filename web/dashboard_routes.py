@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse
 
 
@@ -36,8 +37,14 @@ def _has_users_dep() -> bool:
     return _has_users()
 
 
-def _login_or_setup_redirect(request: Request) -> RedirectResponse:
-    if not _has_users_dep():
+async def _login_or_setup_redirect(request: Request) -> RedirectResponse:
+    from core.auth import AuthStorageError
+
+    try:
+        users_exist = await run_in_threadpool(_has_users_dep)
+    except AuthStorageError as exc:
+        raise HTTPException(status_code=503, detail="Database account non disponibile") from exc
+    if not users_exist:
         return RedirectResponse(url="/setup", status_code=303)
     return RedirectResponse(url="/login", status_code=303)
 
@@ -54,7 +61,7 @@ def _research_redirect(request: Request) -> RedirectResponse:
 async def dashboard_root(request: Request):
     """Keep the historical root entry point and open the default React workspace."""
     if not _get_current_user_id_dep(request):
-        return _login_or_setup_redirect(request)
+        return await _login_or_setup_redirect(request)
     return RedirectResponse(url="/app/emby-live", status_code=303)
 
 
@@ -62,5 +69,5 @@ async def dashboard_root(request: Request):
 async def dashboard_alias(request: Request):
     """Redirect historic bookmarks to the single React research experience."""
     if not _get_current_user_id_dep(request):
-        return _login_or_setup_redirect(request)
+        return await _login_or_setup_redirect(request)
     return _research_redirect(request)

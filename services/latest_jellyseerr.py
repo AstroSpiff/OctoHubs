@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Iterable, List, Tuple
 
 from core.config_manager import _ensure_db_backend, load_config
+from core.log_sanitization import format_exception_for_log
 from core.utils import _normalize_media_type
 from emby_latest import jellyseerr as latest_jellyseerr
 from emby_runtime.api_clients import get_jellyseerr_requests
+
+
+logger = logging.getLogger(__name__)
 
 
 def _jellyseerr_configured(config: Dict[str, Any]) -> bool:
@@ -75,10 +80,11 @@ def refresh_latest_jellyseerr_requests(
     try:
         saved = save_latest_jellyseerr_requests(requests_data)
     except Exception as exc:
+        logger.error("Salvataggio indice Jellyseerr non riuscito:\n%s", format_exception_for_log(exc))
         return {
             "success": False,
             "status": "error",
-            "message": f"Errore salvataggio indice Jellyseerr: {exc}",
+            "message": "Errore salvataggio indice Jellyseerr",
             "counts": {"total": 0, "movies": 0, "tv": 0},
         }, 200
 

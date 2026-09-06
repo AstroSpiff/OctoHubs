@@ -3,6 +3,7 @@ from typing import Any, Dict, Tuple, Optional, Callable
 
 from emby_runtime.api_clients import _fetch_emby_libraries
 from emby_libraries.grouping import group_libraries
+from core.log_sanitization import format_exception_for_log
 from core.utils import get_emby_servers
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,10 @@ class EmbyLibrariesManager:
         self._ensure_db_backend = ensure_db_backend
         self._json_error = json_error
         self._storage_error_cls = storage_error_cls
+
+    def _storage_error(self, context: str, exc: BaseException):
+        logger.error("%s:\n%s", context, format_exception_for_log(exc))
+        return self._json_error("Dati librerie temporaneamente non disponibili", 500)
 
     def build_grouped_libraries_snapshot(self):
         config, is_valid = self._load_config()
@@ -51,7 +56,7 @@ class EmbyLibrariesManager:
             associations = backend.load_library_associations()
             order_map = backend.load_library_group_order()
         except self._storage_error_cls as exc:
-            return self._json_error(f"Errore DB: {exc}", 500)
+            return self._storage_error("Caricamento librerie non riuscito", exc)
         grouped = group_libraries(all_libraries, associations)
         def _group_key(entry):
             ctype = entry.get("collection_type") or ""
@@ -68,7 +73,7 @@ class EmbyLibrariesManager:
             backend = self._ensure_db_backend()
             associations = backend.load_library_associations()
         except self._storage_error_cls as exc:
-            return self._json_error(f"Errore DB: {exc}", 500)
+            return self._storage_error("Caricamento associazioni non riuscito", exc)
         payload = [
             {
                 "server_id": server_id,
@@ -95,8 +100,10 @@ class EmbyLibrariesManager:
         try:
             backend = self._ensure_db_backend()
             backend.save_library_associations(associations)
+        except ValueError as exc:
+            return self._json_error(str(exc), 400)
         except self._storage_error_cls as exc:
-            return self._json_error(f"Errore DB: {exc}", 500)
+            return self._storage_error("Salvataggio associazioni non riuscito", exc)
         payload = [
             {
                 "server_id": server_id,

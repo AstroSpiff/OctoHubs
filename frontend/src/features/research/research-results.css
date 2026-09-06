@@ -1,0 +1,282 @@
+.research-results-card {
+  overflow: hidden;
+}
+.research-results-card .research-card-heading {
+  align-items: center;
+}
+.research-result-loading,
+.research-empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 100px;
+  padding: 20px;
+  color: var(--color-muted);
+  font-size: 13px;
+  text-align: center;
+}
+.research-results-table-wrap {
+  overflow-x: auto;
+}
+.research-results-table-wrap:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: -3px;
+}
+.research-results-table {
+  width: 100%;
+  min-width: 800px;
+  border-collapse: collapse;
+}
+.research-results-table th {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface-muted);
+  color: var(--color-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-align: left;
+  text-transform: uppercase;
+}
+.research-results-table th:first-child,
+.research-results-table td:first-child {
+  width: 42px;
+  padding-right: 4px;
+  text-align: center;
+}
+.research-results-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-surface-muted);
+  color: var(--color-ink);
+  font-size: 12px;
+  vertical-align: middle;
+}
+.research-results-table tbody tr:hover {
+  background: var(--color-surface-muted);
+}
+.research-results-table tbody tr.is-in-library {
+  background: var(--color-success-soft);
+}
+.research-results-table td strong,
+.research-results-table td small {
+  display: block;
+}
+.research-results-table td strong {
+  max-width: 440px;
+  color: var(--color-ink-strong);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.research-results-table td small {
+  margin-top: 2px;
+  color: var(--color-muted);
+  font-size: 10px;
+}
+.research-select-all {
+  display: inline-grid;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-ink);
+  cursor: pointer;
+}
+.research-result-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+}
+.research-result-actions a {
+  display: grid;
+  height: 36px;
+  width: 36px;
+  place-items: center;
+  border-radius: 5px;
+  color: var(--color-ink);
+}
+.research-result-actions a:hover {
+  background: var(--color-surface-muted);
+  color: var(--color-ink-strong);
+}
+.research-result-title {
+  cursor: context-menu;
+}
+.research-duplicate-sources {
+  display: grid;
+  gap: 7px;
+  margin-top: 7px;
+  border-left: 2px solid var(--color-border);
+  padding-left: 9px;
+}
+.research-duplicate-sources summary {
+  width: fit-content;
+  color: var(--color-muted);
+  font-size: 11px;
+  font-weight: 750;
+  cursor: pointer;
+}
+.research-duplicate-sources ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.research-duplicate-sources li {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  border-top: 1px solid var(--color-surface-muted);
+  padding-top: 5px;
+}
+.research-duplicate-sources input[type="checkbox"] {
+  margin: 0;
+}
+.research-duplicate-copy {
+  min-width: 0;
+}
+.research-duplicate-sources .research-result-actions {
+  gap: 0;
+}
+.research-duplicate-sources .research-result-actions > * {
+  min-width: 28px;
+  min-height: 28px;
+  width: 28px;
+  height: 28px;
+}
+.research-term-menu {
+  position: fixed;
+  z-index: 30;
+  display: grid;
+  min-width: 220px;
+  max-width: min(280px, calc(100vw - 20px));
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-floating);
+}
+.research-term-menu strong {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--color-surface-muted);
+  color: var(--color-ink);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.research-term-menu button {
+  min-height: 32px;
+  border: 0;
+  padding: 6px 10px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.research-term-menu button:hover:not(:disabled),
+.research-term-menu button:focus-visible {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-strong);
+  outline: none;
+}
+.research-term-menu button:disabled {
+  color: var(--color-muted);
+  cursor: wait;
+}
+.research-dialog-backdrop {
+  position: fixed;
+  z-index: 40;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: var(--color-backdrop);
+}
+.research-dialog {
+  width: min(560px, 100%);
+  max-height: min(680px, 100%);
+  overflow: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-panel);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-floating);
+}
+.research-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--color-border);
+  padding: 16px 18px;
+}
+.research-dialog > header h2 {
+  margin: 2px 0 0;
+  color: var(--color-ink-strong);
+  font-size: 17px;
+}
+.research-dialog-message {
+  margin: 0;
+  padding: 20px;
+  color: var(--color-muted);
+  font-size: 13px;
+}
+.research-dialog-message.is-error {
+  color: var(--color-danger-strong);
+}
+.research-dialog-details {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 8px 12px;
+  margin: 0;
+  padding: 18px;
+  font-size: 12px;
+}
+.research-dialog-details dt {
+  color: var(--color-muted);
+}
+.research-dialog-details dd {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--color-ink);
+}
+.manual-search-history-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.manual-search-history-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--color-surface-muted);
+}
+.manual-search-history-list li:last-child {
+  border-bottom: 0;
+}
+.manual-search-history-list li > div:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+.manual-search-history-list strong {
+  color: var(--color-ink);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.manual-search-history-list span {
+  color: var(--color-muted);
+  font-size: 11px;
+}
+.manual-search-history-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+}

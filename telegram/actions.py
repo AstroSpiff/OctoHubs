@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from typing import Any
 import uuid
 
+from core.log_sanitization import format_exception_for_log
+from core.safe_output import safe_print as print
 from core.storage import StorageError
 from telegram import (
     _check_telegram_chat,
@@ -16,6 +18,7 @@ from telegram import (
     _telegram_extract_chat_name,
     _telegram_lookup_chat_with_type,
 )
+from telegram.limits import ensure_collection_capacity
 
 
 class TelegramActionError(ValueError):
@@ -80,6 +83,7 @@ def save_bot(data: dict[str, Any]) -> tuple[str, str]:
             _ok, check_message = _telegram_check_bot_identity(existing)
             message = "Bot Telegram aggiornato."
         else:
+            ensure_collection_capacity(bots, label="bot")
             bot_entry = {
                 "id": str(uuid.uuid4()),
                 "alias": bot_alias,
@@ -193,6 +197,7 @@ def save_chat(data: dict[str, Any]) -> tuple[str, str]:
             existing["alias"] = alias
             message = "Chat Telegram aggiornata."
         else:
+            ensure_collection_capacity(entries, label="chat")
             existing = {
                 "id": str(uuid.uuid4()),
                 "alias": alias,
@@ -362,6 +367,7 @@ def save_preset(data: dict[str, Any]) -> tuple[str, str]:
         existing["last_error"] = ""
         message = "Preconfigurazione aggiornata."
     else:
+        ensure_collection_capacity(presets, label="preconfigurazioni")
         presets.append({
             "id": str(uuid.uuid4()),
             "name": preset_name,
@@ -403,7 +409,12 @@ def ensure_telegram_ready(config: dict[str, Any] | None, is_valid: bool, ensure_
     try:
         ensure_db_backend()
     except StorageError as exc:
-        raise TelegramActionError(f"Errore DB: {exc}") from exc
+        print(
+            "[TELEGRAM] Database non disponibile durante la configurazione:",
+            format_exception_for_log(exc),
+            sep="\n",
+        )
+        raise TelegramActionError("Database Telegram non disponibile.") from exc
 
 
 def _find_by_id(entries: list[dict[str, Any]], entry_id: str) -> dict[str, Any] | None:

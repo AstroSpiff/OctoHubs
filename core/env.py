@@ -16,24 +16,18 @@ def env_first(keys: Iterable[str], default: str = "") -> str:
 
 
 def octohubs_env(key: str, default: str = "") -> str:
-    """Read the canonical OCTOHUBS_* env var with OCTOHUB_* legacy fallback."""
-    legacy_key = key.replace("OCTOHUBS_", "OCTOHUB_", 1)
-    return env_first((key, legacy_key), default)
+    """Read one canonical OCTOHUBS_* environment variable."""
+    return env_first((key,), default)
 
 
 def octohubs_secret(key: str) -> str:
-    """Read a secret from OCTOHUBS_* or legacy OCTOHUB_* env/file variables."""
-    legacy_key = key.replace("OCTOHUBS_", "OCTOHUB_", 1)
-    for candidate in (key, legacy_key):
-        file_path = env_first((f"{candidate}_FILE",))
-        if file_path:
-            try:
-                value = Path(file_path).read_text(encoding="utf-8").strip()
-            except OSError:
-                value = ""
-            if value:
-                return value
-        value = env_first((candidate,))
+    """Read one canonical OCTOHUBS_* secret from its value or _FILE path."""
+    file_path = env_first((f"{key}_FILE",))
+    if file_path:
+        try:
+            value = Path(file_path).read_text(encoding="utf-8").strip()
+        except OSError:
+            value = ""
         if value:
             return value
-    return ""
+    return env_first((key,))

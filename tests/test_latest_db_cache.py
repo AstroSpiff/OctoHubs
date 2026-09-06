@@ -5,7 +5,15 @@ from __future__ import annotations
 import unittest
 
 from emby_latest import db_cache
-from emby_latest.db_cache import merge_cached_entry, merge_with_db
+from emby_latest.collector_finalization import (
+    CollectionFinalizationContext,
+    finalize_collection,
+)
+from emby_latest.db_cache import (
+    LatestCachePersistenceError,
+    merge_cached_entry,
+    merge_with_db,
+)
 
 
 class _ExplicitCacheStorage:
@@ -31,6 +39,58 @@ class LatestDbCacheTests(unittest.TestCase):
 
         self.assertEqual("Cached movie", data["payload"]["movies"][0]["title"])
         self.assertEqual([("load_latest_cache", "batch")], storage.calls)
+
+    def test_load_cache_distinguishes_read_failure_from_missing_snapshot(self):
+        class _FailingStorage:
+            @staticmethod
+            def load_latest_cache(_cache_kind):
+                raise RuntimeError("database unavailable")
+
+        with self.assertRaises(LatestCachePersistenceError):
+            db_cache.load_cache("batch", db_storage=_FailingStorage())
+
+    def test_incremental_merge_failure_cannot_publish_a_replacement(self):
+        class _FailingCache:
+            def __init__(self):
+                self.saved = []
+
+            @staticmethod
+            def merge_with_db(_new_payload, _existing_payload):
+                raise RuntimeError("merge failed")
+
+            def save_cache(self, *args):
+                self.saved.append(args)
+
+        cache = _FailingCache()
+        context = CollectionFinalizationContext(
+            movies=[],
+            series=[],
+            errors=[],
+            config={},
+            cache_payload={},
+            latest_state={},
+            limit=10,
+            per_server_limit=10,
+            apply_batch_gap=True,
+            enrich=False,
+            force_omdb=False,
+            omdb_cache_hours=24,
+            skip_existing_complete=True,
+            existing_db_payload={"movies": [{"item_id": "old"}], "series": []},
+            state_enabled=True,
+            state_changed=False,
+            publish_progress_completion=False,
+            progress_tracker=None,
+            db_cache=cache,
+            db_state=None,
+            enrich_entry_with_tmdb=lambda entry, *_args, **_kwargs: entry,
+            apply_jellyseerr_request_info=lambda *_args: None,
+            sync_jellyseerr_to_db=lambda *_args: None,
+        )
+
+        with self.assertRaises(LatestCachePersistenceError):
+            finalize_collection(context)
+        self.assertEqual([], cache.saved)
 
     def test_merge_cached_entry_preserves_movie_rating_runtime_and_external_ratings(self):
         entry = {

@@ -20,16 +20,20 @@ import type {
 
 type CollectionSourcesPanelProps = {
   enabled: boolean;
+  disabled?: boolean;
   options?: CollectionOptions;
   onSelect: (selection: SourceSelection) => void;
   onDirtyChange?: (dirty: boolean) => void;
+  onBusyChange?: (busy: boolean) => void;
 };
 
 function CollectionSourcesPanel({
   enabled,
+  disabled = false,
   options,
   onSelect,
   onDirtyChange,
+  onBusyChange,
 }: CollectionSourcesPanelProps) {
   const confirmation = useConfirmationDialog();
   const client = useQueryClient();
@@ -40,13 +44,19 @@ function CollectionSourcesPanel({
   });
   const trakt = useQuery({
     queryKey: ["collection-trakt-lists"],
-    queryFn: getTraktLists,
+    queryFn: ({ signal }) => getTraktLists(signal),
     enabled: enabled && options?.trakt_enabled === true,
+    retry: false,
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
   });
   const mdblist = useQuery({
     queryKey: ["collection-mdblist-lists"],
-    queryFn: getMdbListLists,
+    queryFn: ({ signal }) => getMdbListLists(signal),
     enabled: enabled && options?.mdblist_enabled === true,
+    retry: false,
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -61,7 +71,17 @@ function CollectionSourcesPanel({
     if (!enabled) setInventoryDirty(false);
   }, [enabled]);
 
+  useEffect(() => {
+    onBusyChange?.(enabled && busy);
+  }, [busy, enabled, onBusyChange]);
+
+  useEffect(
+    () => () => onBusyChange?.(false),
+    [onBusyChange],
+  );
+
   async function addInventory(input: CollectionSourceInventoryInput) {
+    if (disabled || busy) return;
     setBusy(true);
     setError("");
     try {
@@ -69,18 +89,13 @@ function CollectionSourcesPanel({
       await client.invalidateQueries({
         queryKey: ["collection-source-inventory"],
       });
-    } catch (reason) {
-      setError(
-        reason instanceof Error
-          ? reason.message
-          : "Impossibile salvare la fonte.",
-      );
     } finally {
       setBusy(false);
     }
   }
 
   async function removeInventory(item: CollectionSourceInventoryItem) {
+    if (disabled || busy) return;
     if (
       !(await confirmation.confirm({
         title: "Elimina fonte salvata",
@@ -109,7 +124,7 @@ function CollectionSourcesPanel({
   }
 
   async function choose(selection: SourceSelection) {
-    if (busy) return;
+    if (disabled || busy) return;
     if (
       inventoryDirty &&
       !(await confirmation.confirm({
@@ -137,7 +152,7 @@ function CollectionSourcesPanel({
         items={inventory.data?.items || []}
         refreshing={inventory.isFetching}
         error={inventory.error?.message}
-        busy={busy}
+        busy={disabled || busy}
         onRefresh={() => void inventory.refetch()}
         onAdd={addInventory}
         onChoose={(selection) => void choose(selection)}
@@ -149,7 +164,7 @@ function CollectionSourcesPanel({
         defaultSourceType="trakt_list"
         unavailable={!options?.trakt_enabled}
         loading={trakt.isLoading}
-        busy={busy}
+        busy={disabled || busy}
         error={trakt.error?.message}
         items={trakt.data?.lists || []}
         onRefresh={() => void trakt.refetch()}
@@ -160,7 +175,7 @@ function CollectionSourcesPanel({
         defaultSourceType="mdblist"
         unavailable={!options?.mdblist_enabled}
         loading={mdblist.isLoading}
-        busy={busy}
+        busy={disabled || busy}
         error={mdblist.error?.message}
         items={mdblist.data?.lists || []}
         onRefresh={() => void mdblist.refetch()}

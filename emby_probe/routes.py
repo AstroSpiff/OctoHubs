@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+import threading
 from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from emby_probe.api_models import (
     ProbeActionResponse,
@@ -58,6 +61,7 @@ from emby_probe.snapshots import (
     _probe_blacklist_delete_snapshot,
     _probe_debug_recent_items_snapshot,
 )
+from emby_probe.csv_export import build_probe_csv_export
 from web.openapi_requests import no_request_body
 from emby_probe.operations import (
     ProbeWorkerOperation,
@@ -70,6 +74,8 @@ from web.openapi_responses import binary_response
 from web.request_validation import validated_json_payload
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+_PROBE_CSV_EXPORT_SLOTS = threading.BoundedSemaphore(value=2)
 
 _require_auth: Optional[Callable[[Request], Any]] = None
 
@@ -132,7 +138,9 @@ def _command_response(
             summary=_probe_operation_summary(server_ids),
             success=True,
             message=str(payload.get("message") or title),
-            details={"server_ids": [server_id for server_id in server_ids if server_id]},
+            details={
+                "server_ids": [server_id for server_id in server_ids if server_id]
+            },
         )
         payload = {**payload, "operation": operation}
     return JSONResponse(payload, status_code=status_code)
@@ -143,14 +151,36 @@ def _probe_operation_summary(server_ids: Any) -> str:
     return ids[0] if len(ids) == 1 else f"{len(ids)} server"
 
 
-DISCOVERY_OPERATION = ProbeWorkerOperation("discovery", "Media Probe: Discovery", "libraries")
-PROCESSING_OPERATION = ProbeWorkerOperation("processing", "Media Probe: Processing", "libraries")
-LIBRARIES_COMBO_OPERATION = ProbeWorkerOperation("combo_libraries", "Media Probe: Workflow librerie", "libraries")
-RECENT_DISCOVERY_OPERATION = ProbeWorkerOperation("recent_discovery", "Media Probe: Discovery recenti", "recent")
-RECENT_DISCOVERY_ALL_OPERATION = ProbeWorkerOperation("recent_discovery", "Media Probe: Discovery recenti", "recent", "recent_discovery_all")
-RECENT_PROCESSING_OPERATION = ProbeWorkerOperation("recent_processing", "Media Probe: Processing recenti", "recent")
-RECENT_PROCESSING_ALL_OPERATION = ProbeWorkerOperation("recent_processing", "Media Probe: Processing recenti", "recent", "recent_processing_all")
-RECENT_COMBO_OPERATION = ProbeWorkerOperation("combo_recent", "Media Probe: Workflow recenti", "recent")
+DISCOVERY_OPERATION = ProbeWorkerOperation(
+    "discovery", "Media Probe: Discovery", "libraries"
+)
+PROCESSING_OPERATION = ProbeWorkerOperation(
+    "processing", "Media Probe: Processing", "libraries"
+)
+LIBRARIES_COMBO_OPERATION = ProbeWorkerOperation(
+    "combo_libraries", "Media Probe: Workflow librerie", "libraries"
+)
+RECENT_DISCOVERY_OPERATION = ProbeWorkerOperation(
+    "recent_discovery", "Media Probe: Discovery recenti", "recent"
+)
+RECENT_DISCOVERY_ALL_OPERATION = ProbeWorkerOperation(
+    "recent_discovery",
+    "Media Probe: Discovery recenti",
+    "recent",
+    "recent_discovery_all",
+)
+RECENT_PROCESSING_OPERATION = ProbeWorkerOperation(
+    "recent_processing", "Media Probe: Processing recenti", "recent"
+)
+RECENT_PROCESSING_ALL_OPERATION = ProbeWorkerOperation(
+    "recent_processing",
+    "Media Probe: Processing recenti",
+    "recent",
+    "recent_processing_all",
+)
+RECENT_COMBO_OPERATION = ProbeWorkerOperation(
+    "combo_recent", "Media Probe: Workflow recenti", "recent"
+)
 
 
 @router.post(
@@ -159,10 +189,14 @@ RECENT_COMBO_OPERATION = ProbeWorkerOperation("combo_recent", "Media Probe: Work
     openapi_extra=request_body_schema(ProbeServerLibrariesRequest),
 )
 async def probe_discovery_start(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     body = await _request_body(request, ProbeServerLibrariesRequest)
-    payload, status_code = _probe_discovery_start_snapshot(body)
-    return _worker_response(payload, status_code, worker=DISCOVERY_OPERATION, body=body)
+    payload, status_code = await run_in_threadpool(
+        _probe_discovery_start_snapshot, body
+    )
+    return await run_in_threadpool(
+        _worker_response, payload, status_code, worker=DISCOVERY_OPERATION, body=body
+    )
 
 
 @router.post(
@@ -171,10 +205,16 @@ async def probe_discovery_start(request: Request):
     openapi_extra=request_body_schema(ProbeServerRequest),
 )
 async def probe_discovery_stop(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     body = await _request_body(request, ProbeServerRequest)
-    payload, status_code = _probe_discovery_stop_snapshot(body)
-    return _command_response(payload, status_code, title="Media Probe: arresta Discovery", body=body)
+    payload, status_code = await run_in_threadpool(_probe_discovery_stop_snapshot, body)
+    return await run_in_threadpool(
+        _command_response,
+        payload,
+        status_code,
+        title="Media Probe: arresta Discovery",
+        body=body,
+    )
 
 
 @router.post(
@@ -183,10 +223,16 @@ async def probe_discovery_stop(request: Request):
     openapi_extra=request_body_schema(ProbeRecentStartRequest),
 )
 async def probe_recent_start(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     body = await _request_body(request, ProbeRecentStartRequest)
-    payload, status_code = _probe_recent_start_snapshot(body)
-    return _worker_response(payload, status_code, worker=RECENT_DISCOVERY_OPERATION, body=body)
+    payload, status_code = await run_in_threadpool(_probe_recent_start_snapshot, body)
+    return await run_in_threadpool(
+        _worker_response,
+        payload,
+        status_code,
+        worker=RECENT_DISCOVERY_OPERATION,
+        body=body,
+    )
 
 
 @router.post(
@@ -195,10 +241,18 @@ async def probe_recent_start(request: Request):
     openapi_extra=request_body_schema(ProbeStartAllRequest, required=False),
 )
 async def probe_recent_start_all(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     body = await _request_body(request, ProbeStartAllRequest, required=False)
-    payload, status_code = _probe_recent_start_all_snapshot(body)
-    return _worker_response(payload, status_code, worker=RECENT_DISCOVERY_ALL_OPERATION, body=body)
+    payload, status_code = await run_in_threadpool(
+        _probe_recent_start_all_snapshot, body
+    )
+    return await run_in_threadpool(
+        _worker_response,
+        payload,
+        status_code,
+        worker=RECENT_DISCOVERY_ALL_OPERATION,
+        body=body,
+    )
 
 
 @router.post(
@@ -207,10 +261,16 @@ async def probe_recent_start_all(request: Request):
     openapi_extra=request_body_schema(ProbeServerRequest),
 )
 async def probe_recent_stop(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     body = await _request_body(request, ProbeServerRequest)
-    payload, status_code = _probe_recent_stop_snapshot(body)
-    return _command_response(payload, status_code, title="Media Probe: arresta Discovery recenti", body=body)
+    payload, status_code = await run_in_threadpool(_probe_recent_stop_snapshot, body)
+    return await run_in_threadpool(
+        _command_response,
+        payload,
+        status_code,
+        title="Media Probe: arresta Discovery recenti",
+        body=body,
+    )
 
 
 @router.post(
@@ -219,9 +279,15 @@ async def probe_recent_stop(request: Request):
     openapi_extra=no_request_body(),
 )
 async def probe_recent_stop_all(request: Request):
-    _require_auth_dep(request)
-    payload, status_code = _probe_recent_stop_all_snapshot()
-    return _command_response(payload, status_code, title="Media Probe: arresta Discovery recenti", body={})
+    await run_in_threadpool(_require_auth_dep, request)
+    payload, status_code = await run_in_threadpool(_probe_recent_stop_all_snapshot)
+    return await run_in_threadpool(
+        _command_response,
+        payload,
+        status_code,
+        title="Media Probe: arresta Discovery recenti",
+        body={},
+    )
 
 
 @router.get(
@@ -230,9 +296,11 @@ async def probe_recent_stop_all(request: Request):
     openapi_extra=query_parameters(("server_id", True, "string")),
 )
 async def probe_config_get(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     server_id = request.query_params.get("server_id")
-    payload, status_code = _probe_config_get_snapshot(server_id)
+    payload, status_code = await run_in_threadpool(
+        _probe_config_get_snapshot, server_id
+    )
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -242,9 +310,9 @@ async def probe_config_get(request: Request):
     openapi_extra=request_body_schema(ProbeConfigRequest),
 )
 async def probe_config_save(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     body = await _request_body(request, ProbeConfigRequest)
-    payload, status_code = _probe_config_save_snapshot(body)
+    payload, status_code = await run_in_threadpool(_probe_config_save_snapshot, body)
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -254,10 +322,18 @@ async def probe_config_save(request: Request):
     openapi_extra=request_body_schema(ProbeModeRequest),
 )
 async def probe_recent_processing_start(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     body = await _request_body(request, ProbeModeRequest)
-    payload, status_code = _probe_recent_processing_start_snapshot(body)
-    return _worker_response(payload, status_code, worker=RECENT_PROCESSING_OPERATION, body=body)
+    payload, status_code = await run_in_threadpool(
+        _probe_recent_processing_start_snapshot, body
+    )
+    return await run_in_threadpool(
+        _worker_response,
+        payload,
+        status_code,
+        worker=RECENT_PROCESSING_OPERATION,
+        body=body,
+    )
 
 
 @router.post(
@@ -266,10 +342,18 @@ async def probe_recent_processing_start(request: Request):
     openapi_extra=request_body_schema(ProbeModeAllRequest, required=False),
 )
 async def probe_recent_processing_start_all(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     body = await _request_body(request, ProbeModeAllRequest, required=False)
-    payload, status_code = _probe_recent_processing_start_all_snapshot(body)
-    return _worker_response(payload, status_code, worker=RECENT_PROCESSING_ALL_OPERATION, body=body)
+    payload, status_code = await run_in_threadpool(
+        _probe_recent_processing_start_all_snapshot, body
+    )
+    return await run_in_threadpool(
+        _worker_response,
+        payload,
+        status_code,
+        worker=RECENT_PROCESSING_ALL_OPERATION,
+        body=body,
+    )
 
 
 @router.post(
@@ -278,10 +362,18 @@ async def probe_recent_processing_start_all(request: Request):
     openapi_extra=request_body_schema(ProbeServerRequest),
 )
 async def probe_recent_processing_stop(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     body = await _request_body(request, ProbeServerRequest)
-    payload, status_code = _probe_recent_processing_stop_snapshot(body)
-    return _command_response(payload, status_code, title="Media Probe: arresta Processing recenti", body=body)
+    payload, status_code = await run_in_threadpool(
+        _probe_recent_processing_stop_snapshot, body
+    )
+    return await run_in_threadpool(
+        _command_response,
+        payload,
+        status_code,
+        title="Media Probe: arresta Processing recenti",
+        body=body,
+    )
 
 
 @router.post(
@@ -290,9 +382,17 @@ async def probe_recent_processing_stop(request: Request):
     openapi_extra=no_request_body(),
 )
 async def probe_recent_processing_stop_all(request: Request):
-    _require_auth_dep(request)
-    payload, status_code = _probe_recent_processing_stop_all_snapshot()
-    return _command_response(payload, status_code, title="Media Probe: arresta Processing recenti", body={})
+    await run_in_threadpool(_require_auth_dep, request)
+    payload, status_code = await run_in_threadpool(
+        _probe_recent_processing_stop_all_snapshot
+    )
+    return await run_in_threadpool(
+        _command_response,
+        payload,
+        status_code,
+        title="Media Probe: arresta Processing recenti",
+        body={},
+    )
 
 
 @router.post(
@@ -301,10 +401,14 @@ async def probe_recent_processing_stop_all(request: Request):
     openapi_extra=request_body_schema(ProbeModeRequest),
 )
 async def probe_recent_combo_start(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     body = await _request_body(request, ProbeModeRequest)
-    payload, status_code = _probe_recent_combo_start_snapshot(body)
-    return _worker_response(payload, status_code, worker=RECENT_COMBO_OPERATION, body=body)
+    payload, status_code = await run_in_threadpool(
+        _probe_recent_combo_start_snapshot, body
+    )
+    return await run_in_threadpool(
+        _worker_response, payload, status_code, worker=RECENT_COMBO_OPERATION, body=body
+    )
 
 
 @router.post(
@@ -313,10 +417,14 @@ async def probe_recent_combo_start(request: Request):
     openapi_extra=request_body_schema(ProbeModeAllRequest),
 )
 async def probe_recent_combo_start_all(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     body = await _request_body(request, ProbeModeAllRequest)
-    payload, status_code = _probe_recent_combo_start_all_snapshot(body)
-    return _worker_response(payload, status_code, worker=RECENT_COMBO_OPERATION, body=body)
+    payload, status_code = await run_in_threadpool(
+        _probe_recent_combo_start_all_snapshot, body
+    )
+    return await run_in_threadpool(
+        _worker_response, payload, status_code, worker=RECENT_COMBO_OPERATION, body=body
+    )
 
 
 @router.post(
@@ -325,10 +433,18 @@ async def probe_recent_combo_start_all(request: Request):
     openapi_extra=request_body_schema(ProbeServerRequest),
 )
 async def probe_recent_combo_stop(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     body = await _request_body(request, ProbeServerRequest)
-    payload, status_code = _probe_recent_combo_stop_snapshot(body)
-    return _command_response(payload, status_code, title="Media Probe: arresta Workflow recenti", body=body)
+    payload, status_code = await run_in_threadpool(
+        _probe_recent_combo_stop_snapshot, body
+    )
+    return await run_in_threadpool(
+        _command_response,
+        payload,
+        status_code,
+        title="Media Probe: arresta Workflow recenti",
+        body=body,
+    )
 
 
 @router.post(
@@ -337,9 +453,17 @@ async def probe_recent_combo_stop(request: Request):
     openapi_extra=no_request_body(),
 )
 async def probe_recent_combo_stop_all(request: Request):
-    _require_auth_dep(request)
-    payload, status_code = _probe_recent_combo_stop_all_snapshot()
-    return _command_response(payload, status_code, title="Media Probe: arresta Workflow recenti", body={})
+    await run_in_threadpool(_require_auth_dep, request)
+    payload, status_code = await run_in_threadpool(
+        _probe_recent_combo_stop_all_snapshot
+    )
+    return await run_in_threadpool(
+        _command_response,
+        payload,
+        status_code,
+        title="Media Probe: arresta Workflow recenti",
+        body={},
+    )
 
 
 @router.post(
@@ -348,10 +472,18 @@ async def probe_recent_combo_stop_all(request: Request):
     openapi_extra=request_body_schema(ProbeModeRequest),
 )
 async def probe_libraries_combo_start(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     body = await _request_body(request, ProbeModeRequest)
-    payload, status_code = _probe_libraries_combo_start_snapshot(body)
-    return _worker_response(payload, status_code, worker=LIBRARIES_COMBO_OPERATION, body=body)
+    payload, status_code = await run_in_threadpool(
+        _probe_libraries_combo_start_snapshot, body
+    )
+    return await run_in_threadpool(
+        _worker_response,
+        payload,
+        status_code,
+        worker=LIBRARIES_COMBO_OPERATION,
+        body=body,
+    )
 
 
 @router.post(
@@ -360,10 +492,18 @@ async def probe_libraries_combo_start(request: Request):
     openapi_extra=request_body_schema(ProbeServerRequest),
 )
 async def probe_libraries_combo_stop(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     body = await _request_body(request, ProbeServerRequest)
-    payload, status_code = _probe_libraries_combo_stop_snapshot(body)
-    return _command_response(payload, status_code, title="Media Probe: arresta Workflow librerie", body=body)
+    payload, status_code = await run_in_threadpool(
+        _probe_libraries_combo_stop_snapshot, body
+    )
+    return await run_in_threadpool(
+        _command_response,
+        payload,
+        status_code,
+        title="Media Probe: arresta Workflow librerie",
+        body=body,
+    )
 
 
 @router.post(
@@ -372,10 +512,14 @@ async def probe_libraries_combo_stop(request: Request):
     openapi_extra=request_body_schema(ProbeModeRequest),
 )
 async def probe_processing_start(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     body = await _request_body(request, ProbeModeRequest)
-    payload, status_code = _probe_processing_start_snapshot(body)
-    return _worker_response(payload, status_code, worker=PROCESSING_OPERATION, body=body)
+    payload, status_code = await run_in_threadpool(
+        _probe_processing_start_snapshot, body
+    )
+    return await run_in_threadpool(
+        _worker_response, payload, status_code, worker=PROCESSING_OPERATION, body=body
+    )
 
 
 @router.post(
@@ -384,22 +528,41 @@ async def probe_processing_start(request: Request):
     openapi_extra=request_body_schema(ProbeServerRequest),
 )
 async def probe_processing_stop(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     body = await _request_body(request, ProbeServerRequest)
-    payload, status_code = _probe_processing_stop_snapshot(body)
-    return _command_response(payload, status_code, title="Media Probe: arresta Processing", body=body)
+    payload, status_code = await run_in_threadpool(
+        _probe_processing_stop_snapshot, body
+    )
+    return await run_in_threadpool(
+        _command_response,
+        payload,
+        status_code,
+        title="Media Probe: arresta Processing",
+        body=body,
+    )
 
 
 @router.get(
     "/api/emby/probe/queue",
     response_model=ProbeQueueResponse,
-    openapi_extra=query_parameters(("server_id", False, "string"), ("scope", False, "string")),
+    openapi_extra=query_parameters(
+        ("server_id", False, "string"),
+        ("scope", False, "string"),
+        ("limit", False, "integer"),
+        ("offset", False, "integer"),
+        ("cursor", False, "integer"),
+    ),
 )
 async def probe_queue_get(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     server_id = request.query_params.get("server_id")
     scope = request.query_params.get("scope") or "libraries"
-    payload, status_code = _probe_queue_get_snapshot(server_id, scope)
+    limit = request.query_params.get("limit", "200")
+    offset = request.query_params.get("offset", "0")
+    cursor = request.query_params.get("cursor")
+    payload, status_code = await run_in_threadpool(
+        _probe_queue_get_snapshot, server_id, scope, limit, offset, cursor
+    )
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -409,13 +572,17 @@ async def probe_queue_get(request: Request):
     openapi_extra=request_body_schema(ProbeQueueDeleteRequest),
 )
 async def probe_queue_delete(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     body = await _request_body(request, ProbeQueueDeleteRequest)
     server_id = (body or {}).get("server_id") or request.query_params.get("server_id")
     item_id = (body or {}).get("item_id")
     media_source_id = (body or {}).get("media_source_id")
-    scope = (body or {}).get("scope") or request.query_params.get("scope") or "libraries"
-    payload, status_code = _probe_queue_delete_snapshot(server_id, item_id, media_source_id, scope)
+    scope = (
+        (body or {}).get("scope") or request.query_params.get("scope") or "libraries"
+    )
+    payload, status_code = await run_in_threadpool(
+        _probe_queue_delete_snapshot, server_id, item_id, media_source_id, scope
+    )
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -425,15 +592,21 @@ async def probe_queue_delete(request: Request):
     openapi_extra=query_parameters(
         ("server_id", True, "string"),
         ("limit", False, "integer"),
+        ("offset", False, "integer"),
+        ("cursor", False, "integer"),
         ("scope", False, "string"),
     ),
 )
 async def probe_history_get(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     server_id = request.query_params.get("server_id")
     limit = request.query_params.get("limit", "100")
+    offset = request.query_params.get("offset", "0")
+    cursor = request.query_params.get("cursor")
     scope = request.query_params.get("scope") or "libraries"
-    payload, status_code = _probe_history_get_snapshot(server_id, limit, scope)
+    payload, status_code = await run_in_threadpool(
+        _probe_history_get_snapshot, server_id, limit, scope, offset, cursor
+    )
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -443,11 +616,15 @@ async def probe_history_get(request: Request):
     openapi_extra=request_body_schema(ProbeScopeDeleteRequest),
 )
 async def probe_history_delete(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     body = await _request_body(request, ProbeScopeDeleteRequest)
     server_id = (body or {}).get("server_id") or request.query_params.get("server_id")
-    scope = (body or {}).get("scope") or request.query_params.get("scope") or "libraries"
-    payload, status_code = _probe_history_delete_snapshot(server_id, scope)
+    scope = (
+        (body or {}).get("scope") or request.query_params.get("scope") or "libraries"
+    )
+    payload, status_code = await run_in_threadpool(
+        _probe_history_delete_snapshot, server_id, scope
+    )
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -457,10 +634,16 @@ async def probe_history_delete(request: Request):
     openapi_extra=request_body_schema(ProbeRetryRequest),
 )
 async def probe_retry(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     body = await _request_body(request, ProbeRetryRequest)
-    payload, status_code = _probe_retry_snapshot(body)
-    return _command_response(payload, status_code, title="Media Probe: nuovo tentativo", body=body)
+    payload, status_code = await run_in_threadpool(_probe_retry_snapshot, body)
+    return await run_in_threadpool(
+        _command_response,
+        payload,
+        status_code,
+        title="Media Probe: nuovo tentativo",
+        body=body,
+    )
 
 
 @router.get(
@@ -471,15 +654,32 @@ async def probe_retry(request: Request):
         ("min_retry", False, "integer"),
         ("type", False, "string"),
         ("scope", False, "string"),
+        ("limit", False, "integer"),
+        ("offset", False, "integer"),
+        ("cursor", False, "integer"),
     ),
 )
 async def probe_blacklist_get(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     server_id = request.query_params.get("server_id")
     min_retry = request.query_params.get("min_retry", "3")
-    error_type = request.query_params.get("type") or request.query_params.get("error_type")
+    error_type = request.query_params.get("type") or request.query_params.get(
+        "error_type"
+    )
     scope = request.query_params.get("scope") or "libraries"
-    payload, status_code = _probe_blacklist_get_snapshot(server_id, min_retry, error_type, scope)
+    limit = request.query_params.get("limit", "200")
+    offset = request.query_params.get("offset", "0")
+    cursor = request.query_params.get("cursor")
+    payload, status_code = await run_in_threadpool(
+        _probe_blacklist_get_snapshot,
+        server_id,
+        min_retry,
+        error_type,
+        scope,
+        limit,
+        offset,
+        cursor,
+    )
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -489,95 +689,84 @@ async def probe_blacklist_get(request: Request):
     openapi_extra=request_body_schema(ProbeBlacklistDeleteRequest),
 )
 async def probe_blacklist_delete(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     body = await _request_body(request, ProbeBlacklistDeleteRequest)
     server_id = (body or {}).get("server_id") or request.query_params.get("server_id")
     item_id = (body or {}).get("item_id")
     media_source_id = (body or {}).get("media_source_id")
     error_type = (body or {}).get("type") or request.query_params.get("type")
-    scope = (body or {}).get("scope") or request.query_params.get("scope") or "libraries"
-    payload, status_code = _probe_blacklist_delete_snapshot(server_id, item_id, media_source_id, error_type, scope)
+    scope = (
+        (body or {}).get("scope") or request.query_params.get("scope") or "libraries"
+    )
+    payload, status_code = await run_in_threadpool(
+        _probe_blacklist_delete_snapshot,
+        server_id,
+        item_id,
+        media_source_id,
+        error_type,
+        scope,
+    )
     return JSONResponse(payload, status_code=status_code)
 
 
 @router.get(
     "/api/emby/probe/export-csv",
-    response_class=Response,
-    responses={200: binary_response("text/csv", "Esportazione CSV di errori e incompleti del Media Probe.")},
-    openapi_extra=query_parameters(("server_id", False, "string"), ("scope", False, "string")),
+    response_class=StreamingResponse,
+    responses={
+        200: binary_response(
+            "text/csv", "Esportazione CSV di errori e incompleti del Media Probe."
+        )
+    },
+    openapi_extra=query_parameters(
+        ("server_id", False, "string"), ("scope", False, "string")
+    ),
 )
 async def probe_export_csv(request: Request):
     """Export blacklist and incomplete items as CSV"""
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     server_id = request.query_params.get("server_id")
     scope = request.query_params.get("scope") or "libraries"
 
-    from io import StringIO
-    import csv
     from datetime import datetime as dt
 
     # Load config to get server names
-    config, _ = load_config()
+    config, _ = await run_in_threadpool(load_config)
     config = config or {}
     emby_servers = config.get("EMBY", {}).get("SERVERS", [])
     server_name_map = {s.get("id"): s.get("name", s.get("id")) for s in emby_servers}
 
-    # Get all blacklist items (errors and incomplete)
-    all_items_payload, _ = _probe_blacklist_get_snapshot(server_id, "0", None, scope)
-    all_items = all_items_payload.get("blacklist", [])
+    if not _PROBE_CSV_EXPORT_SLOTS.acquire(blocking=False):
+        return JSONResponse(
+            {"error": "Troppe esportazioni CSV simultanee"},
+            status_code=429,
+        )
+    try:
+        spool, export_error, export_status = await run_in_threadpool(
+            build_probe_csv_export,
+            _probe_blacklist_get_snapshot,
+            server_id,
+            scope,
+            server_name_map,
+        )
+    except BaseException:
+        _PROBE_CSV_EXPORT_SLOTS.release()
+        raise
+    if export_status != 200 or spool is None:
+        _PROBE_CSV_EXPORT_SLOTS.release()
+        return JSONResponse(export_error, status_code=export_status)
 
-    output = StringIO()
-    writer = csv.writer(output)
-    writer.writerow([
-        "Tipo",
-        "Server",
-        "Titolo",
-        "Libreria",
-        "Tipo Errore",
-        "Dettaglio Errore",
-        "Tentativi",
-        "Data Ultimo Tentativo",
-    ])
-
-    for item in all_items:
-        error_type = item.get("error_type", "")
-        retry_count = item.get("retry_count", 0)
-        if error_type == "INCOMPLETE":
-            tipo = "Incompleto"
-        elif retry_count >= 3:
-            tipo = "Errore"
-        else:
-            continue
-
-        sid = item.get("server_id", "")
-        server_name = server_name_map.get(sid, sid)
-
-        failed_at = item.get("failed_at", "")
-        if failed_at:
-            try:
-                date_obj = dt.fromisoformat(failed_at.replace("Z", "+00:00"))
-                failed_at = date_obj.strftime("%Y-%m-%d %H:%M:%S")
-            except Exception:
-                pass
-
-        writer.writerow([
-            tipo,
-            server_name,
-            item.get("item_name", ""),
-            item.get("library_name", ""),
-            error_type,
-            item.get("reason", ""),
-            retry_count,
-            failed_at,
-        ])
-
-    csv_content = output.getvalue()
-    output.close()
+    def csv_stream():
+        try:
+            while chunk := spool.read(64 * 1024):
+                yield chunk
+        finally:
+            spool.close()
+            _PROBE_CSV_EXPORT_SLOTS.release()
 
     filename = f"strm_probe_report_{scope}_{dt.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
-    return Response(
-        content=csv_content,
+    return StreamingResponse(
+        csv_stream(),
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
@@ -586,11 +775,15 @@ async def probe_export_csv(request: Request):
 @router.get(
     "/api/emby/probe/debug-recent-items",
     response_model=ProbeDebugRecentResponse,
-    openapi_extra=query_parameters(("server_id", True, "string"), ("limit", False, "integer")),
+    openapi_extra=query_parameters(
+        ("server_id", True, "string"), ("limit", False, "integer")
+    ),
 )
 async def probe_debug_recent_items(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     server_id = request.query_params.get("server_id")
-    limit = _coerce_request_int(request.query_params.get("limit", "50"), 50)
-    payload, status_code = _probe_debug_recent_items_snapshot(server_id, limit)
+    limit = _coerce_request_int(request.query_params.get("limit", "50"), 50, 1, 200)
+    payload, status_code = await run_in_threadpool(
+        _probe_debug_recent_items_snapshot, server_id, limit
+    )
     return JSONResponse(payload, status_code=status_code)

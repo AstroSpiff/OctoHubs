@@ -24,6 +24,7 @@ type CloneUserDialogProps = {
   groups: EmbyUserGroup[];
   servers: EmbyUserServer[];
   cloning: boolean;
+  mutationError?: string;
   onClose: () => void;
   onClone: (input: BulkCloneInput) => void;
   onDirtyChange?: (dirty: boolean) => void;
@@ -34,6 +35,7 @@ function CloneUserDialog({
   groups,
   servers,
   cloning,
+  mutationError,
   onClose,
   onClone,
   onDirtyChange,
@@ -197,7 +199,7 @@ function CloneUserDialog({
             destinazione verranno create copie distinte per ogni utente.
           </p>
         ) : null}
-        {error ? <p className="users-dialog-error" role="alert">{error}</p> : null}
+        {error || mutationError ? <p className="users-dialog-error" role="alert">{error || mutationError}</p> : null}
         <fieldset>
           <legend>Server di destinazione</legend>
           <div className="users-clone-server-list">

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, cast
 from datetime import datetime, timezone, timedelta
 import threading
 import time
@@ -11,7 +11,18 @@ from .constants import PROBE_SCOPE_RECENT
 from .protocols import ProbeManagerProtocol
 from .utils import _parse_emby_date, _coerce_int_range, _coerce_threshold
 from .display import _format_probe_display_name, _format_display_name_from_queue
-from .media_policy import is_probe_media_candidate, normalize_media_policy
+from .media_policy import (
+    is_probe_media_candidate,
+    load_probe_config,
+    normalize_media_policy,
+)
+from .queue_leases import (
+    ProbeClaimLost,
+    commit_claimed_result,
+    complete_claim,
+    release_claim,
+    run_with_claim_renewal,
+)
 
 class RecentProbeMixin(ProbeManagerProtocol):
     """Mixin for probe workflows."""
@@ -31,6 +42,8 @@ class RecentProbeMixin(ProbeManagerProtocol):
             limit: Max number of recent items to scan
         """
         with self._lock:
+            if not self._can_start_worker_locked(server_id):
+                return False
             if server_id not in self._workers:
                 self._workers[server_id] = {}
                 self._status[server_id] = {}
@@ -56,8 +69,12 @@ class RecentProbeMixin(ProbeManagerProtocol):
                 args=(server, server_id, stop_flag, limit),
                 daemon=True
             )
-            worker.start()
-            self._workers[server_id]["recent_discovery"] = worker
+            self._start_local_worker_locked(
+                server_id,
+                "recent_discovery",
+                worker,
+                stop_flag,
+            )
 
         return True
 
@@ -67,6 +84,8 @@ class RecentProbeMixin(ProbeManagerProtocol):
         limit: int = 200
     ) -> bool:
         with self._lock:
+            if not self._can_start_worker_locked():
+                return False
             worker = self._global_workers.get("recent_discovery_all")
             if worker and worker.is_alive():
                 return False
@@ -77,8 +96,11 @@ class RecentProbeMixin(ProbeManagerProtocol):
                 args=(servers, stop_flag, limit),
                 daemon=True
             )
-            self._global_workers["recent_discovery_all"] = sequence
-            sequence.start()
+            self._start_global_worker_locked(
+                "recent_discovery_all",
+                sequence,
+                stop_flag,
+            )
         return True
 
     def start_recent_processing(
@@ -88,8 +110,10 @@ class RecentProbeMixin(ProbeManagerProtocol):
         mode: str = "smart"
     ) -> bool:
         """Start a processing worker for recent discovery items."""
-        self._set_libraries_pause(server_id, True)
         with self._lock:
+            if not self._can_start_worker_locked(server_id):
+                return False
+            self._set_libraries_pause(server_id, True)
             if server_id not in self._workers:
                 self._workers[server_id] = {}
                 self._status[server_id] = {}
@@ -121,8 +145,13 @@ class RecentProbeMixin(ProbeManagerProtocol):
                 args=(server, server_id, mode, stop_flag, None, PROBE_SCOPE_RECENT, "recent_processing"),
                 daemon=True
             )
-            worker.start()
-            self._workers[server_id]["recent_processing"] = worker
+            self._start_local_worker_locked(
+                server_id,
+                "recent_processing",
+                worker,
+                stop_flag,
+                release_libraries_pause=True,
+            )
 
         return True
 
@@ -132,6 +161,8 @@ class RecentProbeMixin(ProbeManagerProtocol):
         mode: str = "smart"
     ) -> bool:
         with self._lock:
+            if not self._can_start_worker_locked():
+                return False
             worker = self._global_workers.get("recent_processing_all")
             if worker and worker.is_alive():
                 return False
@@ -142,8 +173,11 @@ class RecentProbeMixin(ProbeManagerProtocol):
                 args=(servers, stop_flag, mode),
                 daemon=True
             )
-            self._global_workers["recent_processing_all"] = sequence
-            sequence.start()
+            self._start_global_worker_locked(
+                "recent_processing_all",
+                sequence,
+                stop_flag,
+            )
         return True
 
     def stop_recent_discovery(self, server_id: str) -> bool:
@@ -291,6 +325,39 @@ class RecentProbeMixin(ProbeManagerProtocol):
 
         db = self._db_getter()
         status_key = "recent_processing" if scope == PROBE_SCOPE_RECENT else "processing"
+        queue_page_size = 100
+
+        def load_processable_page(server_id: str) -> list[Dict[str, Any]]:
+            blacklist = db.load_probe_blacklist(server_id, scope=scope)
+            cursor_id = 0
+            while True:
+                try:
+                    queue_items = db.get_probe_queue(
+                        server_id,
+                        scope=scope,
+                        limit=queue_page_size,
+                        cursor_id=cursor_id,
+                    )
+                except TypeError as exc:
+                    if "limit" not in str(exc) and "cursor_id" not in str(exc):
+                        raise
+                    queue_items = db.get_probe_queue(server_id, scope=scope)
+                processable = [
+                    item
+                    for item in queue_items
+                    if self._get_retry_count(
+                        blacklist,
+                        item.get("item_id"),
+                        item.get("media_source_id"),
+                    )
+                    < 3
+                ]
+                if processable or len(queue_items) < queue_page_size:
+                    return processable
+                next_cursor = int(queue_items[-1].get("id") or 0)
+                if next_cursor <= cursor_id:
+                    return []
+                cursor_id = next_cursor
 
         # Filter enabled servers
         enabled_servers = [s for s in servers if s and s.get("enabled") and s.get("id")]
@@ -304,15 +371,15 @@ class RecentProbeMixin(ProbeManagerProtocol):
             server_id = server.get("id")
             if not server_id:
                 continue
-            queue_items = db.get_probe_queue(server_id, scope=scope)
-            blacklist = db.load_probe_blacklist(server_id, scope=scope)
-            processable = [
-                item for item in queue_items
-                if self._get_retry_count(blacklist, item.get("item_id"), item.get("media_source_id")) < 3
-            ]
+            processable = load_processable_page(server_id)
             if len(processable) > 0:
                 servers_with_work.append(server)
-                initial_total += len(processable)
+                count_queue = getattr(db, "count_probe_queue", None)
+                initial_total += (
+                    int(cast(int | str, count_queue(server_id, scope=scope)))
+                    if callable(count_queue)
+                    else len(processable)
+                )
 
         # If no servers have work, exit
         if not servers_with_work:
@@ -365,13 +432,7 @@ class RecentProbeMixin(ProbeManagerProtocol):
                     server_id = server.get("id")
                     if not server_id:
                         continue
-                    queue_items = db.get_probe_queue(server_id, scope=scope)
-                    # Filter out blacklisted items (3+ errors)
-                    blacklist = db.load_probe_blacklist(server_id, scope=scope)
-                    processable = [
-                        item for item in queue_items
-                        if self._get_retry_count(blacklist, item.get("item_id"), item.get("media_source_id")) < 3
-                    ]
+                    processable = load_processable_page(server_id)
                     total_remaining += len(processable)
     
                 if total_remaining == 0:
@@ -386,18 +447,14 @@ class RecentProbeMixin(ProbeManagerProtocol):
                     continue
     
                 # Check if server has items to process
-                queue_items = db.get_probe_queue(server_id, scope=scope)
+                processable = load_processable_page(server_id)
                 blacklist = db.load_probe_blacklist(server_id, scope=scope)
-                processable = [
-                    item for item in queue_items
-                    if self._get_retry_count(blacklist, item.get("item_id"), item.get("media_source_id")) < 3
-                ]
     
                 if len(processable) == 0:
                     # Server has no items, move to next
                     server_index = (server_index + 1) % len(enabled_servers)
                     continue
-    
+
                 # Check if server has active streams
                 server_name = server.get("name") or server.get("url") or server_id
                 sessions, error = _fetch_emby_active_sessions(server)
@@ -425,6 +482,16 @@ class RecentProbeMixin(ProbeManagerProtocol):
                             break
                         consecutive_skips = 0
                     continue
+
+                claim = getattr(db, "claim_probe_queue_items", None)
+                if callable(claim):
+                    processable = cast(
+                        list[Dict[str, Any]],
+                        claim([int(processable[0]["id"])]),
+                    )
+                    if not processable:
+                        server_index = (server_index + 1) % len(enabled_servers)
+                        continue
     
                 # Server is free, process one item
                 consecutive_skips = 0
@@ -433,8 +500,6 @@ class RecentProbeMixin(ProbeManagerProtocol):
                 item_id = queue_item["item_id"]
                 item_display_name = _format_display_name_from_queue(queue_item)
                 media_source_id = queue_item.get("media_source_id")
-                library_name = queue_item.get("library_name")
-                library_id = queue_item.get("library_id")
     
                 # Check if this is a retry
                 current_retry_count = self._get_retry_count(blacklist, item_id, media_source_id)
@@ -449,71 +514,18 @@ class RecentProbeMixin(ProbeManagerProtocol):
                     last_log=f"[{server_index + 1}/{len(enabled_servers)}] {server_name} - Analisi{retry_suffix}: {item_display_name}"
                 )
     
-                # Probe the item
-                start_time = time.time()
-                probe_success = self._probe_item(server, item_id, item_display_name, media_source_id)
-                duration_ms = int((time.time() - start_time) * 1000)
-    
-                if stop_flag.is_set():
+                outcome = self._probe_claimed_recent_item(
+                    db,
+                    server,
+                    queue_item,
+                    stop_flag,
+                    scope,
+                    status_key,
+                    item_display_name,
+                )
+                if outcome is None:
                     break
-    
-                # Remove from queue
-                db.remove_from_probe_queue(server_id, item_id, media_source_id, scope=scope)
-    
-                # Handle result (same logic as _processing_worker)
-                status = "ERROR"
-                error_details = "Timeout o errore API"
-    
-                if probe_success:
-                    max_attempts = 15
-                    attempt = 0
-                    metadata_ok = False
-                    metadata_error = None
-                    time.sleep(1)
-    
-                    while attempt < max_attempts and not stop_flag.is_set():
-                        metadata_ok, metadata_error = self._verify_probe_metadata(server, item_id, media_source_id)
-                        if metadata_ok:
-                            break
-                        attempt += 1
-                        if attempt < max_attempts:
-                            time.sleep(1)
-    
-                    if metadata_ok:
-                        status = "SUCCESS"
-                        error_details = None
-                        db.remove_from_probe_blacklist(server_id, item_id, media_source_id, scope=scope)
-                    else:
-                        status = "INCOMPLETE"
-                        error_details = metadata_error or "Mediainfo non scritto dopo polling"
-    
-                if status != "SUCCESS":
-                    error_type = "INCOMPLETE" if status == "INCOMPLETE" else "ERROR"
-                    db.update_probe_blacklist(
-                        server_id,
-                        item_id,
-                        item_display_name,
-                        error_details or "Errore probe",
-                        media_source_id=media_source_id,
-                        increment_retry=True,
-                        error_type=error_type,
-                        scope=scope,
-                        library_id=library_id,
-                        library_name=library_name
-                    )
-    
-                # Add to history
-                db.add_probe_history({
-                    "server_id": server_id,
-                    "item_id": item_id,
-                    "media_source_id": media_source_id,
-                    "scope": scope,
-                    "name": item_display_name,
-                    "library_name": library_name,
-                    "status": status,
-                    "error_details": error_details,
-                    "duration_ms": duration_ms
-                })
+                status, error_details, duration_ms = outcome
     
                 # Update counters
                 with self._lock:
@@ -564,6 +576,195 @@ class RecentProbeMixin(ProbeManagerProtocol):
                 for srv_id in paused_server_ids:
                     self._set_libraries_pause(srv_id, False)
 
+    def _probe_claimed_recent_item(
+        self,
+        db: Any,
+        server: Dict[str, Any],
+        queue_item: Dict[str, Any],
+        stop_flag: threading.Event,
+        scope: str,
+        status_key: str,
+        item_display_name: str,
+    ) -> tuple[str, str | None, int] | None:
+        server_id = str(server.get("id") or "")
+        claim_finished = threading.Event()
+        db_write_lock = threading.Lock()
+
+        try:
+            return run_with_claim_renewal(
+                db,
+                queue_item,
+                lambda: self._probe_recent_and_commit(
+                    db,
+                    server,
+                    queue_item,
+                    stop_flag,
+                    scope,
+                    item_display_name,
+                    claim_finished,
+                    db_write_lock,
+                ),
+                on_claim_lost=stop_flag.set,
+                claim_finished=claim_finished,
+                renew_lock=db_write_lock,
+            )
+        except ProbeClaimLost:
+            stop_flag.set()
+            self._update_status(
+                server_id,
+                status_key,
+                last_log="Processing interrotto: lease della coda non più valida",
+            )
+            return None
+
+    @staticmethod
+    def _release_recent_claim(
+        db: Any,
+        queue_item: Dict[str, Any],
+        server_id: str,
+        scope: str,
+        claim_finished: threading.Event,
+        db_write_lock: threading.Lock,
+    ) -> None:
+        with db_write_lock:
+            released = release_claim(
+                db,
+                queue_item,
+                server_id=server_id,
+                scope=scope,
+            )
+            if released:
+                claim_finished.set()
+        if not released:
+            raise ProbeClaimLost("Rilascio risultato Probe rifiutato: lease non valida")
+
+    def _probe_recent_and_commit(
+        self,
+        db: Any,
+        server: Dict[str, Any],
+        queue_item: Dict[str, Any],
+        stop_flag: threading.Event,
+        scope: str,
+        item_display_name: str,
+        claim_finished: threading.Event,
+        db_write_lock: threading.Lock,
+    ) -> tuple[str, str | None, int] | None:
+        server_id = str(server.get("id") or "")
+        item_id = queue_item["item_id"]
+        media_source_id = queue_item.get("media_source_id")
+        start_time = time.time()
+        probe_success = self._probe_item(
+            server,
+            item_id,
+            item_display_name,
+            media_source_id,
+        )
+        duration_ms = int((time.time() - start_time) * 1000)
+        if stop_flag.is_set():
+            self._release_recent_claim(
+                db, queue_item, server_id, scope, claim_finished, db_write_lock
+            )
+            return None
+
+        status = "ERROR"
+        error_details = "Timeout o errore API"
+        if probe_success:
+            metadata_ok, metadata_error = self._poll_recent_probe_metadata(
+                server,
+                item_id,
+                media_source_id,
+                stop_flag,
+            )
+            status = "SUCCESS" if metadata_ok else "INCOMPLETE"
+            error_details = None if metadata_ok else (
+                metadata_error or "Mediainfo non scritto dopo polling"
+            )
+        if stop_flag.is_set():
+            self._release_recent_claim(
+                db, queue_item, server_id, scope, claim_finished, db_write_lock
+            )
+            return None
+
+        history = {
+            "server_id": server_id,
+            "item_id": item_id,
+            "media_source_id": media_source_id,
+            "scope": scope,
+            "name": item_display_name,
+            "library_name": queue_item.get("library_name"),
+            "status": status,
+            "error_details": error_details,
+            "duration_ms": duration_ms,
+        }
+        failure = None
+        if status != "SUCCESS":
+            failure = {
+                "reason": error_details or "Errore probe",
+                "error_type": "INCOMPLETE" if status == "INCOMPLETE" else "ERROR",
+                "library_id": queue_item.get("library_id"),
+            }
+        committed = commit_claimed_result(
+            db,
+            queue_item,
+            history,
+            failure=failure,
+            max_retries=3,
+            # Discovery, rather than processing, decides when recent failures
+            # are queued again.
+            allow_requeue=False,
+            claim_finished=claim_finished,
+            coordination_lock=db_write_lock,
+        )
+        if committed is None:
+            if queue_item.get("id") is not None and queue_item.get("claim_token"):
+                raise ProbeClaimLost("Backend Probe privo di commit atomico")
+            if status == "SUCCESS":
+                db.remove_from_probe_blacklist(
+                    server_id,
+                    item_id,
+                    media_source_id,
+                    scope=scope,
+                )
+            else:
+                db.update_probe_blacklist(
+                    server_id,
+                    item_id,
+                    item_display_name,
+                    error_details or "Errore probe",
+                    media_source_id=media_source_id,
+                    increment_retry=True,
+                    error_type="INCOMPLETE" if status == "INCOMPLETE" else "ERROR",
+                    scope=scope,
+                    library_id=queue_item.get("library_id"),
+                    library_name=queue_item.get("library_name"),
+                )
+            db.add_probe_history(history)
+            complete_claim(db, queue_item, server_id=server_id, scope=scope)
+        return status, error_details, duration_ms
+
+    def _poll_recent_probe_metadata(
+        self,
+        server: Dict[str, Any],
+        item_id: str,
+        media_source_id: str | None,
+        stop_flag: threading.Event,
+    ) -> tuple[bool, str | None]:
+        metadata_error = None
+        time.sleep(1)
+        for attempt in range(15):
+            if stop_flag.is_set():
+                break
+            metadata_ok, metadata_error = self._verify_probe_metadata(
+                server,
+                item_id,
+                media_source_id,
+            )
+            if metadata_ok:
+                return True, metadata_error
+            if attempt < 14:
+                time.sleep(1)
+        return False, metadata_error
+
     def _recent_discovery_worker(
         self,
         server: Dict[str, Any],
@@ -585,11 +786,7 @@ class RecentProbeMixin(ProbeManagerProtocol):
             db = self._db_getter()
             page_size = max(20, min(500, int(limit or 200)))
 
-            config = {}
-            try:
-                config = db.get_probe_config(server_id)
-            except Exception:
-                config = {}
+            config = load_probe_config(db, server_id)
 
             WINDOW_SIZE = _coerce_int_range(config.get("window_size"), 500, 100, 2000)
             WINDOW_THRESHOLD = _coerce_threshold(config.get("window_threshold"), 0.90)

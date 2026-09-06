@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Dict, Optional
 
+from core.log_sanitization import format_exception_for_log, sanitize_diagnostic_text
+from core.safe_output import safe_print as print
 from emby_runtime.websocket_manager import get_websocket_manager
 from realtime.external_change_feed import publish_external_change
 from realtime.subscribers import sse_subscribers, websocket_subscribers
 
 logger = logging.getLogger(__name__)
+_sessions_dispatcher = None
+_sessions_dispatcher_lock = threading.RLock()
+_sessions_dispatcher_accepting = False
 
 CONFIGURATION_UPDATED_MESSAGE = "OctoHubsConfigurationUpdated"
 
@@ -23,8 +29,8 @@ def _broadcast_sse_event(event_data: Dict):
     # emitter. Browser clients keep receiving the original event untouched.
     try:
         publish_external_change(event_data)
-    except Exception:
-        logger.exception("[REALTIME] Unable to record external change event")
+    except Exception as exc:
+        logger.error("[REALTIME] Unable to record external change event:\n%s", format_exception_for_log(exc))
 
     sse_subscribers.publish(event_data)
     websocket_subscribers.publish(event_data)
@@ -72,8 +78,13 @@ def _fetch_single_library_data(server_id: str, library_id: str) -> Optional[Dict
         library = next((lib for lib in libraries if str(lib.get("id")) == str(library_id)), None)
         return library
 
-    except Exception as e:
-        logger.error("[FETCH_LIBRARY] Error fetching library %s from server %s: %s", library_id, server_id, e)
+    except Exception as exc:
+        logger.error(
+            "[FETCH_LIBRARY] Error fetching library %s from server %s:\n%s",
+            library_id,
+            server_id,
+            format_exception_for_log(exc),
+        )
         return None
 
 
@@ -154,7 +165,11 @@ def _handle_emby_websocket_event(server_id: str, event_data: Dict):
     data = event_data.get("Data", {})
 
     if message_type != "Sessions":
-        print(f"[WS_EVENT:{server_id}] {message_type}")
+        logger.debug(
+            "[WS_EVENT:%s] Received event type %s",
+            sanitize_diagnostic_text(server_id),
+            sanitize_diagnostic_text(message_type),
+        )
     if message_type not in {
         "ConnectionEstablished",
         "ConnectionClosed",
@@ -164,7 +179,11 @@ def _handle_emby_websocket_event(server_id: str, event_data: Dict):
         "ScheduledTasksInfoStop",
         "Sessions",
     }:
-        print(f"[WS_EVENT:{server_id}] payload: {data}")
+        logger.debug(
+            "[WS_EVENT:%s] Payload omitted for event type %s",
+            sanitize_diagnostic_text(server_id),
+            sanitize_diagnostic_text(message_type),
+        )
 
     # Broadcast event to SSE clients
     _broadcast_sse_event({
@@ -176,14 +195,20 @@ def _handle_emby_websocket_event(server_id: str, event_data: Dict):
     # Handle different event types
     if message_type == "LibraryChanged":
         # Library scan completed or changed
-        print(f"[WS_EVENT:{server_id}] Library changed: {data}")
+        logger.debug(
+            "[WS_EVENT:%s] Library changed event received",
+            sanitize_diagnostic_text(server_id),
+        )
         # TODO: Update DB state if needed
 
     elif message_type == "RefreshProgress":
         # Progress update during scan (direct from Emby WebSocket)
         progress = data.get("Progress", 0)
-        item_id = data.get("ItemId", "")
-        print(f"[WS_EVENT:{server_id}] Refresh progress: {progress}% for {item_id}")
+        logger.debug(
+            "[WS_EVENT:%s] Refresh progress received: %.1f%%",
+            sanitize_diagnostic_text(server_id),
+            _normalize_progress_percent(progress),
+        )
 
         # Broadcast to frontend (already in correct format)
         # Frontend will update progress bars automatically
@@ -195,7 +220,11 @@ def _handle_emby_websocket_event(server_id: str, event_data: Dict):
         state = data.get("State", "")
         current_progress = data.get("CurrentProgressPercentage", 0)
 
-        print(f"[WS_EVENT:{server_id}] Task '{task_name}' ({task_id}): {state} - {current_progress}%")
+        logger.debug(
+            "[WS_EVENT:%s] Scheduled task progress received: %.1f%%",
+            sanitize_diagnostic_text(server_id),
+            _normalize_progress_percent(current_progress),
+        )
 
         # Broadcast progress update to frontend, mapping to active libraries when possible.
         progress_percent = _normalize_progress_percent(current_progress)
@@ -241,7 +270,10 @@ def _handle_emby_websocket_event(server_id: str, event_data: Dict):
         # Scheduled task started
         task_id = data.get("Id", "")
         task_name = data.get("Name", "")
-        print(f"[WS_EVENT:{server_id}] Task started: '{task_name}' ({task_id})")
+        logger.debug(
+            "[WS_EVENT:%s] Scheduled task start received",
+            sanitize_diagnostic_text(server_id),
+        )
 
         # Broadcast start event to frontend
         _broadcast_sse_event({
@@ -257,7 +289,10 @@ def _handle_emby_websocket_event(server_id: str, event_data: Dict):
         # Scheduled task stopped/completed
         task_id = data.get("Id", "")
         task_name = data.get("Name", "")
-        print(f"[WS_EVENT:{server_id}] Task stopped: '{task_name}' ({task_id})")
+        logger.debug(
+            "[WS_EVENT:%s] Scheduled task stop received",
+            sanitize_diagnostic_text(server_id),
+        )
 
         # Broadcast completion event to frontend
         _broadcast_sse_event({
@@ -271,15 +306,21 @@ def _handle_emby_websocket_event(server_id: str, event_data: Dict):
 
     elif message_type == "Sessions":
         # Active playback sessions updated via Emby WebSocket
-        _handle_sessions_update(server_id, data)
+        _schedule_sessions_update(server_id, data)
 
     elif message_type == "ConnectionEstablished":
         # WebSocket connected
-        print(f"[WS_EVENT:{server_id}] ✓ WebSocket connection established")
+        logger.debug(
+            "[WS_EVENT:%s] WebSocket connection established",
+            sanitize_diagnostic_text(server_id),
+        )
 
     elif message_type == "ConnectionClosed":
         # WebSocket disconnected
-        print(f"[WS_EVENT:{server_id}] ✗ WebSocket connection closed")
+        logger.debug(
+            "[WS_EVENT:%s] WebSocket connection closed",
+            sanitize_diagnostic_text(server_id),
+        )
 
 
 def _handle_sessions_update(server_id: str, sessions_data):
@@ -294,7 +335,10 @@ def _handle_sessions_update(server_id: str, sessions_data):
     # Get configured server to fetch full session data
     server = _get_emby_server_by_id(server_id)
     if not server:
-        print(f"[WS_SESSIONS:{server_id}] Server not found in config")
+        logger.debug(
+            "[WS_SESSIONS:%s] Server not found in config",
+            sanitize_diagnostic_text(server_id),
+        )
         return
 
     streams_manager = get_streams_manager()
@@ -305,10 +349,14 @@ def _handle_sessions_update(server_id: str, sessions_data):
         force=True,
     )
     if error:
-        print(f"[WS_SESSIONS:{server_id}] Error fetching sessions: {error}")
+        logger.error(
+            "[WS_SESSIONS:%s] Error fetching sessions: %s",
+            sanitize_diagnostic_text(server_id),
+            sanitize_diagnostic_text(error),
+        )
         return
 
-    logger.debug("[WS_SESSIONS:%s] Updated %s active playback session(s)", server_id, len(streams))
+    logger.debug("[WS_SESSIONS:%s] Updated %s active playback session(s)", sanitize_diagnostic_text(server_id), len(streams))
 
     # Broadcast processed sessions to frontend
     _broadcast_sse_event({
@@ -320,12 +368,41 @@ def _handle_sessions_update(server_id: str, sessions_data):
         },
     })
 
+
+def initialize_session_refresh_dispatcher() -> None:
+    """Open one lifecycle-owned dispatcher before WebSocket events can arrive."""
+    global _sessions_dispatcher, _sessions_dispatcher_accepting
+    with _sessions_dispatcher_lock:
+        _sessions_dispatcher_accepting = True
+        if _sessions_dispatcher is None:
+            from realtime.session_refresh_dispatcher import SessionRefreshDispatcher
+
+            _sessions_dispatcher = SessionRefreshDispatcher(_handle_sessions_update)
+
+
+def _schedule_sessions_update(server_id: str, sessions_data) -> bool:
+    with _sessions_dispatcher_lock:
+        if not _sessions_dispatcher_accepting or _sessions_dispatcher is None:
+            return False
+        return bool(_sessions_dispatcher.submit(server_id, sessions_data))
+
+
+def shutdown_session_refresh_dispatcher(timeout_seconds: float = 5.0) -> bool:
+    global _sessions_dispatcher, _sessions_dispatcher_accepting
+    with _sessions_dispatcher_lock:
+        _sessions_dispatcher_accepting = False
+        dispatcher = _sessions_dispatcher
+        _sessions_dispatcher = None
+    return dispatcher.shutdown(timeout_seconds) if dispatcher is not None else True
+
 def _initialize_emby_websockets():
     """Initialize WebSocket connections to all configured Emby servers."""
     from core import config_manager
     from core.emby_servers import _get_emby_servers_from_config
 
+    initialize_session_refresh_dispatcher()
     ws_manager = get_websocket_manager()
+    ws_manager.start_accepting()
 
     # Configure Library Poller persistence
     if config_manager._DB_BACKEND:
@@ -362,5 +439,9 @@ def _initialize_emby_websockets():
         try:
             ws_manager.add_server(server_id, url, api_key)
             print(f"[WS_INIT] ✓ Initialized WebSocket for server {server_id}")
-        except Exception as e:
-            print(f"[WS_INIT] ✗ Failed to initialize WebSocket for server {server_id}: {e}")
+        except Exception as exc:
+            logger.error(
+                "[WS_INIT] Failed to initialize WebSocket for server %s:\n%s",
+                server_id,
+                format_exception_for_log(exc),
+            )

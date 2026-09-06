@@ -77,6 +77,12 @@ function EmbyMediaBrowser({
     setActiveSeasonId("");
   }, [itemId, serverId, selected.tmdb_id]);
 
+  function changeActiveSeason(seasonId: string) {
+    if (seasonId === activeSeasonId) return;
+    setActiveSeasonId(seasonId);
+    setActiveItemId("");
+  }
+
   return (
     <section
       className="emby-media-browser"
@@ -103,7 +109,8 @@ function EmbyMediaBrowser({
           seasons={seasons}
           episodes={episodes}
           activeSeasonId={activeSeasonId}
-          onSeasonChange={setActiveSeasonId}
+          activeItemId={activeItemId}
+          onSeasonChange={changeActiveSeason}
           onItemChange={setActiveItemId}
         />
       ) : (
@@ -140,6 +147,7 @@ function MovieBrowser({
               key={`${version.item_id || "version"}-${index}`}
               type="button"
               className={activeItemId === version.item_id ? "is-active" : ""}
+              aria-pressed={activeItemId === version.item_id}
               onClick={() => version.item_id && onItemChange(version.item_id)}
             >
               <strong>{version.name || "Versione"}</strong>
@@ -158,12 +166,14 @@ function TvBrowser({
   seasons,
   episodes,
   activeSeasonId,
+  activeItemId,
   onSeasonChange,
   onItemChange,
 }: {
   seasons: SeasonsQuery;
   episodes: EpisodesQuery;
   activeSeasonId: string;
+  activeItemId: string;
   onSeasonChange: (seasonId: string) => void;
   onItemChange: (itemId: string) => void;
 }) {
@@ -183,6 +193,7 @@ function TvBrowser({
                 className={
                   activeSeasonId === season.season_id ? "is-active" : ""
                 }
+                aria-pressed={activeSeasonId === season.season_id}
                 onClick={() =>
                   season.season_id && onSeasonChange(season.season_id)
                 }
@@ -210,6 +221,7 @@ function TvBrowser({
                 <EpisodeButton
                   key={episode.episode_id}
                   episode={episode}
+                  activeItemId={activeItemId}
                   onItemChange={onItemChange}
                 />
               ))}
@@ -223,15 +235,19 @@ function TvBrowser({
 
 function EpisodeButton({
   episode,
+  activeItemId,
   onItemChange,
 }: {
   episode: EmbyEpisode;
+  activeItemId: string;
   onItemChange: (itemId: string) => void;
 }) {
   const first = episode.resolutions?.[0];
   return (
     <button
       type="button"
+      className={activeItemId === first?.item_id ? "is-active" : ""}
+      aria-pressed={activeItemId === first?.item_id}
       onClick={() => first?.item_id && onItemChange(first.item_id)}
     >
       <strong>{`E${String(episode.episode_number || 0).padStart(2, "0")}`}</strong>
@@ -316,7 +332,7 @@ function Loading({ label }: { label: string }) {
 }
 
 function BrowserError({ message }: { message: string }) {
-  return <p className="emby-browser-error">{message}</p>;
+  return <p className="emby-browser-error" role="alert">{message}</p>;
 }
 
 function seasonLabel(number: number | undefined) {

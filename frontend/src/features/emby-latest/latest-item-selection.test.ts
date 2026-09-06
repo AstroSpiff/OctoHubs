@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   latestItemSelectionKey,
+  latestPreviewRequestKey,
   reconcileLatestItemSelection,
 } from "@/features/emby-latest/latest-item-selection";
 
@@ -43,5 +44,37 @@ describe("latest item selection", () => {
     expect(latestItemSelectionKey(updates[0], 0)).not.toBe(
       latestItemSelectionKey(updates[1], 1),
     );
+  });
+
+  it("fingerprints preview content canonically and includes metadata changes", () => {
+    const first = {
+      server_id: "green",
+      item_id: "movie-1",
+      title: "Film",
+      overview: "Prima sinossi",
+      changes: [{ quality: "1080p", video_codec: "H264" }],
+      image_url: "/api/emby/green/items/movie-1/images/primary",
+    };
+    const reordered = {
+      image_url: "/api/emby/green/items/movie-1/images/primary",
+      changes: [{ video_codec: "H264", quality: "1080p" }],
+      overview: "Prima sinossi",
+      title: "Film",
+      item_id: "movie-1",
+      server_id: "green",
+    };
+    const updated = {
+      ...first,
+      overview: "Sinossi aggiornata",
+      changes: [{ quality: "2160p", video_codec: "HEVC" }],
+      image_url: "/api/emby/green/items/movie-1/images/primary?tag=new",
+    };
+
+    expect(
+      latestPreviewRequestKey("{{ overview }}", { movie: first }),
+    ).toBe(latestPreviewRequestKey("{{ overview }}", { movie: reordered }));
+    expect(
+      latestPreviewRequestKey("{{ overview }}", { movie: first }),
+    ).not.toBe(latestPreviewRequestKey("{{ overview }}", { movie: updated }));
   });
 });

@@ -51,6 +51,12 @@ function MobilePrimaryNavigation({ pathname }: { pathname: string }) {
     }, longPressDelay);
   }
 
+  function closeSecondaryMenu() {
+    clearLongPress();
+    suppressClickFor.current = null;
+    setSecondaryMenu(null);
+  }
+
   return (
     <>
       <nav
@@ -94,13 +100,14 @@ function MobilePrimaryNavigation({ pathname }: { pathname: string }) {
             </NavLink>
           );
         })}
+        <span className="sr-only" aria-live="polite">{primaryOrder.announcement}</span>
       </nav>
       {secondaryMenu?.secondary ? (
         <SecondaryNavigationSheet
           hash={hash}
           item={secondaryMenu}
           pathname={pathname}
-          onClose={() => setSecondaryMenu(null)}
+          onClose={closeSecondaryMenu}
         />
       ) : null}
     </>
@@ -147,6 +154,7 @@ function SecondaryNavigationSheet({
               interaction={submenuOrder.interaction(secondary.id, { dropAxis: "vertical" })}
             />
           ))}
+          <span className="sr-only" aria-live="polite">{submenuOrder.announcement}</span>
         </nav>
       </section>
     </DialogBackdrop>

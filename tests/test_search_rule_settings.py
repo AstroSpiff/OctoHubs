@@ -23,7 +23,7 @@ def test_update_search_rule_settings_normalizes_and_updates_active_config(monkey
                 "use_original_title": False,
                 "use_alt_titles_language": False,
                 "query_terms": ["2160p"],
-                "min_seeders": "3",
+                "min_seeders": 3,
                 "movie_sort_primary": "seeders_desc",
                 "movie_sort_secondary": "",
             },
@@ -38,5 +38,6 @@ def test_update_search_rule_settings_normalizes_and_updates_active_config(monkey
     assert updated["search_rules"]["use_original_title"] is False
     assert updated["search_rules"]["alt_titles_language"] == "disabled"
     assert config["SEARCH_RULES"] == updated["search_rules"]
-    assert active["SEARCH_RULES"] == updated["search_rules"]
+    assert search_rule_settings.config_manager._ACTIVE_CONFIG["SEARCH_RULES"] == updated["search_rules"]
+    assert search_rule_settings.config_manager._ACTIVE_CONFIG is not active
     assert persisted == [{"TARGET_LANGUAGES": ["ita", "italian"], "EXCLUDE_TAGS": ["cam"], "SEARCH_RULES": updated["search_rules"]}]

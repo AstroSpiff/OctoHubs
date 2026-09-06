@@ -98,6 +98,7 @@ function SearchResultTermMenu({
   return (
     <WriteAction>
       <div
+        id="research-result-term-menu"
         className="research-term-menu"
         ref={menuRef}
         aria-label={`Azioni per ${menu.term}`}

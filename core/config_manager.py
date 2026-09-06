@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import copy
-import json
-import os
+from functools import wraps
+import logging
+import threading
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from core.log_sanitization import format_exception_for_log
 from core.config import (
-    CONFIG_FILE,
     CONNECTION_FIELDS,
     DEFAULT_CONFIG,
     _default_search_rules,
@@ -26,10 +27,46 @@ from emby_runtime.event_bridge_settings import normalize_event_bridge_config
 from emby_users.registry import refresh_emby_user_manager_config
 from search.indexers import _jackett_configured, _prowlarr_configured
 
+
+logger = logging.getLogger(__name__)
+
 _ACTIVE_CONFIG: Optional[Dict[str, Any]] = copy.deepcopy(DEFAULT_CONFIG)
 _DB_BACKEND: Optional[DatabaseStorage] = None
 _DB_BACKEND_SIGNATURE: Optional[Tuple[Any, ...]] = None
 _SYNC_AUTO_SCHEDULER: Optional[Callable[[bool], None]] = None
+_CONFIG_LOAD_LOCK = threading.RLock()
+
+
+def _serialized_config_load(
+    callback: Callable[[], Tuple[Optional[Dict[str, Any]], bool]],
+) -> Callable[[], Tuple[Optional[Dict[str, Any]], bool]]:
+    @wraps(callback)
+    def locked() -> Tuple[Optional[Dict[str, Any]], bool]:
+        with _CONFIG_LOAD_LOCK:
+            return callback()
+
+    return locked
+
+
+def serialized_config_update(callback: Callable[..., Any]) -> Callable[..., Any]:
+    """Serialize a DB configuration mutation through runtime publication."""
+    @wraps(callback)
+    def locked(*args: Any, **kwargs: Any) -> Any:
+        with _CONFIG_LOAD_LOCK:
+            return callback(*args, **kwargs)
+
+    return locked
+
+
+def publish_active_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
+    """Atomically replace the process-local snapshot with committed updates."""
+    global _ACTIVE_CONFIG
+    with _CONFIG_LOAD_LOCK:
+        snapshot = copy.deepcopy(_ACTIVE_CONFIG if _ACTIVE_CONFIG is not None else DEFAULT_CONFIG)
+        for key, value in updates.items():
+            snapshot[key] = copy.deepcopy(value)
+        _ACTIVE_CONFIG = snapshot
+        return snapshot
 
 
 def set_sync_auto_scheduler(callback: Callable[[bool], None]) -> None:
@@ -45,9 +82,9 @@ def _apply_db_env_overrides(db_settings: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _get_effective_db_settings(raw_config: Dict[str, Any] | None) -> Dict[str, Any]:
-    base = _merge_database_settings((raw_config or {}).get("DATABASE"))
-    base["PASSWORD"] = ""
-    base["URL"] = ""
+    """Resolve database settings only from the deployment environment."""
+    del raw_config
+    base = _merge_database_settings(None)
     return _apply_db_env_overrides(base)
 
 
@@ -92,6 +129,13 @@ def _ensure_db_backend() -> DatabaseStorage:
     return _ensure_db_backend_for_settings(_ACTIVE_CONFIG.get("DATABASE", {}))
 
 
+def close_database_backend() -> None:
+    """Dispose the shared storage pool while keeping the backend reusable."""
+    backend = _DB_BACKEND
+    if backend is not None:
+        backend.close()
+
+
 def _db_enabled(settings: Dict[str, Any] | None) -> bool:
     if not settings:
         return False
@@ -102,19 +146,12 @@ def _get_db_backend(settings: Dict[str, Any] | None) -> DatabaseStorage:
     return _ensure_db_backend_for_settings(settings)
 
 
+@_serialized_config_load
 def load_config() -> Tuple[Optional[Dict[str, Any]], bool]:
-    """Carica la configurazione dal file JSON."""
+    """Load the canonical runtime configuration from PostgreSQL."""
     global _ACTIVE_CONFIG
 
-    file_config: Dict[str, Any] = {}
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r") as handle:
-                file_config = json.load(handle)
-        except (json.JSONDecodeError, IOError):
-            return None, False
-
-    database_settings = _get_effective_db_settings(file_config)
+    database_settings = _get_effective_db_settings(None)
     merged = copy.deepcopy(DEFAULT_CONFIG)
     merged["DATABASE"] = database_settings
 
@@ -130,57 +167,15 @@ def load_config() -> Tuple[Optional[Dict[str, Any]], bool]:
             _ACTIVE_CONFIG = merged
             return merged, False
     except StorageError as exc:
-        print(f"   -> Database non disponibile: {exc}")
+        logger.error("Database non disponibile:\n%s", format_exception_for_log(exc))
         merged["DATABASE"]["ENABLED"] = False
         _ACTIVE_CONFIG = merged
         return merged, False
-
-    legacy_target = file_config.get("TARGET_LANGUAGES")
-    legacy_exclude = file_config.get("EXCLUDE_TAGS")
-    legacy_rules = (file_config or {}).get("SEARCH_RULES")
-    legacy_resolution = (file_config or {}).get("RESOLUTION_RULES")
-    legacy_request_rules = (file_config or {}).get("REQUEST_RULES")
 
     app_settings = backend.load_app_settings() or {}
     if not isinstance(app_settings, dict):
         app_settings = {}
     search_rules = _default_search_rules()
-    need_save = False
-
-    legacy_trakt = file_config.get("TRAKT")
-    legacy_justwatch = file_config.get("JUSTWATCH")
-    legacy_emby = (file_config or {}).get("EMBY")
-    legacy_event_bridge = (file_config or {}).get("EVENT_BRIDGE")
-    for key in CONNECTION_FIELDS:
-        if key not in app_settings and key in file_config:
-            app_settings[key] = file_config.get(key)
-            need_save = True
-    if "TRAKT" not in app_settings and isinstance(legacy_trakt, dict):
-        app_settings["TRAKT"] = legacy_trakt
-        need_save = True
-    if "JUSTWATCH" not in app_settings and isinstance(legacy_justwatch, dict):
-        app_settings["JUSTWATCH"] = legacy_justwatch
-        need_save = True
-    if "EMBY" not in app_settings and isinstance(legacy_emby, dict):
-        app_settings["EMBY"] = legacy_emby
-        need_save = True
-    if "EVENT_BRIDGE" not in app_settings and isinstance(legacy_event_bridge, dict):
-        app_settings["EVENT_BRIDGE"] = legacy_event_bridge
-        need_save = True
-
-    if legacy_rules and not app_settings.get("SEARCH_RULES"):
-        app_settings["SEARCH_RULES"] = legacy_rules
-        need_save = True
-    if legacy_target and not app_settings.get("TARGET_LANGUAGES"):
-        app_settings["TARGET_LANGUAGES"] = legacy_target
-        need_save = True
-    if legacy_exclude and not app_settings.get("EXCLUDE_TAGS"):
-        app_settings["EXCLUDE_TAGS"] = legacy_exclude
-        need_save = True
-    if legacy_resolution and not app_settings.get("RESOLUTION_RULES"):
-        app_settings["RESOLUTION_RULES"] = legacy_resolution
-        need_save = True
-
     for key in CONNECTION_FIELDS:
         if key in app_settings:
             value = app_settings.get(key)
@@ -201,7 +196,7 @@ def load_config() -> Tuple[Optional[Dict[str, Any]], bool]:
     collection_settings = _merge_collection_settings(app_settings.get("COLLECTIONS"))
     event_bridge_config = normalize_event_bridge_config(app_settings.get("EVENT_BRIDGE"))
 
-    if need_save or not app_settings or "AUTO_TASKS" not in app_settings:
+    if not app_settings or "AUTO_TASKS" not in app_settings:
         persisted = dict(app_settings)
         persisted.update(
             {
@@ -223,15 +218,11 @@ def load_config() -> Tuple[Optional[Dict[str, Any]], bool]:
                 persisted[key] = DEFAULT_CONFIG.get(key, "")
             else:
                 persisted[key] = value
-        backend.save_app_settings(persisted)
-        app_settings = persisted
+        app_settings = backend.seed_app_settings(persisted)
     else:
         app_settings.setdefault("COLLECTIONS", collection_settings)
 
     request_rules = backend.load_request_rules()
-    if (not request_rules) and legacy_request_rules:
-        backend.save_request_rules(legacy_request_rules)
-        request_rules = legacy_request_rules
 
     merged["TARGET_LANGUAGES"] = target_langs
     merged["EXCLUDE_TAGS"] = exclude_tags
@@ -249,11 +240,16 @@ def load_config() -> Tuple[Optional[Dict[str, Any]], bool]:
 
     _ACTIVE_CONFIG = merged
     refresh_emby_user_manager_config(merged)
+    # Keep the already-created Latest singleton aligned with each committed
+    # configuration snapshot without creating it during config-only callers.
+    from emby_latest.manager import reconfigure_manager_if_initialized
+
+    reconfigure_manager_if_initialized(merged, backend)
 
     if _SYNC_AUTO_SCHEDULER is not None:
         try:
             _SYNC_AUTO_SCHEDULER(connection_valid)
         except Exception as exc:
-            print(f"   -> Errore sync AutoScheduler: {exc}")
+            logger.error("Errore sync AutoScheduler:\n%s", format_exception_for_log(exc))
 
     return merged, True

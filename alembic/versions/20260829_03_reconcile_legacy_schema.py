@@ -10,8 +10,11 @@ from __future__ import annotations
 from alembic import op
 from sqlalchemy import Column, Integer, inspect, text
 
-from core.auth import Base as AuthBase
-from core.storage.storage_models import Base as StorageBase
+from core.database_baseline_20260829 import (
+    REVISION_04_INDEX_NAMES,
+    REVISION_04_METADATA,
+    REVISION_04_TABLE_COLUMNS,
+)
 
 
 revision = "20260829_03"
@@ -32,36 +35,48 @@ def _column_names(bind, table_name: str) -> set[str]:
     return {column["name"] for column in inspect(bind).get_columns(table_name)}
 
 
+def _revision_columns(table):
+    return [
+        table.c[column_name]
+        for column_name in REVISION_04_TABLE_COLUMNS.get(table.name, ())
+        if column_name in table.c
+    ]
+
+
+def _revision_indexes(table):
+    allowed = set(REVISION_04_INDEX_NAMES.get(table.name, ()))
+    return [index for index in table.indexes if index.name in allowed]
+
+
 def _add_missing_model_columns(bind) -> None:
     """Add columns that create_all(checkfirst=True) cannot add to existing tables."""
     existing_tables = _table_names(bind)
-    for metadata in (StorageBase.metadata, AuthBase.metadata):
-        for table in metadata.sorted_tables:
-            if table.name not in existing_tables:
+    for table in REVISION_04_METADATA.sorted_tables:
+        if table.name not in existing_tables:
+            continue
+        existing_columns = _column_names(bind, table.name)
+        for model_column in _revision_columns(table):
+            if model_column.name in existing_columns:
                 continue
-            existing_columns = _column_names(bind, table.name)
-            for model_column in table.columns:
-                if model_column.name in existing_columns:
-                    continue
-                if (
-                    bind.dialect.name == "postgresql"
-                    and model_column.primary_key
-                    and isinstance(model_column.type, Integer)
-                ):
-                    bind.execute(
-                        text(
-                            f"ALTER TABLE {_quoted(bind, table.name)} "
-                            f"ADD COLUMN {_quoted(bind, model_column.name)} SERIAL"
-                        )
+            if (
+                bind.dialect.name == "postgresql"
+                and model_column.primary_key
+                and isinstance(model_column.type, Integer)
+            ):
+                bind.execute(
+                    text(
+                        f"ALTER TABLE {_quoted(bind, table.name)} "
+                        f"ADD COLUMN {_quoted(bind, model_column.name)} SERIAL"
                     )
-                else:
-                    # Legacy tables may already contain rows. Add nullable first;
-                    # known values are backfilled below without risking data loss.
-                    op.add_column(
-                        table.name,
-                        Column(model_column.name, model_column.type, nullable=True),
-                    )
-                existing_columns.add(model_column.name)
+                )
+            else:
+                # Legacy tables may already contain rows. Add nullable first;
+                # known values are backfilled below without risking data loss.
+                op.add_column(
+                    table.name,
+                    Column(model_column.name, model_column.type, nullable=True),
+                )
+            existing_columns.add(model_column.name)
 
 
 def _backfill_renamed_columns(bind) -> None:
@@ -195,12 +210,14 @@ def _bridge_legacy_tables(bind) -> None:
 def _create_missing_indexes(bind) -> None:
     tables = _table_names(bind)
     inspector = inspect(bind)
-    for table in StorageBase.metadata.sorted_tables:
+    for table in REVISION_04_METADATA.sorted_tables:
+        if table.name not in REVISION_04_TABLE_COLUMNS:
+            continue
         if table.name not in tables:
             continue
         existing = {index["name"] for index in inspector.get_indexes(table.name)}
         columns = _column_names(bind, table.name)
-        for index in table.indexes:
+        for index in _revision_indexes(table):
             if not index.name or index.name in existing:
                 continue
             if not {column.name for column in index.columns}.issubset(columns):

@@ -2,6 +2,75 @@
 
 from __future__ import annotations
 
+import logging
+from typing import Any
+
+from core.log_sanitization import (
+    format_exception_for_log,
+    sanitize_diagnostic_text,
+    sanitize_download_reference_for_log,
+    sanitize_url_for_log,
+)
+from core.safe_output import safe_print as print
+from search.query_safety import search_query_for_log
+
+
+logger = logging.getLogger(__name__)
+
+
+def stream_result_reference_log_lines(first: dict[str, Any]) -> tuple[str, str, str]:
+    """Return useful first-result diagnostics without reusable download secrets."""
+    return (
+        f"         magnet: {sanitize_download_reference_for_log(first.get('magnet'))}",
+        f"         torrent: {sanitize_download_reference_for_log(first.get('torrent'))}",
+        f"         web: {sanitize_url_for_log(first.get('web'))}",
+    )
+
+
+def _build_provider_search_tasks(
+    query_variants: Any,
+    search_types: list[str],
+    selected_indexers: Any,
+    config: dict[str, Any],
+) -> list[dict[str, Any]]:
+    from emby_runtime.api_clients import search_jackett, search_prowlarr
+    from search.indexers import _jackett_configured, _prowlarr_configured
+    from search.stream_limits import (
+        MAX_SEARCH_QUERY_LENGTH,
+        MAX_SEARCH_TASKS,
+        SearchWorkloadLimitError,
+    )
+
+    tasks: list[dict[str, Any]] = []
+    providers = (
+        ("prowlarr", search_prowlarr, _prowlarr_configured),
+        ("jackett", search_jackett, _jackett_configured),
+    )
+    for query_variant in query_variants:
+        query = str(query_variant or "").strip()
+        if not query:
+            continue
+        if len(query) > MAX_SEARCH_QUERY_LENGTH:
+            raise SearchWorkloadLimitError(
+                f"Le query non possono superare {MAX_SEARCH_QUERY_LENGTH} caratteri"
+            )
+        for media_type in search_types:
+            for indexer, search_func, is_configured in providers:
+                if indexer not in selected_indexers or not is_configured(config):
+                    continue
+                if len(tasks) >= MAX_SEARCH_TASKS:
+                    raise SearchWorkloadLimitError(
+                        f"La ricerca supera il limite di {MAX_SEARCH_TASKS} combinazioni"
+                    )
+                tasks.append(
+                    {
+                        "indexer": indexer,
+                        "query": query,
+                        "media_type": media_type,
+                        "func": search_func,
+                    }
+                )
+    return tasks
 
 
 async def search_streaming_parallel(
@@ -11,6 +80,7 @@ async def search_streaming_parallel(
     config,
     websocket,
     session_id,
+    owner_id,
     use_jellyseerr_logic=False,
     use_custom_rules=False,
     tmdb_id=None,
@@ -51,24 +121,24 @@ async def search_streaming_parallel(
         fetch_media_info,
         fetch_request_details,
         get_jellyseerr_requests,
-        search_jackett,
-        search_prowlarr,
     )
-    from search.indexers import _jackett_configured, _prowlarr_configured
     from search.library_index import _load_emby_library_title_index
+    from search.provider_outcomes import (
+        MAX_AGGREGATED_SEARCH_RESULTS,
+    provider_results_truncated,
+    validate_provider_results,
+)
     from search.rules import _compose_request_search_rules, _get_request_rule
     from search.outbound_execution import create_search_semaphore, run_outbound_search
     from search.stream_limits import (
-        MAX_SEARCH_QUERY_LENGTH,
-        MAX_SEARCH_TASKS,
         SearchClientDisconnected,
-        SearchWorkloadLimitError,
     )
     from core.config_manager import _ensure_db_backend
     from search.seasons import extract_request_seasons, get_episode_count_for_season, get_pending_episode_numbers
     from core.scanner import filter_results
     from core.search_normalizer import build_dedupe_key
     from search.utils import merge_duplicate_results, sort_results
+    from search.download_references import protect_download_references
     from search.customization import (
         apply_custom_search_rules,
         build_independent_query_variants,
@@ -81,7 +151,9 @@ async def search_streaming_parallel(
         try:
             # Verifica se il WebSocket è ancora aperto
             if websocket.client_state == WebSocketState.CONNECTED:
-                await websocket.send_json(data)
+                from core.websocket_io import send_json_bounded
+
+                await send_json_bounded(websocket, data)
                 return True
             return False
         except Exception:
@@ -99,6 +171,9 @@ async def search_streaming_parallel(
     seen_results = set()  # Deduplica globale
     all_results = []  # Lista di tutti i risultati per salvataggio finale
     query_attempts = []  # Lista delle query provate
+    successful_queries = 0
+    failed_queries = 0
+    global_truncated = False
     outbound_semaphore = create_search_semaphore()
 
     def normalize_search_types(raw_types):
@@ -136,7 +211,11 @@ async def search_streaming_parallel(
                 # 1. Cerca request_rule da Jellyseerr se disponibile
                 if validate_jellyseerr_config(config):
                     try:
-                        requests_data = get_jellyseerr_requests(config, silent=True)
+                        requests_data = await asyncio.to_thread(
+                            get_jellyseerr_requests,
+                            config,
+                            silent=True,
+                        )
                         target_type = _normalize_media_type(media_type)
                         for req in requests_data or []:
                             if not isinstance(req, dict):
@@ -155,14 +234,22 @@ async def search_streaming_parallel(
                             if _normalize_media_type(media_type) == "tv":
                                 details_cache = {}
                                 request_details = (
-                                    fetch_request_details(request_item.get("id"), config, details_cache)
+                                    await asyncio.to_thread(
+                                        fetch_request_details,
+                                        request_item.get("id"),
+                                        config,
+                                        details_cache,
+                                    )
                                     or request_item
                                 )
                             else:
                                 request_details = request_item
                             print(f"[STREAM] Trovata richiesta Jellyseerr ID {request_item.get('id')}")
-                    except Exception as e:
-                        print(f"[STREAM] Errore recupero richiesta Jellyseerr: {e}")
+                    except Exception as exc:
+                        logger.error(
+                            "[STREAM] Errore recupero richiesta Jellyseerr:\n%s",
+                            format_exception_for_log(exc),
+                        )
 
                 # 2. Componi request_rule se disponibile
                 if request_rule:
@@ -171,7 +258,8 @@ async def search_streaming_parallel(
 
                 # 3. Recupera info da TMDB e genera query complete
                 cache = {}
-                tmdb_payload, resolved_type = fetch_media_info(
+                tmdb_payload, resolved_type = await asyncio.to_thread(
+                    fetch_media_info,
                     {"tmdbId": tmdb_id_int, "mediaType": media_type},
                     effective_config,
                     cache,
@@ -235,11 +323,11 @@ async def search_streaming_parallel(
                             print(
                                 f"[STREAM] Generate {len(actual_query_variants)} query da TMDB con direttive Jellyseerr"
                             )
-        except Exception as e:
-            print(f"[STREAM] Errore generazione query Jellyseerr: {e}")
-            import traceback
-
-            traceback.print_exc()
+        except Exception as exc:
+            logger.error(
+                "[STREAM] Errore generazione query Jellyseerr:\n%s",
+                format_exception_for_log(exc),
+            )
             # Fallback alle query originali
 
     if not generated_from_tmdb and (use_custom_rules or selected_seasons):
@@ -253,46 +341,12 @@ async def search_streaming_parallel(
         if generated_queries:
             actual_query_variants = generated_queries
 
-    # Prepara tutte le combinazioni di ricerca
-    search_tasks = []
-
-    def add_search_task(*, indexer, query, media_type, func):
-        if len(search_tasks) >= MAX_SEARCH_TASKS:
-            raise SearchWorkloadLimitError(
-                f"La ricerca supera il limite di {MAX_SEARCH_TASKS} combinazioni"
-            )
-        search_tasks.append(
-            {
-                "indexer": indexer,
-                "query": query,
-                "media_type": media_type,
-                "func": func,
-            }
-        )
-
-    for query_variant in actual_query_variants:
-        normalized_query = (query_variant or "").strip()
-        if not normalized_query:
-            continue
-        if len(normalized_query) > MAX_SEARCH_QUERY_LENGTH:
-            raise SearchWorkloadLimitError(
-                f"Le query non possono superare {MAX_SEARCH_QUERY_LENGTH} caratteri"
-            )
-        for search_type in search_types:
-            if "prowlarr" in selected_indexers and _prowlarr_configured(config):
-                add_search_task(
-                    indexer="prowlarr",
-                    query=normalized_query,
-                    media_type=search_type,
-                    func=search_prowlarr,
-                )
-            if "jackett" in selected_indexers and _jackett_configured(config):
-                add_search_task(
-                    indexer="jackett",
-                    query=normalized_query,
-                    media_type=search_type,
-                    func=search_jackett,
-                )
+    search_tasks = _build_provider_search_tasks(
+        actual_query_variants,
+        search_types,
+        selected_indexers,
+        config,
+    )
 
     total_queries = len(search_tasks)
 
@@ -303,6 +357,7 @@ async def search_streaming_parallel(
     # Funzione wrapper per eseguire singola ricerca e inviare risultati via WebSocket
     async def execute_and_stream(task):
         nonlocal total_results, completed_queries, seen_results
+        nonlocal successful_queries, failed_queries, global_truncated
 
         query = task["query"]
         indexer = task["indexer"]
@@ -324,16 +379,20 @@ async def search_streaming_parallel(
 
         # Esegui ricerca (bloccante, ma in thread separato)
         try:
-            results = await run_outbound_search(
-                outbound_semaphore,
-                search_func,
-                query,
-                media_type,
-                config,
+            results = validate_provider_results(
+                await run_outbound_search(
+                    outbound_semaphore,
+                    search_func,
+                    query,
+                    media_type,
+                    config,
+                ),
+                provider=indexer,
             )
 
             query_duration = time.time() - query_start
             result_count = len(results) if results else 0
+            global_truncated = global_truncated or provider_results_truncated(results)
 
             # Usa filter_results ESATTAMENTE come fa "Ricerche & Riepilogo"
             if results:
@@ -349,38 +408,26 @@ async def search_streaming_parallel(
                     request_rules=filter_request_rules,
                 )
 
-                library_index = _load_emby_library_title_index()
-
-                # Invia i risultati filtrati via WebSocket
+                # Collect within the end-to-end budget. Membership is resolved
+                # once, authoritatively, after all providers have completed.
                 for result in filtered_results:
                     if not isinstance(result, dict):
                         continue
 
-                    # Aggiungi info sulla libreria Emby
                     normalized_title = result.get("normalized_title") or sanitize_title((result.get("title") or "").lower())
                     result["normalized_title"] = normalized_title
-                    result["in_library"] = bool(library_index and normalized_title in library_index)
 
-                    # Manteniamo tutte le fonti per il raggruppamento finale. Durante
-                    # lo streaming mostriamo comunque una sola riga per risultato.
                     result_key = build_dedupe_key(result)
+                    if len(all_results) >= MAX_AGGREGATED_SEARCH_RESULTS:
+                        global_truncated = True
+                        continue
                     all_results.append(result)
-
                     if result_key not in seen_results:
                         seen_results.add(result_key)
                         total_results += 1
 
-                        # Invia risultato via WebSocket
-                        await send_json_or_disconnect(
-                            {
-                                "type": "result",
-                                "data": result,
-                                "query": query,
-                                "indexer": indexer,
-                                "media_type": media_type,
-                                "timestamp": datetime.now().isoformat(),
-                            }
-                        )
+            # Solo una pipeline interamente validata e filtrata conta come successo.
+            successful_queries += 1
 
             # Traccia query attempt
             query_attempts.append(
@@ -413,10 +460,11 @@ async def search_streaming_parallel(
         except Exception as exc:
             query_duration = time.time() - query_start
             completed_queries += 1
+            failed_queries += 1
             error_message = (
                 "Timeout durante la ricerca sull'indexer"
                 if isinstance(exc, TimeoutError)
-                else str(exc)
+                else "Errore durante la ricerca sull'indexer"
             )
 
             # Traccia query fallita
@@ -431,7 +479,11 @@ async def search_streaming_parallel(
                 }
             )
 
-            print(f"[STREAM] Errore ricerca {indexer} per '{query}': {error_message}")
+            print(
+                f"[STREAM] Errore ricerca {sanitize_diagnostic_text(indexer)} "
+                f"per '{search_query_for_log(query)}': "
+                f"{sanitize_diagnostic_text(exc)}"
+            )
             await send_json_or_disconnect(
                 {
                     "type": "error",
@@ -455,6 +507,24 @@ async def search_streaming_parallel(
         await asyncio.gather(*running_tasks, return_exceptions=True)
         raise
 
+    if successful_queries == 0:
+        total_duration = time.time() - start_time
+        final_message = {
+            "type": "all_completed",
+            "status": "error",
+            "message": "Nessun indexer ha completato la ricerca",
+            "total_results": 0,
+            "total_queries": total_queries,
+            "failed_queries": failed_queries,
+            "total_duration": round(total_duration, 2),
+            "timestamp": datetime.now().isoformat(),
+            "filters_applied": True,
+            "truncated": False,
+            "history_saved": False,
+        }
+        await send_json_or_disconnect(final_message)
+        return final_message
+
     # Invia messaggio di completamento finale
     total_duration = time.time() - start_time
 
@@ -469,25 +539,74 @@ async def search_streaming_parallel(
     # stesse regole delle ricerche automatiche e le altre restano disponibili.
     search_rules = effective_config.get("SEARCH_RULES", {})
     media_type_for_sort = search_types[0] if len(search_types) == 1 else None
-    all_results = sort_results(all_results, search_rules, media_type=media_type_for_sort)
-    all_results = merge_duplicate_results(all_results)
+    def sort_and_merge_results():
+        sorted_results = sort_results(
+            all_results,
+            search_rules,
+            media_type=media_type_for_sort,
+        )
+        return merge_duplicate_results(sorted_results)
+
+    all_results = await asyncio.to_thread(sort_and_merge_results)
+    all_results = all_results[:MAX_AGGREGATED_SEARCH_RESULTS]
     print(f"[STREAM] Dopo merge duplicati: {len(all_results)} risultati unici")
 
     # Debug: stampa il primo risultato dopo merge
     if all_results:
         first = all_results[0]
         print("      -> [DEBUG STREAM] Primo risultato DOPO merge_duplicate_results:")
-        print(f"         magnet: {first.get('magnet')}")
-        print(f"         torrent: {first.get('torrent')}")
-        print(f"         web: {first.get('web')}")
+        for diagnostic in stream_result_reference_log_lines(first):
+            print(diagnostic)
 
     # Aggiorna il conteggio dopo merge
     total_results = len(all_results)
 
-    # Salva ricerca nel database (stesso formato delle ricerche automatiche)
+    normalized_titles = {
+        str(result.get("normalized_title") or "")
+        for result in all_results
+        if isinstance(result, dict) and result.get("normalized_title")
+    }
     try:
-        backend = _ensure_db_backend()
+        library_index = await asyncio.to_thread(
+            _load_emby_library_title_index,
+            normalized_titles,
+        )
+    except Exception as exc:
+        logger.error(
+            "[STREAM] Verifica libreria non disponibile:\n%s",
+            format_exception_for_log(exc),
+        )
+        total_duration = time.time() - start_time
+        final_message = {
+            "type": "all_completed",
+            "status": "error",
+            "message": "Impossibile verificare la presenza nella libreria Emby",
+            "total_results": 0,
+            "total_queries": total_queries,
+            "failed_queries": failed_queries,
+            "total_duration": round(total_duration, 2),
+            "timestamp": datetime.now().isoformat(),
+            "filters_applied": True,
+            "truncated": global_truncated,
+            "history_saved": False,
+        }
+        await send_json_or_disconnect(final_message)
+        return final_message
 
+    for result in all_results:
+        normalized_title = str(result.get("normalized_title") or "")
+        result["in_library"] = normalized_title in library_index
+        await send_json_or_disconnect(
+            {
+                "type": "result",
+                "data": protect_download_references(result, int(owner_id)),
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
+
+    # Salva ricerca nel database (stesso formato delle ricerche automatiche)
+    history_saved = True
+    try:
         # Estrai dati dalla prima variante di query
         original_query = query_variants[0] if query_variants else "Ricerca Manuale"
         media_type_str = search_types[0] if len(search_types) == 1 else "mixed"
@@ -525,24 +644,46 @@ async def search_streaming_parallel(
             ],
         }
 
-        backend.save_manual_search(search_payload)
+        def save_search() -> None:
+            backend = _ensure_db_backend()
+            backend.save_manual_search(search_payload)
+
+        await asyncio.to_thread(save_search)
         print(f"[STREAM] Ricerca salvata nel database: {total_results} risultati")
-    except Exception as e:
-        print(f"[STREAM] Errore salvataggio ricerca DB: {e}")
+    except Exception as exc:
+        history_saved = False
+        print(
+            "[STREAM] Errore salvataggio ricerca DB: "
+            f"{sanitize_diagnostic_text(exc)}"
+        )
 
     # Se sono stati applicati filtri Jellyseerr, invia i risultati finali filtrati
     final_message = {
         "type": "all_completed",
+        "status": (
+            "partial"
+            if failed_queries or global_truncated or not history_saved
+            else "success"
+        ),
         "total_results": total_results,
         "total_queries": total_queries,
+        "failed_queries": failed_queries,
         "total_duration": round(total_duration, 2),
         "timestamp": datetime.now().isoformat(),
         "filters_applied": filters_applied,
+        "truncated": global_truncated,
+        "history_saved": history_saved,
     }
-
-    # Se sono stati applicati filtri, includi i risultati finali filtrati
-    if filters_applied:
-        final_message["filtered_results"] = all_results
+    if final_message["status"] == "partial":
+        final_message["message"] = (
+            "Ricerca completata parzialmente; verifica indexer, limiti e storico"
+        )
+    # Preserve the established terminal contract; hard caps make this
+    # compatibility copy deterministic and bounded.
+    final_message["filtered_results"] = protect_download_references(
+        all_results,
+        int(owner_id),
+    )
 
     await send_json_or_disconnect(final_message)
 
@@ -550,4 +691,8 @@ async def search_streaming_parallel(
         "total_results": total_results,
         "total_queries": total_queries,
         "total_duration": round(total_duration, 2),
+        "status": final_message["status"],
+        "failed_queries": failed_queries,
+        "truncated": global_truncated,
+        "history_saved": history_saved,
     }

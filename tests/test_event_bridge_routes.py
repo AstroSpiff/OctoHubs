@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -11,16 +12,40 @@ from starlette.websockets import WebSocketDisconnect
 from emby_runtime.event_bridge_auth import EventBridgePrincipal
 
 
+@pytest.mark.anyio
+async def test_event_bridge_outbound_frame_has_a_bounded_deadline(monkeypatch):
+    from emby_runtime import event_bridge_routes
+
+    class _StalledSocket:
+        async def send_json(self, _payload):
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(event_bridge_routes, "EVENT_BRIDGE_SEND_TIMEOUT_SECONDS", 0.01)
+
+    with pytest.raises(WebSocketDisconnect):
+        await asyncio.wait_for(
+            event_bridge_routes._send_event_bridge_json(_StalledSocket(), {"type": "event_ack"}),
+            0.2,
+        )
+
+
 @pytest.fixture(autouse=True)
 def _server_credentials(monkeypatch):
+    from emby_runtime.event_bridge_connection_limits import reset_event_bridge_connection_limits
     from emby_runtime.event_bridge_limits import reset_event_bridge_ingress_limiter
 
+    reset_event_bridge_connection_limits()
     reset_event_bridge_ingress_limiter()
     monkeypatch.setattr(
         "emby_runtime.event_bridge_routes.authenticate_event_bridge",
         lambda headers: EventBridgePrincipal(str(headers.get("X-OctoHubs-Server-Id") or "")),
     )
+    monkeypatch.setattr(
+        "emby_runtime.event_bridge_routes.event_bridge_principal_is_current",
+        lambda _principal: True,
+    )
     yield
+    reset_event_bridge_connection_limits()
     reset_event_bridge_ingress_limiter()
 
 
@@ -63,6 +88,172 @@ class _FakeWebSocket:
 
     async def send_json(self, payload):
         self.sent.append(payload)
+
+
+class _BlockingWebSocket(_FakeWebSocket):
+    def __init__(self, headers=None):
+        super().__init__([], headers=headers)
+        self.receiving = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def receive(self):
+        self.receiving.set()
+        await self.release.wait()
+        raise WebSocketDisconnect(code=1000)
+
+
+class _HelloThenBlockingWebSocket(_FakeWebSocket):
+    def __init__(self, headers=None):
+        super().__init__([], headers=headers)
+        self._hello_sent = False
+        self.receiving_after_hello = asyncio.Event()
+
+    async def receive(self):
+        if not self._hello_sent:
+            self._hello_sent = True
+            return {
+                "type": "websocket.receive",
+                "text": json.dumps({"type": "hello", "serverId": "green"}),
+            }
+        self.receiving_after_hello.set()
+        await asyncio.Event().wait()
+
+
+@pytest.mark.anyio
+async def test_event_bridge_websocket_times_out_before_first_frame(monkeypatch):
+    from emby_runtime import event_bridge_routes
+
+    monkeypatch.setattr(event_bridge_routes, "EVENT_BRIDGE_HELLO_TIMEOUT_SECONDS", 0.01)
+    websocket = _BlockingWebSocket(
+        headers={"X-Webhook-Secret": "bridge-secret", "X-OctoHubs-Server-Id": "green"},
+    )
+
+    await event_bridge_routes.api_event_bridge_websocket(websocket)
+
+    assert websocket.accepted is True
+    assert websocket.closed is True
+    assert websocket.close_code == 1008
+
+
+@pytest.mark.anyio
+async def test_event_bridge_websocket_rejects_control_frames_before_hello():
+    from emby_runtime import event_bridge_routes
+
+    websocket = _FakeWebSocket(
+        [{"type": "configure_ack", "serverId": "green", "id": "stale"}],
+        headers={"X-OctoHubs-Server-Id": "green"},
+    )
+
+    await event_bridge_routes.api_event_bridge_websocket(websocket)
+
+    assert websocket.closed is True
+    assert websocket.close_code == 1008
+
+
+@pytest.mark.anyio
+async def test_event_bridge_websocket_caps_live_connections_per_server(monkeypatch):
+    from emby_runtime import event_bridge_routes
+
+    monkeypatch.setenv("OCTOHUBS_EVENT_BRIDGE_CONNECTIONS_PER_SERVER", "2")
+    headers = {"X-Webhook-Secret": "bridge-secret", "X-OctoHubs-Server-Id": "green"}
+    first = _BlockingWebSocket(headers=headers)
+    second = _BlockingWebSocket(headers=headers)
+    rejected = _BlockingWebSocket(headers=headers)
+    first_task = asyncio.create_task(event_bridge_routes.api_event_bridge_websocket(first))
+    second_task = asyncio.create_task(event_bridge_routes.api_event_bridge_websocket(second))
+    await first.receiving.wait()
+    await second.receiving.wait()
+
+    await event_bridge_routes.api_event_bridge_websocket(rejected)
+
+    assert rejected.accepted is False
+    assert rejected.closed is True
+    assert rejected.close_code == 1013
+    first.release.set()
+    second.release.set()
+    await asyncio.gather(first_task, second_task)
+
+
+@pytest.mark.anyio
+async def test_event_bridge_websocket_caps_live_connections_globally(monkeypatch):
+    from emby_runtime import event_bridge_routes
+
+    monkeypatch.setenv("OCTOHUBS_EVENT_BRIDGE_CONNECTIONS_GLOBAL", "2")
+    monkeypatch.setenv("OCTOHUBS_EVENT_BRIDGE_CONNECTIONS_PER_SERVER", "20")
+    first = _BlockingWebSocket(headers={"X-OctoHubs-Server-Id": "green"})
+    second = _BlockingWebSocket(headers={"X-OctoHubs-Server-Id": "blue"})
+    rejected = _BlockingWebSocket(headers={"X-OctoHubs-Server-Id": "purple"})
+    first_task = asyncio.create_task(event_bridge_routes.api_event_bridge_websocket(first))
+    second_task = asyncio.create_task(event_bridge_routes.api_event_bridge_websocket(second))
+    await first.receiving.wait()
+    await second.receiving.wait()
+
+    await event_bridge_routes.api_event_bridge_websocket(rejected)
+
+    assert rejected.accepted is False
+    assert rejected.close_code == 1013
+    first.release.set()
+    second.release.set()
+    await asyncio.gather(first_task, second_task)
+
+
+@pytest.mark.anyio
+async def test_event_bridge_websocket_times_out_after_application_idle(monkeypatch):
+    from emby_runtime import event_bridge_routes
+
+    monkeypatch.setattr(event_bridge_routes, "EVENT_BRIDGE_IDLE_TIMEOUT_SECONDS", 0.01)
+    websocket = _HelloThenBlockingWebSocket(
+        headers={"X-OctoHubs-Server-Id": "green"},
+    )
+
+    await event_bridge_routes.api_event_bridge_websocket(websocket)
+
+    assert websocket.sent[0]["type"] == "hello_ack"
+    assert websocket.receiving_after_hello.is_set()
+    assert websocket.closed is True
+    assert websocket.close_code == 1008
+
+
+@pytest.mark.anyio
+async def test_event_bridge_websocket_releases_connection_lease(monkeypatch):
+    from emby_runtime import event_bridge_routes
+
+    monkeypatch.setenv("OCTOHUBS_EVENT_BRIDGE_CONNECTIONS_PER_SERVER", "1")
+    headers = {"X-Webhook-Secret": "bridge-secret", "X-OctoHubs-Server-Id": "green"}
+    disconnected = _FakeWebSocket([], headers=headers)
+    replacement = _FakeWebSocket([], headers=headers)
+
+    await event_bridge_routes.api_event_bridge_websocket(disconnected)
+    await event_bridge_routes.api_event_bridge_websocket(replacement)
+
+    assert disconnected.accepted is True
+    assert replacement.accepted is True
+
+
+@pytest.mark.anyio
+async def test_event_bridge_websocket_revalidates_credential_before_each_frame(
+    monkeypatch,
+):
+    from emby_runtime import event_bridge_routes
+
+    checks = iter((True, False))
+    monkeypatch.setattr(
+        event_bridge_routes,
+        "event_bridge_principal_is_current",
+        lambda _principal: next(checks),
+    )
+    websocket = _FakeWebSocket(
+        [
+            {"type": "hello", "serverId": "green", "serverName": "Green"},
+            {"serverId": "green", "event": {"name": "PlaybackStart"}},
+        ],
+        headers={"X-Webhook-Secret": "bridge-secret", "X-OctoHubs-Server-Id": "green"},
+    )
+
+    await event_bridge_routes.api_event_bridge_websocket(websocket)
+
+    assert websocket.closed is True
+    assert websocket.close_code == 1008
 
 
 @pytest.mark.anyio
@@ -117,8 +308,9 @@ async def test_event_bridge_websocket_accepts_plugin_events(monkeypatch):
         item["server_id"]: item
         for item in get_event_bridge_manager().status()["servers"]
     }
-    assert status_by_id["green"]["last_config_ack_status"] == "applied"
-    assert status_by_id["green"]["last_config_ack_message_id"] == "cfg-green-test"
+    # An unsolicited/stale ACK must not acknowledge the current configuration.
+    assert status_by_id["green"]["last_config_ack_status"] == ""
+    assert status_by_id["green"]["last_config_ack_message_id"] == ""
     assert status_by_id["green"]["connected"] is False
 
 
@@ -268,6 +460,27 @@ async def test_event_bridge_websocket_closes_when_server_quota_is_exhausted(monk
     assert websocket.accepted is True
     assert websocket.closed is True
     assert websocket.close_code == 1008
+
+
+@pytest.mark.anyio
+async def test_event_bridge_websocket_closes_when_byte_quota_is_exhausted(monkeypatch):
+    from emby_runtime import event_bridge_routes
+
+    monkeypatch.setattr(
+        event_bridge_routes,
+        "consume_event_bridge_bytes",
+        lambda _server_id, _byte_count: False,
+    )
+    websocket = _FakeWebSocket(
+        [{"type": "hello", "serverId": "green", "serverName": "Green"}],
+        headers={"X-Webhook-Secret": "green-token", "X-OctoHubs-Server-Id": "green"},
+    )
+
+    await event_bridge_routes.api_event_bridge_websocket(websocket)
+
+    assert websocket.accepted is True
+    assert websocket.closed is True
+    assert websocket.close_code == 1013
 
 
 def test_event_bridge_transport_marks_batched_events():

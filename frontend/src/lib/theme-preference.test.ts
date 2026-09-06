@@ -48,4 +48,15 @@ describe("theme preference", () => {
     expect(root.dataset.theme).toBe("dark");
     expect(root.style.colorScheme).toBe("dark");
   });
+
+  it("falls back to the system theme when storage reads fail", () => {
+    const storage = {
+      getItem: () => {
+        throw new DOMException("denied", "SecurityError");
+      },
+      setItem: () => undefined,
+    };
+
+    expect(resolveApplicationTheme(storage, true)).toBe("dark");
+  });
 });

@@ -116,6 +116,49 @@ class _ContinuousProbeManager(_ParallelProbeManager):
 
 
 class EmbyProbeManagerStopTests(unittest.TestCase):
+    def test_status_returns_a_deep_snapshot_not_live_worker_state(self):
+        manager = EmbyProbeManager()
+        manager._status["server-a"] = {
+            "discovery": {"running": True, "items": [{"id": "one"}]}
+        }
+
+        snapshot = manager.get_status("server-a")
+        snapshot["discovery"]["items"][0]["id"] = "mutated"
+        snapshot["discovery"]["running"] = False
+
+        current = manager.get_status("server-a")
+        self.assertTrue(current["discovery"]["running"])
+        self.assertEqual("one", current["discovery"]["items"][0]["id"])
+
+    def test_failed_recent_processing_start_rolls_back_pause_and_running_state(self):
+        manager = EmbyProbeManager()
+        server = {"id": "server-a", "enabled": True}
+
+        with patch("threading.Thread.start", side_effect=RuntimeError("thread unavailable")):
+            with self.assertRaisesRegex(RuntimeError, "thread unavailable"):
+                manager.start_recent_processing(server, "server-a")
+
+        self.assertFalse(manager._get_libraries_pause_flag("server-a").is_set())
+        self.assertNotIn("recent_processing", manager._workers["server-a"])
+        self.assertNotIn("recent_processing", manager._stop_flags["server-a"])
+        self.assertFalse(manager._status["server-a"]["recent_processing"]["running"])
+        self.assertEqual(
+            "Avvio worker non riuscito",
+            manager._status["server-a"]["recent_processing"]["last_log"],
+        )
+
+    def test_quiesce_tombstone_rejects_new_server_workers_until_cleanup_finishes(self):
+        manager = EmbyProbeManager()
+        server = {"id": "server-a", "enabled": True}
+
+        self.assertTrue(manager.quiesce_server("server-a", 0.1))
+        self.assertFalse(manager.start_discovery(server, "server-a"))
+        self.assertFalse(manager.start_recent_processing(server, "server-a"))
+        self.assertNotIn("server-a", manager._workers)
+
+        manager.release_server("server-a")
+        self.assertNotIn("server-a", manager._quiescing_servers)
+
     def test_stop_recent_combo_stops_child_workers_for_server(self):
         manager = EmbyProbeManager()
         manager._stop_flags["server-a"] = {

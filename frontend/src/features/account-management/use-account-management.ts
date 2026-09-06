@@ -15,6 +15,9 @@ import {
   updateCurrentPassword,
 } from "@/features/account-management/api";
 import type { ApiTokenAuditFilters, CreateApiTokenInput, CreateOctoHubsAccountInput, UpdateOctoHubsAccountInput } from "@/features/account-management/types";
+import { useKeyedOperationState } from "@/lib/use-keyed-operation-state";
+import { useSensitiveMutation } from "@/lib/use-sensitive-mutation";
+import { useWorkspaceCapabilities } from "@/features/session/workspace-capabilities-context";
 
 function useApiTokenAudit(filters: ApiTokenAuditFilters, enabled: boolean) {
   return useQuery({
@@ -25,12 +28,14 @@ function useApiTokenAudit(filters: ApiTokenAuditFilters, enabled: boolean) {
 }
 
 function useAccountManagement() {
+  const { canMutate } = useWorkspaceCapabilities();
   const client = useQueryClient();
+  const accountOperations = useKeyedOperationState();
   const profile = useQuery({ queryKey: ["account", "me"], queryFn: getCurrentAccount });
   const accounts = useQuery({
     queryKey: ["account", "list"],
     queryFn: getAccounts,
-    enabled: profile.data?.role === "admin",
+    enabled: canMutate && profile.data?.role === "admin",
   });
   const apiTokens = useQuery({
     queryKey: ["account", "tokens"],
@@ -42,8 +47,8 @@ function useAccountManagement() {
     void client.invalidateQueries({ queryKey: ["account", "tokens"] });
     void client.invalidateQueries({ queryKey: ["account", "token-audit"] });
   };
-  const updatePassword = useMutation({ mutationFn: updateCurrentPassword });
-  const createToken = useMutation({
+  const updatePassword = useSensitiveMutation({ mutationFn: updateCurrentPassword });
+  const createToken = useSensitiveMutation({
     mutationFn: createApiToken,
     onSuccess: invalidateApiTokens,
   });
@@ -51,15 +56,16 @@ function useAccountManagement() {
     mutationFn: revokeApiToken,
     onSuccess: invalidateApiTokens,
   });
-  const rotateToken = useMutation({
+  const rotateToken = useSensitiveMutation({
     mutationFn: rotateApiToken,
     onSuccess: invalidateApiTokens,
+    publicVariables: (tokenId) => tokenId,
   });
-  const create = useMutation({
+  const create = useSensitiveMutation({
     mutationFn: createAccount,
     onSuccess: invalidateAccounts,
   });
-  const update = useMutation({
+  const update = useSensitiveMutation({
     mutationFn: ({ accountId, input }: { accountId: number; input: UpdateOctoHubsAccountInput }) => updateAccount(accountId, input),
     onSuccess: invalidateAccounts,
   });
@@ -68,8 +74,23 @@ function useAccountManagement() {
     onSuccess: invalidateAccounts,
   });
 
+  async function runAccountOperation<T>(accountId: number, operation: () => Promise<T>): Promise<T | undefined> {
+    const key = String(accountId);
+    if (accountOperations.isPending(key)) return undefined;
+    accountOperations.begin([key]);
+    try {
+      return await operation();
+    } catch (error) {
+      accountOperations.fail([key], error);
+      throw error;
+    } finally {
+      accountOperations.finish([key]);
+    }
+  }
+
   return {
     accounts,
+    accountOperations,
     create,
     apiTokens,
     createToken,
@@ -80,8 +101,12 @@ function useAccountManagement() {
     update,
     updatePassword,
     createAccount: (input: CreateOctoHubsAccountInput) => create.mutateAsync(input),
+    deleteAccount: (accountId: number) =>
+      runAccountOperation(accountId, () => remove.mutateAsync(accountId)),
     createApiToken: (input: CreateApiTokenInput) => createToken.mutateAsync(input),
     exportApiTokenAudit,
+    updateAccount: (accountId: number, input: UpdateOctoHubsAccountInput) =>
+      runAccountOperation(accountId, () => update.mutateAsync({ accountId, input })),
   };
 }
 

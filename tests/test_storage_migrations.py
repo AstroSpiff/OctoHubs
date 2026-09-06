@@ -2,7 +2,33 @@
 
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import create_engine, inspect, text
+
+
+def test_postgresql_version_floor_is_enforced_before_migrations():
+    from core.database_migrations import DatabaseMigrationError, ensure_supported_database
+
+    class _Result:
+        def __init__(self, version):
+            self.version = version
+
+        def scalar_one(self):
+            return self.version
+
+    class _Connection:
+        dialect = type("Dialect", (), {"name": "postgresql"})()
+
+        def __init__(self, version):
+            self.version = version
+
+        def execute(self, _statement):
+            return _Result(self.version)
+
+    with pytest.raises(DatabaseMigrationError, match="PostgreSQL 16"):
+        ensure_supported_database(_Connection(150_999))
+
+    ensure_supported_database(_Connection(160_000))
 
 
 def test_alembic_config_preserves_percent_encoded_database_urls():
@@ -28,6 +54,20 @@ def test_dry_run_reports_uninitialized_database_without_writing(tmp_path):
         "20260829_04",
         "20260829_05",
         "20260830_06",
+        "20260830_07",
+        "20260831_08",
+        "20260831_09",
+        "20260831_10",
+        "20260831_11",
+        "20260831_12",
+        "20260901_13",
+        "20260901_14",
+        "20260902_15",
+        "20260902_16",
+        "20260902_17",
+        "20260905_18",
+        "20260906_19",
+        "20260906_20",
     ]
     engine = create_engine(database_url, future=True)
     try:
@@ -52,6 +92,20 @@ def test_upgrade_records_the_unified_alembic_baseline(tmp_path):
         "20260829_04",
         "20260829_05",
         "20260830_06",
+        "20260830_07",
+        "20260831_08",
+        "20260831_09",
+        "20260831_10",
+        "20260831_11",
+        "20260831_12",
+        "20260901_13",
+        "20260901_14",
+        "20260902_15",
+        "20260902_16",
+        "20260902_17",
+        "20260905_18",
+        "20260906_19",
+        "20260906_20",
     ]
     assert status.applied == [
         "20260829_01",
@@ -60,6 +114,20 @@ def test_upgrade_records_the_unified_alembic_baseline(tmp_path):
         "20260829_04",
         "20260829_05",
         "20260830_06",
+        "20260830_07",
+        "20260831_08",
+        "20260831_09",
+        "20260831_10",
+        "20260831_11",
+        "20260831_12",
+        "20260901_13",
+        "20260901_14",
+        "20260902_15",
+        "20260902_16",
+        "20260902_17",
+        "20260905_18",
+        "20260906_19",
+        "20260906_20",
     ]
     assert status.pending == []
     assert validation["ok"] is True
@@ -73,8 +141,139 @@ def test_upgrade_records_the_unified_alembic_baseline(tmp_path):
             "api_tokens",
             "audit_logs",
             "emby_latest_notification_deliveries",
+            "emby_user_creation_journal",
         }.issubset(names)
         assert "schema_migrations" not in names
+    finally:
+        engine.dispose()
+
+
+def test_latest_legacy_projection_is_materialized_once_then_dropped(tmp_path):
+    from alembic import command
+
+    from core.database_migrations import alembic_config
+    from core.storage import DatabaseStorage
+
+    database_url = f"sqlite:///{tmp_path / 'latest-forward-only.db'}"
+    command.upgrade(alembic_config(database_url), "20260905_18")
+    engine = create_engine(database_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("DELETE FROM emby_latest_state_document"))
+            connection.execute(
+                text(
+                    "CREATE TABLE emby_latest_state_movies ("
+                    "server_id VARCHAR(36) NOT NULL, state_key VARCHAR(255) NOT NULL, "
+                    "item_id VARCHAR(36), signature VARCHAR(255), title VARCHAR(500), "
+                    "year INTEGER, last_seen_at DATETIME, media_source_keys JSON, "
+                    "notified BOOLEAN, notified_at DATETIME, "
+                    "PRIMARY KEY (server_id, state_key))"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO emby_latest_state_movies "
+                    "(server_id, state_key, item_id, title, year, notified) "
+                    "VALUES ('server-1', 'movie-1', 'item-1', 'Film', 2026, 0)"
+                )
+            )
+        command.upgrade(alembic_config(database_url), "head")
+        inspector = inspect(engine)
+        assert inspector.has_table("emby_latest_state_document")
+        for table in (
+            "emby_latest_state_movies",
+            "emby_latest_state_series",
+            "emby_latest_state_episodes",
+            "emby_latest_state_series_groups",
+            "emby_latest_state_series_changes",
+        ):
+            assert not inspector.has_table(table)
+    finally:
+        engine.dispose()
+
+    storage = DatabaseStorage({"URL": database_url})
+    try:
+        state = storage.load_latest_state()
+        assert state["server-1"]["movies"]["items"]["movie-1"]["title"] == "Film"
+    finally:
+        storage.close()
+
+
+def test_baseline_revision_does_not_create_later_auth_columns(tmp_path):
+    from alembic import command
+
+    from core.database_migrations import alembic_config
+
+    database_url = f"sqlite:///{tmp_path / 'baseline.db'}"
+    command.upgrade(alembic_config(database_url), "20260829_01")
+
+    engine = create_engine(database_url, future=True)
+    try:
+        columns = {
+            column["name"]
+            for column in inspect(engine).get_columns("users")
+        }
+    finally:
+        engine.dispose()
+
+    assert "auth_epoch" not in columns
+
+
+def test_latest_image_url_migration_removes_persisted_credentials(tmp_path):
+    from alembic import command
+
+    from core.database_migrations import alembic_config
+
+    database_url = f"sqlite:///{tmp_path / 'tainted-images.db'}"
+    config = alembic_config(database_url)
+    command.upgrade(config, "20260830_06")
+    engine = create_engine(database_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    """
+                    CREATE TABLE emby_latest_cache_items (
+                        id INTEGER PRIMARY KEY,
+                        cache_kind VARCHAR(20) NOT NULL,
+                        server_id VARCHAR(36),
+                        item_id VARCHAR(36),
+                        image_url TEXT,
+                        poster_url TEXT,
+                        backdrop_url TEXT,
+                        banner_url TEXT,
+                        thumb_url TEXT,
+                        logo_url TEXT
+                    )
+                    """
+                )
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO emby_latest_cache_items (
+                        cache_kind, server_id, item_id, image_url,
+                        poster_url, backdrop_url
+                    ) VALUES (
+                        'batch', 'server-a', 'movie-1',
+                        'https://emby.test/image?X-Emby-Token=secret',
+                        'https://emby.test/image?api_key=secret',
+                        'https://images.example.test/backdrop.jpg'
+                    )
+                    """
+                )
+            )
+
+        command.upgrade(config, "head")
+
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT image_url, poster_url, backdrop_url "
+                    "FROM emby_latest_cache_items"
+                )
+            ).one()
+        assert row == (None, None, "https://images.example.test/backdrop.jpg")
     finally:
         engine.dispose()
 
@@ -200,6 +399,20 @@ def test_reconciliation_runs_for_database_already_marked_at_broken_baseline(tmp_
             "20260829_04",
             "20260829_05",
             "20260830_06",
+            "20260830_07",
+            "20260831_08",
+            "20260831_09",
+            "20260831_10",
+            "20260831_11",
+            "20260831_12",
+            "20260901_13",
+            "20260901_14",
+            "20260902_15",
+            "20260902_16",
+            "20260902_17",
+            "20260905_18",
+            "20260906_19",
+            "20260906_20",
         ]
         assert {"name", "scope", "error_details"}.issubset(columns)
     finally:

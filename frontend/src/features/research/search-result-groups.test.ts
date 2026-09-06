@@ -35,14 +35,12 @@ describe("search result groups", () => {
     }];
     const group = groupSearchResultsByResolution(withDuplicate)[0];
 
-    expect(group.items[0].duplicates).toMatchObject([
-      { key: "0:duplicate:0", result: withDuplicate[0].duplicates?.[0] },
-    ]);
+    expect(group.items[0].duplicates[0].result).toBe(
+      withDuplicate[0].duplicates?.[0],
+    );
     expect(filterBucketResults(group.items, "altra fonte")).toHaveLength(1);
-    expect(searchResultEntries(withDuplicate).map((entry) => entry.key)).toEqual([
-      "0",
-      "0:duplicate:0",
-    ]);
+    expect(new Set(searchResultEntries(withDuplicate).map((entry) => entry.key)).size)
+      .toBe(2);
   });
 
   it("keeps TV result keys stable while grouping seasons before resolutions", () => {
@@ -60,7 +58,7 @@ describe("search result groups", () => {
       "Stagione 2",
       "Tutti i risultati",
     ]);
-    expect(groups[1].items[0].key).toBe("1");
+    expect(groups[1].items[0].key).toContain("Serie S01E02");
     expect(groupIndexedResultsByResolution(groups[1].items)[0].key).toBe("2160p");
   });
 });

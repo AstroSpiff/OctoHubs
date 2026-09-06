@@ -2,10 +2,17 @@
 Jellyseerr integration for Latest Publications.
 """
 
+import logging
+
+from core.safe_output import safe_print as print
 from typing import Any, Dict, List, Optional, Set
 
+from core.log_sanitization import format_exception_for_log
 from emby_runtime.api_clients import _extract_tmdb_id
 from core.utils import _normalize_media_type
+
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_status_label(value: Any) -> str:
@@ -172,7 +179,7 @@ def _apply_jellyseerr_request_info(items: List[Dict[str, Any]], config: Dict[str
         from core.config_manager import _ensure_db_backend
         backend = _ensure_db_backend()
     except Exception as exc:
-        print(f"[JELLYSEERR] Impossibile ottenere DB backend: {exc}")
+        logger.error("[JELLYSEERR] Impossibile ottenere DB backend:\n%s", format_exception_for_log(exc))
         return
 
     tmdb_ids: List[str] = []
@@ -291,7 +298,7 @@ def _sync_jellyseerr_to_db(config: Dict[str, Any]) -> bool:
         )
         return True
     except Exception as exc:
-        print(f"[LATEST] Jellyseerr: errore sincronizzazione DB: {exc}")
+        logger.error("[LATEST] Jellyseerr: errore sincronizzazione DB:\n%s", format_exception_for_log(exc))
         return False
 
 
@@ -356,4 +363,4 @@ def _apply_jellyseerr_direct(item: Dict[str, Any], config: Dict[str, Any]) -> No
 
         print(f"[LATEST] Jellyseerr diretta: TMDB {tmdb_id} → {status_label} (richiesta #{request_id})")
     except Exception as exc:
-        print(f"[LATEST] Jellyseerr diretta: errore per TMDB {tmdb_id}: {exc}")
+        logger.error("[LATEST] Jellyseerr diretta: errore per TMDB %s:\n%s", tmdb_id, format_exception_for_log(exc))

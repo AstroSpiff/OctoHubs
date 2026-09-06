@@ -8,9 +8,9 @@ Questa guida riassume i principali workflow disponibili nella UI e il loro legam
 
 ## Setup iniziale (una volta sola)
 - Crea l'amministratore iniziale tramite Docker con `ADMIN_USERNAME`, `ADMIN_PASSWORD` oppure `ADMIN_PASSWORD_FILE` e `ADMIN_EMAIL`; la creazione account dal browser è disabilitata.
-- Aggiungi almeno un server Emby in `config.json` con API key valida.
+- Aggiungi almeno un server Emby con API key valida dalla UI autenticata.
 - Inserisci URL e API key delle integrazioni che vuoi usare.
-- Dopo modifiche manuali a `config.json`, riavvia il container app.
+- Le impostazioni correnti vivono in PostgreSQL e si gestiscono dalla UI autenticata.
 
 ## Dashboard e ricerche
 - Ricerca manuale: avvia una ricerca completa sulle richieste attive.
@@ -31,7 +31,8 @@ Passi manuali:
 - Abilita la Web UI di qBittorrent e imposta `QBITTORRENT_*` se vuoi l'invio automatico.
 
 ## Search rules
-Le regole di ricerca sono in `config.json` e si possono aggiornare dalla UI. Vedi `CONFIGURATION_ita.md`.
+Le regole di ricerca sono salvate in PostgreSQL e aggiornate dalla UI. Vedi
+`CONFIGURATION_ita.md`.
 
 ## Automazioni
 - Auto scan e auto refresh programmati con `AUTO_TASKS`.
@@ -60,11 +61,14 @@ Passi manuali:
 - Ruoli: `admin`, `user`, `viewer`.
 - `viewer` e un profilo in sola lettura: puo consultare dashboard, dati e stato in tempo reale, ma non puo inviare richieste che modificano configurazioni, utenti o servizi, ne avviare ricerche manuali.
 - `admin` e `user` mantengono le normali operazioni disponibili nell'applicazione.
-- Admin di default creato al primo avvio con env vars.
-- Usa `manage_users.py` per lista e creazione utenti.
+- L'amministratore iniziale viene creato da input Docker monouso soltanto quando
+  la tabella utenti PostgreSQL è vuota.
+- Gestisci gli account dalla pagina Utenti autenticata. Per l'accesso CLI di
+  emergenza usa `python scripts/manage_users.py --help` dentro il container app.
 
 Passi manuali:
 - Mantieni persistente lo storage PostgreSQL per non perdere utenti e dati applicativi.
+- Rimuovi gli input di bootstrap `ADMIN_*` dopo il primo login riuscito.
 - Usa la CLI se perdi l'accesso all'account admin.
 
 ## Audit log

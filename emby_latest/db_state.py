@@ -3,8 +3,12 @@ DB state operations for Latest Publications system.
 Handles loading, saving, clearing state data for tracking seen items.
 """
 
+from copy import deepcopy
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
+
+from core.storage.storage_latest_state_merge import merge_notification_updates
+from emby_latest.state_coordination import latest_state_update_guard
 
 
 class LatestStateRepository:
@@ -18,6 +22,15 @@ class LatestStateRepository:
 
     def save_state(self, state: Dict[str, Any]) -> None:
         save_state(state, db_storage=self.db_storage)
+
+    def update_state(
+        self,
+        updater: Callable[[Dict[str, Any]], Optional[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        return update_state(updater, db_storage=self.db_storage)
+
+    def replace_state_preserving_notifications(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        return replace_state_preserving_notifications(state, db_storage=self.db_storage)
 
     def clear_state(self) -> None:
         clear_state(db_storage=self.db_storage)
@@ -58,12 +71,9 @@ def load_state(db_storage=None) -> Dict[str, Any]:
     Returns:
         Dict containing state data (server_id -> {movies, series}), or empty dict on error
     """
-    try:
-        backend = _get_db_backend(db_storage)
-        state = backend.load_latest_state()
-        return state if isinstance(state, dict) else {}
-    except Exception:
-        return {}
+    backend = _get_db_backend(db_storage)
+    state = backend.load_latest_state()
+    return state if isinstance(state, dict) else {}
 
 
 def save_state(state: Dict[str, Any], db_storage=None) -> None:
@@ -73,20 +83,49 @@ def save_state(state: Dict[str, Any], db_storage=None) -> None:
     Args:
         state: State data structure (server_id -> {movies, series})
     """
-    try:
-        backend = _get_db_backend(db_storage)
-        backend.save_latest_state(state or {})
-    except Exception as exc:
-        print(f"[LATEST_DB] Error saving state: {exc}")
+    backend = _get_db_backend(db_storage)
+    backend.save_latest_state(state or {})
+
+
+def update_state(
+    updater: Callable[[Dict[str, Any]], Optional[Dict[str, Any]]],
+    db_storage=None,
+) -> Dict[str, Any]:
+    """Run one serialized, error-propagating Latest state transformation."""
+    with latest_state_update_guard(db_storage):
+        current = load_state(db_storage=db_storage) if db_storage is not None else load_state()
+        working = deepcopy(current)
+        result = updater(working)
+        updated = working if result is None else result
+        if not isinstance(updated, dict):
+            raise TypeError("Latest state updater must return a dictionary or None")
+        if db_storage is not None:
+            save_state(updated, db_storage=db_storage)
+        else:
+            save_state(updated)
+        return updated
+
+
+def replace_state_preserving_notifications(
+    state: Dict[str, Any],
+    db_storage=None,
+) -> Dict[str, Any]:
+    """Publish collector state while retaining concurrent delivery checkpoints."""
+    candidate = deepcopy(state or {})
+    return update_state(
+        lambda current: merge_notification_updates(candidate, current),
+        db_storage=db_storage,
+    )
 
 
 def clear_state(db_storage=None) -> None:
     """Clear all state data from database."""
-    try:
-        backend = _get_db_backend(db_storage)
+    backend = _get_db_backend(db_storage)
+    with latest_state_update_guard(backend):
         backend.clear_latest_state()
-    except Exception as exc:
-        print(f"[LATEST_DB] Error clearing state: {exc}")
+        reset_deliveries = getattr(backend, "reset_latest_notification_deliveries", None)
+        if callable(reset_deliveries):
+            reset_deliveries()
 
 
 def delete_state_for_server(server_id: str, db_storage=None) -> None:
@@ -96,11 +135,8 @@ def delete_state_for_server(server_id: str, db_storage=None) -> None:
     Args:
         server_id: Server identifier
     """
-    try:
-        backend = _get_db_backend(db_storage)
-        backend.delete_latest_state_for_server(server_id)
-    except Exception as exc:
-        print(f"[LATEST_DB] Error deleting state for server {server_id}: {exc}")
+    backend = _get_db_backend(db_storage)
+    backend.delete_latest_state_for_server(server_id)
 
 
 def get_latest_date_from_state(

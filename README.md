@@ -1,6 +1,6 @@
 [Italiano](README_ita.md) | [English](README.md)
 
-Docs: [Docker Deploy](docs/DOCKER_DEPLOY.md) | [Deployment](docs/DEPLOYMENT.md) | [Configuration](docs/CONFIGURATION.md) | [Features](docs/FEATURES.md) | [Integrations](docs/INTEGRATIONS.md) | [Emby Tools](docs/EMBY_TOOLS.md)
+Docs: [Docker Deploy](docs/DOCKER_DEPLOY.md) | [Deployment](docs/DEPLOYMENT.md) | [Configuration](docs/CONFIGURATION.md) | [Features](docs/FEATURES.md) | [Integrations](docs/INTEGRATIONS.md) | [External API](docs/API_EXTERNAL_ACCESS.md) | [Emby Tools](docs/EMBY_TOOLS.md) | [Release Checklist](docs/RELEASE_CHECKLIST.md)
 
 # OctoHubs
 
@@ -20,73 +20,122 @@ OctoHubs is a FastAPI web app to orchestrate Emby servers and related services (
 
 ## Requirements
 - Docker + Docker Compose
-- (Optional) SSL certificates if you enable the included Nginx `proxy` profile
+- An operator-managed PostgreSQL 16 or newer server reachable from the app container
 
 ## Persistent data layout
-- `/mnt/shared/config/octohubs`: `config.json` and Nginx certs (if proxy is enabled).
-- `/mnt/shared/applications/octohubs`: `last_results.json`, app logs, `nginx/logs`, Postgres data.
+- `/mnt/shared/config/octohubs`: generated application secrets and coordination files.
 - Update the `/mnt/shared/...` paths in `docker-compose.yml` if your storage differs.
 
-## Portainer quick install (copy/paste)
-1. Create a new stack and paste the content of `docker-compose.yml`.
+## Portainer quick install
+1. Prefer **Stacks → Add stack → Git repository**, select the intended release
+   tag, and use `docker-compose.yml` as the Compose path. Portainer then has the
+   relative `Dockerfile` required by the official stack.
 2. Update the `/mnt/shared/...` paths to your real storage.
-3. Set `ADMIN_USERNAME`, `ADMIN_PASSWORD` (or the one-time Docker secret documented below), and `ADMIN_EMAIL`.
-4. Set a strong `OCTOHUBS_DB_PASSWORD`; PostgreSQL is included and required by the stack.
-5. For the included HTTPS proxy, configure its certificates and set `COMPOSE_PROFILES=proxy`.
-6. Deploy the stack and open its HTTPS hostname. For direct local HTTP development, set `SESSION_COOKIE_SECURE=false` explicitly.
+3. Set `ADMIN_USERNAME`, `ADMIN_PASSWORD`, and optionally `ADMIN_EMAIL` for the first deployment only.
+4. Create a dedicated database and role on your PostgreSQL server, then configure
+   `OCTOHUBS_DB_HOST`, `OCTOHUBS_DB_PORT`, `OCTOHUBS_DB_NAME`,
+   `OCTOHUBS_DB_USER` and `OCTOHUBS_DB_PASSWORD` in Portainer.
+5. Keep `OCTOHUBS_BIND_ADDRESS=127.0.0.1` for local access, or set the specific
+   host address reachable by your independently managed reverse proxy.
+6. Deploy the stack and open `http://127.0.0.1:5050`, or the hostname configured
+   on your external proxy.
+
+The Web editor is supported for a custom app-only stack that uses a remote Git
+build context or a published image. See the complete
+[Portainer procedure](docs/DOCKER_DEPLOY.md#portainer-installation).
+
+The initial administrator is created only while the PostgreSQL users table is
+empty. After the first successful login, remove `ADMIN_USERNAME`,
+`ADMIN_PASSWORD`, and `ADMIN_EMAIL` from the stack. The account remains stored in
+PostgreSQL with a bcrypt password hash. Browser routes never accept bootstrap
+credentials.
+
+The official stack is app-only: it never creates a PostgreSQL container, server,
+database or role. Database provisioning, availability and backups remain the
+installer's responsibility. OctoHubs only connects to the configured database and
+applies its versioned Alembic schema migrations.
 
 ## Quick start (Docker)
 
-For production with the included HTTPS proxy:
+OctoHubs serves HTTP directly on port 5050. The default Compose binding is
+loopback-only:
 
 ```bash
-docker compose --profile proxy up -d --build
+docker compose up -d --build
 ```
 
-For explicit local HTTP access, publish the app only on loopback:
+Then open `http://127.0.0.1:5050`. The application port is published on loopback
+only, so remote clients cannot reach it unless the deployment changes the bind.
 
-```bash
-SESSION_COOKIE_SECURE=false docker compose \
-  -f docker-compose.yml -f docker-compose.direct.yml up -d --build
-```
+Generated secret files are created automatically in the persistent `/config`
+mount. PostgreSQL must already be reachable; Compose starts only OctoHubs.
+Runtime logs are written to container stdout/stderr.
 
-Then open `http://127.0.0.1:5050`. The application port is not published by the
-base Compose file, so remote clients cannot bypass the proxy.
+## External reverse proxy (optional)
 
-`config.json` and `last_results.json` are created automatically under `/mnt/shared/...` as defined in the compose.
-PostgreSQL is started by Compose and is required by OctoHubs.
+OctoHubs does not ship or manage a reverse proxy. You may expose its HTTP listener
+directly on a trusted local network or place any independently managed solution,
+such as Nginx, Caddy, Traefik or a platform gateway, in front of it. For HTTPS,
+WebSocket and forwarded-header requirements, see
+[Docker deployment](docs/DOCKER_DEPLOY.md#external-reverse-proxy-contract).
 
-## HTTPS with Nginx (optional)
-1. Put certificates in `/mnt/shared/config/octohubs/nginx/ssl`.
-2. Ensure `nginx.conf` is available (from the repo or mounted in the stack).
-3. Start with `docker compose --profile proxy up -d --build`.
+## Main environment variables
 
-## Main environment variables (optional)
-You can set them in Portainer or in the Docker environment. If absent or still a documented placeholder, OctoHubs generates and persists `SECRET_KEY` and the dedicated `PASSWORD_SECRET` in `/config/.env` on first Docker startup. See [password-key rotation](docs/PASSWORD_SECRET_ROTATION.md).
+Set deployment values in Portainer or the Docker environment. PostgreSQL settings
+are mandatory. Admin values are temporary bootstrap inputs. If `SECRET_KEY` or
+`PASSWORD_SECRET` is absent or still a documented placeholder, the Docker
+entrypoint generates and persists it in `/config/.env`; keep the `/config` mount
+persistent and writable. An explicit custom `SECRET_KEY` must contain at least 32
+non-trivial UTF-8 bytes or startup fails closed. See
+[password-key rotation](docs/PASSWORD_SECRET_ROTATION.md).
 Essential example:
 ```env
-SECRET_KEY=a-long-random-key
+# Omit SECRET_KEY to let Docker generate and persist a strong value, or provide
+# a random value of at least 32 bytes.
+SECRET_KEY=
 PASSWORD_SECRET=a-separate-random-key-of-at-least-32-characters
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=StrongPassword
+# Set a unique secret in Portainer for the first deployment; do not copy a sample.
+ADMIN_PASSWORD=
 ADMIN_EMAIL=admin@example.com
+
+# Required operator-managed PostgreSQL connection
+OCTOHUBS_DB_HOST=database.example.internal
+OCTOHUBS_DB_PORT=5432
+OCTOHUBS_DB_CONNECT_TIMEOUT_SECONDS=5
+OCTOHUBS_DB_STATEMENT_TIMEOUT_MS=30000
+OCTOHUBS_DB_NAME=octohubs
+OCTOHUBS_DB_USER=octohubs
+OCTOHUBS_DB_PASSWORD=StrongDatabasePassword
 
 # Webhook security (optional but recommended)
 # WEBHOOK_IP_WHITELIST=1.2.3.4,10.0.0.0/8,2001:db8::/32
-# WEBHOOK_TRUST_PROXY_HEADERS=true  # only behind the bundled/configured Nginx
+# WEBHOOK_TRUST_PROXY_HEADERS=true  # only behind a trusted configured proxy
+# WEBHOOK_TRUSTED_PROXY_CIDRS=172.18.0.0/16  # direct proxy network
 
 # Sessions and CSRF (optional)
 # SESSION_TIMEOUT_MINUTES=60
+# Required when an external TLS endpoint gives browsers a different public origin.
+# OCTOHUBS_PUBLIC_ORIGIN=https://octohubs.example.com
+# LOGIN_TRUST_PROXY_HEADERS=true
+# LOGIN_TRUSTED_PROXY_CIDRS=172.18.0.0/16
+# API_TOKEN_PREAUTH_RATE_LIMIT_PER_MINUTE=120
+# API_TOKEN_TRUST_PROXY_HEADERS=true
+# API_TOKEN_TRUSTED_PROXY_CIDRS=172.18.0.0/16
 # CSRF_TIME_LIMIT_SECONDS=3600
-# Defaults to true in Docker. Set false only for direct local HTTP development.
-# SESSION_COOKIE_SECURE=true
+# Defaults to false for direct HTTP. Set true when the browser uses external HTTPS.
+# SESSION_COOKIE_SECURE=false
 
 # Fallback polling stream when webhooks are not available
 # STREAMS_REFRESH_SECONDS=15
+# Authenticated SSE/WebSocket connections allowed per user and channel (1-20)
+# OCTOHUBS_REALTIME_CONNECTIONS_PER_CHANNEL=3
+# OCTOHUBS_EVENT_BRIDGE_CONNECTIONS_GLOBAL=64
+# OCTOHUBS_EVENT_BRIDGE_CONNECTIONS_PER_SERVER=3
 ```
 
-The initial administrator cannot be created from the browser. For a file-only
-password bootstrap, use `docker-compose.admin-bootstrap.yml` as documented in
+The initial administrator cannot be created from the browser. For a one-time
+file-backed password bootstrap, use `docker-compose.admin-bootstrap.yml` as documented in
 [Docker deployment](docs/DOCKER_DEPLOY.md#initial-administrator-via-compose-secret).
 
 Generate a secure key:
@@ -94,54 +143,37 @@ Generate a secure key:
 python3 -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-## `config.json` (minimal)
-`config.json` can be edited manually or saved from the UI. In Docker it lives at `/mnt/shared/config/octohubs/config.json`.
-Minimal example:
-```json
-{
-  "EMBY": {
-    "SERVERS": [
-      {
-        "id": "server-1",
-        "name": "Home Emby",
-        "url": "http://emby:8096",
-        "api_key": "API_KEY_EMBY",
-        "enabled": true,
-        "notes": ""
-      }
-    ]
-  }
-}
-```
+## Runtime configuration
 
-If you want integrations and automation:
-- `JELLYSEERR_URL`, `JELLYSEERR_API_KEY`
-- `PROWLARR_URL`, `PROWLARR_API_KEY`
-- `JACKETT_URL`, `JACKETT_API_KEY`
-- `QBITTORRENT_URL`, `QBITTORRENT_USERNAME`, `QBITTORRENT_PASSWORD`
-- `TRAKT` (client and token)
-- `AUTO_TASKS` (scan/refresh)
-- `OCTOHUBS_DB_*` (required PostgreSQL connection used for all application data)
+PostgreSQL is the only application settings store. Configure the external
+database and initial administrator through Docker/Portainer variables, then add
+Emby servers, integrations, search rules and automations from the authenticated
+UI. OctoHubs does not read or create `config.json` and does not import SQLite
+databases.
 
-Note: `config.json` contains secrets. Do not publish it if it has real credentials.
+The `/config` mount contains only application-generated secret material and
+coordination files. Its location can be changed with `OCTOHUBS_CONFIG_DIR`; keep
+it persistent and private.
 
 ## First access
-On first deployment, OctoHubs automatically redirects to the setup wizard at `/setup`:
+On first deployment, OctoHubs redirects to the read-only bootstrap instructions at `/setup`:
 1. **Bootstrap the administrator in Docker**: configure `ADMIN_USERNAME` and `ADMIN_PASSWORD` or use the one-time Compose secret documented above.
 2. **Verify database**: PostgreSQL must already be reachable through `OCTOHUBS_DB_*`.
 
-The browser wizard never accepts administrator credentials. If the Docker bootstrap
+The browser page never accepts administrator or database credentials. If the Docker bootstrap
 configuration is missing, it displays instructions and waits for the app container
 to be restarted. Once created, the account remains in PostgreSQL and the bootstrap
-secret can be removed.
+variables or secret can be removed.
 
 ## User management
+- Administrators can manage accounts from the authenticated Users page.
 - List users:
-  - `docker compose exec app python manage_users.py list`
+  - `docker compose exec app python scripts/manage_users.py list`
 - Create user:
-  - `docker compose exec app python manage_users.py create --username mario --password "StrongPassword" --role user`
+  - `docker compose exec -it app python scripts/manage_users.py create --username mario --role user`
+  - The command prompts for the password without placing it in shell history or process arguments.
 - Set role:
-  - `docker compose exec app python manage_users.py set-role --username mario --role viewer`
+  - `docker compose exec app python scripts/manage_users.py set-role --username mario --role viewer`
 
 ## Webhook (Emby)
 - URL: `https://your-domain/api/emby/event-bridge/events`
@@ -149,15 +181,28 @@ secret can be removed.
 - After installing/updating the Event Bridge plugin, open the OctoHubs Event Bridge
   page and select **Connect** for that server. No secret is required in Portainer.
 - Optional IP/CIDR whitelist: `WEBHOOK_IP_WHITELIST=1.2.3.4,10.0.0.0/8,2001:db8::/32`
-- Set `WEBHOOK_TRUST_PROXY_HEADERS=true` only behind a proxy that overwrites
-  `X-Real-IP` (the bundled Nginx does); direct deployments should keep it `false`.
+- Set `WEBHOOK_TRUST_PROXY_HEADERS=true` only behind a trusted external proxy that
+  overwrites `X-Real-IP`, and set `WEBHOOK_TRUSTED_PROXY_CIDRS` to the direct
+  proxy network; direct deployments should keep trust disabled.
 
-## Docs
-- `docs/DOCKER_DEPLOY.md`, `docs/DEPLOYMENT.md`, `docs/CONFIGURATION.md`, `docs/FEATURES.md`
-- `docs/INTEGRATIONS.md`, `docs/EMBY_TOOLS.md`
+## Documentation map
+
+- Installation, Portainer, admin, database and proxy: [Docker deployment](docs/DOCKER_DEPLOY.md)
+- Production networking, backup and rollback: [Deployment](docs/DEPLOYMENT.md)
+- Application settings: [Configuration](docs/CONFIGURATION.md)
+- Database lifecycle and migrations: [Database migrations](docs/DATABASE_MIGRATIONS.md)
+- Integrations and workflows: [Integrations](docs/INTEGRATIONS.md), [Features](docs/FEATURES.md), [Emby tools](docs/EMBY_TOOLS.md)
 
 ## Quick updates
+
+Back up the operator-managed PostgreSQL database, then update OctoHubs:
+
 ```bash
 git pull
-docker compose --profile proxy up -d --build
+docker compose up -d --build
 ```
+
+If Portainer builds from a Git URL pinned to a tag such as `#v0.4.8`, update that
+tag to the intended release before redeploying; restarting the old tag does not
+install newer fixes. Follow the backup and rollback checklist in
+[Deployment](docs/DEPLOYMENT.md#updates-and-rollback).

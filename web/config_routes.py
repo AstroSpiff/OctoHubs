@@ -2,33 +2,31 @@
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
-from pathlib import Path
+import logging
 from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse, JSONResponse
 
-from app_helpers import _get_total_blacklist_counts
 from app_state import _JELLYSEERR_REFRESH_STATE
 from core import config_manager as _config_manager
-from core.config import CONFIG_FILE, _default_emby_settings
-from core.config_manager import load_config, _db_enabled
+from core.config import _default_emby_settings
+from core.config_manager import load_config
+from core.log_sanitization import format_exception_for_log
 from emby_actions import _prepare_emby_servers_for_view
 from emby_runtime.event_bridge_configuration import (
-    _event_bridge_config_ack_payload,
     _event_bridge_servers_for_view,
     _event_bridge_timestamp_label,
     _event_bridge_transport_payload,
 )
 from emby_runtime.event_bridge_manager import get_event_bridge_manager
 from emby_runtime.event_bridge_settings import normalize_event_bridge_config
-from telegram import _default_telegram_settings, _load_telegram_settings, _build_telegram_alerts
 from web.system_status_api_models import SystemStatusResponse
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _require_auth: Optional[Callable[[Request], Any]] = None
 
@@ -49,7 +47,7 @@ def _require_auth_dep(request: Request):
 @router.get("/configuration", include_in_schema=False)
 async def configuration_page(request: Request):
     """Redirect the retired configuration template to the React workspace."""
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     return RedirectResponse(url="/app/configuration", status_code=303)
 
 
@@ -74,7 +72,7 @@ async def system_status_route(
     ),
 ):
     """Return all or one read-only health section for the configuration tab."""
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     section_id = section if isinstance(section, str) else ""
     should_check_services = check_services if isinstance(check_services, bool) else False
 
@@ -235,7 +233,6 @@ def _build_system_status_snapshot(
 
 def _system_app_section(config: dict[str, Any] | None, is_valid: bool) -> dict[str, Any]:
     severity = "ok" if config and is_valid else "error"
-    config_path = str(CONFIG_FILE)
     return _system_section(
         "app",
         "Applicazione",
@@ -245,11 +242,11 @@ def _system_app_section(config: dict[str, Any] | None, is_valid: bool) -> dict[s
                 "OctoHubs",
                 severity,
                 "Configurazione caricata" if severity == "ok" else "Configurazione non valida",
-                detail="" if severity == "ok" else "Controlla database e file di configurazione.",
+                detail="" if severity == "ok" else "Controlla il database PostgreSQL e le variabili di ambiente.",
                 href="/app/configuration/services",
                 status_code="ready" if severity == "ok" else "config_error",
                 metrics=[
-                    {"label": "Config", "value": config_path},
+                    {"label": "Configurazione", "value": "PostgreSQL"},
                     {"label": "Event Bridge auth", "value": "Credenziali per-server"},
                 ],
             )
@@ -273,6 +270,7 @@ def _system_database_section(config: dict[str, Any] | None, is_valid: bool) -> d
                 status_code="disconnected",
             )
         )
+        items.append(_system_backup_item())
         return _system_section("database", "Database", items)
 
     metrics = [
@@ -284,6 +282,7 @@ def _system_database_section(config: dict[str, Any] | None, is_valid: bool) -> d
         backend = _config_manager._DB_BACKEND or _config_manager._ensure_db_backend()
         migration_status = backend.get_migration_status()
     except Exception as exc:
+        logger.error("Stato connessione database non disponibile:\n%s", format_exception_for_log(exc))
         items.extend(
             [
                 _system_item(
@@ -291,7 +290,7 @@ def _system_database_section(config: dict[str, Any] | None, is_valid: bool) -> d
                     "Connessione database",
                     "error",
                     "Connessione non disponibile",
-                    detail=str(exc),
+                    detail="Dettagli disponibili nei log dell'applicazione.",
                     href=database_href,
                     status_code="disconnected",
                     metrics=metrics,
@@ -350,13 +349,14 @@ def _system_database_section(config: dict[str, Any] | None, is_valid: bool) -> d
             )
         )
     except Exception as exc:
+        logger.error("Stato migrazioni non disponibile:\n%s", format_exception_for_log(exc))
         items.append(
             _system_item(
                 "database-migrations",
                 "Migrazioni",
                 "warning",
                 "Stato migrazioni non leggibile",
-                detail=str(exc),
+                detail="Dettagli disponibili nei log dell'applicazione.",
                 href=database_href,
                 status_code="unknown",
             )
@@ -372,9 +372,9 @@ def _system_services_section(config: dict[str, Any] | None, *, check_services: b
     checked_at = ""
     if check_services:
         try:
-            from services.manager import _build_test_connections_snapshot
+            from services.manager import build_test_connections_snapshot_guarded
 
-            payload, _status_code = _build_test_connections_snapshot()
+            payload, _status_code = build_test_connections_snapshot_guarded()
             payload_dict = payload if isinstance(payload, dict) else {}
             if not payload_dict or payload_dict.get("success") is False:
                 check_error = "Verifica dei servizi non riuscita"
@@ -390,7 +390,8 @@ def _system_services_section(config: dict[str, Any] | None, *, check_services: b
         from app_state import get_connection_check_state
 
         last_check = get_connection_check_state()
-        statuses = last_check.get("statuses") if isinstance(last_check.get("statuses"), dict) else {}
+        last_statuses = last_check.get("statuses")
+        statuses = last_statuses if isinstance(last_statuses, dict) else {}
         checked_at = str(last_check.get("checked_at") or "")
 
     items: list[dict[str, Any]] = []
@@ -489,6 +490,7 @@ def _system_emby_section(config: dict[str, Any] | None) -> dict[str, Any]:
         payload, _status_code = _build_emby_health_status_snapshot()
         server_statuses = payload.get("data") if isinstance(payload, dict) else []
     except Exception as exc:
+        logger.error("Stato Emby non disponibile:\n%s", format_exception_for_log(exc))
         return _system_section(
             "emby",
             "Server Emby",
@@ -498,7 +500,7 @@ def _system_emby_section(config: dict[str, Any] | None) -> dict[str, Any]:
                     "Stato server",
                     "warning",
                     "Stato Emby non leggibile",
-                    detail=str(exc),
+                    detail="Dettagli disponibili nei log dell'applicazione.",
                     href="/app/emby-live?focus=emby-live-servers",
                     status_code="unknown",
                 )
@@ -609,6 +611,7 @@ def _system_transcode_guard_section() -> dict[str, Any]:
 
         status = get_transcode_guard_service().get_status()
     except Exception as exc:
+        logger.error("Stato Transcode Guard non disponibile:\n%s", format_exception_for_log(exc))
         return _system_section(
             "transcode-guard",
             "Transcode Guard",
@@ -618,7 +621,7 @@ def _system_transcode_guard_section() -> dict[str, Any]:
                     "Monitor",
                     "warning",
                     "Stato non leggibile",
-                    detail=str(exc),
+                    detail="Dettagli disponibili nei log dell'applicazione.",
                     href="/app/transcode-guard",
                     status_code="unknown",
                 )
@@ -651,7 +654,7 @@ def _system_transcode_guard_section() -> dict[str, Any]:
                 "Monitor",
                 severity,
                 summary,
-                detail=str(last_result.get("message") or last_result.get("error") or ""),
+                detail="Ultimo controllo disponibile nei log dell'applicazione." if last_result else "",
                 href="/app/transcode-guard",
                 status_code=status_code,
                 metrics=[
@@ -670,6 +673,7 @@ def _system_operations_section() -> dict[str, Any]:
 
         operations = get_operation_tracker().list_operations()
     except Exception as exc:
+        logger.error("Centro operazioni non disponibile:\n%s", format_exception_for_log(exc))
         return _system_section(
             "operations",
             "Operazioni",
@@ -679,7 +683,7 @@ def _system_operations_section() -> dict[str, Any]:
                     "Centro operazioni",
                     "warning",
                     "Operazioni non leggibili",
-                    detail=str(exc),
+                    detail="Dettagli disponibili nei log dell'applicazione.",
                     href="/app/emby-live",
                     status_code="unknown",
                 )
@@ -692,7 +696,6 @@ def _system_operations_section() -> dict[str, Any]:
     summary = f"{len(active)} attive"
     if failed:
         summary += f" · {len(failed)} con problemi recenti"
-    latest_failed = failed[0] if failed else {}
     return _system_section(
         "operations",
         "Operazioni",
@@ -702,7 +705,7 @@ def _system_operations_section() -> dict[str, Any]:
                 "Centro operazioni",
                 severity,
                 summary,
-                detail=str(latest_failed.get("message") or latest_failed.get("error") or ""),
+                detail="Ultima operazione non completata. Consulta il centro operazioni.",
                 href="/app/emby-live",
                 status_code=status_code,
                 metrics=[
@@ -759,45 +762,21 @@ def _system_requests_section() -> dict[str, Any]:
 
 
 def _system_backup_item() -> dict[str, Any]:
+    """Describe the operator-owned backup boundary without guessing from files."""
     database_href = "/app/configuration/services?focus=configuration-database"
-    root = Path(os.environ.get("OCTOHUBS_DB_BACKUP_DIR") or "backups/db")
-    try:
-        files = [
-            item for item in root.glob("*")
-            if item.is_file() and item.suffix in {".dump", ".sqlite3", ".json"}
-        ] if root.exists() else []
-        files.sort(key=lambda item: item.stat().st_mtime, reverse=True)
-        if not root.exists():
-            return _system_item(
-                "database-backups",
-                "Backup database",
-                "unknown",
-                "Cartella backup non ancora presente",
-                detail=str(root),
-                href=database_href,
-                status_code="empty",
-            )
-        latest = files[0] if files else None
-        return _system_item(
-            "database-backups",
-            "Backup database",
-            "ok" if latest else "unknown",
-            f"Ultimo backup: {latest.name}" if latest else "Nessun backup trovato",
-            detail=str(root),
-            href=database_href,
-            status_code="ready" if latest else "empty",
-            metrics=[{"label": "File", "value": str(len(files))}],
-        )
-    except Exception as exc:
-        return _system_item(
-            "database-backups",
-            "Backup database",
-            "warning",
-            "Backup non leggibili",
-            detail=str(exc),
-            href=database_href,
-            status_code="unknown",
-        )
+    return _system_item(
+        "database-backups",
+        "Backup PostgreSQL",
+        "unknown",
+        "Gestito esternamente",
+        detail=(
+            "Il database e i relativi backup sono gestiti dall'operatore; "
+            "OctoHubs non puo verificarne esistenza o ripristinabilita."
+        ),
+        href=database_href,
+        status_code="external",
+        status_label="Gestito dall'operatore",
+    )
 
 
 def _system_service_configured(config: dict[str, Any] | None, key: str) -> bool:

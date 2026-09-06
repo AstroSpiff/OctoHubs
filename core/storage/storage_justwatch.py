@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Protocol
 
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
 from core.storage.storage_errors import StorageError
 from core.storage.storage_models import SQLAlchemyError, JustWatchCache, _utcnow
 
@@ -55,6 +58,36 @@ class StorageJustWatchMixin(_SessionProvider):
         """Save or update JustWatch availability data for an episode."""
         session = self._get_session()
         try:
+            dialect_name = session.get_bind().dialect.name
+            checked_at = _utcnow()
+            values = {
+                "show_name": show_name,
+                "season": season,
+                "episode": episode,
+                "is_available": is_available,
+                "providers": providers,
+                "last_checked": checked_at,
+            }
+            if dialect_name in {"postgresql", "sqlite"}:
+                insert_factory = (
+                    postgresql_insert if dialect_name == "postgresql" else sqlite_insert
+                )
+                statement = insert_factory(JustWatchCache).values(**values)
+                update_values = {
+                    "is_available": statement.excluded.is_available,
+                    "last_checked": statement.excluded.last_checked,
+                }
+                if providers is not None:
+                    update_values["providers"] = statement.excluded.providers
+                session.execute(
+                    statement.on_conflict_do_update(
+                        index_elements=("show_name", "season", "episode"),
+                        set_=update_values,
+                    )
+                )
+                session.commit()
+                return
+
             entry = (
                 session.query(JustWatchCache)
                 .filter(
@@ -72,11 +105,7 @@ class StorageJustWatchMixin(_SessionProvider):
                 entry.last_checked = _utcnow()  # type: ignore[assignment]
             else:
                 new_entry = JustWatchCache(
-                    show_name=show_name,
-                    season=season,
-                    episode=episode,
-                    is_available=is_available,
-                    providers=providers
+                    **values,
                 )
                 session.add(new_entry)
 

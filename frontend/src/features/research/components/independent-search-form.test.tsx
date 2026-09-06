@@ -5,7 +5,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getTmdbTvDetails } from "@/features/research/api";
+import { getTmdbTvDetails, requestFromJellyseerr } from "@/features/research/api";
 import { IndependentSearchForm } from "@/features/research/components/independent-search-form";
 import type {
   ResearchOverview,
@@ -20,9 +20,12 @@ vi.mock("@/features/research/api", () => ({
 vi.mock("@/features/research/components/tmdb-search-picker", () => ({
   TmdbSearchPicker: ({
     onSelect,
+    selected,
   }: {
     onSelect: (result: TmdbSearchResult) => void;
-  }) => (
+    selected: TmdbSearchResult | null;
+  }) => <>
+    <span data-testid="selected-title">{selected?.title}</span>
     <button
       type="button"
       data-testid="select-tv"
@@ -32,7 +35,25 @@ vi.mock("@/features/research/components/tmdb-search-picker", () => ({
     >
       Seleziona serie
     </button>
-  ),
+    <button
+      type="button"
+      data-testid="select-movie-a"
+      onClick={() =>
+        onSelect({ tmdb_id: 201, title: "Film A", media_type: "movie" })
+      }
+    >
+      Seleziona film A
+    </button>
+    <button
+      type="button"
+      data-testid="select-movie-b"
+      onClick={() =>
+        onSelect({ tmdb_id: 202, title: "Film B", media_type: "movie" })
+      }
+    >
+      Seleziona film B
+    </button>
+  </>,
 }));
 
 declare global {
@@ -161,7 +182,163 @@ describe("IndependentSearchForm", () => {
 
     expect(selectedSeasons(container)).toEqual(["S01", "S02", "S03"]);
   });
+
+  it("requires seasons only for Jellyseerr and keeps generic TV search available", async () => {
+    const details = deferred<typeof tvDetails>();
+    vi.mocked(getTmdbTvDetails).mockReturnValue(details.promise);
+
+    await renderForm(root, queryClient);
+    act(() => {
+      container
+        .querySelector<HTMLButtonElement>("[data-testid='select-tv']")
+        ?.click();
+    });
+
+    expect(buttonByText(container, "Cerca")?.disabled).toBe(false);
+    expect(buttonByText(container, "Richiedi a Jellyseerr")?.disabled).toBe(true);
+
+    await resolveDetails(details);
+    await waitForSelectedSeasons(container, ["S01", "S02", "S03"]);
+    expect(buttonByText(container, "Cerca")?.disabled).toBe(false);
+    expect(buttonByText(container, "Richiedi a Jellyseerr")?.disabled).toBe(false);
+
+    act(() => {
+      container
+        .querySelectorAll<HTMLInputElement>(".research-seasons input")
+        .forEach((input) => input.click());
+    });
+    expect(buttonByText(container, "Cerca")?.disabled).toBe(false);
+    expect(buttonByText(container, "Richiedi a Jellyseerr")?.disabled).toBe(true);
+  });
+
+  it("clears an incompatible TMDB selection when the media type changes", async () => {
+    vi.mocked(getTmdbTvDetails).mockResolvedValue(tvDetails);
+    const onSearch = vi.fn().mockResolvedValue(undefined);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IndependentSearchForm
+            overview={overview}
+            searching={false}
+            onSearch={onSearch}
+            onSearchStart={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+    });
+
+    act(() => {
+      container
+        .querySelector<HTMLButtonElement>("[data-testid='select-tv']")
+        ?.click();
+    });
+
+    const mediaType = container.querySelector<HTMLSelectElement>(
+      "#research-media-type",
+    );
+    expect(mediaType).not.toBeNull();
+    act(() => {
+      if (!mediaType) return;
+      mediaType.value = "movie";
+      mediaType.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    expect(container.querySelector(".research-seasons")).toBeNull();
+    await act(async () => {
+      container
+        .querySelector<HTMLFormElement>("form")
+        ?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      await Promise.resolve();
+    });
+
+    expect(onSearch).toHaveBeenCalledWith(expect.objectContaining({
+      mediaType: "movie",
+      seasons: [],
+    }));
+    expect(onSearch.mock.calls[0][0]).not.toHaveProperty("tmdbId");
+  });
+
+  it("does not attach a completed Jellyseerr request to a newer title", async () => {
+    const firstRequest = deferred<{ success: boolean; message: string }>();
+    vi.mocked(requestFromJellyseerr).mockReturnValueOnce(firstRequest.promise);
+    await renderForm(root, queryClient);
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>("[data-testid='select-movie-a']")?.click();
+    });
+    act(() => buttonByText(container, "Richiedi a Jellyseerr")?.click());
+    expect(requestFromJellyseerr).toHaveBeenCalledWith(201, "movie", []);
+
+    act(() => {
+      container.querySelector<HTMLButtonElement>("[data-testid='select-movie-b']")?.click();
+    });
+    await act(async () => {
+      firstRequest.resolve({ success: true, message: "Film A richiesto" });
+      await firstRequest.promise;
+    });
+
+    expect(container.textContent).toContain("Film B");
+    expect(container.textContent).not.toContain("Film A richiesto");
+    expect(buttonByText(container, "Richiedi a Jellyseerr")?.disabled).toBe(false);
+  });
+
+  it("does not enable or persist custom rules just by reopening the form", async () => {
+    await renderForm(root, queryClient);
+
+    expect(customRulesToggle(container).checked).toBe(false);
+    expect(window.localStorage.getItem("indie-search-rules")).toBeNull();
+
+    await act(async () => {
+      root.render(<></>);
+    });
+    await renderForm(root, queryClient);
+
+    expect(customRulesToggle(container).checked).toBe(false);
+    expect(window.localStorage.getItem("indie-search-rules")).toBeNull();
+  });
+
+  it("restores custom rules only after the user explicitly enables them", async () => {
+    await renderForm(root, queryClient);
+
+    act(() => customRulesToggle(container).click());
+
+    expect(JSON.parse(window.localStorage.getItem("indie-search-rules") || "null"))
+      .toMatchObject({ enabled: true, rules: { search_rules: {} } });
+
+    await act(async () => {
+      root.render(<></>);
+    });
+    await renderForm(root, queryClient);
+
+    expect(customRulesToggle(container).checked).toBe(true);
+  });
 });
+
+async function renderForm(
+  root: ReturnType<typeof createRoot>,
+  queryClient: QueryClient,
+) {
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <IndependentSearchForm
+          overview={overview}
+          searching={false}
+          onSearch={vi.fn()}
+          onSearchStart={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+  });
+}
+
+function customRulesToggle(container: HTMLElement) {
+  const toggle = [...container.querySelectorAll<HTMLInputElement>("input[type='checkbox']")]
+    .find((input) => input.parentElement?.textContent?.includes("Personalizza regole"));
+  if (!toggle) throw new Error("Custom-rules toggle not found");
+  return toggle;
+}
 
 async function resolveDetails(details: Deferred<typeof tvDetails>) {
   await act(async () => {
@@ -186,4 +363,10 @@ function selectedSeasons(container: HTMLElement) {
   return [...container.querySelectorAll<HTMLLabelElement>(".research-seasons label")]
     .filter((label) => label.querySelector("input")?.checked)
     .map((label) => label.textContent?.trim());
+}
+
+function buttonByText(container: HTMLElement, text: string) {
+  return Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+    (button) => button.textContent?.includes(text),
+  );
 }

@@ -2,7 +2,6 @@
 Emby WebSocket Manager - Persistent connections to Emby servers
 Handles real-time events from Emby servers without polling.
 """
-import asyncio
 import json
 import threading
 import time
@@ -10,7 +9,7 @@ import websocket
 from typing import Dict, Callable, Optional, Any, List
 import logging
 
-from core.log_sanitization import sanitize_text_for_log, sanitize_url_for_log
+from core.log_sanitization import format_exception_for_log, sanitize_diagnostic_text, sanitize_url_for_log
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +90,7 @@ class EmbyWebSocketConnection:
         self.reconnect_delay = 1  # Start with 1 second
         self.max_reconnect_delay = 60  # Max 60 seconds
         self.last_connection_time = 0
+        self._reconnect_wake = threading.Event()
 
         # Statistics
         self.connection_attempts = 0
@@ -109,27 +109,37 @@ class EmbyWebSocketConnection:
     def start(self):
         """Start WebSocket connection in a separate thread."""
         if self.ws_thread and self.ws_thread.is_alive():
-            logger.warning(f"[WS:{self.server_id}] Connection already running")
+            logger.warning("[WS:%s] Connection already running", sanitize_diagnostic_text(self.server_id))
             return
 
         self.should_reconnect = True
+        self._reconnect_wake.clear()
         self.ws_thread = threading.Thread(target=self._run, daemon=True)
         self.ws_thread.start()
-        logger.info(f"[WS:{self.server_id}] WebSocket thread started")
+        logger.info("[WS:%s] WebSocket thread started", sanitize_diagnostic_text(self.server_id))
 
     def stop(self):
         """Stop WebSocket connection gracefully."""
-        logger.info(f"[WS:{self.server_id}] Stopping WebSocket connection")
+        logger.info("[WS:%s] Stopping WebSocket connection", sanitize_diagnostic_text(self.server_id))
         self.should_reconnect = False
+        self._reconnect_wake.set()
 
         if self.ws:
             try:
                 self._send_sessions_stop()
                 self.ws.close()
             except Exception as e:
-                logger.error("[WS:%s] Error closing WebSocket: %s", self.server_id, sanitize_text_for_log(e))
+                logger.error("[WS:%s] Error closing WebSocket: %s", sanitize_diagnostic_text(self.server_id), sanitize_diagnostic_text(e))
 
         self.state = self.STATE_DISCONNECTED
+
+    def wait_stopped(self, timeout_seconds: float | None = None) -> bool:
+        """Wait for the connection thread without blocking indefinitely."""
+        thread = self.ws_thread
+        if thread is None or thread is threading.current_thread():
+            return True
+        thread.join(timeout=timeout_seconds)
+        return not thread.is_alive()
 
     def _run(self):
         """Main WebSocket connection loop with auto-reconnect."""
@@ -137,7 +147,7 @@ class EmbyWebSocketConnection:
             try:
                 self._connect()
             except Exception as e:
-                logger.error("[WS:%s] Connection error: %s", self.server_id, sanitize_text_for_log(e))
+                logger.error("[WS:%s] Connection error: %s", sanitize_diagnostic_text(self.server_id), sanitize_diagnostic_text(e))
                 self.state = self.STATE_RECONNECTING
             finally:
                 if self.should_reconnect and self.state != self.STATE_CONNECTED:
@@ -148,7 +158,7 @@ class EmbyWebSocketConnection:
         self.state = self.STATE_CONNECTING
         self.connection_attempts += 1
 
-        logger.info("[WS:%s] Connecting to %s", self.server_id, sanitize_url_for_log(self.get_websocket_url()))
+        logger.info("[WS:%s] Connecting to %s", sanitize_diagnostic_text(self.server_id), sanitize_url_for_log(self.get_websocket_url()))
 
         # Create WebSocket with callbacks
         self.ws = websocket.WebSocketApp(
@@ -169,7 +179,7 @@ class EmbyWebSocketConnection:
         self.last_connection_time = time.time()
         self.reconnect_delay = 1  # Reset reconnect delay on successful connection
 
-        logger.info(f"[WS:{self.server_id}] ✓ Connected successfully (attempt #{self.connection_attempts})")
+        logger.info("[WS:%s] Connected successfully (attempt #%s)", sanitize_diagnostic_text(self.server_id), self.connection_attempts)
         self._send_sessions_start()
 
         # Notify callback about connection
@@ -188,7 +198,7 @@ class EmbyWebSocketConnection:
             data = json.loads(message)
 
             message_type = data.get("MessageType")
-            logger.debug("[WS:%s] Received event: %s", self.server_id, message_type)
+            logger.debug("[WS:%s] Received event: %s", sanitize_diagnostic_text(self.server_id), sanitize_diagnostic_text(message_type))
 
             # Add server_id to data for routing
             data["server_id"] = self.server_id
@@ -196,19 +206,24 @@ class EmbyWebSocketConnection:
             # Call event callback
             self._notify_event(data)
 
-        except json.JSONDecodeError as e:
-            logger.error(f"[WS:{self.server_id}] Invalid JSON: {e}")
-        except Exception as e:
-            logger.error(f"[WS:{self.server_id}] Error processing message: {e}")
+        except json.JSONDecodeError as exc:
+            logger.error("[WS:%s] Invalid JSON:\n%s", sanitize_diagnostic_text(self.server_id), format_exception_for_log(exc))
+        except Exception as exc:
+            logger.error("[WS:%s] Error processing message:\n%s", sanitize_diagnostic_text(self.server_id), format_exception_for_log(exc))
 
     def _on_error(self, ws, error):
         """Called when WebSocket encounters an error."""
-        logger.error("[WS:%s] Error: %s", self.server_id, sanitize_text_for_log(error))
+        logger.error("[WS:%s] Error: %s", sanitize_diagnostic_text(self.server_id), sanitize_diagnostic_text(error))
         self.state = self.STATE_RECONNECTING
 
     def _on_close(self, ws, close_status_code, close_msg):
         """Called when WebSocket connection is closed."""
-        logger.warning(f"[WS:{self.server_id}] Connection closed (code: {close_status_code}, msg: {close_msg})")
+        logger.warning(
+            "[WS:%s] Connection closed (code: %s, msg: %s)",
+            sanitize_diagnostic_text(self.server_id),
+            close_status_code,
+            sanitize_diagnostic_text(close_msg),
+        )
         self.state = self.STATE_RECONNECTING
 
         # Notify callback about disconnection
@@ -226,8 +241,10 @@ class EmbyWebSocketConnection:
         if not self.should_reconnect:
             return
 
-        logger.info(f"[WS:{self.server_id}] Reconnecting in {self.reconnect_delay}s...")
-        time.sleep(self.reconnect_delay)
+        logger.info("[WS:%s] Reconnecting in %ss...", sanitize_diagnostic_text(self.server_id), self.reconnect_delay)
+        if self._reconnect_wake.wait(self.reconnect_delay):
+            self._reconnect_wake.clear()
+            return
 
         # Exponential backoff
         self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
@@ -236,8 +253,8 @@ class EmbyWebSocketConnection:
         """Notify event callback with received data."""
         try:
             self.event_callback(self.server_id, event_data)
-        except Exception as e:
-            logger.error(f"[WS:{self.server_id}] Error in event callback: {e}")
+        except Exception as exc:
+            logger.error("[WS:%s] Error in event callback:\n%s", sanitize_diagnostic_text(self.server_id), format_exception_for_log(exc))
 
     def _send_sessions_start(self):
         """Subscribe to Emby session updates after connecting."""
@@ -253,8 +270,13 @@ class EmbyWebSocketConnection:
         try:
             self.ws.send(json.dumps(payload))
             return True
-        except Exception as e:
-            logger.warning(f"[WS:{self.server_id}] Failed sending command {payload.get('MessageType')}: {e}")
+        except Exception as exc:
+            logger.warning(
+                "[WS:%s] Failed sending command %s:\n%s",
+                self.server_id,
+                payload.get("MessageType"),
+                format_exception_for_log(exc),
+            )
             return False
 
     def is_connected(self) -> bool:
@@ -282,6 +304,8 @@ class EmbyWebSocketManager:
         self.connections: Dict[str, EmbyWebSocketConnection] = {}
         self.event_handlers: Dict[str, Callable] = {}
         self._lock = threading.Lock()
+        self._event_fence = threading.RLock()
+        self._accepting_connections = True
 
         # Global event callback
         self.global_event_callback: Optional[Callable] = None
@@ -292,23 +316,20 @@ class EmbyWebSocketManager:
 
     def add_server(self, server_id: str, server_url: str, api_key: str):
         """Add an Emby server and establish WebSocket connection."""
-        with self._lock:
-            if server_id in self.connections:
-                logger.warning(f"[WSManager] Server {server_id} already connected")
-                return
+        with self._event_fence:
+            with self._lock:
+                if not self._accepting_connections:
+                    logger.info("[WSManager] Ignoring server %s while stopping", sanitize_diagnostic_text(server_id))
+                    return
+                if server_id in self.connections:
+                    logger.warning("[WSManager] Server %s already connected", sanitize_diagnostic_text(server_id))
+                    return
 
-            # Create connection
-            conn = EmbyWebSocketConnection(
-                server_id=server_id,
-                server_url=server_url,
-                api_key=api_key,
-                event_callback=self._handle_event
-            )
+                conn = self._build_connection(server_id, server_url, api_key)
+                self.connections[server_id] = conn
+                conn.start()
 
-            self.connections[server_id] = conn
-            conn.start()
-
-            logger.info(f"[WSManager] Added server {server_id}")
+            logger.info("[WSManager] Added server %s", sanitize_diagnostic_text(server_id))
 
     def upsert_server(self, server_id: str, server_url: str, api_key: str) -> bool:
         """Create or replace a server connection when its endpoint changes."""
@@ -317,47 +338,79 @@ class EmbyWebSocketManager:
         if not server_id or not normalized_url or not normalized_key:
             raise ValueError("Server ID, URL e API key sono necessari per il WebSocket Emby.")
 
-        with self._lock:
-            existing = self.connections.get(server_id)
-            if (
-                existing is not None
-                and existing.server_url == normalized_url
-                and existing.api_key == normalized_key
-            ):
-                return False
+        with self._event_fence:
+            with self._lock:
+                if not self._accepting_connections:
+                    logger.info("[WSManager] Ignoring server %s while stopping", sanitize_diagnostic_text(server_id))
+                    return False
+                existing = self.connections.get(server_id)
+                if (
+                    existing is not None
+                    and existing.server_url == normalized_url
+                    and existing.api_key == normalized_key
+                ):
+                    return False
 
-            if existing is not None:
-                existing.stop()
+                if existing is not None:
+                    existing.stop()
 
-            connection = EmbyWebSocketConnection(
-                server_id=server_id,
-                server_url=normalized_url,
-                api_key=normalized_key,
-                event_callback=self._handle_event,
-            )
-            self.connections[server_id] = connection
-
-        connection.start()
-        logger.info(f"[WSManager] Synchronized server {server_id}")
+                connection = self._build_connection(server_id, normalized_url, normalized_key)
+                self.connections[server_id] = connection
+                connection.start()
+        logger.info("[WSManager] Synchronized server %s", sanitize_diagnostic_text(server_id))
         return True
+
+    def start_accepting(self) -> None:
+        """Open connection registration for a newly initialized app lifespan."""
+        with self._lock:
+            self._accepting_connections = True
 
     def remove_server(self, server_id: str):
         """Remove an Emby server and close WebSocket connection."""
-        with self._lock:
-            if server_id not in self.connections:
-                logger.warning(f"[WSManager] Server {server_id} not found")
-                return
+        with self._event_fence:
+            with self._lock:
+                if server_id not in self.connections:
+                    logger.warning("[WSManager] Server %s not found", sanitize_diagnostic_text(server_id))
+                    return
 
-            conn = self.connections[server_id]
-            conn.stop()
-            del self.connections[server_id]
+                conn = self.connections.pop(server_id)
+                conn.stop()
 
-            logger.info(f"[WSManager] Removed server {server_id}")
+                logger.info("[WSManager] Removed server %s", sanitize_diagnostic_text(server_id))
+
+    def _build_connection(self, server_id: str, server_url: str, api_key: str):
+        connection = None
+
+        def owned_callback(callback_server_id: str, event_data: Dict):
+            if connection is not None:
+                self._handle_owned_event(connection, callback_server_id, event_data)
+
+        connection = EmbyWebSocketConnection(
+            server_id=server_id,
+            server_url=server_url,
+            api_key=api_key,
+            event_callback=owned_callback,
+        )
+        return connection
+
+    def _handle_owned_event(
+        self,
+        source: EmbyWebSocketConnection,
+        server_id: str,
+        event_data: Dict,
+    ) -> None:
+        """Dispatch only while the source still owns this server connection."""
+        with self._event_fence:
+            with self._lock:
+                if self.connections.get(server_id) is not source:
+                    logger.debug("[WSManager] Ignored stale event for server %s", sanitize_diagnostic_text(server_id))
+                    return
+            self._handle_event(server_id, event_data)
 
     def register_event_handler(self, message_type: str, handler: Callable):
         """Register a handler for a specific Emby event type."""
         self.event_handlers[message_type] = handler
-        logger.info(f"[WSManager] Registered handler for {message_type}")
+        logger.info("[WSManager] Registered handler for %s", sanitize_diagnostic_text(message_type))
 
     def set_global_callback(self, callback: Callable):
         """Set a global callback for all events."""
@@ -377,21 +430,21 @@ class EmbyWebSocketManager:
         if message_type in self.event_handlers:
             try:
                 self.event_handlers[message_type](server_id, event_data)
-            except Exception as e:
-                logger.error(f"[WSManager] Error in handler for {message_type}: {e}")
+            except Exception as exc:
+                logger.error("[WSManager] Error in handler for %s:\n%s", sanitize_diagnostic_text(message_type), format_exception_for_log(exc))
 
         # Call global callback
         if self.global_event_callback:
             try:
                 self.global_event_callback(server_id, event_data)
-            except Exception as e:
-                logger.error(f"[WSManager] Error in global callback: {e}")
+            except Exception as exc:
+                logger.error("[WSManager] Error in global callback:\n%s", format_exception_for_log(exc))
 
         for callback in list(self._global_event_callbacks):
             try:
                 callback(server_id, event_data)
-            except Exception as e:
-                logger.error(f"[WSManager] Error in extra global callback: {e}")
+            except Exception as exc:
+                logger.error("[WSManager] Error in extra global callback:\n%s", format_exception_for_log(exc))
 
     def get_connection(self, server_id: str) -> Optional[EmbyWebSocketConnection]:
         """Get connection for a specific server."""
@@ -410,13 +463,26 @@ class EmbyWebSocketManager:
         conn = self.connections.get(server_id)
         return conn.is_connected() if conn else False
 
-    def stop_all(self):
-        """Stop all WebSocket connections."""
+    def stop_all(self, timeout_seconds: float = 5.0) -> bool:
+        """Stop all WebSocket connections within one shared deadline."""
         logger.info("[WSManager] Stopping all connections")
-        with self._lock:
-            for conn in self.connections.values():
-                conn.stop()
-            self.connections.clear()
+        with self._event_fence:
+            with self._lock:
+                self._accepting_connections = False
+                connections = list(self.connections.values())
+                self.connections.clear()
+
+        for connection in connections:
+            connection.stop()
+
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        stopped = True
+        for connection in connections:
+            wait_stopped = getattr(connection, "wait_stopped", None)
+            if wait_stopped is None:
+                continue
+            stopped = bool(wait_stopped(max(0.0, deadline - time.monotonic()))) and stopped
+        return stopped
 
     def setup_scan_progress_forwarding(self):
         """
@@ -429,8 +495,8 @@ class EmbyWebSocketManager:
         from emby_runtime.scan_websocket_manager import get_scan_connection_manager
         from app_state import _LIBRARY_SCAN_TRACKER
 
-        async def forward_refresh_progress(server_id: str, event_data: Dict):
-            """Forward evento RefreshProgress ai client sottoscritti."""
+        def sync_handler(server_id: str, event_data: Dict):
+            """Coalesce RefreshProgress from the socket thread by scan job."""
             try:
                 data = event_data.get("Data", {})
                 library_id = data.get("ItemId")
@@ -439,20 +505,26 @@ class EmbyWebSocketManager:
                 if not library_id:
                     return
 
-                logger.debug(f"[WSManager] RefreshProgress from {server_id}, library {library_id}: {progress}%")
+                logger.debug("[WSManager] RefreshProgress from %s, library %s: %s%%", sanitize_diagnostic_text(server_id), sanitize_diagnostic_text(library_id), progress)
 
                 # Trova job associati a questo server/library
                 matching_jobs = _LIBRARY_SCAN_TRACKER.find_jobs_by_library(server_id, str(library_id))
 
                 if not matching_jobs:
-                    logger.debug(f"[WSManager] No active jobs for server {server_id}, library {library_id}")
+                    logger.debug("[WSManager] No active jobs for server %s, library %s", sanitize_diagnostic_text(server_id), sanitize_diagnostic_text(library_id))
                     return
 
                 # Broadcast a tutti job corrispondenti
                 manager = get_scan_connection_manager()
+                from app_state import get_app_event_loop
+
+                loop = get_app_event_loop()
+                if not loop or not loop.is_running():
+                    logger.warning("[WSManager] App event loop not running, cannot forward progress")
+                    return
 
                 for job_id in matching_jobs:
-                    await manager.broadcast_to_job(job_id, {
+                    manager.schedule_broadcast(loop, job_id, {
                         "type": "progress",
                         "job_id": job_id,
                         "library_id": str(library_id),
@@ -462,24 +534,8 @@ class EmbyWebSocketManager:
 
                     logger.debug(f"[WSManager] Forwarded progress to job {job_id}: {progress}%")
 
-            except Exception as e:
-                logger.error(f"[WSManager] Error forwarding RefreshProgress: {e}")
-
-        def sync_handler(server_id: str, event_data: Dict):
-            """Handler sincrono che crea task async per forward."""
-            try:
-                from app_state import get_app_event_loop
-
-                loop = get_app_event_loop()
-                if loop and loop.is_running():
-                    asyncio.run_coroutine_threadsafe(
-                        forward_refresh_progress(server_id, event_data),
-                        loop,
-                    )
-                else:
-                    logger.warning("[WSManager] App event loop not running, cannot forward progress")
-            except Exception as e:
-                logger.error(f"[WSManager] Error creating async task: {e}")
+            except Exception as exc:
+                logger.error("[WSManager] Error forwarding RefreshProgress:\n%s", format_exception_for_log(exc))
 
         # Registra handler per RefreshProgress
         self.register_event_handler("RefreshProgress", sync_handler)
@@ -502,8 +558,8 @@ class EmbyWebSocketManager:
                     from emby_runtime.streams import get_streams_manager
 
                     get_streams_manager().mark_stale(server_id, f"websocket:{message_type}")
-            except Exception as e:
-                logger.error("[WSManager] Error marking stream cache stale for %s: %s", server_id, e)
+            except Exception as exc:
+                logger.error("[WSManager] Error marking stream cache stale for %s:\n%s", sanitize_diagnostic_text(server_id), format_exception_for_log(exc))
 
             try:
                 from emby_runtime.transcode_guard import get_transcode_guard_service
@@ -511,8 +567,8 @@ class EmbyWebSocketManager:
                 service = get_transcode_guard_service()
                 service.record_playback_event(server_id, event_data)
                 service.wake()
-            except Exception as e:
-                logger.error("[WSManager] Error waking Transcode Guard for %s: %s", server_id, e)
+            except Exception as exc:
+                logger.error("[WSManager] Error waking Transcode Guard for %s:\n%s", sanitize_diagnostic_text(server_id), format_exception_for_log(exc))
 
         self.add_global_callback(sync_handler)
         logger.info("[WSManager] Setup stream session forwarding to shared stream manager")

@@ -148,10 +148,16 @@ export type LatestPreview = {
   >;
 };
 
+export type LatestPreviewRequest = {
+  template: string;
+  items: Partial<Record<"movie" | "series", LatestItem>>;
+};
+
 export type LatestEnrichResult = { success: boolean; item: LatestItem };
 
 export type LatestActionResult = {
   success: boolean;
+  status?: "success" | "partial" | "error" | "busy";
   message?: string;
   sent?: number;
   failed?: number;

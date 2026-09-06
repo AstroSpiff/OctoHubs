@@ -2,10 +2,12 @@
 
 import threading
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from core.storage import AppSettings, DatabaseStorage
+from core.storage import AppSettings, DatabaseStorage, StorageError
+from core.storage.storage_models import RequestRuleEntry
 
 
 def test_concurrent_read_modify_write_preserves_independent_sections(tmp_path):
@@ -67,4 +69,81 @@ def test_concurrent_read_modify_write_preserves_independent_nested_keys(tmp_path
     assert storage.load_app_settings() == {
         "AUTO_TASKS": {"telegram": {"enabled": True}, "services": {"enabled": True}}
     }
+    engine.dispose()
+
+
+def test_seed_does_not_replace_a_value_written_after_the_seed_snapshot(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'seed-settings.db'}"
+    engine = create_engine(database_url, future=True)
+    AppSettings.__table__.create(engine)
+    storage = DatabaseStorage({"URL": database_url})
+    storage._engine = engine
+    storage._Session = sessionmaker(bind=engine, expire_on_commit=False)
+
+    storage.update_app_settings_section(
+        "AUTO_TASKS",
+        lambda _current: {"job": {"enabled": True, "interval_minutes": 7}},
+    )
+    storage.seed_app_settings(
+        {"AUTO_TASKS": {"job": {"enabled": False, "interval_minutes": 60}}},
+    )
+
+    assert storage.load_app_settings() == {
+        "AUTO_TASKS": {"job": {"enabled": True, "interval_minutes": 7}},
+    }
+    engine.dispose()
+
+
+def test_snapshot_merge_rejects_two_different_first_values_for_same_section(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'settings-conflict.db'}"
+    engine = create_engine(database_url, future=True)
+    AppSettings.__table__.create(engine)
+    storage = DatabaseStorage({"URL": database_url})
+    storage._engine = engine
+    storage._Session = sessionmaker(bind=engine, expire_on_commit=False)
+    original = storage.load_app_settings() or {}
+    storage.update_app_settings({"AUTO_TASKS": {"job": {"enabled": True}}})
+
+    with pytest.raises(StorageError, match="Conflitto"):
+        storage.save_app_settings_changes(
+            original,
+            {"AUTO_TASKS": {"job": {"enabled": False}}},
+        )
+
+    assert storage.load_app_settings() == {
+        "AUTO_TASKS": {"job": {"enabled": True}},
+    }
+    engine.dispose()
+
+
+def test_concurrent_request_rule_patches_preserve_distinct_request_ids(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'request-rules.db'}"
+    engine = create_engine(database_url, future=True)
+    RequestRuleEntry.__table__.create(engine)
+    storage = DatabaseStorage({"URL": database_url})
+    storage._engine = engine
+    storage._Session = sessionmaker(bind=engine, expire_on_commit=False)
+    barrier = threading.Barrier(2)
+    failures = []
+
+    def update(request_id):
+        try:
+            barrier.wait(timeout=2)
+            storage.patch_request_rules(
+                {request_id: {"enabled": True, "query_terms": [request_id]}},
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+
+    threads = [
+        threading.Thread(target=update, args=("request-0",)),
+        threading.Thread(target=update, args=("request-1",)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=3)
+
+    assert failures == []
+    assert set(storage.load_request_rules()) == {"request-0", "request-1"}
     engine.dispose()

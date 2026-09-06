@@ -95,19 +95,12 @@ def test_external_audit_accepts_an_explicitly_bodyless_command():
 
 def test_current_application_external_contract_has_no_structural_violations(monkeypatch):
     import runtime.app_setup as app_setup
-    from services import interface_order_migration
 
     # This is an OpenAPI-only audit. Database/bootstrap behavior is covered by
     # dedicated tests and must not make a local PostgreSQL service a prerequisite.
     monkeypatch.setenv("PASSWORD_SECRET", "test-password-secret-that-is-long-enough")
     monkeypatch.setattr(app_setup, "init_auth", lambda **_kwargs: True)
     monkeypatch.setattr(app_setup, "initialize_runtime_services", lambda: None)
-    monkeypatch.setattr(
-        interface_order_migration,
-        "migrate_legacy_interface_orders",
-        lambda: {"completed": False, "already_completed": True, "profiles": 0},
-    )
-
     app = app_setup.create_app()
     schema = build_external_openapi(app.openapi(), ["admin:all"])
     audit = audit_external_openapi(schema)

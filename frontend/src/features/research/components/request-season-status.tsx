@@ -1,29 +1,36 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { KeyboardEvent } from "react";
 
 import { tabAtKey } from "@/components/ui/tab-navigation";
 
 function RequestSeasonStatus({ seasons }: { seasons: Array<Record<string, unknown>> }) {
   const instanceId = useId().replace(/:/g, "");
-  const [selectedIndex, setSelectedIndex] = useState(0);
-  const selected = seasons[selectedIndex] || seasons[0];
+  const [selectedSeasonKey, setSelectedSeasonKey] = useState(() => seasonKey(seasons[0], 0));
+  const matchedIndex = seasons.findIndex((season, index) => seasonKey(season, index) === selectedSeasonKey);
+  const selectedIndex = matchedIndex >= 0 ? matchedIndex : 0;
+  const selected = seasons[selectedIndex];
   const episodes = Array.isArray(selected?.episodes)
     ? selected.episodes.filter((episode): episode is Record<string, unknown> => Boolean(episode) && typeof episode === "object")
     : [];
   const pending = Array.isArray(selected?.pending) ? selected.pending : [];
+
+  useEffect(() => {
+    const effectiveKey = seasonKey(selected, selectedIndex);
+    if (effectiveKey !== selectedSeasonKey) setSelectedSeasonKey(effectiveKey);
+  }, [selected, selectedIndex, selectedSeasonKey]);
 
   function selectSeasonFromKeyboard(event: KeyboardEvent<HTMLButtonElement>, currentIndex: number) {
     const nextId = tabAtKey(seasons.map((_, index) => String(index)), String(currentIndex), event.key);
     if (nextId === undefined) return;
     event.preventDefault();
     const nextIndex = Number(nextId);
-    setSelectedIndex(nextIndex);
+    setSelectedSeasonKey(seasonKey(seasons[nextIndex], nextIndex));
     window.requestAnimationFrame(() => document.getElementById(`research-season-${instanceId}-tab-${nextIndex}`)?.focus());
   }
 
   return <div className="research-request-seasons">
     <div className="research-request-season-tabs" role="tablist" aria-label="Stagioni richiesta">
-      {seasons.map((season, index) => <button key={`${season.season || "season"}-${index}`} id={`research-season-${instanceId}-tab-${index}`} type="button" role="tab" aria-selected={selected === season} aria-controls={`research-season-${instanceId}-panel-${index}`} tabIndex={selected === season ? 0 : -1} className={selected === season ? "is-active" : ""} onClick={() => setSelectedIndex(index)} onKeyDown={(event) => selectSeasonFromKeyboard(event, index)}>
+      {seasons.map((season, index) => <button key={seasonKey(season, index)} id={`research-season-${instanceId}-tab-${index}`} type="button" role="tab" aria-selected={selectedIndex === index} aria-controls={`research-season-${instanceId}-panel-${index}`} tabIndex={selectedIndex === index ? 0 : -1} className={selectedIndex === index ? "is-active" : ""} onClick={() => setSelectedSeasonKey(seasonKey(season, index))} onKeyDown={(event) => selectSeasonFromKeyboard(event, index)}>
         {`S${String(season.season || 0).padStart(2, "0")}`} {String(season.status_display || season.status || "")}
       </button>)}
     </div>
@@ -33,6 +40,12 @@ function RequestSeasonStatus({ seasons }: { seasons: Array<Record<string, unknow
       </span>) : pending.length ? pending.map((episode) => <span key={String(episode)} className="is-pending">E{String(episode).padStart(2, "0")}</span>) : " Nessun episodio rilevato"}
     </div> : null}
   </div>;
+}
+
+function seasonKey(season: Record<string, unknown> | undefined, index: number) {
+  return season?.season === undefined || season.season === null
+    ? `index:${index}`
+    : `season:${String(season.season)}`;
 }
 
 function episodeJustWatchTitle(episode: Record<string, unknown>) {

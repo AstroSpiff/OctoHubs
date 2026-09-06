@@ -142,6 +142,34 @@ class PlaystateHideFromResumeTests(unittest.TestCase):
         self.assertEqual(result["success"], ["Target"])
         self.assertEqual(hide_calls, [("target", "target-user", "target-item", True)])
 
+    def test_hide_from_resume_write_failure_makes_target_partial(self):
+        manager, _ = self._manager_for_hide_tests(
+            _item("source-item", hide=True), _item("target-item", hide=False)
+        )
+        manager._set_item_hide_from_resume = lambda *_args: (False, "remote rejected")
+
+        result = manager.sync_user_playstate_exact(
+            "source", "source-user", [("target", "target-user")], include_resume=True
+        )
+
+        self.assertEqual([], result["success"])
+        self.assertEqual(["Target: 1 update(s) failed"], result["failed"])
+
+    def test_merge_aborts_before_writes_when_a_source_snapshot_is_incomplete(self):
+        writes = []
+        manager, _ = self._manager_for_hide_tests(_item("source-item"), _item("target-item"))
+        manager._fetch_user_items_for_sync = lambda server, *_args: (
+            ([], "offline") if server["id"] == "target" else ([_item("source-item")], None)
+        )
+        manager._mark_item_played = lambda *_args: (writes.append(True) or True, None)
+
+        result = manager.sync_merge_playstate(
+            [("source", "source-user"), ("target", "target-user")], include_resume=True
+        )
+
+        self.assertIn("aborted", result["error"])
+        self.assertEqual([], writes)
+
     def _manager_for_hide_tests(self, source_item: dict, target_item: dict):
         servers = {
             "source": {"id": "source", "name": "Source"},

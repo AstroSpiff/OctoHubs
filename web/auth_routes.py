@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-from fastapi import APIRouter, Request, Form
+from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import RedirectResponse, HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app_helpers import _resolve_next_url
@@ -118,7 +118,7 @@ def _login_page_response(request: Request, *, status_code: int = 200):
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     """Login page - open the React workspace for an active session."""
-    if _get_current_user_dep(request):
+    if await run_in_threadpool(_get_current_user_dep, request):
         return RedirectResponse(url=_APPLICATION_HOME, status_code=303)
 
     return _login_page_response(request)
@@ -143,7 +143,7 @@ async def login_submit(
         _flash_dep(request, "Username e password sono obbligatori.", "error")
         return RedirectResponse(url="/login", status_code=303)
 
-    from core.auth import get_user_by_username, log_audit_event
+    from core.auth import AuthStorageError, get_user_by_username, log_audit_event
 
     client_address = login_client_address(request)
     limiter = get_login_attempt_limiter()
@@ -154,7 +154,13 @@ async def login_submit(
         response.headers["Retry-After"] = str(rate_limit.retry_after_seconds)
         return response
 
-    user = get_user_by_username(username)
+    try:
+        user = await run_in_threadpool(get_user_by_username, username)
+    except AuthStorageError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Database autenticazione temporaneamente non disponibile",
+        ) from exc
     password_matches = await run_in_threadpool(login_password_matches, user, password)
 
     if password_matches:
@@ -162,8 +168,9 @@ async def login_submit(
         request.session["permanent"] = True
         user_id: int = user.id  # type: ignore - SQLAlchemy Column[int] is int at runtime
         _set_current_user_dep(request, user_id)
-        user.update_last_login()
-        log_audit_event(user, "login", "success", request)
+        request.session["auth_epoch"] = int(getattr(user, "auth_epoch", 0) or 0)
+        await run_in_threadpool(user.update_last_login)
+        await run_in_threadpool(log_audit_event, user, "login", "success", request)
         _flash_dep(request, f"Benvenuto, {user.username}!", "success")
 
         return RedirectResponse(
@@ -172,19 +179,23 @@ async def login_submit(
         )
 
     _flash_dep(request, "Username o password non validi.", "error")
-    log_audit_event(user, "login", "failed", request)
+    await run_in_threadpool(log_audit_event, user, "login", "failed", request)
     return RedirectResponse(url="/login", status_code=303)
 
 
-@router.get("/logout")
+@router.post("/logout")
 async def logout(request: Request):
     """Logout handler."""
+    token = request.headers.get("X-CSRFToken") or request.headers.get("X-CSRF-Token")
+    if not _validate_csrf_dep(request, token):
+        raise HTTPException(status_code=403, detail="CSRF token non valido")
+
     from core.auth import log_audit_event
 
-    user = _get_current_user_dep(request)
+    user = await run_in_threadpool(_get_current_user_dep, request)
     if user:
-        log_audit_event(user, "logout", "success", request)
+        await run_in_threadpool(log_audit_event, user, "logout", "success", request)
 
     request.session.clear()
     _flash_dep(request, "Disconnessione effettuata.", "success")
-    return RedirectResponse(url="/login", status_code=303)
+    return JSONResponse({"success": True, "redirect": "/login"})

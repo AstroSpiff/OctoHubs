@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import threading
 import time
 from typing import Any, Callable, Dict, Optional
@@ -16,6 +17,7 @@ from .utils import _coerce_int_range
 from .recent import RecentProbeMixin
 from .libraries import LibrariesProbeMixin
 from .combo import ComboProbeMixin
+from .operation_monitor_registry import ProbeOperationMonitorRegistry
 
 
 class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
@@ -27,13 +29,162 @@ class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
         self._stop_flags: Dict[str, Dict[str, threading.Event]] = {}
         self._global_workers: Dict[str, threading.Thread] = {}
         self._global_stop_flags: Dict[str, threading.Event] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._db_getter: Optional[Callable[[], Any]] = None
         self._libraries_pause_flags: Dict[str, threading.Event] = {}
+        self._quiescing_servers: set[str] = set()
+        self._operation_monitors = ProbeOperationMonitorRegistry()
+        self._accept_workers = True
 
-    def configure(self, db_getter: Callable[[], Any]) -> None:
-        """Configure the database getter function."""
-        self._db_getter = db_getter
+    def configure(self, db_getter: Callable[[], Any], *, reopen: bool = False) -> None:
+        """Configure dependencies and optionally reopen a drained lifespan."""
+        with self._lock:
+            workers = [
+                *self._global_workers.values(),
+                *(worker for server_workers in self._workers.values() for worker in server_workers.values()),
+            ]
+            if reopen and any(worker.is_alive() for worker in workers):
+                raise RuntimeError("Worker Probe ancora attivi durante la riapertura")
+            try:
+                self._operation_monitors.initialize()
+            except BaseException:
+                self._accept_workers = False
+                raise
+            self._db_getter = db_getter
+            if reopen:
+                self._accept_workers = True
+
+    def begin_shutdown(self) -> None:
+        """Reject new Probe workers before the runtime starts parallel drains."""
+        with self._lock:
+            self._accept_workers = False
+
+    def _can_start_worker_locked(self, server_id: Optional[str] = None) -> bool:
+        if not self._accept_workers:
+            return False
+        return server_id is None or server_id not in self._quiescing_servers
+
+    def shutdown(self, timeout_seconds: float = 5.0) -> bool:
+        """Signal every Probe worker and wait for them within one deadline."""
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        self.begin_shutdown()
+        with self._lock:
+            stop_flags = {
+                *self._global_stop_flags.values(),
+                *(flag for flags in self._stop_flags.values() for flag in flags.values()),
+            }
+            workers = {
+                *self._global_workers.values(),
+                *(worker for workers in self._workers.values() for worker in workers.values()),
+            }
+
+        for stop_flag in stop_flags:
+            stop_flag.set()
+        for worker in workers:
+            if worker is threading.current_thread():
+                continue
+            worker.join(timeout=max(0.0, deadline - time.monotonic()))
+
+        workers_stopped = all(
+            worker is threading.current_thread() or not worker.is_alive()
+            for worker in workers
+        )
+        monitors_stopped = self._operation_monitors.shutdown(
+            max(0.0, deadline - time.monotonic())
+        )
+        return workers_stopped and monitors_stopped
+
+    def start_operation_monitor(
+        self,
+        callback: Callable[[threading.Event], None],
+    ) -> None:
+        with self._lock:
+            if not self._accept_workers:
+                raise RuntimeError("Monitor Probe rifiutato durante lo shutdown")
+            self._operation_monitors.start(callback)
+
+    def _start_local_worker_locked(
+        self,
+        server_id: str,
+        worker_key: str,
+        worker: threading.Thread,
+        stop_flag: threading.Event,
+        *,
+        release_libraries_pause: bool = False,
+    ) -> None:
+        """Register before start and leave a terminal status if start fails."""
+        self._workers[server_id][worker_key] = worker
+        try:
+            worker.start()
+        except BaseException:
+            if self._workers.get(server_id, {}).get(worker_key) is worker:
+                self._workers[server_id].pop(worker_key, None)
+            if self._stop_flags.get(server_id, {}).get(worker_key) is stop_flag:
+                self._stop_flags[server_id].pop(worker_key, None)
+            status = self._status.get(server_id, {}).get(worker_key)
+            if isinstance(status, dict):
+                status["running"] = False
+                status["last_log"] = "Avvio worker non riuscito"
+            if release_libraries_pause:
+                self._set_libraries_pause(server_id, False)
+            raise
+
+    def _start_global_worker_locked(
+        self,
+        worker_key: str,
+        worker: threading.Thread,
+        stop_flag: threading.Event,
+    ) -> None:
+        """Publish a global worker before start and roll registration back on failure."""
+        self._global_workers[worker_key] = worker
+        try:
+            worker.start()
+        except BaseException:
+            if self._global_workers.get(worker_key) is worker:
+                self._global_workers.pop(worker_key, None)
+            if self._global_stop_flags.get(worker_key) is stop_flag:
+                self._global_stop_flags.pop(worker_key, None)
+            raise
+
+    def quiesce_server(self, server_id: str, timeout_seconds: float = 5.0) -> bool:
+        """Stop and join workers that may still write data for one server."""
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        with self._lock:
+            self._quiescing_servers.add(server_id)
+            local_flags = list(self._stop_flags.get(server_id, {}).values())
+            local_workers = list(self._workers.get(server_id, {}).values())
+            # Sequence/combo workers can start work for this server later, so a
+            # server deletion must also stop those application-wide sequences.
+            global_flags = list(self._global_stop_flags.values())
+            global_workers = list(self._global_workers.values())
+
+        for stop_flag in [*local_flags, *global_flags]:
+            stop_flag.set()
+        for worker in [*local_workers, *global_workers]:
+            if worker is threading.current_thread():
+                continue
+            worker.join(timeout=max(0.0, deadline - time.monotonic()))
+
+        with self._lock:
+            current_local_workers = list(self._workers.get(server_id, {}).values())
+            stopped = all(
+                worker is threading.current_thread() or not worker.is_alive()
+                for worker in [*local_workers, *global_workers, *current_local_workers]
+            )
+            if stopped:
+                self._workers.pop(server_id, None)
+                self._stop_flags.pop(server_id, None)
+                self._status.pop(server_id, None)
+                self._libraries_pause_flags.pop(server_id, None)
+        return stopped
+
+    def release_server(self, server_id: str) -> None:
+        """Release a deletion tombstone after persistent cleanup has completed."""
+        with self._lock:
+            self._quiescing_servers.discard(server_id)
+
+    def _is_server_quiescing_locked(self, server_id: str) -> bool:
+        return server_id in self._quiescing_servers
 
     def _get_libraries_pause_flag(self, server_id: str) -> threading.Event:
         with self._lock:
@@ -59,7 +210,9 @@ class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
     def get_status(self, server_id: str) -> Dict[str, Any]:
         """Get the status of both discovery and processing workers for a server."""
         with self._lock:
-            return self._status.get(server_id, {})
+            # Status contains nested mutable lists/dicts that worker threads keep
+            # updating.  Never let serializers or callers observe that live graph.
+            return copy.deepcopy(self._status.get(server_id, {}))
 
     def is_worker_running(
         self,
@@ -248,9 +401,12 @@ class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
         if not isinstance(items, list) or not items:
             # File doesn't exist anymore - clean it up from all tables
             db = self._db_getter()
-            db.remove_from_probe_queue(server_id, item_id, media_source_id, scope=scope)
-            db.remove_from_probe_blacklist(server_id, item_id, media_source_id, scope=scope)
-            db.remove_from_probe_history(server_id, item_id, media_source_id, scope=scope)
+            db.remove_probe_item_state(
+                server_id=server_id,
+                item_id=item_id,
+                media_source_id=media_source_id,
+                scope=scope,
+            )
             return False, "File non trovato su Emby (rimosso automaticamente dalla coda/blacklist)"
 
         payload = items[0]
@@ -384,13 +540,15 @@ class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
 
         try:
             db = self._db_getter()
-            # Add to queue
-            db.add_to_probe_queue(queue_items)
-            # Remove from history
-            for queue_item in queue_items:
-                db.remove_from_probe_history(server_id, item_id, queue_item.get("media_source_id"))
+            queued = db.retry_probe_items(
+                queue_items,
+                server_id=server_id,
+                item_id=item_id,
+                media_source_id=media_source_id,
+                scope=scope,
+            )
             display_name = queue_items[0].get("name") or item_name
-            return True, f"Item '{display_name}' aggiunto alla coda ({len(queue_items)} sorgenti)"
+            return True, f"Item '{display_name}' aggiunto alla coda ({queued} sorgenti)"
         except Exception as exc:
             return False, f"Errore database: {exc}"
 
@@ -584,7 +742,15 @@ class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
             params["MediaSourceId"] = media_source_id
 
         try:
-            response = requests.post(target, headers=headers, params=params, timeout=15)
+            response = requests.post(
+                target,
+                headers=headers,
+                params=params,
+                allow_redirects=False,
+                timeout=15,
+            )
+            if response.status_code in {301, 302, 303, 307, 308}:
+                return False
             response.raise_for_status()
             return True
         except (requests.RequestException, requests.HTTPError):

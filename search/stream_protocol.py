@@ -14,6 +14,7 @@ from search.stream_limits import (
     MAX_SEARCH_QUERY_LENGTH,
     SEARCH_START_FRAME_TIMEOUT_SECONDS,
 )
+from search.rule_contracts import CustomSearchRulesInput
 
 
 SearchQuery = Annotated[
@@ -33,7 +34,7 @@ class SearchStreamStartPayload(BaseModel):
     use_jellyseerr_logic: bool = False
     use_custom_rules: bool = False
     tmdb_id: int | str | None = ""
-    custom_rules: dict[str, Any] | None = None
+    custom_rules: CustomSearchRulesInput | None = None
     seasons: list[SeasonNumber] = Field(default_factory=list, max_length=50)
 
     @field_validator("query_variants", "search_types", "indexers")

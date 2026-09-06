@@ -192,8 +192,9 @@ function TelegramChatResourcePanel({
 }
 
 function ResourceIdentity({ title, subtitle, verified, error }: { title: string; subtitle: string; verified: boolean; error: string }) {
+  const verificationLabel = verified ? "Verificato" : error ? "Verifica non riuscita" : "Non verificato";
   return <div className="telegram-resource-identity">
-    <span className={verified ? "telegram-verification telegram-verification--ok" : "telegram-verification telegram-verification--unknown"}>{verified ? <CheckCircle2 size={16} aria-hidden="true" /> : <XCircle size={16} aria-hidden="true" />}</span>
+    <span role="status" aria-label={verificationLabel} title={verificationLabel} className={verified ? "telegram-verification telegram-verification--ok" : "telegram-verification telegram-verification--unknown"}>{verified ? <CheckCircle2 size={16} aria-hidden="true" /> : <XCircle size={16} aria-hidden="true" />}<span className="sr-only">{verificationLabel}</span></span>
     <div><strong>{title}</strong><small title={error || subtitle}>{error || subtitle}</small></div>
   </div>;
 }

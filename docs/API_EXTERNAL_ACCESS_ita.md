@@ -1,3 +1,5 @@
+[Italiano](API_EXTERNAL_ACCESS_ita.md) | [English](API_EXTERNAL_ACCESS.md)
+
 # Accesso API esterno OctoHubs
 
 Questa guida spiega come usare OctoHubs da strumenti esterni, script, automazioni o agenti IA senza duplicare endpoint e senza usare cookie browser.
@@ -52,15 +54,22 @@ Esempio:
 ```bash
 export OCTOHUBS_URL="https://octohubs.example.test"
 export OCTOHUBS_API_TOKEN="ohs_copia_qui_il_token"
+export OCTOHUBS_CURL_CONFIG="$(mktemp)"
+chmod 600 "$OCTOHUBS_CURL_CONFIG"
+printf 'header = "Authorization: Bearer %s"\n' "$OCTOHUBS_API_TOKEN" > "$OCTOHUBS_CURL_CONFIG"
+trap 'rm -f "$OCTOHUBS_CURL_CONFIG"' EXIT
 
 curl -sS "$OCTOHUBS_URL/api/v1/system/status" \
-  -H "Authorization: Bearer $OCTOHUBS_API_TOKEN" \
+  --config "$OCTOHUBS_CURL_CONFIG" \
   -H "Accept: application/json"
 ```
 
 Con un Bearer token valido non serve inviare CSRF, perche il token non e un cookie che il browser invia automaticamente.
 
 ## Smoke test consigliato
+
+Il client legge il token da `OCTOHUBS_API_TOKEN`, oppure da `--token-file` se
+preferisci un file secret protetto. Il token non viene passato negli argv.
 
 Crea un token con solo:
 
@@ -74,7 +83,6 @@ Poi verifica:
 ```bash
 python scripts/octohubs_api_client.py \
   --base-url "$OCTOHUBS_URL" \
-  --token "$OCTOHUBS_API_TOKEN" \
   smoke
 ```
 
@@ -90,7 +98,6 @@ Se vuoi provare anche la lettura dei server Emby:
 ```bash
 python scripts/octohubs_api_client.py \
   --base-url "$OCTOHUBS_URL" \
-  --token "$OCTOHUBS_API_TOKEN" \
   smoke --include-servers
 ```
 
@@ -118,7 +125,6 @@ vuoi usare, esegui:
 ```bash
 python scripts/octohubs_api_client.py \
   --base-url "$OCTOHUBS_URL" \
-  --token "$OCTOHUBS_API_TOKEN" \
   verify
 ```
 
@@ -133,7 +139,6 @@ token non la vede nel proprio contratto:
 ```bash
 python scripts/octohubs_api_client.py \
   --base-url "$OCTOHUBS_URL" \
-  --token "$OCTOHUBS_API_TOKEN" \
   call POST /api/v1/workflow/start --body '{"type":"library","context":{}}'
 ```
 
@@ -152,7 +157,7 @@ read:status
 
 ```bash
 curl -sS "$OCTOHUBS_URL/api/v1/system/status" \
-  -H "Authorization: Bearer $OCTOHUBS_API_TOKEN" \
+  --config "$OCTOHUBS_CURL_CONFIG" \
   -H "Accept: application/json"
 ```
 
@@ -171,7 +176,7 @@ read:status
 
 ```bash
 curl -sS "$OCTOHUBS_URL/api/v1/realtime/changes?after=0&limit=100" \
-  -H "Authorization: Bearer $OCTOHUBS_API_TOKEN" \
+  --config "$OCTOHUBS_CURL_CONFIG" \
   -H "Accept: application/json"
 ```
 
@@ -194,7 +199,7 @@ read:servers
 
 ```bash
 curl -sS "$OCTOHUBS_URL/api/v1/emby/servers" \
-  -H "Authorization: Bearer $OCTOHUBS_API_TOKEN" \
+  --config "$OCTOHUBS_CURL_CONFIG" \
   -H "Accept: application/json"
 ```
 
@@ -205,7 +210,7 @@ Con un token che ha solo `read:status`, questa chiamata deve rispondere `403`:
 ```bash
 curl -i "$OCTOHUBS_URL/api/v1/telegram/action" \
   -X POST \
-  -H "Authorization: Bearer $OCTOHUBS_API_TOKEN" \
+  --config "$OCTOHUBS_CURL_CONFIG" \
   -H "Content-Type: application/json" \
   -d '{"action":"bot.save","data":{"id":"scope-check"}}'
 ```
@@ -255,8 +260,7 @@ Regola generale:
   un token figlio solo con scope gia presenti nel token chiamante: non puo auto-promuoversi;
 - `admin:accounts` amministra gli account OctoHubs. L'account proprietario deve comunque avere
   ruolo amministratore, quindi lo scope da solo non aggira i ruoli applicativi;
-- `admin:all` apre anche endpoint non ancora classificati;
-- una route legacy `/api/*` non classificata richiede `admin:all` in modo conservativo;
+- `admin:all` e il fallback amministrativo piu ampio per le sole operazioni v1 catalogate;
 - una route non inclusa nel contratto non e raggiungibile tramite `/api/v1`.
 
 ## Contratti JSON e OpenAPI
@@ -278,9 +282,9 @@ Gli strumenti esterni devono usare le route `/api/v1/*` con
 schema filtrato. Il gateway v1 raggiunge gli stessi handler e servizi della UI:
 non esiste una seconda API o una logica duplicata per automazioni e IA.
 
-La versione del contratto e `1.0`; il namespace stabile e `/api/v1`. Le route
-storiche `/api/*` restano temporaneamente per la UI in migrazione, ma i nuovi
-client esterni devono usare esclusivamente `v1`.
+La versione del contratto è `1.0`; il namespace stabile è `/api/v1`. Le vecchie
+route pubbliche non versionate sono ritirate e rispondono `410 Gone` indicando il
+successore `/api/v1`; le route interne della UI non sono un contratto esterno.
 
 Le risposte delle aree a payload stabile vengono descritte progressivamente
 come modelli OpenAPI concreti. Il feed `GET /api/v1/operations`, per esempio,
@@ -377,7 +381,7 @@ Esempio:
 
 ```bash
 curl -sS "$OCTOHUBS_URL/api/v1/external/openapi.json" \
-  -H "Authorization: Bearer $OCTOHUBS_API_TOKEN" \
+  --config "$OCTOHUBS_CURL_CONFIG" \
   -H "Accept: application/json"
 ```
 
@@ -415,7 +419,7 @@ dichiarati nel contratto OpenAPI.
 
 Le integrazioni di configurazione usano gli stessi handler dell'interfaccia:
 Telegram e Trakt richiedono write:configuration per le mutazioni; la verifica
-delle connessioni richiede read:configuration. Il device flow Trakt non
+delle connessioni richiede run:operations. Il device flow Trakt non
 restituisce mai token OAuth: il client riceve solo stato e scadenza.
 
 /api/v1/emby/users
@@ -472,9 +476,9 @@ scansioni Emby tracciate (`/api/v1/emby/scan-library*`,
 /api/v1/emby/probe/history
 /api/v1/emby/probe/blacklist     -> read:libraries per GET
                                 -> write:libraries per DELETE
-/api/v1/emby/probe/export-csv
+/api/v1/emby/probe/export-csv -> read:libraries
 /api/v1/emby/probe/debug-recent-items
-                              -> read:libraries
+                              -> run:operations
 /api/v1/emby/probe/* start/stop/retry
                               -> run:operations
 
@@ -485,8 +489,10 @@ scansioni Emby tracciate (`/api/v1/emby/scan-library*`,
 /api/v1/research/tmdb/check-availability
 /api/v1/research/media/details
 /api/v1/research/manual/history
+                                                -> read:research
 /api/v1/research/torrents/proxy
-/api/v1/research/torrents/archive -> read:research
+/api/v1/research/torrents/archive
+/api/v1/research/torrents/magnets               -> write:research; solo riferimenti opachi
 
 /api/v1/research/search-rules
 /api/v1/research/request-rules
@@ -517,7 +523,7 @@ scansioni Emby tracciate (`/api/v1/emby/scan-library*`,
 
 /api/v1/configuration
 /api/v1/telegram
-/api/v1/test-connections         -> read:configuration
+/api/v1/test-connections         -> run:operations
 /api/v1/trakt                    -> read:configuration per GET
                                 -> write:configuration per mutazioni
 
@@ -584,11 +590,11 @@ Il client in `scripts/octohubs_api_client.py` usa solo la libreria standard Pyth
 Esempi:
 
 ```bash
-python scripts/octohubs_api_client.py --base-url "$OCTOHUBS_URL" --token "$OCTOHUBS_API_TOKEN" status
-python scripts/octohubs_api_client.py --base-url "$OCTOHUBS_URL" --token "$OCTOHUBS_API_TOKEN" servers
-python scripts/octohubs_api_client.py --base-url "$OCTOHUBS_URL" --token "$OCTOHUBS_API_TOKEN" catalog
-python scripts/octohubs_api_client.py --base-url "$OCTOHUBS_URL" --token "$OCTOHUBS_API_TOKEN" expect-denied
-python scripts/octohubs_api_client.py --base-url "$OCTOHUBS_URL" --token "$OCTOHUBS_API_TOKEN" smoke
+python scripts/octohubs_api_client.py --base-url "$OCTOHUBS_URL" status
+python scripts/octohubs_api_client.py --base-url "$OCTOHUBS_URL" servers
+python scripts/octohubs_api_client.py --base-url "$OCTOHUBS_URL" catalog
+python scripts/octohubs_api_client.py --base-url "$OCTOHUBS_URL" expect-denied
+python scripts/octohubs_api_client.py --base-url "$OCTOHUBS_URL" smoke
 ```
 
 Per chiamare un endpoint senza hard-code locale, il client verifica prima che
@@ -597,7 +603,6 @@ metodo e percorso siano presenti nel catalogo filtrato per il token:
 ```bash
 python scripts/octohubs_api_client.py \
   --base-url "$OCTOHUBS_URL" \
-  --token "$OCTOHUBS_API_TOKEN" \
   call PUT /api/v1/research/search-rules \
   --body '{"search_rules":{"min_seeders":2}}'
 ```

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from core.config_manager import load_config
+from core.safe_output import safe_print as print
 from core.utils import json_error
 from emby_runtime.api_clients import _fetch_emby_scheduled_tasks
 from services.health import validate_connections

@@ -31,6 +31,7 @@ type GroupSyncControlsProps = {
 function GroupSyncControls({ group, saving, syncing, onSave, onSync }: GroupSyncControlsProps) {
   const [settings, setSettings] = useState(() => groupSyncSettingsFrom(group));
   const [persisting, setPersisting] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const settingsRef = useRef(settings);
   const persistingRef = useRef(false);
   const syncOptionsPopover = usePopoverDisclosure();
@@ -47,6 +48,7 @@ function GroupSyncControls({ group, saving, syncing, onSave, onSync }: GroupSync
 
   async function update(next: GroupSyncSettings) {
     if (persistingRef.current) return;
+    const baseline = settingsRef.current;
     const normalized = {
       ...next,
       sync_resume: next.sync_playstate ? next.sync_resume : false,
@@ -55,8 +57,13 @@ function GroupSyncControls({ group, saving, syncing, onSave, onSync }: GroupSync
     setSettings(normalized);
     settingsRef.current = normalized;
     setPersisting(true);
+    setSaveError("");
     try {
       await onSave(normalized);
+    } catch (error) {
+      settingsRef.current = baseline;
+      setSettings(baseline);
+      setSaveError(error instanceof Error ? error.message : "Errore sconosciuto");
     } finally {
       persistingRef.current = false;
       setPersisting(false);
@@ -79,6 +86,11 @@ function GroupSyncControls({ group, saving, syncing, onSave, onSync }: GroupSync
 
   return (
     <div className="users-group-sync-area">
+      {saveError ? (
+        <p className="users-group-message users-group-message--error" role="alert">
+          Salvataggio non riuscito: {saveError}
+        </p>
+      ) : null}
       <label className="users-group-sync-toggle" title="Attiva o disattiva la sincronizzazione automatica per questo gruppo.">
         <input
           type="checkbox"

@@ -47,11 +47,23 @@ def start_probe_worker_operation(
         raise RuntimeError("Impossibile creare l'operazione Media Probe")
 
     manager = get_probe_manager()
-    threading.Thread(
-        target=_monitor_probe_worker,
-        args=(tracker, operation_id, manager, worker, normalized_server_ids),
-        daemon=True,
-    ).start()
+    try:
+        manager.start_operation_monitor(
+            lambda stop_event: _monitor_probe_worker(
+                tracker,
+                operation_id,
+                manager,
+                worker,
+                normalized_server_ids,
+                stop_event,
+            )
+        )
+    except Exception:
+        failed = tracker.fail(
+            operation_id,
+            "Monitor dell'operazione Media Probe non avviato",
+        )
+        return failed or operation
     return operation
 
 
@@ -92,12 +104,13 @@ def _monitor_probe_worker(
     manager: Any,
     worker: ProbeWorkerOperation,
     server_ids: list[str],
+    stop_event: threading.Event,
 ) -> None:
     """Mirror the live worker until its own thread ends."""
 
     seen_running = False
     startup_deadline = time.monotonic() + 5
-    while True:
+    while not stop_event.is_set():
         states = _worker_states(manager, worker.key, server_ids)
         running = manager.is_worker_running(
             worker.key,
@@ -127,7 +140,8 @@ def _monitor_probe_worker(
             return
         else:
             tracker.update(operation_id, message="Avvio worker Media Probe")
-        time.sleep(1)
+        if stop_event.wait(1):
+            return
 
 
 def _worker_states(manager: Any, worker_key: str, server_ids: list[str]) -> dict[str, dict[str, Any]]:

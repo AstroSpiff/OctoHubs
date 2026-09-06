@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getEmbyLiveSnapshot } from "@/features/emby-live/api";
+import { getEmbyLiveSnapshot, getEmbyServerStatus } from "@/features/emby-live/api";
 import type { EmbyLiveSnapshot } from "@/features/emby-live/types";
 import { useEmbyLive } from "@/features/emby-live/use-emby-live";
 
@@ -118,6 +118,34 @@ describe("useEmbyLive", () => {
     expect(Object.keys(latest?.snapshot?.servers || {})).toEqual(["sse-new"]);
     expect(latest?.connection).toBe("connected");
     expect(latest?.error).toBeNull();
+  });
+
+  it("does not let a manual server refresh overwrite a newer SSE server state", async () => {
+    const manual = deferred<Awaited<ReturnType<typeof getEmbyServerStatus>>>();
+    vi.mocked(getEmbyServerStatus).mockReturnValue(manual.promise);
+    const source = FakeEventSource.instances[0];
+    const initial = snapshot("server-a");
+    initial.servers["server-a"].status.version = "initial";
+    act(() => source.onmessage?.({ data: JSON.stringify(initial) }));
+
+    act(() => {
+      void latest?.refreshServer("server-a");
+    });
+    const newer = snapshot("server-a");
+    newer.servers["server-a"].status.version = "sse-new";
+    act(() => source.onmessage?.({ data: JSON.stringify(newer) }));
+    await act(async () => {
+      manual.resolve({
+        status: { ok: true, version: "manual-old" },
+        running_tasks: [],
+        tasks_error: null,
+        streams: [],
+        streams_error: null,
+      });
+      await manual.promise;
+    });
+
+    expect(latest?.snapshot?.servers["server-a"].status.version).toBe("sse-new");
   });
 
   it("invalidates an in-flight fallback when refresh creates a new generation", async () => {

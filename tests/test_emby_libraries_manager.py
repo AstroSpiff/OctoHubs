@@ -18,6 +18,11 @@ class _Backend:
         self.associations = dict(associations)
 
 
+class _RejectingBackend(_Backend):
+    def save_library_associations(self, associations):
+        raise ValueError("Associazioni riferite a server non configurati: removed")
+
+
 class EmbyLibrariesManagerTests(unittest.TestCase):
     def test_associations_post_normalizes_valid_entries_and_ignores_incomplete_rows(self):
         backend = _Backend()
@@ -45,6 +50,24 @@ class EmbyLibrariesManagerTests(unittest.TestCase):
             },
         )
         self.assertEqual(len(payload["associations"]), 2)
+
+    def test_associations_post_reports_stale_server_snapshots_as_client_errors(self):
+        manager = EmbyLibrariesManager(
+            load_config=lambda: ({}, True),
+            ensure_db_backend=_RejectingBackend,
+            json_error=lambda message, status_code=400: (
+                {"success": False, "message": message},
+                status_code,
+            ),
+            storage_error_cls=RuntimeError,
+        )
+
+        payload, status_code = manager.build_associations_post_snapshot([
+            {"server_id": "removed", "library_id": "lib-a", "group_name": "Movies"},
+        ])
+
+        self.assertEqual(status_code, 400)
+        self.assertIn("removed", payload["message"])
 
 
 if __name__ == "__main__":

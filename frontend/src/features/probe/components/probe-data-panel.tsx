@@ -25,15 +25,23 @@ import type {
 type DataPanelProps = {
   scope: ProbeScope;
   queue: ProbeQueueItem[];
+  queueLoaded: boolean;
   history: ProbeHistoryItem[];
+  historyLoaded: boolean;
   errors: ProbeBlacklistItem[];
+  errorsLoaded: boolean;
   incomplete: ProbeBlacklistItem[];
+  incompleteLoaded: boolean;
   serverNames: Record<string, string>;
   loading: boolean;
+  hasMore: boolean;
+  loadingMore: boolean;
   busy: boolean;
   downloadUrl?: string;
   settings?: ReactNode;
   onRefresh: () => void;
+  onLoadMore: () => void;
+  onActiveTabChange: (tab: ProbeDataTab) => void;
   onClearQueue: () => void;
   onClearHistory: () => void;
   onClearBlacklist: (type: "error" | "incomplete") => void;
@@ -55,15 +63,23 @@ type DataPanelProps = {
 function ProbeDataPanel({
   scope,
   queue,
+  queueLoaded,
   history,
+  historyLoaded,
   errors,
+  errorsLoaded,
   incomplete,
+  incompleteLoaded,
   serverNames,
   loading,
+  hasMore,
+  loadingMore,
   busy,
   downloadUrl,
   settings,
   onRefresh,
+  onLoadMore,
+  onActiveTabChange,
   onClearQueue,
   onClearHistory,
   onClearBlacklist,
@@ -89,13 +105,14 @@ function ProbeDataPanel({
   useEffect(() => {
     setTab("queue");
     setIssuesOnly(false);
-  }, [scope]);
+    onActiveTabChange("queue");
+  }, [onActiveTabChange, scope]);
 
   const tabs = probeDataTabOptions({
-    queueCount: queue.length,
-    historyCount: history.length,
-    errorCount: errors.length,
-    incompleteCount: incomplete.length,
+    queueCount: queueLoaded ? queue.length : undefined,
+    historyCount: historyLoaded ? history.length : undefined,
+    errorCount: errorsLoaded ? errors.length : undefined,
+    incompleteCount: incompleteLoaded ? incomplete.length : undefined,
     showSettings: Boolean(settings),
   });
 
@@ -109,6 +126,7 @@ function ProbeDataPanel({
       return false;
     }
     setTab(nextTab);
+    onActiveTabChange(nextTab);
     return true;
   }
 
@@ -207,6 +225,19 @@ function ProbeDataPanel({
         />
       ) : null}
       {tab === "settings" ? settings : null}
+      {tab !== "settings" && hasMore ? (
+        <div className="probe-data-pagination">
+          <Button
+            type="button"
+            variant="secondary"
+            size="compact"
+            onClick={onLoadMore}
+            disabled={loadingMore || busy}
+          >
+            {loadingMore ? "Caricamento..." : "Carica altri risultati"}
+          </Button>
+        </div>
+      ) : null}
       </div>
     </section>
   );

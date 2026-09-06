@@ -31,6 +31,16 @@ def test_interface_preferences_are_scoped_to_each_auth_account(tmp_path, monkeyp
             "primary_navigation": "top",
             "secondary_navigation": "tabs",
         }
+        # Two stale tabs updating independent fields must merge at the row lock,
+        # not replace one another from their local snapshots.
+        assert auth.save_user_interface_preferences(
+            second.id,
+            {"primary_navigation": "sidebar"},
+        ) == {"primary_navigation": "sidebar", "secondary_navigation": "tabs"}
+        assert auth.save_user_interface_preferences(
+            second.id,
+            {"secondary_navigation": "sidebar"},
+        ) == {"primary_navigation": "sidebar", "secondary_navigation": "sidebar"}
         assert auth.get_user_interface_order(first.id, "primary") is None
         assert auth.save_user_interface_order(
             first.id,
@@ -39,14 +49,11 @@ def test_interface_preferences_are_scoped_to_each_auth_account(tmp_path, monkeyp
         ) == ["probe", "operations"]
         assert auth.get_user_interface_order(first.id, "primary") == ["probe", "operations"]
         assert auth.get_user_interface_order(second.id, "primary") is None
-        assert auth.save_user_interface_order(first.id, "dashboard", ["summary", "rules"]) == ["summary", "rules"]
-        assert auth.get_user_interface_order(first.id, "research") is None
-        assert auth.migrate_user_interface_navigation_orders({}, {"dashboard": "research"}) == 1
+        assert auth.save_user_interface_order(first.id, "research", ["summary", "rules"]) == ["summary", "rules"]
         assert auth.get_user_interface_order(first.id, "research") == ["summary", "rules"]
         preference = auth.db_session.query(auth.UserInterfacePreference).filter_by(user_id=first.id).one()
         saved_orders = json.loads(preference.navigation_order)
         assert saved_orders["research"] == ["summary", "rules"]
-        assert "dashboard" not in saved_orders
 
     finally:
         if auth.db_session is not None:
@@ -55,7 +62,6 @@ def test_interface_preferences_are_scoped_to_each_auth_account(tmp_path, monkeyp
 
 
 def test_interface_preferences_migrate_a_preexisting_auth_database(tmp_path):
-    import core.auth as auth
 
     database_url = f"sqlite:///{Path(tmp_path) / 'auth-migration.db'}"
     engine = create_engine(database_url)

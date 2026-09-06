@@ -34,7 +34,7 @@ type LibraryGroupCardProps = {
   scanning: boolean;
   scanJobs: ScanJob[];
   scanHistory: LibraryScanHistoryJob[];
-  scanningLibraryKey?: string;
+  scanningLibraryKeys?: ReadonlySet<string>;
   libraryScanBusy: boolean;
   onScan: (scanType: ScanType) => void;
   onScanLibrary: (library: LibraryEntry, scanType: ScanType) => void;
@@ -46,7 +46,7 @@ function LibraryGroupCard({
   scanning,
   scanJobs,
   scanHistory,
-  scanningLibraryKey,
+  scanningLibraryKeys = new Set(),
   libraryScanBusy,
   onScan,
   onScanLibrary,
@@ -210,7 +210,7 @@ function LibraryGroupCard({
                       <RefreshCw
                         size={14}
                         className={
-                          scanningLibraryKey === libraryKey
+                          scanningLibraryKeys.has(libraryKey)
                             ? "animate-spin"
                             : ""
                         }

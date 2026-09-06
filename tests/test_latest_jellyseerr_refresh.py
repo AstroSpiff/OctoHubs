@@ -21,6 +21,36 @@ class _Backend:
 
 
 class LatestJellyseerrRefreshTests(unittest.TestCase):
+    def test_jellyseerr_request_listing_reads_every_page_and_deduplicates(self):
+        calls = []
+
+        class _Response:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return self._payload
+
+        def fake_get(_url, **kwargs):
+            params = kwargs["params"]
+            calls.append((params["filter"], params["skip"]))
+            if params["filter"] == "pending" and params["skip"] == 0:
+                return _Response({"results": [{"id": value} for value in range(100)], "pageInfo": {"results": 101}})
+            if params["filter"] == "pending":
+                return _Response({"results": [{"id": 100}], "pageInfo": {"results": 101}})
+            return _Response({"results": [{"id": 100}], "pageInfo": {"results": 1}})
+
+        config = {"JELLYSEERR_URL": "https://jellyseerr.example", "JELLYSEERR_API_KEY": "secret"}
+        with patch("emby_runtime.api_clients_jellyseerr.requests.get", side_effect=fake_get):
+            entries, ok = get_jellyseerr_requests(config, silent=True, return_status=True)
+
+        self.assertTrue(ok)
+        self.assertEqual(101, len(entries))
+        self.assertIn(("pending", 100), calls)
+
     def test_jellyseerr_client_strips_trailing_base_url_slash_for_request_submission(self):
         calls = []
 

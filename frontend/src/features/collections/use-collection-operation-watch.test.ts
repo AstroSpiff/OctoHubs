@@ -37,4 +37,12 @@ describe("collection operation watch", () => {
       ]),
     ).toEqual([{ operationId: "done", type: "all" }]);
   });
+
+  it("releases a tracked operation removed by another administrator", () => {
+    const tracked: TrackedOperation[] = [
+      { operationId: "cleared", type: "collection", collectionId: "collection-1" },
+    ];
+
+    expect(completedCollectionOperations(tracked, [])).toEqual(tracked);
+  });
 });

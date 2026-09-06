@@ -19,6 +19,7 @@ import type { ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { WriteAction } from "@/features/session/workspace-capabilities";
+import { useWorkspaceCapabilities } from "@/features/session/workspace-capabilities-context";
 import { usePopoverDisclosure } from "@/components/ui/use-popover-disclosure";
 import { EmbyServerIcon } from "@/features/emby-live/components/emby-server-icon";
 import { accessPresentation, passwordPresentation, settingsPresentation } from "@/features/users/presentation";
@@ -67,6 +68,7 @@ function UserRow({
   groupSyncing,
   settingsSyncing,
 }: UserRowProps) {
+  const { canMutate } = useWorkspaceCapabilities();
   const access = accessPresentation(user);
   const password = passwordPresentation(user);
   const settings = settingsPresentation(user);
@@ -75,16 +77,18 @@ function UserRow({
   const canManageSettings = !changing && !settingsSyncing;
 
   return (
-    <article className="user-row">
-      <label className="user-select">
-        <input
-          type="checkbox"
-          checked={checked}
-          onChange={onToggle}
-          aria-label={`Seleziona ${user.name}`}
-        />
-        <span />
-      </label>
+    <article className={`user-row${canMutate ? "" : " user-row--read-only"}`}>
+      <WriteAction>
+        <label className="user-select">
+          <input
+            type="checkbox"
+            checked={checked}
+            onChange={onToggle}
+            aria-label={`Seleziona ${user.name}`}
+          />
+          <span />
+        </label>
+      </WriteAction>
       <span className="user-avatar-wrap">
         {avatarUrl || user.image_url ? (
           <img src={avatarUrl || user.image_url} alt="" />

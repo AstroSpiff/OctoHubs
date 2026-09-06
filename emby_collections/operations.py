@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Callable, Dict, List
 
 from services.background_jobs import BackgroundJobContext, start_tracked_background_job
+
+
+_SOURCE_LIST_OPERATION_LOCK = threading.Lock()
+_ACTIVE_OPERATION_STATUSES = {"queued", "running"}
 
 
 def start_source_list_operation(
@@ -15,9 +20,13 @@ def start_source_list_operation(
 ) -> Dict[str, Any]:
     """Refresh a collection source list in the background."""
 
+    kind = f"collections_{source_key}_lists"
+
     def _work(context: BackgroundJobContext) -> Dict[str, Any]:
+        context.raise_if_cancelled()
         context.update(message=f"Caricamento {title}", progress=20, current=0, total=1)
         lists = fetcher()
+        context.raise_if_cancelled()
         count = len(lists) if isinstance(lists, list) else 0
         context.update(
             message=f"{title}: {count} liste caricate",
@@ -28,15 +37,30 @@ def start_source_list_operation(
         )
         return {"lists": lists or [], "count": count}
 
-    return start_tracked_background_job(
-        kind=f"collections_{source_key}_lists",
-        title=f"Aggiornamento {title}",
-        summary="Collezioni",
-        details={"source": title, "current_step_label": "Caricamento liste"},
-        total=1,
-        work=_work,
-        success_message=f"{title} aggiornate",
-    )
+    with _SOURCE_LIST_OPERATION_LOCK:
+        from app_state import get_operation_tracker
+
+        active = next(
+            (
+                operation
+                for operation in get_operation_tracker().list_operations()
+                if operation.get("kind") == kind
+                and operation.get("status") in _ACTIVE_OPERATION_STATUSES
+            ),
+            None,
+        )
+        if active is not None:
+            return active
+        return start_tracked_background_job(
+            kind=kind,
+            title=f"Aggiornamento {title}",
+            summary="Collezioni",
+            details={"source": title, "current_step_label": "Caricamento liste"},
+            total=1,
+            work=_work,
+            success_message=f"{title} aggiornate",
+            singleflight_key=f"collection-source:{source_key}",
+        )
 
 
 def start_collection_sync_operation(
@@ -47,6 +71,7 @@ def start_collection_sync_operation(
     """Synchronize one collection to Emby in the background."""
 
     def _work(context: BackgroundJobContext) -> Dict[str, Any]:
+        context.raise_if_cancelled()
         context.update(
             message="Sincronizzazione collezione verso Emby",
             progress=15,
@@ -55,6 +80,7 @@ def start_collection_sync_operation(
             details={"collection_id": collection_id, "current_step_label": "Sync Emby"},
         )
         result = runner(collection_id) or {}
+        context.raise_if_cancelled()
         collection = result.get("collection") if isinstance(result, dict) else {}
         details = result.get("details") if isinstance(result, dict) else {}
         message = (
@@ -87,6 +113,7 @@ def start_collection_sync_operation(
         total=1,
         work=_work,
         success_message="Sincronizzazione collezione completata",
+        singleflight_key=f"collection:{collection_id}",
     )
 
 
@@ -97,6 +124,7 @@ def start_collection_sync_all_operation(
     """Synchronize all collections to Emby in the background."""
 
     def _work(context: BackgroundJobContext) -> Dict[str, Any]:
+        context.raise_if_cancelled()
         context.update(
             message="Sincronizzazione globale collezioni verso Emby",
             progress=10,
@@ -105,10 +133,12 @@ def start_collection_sync_all_operation(
             details={"current_step_label": "Sync Emby"},
         )
         result = runner() or {}
+        context.raise_if_cancelled()
         summary = result.get("summary", {}) if isinstance(result, dict) else {}
         synced = int(summary.get("synced") or 0) if isinstance(summary, dict) else 0
         errors = summary.get("errors") if isinstance(summary, dict) else []
         error_count = len(errors) if isinstance(errors, list) else 0
+        status = "success" if not error_count else ("partial" if synced else "error")
         message = f"Sync globale completato: {synced} sincronizzate"
         if error_count:
             message += f", {error_count} errori"
@@ -124,7 +154,9 @@ def start_collection_sync_all_operation(
             },
         )
         return {
-            "success": True,
+            "success": not error_count,
+            "status": status,
+            "message": message,
             "summary": summary if isinstance(summary, dict) else {},
         }
 
@@ -136,4 +168,5 @@ def start_collection_sync_all_operation(
         total=1,
         work=_work,
         success_message="Sincronizzazione globale collezioni completata",
+        singleflight_key="collections:all",
     )

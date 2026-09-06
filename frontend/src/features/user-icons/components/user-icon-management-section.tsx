@@ -16,30 +16,10 @@ function UserIconManagementSection({ icons, servers, onDirtyChange }: { icons: U
   const [profileDialogOpen, setProfileDialogOpen] = useState(false);
   const config = icons.config.data || { profiles: [], matrix: {}, bindings: {} };
   const revision = icons.config.dataUpdatedAt;
-  const changingRule = icons.rule.isPending
-    ? icons.rule.variables
-    : icons.removeRule.isPending
-      ? icons.removeRule.variables
-      : undefined;
-  const changingProfileId = icons.profile.isPending
-    ? icons.profile.variables?.id
-    : icons.removeProfile.isPending
-      ? icons.removeProfile.variables
-      : undefined;
   const profileDialogError = icons.profile.error
     && icons.profile.variables?.id === dialogProfile?.id
     ? icons.profile.error.message
     : undefined;
-  const profileError = (profile: IconProfile) => {
-    if (icons.profile.variables?.id === profile.id) return icons.profile.error?.message;
-    if (icons.removeProfile.variables === profile.id) return icons.removeProfile.error?.message;
-    return undefined;
-  };
-  const ruleError = (profileId: string, serverId: string) => {
-    const target = icons.rule.variables || icons.removeRule.variables;
-    if (target?.profileId !== profileId || target.serverId !== serverId) return undefined;
-    return icons.rule.error?.message || icons.removeRule.error?.message;
-  };
 
   function editProfile(profile?: IconProfile) {
     setDialogProfile(profile || null);
@@ -78,7 +58,7 @@ function UserIconManagementSection({ icons, servers, onDirtyChange }: { icons: U
         </>}
       />
       {icons.config.error ? <div className="inline-alert inline-alert--error" role="alert">{icons.config.error.message}</div> : null}
-      <IconProfilesMatrix config={config} servers={servers} revision={revision} changingProfileId={changingProfileId} changingRule={changingRule} profileError={profileError} ruleError={ruleError} showHeader={false} onCreate={() => editProfile()} onEdit={editProfile} onDeleteProfile={(profile) => void deleteProfile(profile)} onUpload={uploadRule} onDeleteRule={(profileId, serverId) => void deleteRule(profileId, serverId)} />
+      <IconProfilesMatrix config={config} servers={servers} revision={revision} pendingProfileKeys={icons.profileOperations.pendingKeys} pendingRuleKeys={icons.ruleOperations.pendingKeys} profileErrors={icons.profileOperations.errors} ruleErrors={icons.ruleOperations.errors} showHeader={false} onCreate={() => editProfile()} onEdit={editProfile} onDeleteProfile={(profile) => void deleteProfile(profile)} onUpload={uploadRule} onDeleteRule={(profileId, serverId) => void deleteRule(profileId, serverId)} />
       <IconProfileDialog open={profileDialogOpen} profile={dialogProfile} saving={icons.profile.isPending} error={profileDialogError} onClose={() => setProfileDialogOpen(false)} onSave={saveProfile} onDirtyChange={onDirtyChange} />
       {confirmation.dialog}
     </section>

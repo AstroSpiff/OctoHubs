@@ -17,7 +17,8 @@ describe("AccountMenu", () => {
 
     expect(markup).toContain("Preferenze interfaccia");
     expect(markup).toContain("Attiva tema scuro");
-    expect(markup).toContain('href="/logout"');
+    expect(markup).toContain("Esci");
+    expect(markup).not.toContain('href="/logout"');
     expect(markup).toContain("Apri menu account di roy");
   });
 

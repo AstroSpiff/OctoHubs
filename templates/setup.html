@@ -6,24 +6,56 @@
     <title>Configurazione OctoHubs</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='config.css') }}">
 </head>
-<body>
-    <div class="container">
-        <h1>Configurazione OctoHubs</h1>
-        <div class="alert">
-            <strong>Amministratore non ancora configurato.</strong>
-            La creazione degli account e la configurazione del database dal browser
-            sono disabilitate per impedire che il primo visitatore possa assumere il
-            controllo dell'installazione.
-        </div>
-        <p>Configura nel deploy Docker o nella stack Portainer:</p>
-        <ul>
-            <li><code>OCTOHUBS_DB_URL</code> oppure le variabili <code>OCTOHUBS_DB_*</code></li>
-            <li><code>ADMIN_USERNAME</code></li>
-            <li><code>ADMIN_PASSWORD_FILE</code> (consigliato) oppure <code>ADMIN_PASSWORD</code></li>
-            <li><code>ADMIN_EMAIL</code> (opzionale)</li>
-        </ul>
-        <p>Riavvia quindi il container <code>app</code>. L'account verrà creato
-            soltanto se il database utenti è ancora vuoto.</p>
-    </div>
+<body class="setup-page">
+    <main class="setup-shell">
+        <section class="setup-panel" aria-labelledby="setup-title">
+            <div class="setup-brand" aria-label="OctoHubs">
+                <span class="setup-brand-mark" aria-hidden="true">OH</span>
+                <strong>OctoHubs</strong>
+            </div>
+
+            <header class="setup-heading">
+                <p>Configurazione iniziale</p>
+                <h1 id="setup-title">Completa il bootstrap dal deployment</h1>
+                <span>L'installazione è pronta a ricevere le credenziali del primo amministratore.</span>
+            </header>
+
+            <div class="setup-alert" role="status">
+                <strong>Amministratore non ancora configurato</strong>
+                <span>La creazione degli account e la configurazione del database dal browser
+                    sono disabilitate, così il primo visitatore non può assumere il controllo
+                    dell'installazione.</span>
+            </div>
+
+            <section class="setup-instructions" aria-labelledby="variables-title">
+                <h2 id="variables-title">Variabili da configurare</h2>
+                <p>Inseriscile nel deployment Docker o direttamente nella stack Portainer.</p>
+                <dl class="setup-variable-list">
+                    <div>
+                        <dt><code>OCTOHUBS_DB_URL</code></dt>
+                        <dd>In alternativa, usa le variabili separate <code>OCTOHUBS_DB_*</code>.</dd>
+                    </div>
+                    <div>
+                        <dt><code>ADMIN_USERNAME</code></dt>
+                        <dd>Nome utente del primo amministratore.</dd>
+                    </div>
+                    <div>
+                        <dt><code>ADMIN_PASSWORD_FILE</code></dt>
+                        <dd>Metodo consigliato. In alternativa, usa <code>ADMIN_PASSWORD</code>.</dd>
+                    </div>
+                    <div>
+                        <dt><code>ADMIN_EMAIL</code></dt>
+                        <dd>Indirizzo email facoltativo.</dd>
+                    </div>
+                </dl>
+            </section>
+
+            <footer class="setup-next-step">
+                <strong>Ultimo passaggio</strong>
+                <p>Riavvia il container <code>app</code>. L'account verrà creato soltanto
+                    se il database utenti è ancora vuoto.</p>
+            </footer>
+        </section>
+    </main>
 </body>
 </html>

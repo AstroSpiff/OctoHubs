@@ -5,8 +5,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, Protocol
 
+from sqlalchemy import select
+
 from core.storage.storage_errors import StorageError
 from core.storage.storage_models import SQLAlchemyError, ManualSearchHistory
+from search.download_references import protect_download_references
 
 
 class _SessionProvider(Protocol):
@@ -28,7 +31,7 @@ class StorageManualSearchMixin(_SessionProvider):
             else:
                 generated_dt = datetime.now(timezone.utc)
             entry = ManualSearchHistory(generated_at=generated_dt)
-            entry.payload = payload  # type: ignore[assignment]
+            entry.payload = protect_download_references(payload, persisted=True)  # type: ignore[assignment]
             session.add(entry)
             session.commit()
         except SQLAlchemyError as exc:
@@ -80,19 +83,19 @@ class StorageManualSearchMixin(_SessionProvider):
         try:
             keep_last = int(keep_last or 0)
             if keep_last > 0:
-                keep_ids = [
-                    entry.id
-                    for entry in session.query(ManualSearchHistory)  # type: ignore[attr-defined]
-                    .order_by(ManualSearchHistory.generated_at.desc())  # type: ignore[attr-defined]
+                # Keep selection and deletion in one statement so PostgreSQL
+                # evaluates both against the same READ COMMITTED snapshot.
+                keep_ids = (
+                    select(ManualSearchHistory.id)
+                    .order_by(
+                        ManualSearchHistory.generated_at.desc(),  # type: ignore[attr-defined]
+                        ManualSearchHistory.id.desc(),  # type: ignore[attr-defined]
+                    )
                     .limit(keep_last)
-                    .all()
-                ]
-                if keep_ids:
-                    deleted = session.query(ManualSearchHistory).filter(  # type: ignore[attr-defined]
-                        ~ManualSearchHistory.id.in_(keep_ids)
-                    ).delete(synchronize_session=False)
-                else:
-                    deleted = 0
+                )
+                deleted = session.query(ManualSearchHistory).filter(  # type: ignore[attr-defined]
+                    ~ManualSearchHistory.id.in_(keep_ids)
+                ).delete(synchronize_session=False)
             else:
                 deleted = session.query(ManualSearchHistory).delete()  # type: ignore[attr-defined]
             session.commit()

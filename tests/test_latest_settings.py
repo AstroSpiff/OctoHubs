@@ -18,7 +18,7 @@ class LatestSettingsTests(unittest.TestCase):
         stored = {
             "EMBY_LATEST": {
                 "PRESETS": [
-                    {"id": "preset-a", "name": "A", "template": "{title}"},
+                    {"id": "preset-a", "name": "A", "template": "{{ title }}"},
                 ],
                 "ACTIVE_PRESET_ID": "missing-preset",
             }
@@ -39,7 +39,7 @@ class LatestSettingsTests(unittest.TestCase):
             _save_latest_settings(
                 {
                     "PRESETS": [
-                        {"id": "preset-a", "name": "A", "template": "{title}"},
+                        {"id": "preset-a", "name": "A", "template": "{{ title }}"},
                     ],
                     "ACTIVE_PRESET_ID": "missing-preset",
                 }
@@ -197,7 +197,7 @@ class LatestSettingsTests(unittest.TestCase):
                         },
                     },
                     "PRESETS": [
-                        {"id": "preset-a", "name": "A", "template": "{title}"},
+                        {"id": "preset-a", "name": "A", "template": "{{ title }}"},
                     ],
                     "ACTIVE_PRESET_ID": "preset-a",
                 }

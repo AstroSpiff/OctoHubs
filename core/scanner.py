@@ -1,19 +1,23 @@
 # core/scanner.py
 """Pure business logic for scanning, searching, and filtering media requests."""
 
+from collections import OrderedDict
 import re
+import threading
 import unicodedata
 from typing import Optional, Tuple
 
-from core.utils import _sanitize_terms_list, _resolution_label_from_dims
+from core.utils import _resolution_label_from_dims
 from emby_runtime.api_clients import _try_parse_int
 from core.config import _merge_resolution_settings
+from search.rule_contracts import MAX_TAG_REGEX_CACHE_ENTRIES, normalize_rule_terms
 
 
 # --- CONSTANTS ---
 
 MAX_PRIMARY_QUERY_VARIANTS = 80
-_TAG_REGEX_CACHE = {}
+_TAG_REGEX_CACHE: OrderedDict[str, re.Pattern[str]] = OrderedDict()
+_TAG_REGEX_CACHE_LOCK = threading.Lock()
 _DIMENSION_REGEX = re.compile(r"(?P<w>\d{3,4})\s*[x×]\s*(?P<h>\d{3,4})", re.IGNORECASE)
 _RESOLUTION_RANK = {
     "2160p": 6,
@@ -250,18 +254,18 @@ def build_search_queries(
     primary_candidates = []
     episode_candidates = []
     query_terms = []
-    for term in _sanitize_terms_list(rules.get("query_terms")):
+    for term in normalize_rule_terms(rules.get("query_terms")):
         if term not in query_terms:
             query_terms.append(term)
     if request_terms:
-        for term in _sanitize_terms_list(request_terms.get("query_terms")):
+        for term in normalize_rule_terms(request_terms.get("query_terms")):
             if term not in query_terms:
                 query_terms.append(term)
     has_primary_terms = len(query_terms) > 0
     if "query_languages" in rules:
-        lang_terms = _sanitize_terms_list(rules.get("query_languages"))
+        lang_terms = normalize_rule_terms(rules.get("query_languages"))
     else:
-        lang_terms = _sanitize_terms_list(config.get("TARGET_LANGUAGES"))
+        lang_terms = normalize_rule_terms(config.get("TARGET_LANGUAGES"))
     include_language_variants = rules.get("include_target_lang_base", False)
     force_language_only = bool(lang_terms) and not include_language_variants
     if force_language_only:
@@ -295,7 +299,7 @@ def build_search_queries(
         year_values = sorted(base_years)
     parsed_season = _try_parse_int(season_code) if season_code is not None else None
     season_tokens = []
-    season_templates = rules.get("season_templates") or default_search_rules["season_templates"]
+    season_templates = normalize_rule_terms(rules.get("season_templates")) or default_search_rules["season_templates"]
     if parsed_season is not None:
         season_str = str(parsed_season)
         season02 = f"{parsed_season:02d}"
@@ -425,12 +429,16 @@ def _contains_isolated_tag(text: str, tag: str) -> bool:
     if not text or not tag:
         return False
     tag_lower = tag.lower()
-    cached = _TAG_REGEX_CACHE.get(tag_lower)
-    if cached is None:
-        separators = r"\s\.\-_\[\]\(\)\{\}"
-        pattern = re.compile(rf"(^|[{separators}]){re.escape(tag_lower)}(?=$|[{separators}])")
-        _TAG_REGEX_CACHE[tag_lower] = pattern
-        cached = pattern
+    with _TAG_REGEX_CACHE_LOCK:
+        cached = _TAG_REGEX_CACHE.get(tag_lower)
+        if cached is None:
+            separators = r"\s\.\-_\[\]\(\)\{\}"
+            cached = re.compile(rf"(^|[{separators}]){re.escape(tag_lower)}(?=$|[{separators}])")
+            _TAG_REGEX_CACHE[tag_lower] = cached
+            while len(_TAG_REGEX_CACHE) > MAX_TAG_REGEX_CACHE_ENTRIES:
+                _TAG_REGEX_CACHE.popitem(last=False)
+        else:
+            _TAG_REGEX_CACHE.move_to_end(tag_lower)
     return cached.search(text) is not None
 
 
@@ -507,14 +515,14 @@ def filter_results(
         return filtered_list
 
     rules = config.get("SEARCH_RULES", {})
-    target_languages = _sanitize_terms_list(config.get("TARGET_LANGUAGES"))
-    global_exclude_tags = [tag.lower() for tag in _sanitize_terms_list(config.get("EXCLUDE_TAGS"))]
+    target_languages = normalize_rule_terms(config.get("TARGET_LANGUAGES"))
+    global_exclude_tags = [tag.lower() for tag in normalize_rule_terms(config.get("EXCLUDE_TAGS"))]
     min_seeders = int(rules.get("min_seeders", 0))
-    global_filter_terms = [term.lower() for term in _sanitize_terms_list(rules.get("filter_terms"))]
+    global_filter_terms = [term.lower() for term in normalize_rule_terms(rules.get("filter_terms"))]
     require_audio_language = rules.get("require_audio_language", False)
     request_rules = request_rules or {}
-    request_filter_terms = [term.lower() for term in _sanitize_terms_list(request_rules.get("filter_terms"))]
-    request_excluded_terms = [term.lower() for term in _sanitize_terms_list(request_rules.get("exclude_terms"))]
+    request_filter_terms = [term.lower() for term in normalize_rule_terms(request_rules.get("filter_terms"))]
+    request_excluded_terms = [term.lower() for term in normalize_rule_terms(request_rules.get("exclude_terms"))]
     required_terms = global_filter_terms + request_filter_terms
     resolution_rules = config.get("RESOLUTION_RULES") if isinstance(config, dict) else None
 

@@ -2131,7 +2131,7 @@ class LatestPublicationHistoryTests(unittest.TestCase):
             }
         }
         latest_settings = {
-            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{title}"}],
+            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{{ title }}"}],
             "NOTIFICATION_RULES": [
                 {
                     "id": "rule-a",

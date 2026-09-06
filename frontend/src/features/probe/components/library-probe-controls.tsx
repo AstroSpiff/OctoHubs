@@ -14,6 +14,7 @@ type LibraryProbeControlsProps = {
   comboStatus?: ProbeWorkerStatus;
   comboServerStatuses: ProbeComboServerStatus[];
   disabled: boolean;
+  canMutate?: boolean;
   onDiscoverySelectionChange: (ids: string[]) => void;
   onProcessingSelectionChange: (ids: string[]) => void;
   onRunCombo: (mode: "smart" | "forced") => void;
@@ -33,6 +34,7 @@ function LibraryProbeControls({
   comboStatus,
   comboServerStatuses,
   disabled,
+  canMutate = true,
   onDiscoverySelectionChange,
   onProcessingSelectionChange,
   onRunCombo,
@@ -74,6 +76,7 @@ function LibraryProbeControls({
             disabled: disabled || !comboRunning,
           },
         ]}
+        canMutate={canMutate}
       />
       <ProbeWorkerCard
         className="probe-worker-card--discovery"
@@ -107,6 +110,7 @@ function LibraryProbeControls({
             disabled: disabled || !discoveryStatus?.running,
           },
         ]}
+        canMutate={canMutate}
       >
         <ProbeLibrarySelector
           libraries={libraries}
@@ -165,6 +169,7 @@ function LibraryProbeControls({
             disabled: disabled || !processingStatus?.running,
           },
         ]}
+        canMutate={canMutate}
       >
         <ProbeLibrarySelector
           libraries={libraries}

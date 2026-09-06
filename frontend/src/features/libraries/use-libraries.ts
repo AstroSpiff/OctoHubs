@@ -19,9 +19,35 @@ import {
   startLibraryWorkflow,
 } from "@/features/libraries/api";
 import { useLibrariesRealtime } from "@/features/libraries/use-libraries-realtime";
+import { useKeyedOperationState } from "@/lib/use-keyed-operation-state";
+
+function libraryOperationKey(library: { server_id: string; library_id?: string; id?: string }) {
+  return `${library.server_id}:${library.library_id || library.id || ""}`;
+}
+
+function workflowOperationKeys(context: Parameters<typeof startLibraryWorkflow>[0]) {
+  if (context.library_id && context.server_id) {
+    return {
+      groups: [] as string[],
+      libraries: [`${context.server_id}:${context.library_id}`],
+      maintenance: [] as string[],
+    };
+  }
+  return {
+    groups: context.group_name ? [context.group_name] : [],
+    libraries: [] as string[],
+    maintenance: context.group_name
+      ? []
+      : [context.server_id ? `workflow:server:${context.server_id}` : "workflow:all"],
+  };
+}
 
 function useLibraries() {
   const client = useQueryClient();
+  const groupScanOperations = useKeyedOperationState();
+  const libraryScanOperations = useKeyedOperationState();
+  const workflowMaintenanceOperations = useKeyedOperationState();
+  const historyDeleteOperations = useKeyedOperationState();
   const groups = useQuery({
     queryKey: ["library-groups"],
     queryFn: getGroupedLibraries,
@@ -95,7 +121,10 @@ function useLibraries() {
       : {
           group: Parameters<typeof scanLibraryGroup>[0];
           scanType: Parameters<typeof scanLibraryGroup>[1];
-        }) => scanLibraryGroup(group, scanType),
+    }) => scanLibraryGroup(group, scanType),
+    onMutate: ({ group }) => groupScanOperations.begin([group.group_name]),
+    onError: (error, { group }) => groupScanOperations.fail([group.group_name], error),
+    onSettled: (_data, _error, { group }) => groupScanOperations.finish([group.group_name]),
     onSuccess: refresh,
   });
   const libraryScan = useMutation({
@@ -106,6 +135,9 @@ function useLibraries() {
       library: Parameters<typeof scanSingleLibrary>[0];
       scanType: Parameters<typeof scanSingleLibrary>[1];
     }) => scanSingleLibrary(library, scanType),
+    onMutate: ({ library }) => libraryScanOperations.begin([libraryOperationKey(library)]),
+    onError: (error, { library }) => libraryScanOperations.fail([libraryOperationKey(library)], error),
+    onSettled: (_data, _error, { library }) => libraryScanOperations.finish([libraryOperationKey(library)]),
     onSuccess: refresh,
   });
   const saveAssociations = useMutation({
@@ -130,10 +162,31 @@ function useLibraries() {
   });
   const deleteHistoryJob = useMutation({
     mutationFn: deleteLibraryScanHistoryJob,
+    onMutate: (jobId) => historyDeleteOperations.begin([jobId]),
+    onError: (error, jobId) => historyDeleteOperations.fail([jobId], error),
+    onSettled: (_data, _error, jobId) => historyDeleteOperations.finish([jobId]),
     onSuccess: refresh,
   });
   const workflow = useMutation({
     mutationFn: startLibraryWorkflow,
+    onMutate: (context) => {
+      const keys = workflowOperationKeys(context);
+      groupScanOperations.begin(keys.groups);
+      libraryScanOperations.begin(keys.libraries);
+      workflowMaintenanceOperations.begin(keys.maintenance);
+    },
+    onError: (error, context) => {
+      const keys = workflowOperationKeys(context);
+      groupScanOperations.fail(keys.groups, error);
+      libraryScanOperations.fail(keys.libraries, error);
+      workflowMaintenanceOperations.fail(keys.maintenance, error);
+    },
+    onSettled: (_data, _error, context) => {
+      const keys = workflowOperationKeys(context);
+      groupScanOperations.finish(keys.groups);
+      libraryScanOperations.finish(keys.libraries);
+      workflowMaintenanceOperations.finish(keys.maintenance);
+    },
     onSuccess: refresh,
   });
 
@@ -153,6 +206,10 @@ function useLibraries() {
     resetHistory,
     deleteHistoryJob,
     workflow,
+    groupScanOperations,
+    libraryScanOperations,
+    workflowMaintenanceOperations,
+    historyDeleteOperations,
     refresh,
   };
 }

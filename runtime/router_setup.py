@@ -43,6 +43,7 @@ from web.emby_routes import init_emby_ui_routes, router as emby_ui_router
 from web.event_bridge_api_routes import init_event_bridge_api_routes, router as event_bridge_api_router
 from web.external_api_catalog import init_external_api_catalog, router as external_api_catalog_router
 from web.frontend_routes import init_frontend_routes, router as frontend_router
+from web.health_routes import router as health_router
 from web.research_api_routes import init_research_api_routes, router as research_api_router
 from web.http_responses import error_response, success_response
 from web.session_auth import (
@@ -58,6 +59,7 @@ from web.ui_helpers import flash, get_flash_messages, get_csrf_token, validate_c
 
 def register_routes(app: FastAPI, templates: Jinja2Templates, logger: logging.Logger) -> None:
     """Initialize and include all application routes."""
+    app.include_router(health_router)
     init_emby_user_routes(
         require_user,
         get_emby_user_manager,

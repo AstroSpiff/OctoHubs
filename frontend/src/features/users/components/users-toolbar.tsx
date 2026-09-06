@@ -2,6 +2,8 @@ import { CheckCheck, ChevronDown, RefreshCw, Search, Star, UserPlus, X } from "@
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { WriteAction } from "@/features/session/workspace-capabilities";
+import { useWorkspaceCapabilities } from "@/features/session/workspace-capabilities-context";
 import {
   WorkspaceToolbar,
   WorkspaceToolbarActions,
@@ -58,6 +60,7 @@ function UsersToolbar({
   onCreate,
   onRefresh,
 }: UsersToolbarProps) {
+  const { canMutate } = useWorkspaceCapabilities();
   const allVisibleSelected = selection.visibleCount > 0 && selection.selectedVisibleCount === selection.visibleCount;
   const onlyLeadersSelected = selection.leaderCount > 0
     && selection.selectedLeaderCount === selection.leaderCount
@@ -65,23 +68,25 @@ function UsersToolbar({
 
   return (
     <WorkspaceToolbar className="users-toolbar" aria-label="Gestione utenti">
-      <WorkspaceToolbarRow className="users-toolbar-primary">
-        <WorkspaceToolbarGroup className="users-selection-group" label="Selezione">
-          <WorkspaceToolbarActions className="users-selection-actions" role="group" aria-label="Selezione rapida utenti">
-            <Button type="button" variant="secondary" onClick={onSelectAll} title="Seleziona tutti gli utenti visibili" disabled={!selection.visibleCount} aria-pressed={allVisibleSelected}>
-              <CheckCheck size={15} aria-hidden="true" />
-              Tutti
-            </Button>
-            <Button type="button" variant="secondary" onClick={onSelectLeaders} title="Seleziona solo leader e utenti singoli visibili" disabled={!selection.leaderCount} aria-pressed={onlyLeadersSelected}>
-              <Star size={15} aria-hidden="true" />
-              Leader
-            </Button>
-            <Button type="button" variant="secondary" onClick={onDeselect} title="Deseleziona gli utenti visibili" disabled={!selection.selectedVisibleCount}>
-              <X size={15} aria-hidden="true" />
-              Desel.
-            </Button>
-          </WorkspaceToolbarActions>
-        </WorkspaceToolbarGroup>
+      <WorkspaceToolbarRow className={`users-toolbar-primary${canMutate ? "" : " users-toolbar-primary--read-only"}`}>
+        <WriteAction>
+          <WorkspaceToolbarGroup className="users-selection-group" label="Selezione">
+            <WorkspaceToolbarActions className="users-selection-actions" role="group" aria-label="Selezione rapida utenti">
+              <Button type="button" variant="secondary" onClick={onSelectAll} title="Seleziona tutti gli utenti visibili" disabled={!selection.visibleCount} aria-pressed={allVisibleSelected}>
+                <CheckCheck size={15} aria-hidden="true" />
+                Tutti
+              </Button>
+              <Button type="button" variant="secondary" onClick={onSelectLeaders} title="Seleziona solo leader e utenti singoli visibili" disabled={!selection.leaderCount} aria-pressed={onlyLeadersSelected}>
+                <Star size={15} aria-hidden="true" />
+                Leader
+              </Button>
+              <Button type="button" variant="secondary" onClick={onDeselect} title="Deseleziona gli utenti visibili" disabled={!selection.selectedVisibleCount}>
+                <X size={15} aria-hidden="true" />
+                Desel.
+              </Button>
+            </WorkspaceToolbarActions>
+          </WorkspaceToolbarGroup>
+        </WriteAction>
 
         <WorkspaceToolbarGroup className="users-search-group" label="Ricerca">
           <span className="workspace-toolbar-search-control users-search">

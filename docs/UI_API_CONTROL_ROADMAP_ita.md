@@ -339,7 +339,7 @@ senza versione e ritirato e risponde `410 Gone`.
 
 /api/configuration/*
 /api/telegram/*
-/api/test-connections         -> read:configuration
+/api/test-connections         -> run:operations
 /api/trakt/*                  -> read:configuration per lettura
                                 -> write:configuration per modifica
 
@@ -580,7 +580,7 @@ Rilievi iniziali:
 - terzo intervento completato: autenticazione esterna con `Authorization: Bearer <api_token>` sugli stessi endpoint JSON, con token hashato in DB auth e scope granulari.
 - sesto intervento completato: gateway pubblico `/api/v1` senza duplicazione handler, catalogo OpenAPI esterno e client smoke versionati; percorso di ritiro documentato in `docs/API_V1_MIGRATION_ita.md`.
 - quarto intervento completato: gestione token API nella UI React in Configurazione -> Accessi OctoHubs, con creazione una-tantum, lista metadati e revoca.
-- quinto intervento completato: endpoint Trakt classificati per API token esterne sotto `write:configuration`; `POST /api/test-connections` corretto a `read:configuration` perche verifica soltanto.
+- quinto intervento completato: endpoint Trakt classificati per API token esterne sotto `write:configuration`; `POST /api/test-connections` richiede `run:operations` perche esegue controlli di rete server-side.
 - settimo intervento completato: Configurazione ed Event Bridge espongono snapshot, diagnostica e corpi JSON OpenAPI tipizzati sugli stessi handler v1 usati dalla UI React; l'audit del contratto segnala automaticamente eventuali regressioni strutturali.
 - ottavo intervento completato: azioni Emby e job di scansione Librerie espongono target, risultati, stati e corpi JSON tipizzati sugli stessi handler operativi, mantenendo `run:operations` per l'esecuzione e `read:libraries` per il monitoraggio.
 - nono intervento completato: raggruppamenti manuali Librerie e ordine di gruppi/server espongono contratti JSON tipizzati sugli stessi handler `write:libraries` usati da React.
@@ -929,3 +929,11 @@ OctoHubs sara considerabile pronto al controllo esterno quando:
 - le pagine principali sono state verificate funzionalmente;
 - esiste documentazione minima con esempi;
 - un tool esterno di prova riesce a leggere stato, lanciare una operazione consentita e ricevere stato live.
+# Documento storico archiviato
+
+Questa roadmap fotografa una migrazione ormai conclusa e non descrive
+l'architettura o le procedure operative correnti. Non usare route, file di
+configurazione o passaggi di migrazione indicati qui per installare o gestire
+OctoHubs. Le fonti canoniche aggiornate sono il [README](../README_ita.md), la
+[guida di configurazione](CONFIGURATION_ita.md) e la
+[guida API esterna](API_EXTERNAL_ACCESS_ita.md).

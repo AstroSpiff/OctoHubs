@@ -12,12 +12,13 @@ import type { PasswordTarget } from "@/features/users/types";
 type PasswordDialogProps = {
   target: PasswordTarget | null;
   saving: boolean;
+  mutationError?: string;
   onClose: () => void;
   onSave: (password: string) => void;
   onDirtyChange?: (dirty: boolean) => void;
 };
 
-function PasswordDialog({ target, saving, onClose, onSave, onDirtyChange }: PasswordDialogProps) {
+function PasswordDialog({ target, saving, mutationError, onClose, onSave, onDirtyChange }: PasswordDialogProps) {
   const confirmation = useConfirmationDialog();
   const [password, setPassword] = useState("");
   const [savedPassword, setSavedPassword] = useState("");
@@ -34,7 +35,17 @@ function PasswordDialog({ target, saving, onClose, onSave, onDirtyChange }: Pass
     : null;
 
   useEffect(() => {
-    if (!target) return undefined;
+    if (!target) {
+      setPassword("");
+      setSavedPassword("");
+      setHasSavedPassword(false);
+      setUpdatedAt(null);
+      setLoadedTargetKey(null);
+      setRevealed(false);
+      setLoading(false);
+      setError("");
+      return undefined;
+    }
     let active = true;
     setLoading(true);
     setError("");
@@ -144,7 +155,7 @@ function PasswordDialog({ target, saving, onClose, onSave, onDirtyChange }: Pass
         <header>
           <h2 id="password-dialog-title" className="contextual-heading" title={`Password ${target.scope === "group" ? "gruppo" : "utente"}`}>{target.name}</h2>
         </header>
-        {error ? <p className="users-dialog-error" role="alert">{error}</p> : null}
+        {error || mutationError ? <p className="users-dialog-error" role="alert">{error || mutationError}</p> : null}
         <p className="users-password-status" role="status">
           {loading ? "Verifica password salvata..." : hasSavedPassword ? "Password salvata" : "Password non salvata"}
           {statusDetail ? ` · ${statusDetail}` : ""}

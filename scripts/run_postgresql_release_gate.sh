@@ -59,4 +59,9 @@ fi
 cd "${project_root}"
 OCTOHUBS_REQUIRE_POSTGRES_TESTS=1 \
 OCTOHUBS_TEST_POSTGRES_URL="postgresql://${postgres_user}:${postgres_password}@127.0.0.1:${postgres_port}/${postgres_database}" \
-    "${python_command}" -m pytest -q tests/test_postgresql_legacy_migrations.py
+    "${python_command}" -m pytest -q \
+        tests/test_postgresql_legacy_migrations.py \
+        tests/test_r7_storage_concurrency.py \
+        tests/test_r14_storage_remediation.py \
+        tests/test_r15_storage_remediation.py \
+        tests/test_r20_storage_lifecycle.py

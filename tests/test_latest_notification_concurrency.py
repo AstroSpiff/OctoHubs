@@ -7,6 +7,12 @@ import threading
 from unittest.mock import patch
 
 from emby_latest.notifications import send_notifications
+from emby_latest.notification_delivery import (
+    begin_notification_dispatch,
+    complete_notification_dispatch,
+    notification_dispatch_key,
+    wait_for_notification_dispatch,
+)
 
 
 def _cache_payload() -> dict:
@@ -31,7 +37,7 @@ def _cache_payload() -> dict:
 
 def _latest_settings() -> dict:
     return {
-        "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{title}"}],
+        "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{{ title }}"}],
         "NOTIFICATION_RULES": [
             {
                 "id": "rule-a",
@@ -149,20 +155,129 @@ def test_two_synchronized_notifiers_send_only_once():
         first.start()
         assert entered_provider.wait(timeout=3)
         second.start()
-        second.join(timeout=3)
-        assert not second.is_alive()
+        assert second.is_alive()
         release_provider.set()
         first.join(timeout=3)
+        second.join(timeout=3)
         assert not first.is_alive()
+        assert not second.is_alive()
     finally:
         release_provider.set()
         for active_patch in reversed(patches):
             active_patch.stop()
 
     assert deliveries == ["chat"]
-    assert sorted(result["sent"] for result in results) == [0, 1]
+    assert [result["sent"] for result in results] == [1, 1]
     assert all(result["success"] for result in results)
-    assert any("già in corso" in result["message"] for result in results)
+
+
+def test_notification_waiter_observes_the_exact_partial_generation_outcome():
+    owner = begin_notification_dispatch()
+    waiter = begin_notification_dispatch()
+    partial = {
+        "success": False,
+        "status": "partial",
+        "sent": 1,
+        "failed": 1,
+        "errors": ["destination failed"],
+    }
+
+    assert owner.owner is True
+    assert waiter.owner is False
+    assert waiter.generation == owner.generation
+    complete_notification_dispatch(owner, partial)
+
+    assert wait_for_notification_dispatch(waiter, timeout_seconds=0) == partial
+
+
+def test_notification_dispatch_identity_is_stable_and_request_scoped():
+    storage = object()
+    first = notification_dispatch_key(
+        per_server_limit=10,
+        server_filter="server-a",
+        config={"B": 2, "A": 1},
+        storage=storage,
+    )
+
+    assert first == notification_dispatch_key(
+        per_server_limit=10,
+        server_filter="server-a",
+        config={"A": 1, "B": 2},
+        storage=storage,
+    )
+    assert first != notification_dispatch_key(
+        per_server_limit=10,
+        server_filter="server-b",
+        config={"A": 1, "B": 2},
+        storage=storage,
+    )
+    assert first != notification_dispatch_key(
+        per_server_limit=20,
+        server_filter="server-a",
+        config={"A": 1, "B": 2},
+        storage=storage,
+    )
+
+
+def test_different_server_filters_run_distinct_notification_dispatches():
+    storage = _NotificationStorage()
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    calls: list[str | None] = []
+    results: dict[str, dict] = {}
+
+    def dispatch(*, server_filter=None, **_kwargs):
+        calls.append(server_filter)
+        if server_filter == "server-a":
+            first_entered.set()
+            assert release_first.wait(timeout=3)
+        return {
+            "success": True,
+            "status": "success",
+            "sent": 1,
+            "failed": 0,
+            "errors": [],
+            "server_filter": server_filter,
+        }
+
+    with patch(
+        "emby_latest.notifications._send_notifications_unlocked",
+        side_effect=dispatch,
+    ):
+        first = threading.Thread(
+            target=lambda: results.setdefault(
+                "a",
+                send_notifications(
+                    10,
+                    server_filter="server-a",
+                    config=_config(),
+                    db_storage=storage,
+                ),
+            )
+        )
+        second = threading.Thread(
+            target=lambda: results.setdefault(
+                "b",
+                send_notifications(
+                    10,
+                    server_filter="server-b",
+                    config=_config(),
+                    db_storage=storage,
+                ),
+            )
+        )
+        first.start()
+        assert first_entered.wait(timeout=3)
+        second.start()
+        release_first.set()
+        first.join(timeout=3)
+        second.join(timeout=3)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert calls == ["server-a", "server-b"]
+    assert results["a"]["server_filter"] == "server-a"
+    assert results["b"]["server_filter"] == "server-b"
 
 
 def test_persistent_delivery_key_prevents_resend_when_state_checkpoint_is_missing():

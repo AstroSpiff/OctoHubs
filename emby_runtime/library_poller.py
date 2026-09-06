@@ -15,12 +15,15 @@ Strategia:
 """
 
 import asyncio
+from concurrent.futures import Future
 import logging
+import threading
 import time
 from typing import Dict, Set, Optional
 from datetime import datetime
 import copy
 
+from core.log_sanitization import format_exception_for_log, sanitize_diagnostic_text
 from emby_runtime.library_poller_terminal import (
     RESTART_INTERRUPTION_MESSAGE,
     TerminalLibraryUpdate,
@@ -30,6 +33,18 @@ from emby_runtime.library_poller_terminal import (
 )
 
 logger = logging.getLogger(__name__)
+
+TrackerUpdate = tuple[
+    str,
+    str,
+    float,
+    Optional[str],
+    Optional[Dict],
+    str,
+    str,
+    str,
+    bool,
+]
 
 
 class _PersistedScanChanged(RuntimeError):
@@ -57,9 +72,18 @@ class EmbyLibraryPoller:
 
     def __init__(self):
         self._polling_tasks: Dict[str, asyncio.Task] = {}  # server_id -> Task
+        self._background_tasks: Set[asyncio.Task] = set()
+        self._worker_thread_calls: Dict[str, Set[asyncio.Task]] = {}
         self._tracked_libraries: Dict[str, Set[str]] = {}  # server_id -> Set[library_id]
         self._library_states: Dict[str, Dict] = {}  # (server_id, library_id) -> state_data
         self._lock = asyncio.Lock()
+        self._persistence_lock = asyncio.Lock()
+        self._persistence_revisions: Dict[str, int] = {}
+        self._scheduling_lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
+        self._server_generations: Dict[str, int] = {}
+        self._blocked_servers: Set[str] = set()
+        self._scheduled_starts: Dict[str, Set[Future]] = {}
         self.storage = None  # Dependency injection
 
         # Configurazione polling
@@ -73,10 +97,219 @@ class EmbyLibraryPoller:
         self.max_scan_duration = 3600.0  # secondi - timeout massimo scan (1 ora)
 
         self._running = False
+        self._accept_tasks = True
+        self._lifecycle_state = "open"
+        self._lifecycle_generation = 0
+        self._active_resets = 0
+        self._active_terminal_drains = 0
 
-    def configure(self, storage):
-        """Configure storage backend."""
-        self.storage = storage
+    def _begin_terminal_shutdown(self) -> int:
+        with self._lifecycle_lock:
+            self._lifecycle_generation += 1
+            self._lifecycle_state = "closed"
+            self._accept_tasks = False
+            self._active_terminal_drains += 1
+            return self._lifecycle_generation
+
+    def _finish_terminal_shutdown(self, generation: int) -> None:
+        with self._lifecycle_lock:
+            self._active_terminal_drains = max(0, self._active_terminal_drains - 1)
+            if self._active_terminal_drains == 0:
+                self._lifecycle_generation = max(
+                    self._lifecycle_generation,
+                    generation,
+                )
+                self._lifecycle_state = "closed"
+                self._accept_tasks = False
+
+    def _begin_operational_reset(self) -> int:
+        with self._lifecycle_lock:
+            self._lifecycle_generation += 1
+            generation = self._lifecycle_generation
+            self._active_resets += 1
+            if self._lifecycle_state == "open":
+                self._lifecycle_state = "resetting"
+            self._accept_tasks = False
+            return generation
+
+    def _finish_operational_reset(self, generation: int) -> None:
+        with self._lifecycle_lock:
+            self._active_resets = max(0, self._active_resets - 1)
+            if (
+                self._active_resets == 0
+                and self._lifecycle_state == "resetting"
+                and generation == self._lifecycle_generation
+            ):
+                self._lifecycle_state = "open"
+                self._accept_tasks = True
+
+    async def _run_worker_thread(self, server_id: str, callback, *args):
+        """Run blocking worker I/O while retaining ownership through cancellation."""
+        owner = str(server_id or "")
+        task = asyncio.create_task(asyncio.to_thread(callback, *args))
+        self._worker_thread_calls.setdefault(owner, set()).add(task)
+
+        def discard(completed: asyncio.Task) -> None:
+            calls = self._worker_thread_calls.get(owner)
+            if calls is None:
+                return
+            calls.discard(completed)
+            if not calls:
+                self._worker_thread_calls.pop(owner, None)
+
+        task.add_done_callback(discard)
+        return await asyncio.shield(task)
+
+    async def _drain_worker_thread_calls(self, server_id: str | None = None) -> None:
+        """Wait for blocking calls that asyncio cancellation cannot terminate."""
+        owner = str(server_id) if server_id is not None else None
+        while True:
+            if owner is None:
+                calls = {
+                    task
+                    for tasks in self._worker_thread_calls.values()
+                    for task in tasks
+                }
+            else:
+                calls = set(self._worker_thread_calls.get(owner, set()))
+            if not calls:
+                return
+            await asyncio.shield(asyncio.gather(*calls, return_exceptions=True))
+
+    def _server_generation(self, server_id: str) -> int:
+        with self._scheduling_lock:
+            return self._server_generations.setdefault(str(server_id), 0)
+
+    def _server_is_blocked(self, server_id: str) -> bool:
+        with self._scheduling_lock:
+            return str(server_id) in self._blocked_servers
+
+    def allow_server(self, server_id: str) -> None:
+        """Admit starts again only after this server identity is explicitly saved."""
+        server_key = str(server_id)
+        with self._scheduling_lock:
+            self._blocked_servers.discard(server_key)
+            self._server_generations[server_key] = self._server_generations.get(server_key, 0) + 1
+
+    def _current_lifecycle_generation(self) -> int:
+        with self._lifecycle_lock:
+            return self._lifecycle_generation
+
+    def _invalidate_server_starts(self, server_id: str) -> None:
+        """Cancel starts queued from a worker before a server was stopped."""
+        with self._scheduling_lock:
+            server_key = str(server_id)
+            self._server_generations[server_key] = self._server_generations.get(server_key, 0) + 1
+            for future in self._scheduled_starts.pop(server_key, set()):
+                future.cancel()
+
+    def _invalidate_all_starts(self) -> None:
+        with self._scheduling_lock:
+            for server_id in set(self._server_generations) | set(self._scheduled_starts):
+                self._server_generations[server_id] = self._server_generations.get(server_id, 0) + 1
+            scheduled = [future for futures in self._scheduled_starts.values() for future in futures]
+            self._scheduled_starts.clear()
+        for future in scheduled:
+            future.cancel()
+
+    def schedule_tracking_library(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        server_id: str,
+        library_id: str,
+        job_id: str,
+        emby_client,
+        *,
+        scan_type: str = "content",
+        library_name: Optional[str] = None,
+    ) -> bool:
+        """Queue a generation-guarded start from a synchronous scan worker."""
+        with self._lifecycle_lock:
+            if not self._accept_tasks:
+                return False
+            expected_lifecycle_generation = self._lifecycle_generation
+        server_key = str(server_id)
+        with self._scheduling_lock:
+            if server_key in self._blocked_servers:
+                return False
+            expected_generation = self._server_generations.setdefault(server_key, 0)
+        coroutine = self.start_tracking_library(
+            server_key,
+            library_id,
+            job_id,
+            emby_client,
+            scan_type=scan_type,
+            library_name=library_name,
+            expected_generation=expected_generation,
+            expected_lifecycle_generation=expected_lifecycle_generation,
+        )
+        try:
+            future = asyncio.run_coroutine_threadsafe(coroutine, loop)
+        except Exception:
+            coroutine.close()
+            raise
+        with self._scheduling_lock:
+            self._scheduled_starts.setdefault(server_key, set()).add(future)
+
+        def discard(completed) -> None:
+            with self._scheduling_lock:
+                scheduled = self._scheduled_starts.get(server_key)
+                if scheduled is not None:
+                    scheduled.discard(completed)
+                    if not scheduled:
+                        self._scheduled_starts.pop(server_key, None)
+
+        future.add_done_callback(discard)
+        return True
+
+    def _spawn_background_task(self, coroutine) -> Optional[asyncio.Task]:
+        """Track auxiliary tasks so application shutdown can cancel and await them."""
+        if not self._accept_tasks:
+            coroutine.close()
+            return None
+        task = asyncio.create_task(coroutine)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
+
+    def configure(self, storage, *, reopen: bool = False):
+        """Configure storage and optionally reopen the poller for a new lifespan."""
+        if not reopen:
+            self.storage = storage
+            return
+        if reopen:
+            live_tasks = [
+                task
+                for task in (
+                    *self._polling_tasks.values(),
+                    *self._background_tasks,
+                    *(call for calls in self._worker_thread_calls.values() for call in calls),
+                )
+                if not task.done()
+            ]
+            with self._scheduling_lock:
+                pending_starts = [
+                    future
+                    for futures in self._scheduled_starts.values()
+                    for future in futures
+                    if not future.done()
+                ]
+            with self._lifecycle_lock:
+                if (
+                    live_tasks
+                    or pending_starts
+                    or self._active_resets
+                    or self._active_terminal_drains
+                ):
+                    raise RuntimeError("Library poller ancora attivo durante la riapertura")
+                self._lifecycle_generation += 1
+                self._lifecycle_state = "open"
+                self._accept_tasks = True
+                # asyncio primitives are bound lazily to their creating
+                # lifespan's loop when contended; never reuse them after drain.
+                self._lock = asyncio.Lock()
+                self._persistence_lock = asyncio.Lock()
+                self.storage = storage
 
     async def start_tracking_library(
         self,
@@ -85,7 +318,9 @@ class EmbyLibraryPoller:
         job_id: str,
         emby_client,
         scan_type: str = "content",
-        library_name: Optional[str] = None
+        library_name: Optional[str] = None,
+        expected_generation: Optional[int] = None,
+        expected_lifecycle_generation: Optional[int] = None,
     ):
         """
         Inizia tracking di una libreria specifica.
@@ -98,14 +333,29 @@ class EmbyLibraryPoller:
         """
         logger.info(f"\n{'*'*80}")
         logger.info("[POLLER] >>> start_tracking_library CALLED <<<")
-        logger.info(f"[POLLER]   server_id: {server_id}")
-        logger.info(f"[POLLER]   library_id: {library_id}")
-        logger.info(f"[POLLER]   job_id: {job_id}")
-        logger.info(f"[POLLER]   library_name: {library_name}")
-        logger.info(f"[POLLER]   scan_type: {scan_type}")
+        logger.info("[POLLER]   server_id: %s", sanitize_diagnostic_text(server_id))
+        logger.info("[POLLER]   library_id: %s", sanitize_diagnostic_text(library_id))
+        logger.info("[POLLER]   job_id: %s", sanitize_diagnostic_text(job_id))
+        logger.info("[POLLER]   library_name: %s", sanitize_diagnostic_text(library_name))
+        logger.info("[POLLER]   scan_type: %s", sanitize_diagnostic_text(scan_type))
         logger.info(f"{'*'*80}\n")
 
         async with self._lock:
+            if not self._accept_tasks:
+                logger.info("[LibPoller] Ignored tracking start during shutdown for server %s", server_id)
+                return
+            if (
+                expected_lifecycle_generation is not None
+                and expected_lifecycle_generation != self._current_lifecycle_generation()
+            ):
+                logger.info("[LibPoller] Ignored tracking start from an earlier lifecycle for server %s", server_id)
+                return
+            if expected_generation is not None and expected_generation != self._server_generation(server_id):
+                logger.info("[LibPoller] Ignored stale tracking start for server %s", server_id)
+                return
+            if self._server_is_blocked(server_id):
+                logger.info("[LibPoller] Ignored tracking start for deleted server %s", server_id)
+                return
             # Aggiungi libreria a tracking set
             if server_id not in self._tracked_libraries:
                 self._tracked_libraries[server_id] = set()
@@ -125,45 +375,27 @@ class EmbyLibraryPoller:
                 "total_poll_count": 0,
                 "triple_shot_detected": False
             }
-            if state_key not in self._library_states:
-                metadata["scan_type"] = metadata["scan_type"] or scan_type
-                metadata["library_name"] = metadata["library_name"] or library_name
-                self._library_states[state_key] = {
-                    "server_id": server_id,
-                    "library_id": library_id,
-                    "job_id": job_id,
-                    "state": "waiting",  # waiting until RefreshProgress appears
-                    "progress": 0.0,
-                    "scan_requested_at": now,
-                    "first_progress_seen_at": None,
-                    "last_seen_at": now,
-                    "progress_source": "none",
-                    "ever_seen_progress": False,
-                    "scan_stage": "file",
-                    "completed_at": None,
-                    "next_poll_time": time.time(),
-                    "queue_position": queue_pos,
-                    "metadata": metadata
-                }
-            else:
-                state = self._library_states[state_key]
-                state.update({
-                    "job_id": job_id,
-                    "scan_requested_at": now,
-                    "scan_stage": "file",
-                    "completed_at": None,
-                    "state": "waiting",
-                    "progress": 0.0,
-                    "next_poll_time": time.time(),
-                    "queue_position": queue_pos
-                })
-                state_metadata = state.get("metadata")
-                if isinstance(state_metadata, dict):
-                    state_metadata["rapid_poll_count"] = 0
-                    state_metadata["total_poll_count"] = 0
-                    state_metadata["triple_shot_detected"] = False
-                    state_metadata["scan_type"] = scan_type
-                    state_metadata["library_name"] = library_name
+            metadata["scan_type"] = metadata["scan_type"] or scan_type
+            metadata["library_name"] = metadata["library_name"] or library_name
+            self._library_states[state_key] = {
+                "server_id": server_id,
+                "library_id": library_id,
+                "job_id": job_id,
+                "state": "waiting",  # waiting until RefreshProgress appears
+                "progress": 0.0,
+                "scan_requested_at": now,
+                "first_progress_seen_at": None,
+                "started_at": None,
+                "last_seen_at": now,
+                "progress_source": "none",
+                "ever_seen_progress": False,
+                "scan_stage": "file",
+                "completed_at": None,
+                "cleanup_scheduled": None,
+                "next_poll_time": time.time(),
+                "queue_position": queue_pos,
+                "metadata": metadata,
+            }
 
             # Avvia polling per questo server se non già attivo
             if server_id not in self._polling_tasks:
@@ -174,27 +406,56 @@ class EmbyLibraryPoller:
                 logger.info(f"[LibPoller] Started polling for server {server_id}")
 
             logger.info(f"[LibPoller] Tracking library {library_id} on server {server_id} (job: {job_id})")
-        asyncio.create_task(self._attempt_initial_detection(server_id, library_id, emby_client))
+        self._spawn_background_task(
+            self._attempt_initial_detection(
+                server_id,
+                library_id,
+                emby_client,
+                expected_generation=expected_generation,
+                expected_job_id=str(job_id),
+            )
+        )
 
-    async def stop_tracking_library(self, server_id: str, library_id: str):
+    async def stop_tracking_library(
+        self,
+        server_id: str,
+        library_id: str,
+        *,
+        expected_job_id: Optional[str] = None,
+    ):
         """Ferma tracking di una libreria specifica."""
+        polling_task = None
         async with self._lock:
+            state_key = f"{server_id}:{library_id}"
+            current_state = self._library_states.get(state_key)
+            if expected_job_id is not None and (
+                not current_state
+                or str(current_state.get("job_id") or "") != str(expected_job_id)
+            ):
+                logger.debug(
+                    "[LibPoller] Ignored stale cleanup for %s/%s job=%s",
+                    server_id,
+                    library_id,
+                    expected_job_id,
+                )
+                return
             if server_id in self._tracked_libraries:
                 self._tracked_libraries[server_id].discard(library_id)
 
                 # Se non ci sono più librerie da trackare su questo server, ferma polling
                 if not self._tracked_libraries[server_id]:
                     if server_id in self._polling_tasks:
-                        self._polling_tasks[server_id].cancel()
-                        del self._polling_tasks[server_id]
+                        polling_task = self._polling_tasks.pop(server_id)
+                        polling_task.cancel()
                         logger.info(f"[LibPoller] Stopped polling for server {server_id}")
 
             # Rimuovi stato
-            state_key = f"{server_id}:{library_id}"
             if state_key in self._library_states:
                 del self._library_states[state_key]
 
             logger.info(f"[LibPoller] Stopped tracking library {library_id} on server {server_id}")
+        if polling_task is not None and polling_task is not asyncio.current_task():
+            await asyncio.gather(polling_task, return_exceptions=True)
 
     async def _poll_server_libraries(self, server_id: str, emby_client):
         """
@@ -202,7 +463,7 @@ class EmbyLibraryPoller:
         Interroga /Library/VirtualFolders periodicamente.
         """
         error_count = 0
-        failed_library_ids: list[str] = []
+        failed_updates: list[TerminalLibraryUpdate] = []
 
         try:
             while True:
@@ -216,12 +477,18 @@ class EmbyLibraryPoller:
                 except asyncio.CancelledError:
                     logger.info(f"[LibPoller] Polling cancelled for server {server_id}")
                     break
-                except Exception as e:
+                except Exception as exc:
                     error_count += 1
-                    logger.error(f"[LibPoller] Error polling server {server_id}: {e} (error {error_count}/{self.max_errors})")
+                    logger.error(
+                        "[LibPoller] Error polling server %s (error %s/%s):\n%s",
+                        server_id,
+                        error_count,
+                        self.max_errors,
+                        format_exception_for_log(exc),
+                    )
                     if error_count >= self.max_errors:
                         logger.error(f"[LibPoller] Too many errors, stopping polling for server {server_id}")
-                        failed_library_ids = await self._fail_tracked_libraries(
+                        failed_updates = await self._fail_tracked_libraries(
                             server_id,
                             f"Library polling stopped after {error_count} consecutive errors",
                         )
@@ -232,10 +499,18 @@ class EmbyLibraryPoller:
             async with self._lock:
                 if self._polling_tasks.get(server_id) is current_task:
                     self._polling_tasks.pop(server_id, None)
-            for library_id in failed_library_ids:
-                await self.stop_tracking_library(server_id, library_id)
+            for update in failed_updates:
+                await self.stop_tracking_library(
+                    server_id,
+                    update.library_id,
+                    expected_job_id=update.job_id,
+                )
 
-    async def _fail_tracked_libraries(self, server_id: str, message: str) -> list[str]:
+    async def _fail_tracked_libraries(
+        self,
+        server_id: str,
+        message: str,
+    ) -> list[TerminalLibraryUpdate]:
         updates: list[TerminalLibraryUpdate] = []
         now = datetime.now()
         async with self._lock:
@@ -249,7 +524,7 @@ class EmbyLibraryPoller:
                     updates.append(update)
 
         await self._notify_terminal_updates(updates)
-        return [update.library_id for update in updates]
+        return updates
 
     async def _notify_terminal_updates(self, updates: list[TerminalLibraryUpdate]) -> None:
         for update in updates:
@@ -259,6 +534,7 @@ class EmbyLibraryPoller:
                 update.progress,
                 update.message,
                 metadata=update.metadata,
+                expected_job_id=update.job_id,
             )
 
     async def _calculate_sleep_for_server(self, server_id: str) -> float:
@@ -312,17 +588,34 @@ class EmbyLibraryPoller:
 
         return now + self.idle_poll_interval
 
-    async def _attempt_initial_detection(self, server_id: str, library_id: str, emby_client):
+    async def _attempt_initial_detection(
+        self,
+        server_id: str,
+        library_id: str,
+        emby_client,
+        *,
+        expected_generation: Optional[int] = None,
+        expected_job_id: Optional[str] = None,
+    ):
         """Try to catch RefreshProgress immediately via triple-shot GETs."""
         state_key = f"{server_id}:{library_id}"
         delays = [0, 0.1, 0.2]
         for delay in delays:
+            if (
+                expected_generation is not None
+                and expected_generation != self._server_generation(server_id)
+            ):
+                return
             if delay:
                 await asyncio.sleep(delay)
             try:
-                response = await asyncio.to_thread(emby_client.get, "/Library/VirtualFolders")
+                response = await self._run_worker_thread(
+                    server_id,
+                    emby_client.get,
+                    "/Library/VirtualFolders",
+                )
             except Exception as exc:
-                logger.debug(f"[LibPoller] initial detection error ({state_key}): {exc}")
+                logger.debug("[LibPoller] initial detection error (%s):\n%s", state_key, format_exception_for_log(exc))
                 continue
             if not isinstance(response, list):
                 continue
@@ -333,19 +626,44 @@ class EmbyLibraryPoller:
                 refresh_progress = vfolder.get("RefreshProgress")
                 if refresh_progress is None:
                     continue
-                await self._handle_detected_progress(state_key, server_id, library_id, float(refresh_progress))
+                if (
+                    expected_generation is not None
+                    and expected_generation != self._server_generation(server_id)
+                ):
+                    return
+                await self._handle_detected_progress(
+                    state_key,
+                    server_id,
+                    library_id,
+                    float(refresh_progress),
+                    expected_job_id=expected_job_id,
+                )
                 return
         # If nothing detected, ensure next poll is sooner
         async with self._lock:
             state = self._library_states.get(state_key)
-            if state:
+            if state and (
+                expected_job_id is None
+                or str(state.get("job_id") or "") == str(expected_job_id)
+            ):
                 state["next_poll_time"] = time.time() + self.rapid_poll_interval
 
-    async def _handle_detected_progress(self, state_key: str, server_id: str, library_id: str, refresh_progress: float):
+    async def _handle_detected_progress(
+        self,
+        state_key: str,
+        server_id: str,
+        library_id: str,
+        refresh_progress: float,
+        *,
+        expected_job_id: Optional[str] = None,
+    ):
         """Helper to set state to running when progress is spotted manually."""
         async with self._lock:
             state = self._library_states.get(state_key)
-            if not state:
+            if not state or (
+                expected_job_id is not None
+                and str(state.get("job_id") or "") != str(expected_job_id)
+            ):
                 return
             now = datetime.now()
             normalized = min(max(float(refresh_progress) / 100.0, 0.0), 1.0)
@@ -360,7 +678,14 @@ class EmbyLibraryPoller:
             metadata = state.get("metadata")
             if isinstance(metadata, dict):
                 metadata["triple_shot_detected"] = True
-        await self._update_tracker_status(state_key, "active", normalized, f"RefreshProgress {refresh_progress:.1f}%", metadata=metadata if isinstance(metadata, dict) else None)
+        await self._update_tracker_status(
+            state_key,
+            "active",
+            normalized,
+            f"RefreshProgress {refresh_progress:.1f}%",
+            metadata=metadata if isinstance(metadata, dict) else None,
+            expected_job_id=expected_job_id,
+        )
 
     async def _should_use_rapid_polling(self, server_id: str) -> bool:
         """Determina se servono poll rapidi localizzati finché non compare RefreshProgress."""
@@ -397,7 +722,8 @@ class EmbyLibraryPoller:
         """
         try:
             # Chiamata API a /Library/VirtualFolders
-            response = await asyncio.to_thread(
+            response = await self._run_worker_thread(
+                server_id,
                 emby_client.get,
                 "/Library/VirtualFolders"
             )
@@ -411,6 +737,7 @@ class EmbyLibraryPoller:
             target_set = {str(lib) for lib in target_libraries} if target_libraries is not None else None
             seen_target_ids: set[str] = set()
             terminal_updates: list[TerminalLibraryUpdate] = []
+            tracker_updates: list[TrackerUpdate] = []
             # Processa ogni virtual folder
             async with self._lock:
                 for vfolder in response:
@@ -440,11 +767,16 @@ class EmbyLibraryPoller:
 
                     old_state_data = self._library_states[state_key]
                     old_state = old_state_data["state"]
+                    try:
+                        previous_progress = float(old_state_data.get("progress", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        previous_progress = 0.0
+                    previous_progress = min(max(previous_progress, 0.0), 1.0)
                     now = datetime.now()
 
                     # Valori di default (reuse stage/progress precedenti)
                     current_scan_stage = old_state_data.get("scan_stage", "file")
-                    current_progress_value = (old_state_data.get("progress", 0.0) or 0.0) * 100.0
+                    current_progress_value = previous_progress * 100.0
                     new_state = old_state
                     progress_source = old_state_data.get("progress_source", "none")
                     elapsed_since_request = 0.0
@@ -492,7 +824,7 @@ class EmbyLibraryPoller:
                             logger.error(f"[LibPoller] Library {library_id}: running scan timeout after {elapsed_from_start:.1f}s")
                             new_state = "error"
                             current_scan_stage = old_state_data.get("scan_stage", "file")
-                            current_progress_value = old_state_data.get("progress", 0.0) * 100.0
+                            current_progress_value = previous_progress * 100.0
                             
                     state_changed = (old_state != new_state)
 
@@ -550,53 +882,75 @@ class EmbyLibraryPoller:
 
                     if new_state == "idle" and state_changed:
                         logger.info(f"[LibPoller] Library {library_id} on server {server_id}: scan COMPLETED (100%)")
-                        await self._update_tracker_status(
-                            state_key,
-                            tracker_status,
-                            1.0,
-                            status_message,
-                            metadata=metadata
+                        tracker_updates.append(
+                            (
+                                state_key,
+                                tracker_status,
+                                1.0,
+                                status_message,
+                                copy.deepcopy(metadata),
+                                server_id,
+                                library_id,
+                                str(self._library_states[state_key].get("job_id") or ""),
+                                True,
+                            )
                         )
-                        asyncio.create_task(self._schedule_tracking_cleanup(server_id, library_id))
 
                     elif new_state == "timeout" and state_changed:
                         logger.warning(f"[LibPoller] Library {library_id} on server {server_id}: scan TIMEOUT, forcing completion")
-                        await self._update_tracker_status(
-                            state_key,
-                            tracker_status,
-                            1.0,
-                            status_message,
-                            metadata=metadata
+                        tracker_updates.append(
+                            (
+                                state_key,
+                                tracker_status,
+                                1.0,
+                                status_message,
+                                copy.deepcopy(metadata),
+                                server_id,
+                                library_id,
+                                str(self._library_states[state_key].get("job_id") or ""),
+                                True,
+                            )
                         )
-                        asyncio.create_task(self._schedule_tracking_cleanup(server_id, library_id))
 
                     elif new_state == "error" and state_changed:
                         logger.error(f"[LibPoller] Library {library_id} on server {server_id}: scan ERROR")
-                        await self._update_tracker_status(
-                            state_key,
-                            tracker_status,
-                            old_state_data.get("progress", 0.0),
-                            status_message,
-                            metadata=metadata
+                        tracker_updates.append(
+                            (
+                                state_key,
+                                tracker_status,
+                                previous_progress,
+                                status_message,
+                                copy.deepcopy(metadata),
+                                server_id,
+                                library_id,
+                                str(self._library_states[state_key].get("job_id") or ""),
+                                True,
+                            )
                         )
-                        asyncio.create_task(self._schedule_tracking_cleanup(server_id, library_id))
 
                     elif new_state in ("running", "waiting"):
-                        # Solo broadcast se stato cambiato O progress cambiato significativamente (>1%)
-                        old_progress = old_state_data.get("progress", 0.0)
-                        progress_diff = abs(current_progress_value - old_progress)
-                        should_broadcast = state_changed or (new_state == "running" and progress_diff >= 1.0)
+                        # Broadcast only on state changes or at least one percentage point.
+                        current_progress = current_progress_value / 100.0
+                        progress_diff_percent = abs(current_progress_value - (previous_progress * 100.0))
+                        should_broadcast = state_changed or (
+                            new_state == "running" and progress_diff_percent >= 1.0
+                        )
 
                         if should_broadcast:
                             logger.info(f"[LibPoller] Library {library_id}: state={new_state}, progress={current_progress_value:.1f}%, calling update_tracker_status")
-                            await self._update_tracker_status(
-                                state_key,
-                                tracker_status,
-                                current_progress_value / 100.0,
-                                status_message,
-                                metadata=metadata
+                            tracker_updates.append(
+                                (
+                                    state_key,
+                                    tracker_status,
+                                    current_progress,
+                                    status_message,
+                                    copy.deepcopy(metadata),
+                                    server_id,
+                                    library_id,
+                                    str(self._library_states[state_key].get("job_id") or ""),
+                                    False,
+                                )
                             )
-                            logger.debug(f"[LibPoller] Library {library_id}: update_tracker_status completed")
                         else:
                             logger.debug(f"[LibPoller] Library {library_id}: skipping broadcast (no significant change)")
 
@@ -622,15 +976,54 @@ class EmbyLibraryPoller:
                             or time.time() + self.idle_poll_interval
                         )
 
+            # Tracker broadcasts and persistence may block on threads/database I/O.
+            # They must run after releasing the non-reentrant state lock because
+            # persistence snapshots the same state under that lock.
+            await self._dispatch_tracker_updates(tracker_updates)
+
             await self._notify_terminal_updates(terminal_updates)
             for update in terminal_updates:
-                asyncio.create_task(
-                    self._schedule_tracking_cleanup(update.server_id, update.library_id)
+                self._spawn_background_task(
+                    self._schedule_tracking_cleanup(
+                        update.server_id,
+                        update.library_id,
+                        update.job_id,
+                    )
                 )
 
-        except Exception as e:
-            logger.error(f"[LibPoller] Error fetching virtual folders for {server_id}: {e}", exc_info=True)
+        except Exception as exc:
+            logger.error("[LibPoller] Error fetching virtual folders for %s:\n%s", server_id, format_exception_for_log(exc))
             raise
+
+    async def _dispatch_tracker_updates(self, tracker_updates: list[TrackerUpdate]) -> None:
+        """Publish state snapshots after the poller's state lock is released."""
+        for (
+            state_key,
+            tracker_status,
+            progress,
+            status_message,
+            metadata,
+            server_id,
+            library_id,
+            expected_job_id,
+            should_cleanup,
+        ) in tracker_updates:
+            await self._update_tracker_status(
+                state_key,
+                tracker_status,
+                progress,
+                status_message,
+                metadata=metadata,
+                expected_job_id=expected_job_id,
+            )
+            logger.debug(
+                "[LibPoller] Library %s: update_tracker_status completed",
+                library_id,
+            )
+            if should_cleanup:
+                self._spawn_background_task(
+                    self._schedule_tracking_cleanup(server_id, library_id, expected_job_id)
+                )
 
     async def _update_tracker_status(
         self,
@@ -638,7 +1031,8 @@ class EmbyLibraryPoller:
         status: str,
         progress: float,
         message: Optional[str] = None,
-        metadata: Optional[Dict] = None
+        metadata: Optional[Dict] = None,
+        expected_job_id: Optional[str] = None,
     ):
         """
         Aggiorna LibraryScanTracker con status e progress.
@@ -648,7 +1042,14 @@ class EmbyLibraryPoller:
             # Import lazy per evitare circular dependency
             from app_state import _LIBRARY_SCAN_TRACKER
 
-            state_data = self._library_states[state_key]
+            async with self._lock:
+                state_data = copy.deepcopy(self._library_states.get(state_key))
+            if not state_data or (
+                expected_job_id is not None
+                and str(state_data.get("job_id") or "") != str(expected_job_id)
+            ):
+                logger.debug("[LibPoller] State %s disappeared before tracker update", state_key)
+                return
             job_id = state_data["job_id"]
             library_id = state_data["library_id"]
             scan_stage = state_data.get("scan_stage", "file") # Default to file if not set
@@ -687,7 +1088,8 @@ class EmbyLibraryPoller:
             # Aggiorna tracker (thread-safe)
             # LibraryScanTracker.update_library_status si occuperà del broadcast
             logger.info("[POLLER] Calling update_library_status via asyncio.to_thread...")
-            await asyncio.to_thread(
+            await self._run_worker_thread(
+                state_data["server_id"],
                 _LIBRARY_SCAN_TRACKER.update_library_status,
                 job_id,
                 library_id,
@@ -702,8 +1104,8 @@ class EmbyLibraryPoller:
             # Persisti stato su DB per recovery in caso di restart
             await self._persist_library_state(state_key)
 
-        except Exception as e:
-            logger.error(f"[LibPoller] Error updating tracker for {state_key}: {e}")
+        except Exception as exc:
+            logger.error("[LibPoller] Error updating tracker for %s:\n%s", state_key, format_exception_for_log(exc))
 
     async def _persist_library_state(self, state_key: str):
         """
@@ -714,43 +1116,77 @@ class EmbyLibraryPoller:
             return
 
         try:
-            state_data = self._library_states.get(state_key)
-            if not state_data:
-                return
+            # Snapshot and write share one ordered lane. A later terminal state
+            # therefore cannot be overwritten by an older blocked write.
+            async with self._persistence_lock:
+                async with self._lock:
+                    state_data = copy.deepcopy(self._library_states.get(state_key))
+                    if not state_data:
+                        return
+                    persistence_revision = self._persistence_revisions.get(state_key, 0) + 1
+                    self._persistence_revisions[state_key] = persistence_revision
 
-            # Converti datetime a ISO string per serializzazione JSON
-            persist_data = {
-                "server_id": state_data["server_id"],
-                "library_id": state_data["library_id"],
-                "job_id": state_data["job_id"],
-                "state": state_data["state"],
-                "progress": state_data["progress"],
-                "scan_requested_at": state_data["scan_requested_at"].isoformat(),
-                "first_progress_seen_at": state_data["first_progress_seen_at"].isoformat() if state_data["first_progress_seen_at"] else None,
-                "started_at": state_data["started_at"].isoformat() if state_data["started_at"] else None,
-                "last_seen_at": state_data["last_seen_at"].isoformat(),
-                "ever_seen_progress": state_data["ever_seen_progress"],
-                "progress_source": state_data["progress_source"],
-                "scan_stage": state_data["scan_stage"],
-                "completed_at": state_data["completed_at"].isoformat() if state_data["completed_at"] else None
-            }
-            persist_data["queue_position"] = state_data.get("queue_position", 0)
-            metadata = state_data.get("metadata")
-            if isinstance(metadata, dict):
-                persist_data["metadata"] = copy.deepcopy(metadata)
-            else:
-                persist_data["metadata"] = {}
+                # Converti datetime a ISO string per serializzazione JSON
+                persist_data = {
+                    "server_id": state_data["server_id"],
+                    "library_id": state_data["library_id"],
+                    "job_id": state_data["job_id"],
+                    "state": state_data["state"],
+                    "progress": state_data["progress"],
+                    "scan_requested_at": state_data["scan_requested_at"].isoformat(),
+                    "first_progress_seen_at": state_data["first_progress_seen_at"].isoformat() if state_data["first_progress_seen_at"] else None,
+                    "started_at": state_data["started_at"].isoformat() if state_data["started_at"] else None,
+                    "last_seen_at": state_data["last_seen_at"].isoformat(),
+                    "ever_seen_progress": state_data["ever_seen_progress"],
+                    "progress_source": state_data["progress_source"],
+                    "scan_stage": state_data["scan_stage"],
+                    "completed_at": state_data["completed_at"].isoformat() if state_data["completed_at"] else None
+                }
+                persist_data["queue_position"] = state_data.get("queue_position", 0)
+                persist_data["persistence_revision"] = persistence_revision
+                metadata = state_data.get("metadata")
+                if isinstance(metadata, dict):
+                    persist_data["metadata"] = copy.deepcopy(metadata)
+                else:
+                    persist_data["metadata"] = {}
 
-            # Salva su DB (usa key-value store o tabella dedicata)
-            await asyncio.to_thread(
-                self.storage.set_key_value,
-                f"library_scan_state:{state_key}",
-                persist_data
-            )
+                key = f"library_scan_state:{state_key}"
+                update_key_value = getattr(self.storage, "update_key_value", None)
+                if callable(update_key_value):
+                    def keep_newest(current):
+                        if isinstance(current, dict):
+                            same_scan = (
+                                current.get("job_id"),
+                                current.get("scan_requested_at"),
+                            ) == (
+                                persist_data.get("job_id"),
+                                persist_data.get("scan_requested_at"),
+                            )
+                            try:
+                                current_revision = int(current.get("persistence_revision") or 0)
+                            except (TypeError, ValueError):
+                                current_revision = 0
+                            if same_scan and current_revision > persistence_revision:
+                                return current
+                        return persist_data
 
-        except Exception as e:
+                    await self._run_worker_thread(
+                        state_data["server_id"],
+                        update_key_value,
+                        key,
+                        keep_newest,
+                    )
+                else:
+                    await self._run_worker_thread(
+                        state_data["server_id"],
+                        self.storage.set_key_value,
+                        key,
+                        persist_data,
+                    )
+
+        except Exception as exc:
             # Non bloccare l'esecuzione se il salvataggio fallisce
-            logger.warning(f"[LibPoller] Could not persist state for {state_key}: {e}")
+            logger.warning("[LibPoller] Could not persist state for %s:\n%s", state_key, format_exception_for_log(exc))
 
     async def get_library_state(self, server_id: str, library_id: str) -> Optional[Dict]:
         """Ottieni stato corrente di una libreria."""
@@ -802,9 +1238,9 @@ class EmbyLibraryPoller:
                         interrupted += 1
                         logger.info("[LibPoller] %s: %s", key, RESTART_INTERRUPTION_MESSAGE)
                 except Exception as exc:
-                    logger.warning(f"[LibPoller] Could not finalize state from {key}: {exc}")
+                    logger.warning("[LibPoller] Could not finalize state from %s:\n%s", key, format_exception_for_log(exc))
         except Exception as exc:
-            logger.error(f"[LibPoller] Error finalizing persisted states: {exc}")
+            logger.error("[LibPoller] Error finalizing persisted states:\n%s", format_exception_for_log(exc))
         return interrupted
 
     async def restore_from_db(self) -> int:
@@ -833,43 +1269,89 @@ class EmbyLibraryPoller:
                             await asyncio.to_thread(self.storage.delete_key, key)
                             logger.debug(f"[LibPoller] Cleaned up old state: {key}")
 
-                except Exception as e:
-                    logger.warning(f"[LibPoller] Could not cleanup {key}: {e}")
+                except Exception as exc:
+                    logger.warning("[LibPoller] Could not cleanup %s:\n%s", key, format_exception_for_log(exc))
 
-        except Exception as e:
-            logger.warning(f"[LibPoller] Error during cleanup: {e}")
+        except Exception as exc:
+            logger.warning("[LibPoller] Error during cleanup:\n%s", format_exception_for_log(exc))
+
+    async def _stop_all(self, *, terminal: bool) -> None:
+        """Stop every poller task, optionally closing the lifecycle permanently."""
+        shutdown_generation = self._begin_terminal_shutdown() if terminal else None
+        try:
+            self._invalidate_all_starts()
+            async with self._lock:
+                tasks = set(self._polling_tasks.values()) | set(self._background_tasks)
+                for task in tasks:
+                    task.cancel()
+                self._polling_tasks.clear()
+                self._background_tasks.clear()
+                self._tracked_libraries.clear()
+                self._library_states.clear()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            await self._drain_worker_thread_calls()
+            logger.info("[LibPoller] Stopped all polling")
+        finally:
+            if shutdown_generation is not None:
+                self._finish_terminal_shutdown(shutdown_generation)
 
     async def stop_all(self):
-        """Ferma tutti i polling tasks."""
+        """Stop every polling task and reject work until the next lifespan."""
+        await self._stop_all(terminal=True)
+
+    async def stop_server(self, server_id: str) -> None:
+        """Cancel every poller task and tracked state owned by one server."""
+        with self._scheduling_lock:
+            self._blocked_servers.add(str(server_id))
+        self._invalidate_server_starts(server_id)
         async with self._lock:
-            for server_id, task in list(self._polling_tasks.items()):
+            task = self._polling_tasks.pop(server_id, None)
+            if task is not None:
                 task.cancel()
-            self._polling_tasks.clear()
-            self._tracked_libraries.clear()
-            self._library_states.clear()
-        logger.info("[LibPoller] Stopped all polling")
+            library_ids = set(self._tracked_libraries.pop(server_id, set()))
+            for library_id in library_ids:
+                self._library_states.pop(f"{server_id}:{library_id}", None)
+        if task is not None and task is not asyncio.current_task():
+            await asyncio.gather(task, return_exceptions=True)
+        await self._drain_worker_thread_calls(server_id)
 
     async def clear_states(self):
         """Cancella lo stato tracciato e le entry persistite nel database."""
-        await self.stop_all()
-
-        if not self.storage:
-            logger.debug("[LibPoller] Storage backend non configurato, nulla da cancellare")
-            return
-
+        # Reset is an operational action, not application shutdown. Keep the
+        # singleton open so scans started after the reset can be tracked.
+        reset_generation = self._begin_operational_reset()
         try:
-            keys = await asyncio.to_thread(self.storage.get_keys_by_prefix, "library_scan_state:")
-            for key in keys:
-                await asyncio.to_thread(self.storage.delete_key, key)
-            logger.info(f"[LibPoller] Cancellati {len(keys)} stati scan memorizzati")
-        except Exception as exc:  # pragma: no cover
-            logger.error(f"[LibPoller] Impossibile cancellare gli stati scan: {exc}")
-            raise
+            await self._stop_all(terminal=False)
 
-    async def _schedule_tracking_cleanup(self, server_id: str, library_id: str):
+            if not self.storage:
+                logger.debug("[LibPoller] Storage backend non configurato, nulla da cancellare")
+                return
+
+            try:
+                keys = await asyncio.to_thread(self.storage.get_keys_by_prefix, "library_scan_state:")
+                for key in keys:
+                    await asyncio.to_thread(self.storage.delete_key, key)
+                logger.info(f"[LibPoller] Cancellati {len(keys)} stati scan memorizzati")
+            except Exception as exc:  # pragma: no cover
+                logger.error("[LibPoller] Impossibile cancellare gli stati scan:\n%s", format_exception_for_log(exc))
+                raise
+        finally:
+            self._finish_operational_reset(reset_generation)
+
+    async def _schedule_tracking_cleanup(
+        self,
+        server_id: str,
+        library_id: str,
+        expected_job_id: str,
+    ):
         """Utility per fermare il tracking dopo aver rilasciato eventuali lock."""
         await asyncio.sleep(0)
-        await self.stop_tracking_library(server_id, library_id)
+        await self.stop_tracking_library(
+            server_id,
+            library_id,
+            expected_job_id=expected_job_id,
+        )
 
 
 # Global singleton

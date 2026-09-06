@@ -16,7 +16,7 @@
   line-height: 1;
 }
 
-.emby-live-page-actions button:last-child {
+.emby-live-page-restart-action {
   border-color: var(--color-danger-border);
   background: var(--color-danger-soft);
   color: var(--color-danger-strong);

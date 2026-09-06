@@ -1,6 +1,7 @@
 import { ExternalLink, RefreshCw } from "@/components/ui/icons";
 
 import { Button } from "@/components/ui/button";
+import { safeCollectionProviderLink } from "@/features/collections/collection-provider-links";
 import type { SourceSelection } from "@/features/collections/collection-source-selection";
 import type { PersonalCollectionList } from "@/features/collections/types";
 
@@ -33,6 +34,7 @@ function CollectionSourceRemoteSection({
         <h3>{title}</h3>
         <Button
           type="button"
+          requiresWriteAccess
           variant="ghost"
           size="icon"
           title={`Aggiorna ${title}`}
@@ -60,7 +62,10 @@ function CollectionSourceRemoteSection({
           {items.map((item, index) => {
             const sourceValue = collectionListSourceValue(item);
             const label = item.name || item.title || sourceValue;
-            const link = item.url || item.link;
+            const link = safeCollectionProviderLink(
+              item.url || item.link,
+              item.source_type || defaultSourceType,
+            );
             return (
               <li key={`${sourceValue}:${index}`}>
                 <div>
@@ -77,6 +82,7 @@ function CollectionSourceRemoteSection({
                       target="_blank"
                       rel="noreferrer"
                       title="Apri lista"
+                      aria-label={`Apri ${label}`}
                     >
                       <ExternalLink size={16} aria-hidden="true" />
                     </a>

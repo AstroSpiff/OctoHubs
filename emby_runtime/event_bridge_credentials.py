@@ -40,20 +40,50 @@ def event_bridge_credential_configured(server_id: str) -> bool:
 
 def verify_event_bridge_credential(server_id: str, credential: str) -> bool:
     """Compare a presented credential without ever persisting its plaintext."""
+    return bool(event_bridge_credential_generation(server_id, credential))
+
+
+def event_bridge_credential_generation(server_id: str, credential: str) -> str:
+    """Return the shared credential generation only when the secret is current."""
     normalized_server_id = _normalized_server_id(server_id)
-    stored = _stored_digest(normalized_server_id) or _DUMMY_DIGEST
+    backend = _config_manager._ensure_db_backend()
+    settings = backend.load_app_settings() or {}
+    stored = _stored_digest_from_settings(settings, normalized_server_id) or _DUMMY_DIGEST
     presented = _credential_digest(normalized_server_id, credential)
     matches = hmac.compare_digest(stored, presented)
-    return bool(
+    valid = bool(
         normalized_server_id
         and credential
+        and _server_is_configured(settings, normalized_server_id)
         and stored != _DUMMY_DIGEST
         and matches
+    )
+    return stored if valid else ""
+
+
+def event_bridge_credential_generation_is_current(server_id: str, generation: str) -> bool:
+    """Revalidate an accepted socket against shared persisted state."""
+    normalized_server_id = _normalized_server_id(server_id)
+    if not normalized_server_id or not generation:
+        return False
+    backend = _config_manager._ensure_db_backend()
+    settings = backend.load_app_settings() or {}
+    stored = _stored_digest_from_settings(settings, normalized_server_id) or _DUMMY_DIGEST
+    return bool(
+        _server_is_configured(settings, normalized_server_id)
+        and stored != _DUMMY_DIGEST
+        and hmac.compare_digest(stored, generation)
     )
 
 
 def save_event_bridge_credential(server_id: str, credential: str) -> None:
     """Atomically replace the hash associated with one server."""
+    if not save_event_bridge_credential_if_server_exists(server_id, credential):
+        raise ValueError("Server Emby non configurato")
+
+
+def save_event_bridge_credential_if_server_exists(server_id: str, credential: str) -> bool:
+    """Persist a credential only while its owning server exists in the same commit."""
     normalized_server_id = _normalized_server_id(server_id)
     if not normalized_server_id or not str(credential or ""):
         raise ValueError("Credenziale Event Bridge non valida")
@@ -63,9 +93,33 @@ def save_event_bridge_credential(server_id: str, credential: str) -> None:
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
+    saved = False
+
+    def update(settings: dict[str, Any]) -> dict[str, Any]:
+        nonlocal saved
+        if not _server_is_configured(settings, normalized_server_id):
+            return settings
+        entries = settings.get(EVENT_BRIDGE_CREDENTIALS_SECTION)
+        entries = dict(entries) if isinstance(entries, dict) else {}
+        entries[normalized_server_id] = record
+        settings[EVENT_BRIDGE_CREDENTIALS_SECTION] = entries
+        saved = True
+        return settings
+
+    backend = _config_manager._ensure_db_backend()
+    backend.mutate_app_settings(update)
+    return saved
+
+
+def delete_event_bridge_credential(server_id: str) -> None:
+    """Atomically revoke the credential associated with one server."""
+    normalized_server_id = _normalized_server_id(server_id)
+    if not normalized_server_id:
+        return
+
     def update(current: Any) -> dict[str, Any]:
         entries = dict(current) if isinstance(current, dict) else {}
-        entries[normalized_server_id] = record
+        entries.pop(normalized_server_id, None)
         return entries
 
     backend = _config_manager._ensure_db_backend()
@@ -78,10 +132,24 @@ def _stored_digest(server_id: str) -> str:
         return ""
     backend = _config_manager._ensure_db_backend()
     settings = backend.load_app_settings() or {}
-    entries = settings.get(EVENT_BRIDGE_CREDENTIALS_SECTION)
+    return _stored_digest_from_settings(settings, normalized_server_id)
+
+
+def _stored_digest_from_settings(settings: Any, server_id: str) -> str:
+    entries = settings.get(EVENT_BRIDGE_CREDENTIALS_SECTION) if isinstance(settings, dict) else None
     if not isinstance(entries, dict):
         return ""
-    return _record_digest(entries.get(normalized_server_id))
+    return _record_digest(entries.get(server_id))
+
+
+def _server_is_configured(settings: Any, server_id: str) -> bool:
+    emby = settings.get("EMBY") if isinstance(settings, dict) else None
+    servers = emby.get("SERVERS") if isinstance(emby, dict) else None
+    return any(
+        isinstance(server, dict)
+        and str(server.get("id") or server.get("server_id") or "").strip() == server_id
+        for server in (servers or [])
+    )
 
 
 def _record_digest(record: Any) -> str:

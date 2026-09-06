@@ -7,7 +7,7 @@ type NavigationPreferencesResponse = {
   preferences?: NavigationPreferences;
 };
 
-async function saveNavigationPreferences(preferences: NavigationPreferences): Promise<NavigationPreferences> {
+async function saveNavigationPreferences(preferences: Partial<NavigationPreferences>): Promise<NavigationPreferences> {
   const response = await request<NavigationPreferencesResponse>("/api/ui/preferences", {
     method: "PUT",
     body: JSON.stringify(preferences),

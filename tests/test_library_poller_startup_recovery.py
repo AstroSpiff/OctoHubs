@@ -110,8 +110,8 @@ async def test_runtime_startup_finalizes_poller_state(monkeypatch):
     registered_loops = []
 
     class _Poller:
-        def configure(self, backend):
-            configured.append(backend)
+        def configure(self, backend, *, reopen=False):
+            configured.append((backend, reopen))
 
         async def finalize_interrupted_states(self):
             return 1
@@ -122,7 +122,7 @@ async def test_runtime_startup_finalizes_poller_state(monkeypatch):
 
     await bootstrap.register_runtime_event_loop()
 
-    assert configured == [storage]
+    assert configured == [(storage, True)]
     assert len(registered_loops) == 1
 
 

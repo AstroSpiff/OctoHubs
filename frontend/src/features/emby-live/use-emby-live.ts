@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getEmbyLiveSnapshot, getEmbyServerStatus } from "@/features/emby-live/api";
 import { liveConnectionFromHeartbeat } from "@/features/emby-live/live-connection";
@@ -17,14 +17,19 @@ function useEmbyLive() {
   const [error, setError] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState(0);
   const [generation, setGeneration] = useState(0);
+  const snapshotRevisionRef = useRef(0);
 
   const refresh = useCallback(() => {
+    // Any per-server response started before the full refresh is stale.
+    snapshotRevisionRef.current += 1;
     setConnection("loading");
     setError(null);
     setGeneration((value) => value + 1);
   }, []);
   const refreshServer = useCallback(async (serverId: string) => {
+    const revision = snapshotRevisionRef.current;
     const status = await getEmbyServerStatus(serverId);
+    if (revision !== snapshotRevisionRef.current) return;
     setSnapshot((current) => {
       const server = current?.servers[serverId];
       if (!current || !server) return current;
@@ -76,6 +81,7 @@ function useEmbyLive() {
         if (disposed || controller.signal.aborted || fallbackController !== controller) return;
         if (!payload.success) throw new Error("Impossibile aggiornare lo stato Emby.");
         lastFallbackAt = Date.now();
+        snapshotRevisionRef.current += 1;
         setSnapshot(payload);
         setUpdatedAt(lastFallbackAt);
         setError(null);
@@ -119,6 +125,7 @@ function useEmbyLive() {
             );
           fallbackController?.abort();
           lastSsePayloadAt = Date.now();
+          snapshotRevisionRef.current += 1;
           setSnapshot(payload);
           setUpdatedAt(lastSsePayloadAt);
           setError(null);

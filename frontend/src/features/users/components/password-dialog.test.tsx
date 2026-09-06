@@ -32,4 +32,19 @@ describe("PasswordDialog", () => {
 
     expect(markup).toContain("Emby: presente");
   });
+
+  it("renders mutation failures inside the active modal", () => {
+    const markup = renderToStaticMarkup(
+      <PasswordDialog
+        target={{ scope: "group", groupId: "group-1", name: "Famiglia" }}
+        saving={false}
+        mutationError="Aggiornamento non riuscito"
+        onClose={() => undefined}
+        onSave={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain('role="alert"');
+    expect(markup).toContain("Aggiornamento non riuscito");
+  });
 });

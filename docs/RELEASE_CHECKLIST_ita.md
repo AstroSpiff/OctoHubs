@@ -1,4 +1,4 @@
-[Italiano](RELEASE_CHECKLIST_ita.md)
+[Italiano](RELEASE_CHECKLIST_ita.md) | [English](RELEASE_CHECKLIST.md)
 
 Documenti: [README](../README_ita.md) | [Docker Deploy](DOCKER_DEPLOY_ita.md) | [Deployment](DEPLOYMENT_ita.md) | [Configurazione](CONFIGURATION_ita.md) | [Funzionalita](FEATURES_ita.md) | [Integrazioni](INTEGRATIONS_ita.md) | [Strumenti Emby](EMBY_TOOLS_ita.md)
 
@@ -24,18 +24,30 @@ Per ogni riga compila:
 | P0 | Test suite backend | Pytest completo | `./venv/bin/python -m pytest -q` | Tutti i test pytest, async, parametrizzati e unittest passano |  |  |
 | P0 | PostgreSQL 16 | Migrazioni e CRUD reali | `./scripts/run_postgresql_release_gate.sh` | Upgrade legacy valido e rifiuto dati ambigui passano su PostgreSQL 16 effimero, senza test saltati |  |  |
 | P0 | Test suite frontend | Vitest completo | `cd frontend && npm test -- --run` | Tutti i test frontend passano |  |  |
+| P0 | Dipendenze frontend | Audit runtime | `cd frontend && npm audit --omit=dev --audit-level=high` | Nessuna vulnerabilità alta/critica nelle dipendenze runtime |  |  |
 | P0 | Frontend statico | Lint e build produzione | `cd frontend && npm run lint && npm run build` | Lint pulito e build completata |  |  |
-| P0 | Formattazione diff | Whitespace/check patch | `git diff --check` | Nessun errore |  |  |
+| P0 | API esterna | Audit contratto pubblico | `./venv/bin/python scripts/audit_external_api_contract.py --strict` | Nessuna violazione del contratto pubblico |  |  |
+| P0 | Sicurezza Python | Audit dipendenze produzione | `./venv/bin/python -m pip_audit -r requirements.txt` | Nessuna vulnerabilità nota nelle dipendenze verificabili |  |  |
+| P0 | Qualità statica Python | Ruff | `./venv/bin/python -m ruff check .` | Nessun errore Ruff |  |  |
+| P0 | Regressioni di complessità | Baseline C901 | `./venv/bin/python scripts/check_cyclomatic_complexity.py` | Nessun finding C901 nuovo o peggiorato |  |  |
+| P0 | Tipi Python | Pyright incrementale | `./venv/bin/python -m pyright` | Nessun errore nei moduli inclusi nel gate tipizzato |  |  |
+| P0 | Immagine produzione | Release gate GitHub | Build riproducibile e avvio dell'immagine invariata | Entry point reale avviato, `/health/ready` risponde 200, UID/GID non-root |  |  |
+| P0 | Formattazione diff | Whitespace/check patch | In locale `git diff --check`; la CI controlla l'intero range di commit della PR/push | Nessun errore nel patch candidato |  |  |
 | P0 | Import/compile | Moduli principali | `./venv/bin/python -m py_compile asgi.py core/tasks.py services/workflows.py` | Exit code 0 |  |  |
 | P0 | Git | Stato worktree | `git status -sb` | Solo modifiche attese oppure working tree pulito |  |  |
 | P1 | Avvio app | Startup locale | `./start_dev.sh` | Uvicorn avviato, startup complete, nessun traceback |  |  |
 | P1 | API Probe protette | Smoke senza login | `curl -i http://127.0.0.1:5050/api/v1/emby/probe/queue` | `401 Authentication required` |  |  |
 
+Prima dello smoke locale con `./start_dev.sh`, configura il collegamento al
+PostgreSQL esterno: `OCTOHUBS_DB_URL`, oppure i valori separati `OCTOHUBS_DB_*`
+incluso `OCTOHUBS_DB_PASSWORD`/`OCTOHUBS_DB_PASSWORD_FILE`. Lo script non crea
+PostgreSQL e non fornisce una password di sviluppo predefinita.
+
 ## 2. Ambiente e dati di test
 
 | Priorita | Area | Test | Procedura | Risultato atteso | Esito | Note |
 | --- | --- | --- | --- | --- | --- | --- |
-| P0 | Config | Config valida | Aprire configurazione o validare `config.json` | Nessun errore di parsing, server Emby caricati |  |  |
+| P0 | Config | Config runtime valida | Aprire la Configurazione autenticata e verificare lo stato PostgreSQL/servizi | Connessione PostgreSQL valida, server Emby caricati o errore controllato |  |  |
 | P0 | Database | Connessione DB app | Aprire app e tab che leggono dati DB | Nessun errore DB, storage pronto |  |  |
 | P0 | Auth | Login admin | Login con account admin reale | Accesso riuscito, sessione stabile |  |  |
 | P0 | Emby | Server abilitati | Aprire Operazioni o Dashboard Emby | Tutti i server abilitati rispondono o mostrano errore controllato |  |  |

@@ -3,8 +3,9 @@ Builders and helpers for Latest Publications items.
 """
 
 from typing import Any, Dict, Optional, Tuple
-from urllib.parse import urlencode
 
+from core.emby_image_urls import build_latest_emby_image_urls
+from core.safe_output import safe_print as print
 from emby_latest.emby_api import _resolve_emby_library_for_item
 from emby_latest.utils import limit_by_server
 
@@ -123,31 +124,20 @@ def _build_emby_latest_item(item: Dict[str, Any], server: Optional[Dict[str, Any
         library_id, library_name = _resolve_emby_library_for_item(server, item)
 
     if server and item_id:
-        query = {
-            "server_id": server.get("id"),
-            "item_id": item_id,
-            "type": "Primary",
-            "max_width": 240
-        }
-        if image_tags.get("Primary"):
-            query["tag"] = image_tags.get("Primary")
-        image_url = f"/api/v1/emby/image?{urlencode(query)}"
+        image_urls = build_latest_emby_image_urls(
+            server.get("id"),
+            item_id,
+            primary_tag=image_tags.get("Primary"),
+        )
+        image_url = image_urls["image_url"]
+        poster_url = image_urls["poster_url"]
+        backdrop_url = image_urls["backdrop_url"]
+        banner_url = image_urls["banner_url"]
+        thumb_url = image_urls["thumb_url"]
+        logo_url = image_urls["logo_url"]
 
         base_url = (server.get("url") or "").strip().rstrip("/")
-        token = (server.get("api_key") or "").strip()
         if base_url:
-            if token:
-                poster_url = f"{base_url}/Items/{item_id}/Images/Primary?maxWidth=720&quality=90&api_key={token}"
-                backdrop_url = f"{base_url}/Items/{item_id}/Images/Backdrop?maxWidth=1280&quality=90&api_key={token}"
-                banner_url = f"{base_url}/Items/{item_id}/Images/Banner?maxWidth=1280&quality=90&api_key={token}"
-                thumb_url = f"{base_url}/Items/{item_id}/Images/Thumb?maxWidth=1280&quality=90&api_key={token}"
-                logo_url = f"{base_url}/Items/{item_id}/Images/Logo?maxWidth=720&quality=90&api_key={token}"
-            else:
-                poster_url = f"{base_url}/Items/{item_id}/Images/Primary?maxWidth=720&quality=90"
-                backdrop_url = f"{base_url}/Items/{item_id}/Images/Backdrop?maxWidth=1280&quality=90"
-                banner_url = f"{base_url}/Items/{item_id}/Images/Banner?maxWidth=1280&quality=90"
-                thumb_url = f"{base_url}/Items/{item_id}/Images/Thumb?maxWidth=1280&quality=90"
-                logo_url = f"{base_url}/Items/{item_id}/Images/Logo?maxWidth=720&quality=90"
             emby_url = f"{base_url}/web/index.html#!/itemdetails.html?id={item_id}"
 
     item_type = str(item.get("Type") or "")

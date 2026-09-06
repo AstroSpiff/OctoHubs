@@ -99,4 +99,21 @@ describe("GroupSyncControls", () => {
     expect(container.textContent).toContain("Sincronizzazione da verificare");
     expect(container.textContent).toContain("Leader non valido: trovati 0 leader");
   });
+
+  it("restores the previous value and reports a rejected autosave", async () => {
+    const onSave = vi.fn(() => Promise.reject(new Error("backend offline")));
+    act(() => {
+      root.render(<GroupSyncControls group={group} saving={false} syncing={false} onSave={onSave} onSync={() => undefined} />);
+    });
+    const direction = container.querySelector("select") as HTMLSelectElement;
+
+    await act(async () => {
+      direction.value = "one_way";
+      direction.dispatchEvent(new Event("change", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(direction.value).toBe("merge");
+    expect(container.textContent).toContain("Salvataggio non riuscito: backend offline");
+  });
 });

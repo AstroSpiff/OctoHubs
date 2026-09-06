@@ -1,5 +1,9 @@
 import requests
 
+from core.log_sanitization import sanitize_diagnostic_text
+from core.safe_output import safe_print as print
+from core.outbound_redirects import response_is_redirect
+
 from core.utils import _normalize_media_type
 from emby_runtime.api_client_urls import build_jellyseerr_api_url
 
@@ -48,8 +52,11 @@ def _fetch_tmdb_payload(tmdb_id, media_type_candidates, config, cache):
             response = requests.get(
                 build_jellyseerr_api_url(config, endpoint),
                 headers=headers,
+                allow_redirects=False,
                 timeout=15
             )
+            if response_is_redirect(response):
+                continue
             if response.status_code == 404:
                 continue
             response.raise_for_status()
@@ -89,7 +96,10 @@ def search_tmdb(api_key: str, query: str, language: str = "it-IT", page: int = 1
             "page": page
         }
 
-        response = requests.get(url, params=params, timeout=10)
+        response = requests.get(url, params=params, allow_redirects=False, timeout=10)
+
+        if response_is_redirect(response):
+            return [], 0
 
         if response.status_code != 200:
             print(f"   -> TMDB API error: {response.status_code}")
@@ -132,7 +142,7 @@ def search_tmdb(api_key: str, query: str, language: str = "it-IT", page: int = 1
         return normalized, total_pages
 
     except requests.exceptions.RequestException as exc:
-        print(f"   -> Impossibile contattare TMDB: {exc}")
+        print(f"   -> Impossibile contattare TMDB: {sanitize_diagnostic_text(exc)}")
         return [], 0
 
 
@@ -158,7 +168,10 @@ def get_tmdb_tv_details(api_key: str, tv_id: int, language: str = "it-IT") -> di
             "language": language
         }
 
-        response = requests.get(url, params=params, timeout=10)
+        response = requests.get(url, params=params, allow_redirects=False, timeout=10)
+
+        if response_is_redirect(response):
+            return {}
 
         if response.status_code != 200:
             print(f"   -> TMDB API error: {response.status_code}")
@@ -188,5 +201,5 @@ def get_tmdb_tv_details(api_key: str, tv_id: int, language: str = "it-IT") -> di
         }
 
     except requests.exceptions.RequestException as exc:
-        print(f"   -> Impossibile contattare TMDB: {exc}")
+        print(f"   -> Impossibile contattare TMDB: {sanitize_diagnostic_text(exc)}")
         return {}

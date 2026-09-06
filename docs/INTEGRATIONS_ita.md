@@ -11,7 +11,7 @@ Per script, automazioni, agenti IA o altre app che devono controllare OctoHubs v
 ## Passi manuali comuni
 - Recupera API key o token da ogni servizio.
 - Usa URL raggiungibili dal container OctoHubs (evita `localhost` se il servizio non e nello stesso container).
-- Dopo modifiche manuali a `config.json`, riavvia il container app.
+- Configura le integrazioni dalla UI autenticata; PostgreSQL è autorevole.
 
 ## Jellyseerr
 Usato per leggere le richieste e inviarne di nuove.
@@ -74,11 +74,24 @@ Metadati e controlli release opzionali.
 Campi config:
 - `TRAKT.ENABLED`
 - `TRAKT.CLIENT_ID`
+- `TRAKT.CLIENT_SECRET`
 - `TRAKT.ACCESS_TOKEN`
+- `TRAKT.REFRESH_TOKEN`
+- `TRAKT.EXPIRES_AT`
 
 Passi manuali:
-- Crea una app Trakt per ottenere `CLIENT_ID`.
-- Genera e salva l'access token.
+- Crea una app Trakt per ottenere `CLIENT_ID` e `CLIENT_SECRET`.
+- Preferisci il flusso di autorizzazione del dispositivo nella pagina di
+  configurazione. OctoHubs salva access token, refresh token e scadenza come un
+  unico insieme di credenziali.
+- Se inserisci i token manualmente, fornisci insieme tutti e tre i valori:
+  access token, refresh token e una scadenza ISO 8601 futura con fuso orario. Un
+  insieme parziale viene rifiutato e non viene mai unito alle vecchie
+  credenziali.
+- Cambiare client OAuth invalida i token esistenti, salvo che nella stessa
+  operazione venga salvato un insieme sostitutivo completo. Anche un tentativo
+  di autorizzazione in corso viene invalidato se cambia la configurazione del
+  client.
 
 ## TMDB
 Supporto ricerca metadati.
@@ -99,11 +112,23 @@ Campi config:
 
 Note:
 - Richiede il pacchetto Python `JustWatch`.
-- Usa cache su DB; abilita `DATABASE.ENABLED=true` in `config.json`.
+- Usa il database PostgreSQL applicativo obbligatorio per la cache; non serve
+  abilitare un database separato.
 - Cache: episodi disponibili non ricontrollati; non disponibili ricontrollati ogni 24h.
 
 Passi manuali:
 - Imposta `JUSTWATCH.LOCALE` per la tua regione (esempio: `it_IT`).
+
+## Telegram
+
+Configura bot, gruppi, canali e preconfigurazioni di notifica dalla UI di
+configurazione autenticata. I token dei bot restano sul server e non vengono mai
+restituiti dall'API delle impostazioni. I nomi inseriti dall'utente sono limitati
+a 200 caratteri, gli identificativi a 128 caratteri e i token bot a 512
+caratteri. Ogni tipo di risorsa supporta fino a 100 voci, ogni preconfigurazione
+fino a 100 gruppi e 100 canali, e l'intera configurazione Telegram normalizzata è
+limitata a 256 KiB. Le richieste oltre questi limiti vengono rifiutate prima del
+salvataggio.
 
 ## Server Emby
 Configura in `EMBY.SERVERS`:
@@ -119,12 +144,12 @@ Passi manuali:
 ## Webhook Emby
 Endpoint:
 - `http://HOST:5050/api/emby/event-bridge/events` (override HTTP diretto)
-- `https://TUO_DOMINIO/api/emby/event-bridge/events` (HTTPS con Nginx)
+- `https://TUO_DOMINIO/api/emby/event-bridge/events` (tramite qualsiasi proxy HTTPS esterno configurato)
 
 Sicurezza opzionale:
 - `WEBHOOK_IP_WHITELIST` (indirizzi IPv4/IPv6 o CIDR separati da virgola)
 - `WEBHOOK_TRUST_PROXY_HEADERS=true` fa usare `X-Real-IP` alla allowlist; abilitalo
-  soltanto dietro un proxy che sovrascrive tale header. Nginx incluso lo fa.
+  soltanto dietro un proxy esterno fidato che sovrascrive tale header.
 
 Una allowlist non vuota ma non valida rifiuta le richieste Event Bridge finché la
 configurazione non viene corretta. Con Portainer, imposta le stesse variabili sul

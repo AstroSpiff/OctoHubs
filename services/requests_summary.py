@@ -1,4 +1,5 @@
 # services/requests_summary.py
+import logging
 from datetime import datetime, timezone
 
 from core.config import DEFAULT_CONFIG
@@ -9,6 +10,8 @@ from core.integrations import (
     _log_justwatch_status,
 )
 from core.justwatch_manager import JustWatchError
+from core.log_sanitization import format_exception_for_log
+from core.safe_output import safe_print as print
 from core.scanner import extract_title_and_year, gather_title_candidates
 from core.utils import _normalize_media_type, _parse_date_value, _sanitize_terms_list, get_nested
 from emby_runtime.api_clients import fetch_media_info, fetch_request_details, get_jellyseerr_requests
@@ -17,6 +20,7 @@ from search.rules import _get_request_rule
 from search.seasons import describe_season_statuses, select_scan_seasons, _request_release_date
 
 TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w154"
+logger = logging.getLogger(__name__)
 
 
 def _iter_metadata_sources(*sources):
@@ -192,19 +196,17 @@ def _resolve_request_metadata_for_summary(req, config, details_cache, media_cach
 def _summarize_requests_for_dashboard(config, requests_data=None):
     if not config:
         return []
-    try:
-        if requests_data is None:
-            requests_data = get_jellyseerr_requests(config, silent=True)
-            print(f"   -> Dashboard: Jellyseerr ha restituito {len(requests_data)} richieste (pending+approved)")
-            _log_justwatch_status()
-        else:
-            print(f"   -> Dashboard: Jellyseerr richieste fornite: {len(requests_data)}")
-            _log_justwatch_status()
-    except Exception as exc:
-        print(f"   -> [ERRORE] Errore durante il recupero richieste Jellyseerr per dashboard: {exc}")
-        import traceback
-        traceback.print_exc()
-        return []
+    if requests_data is None:
+        requests_data, requests_ok = get_jellyseerr_requests(
+            config, silent=True, return_status=True
+        )
+        if not requests_ok:
+            raise RuntimeError("Jellyseerr request dataset unavailable")
+        print(f"   -> Dashboard: Jellyseerr ha restituito {len(requests_data)} richieste (pending+approved)")
+        _log_justwatch_status()
+    else:
+        print(f"   -> Dashboard: Jellyseerr richieste fornite: {len(requests_data)}")
+        _log_justwatch_status()
     summary = []
     details_cache = {}
     media_cache = {}
@@ -319,7 +321,11 @@ def _summarize_requests_for_dashboard(config, requests_data=None):
                         )
                         justwatch_checked = bool(justwatch_available)
                     except JustWatchError as exc:
-                        print(f"   -> JustWatch: errore verifica movie {title}: {exc}")
+                        logger.warning(
+                            "Errore verifica JustWatch per il film %s:\n%s",
+                            title,
+                            format_exception_for_log(exc),
+                        )
         summary.append(
             {
                 "id": req_id,

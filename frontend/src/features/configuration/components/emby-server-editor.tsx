@@ -10,7 +10,7 @@ import {
 import { EmbyServerIconPicker } from "@/features/configuration/components/emby-server-icon-picker";
 import type { EmbyServerInput, EmbyServerSettings } from "@/features/configuration/types";
 
-function EmbyServerEditor({ server, saving, deleting, onSave, onDelete, onCancel, editorId, onDirtyChange }: { server?: EmbyServerSettings; saving: boolean; deleting: boolean; onSave: (input: EmbyServerInput) => Promise<void>; onDelete?: () => void; onCancel?: () => void; editorId?: string; onDirtyChange?: (editorId: string, dirty: boolean) => void }) {
+function EmbyServerEditor({ server, saving, deleting, operationError, onSave, onDelete, onCancel, editorId, onDirtyChange }: { server?: EmbyServerSettings; saving: boolean; deleting: boolean; operationError?: string; onSave: (input: EmbyServerInput) => Promise<void>; onDelete?: () => void; onCancel?: () => void; editorId?: string; onDirtyChange?: (editorId: string, dirty: boolean) => void }) {
   const [draft, setDraft] = useState<EmbyServerInput>(() => embyServerInputFromSettings(server));
   const baseline = useRef(embyServerInputFromSettings(server));
   const [apiKey, setApiKey] = useState("");
@@ -65,6 +65,7 @@ function EmbyServerEditor({ server, saving, deleting, onSave, onDelete, onCancel
       {server ? <label className="configuration-switch"><input type="checkbox" checked={draft.enabled} disabled={busy} onChange={(event) => update("enabled", event.target.checked)} /><span>Abilitato</span></label> : null}
     </div>
     {error ? <p className="configuration-form-error" role="alert">{error}</p> : null}
+    {operationError ? <p className="configuration-form-error" role="alert">{operationError}</p> : null}
     {dirty ? <div className="configuration-draft-state" role="status"><span>Modifiche non salvate</span><Button type="button" variant="ghost" size="compact" onClick={resetDraft} disabled={busy}>Ripristina valori salvati</Button></div> : null}
     <div className="configuration-server-fields">
       <EmbyServerIconPicker icon={draft.icon} color={draft.icon_color} disabled={busy} onIconChange={(value) => update("icon", value)} onColorChange={(value) => update("icon_color", value)} />

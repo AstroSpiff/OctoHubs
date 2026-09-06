@@ -14,6 +14,7 @@ type RecentProbeControlsProps = {
   processingStatus?: ProbeWorkerStatus;
   comboServerStatuses: ProbeComboServerStatus[];
   disabled: boolean;
+  canMutate?: boolean;
   onRunCombo: (mode: "smart" | "forced") => void;
   onStopCombo: () => void;
   onRunDiscovery: () => void;
@@ -31,6 +32,7 @@ function RecentProbeControls({
   processingStatus,
   comboServerStatuses,
   disabled,
+  canMutate = true,
   onRunCombo,
   onStopCombo,
   onRunDiscovery,
@@ -71,6 +73,7 @@ function RecentProbeControls({
               disabled: disabled || !comboRunning,
             },
           ]}
+          canMutate={canMutate}
         />
         <ProbeWorkerCard
           className="probe-worker-card--discovery"
@@ -118,6 +121,7 @@ function RecentProbeControls({
               disabled: disabled || !discoveryRunning,
             },
           ]}
+          canMutate={canMutate}
         />
         <ProbeWorkerCard
           className="probe-worker-card--processing"
@@ -154,6 +158,7 @@ function RecentProbeControls({
               disabled: disabled || !processingRunning,
             },
           ]}
+          canMutate={canMutate}
         />
       </div>
     </>

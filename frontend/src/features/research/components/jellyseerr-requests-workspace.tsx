@@ -65,6 +65,7 @@ function JellyseerrRequestsWorkspace({
     tv: true,
   });
   const draftRef = useRef(drafts);
+  const hydratedSourceSignatureRef = useRef(sourceSignature);
   const lastAttemptedSaveRevision = useRef(0);
   const refreshStatus = useQuery({
     queryKey: ["jellyseerr-requests-refresh"],
@@ -74,6 +75,7 @@ function JellyseerrRequestsWorkspace({
   });
   const movieRequests = overview.all_movie_requests || overview.movie_requests;
   const tvRequests = overview.all_tv_requests || overview.tv_requests;
+  const hasRequests = movieRequests.length + tvRequests.length > 0;
   const tabRequests = tab === "movie" ? movieRequests : tvRequests;
   const visibleRequests = hideAvailable ? tabRequests.filter((request) => !request.is_available) : tabRequests;
   const availableCount = tabRequests.filter((request) => request.is_available).length;
@@ -82,6 +84,11 @@ function JellyseerrRequestsWorkspace({
   const visibleCountLabel = hideAvailable ? `${visibleRequests.length} da gestire su ${tabRequests.length}` : `${tabRequests.length} richieste totali`;
 
   draftRef.current = drafts;
+
+  useEffect(() => {
+    if (!movieRequests.length && tvRequests.length) setTab("tv");
+    else if (!tvRequests.length && movieRequests.length) setTab("movie");
+  }, [movieRequests.length, tvRequests.length]);
 
   useEffect(() => {
     onDirtyChange?.(dirty);
@@ -93,7 +100,9 @@ function JellyseerrRequestsWorkspace({
   );
 
   useEffect(() => {
-    if (!dirty) setDrafts(rulesFromRequests(sourceRequests, overview.search_rules));
+    if (dirty || hydratedSourceSignatureRef.current === sourceSignature) return;
+    hydratedSourceSignatureRef.current = sourceSignature;
+    setDrafts(rulesFromRequests(sourceRequests, overview.search_rules));
   }, [overview.search_rules, dirty, sourceRequests, sourceSignature]);
 
   useEffect(() => {
@@ -115,7 +124,10 @@ function JellyseerrRequestsWorkspace({
           throw new Error(response.message || "Salvataggio regole richieste non riuscito.");
         }
         const savedDraftsAreCurrent = JSON.stringify(draftRef.current) === JSON.stringify(submittedDrafts);
-        if (savedDraftsAreCurrent) setDirty(false);
+        if (savedDraftsAreCurrent) {
+          hydratedSourceSignatureRef.current = sourceSignature;
+          setDirty(false);
+        }
         setNotice({ message: response.message || "Regole per le richieste aggiornate.", tone: "success" });
         onRefresh();
       } catch (reason) {
@@ -125,10 +137,25 @@ function JellyseerrRequestsWorkspace({
       }
     }, 650);
     return () => window.clearTimeout(timeout);
-  }, [dirty, onRefresh, saveRevision, saving]);
+  }, [dirty, onRefresh, saveRevision, saving, sourceSignature]);
 
   useEffect(() => {
-    if (!refreshing || refreshStatus.isFetching || refreshStatus.data?.running) return;
+    if (
+      !refreshing ||
+      refreshStatus.isFetching ||
+      (!refreshStatus.data && !refreshStatus.isError)
+    ) return;
+    if (refreshStatus.isError) {
+      setRefreshing(false);
+      setNotice({
+        message: refreshStatus.error instanceof Error
+          ? refreshStatus.error.message
+          : "Impossibile verificare lo stato dell'aggiornamento richieste.",
+        tone: "error",
+      });
+      return;
+    }
+    if (refreshStatus.data?.running) return;
     setRefreshing(false);
     const message = refreshStatus.data?.last_error || refreshStatus.data?.last_warning || "Lista richieste aggiornata.";
     setNotice({
@@ -136,7 +163,7 @@ function JellyseerrRequestsWorkspace({
       tone: refreshStatus.data?.last_error ? "error" : refreshStatus.data?.last_warning ? "warning" : "success",
     });
     onRefresh();
-  }, [onRefresh, refreshStatus.data, refreshStatus.isFetching, refreshing]);
+  }, [onRefresh, refreshStatus.data, refreshStatus.error, refreshStatus.isError, refreshStatus.isFetching, refreshing]);
 
   function selectRequestTabFromKeyboard(event: KeyboardEvent<HTMLButtonElement>, current: RequestTab) {
     const next = tabAtKey(requestTabs, current, event.key);
@@ -231,7 +258,7 @@ function JellyseerrRequestsWorkspace({
           <Link to="/configuration?focus=configuration-connections#services">Apri configurazione servizi</Link>
         </Button>
       </div>
-    ) : tabRequests.length ? <>
+    ) : hasRequests ? <>
       <div className="workspace-tabs workspace-tabs--context research-summary-tabs research-request-tabs" role="tablist" aria-label="Tipi richieste">
         {requestTabs.map((requestTab) => <button key={requestTab} id={`research-request-tab-${requestTab}`} type="button" role="tab" aria-selected={tab === requestTab} aria-controls={`research-request-panel-${requestTab}`} tabIndex={tab === requestTab ? 0 : -1} className={tab === requestTab ? "is-active" : ""} onClick={() => setTab(requestTab)} onKeyDown={(event) => selectRequestTabFromKeyboard(event, requestTab)}>
           {requestTab === "movie" ? "Film" : "Serie TV"}<span>{requestTab === "movie" ? movieRequests.length : tvRequests.length}</span>

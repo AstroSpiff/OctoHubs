@@ -1,10 +1,15 @@
 {
-  "exclude": [
-    "rss",
-    "core/storage/storage_rss.py"
+  "include": [
+    "core/client_address.py",
+    "emby_probe/queue_leases.py",
+    "emby_users/sync_results.py",
+    "emby_users/sync_state_refresh.py",
+    "realtime/session_refresh_dispatcher.py",
+    "web/api_token_rate_limit.py",
+    "web/login_security.py"
   ],
   "stubPath": "typings",
   "venvPath": ".",
   "venv": "venv",
-  "typeCheckingMode": "off"
+  "typeCheckingMode": "basic"
 }

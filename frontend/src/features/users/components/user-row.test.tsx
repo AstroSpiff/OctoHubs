@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
+import { WorkspaceCapabilitiesProvider } from "@/features/session/workspace-capabilities";
 import { UserRow } from "@/features/users/components/user-row";
 
 const user = {
@@ -155,5 +156,18 @@ describe("UserRow", () => {
     expect(markup).toContain('aria-expanded="false"');
     expect(markup).toMatch(/aria-controls="([^"]+)"/);
     expect(markup).toMatch(/<div id="[^"]+" class="user-row-menu-panel">/);
+  });
+
+  it("does not expose selection controls to a viewer", () => {
+    const markup = renderToStaticMarkup(
+      <WorkspaceCapabilitiesProvider canMutate={false}>
+        <UserRow user={user} checked={false} linked={false} isOwner changing={false} groupSyncing={false} settingsSyncing={false} {...actions} />
+      </WorkspaceCapabilitiesProvider>,
+    );
+
+    expect(markup).not.toContain("Seleziona Amministratore");
+    expect(markup).not.toContain('class="user-select"');
+    expect(markup).toContain("user-row--read-only");
+    expect(markup).toContain("Apri dettagli di Amministratore");
   });
 });

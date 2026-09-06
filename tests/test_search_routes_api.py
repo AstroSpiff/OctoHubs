@@ -21,7 +21,7 @@ class SearchRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             response.body.decode(),
-            '{"success":true,"searches":[],"warning":"tabella mancante"}',
+            '{"success":true,"searches":[],"warning":"Storico ricerche temporaneamente non disponibile"}',
         )
 
 

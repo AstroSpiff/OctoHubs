@@ -24,7 +24,7 @@ function completedCollectionOperations(
   );
   return tracked.filter((entry) => {
     const operation = operationById.get(entry.operationId);
-    return Boolean(operation && !isActiveOperation(operation));
+    return !operation || !isActiveOperation(operation);
   });
 }
 
@@ -56,6 +56,7 @@ function useCollectionOperationWatch(onCompleted: () => void) {
   );
 
   useEffect(() => {
+    if (!operations.isSuccess) return;
     const completed = completedCollectionOperations(
       tracked,
       operations.data?.operations || [],
@@ -69,7 +70,7 @@ function useCollectionOperationWatch(onCompleted: () => void) {
       ),
     );
     onCompleted();
-  }, [onCompleted, operations.data, tracked]);
+  }, [onCompleted, operations.data, operations.isSuccess, tracked]);
 
   return {
     track,

@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import threading
 
 import pytest
 
@@ -52,6 +53,7 @@ def test_probe_worker_monitor_finishes_after_live_worker_ends(monkeypatch):
         manager,
         ProbeWorkerOperation("discovery", "Media Probe: Discovery", "libraries"),
         ["green"],
+        threading.Event(),
     )
 
     assert tracker.updates
@@ -75,6 +77,7 @@ def test_probe_worker_monitor_marks_user_stop_as_skipped(monkeypatch):
         manager,
         ProbeWorkerOperation("discovery", "Media Probe: Discovery", "libraries"),
         ["green"],
+        threading.Event(),
     )
 
     assert tracker.skipped == [

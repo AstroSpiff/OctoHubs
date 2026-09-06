@@ -1,3 +1,5 @@
+import { readStoredValue, writeStoredValue } from "@/lib/safe-web-storage";
+
 export type PrimaryNavigationMode = "top" | "sidebar";
 export type SecondaryNavigationMode = "tabs" | "sidebar";
 
@@ -35,7 +37,7 @@ function normalizeNavigationPreferences(value: unknown): NavigationPreferences {
 
 function storedNavigationPreferences(storage: Pick<Storage, "getItem"> | null): NavigationPreferences | null {
   if (!storage) return null;
-  const value = storage.getItem(navigationPreferencesStorageKey);
+  const value = readStoredValue(storage, navigationPreferencesStorageKey);
   if (!value) return null;
   try {
     return normalizeNavigationPreferences(JSON.parse(value));
@@ -50,7 +52,11 @@ function resolveNavigationPreferences(storage: Pick<Storage, "getItem"> | null, 
 }
 
 function persistNavigationPreferences(preferences: NavigationPreferences, storage: Pick<Storage, "setItem"> | null): void {
-  storage?.setItem(navigationPreferencesStorageKey, JSON.stringify(preferences));
+  writeStoredValue(
+    storage,
+    navigationPreferencesStorageKey,
+    JSON.stringify(preferences),
+  );
 }
 
 export {

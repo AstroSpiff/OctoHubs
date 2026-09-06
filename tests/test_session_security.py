@@ -10,7 +10,9 @@ def test_placeholder_session_secrets_are_never_accepted():
     assert is_insecure_session_secret("") is True
     assert is_insecure_session_secret("change-this-secret-key") is True
     assert is_insecure_session_secret("your-secret-key-here") is True
-    assert is_insecure_session_secret("secure-session-key") is False
+    assert is_insecure_session_secret("secure-session-key") is True
+    assert is_insecure_session_secret("a" * 32) is True
+    assert is_insecure_session_secret("0123456789abcdef" * 2) is False
 
 
 def test_missing_session_secret_gets_a_safe_ephemeral_value():
@@ -21,10 +23,18 @@ def test_missing_session_secret_gets_a_safe_ephemeral_value():
 
 
 def test_configured_session_secret_is_preserved():
-    secret, generated = resolved_session_secret({"SECRET_KEY": "kept-secret"})
+    configured = "0123456789abcdef" * 3
+    secret, generated = resolved_session_secret({"SECRET_KEY": configured})
 
-    assert secret == "kept-secret"
+    assert secret == configured
     assert generated is False
+
+
+def test_explicit_weak_session_secret_fails_closed():
+    import pytest
+
+    with pytest.raises(ValueError, match="almeno 32 byte"):
+        resolved_session_secret({"SECRET_KEY": "x"})
 
 
 def test_environment_flags_only_accept_explicit_truthy_values():

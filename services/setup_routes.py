@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -35,10 +36,19 @@ def _templates_dep() -> Jinja2Templates:
     return _templates
 
 
+async def _users_exist() -> bool:
+    from core.auth import AuthStorageError
+
+    try:
+        return await run_in_threadpool(_has_users_dep)
+    except AuthStorageError as exc:
+        raise HTTPException(status_code=503, detail="Database account non disponibile") from exc
+
+
 @router.get("/setup")
 async def setup_index_route(request: Request):
     """Show bootstrap instructions only until the first user exists."""
-    if not _has_users_dep():
+    if not await _users_exist():
         return RedirectResponse(url="/setup/user", status_code=303)
     return RedirectResponse(url="/login", status_code=303)
 
@@ -46,7 +56,7 @@ async def setup_index_route(request: Request):
 @router.get("/setup/user")
 async def setup_user_get_route(request: Request):
     """Explain how to bootstrap the first administrator outside the UI."""
-    if _has_users_dep():
+    if await _users_exist():
         return RedirectResponse(url="/login", status_code=303)
 
     return _templates_dep().TemplateResponse(request, "setup.html", {"request": request, "step": "user"})
@@ -67,7 +77,7 @@ async def setup_user_post_route(request: Request):
 @router.get("/setup/db")
 async def setup_db_get_route(request: Request):
     """Retain the legacy URL without exposing database controls."""
-    if not _has_users_dep():
+    if not await _users_exist():
         return RedirectResponse(url="/setup/user", status_code=303)
     return RedirectResponse(url="/login", status_code=303)
 

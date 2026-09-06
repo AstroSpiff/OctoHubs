@@ -5,9 +5,11 @@ import { Button } from "@/components/ui/button";
 import { downloadBrowserFile } from "@/lib/browser-download";
 import {
   downloadTorrentArchive,
+  resolveMagnetReferences,
   sendBatchToQbittorrent,
 } from "@/features/research/api";
 import type { SearchResultActionNotice } from "@/features/research/components/search-result-actions";
+import { batchSendNotice } from "@/features/research/batch-send-outcome";
 
 type SearchResultBatchActionsProps = {
   selectedCount: number;
@@ -41,12 +43,7 @@ function SearchResultBatchActions({
     setSending(true);
     try {
       const response = await sendBatchToQbittorrent(resultLinks);
-      onNotice({
-        message:
-          response.message ||
-          `${response.sent || resultLinks.length} risultati inviati a qBittorrent.`,
-        tone: "success",
-      });
+      onNotice(batchSendNotice(response, resultLinks.length));
     } catch (reason) {
       onNotice({
         message:
@@ -100,11 +97,17 @@ function SearchResultBatchActions({
       });
       return;
     }
-    const content = magnets.join("\n");
+    let content = "";
     try {
+      const response = await resolveMagnetReferences(magnets);
+      content = response.magnets.join("\n");
       await navigator.clipboard?.writeText(content);
-    } catch {
-      // The downloaded file remains available when clipboard access is denied.
+    } catch (reason) {
+      onNotice({
+        message: reason instanceof Error ? reason.message : "Esportazione magnet non riuscita.",
+        tone: "error",
+      });
+      return;
     }
     downloadBrowserFile(
       new Blob([content], { type: "text/plain" }),
@@ -137,6 +140,7 @@ function SearchResultBatchActions({
       </Button>
       <Button
         type="button"
+        requiresWriteAccess
         variant="ghost"
         size="compact"
         title="Esporta i magnet selezionati in un file di testo"
@@ -148,6 +152,7 @@ function SearchResultBatchActions({
       </Button>
       <Button
         type="button"
+        requiresWriteAccess
         variant="ghost"
         size="compact"
         title="Scarica i torrent HTTP selezionati in un archivio ZIP"

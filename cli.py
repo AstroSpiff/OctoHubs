@@ -3,15 +3,19 @@ Command-line entrypoint for OctoHubs.
 """
 
 import argparse
-import json
-import os
 import sys
+
+from core.log_sanitization import sanitize_diagnostic_text
+from core.safe_output import safe_print as print
 
 
 def _print_fastapi_start_hint(port: int = 8000) -> None:
     """Print the recommended FastAPI startup command."""
     print("Avvia l'app FastAPI con:")
-    print(f"  uvicorn asgi:app --reload --host 0.0.0.0 --port {port}")
+    print(
+        f"  uvicorn asgi:app --reload --host 0.0.0.0 --port {port} "
+        "--no-proxy-headers"
+    )
 
 
 def parse_args(argv=None):
@@ -51,24 +55,14 @@ def parse_args(argv=None):
 
 
 def _load_database_settings_for_cli() -> dict:
-    from core.config import CONFIG_FILE, _merge_database_settings
+    from core.config import _merge_database_settings
     from core.storage import StorageError
     from services.manager import _apply_db_env_overrides
 
-    file_config = {}
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r") as handle:
-                file_config = json.load(handle)
-        except (json.JSONDecodeError, IOError) as exc:
-            raise StorageError(f"Configurazione non leggibile: {exc}") from exc
-
-    db_settings = _merge_database_settings(file_config.get("DATABASE"))
-    db_settings["PASSWORD"] = ""
-    db_settings["URL"] = ""
+    db_settings = _merge_database_settings(None)
     db_settings = _apply_db_env_overrides(db_settings)
     if not db_settings.get("ENABLED"):
-        raise StorageError("Database non abilitato nella configurazione")
+        raise StorageError("Database non configurato nelle variabili di deployment")
     return db_settings
 
 
@@ -77,6 +71,7 @@ def _format_list(values) -> str:
 
 
 def _handle_db_command(args) -> int:
+    from core.database_migrations import DatabaseMigrationError
     from core.storage import DatabaseStorage, StorageError
 
     try:
@@ -106,15 +101,17 @@ def _handle_db_command(args) -> int:
                 print(f"Pendenti: {_format_list(result['pending'])}")
             else:
                 print("Migrazioni database applicate")
-                backup = result.get("backup")
-                if backup:
-                    print(f"Backup: {backup.get('path')}")
-                    print(f"Manifest: {backup.get('manifest_path')}")
                 print(f"Applicate ora: {_format_list(result['applied'])}")
-                print(f"Pendenti iniziali: {_format_list(result['pending'])}")
+                print(f"Pendenti dopo upgrade: {_format_list(result['pending'])}")
             return 0
-    except StorageError as exc:
-        print(f"Errore database: {exc}")
+    except (StorageError, DatabaseMigrationError) as exc:
+        print(f"Errore database: {sanitize_diagnostic_text(exc)}", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(
+            f"Errore database inatteso ({type(exc).__name__}); controlla configurazione e connettivita.",
+            file=sys.stderr,
+        )
         return 1
 
     print(f"Comando database non riconosciuto: {args.db_command}")
@@ -141,7 +138,7 @@ def main() -> None:
     if not config or not is_valid:
         print("Configurazione mancante o non valida.")
         _print_fastapi_start_hint()
-        sys.exit(0)
+        sys.exit(1 if args.cli else 0)
 
     if args.web:
         _print_fastapi_start_hint()

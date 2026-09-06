@@ -1,6 +1,12 @@
 """API client helpers for Emby user management (user CRUD)."""
 
+from core.emby_identifiers import quote_emby_identifier
 from emby_runtime.api_clients import _call_emby_api
+
+
+def _quoted_user_id(user_id):
+    """Return one safe Emby user path segment, or ``None`` for invalid input."""
+    return quote_emby_identifier(user_id)
 
 
 def _fetch_emby_users_list(server):
@@ -20,9 +26,10 @@ def _fetch_emby_user_details(server, user_id):
     """
     Recupera i dettagli completi di un utente, incluse Policy e Configuration.
     """
-    if not user_id:
+    quoted_user_id = _quoted_user_id(user_id)
+    if not quoted_user_id:
         return None, "User ID mancante"
-    success, payload = _call_emby_api(server, f"Users/{user_id}")
+    success, payload = _call_emby_api(server, f"Users/{quoted_user_id}")
     if success:
         return payload, None
     return None, payload
@@ -32,13 +39,14 @@ def _update_emby_user_policy(server, user_id, policy):
     """
     Aggiorna la policy di un utente (es. permessi, accessi).
     """
-    if not user_id or not isinstance(policy, dict):
+    quoted_user_id = _quoted_user_id(user_id)
+    if not quoted_user_id or not isinstance(policy, dict):
         return False, "Dati non validi"
 
     # Emby richiede una POST su /Users/{Id}/Policy
     success, payload = _call_emby_api(
         server,
-        f"Users/{user_id}/Policy",
+        f"Users/{quoted_user_id}/Policy",
         method="POST",
         json_payload=policy
     )
@@ -49,13 +57,14 @@ def _update_emby_user_configuration(server, user_id, configuration):
     """
     Aggiorna la configurazione utente (es. preferenze UI, lingua).
     """
-    if not user_id or not isinstance(configuration, dict):
+    quoted_user_id = _quoted_user_id(user_id)
+    if not quoted_user_id or not isinstance(configuration, dict):
         return False, "Dati non validi"
 
     # Emby richiede una POST su /Users/{Id}/Configuration
     success, payload = _call_emby_api(
         server,
-        f"Users/{user_id}/Configuration",
+        f"Users/{quoted_user_id}/Configuration",
         method="POST",
         json_payload=configuration
     )
@@ -69,13 +78,14 @@ def _fetch_emby_user_display_preferences(server, user_id, prefs_id="usersettings
     Emby salva molte preferenze della UI in DisplayPreferences.CustomPrefs,
     separate da UserPolicy e UserConfiguration.
     """
-    if not user_id:
+    normalized_user_id = _quoted_user_id(user_id)
+    if not normalized_user_id:
         return None, "User ID mancante"
 
     success, payload = _call_emby_api(
         server,
         f"DisplayPreferences/{prefs_id}",
-        params={"UserId": user_id, "Client": client}
+        params={"UserId": normalized_user_id, "Client": client}
     )
     if success and isinstance(payload, dict):
         payload.setdefault("Id", prefs_id)
@@ -91,7 +101,8 @@ def _update_emby_user_display_preferences(server, user_id, preferences, prefs_id
     """
     Aggiorna le preferenze display/client dell'utente.
     """
-    if not user_id or not isinstance(preferences, dict):
+    normalized_user_id = _quoted_user_id(user_id)
+    if not normalized_user_id or not isinstance(preferences, dict):
         return False, "Dati non validi"
 
     payload = dict(preferences)
@@ -105,7 +116,7 @@ def _update_emby_user_display_preferences(server, user_id, preferences, prefs_id
         server,
         f"DisplayPreferences/{prefs_id}",
         method="POST",
-        params={"UserId": user_id, "Client": client},
+        params={"UserId": normalized_user_id, "Client": client},
         json_payload=payload
     )
     return success, response
@@ -146,11 +157,12 @@ def _rename_emby_user(server, user_id, new_name):
     """
     Rinomina un utente sul server Emby.
     """
-    if not user_id or not new_name:
+    quoted_user_id = _quoted_user_id(user_id)
+    if not quoted_user_id or not new_name:
         return False, "Dati mancanti"
 
     # 1. Fetch current user details
-    user_dto, err = _fetch_emby_user_details(server, user_id)
+    user_dto, err = _fetch_emby_user_details(server, quoted_user_id)
     if err or not user_dto:
         return False, f"Impossibile recuperare utente: {err}"
 
@@ -168,7 +180,7 @@ def _rename_emby_user(server, user_id, new_name):
     # Endpoint: /Users/{Id}
     success, payload = _call_emby_api(
         server,
-        f"Users/{user_id}",
+        f"Users/{quoted_user_id}",
         method="POST",
         json_payload=user_dto
     )
@@ -180,19 +192,20 @@ def _update_emby_user_password(server, user_id, new_password):
     Aggiorna la password dell'utente.
     Richiede privilegi amministrativi (API Key) per ignorare la password corrente.
     """
-    if not user_id:
+    quoted_user_id = _quoted_user_id(user_id)
+    if not quoted_user_id:
         return False, "User ID mancante"
 
     # Endpoint: /Users/{Id}/Password
     payload = {
-        "Id": user_id,
+        "Id": quoted_user_id,
         "NewPw": new_password
         # "CurrentPassword": "" # Admin can typically omit this
     }
 
     success, resp = _call_emby_api(
         server,
-        f"Users/{user_id}/Password",
+        f"Users/{quoted_user_id}/Password",
         method="POST",
         json_payload=payload
     )
@@ -205,7 +218,10 @@ def _create_emby_user(server, name, copy_from_user_id=None):
     """
     params = {"Name": name}
     if copy_from_user_id:
-        params["CopyFromUserId"] = copy_from_user_id
+        normalized_source_id = _quoted_user_id(copy_from_user_id)
+        if not normalized_source_id:
+            return False, "User ID sorgente non valido"
+        params["CopyFromUserId"] = normalized_source_id
 
     success, payload = _call_emby_api(
         server,
@@ -220,12 +236,13 @@ def _delete_emby_user(server, user_id):
     """
     Deletes a user from the Emby server.
     """
-    if not user_id:
+    quoted_user_id = _quoted_user_id(user_id)
+    if not quoted_user_id:
         return False, "User ID mancante"
 
     success, payload = _call_emby_api(
         server,
-        f"Users/{user_id}",
+        f"Users/{quoted_user_id}",
         method="DELETE"
     )
     return success, payload

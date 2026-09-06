@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from io import BytesIO
 import unittest
@@ -16,6 +17,7 @@ from emby_collections.collection_common import (
 from emby_collections.collection_emby import _clear_collection_items, _find_emby_item_ids
 from emby_collections.collection_store import (
     list_collection_definitions,
+    remove_collection_definition,
     save_collection_definition,
     set_collection_enabled,
 )
@@ -31,6 +33,8 @@ from emby_collections.routes import (
     api_emby_collections_get_poster,
     api_emby_collections_save,
     api_emby_collections_mdblist_lists,
+    api_emby_collections_refresh_mdblist_lists,
+    api_emby_collections_refresh_trakt_lists,
     api_emby_collections_sync,
     api_emby_collections_sync_all,
     api_emby_collections_trakt_lists,
@@ -39,6 +43,7 @@ from emby_collections.sources import SOURCE_TYPES, build_source_link, fetch_sour
 from emby_collections.sources_mdblist import (
     MdblistClient,
     _normalize_mdblist_entries,
+    _parse_mdblist_source,
     list_mdblist_user_lists,
 )
 from emby_collections.sources_tmdb import _extract_tmdb_identifier, _fetch_tmdb_list_items
@@ -77,6 +82,11 @@ class _CollectionStorage:
         self.deleted.append(definition_id)
         self.definitions.pop(definition_id, None)
 
+    def delete_emby_collection_bundle(self, definition_id):
+        self.delete_emby_collection_definition(definition_id)
+        self.posters.pop(definition_id, None)
+        self.backdrops.pop(definition_id, None)
+
     def list_emby_collection_poster_ids(self):
         return set(self.posters)
 
@@ -107,6 +117,11 @@ class _CollectionStorage:
     def set_key_value(self, key, value):
         self.key_values[key] = value
 
+    def update_key_value(self, key, updater):
+        updated = updater(copy.deepcopy(self.key_values.get(key)))
+        self.key_values[key] = copy.deepcopy(updated)
+        return copy.deepcopy(updated)
+
 
 def _servers():
     return {
@@ -116,18 +131,21 @@ def _servers():
 
 
 class CollectionEmbyTests(unittest.TestCase):
-    def test_collection_tags_use_octohubs_and_drop_legacy_octohub_tags(self):
+    def test_collection_tags_use_only_the_canonical_octohubs_namespace(self):
         tags = _build_collection_tags(
             {"id": "definition-a"},
             ["Featured", "OctoHub", "OctoHub:old-definition"],
         )
 
-        self.assertEqual(tags, ["Featured", "OctoHubs", "OctoHubs:definition-a"])
+        self.assertEqual(
+            tags,
+            ["Featured", "OctoHub", "OctoHub:old-definition", "OctoHubs", "OctoHubs:definition-a"],
+        )
 
-    def test_extract_collection_id_accepts_legacy_octohub_tag(self):
+    def test_extract_collection_id_rejects_the_removed_octohub_tag(self):
         self.assertEqual(
             _extract_octohubs_definition_id(["OctoHub:definition-a"]),
-            "definition-a",
+            "",
         )
 
     def test_clear_collection_items_raises_when_emby_delete_fails(self):
@@ -281,6 +299,25 @@ class CollectionSourceTests(unittest.TestCase):
         self.assertEqual("2868", fake_client.list_id)
         self.assertEqual("550", items[0]["provider_id"])
 
+    def test_mdblist_source_rejects_non_mdblist_and_ambiguous_urls(self):
+        invalid_values = (
+            "http://mdblist.com/lists/42",
+            "https://127.0.0.1/lists/42",
+            "https://mdblist.com.evil.test/lists/42",
+            "https://user:password@mdblist.com/lists/42",
+            "https://mdblist.com:8443/lists/42",
+            "https://mdblist.com:invalid/lists/42",
+        )
+        for value in invalid_values:
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "MDBList non valido"):
+                _parse_mdblist_source(value)
+
+        self.assertEqual(("list", "42"), _parse_mdblist_source("https://mdblist.com/lists/42"))
+        self.assertEqual(
+            ("external", "2868"),
+            _parse_mdblist_source("https://api.mdblist.com/external/lists/2868/items"),
+        )
+
     def test_mdblist_user_lists_include_external_lists(self):
         class _FakeClient:
             def __init__(self, api_key):
@@ -323,6 +360,33 @@ class CollectionSourceTests(unittest.TestCase):
         self.assertEqual("mdblist", lists[1]["source_type"])
         self.assertTrue(lists[1]["external"])
 
+    def test_mdblist_external_list_ignores_untrusted_provider_links(self):
+        class _FakeClient:
+            def __init__(self, _api_key):
+                pass
+
+            def get_my_lists(self):
+                return []
+
+            def get_user_external_lists(self):
+                return [{
+                    "id": 2868,
+                    "name": "IMDb Top TV",
+                    "user_name": "roy",
+                    "link": "https://mdblist.example/steal?access_token=CANARY",
+                    "source_url": "https://upstream.example/list?token=CANARY",
+                }]
+
+        with patch("emby_collections.sources_mdblist.load_config", return_value=({}, None)), patch(
+            "emby_collections.sources_mdblist._collect_mdblist_api_keys",
+            return_value=["key"],
+        ), patch("emby_collections.sources_mdblist.MdblistClient", _FakeClient):
+            lists = list_mdblist_user_lists()
+
+        self.assertEqual("https://mdblist.com/lists/roy/external/2868", lists[0]["link"])
+        self.assertEqual("", lists[0]["description"])
+        self.assertNotIn("CANARY", str(lists[0]))
+
     def test_source_registry_excludes_imdb_sources(self):
         source_values = {entry["value"] for entry in SOURCE_TYPES}
 
@@ -347,6 +411,26 @@ class CollectionSourceTests(unittest.TestCase):
             build_source_link("trakt_list", "RedPrimrose/festival-list"),
         )
 
+    def test_source_links_reject_untrusted_hosts_and_sensitive_queries(self):
+        self.assertEqual(
+            "",
+            build_source_link(
+                "trakt_list",
+                "https://trakt.tv.attacker.example/users/roy/lists/list-a",
+            ),
+        )
+        self.assertEqual(
+            "",
+            build_source_link(
+                "trakt_list",
+                "https://trakt.tv/users/roy/lists/list-a?access_token=CANARY",
+            ),
+        )
+        self.assertEqual(
+            "",
+            build_source_link("tmdb_list", "https://attacker.example/list/123"),
+        )
+
     def test_trakt_reference_normalizes_username_for_api_paths(self):
         reference = _parse_trakt_list_reference("RedPrimrose/festival-list?sort=rank,asc")
 
@@ -358,6 +442,33 @@ class CollectionSourceTests(unittest.TestCase):
 
 
 class CollectionStoreTests(unittest.TestCase):
+    def test_remove_collection_deletes_definition_and_images_as_one_bundle(self):
+        backend = _CollectionStorage(
+            [
+                {
+                    "id": "collection-1",
+                    "name": "Collection",
+                    "server_ids": ["server-a"],
+                }
+            ]
+        )
+        backend.posters["collection-1"] = {"data": b"poster"}
+        backend.backdrops["collection-1"] = {"data": b"backdrop"}
+
+        with patch("emby_collections.collection_store._ensure_db_backend", return_value=backend), patch(
+            "emby_collections.collection_store._server_map",
+            return_value=_servers(),
+        ), patch(
+            "emby_collections.collection_store._find_collection_ids_for_definition",
+            return_value=([], True),
+        ):
+            result = remove_collection_definition("collection-1")
+
+        self.assertFalse(result["delete_pending"])
+        self.assertNotIn("collection-1", backend.definitions)
+        self.assertNotIn("collection-1", backend.posters)
+        self.assertNotIn("collection-1", backend.backdrops)
+
     def test_source_inventory_rejects_imdb_links(self):
         backend = _CollectionStorage()
 
@@ -443,6 +554,61 @@ class CollectionStoreTests(unittest.TestCase):
 
         self.assertEqual("https://trakt.tv/users/redprimrose/lists/festival-list", items[0]["source_link"])
 
+    def test_source_inventory_ignores_submitted_link_and_hides_unsafe_existing_rows(self):
+        canary = "CANARY_COLLECTION_TOKEN"
+        backend = _CollectionStorage()
+        backend.key_values["collections.source_inventory"] = [
+            {
+                "id": "unsafe",
+                "name": "Unsafe",
+                "source_type": "trakt_list",
+                "source_value": f"roy/list-a?access_token={canary}",
+                "source_link": f"https://attacker.example/?token={canary}",
+            }
+        ]
+
+        with patch("emby_collections.source_inventory._ensure_db_backend", return_value=backend):
+            saved = add_source_inventory_item(
+                {
+                    "name": "Safe",
+                    "source_type": "tmdb_list",
+                    "source_value": "123",
+                    "source_link": "https://attacker.example/steal",
+                },
+                origin="manual",
+            )
+            items = list_source_inventory()
+
+        self.assertEqual("https://www.themoviedb.org/list/123", saved["source_link"])
+        self.assertEqual([saved["id"]], [item["id"] for item in items])
+        self.assertNotIn(canary, json.dumps(items))
+
+    def test_collection_projection_redacts_an_unsafe_persisted_source(self):
+        canary = "CANARY_COLLECTION_TOKEN"
+        backend = _CollectionStorage(
+            [
+                {
+                    "id": "collection-unsafe",
+                    "name": "Unsafe",
+                    "source": {
+                        "type": "trakt_list",
+                        "value": f"roy/list-a?access_token={canary}",
+                    },
+                    "server_ids": ["server-a"],
+                }
+            ]
+        )
+
+        with patch("emby_collections.collection_store._ensure_db_backend", return_value=backend), patch(
+            "emby_collections.collection_store._server_map",
+            return_value=_servers(),
+        ):
+            collections = list_collection_definitions()
+
+        self.assertEqual("", collections[0]["source_value"])
+        self.assertEqual("", collections[0]["source_link"])
+        self.assertNotIn(canary, json.dumps(collections))
+
     def test_save_collection_definition_rejects_imdb_sources(self):
         backend = _CollectionStorage()
 
@@ -456,6 +622,23 @@ class CollectionStoreTests(unittest.TestCase):
                         "name": "Top TV",
                         "source_type": "imdb_list",
                         "source_value": "ls123456789",
+                        "server_ids": ["server-a"],
+                    }
+                )
+
+    def test_save_collection_definition_rejects_sensitive_provider_query(self):
+        backend = _CollectionStorage()
+
+        with patch("emby_collections.collection_store._ensure_db_backend", return_value=backend), patch(
+            "emby_collections.collection_store._server_map",
+            return_value=_servers(),
+        ):
+            with self.assertRaisesRegex(ValueError, "non autorizzati"):
+                save_collection_definition(
+                    {
+                        "name": "Unsafe",
+                        "source_type": "trakt_list",
+                        "source_value": "roy/list-a?access_token=CANARY",
                         "server_ids": ["server-a"],
                     }
                 )
@@ -771,7 +954,29 @@ class CollectionRoutesTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((2, 2), decoded.size)
         getter.assert_called_once_with("collection-1")
 
-    async def test_trakt_lists_can_start_background_operation(self):
+    async def test_trakt_lists_get_does_not_start_a_background_operation(self):
+        class _Logger:
+            def info(self, *_args, **_kwargs):
+                pass
+
+        with patch(
+            "emby_collections.routes._logger_dep",
+            return_value=_Logger(),
+        ), patch(
+            "emby_collections.routes.start_source_list_operation",
+        ) as starter, patch(
+            "emby_collections.routes.list_trakt_lists",
+            return_value=[{"name": "Preferiti"}],
+        ) as sync_fetch:
+            response = await api_emby_collections_trakt_lists(
+                user={"username": "tester"},
+            )
+
+        self.assertEqual({"success": True, "lists": [{"name": "Preferiti"}]}, response)
+        starter.assert_not_called()
+        sync_fetch.assert_called_once_with()
+
+    async def test_trakt_lists_post_can_start_background_operation(self):
         class _Logger:
             def info(self, *_args, **_kwargs):
                 pass
@@ -783,8 +988,7 @@ class CollectionRoutesTests(unittest.IsolatedAsyncioTestCase):
             "emby_collections.routes.start_source_list_operation",
             return_value={"id": "operation-1", "title": "Aggiornamento Liste Trakt"},
         ) as starter, patch("emby_collections.routes.list_trakt_lists") as sync_fetch:
-            response = await api_emby_collections_trakt_lists(
-                self._Request({"background": "1"}),
+            response = await api_emby_collections_refresh_trakt_lists(
                 user={"username": "tester"},
             )
 
@@ -796,7 +1000,53 @@ class CollectionRoutesTests(unittest.IsolatedAsyncioTestCase):
         starter.assert_called_once()
         sync_fetch.assert_not_called()
 
-    async def test_mdblist_lists_can_start_background_operation(self):
+    async def test_mdblist_lists_get_does_not_start_a_background_operation(self):
+        class _Logger:
+            def info(self, *_args, **_kwargs):
+                pass
+
+        with patch(
+            "emby_collections.routes._logger_dep",
+            return_value=_Logger(),
+        ), patch(
+            "emby_collections.routes.start_source_list_operation",
+        ) as starter, patch(
+            "emby_collections.routes.list_mdblist_user_lists",
+            return_value=[{"name": "Watchlist"}],
+        ) as sync_fetch:
+            response = await api_emby_collections_mdblist_lists(
+                user={"username": "tester"},
+            )
+
+        self.assertEqual({"success": True, "lists": [{"name": "Watchlist"}]}, response)
+        starter.assert_not_called()
+        sync_fetch.assert_called_once_with()
+
+    async def test_mdblist_lists_get_never_reflects_upstream_secrets(self):
+        class _Logger:
+            def info(self, *_args, **_kwargs):
+                pass
+
+            def warning(self, *_args, **_kwargs):
+                pass
+
+        secret = "R4_TEST_SECRET"
+        with patch("emby_collections.routes._logger_dep", return_value=_Logger()), patch(
+            "emby_collections.routes.list_mdblist_user_lists",
+            side_effect=RuntimeError(
+                f"failed for https://api.mdblist.com/lists/user/?apikey={secret}"
+            ),
+        ):
+            response = await api_emby_collections_mdblist_lists(
+                user={"username": "tester"},
+            )
+
+        body = response.body.decode("utf-8")
+        self.assertEqual(400, response.status_code)
+        self.assertNotIn(secret, body)
+        self.assertIn("Impossibile caricare", body)
+
+    async def test_mdblist_lists_post_can_start_background_operation(self):
         class _Logger:
             def info(self, *_args, **_kwargs):
                 pass
@@ -808,8 +1058,7 @@ class CollectionRoutesTests(unittest.IsolatedAsyncioTestCase):
             "emby_collections.routes.start_source_list_operation",
             return_value={"id": "operation-2", "title": "Aggiornamento Liste MDBList"},
         ) as starter, patch("emby_collections.routes.list_mdblist_user_lists") as sync_fetch:
-            response = await api_emby_collections_mdblist_lists(
-                self._Request({"background": "1"}),
+            response = await api_emby_collections_refresh_mdblist_lists(
                 user={"username": "tester"},
             )
 

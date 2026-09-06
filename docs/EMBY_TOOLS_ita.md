@@ -25,7 +25,8 @@ Dalla dashboard collezioni Emby puoi:
 - Gestire manualmente le collezioni create
 
 ## Setup manuale
-- Aggiungi i server Emby in `config.json` con API key admin.
+- Aggiungi e gestisci i server Emby dalla pagina Configurazione autenticata;
+  PostgreSQL è l'unico archivio delle impostazioni.
 - Se vuoi automatizzare STRM Extract, imposta `strm_task_id` per il server.
 
 Come trovare `strm_task_id`:
@@ -58,13 +59,10 @@ La pagina Media Probe consente di ispezionare e analizzare file video senza Medi
 - dalla configurazione Probe per server puo includere tutti i file video senza MediaInfo;
 - la policy e condivisa fra Librerie e Ultimi aggiunti.
 - vedere sorgente e metadati
-- ispezionare coda e history (se DB abilitato)
+- ispezionare coda e storico salvati nel database applicativo
 - verificare lo stato dei processi Probe
-
-Passi manuali:
-- Abilita `DATABASE.ENABLED=true` se vuoi la history nella vista probe.
 
 ## Troubleshooting
 - Task STRM non parte: verifica `strm_task_id` e API key Emby.
 - Guard non parte: verifica assenza stream attivi e URL server.
-- Dati probe mancanti: abilita il DB app per storicizzare.
+- Dati Probe mancanti: verifica la connettività PostgreSQL e i log dell'app.

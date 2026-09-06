@@ -1,12 +1,16 @@
 """FastAPI routes for Emby user management."""
 
+import logging
 from typing import Any, Callable, Dict, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
+from core.emby_identifiers import OpaqueEmbyIdentifier
+
 from realtime.manager import publish_application_event
+from core.log_sanitization import format_exception_for_log
 from web.session_auth import has_mutation_capability
 from web.openapi_requests import no_request_body
 from web.http_responses import error_response, success_response
@@ -50,6 +54,7 @@ from emby_users.response_models import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 USERS_UPDATED_MESSAGE = "OctoHubsUsersUpdated"
 
 _require_user: Optional[Callable[[Request], Any]] = None
@@ -143,6 +148,17 @@ def _publish_users_updated(scope: str = "dashboard") -> None:
         pass
 
 
+def _settings_preset_error_response(result: Dict[str, Any]) -> JSONResponse:
+    error = result.get("error")
+    if error == "Preset non trovato":
+        status_code = 404
+    elif error == "Nome preset gia esistente":
+        status_code = 409
+    else:
+        status_code = 400
+    return JSONResponse(status_code=status_code, content=result)
+
+
 @router.get(
     "/api/emby/users/list",
     responses={200: {"model": EmbyUsersDashboardResponse}, 503: {"model": UserApiErrorResponse}},
@@ -201,7 +217,12 @@ async def api_emby_users_toggle_remote(
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    success = manager.user_ops_manager.toggle_remote_access(payload.server_id, payload.user_id, payload.enable)
+    success = await run_in_threadpool(
+        manager.user_ops_manager.toggle_remote_access,
+        payload.server_id,
+        payload.user_id,
+        payload.enable,
+    )
     if success:
         _publish_users_updated()
     return {"ok": success}
@@ -216,7 +237,12 @@ async def api_emby_users_toggle_download(
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    success = manager.user_ops_manager.toggle_download_permissions(payload.server_id, payload.user_id, payload.enable)
+    success = await run_in_threadpool(
+        manager.user_ops_manager.toggle_download_permissions,
+        payload.server_id,
+        payload.user_id,
+        payload.enable,
+    )
     if success:
         _publish_users_updated()
     return {"ok": success}
@@ -231,12 +257,19 @@ async def api_emby_users_link(
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    group_id = manager.group_manager.link_users(
-        [link.model_dump() for link in payload.links],
-        group_id=payload.group_id or None,
-    )
+    from emby_users.group_manager import GroupSyncBusyError
+
+    try:
+        group_id = await run_in_threadpool(
+            manager.group_manager.link_users,
+            [link.model_dump() for link in payload.links],
+            group_id=payload.group_id or None,
+        )
+    except GroupSyncBusyError as exc:
+        return JSONResponse(status_code=409, content={"ok": False, "error": str(exc)})
     _publish_users_updated()
-    return {"ok": True, "group_id": group_id, "group_health": manager.group_manager.get_group_health(group_id)}
+    group_health = await run_in_threadpool(manager.group_manager.get_group_health, group_id)
+    return {"ok": True, "group_id": group_id, "group_health": group_health}
 
 
 @router.post("/api/emby/users/unlink", responses={200: {"model": UserApiSuccessResponse}})
@@ -248,7 +281,12 @@ async def api_emby_users_unlink(
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    manager.group_manager.unlink_user(payload.server_id, payload.user_id)
+    from emby_users.group_manager import GroupSyncBusyError
+
+    try:
+        await run_in_threadpool(manager.group_manager.unlink_user, payload.server_id, payload.user_id)
+    except GroupSyncBusyError as exc:
+        return JSONResponse(status_code=409, content={"ok": False, "error": str(exc)})
     _publish_users_updated()
     return {"ok": True}
 
@@ -262,7 +300,7 @@ async def api_emby_users_group_rename(
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    success = manager.group_manager.rename_group(payload.group_id, payload.new_name)
+    success = await run_in_threadpool(manager.group_manager.rename_group, payload.group_id, payload.new_name)
     if not success:
         return JSONResponse(status_code=400, content={"ok": False, "error": "Failed to rename group"})
     _publish_users_updated()
@@ -279,7 +317,12 @@ async def api_emby_users_rename(
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
 
-    success = manager.user_ops_manager.rename_user(payload.server_id, payload.user_id, payload.new_name)
+    success = await run_in_threadpool(
+        manager.user_ops_manager.rename_user,
+        payload.server_id,
+        payload.user_id,
+        payload.new_name,
+    )
     if not success:
         return JSONResponse(status_code=400, content={"ok": False, "error": "Rename failed"})
     _publish_users_updated()
@@ -296,9 +339,14 @@ async def api_emby_users_password(
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
 
-    result = manager.password_manager.update_user_password(payload.server_id, payload.user_id, payload.new_password)
+    result = await run_in_threadpool(
+        manager.password_manager.update_user_password,
+        payload.server_id,
+        payload.user_id,
+        payload.new_password,
+    )
     if not result.get("ok"):
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Password update failed", "details": result})
+        return JSONResponse(status_code=409 if result.get("busy") else 400, content={"ok": False, "error": "Password update failed", "details": result})
     _publish_users_updated("settings")
     return {"ok": True, "result": result}
 
@@ -313,9 +361,13 @@ async def api_emby_users_password_group(
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
 
-    result = manager.password_manager.set_group_password(payload.group_id, payload.new_password)
+    result = await run_in_threadpool(
+        manager.password_manager.set_group_password,
+        payload.group_id,
+        payload.new_password,
+    )
     if not result.get("ok"):
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Password update failed", "details": result})
+        return JSONResponse(status_code=409 if result.get("busy") else 400, content={"ok": False, "error": "Password update failed", "details": result})
     _publish_users_updated("settings")
     return {"ok": True, "result": result}
 
@@ -336,14 +388,15 @@ async def api_emby_users_password_get(
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
 
     include_password = has_mutation_capability(request, user, "write:users")
-    result = manager.password_manager.get_password_info(
+    result = await run_in_threadpool(
+        manager.password_manager.get_password_info,
         group_id=group_id,
         server_id=server_id,
         user_id=user_id,
         include_password=include_password,
     )
     if not result.get("ok"):
-        return JSONResponse(status_code=400, content=result)
+        return JSONResponse(status_code=409 if result.get("busy") else 400, content=result)
     if not include_password:
         result.pop("password", None)
     return result
@@ -357,7 +410,7 @@ async def api_emby_users_settings_schema(user=Depends(_require_user_dep)):
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    result = manager.settings_manager.get_settings_schema()
+    result = await run_in_threadpool(manager.settings_manager.get_settings_schema)
     return result
 
 
@@ -384,7 +437,14 @@ async def api_emby_users_settings_preset_get(preset_id: str, user=Depends(_requi
     return {"ok": True, "preset": preset}
 
 
-@router.post("/api/emby/users/settings-presets", responses={200: {"model": UserSettingsPresetResponse}})
+@router.post(
+    "/api/emby/users/settings-presets",
+    responses={
+        200: {"model": UserSettingsPresetResponse},
+        404: {"model": UserApiErrorResponse},
+        409: {"model": UserApiErrorResponse},
+    },
+)
 async def api_emby_users_settings_preset_save(
     payload: SettingsPresetRequest,
     _csrf=Depends(_validate_csrf_dep),
@@ -412,12 +472,19 @@ async def api_emby_users_settings_preset_save(
         apply_libraries
     )
     if not result.get("ok"):
-        return JSONResponse(status_code=400, content=result)
+        return _settings_preset_error_response(result)
     _publish_users_updated("presets")
     return result
 
 
-@router.post("/api/emby/users/settings-presets/{preset_id}/duplicate", responses={200: {"model": UserSettingsPresetResponse}})
+@router.post(
+    "/api/emby/users/settings-presets/{preset_id}/duplicate",
+    responses={
+        200: {"model": UserSettingsPresetResponse},
+        404: {"model": UserApiErrorResponse},
+        409: {"model": UserApiErrorResponse},
+    },
+)
 async def api_emby_users_settings_preset_duplicate(
     preset_id: str,
     payload: SettingsPresetDuplicateRequest,
@@ -433,7 +500,7 @@ async def api_emby_users_settings_preset_duplicate(
         payload.label or None,
     )
     if not result.get("ok"):
-        return JSONResponse(status_code=404, content=result)
+        return _settings_preset_error_response(result)
     _publish_users_updated("presets")
     return result
 
@@ -467,9 +534,14 @@ async def api_emby_users_settings_get(
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    result = manager.settings_manager.get_settings_info(group_id=group_id, server_id=server_id, user_id=user_id)
+    result = await run_in_threadpool(
+        manager.settings_manager.get_settings_info,
+        group_id=group_id,
+        server_id=server_id,
+        user_id=user_id,
+    )
     if not result.get("ok"):
-        return JSONResponse(status_code=400, content=result)
+        return JSONResponse(status_code=409 if result.get("busy") else 400, content=result)
     return result
 
 
@@ -482,9 +554,14 @@ async def api_emby_users_settings_update(
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    result = manager.settings_manager.update_user_settings(payload.server_id, payload.user_id, payload.settings)
+    result = await run_in_threadpool(
+        manager.settings_manager.update_user_settings,
+        payload.server_id,
+        payload.user_id,
+        payload.settings,
+    )
     if not result.get("ok"):
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Settings update failed", "details": result})
+        return JSONResponse(status_code=409 if result.get("busy") else 400, content={"ok": False, "error": "Settings update failed", "details": result})
     _publish_users_updated("settings")
     return {"ok": True, "result": result}
 
@@ -498,9 +575,13 @@ async def api_emby_users_settings_group_update(
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
-    result = manager.settings_manager.set_group_settings(payload.group_id, payload.settings)
+    result = await run_in_threadpool(
+        manager.settings_manager.set_group_settings,
+        payload.group_id,
+        payload.settings,
+    )
     if not result.get("ok"):
-        return JSONResponse(status_code=400, content={"ok": False, "error": "Settings update failed", "details": result})
+        return JSONResponse(status_code=409 if result.get("busy") else 400, content={"ok": False, "error": "Settings update failed", "details": result})
     _publish_users_updated("settings")
     return {"ok": True, "result": result}
 
@@ -520,7 +601,8 @@ async def api_emby_users_settings_apply(
     tracker = _get_operation_tracker(manager)
     operation = None
     if tracker:
-        operation = tracker.start(
+        operation = await run_in_threadpool(
+            tracker.start,
             "settings_apply",
             "Applica impostazioni",
             summary=f"{len(targets)} utenti",
@@ -529,23 +611,32 @@ async def api_emby_users_settings_apply(
         )
     callback = _operation_callback(tracker, operation.get("id") if operation else None)
     try:
-        result = manager.settings_manager.apply_settings_to_users(
+        result = await run_in_threadpool(
+            manager.settings_manager.apply_settings_to_users,
             targets,
             settings,
             apply_libraries=apply_libraries,
             progress_callback=callback,
         )
     except Exception as exc:
+        logger.error(
+            "Errore applicazione impostazioni utenti:\n%s",
+            format_exception_for_log(exc),
+        )
         if tracker and operation:
-            tracker.fail(operation["id"], f"Errore applicazione impostazioni: {exc}")
+            await run_in_threadpool(
+                tracker.fail,
+                operation["id"],
+                "Applicazione impostazioni non riuscita",
+            )
         raise
     if tracker and operation:
         message = _operation_finish_message("Impostazioni applicate", result)
         if result.get("ok"):
-            tracker.finish(operation["id"], message, result=result)
+            await run_in_threadpool(tracker.finish, operation["id"], message, result=result)
         else:
-            tracker.fail(operation["id"], message, result=result)
-    status = 200 if result.get("success") else 400
+            await run_in_threadpool(tracker.fail, operation["id"], message, result=result)
+    status = 200 if result.get("success") else (409 if result.get("busy") else 400)
     if result.get("success"):
         _publish_users_updated("settings")
         _publish_users_updated("operations")
@@ -562,7 +653,8 @@ async def api_emby_users_group_settings(
     if not manager:
         return error_response("Manager not available", 500)
 
-    success = manager.group_manager.save_group_settings(
+    success = await run_in_threadpool(
+        manager.group_manager.save_group_settings,
         payload.group_id,
         payload.auto_sync,
         payload.sync_type,
@@ -597,14 +689,16 @@ async def api_emby_users_group_sync_now(
     tracker = _get_operation_tracker(manager)
     operation = None
     if tracker:
-        operation = tracker.start(
+        operation = await run_in_threadpool(
+            tracker.start,
             "group_sync",
             "Sync gruppo utenti",
             summary=f"Gruppo {payload.group_id}",
             details={"group_id": payload.group_id},
             total=1,
         )
-    manager.group_manager.mark_group_sync_result(
+    await run_in_threadpool(
+        manager.group_manager.mark_group_sync_result,
         payload.group_id,
         "running",
         "Sincronizzazione manuale avviata",
@@ -632,7 +726,7 @@ async def api_emby_users_group_sync_now(
 )
 async def api_emby_user_details(
     server_id: str,
-    user_id: str,
+    user_id: OpaqueEmbyIdentifier,
     user=Depends(_require_user_dep)
 ):
     manager = _get_manager()
@@ -680,7 +774,8 @@ async def api_emby_users_create(
     operation = None
     if tracker:
         usernames = [str(item.get("username") or item.get("name") or "").strip() for item in targets if isinstance(item, dict)]
-        operation = tracker.start(
+        operation = await run_in_threadpool(
+            tracker.start,
             "create_user",
             "Crea utente",
             summary=", ".join([name for name in usernames if name][:2]) or f"{len(targets)} utenti",
@@ -700,15 +795,23 @@ async def api_emby_users_create(
             callback,
         )
     except Exception as exc:
+        logger.error(
+            "Errore creazione utenti:\n%s",
+            format_exception_for_log(exc),
+        )
         if tracker and operation:
-            tracker.fail(operation["id"], f"Errore creazione utente: {exc}")
+            await run_in_threadpool(
+                tracker.fail,
+                operation["id"],
+                "Creazione utenti non riuscita",
+            )
         raise
     if tracker and operation:
         message = _operation_finish_message("Utenti creati", result)
         if result.get("ok"):
-            tracker.finish(operation["id"], message, result=result)
+            await run_in_threadpool(tracker.finish, operation["id"], message, result=result)
         else:
-            tracker.fail(operation["id"], message, result=result)
+            await run_in_threadpool(tracker.fail, operation["id"], message, result=result)
     status = 200 if result.get("created") else 400
     if result.get("created"):
         _publish_users_updated()
@@ -732,7 +835,7 @@ async def api_emby_users_delete(
         payload.expected_name,
     )
     if not result.get("ok"):
-        return JSONResponse(status_code=400, content=result)
+        return JSONResponse(status_code=409 if result.get("busy") else 400, content=result)
     _publish_users_updated()
     return result
 
@@ -792,7 +895,8 @@ async def api_emby_users_clone(
     operation = None
     if tracker:
         target_label = _server_label(manager, target_server_id)
-        operation = tracker.start(
+        operation = await run_in_threadpool(
+            tracker.start,
             "clone",
             "Clonazione utente",
             summary=f"{source_user_id} -> {target_label}",
@@ -823,20 +927,34 @@ async def api_emby_users_clone(
             callback,
         )
     except Exception as exc:
+        logger.error(
+            "Errore clonazione utente:\n%s",
+            format_exception_for_log(exc),
+        )
         if tracker and operation:
-            tracker.fail(operation["id"], f"Errore clonazione utente: {exc}")
+            await run_in_threadpool(
+                tracker.fail,
+                operation["id"],
+                "Clonazione utente non riuscita",
+            )
         raise
     if "error" in result:
         if tracker and operation:
-            tracker.fail(operation["id"], result.get("error") or "Clonazione non riuscita", result=result)
-        return JSONResponse(status_code=400, content=result)
+            await run_in_threadpool(
+                tracker.fail,
+                operation["id"],
+                result.get("error") or "Clonazione non riuscita",
+                result=result,
+            )
+        return JSONResponse(status_code=409 if result.get("busy") else 400, content=result)
 
     target_user_id = result.get("target_user_id")
     refresh_targets = [(source_server_id, source_user_id)]
     if target_user_id:
         refresh_targets.append((target_server_id, target_user_id))
     if tracker and operation:
-        tracker.update(
+        await run_in_threadpool(
+            tracker.update,
             operation["id"],
             message="Aggiornamento snapshot clonazione",
             progress=95,
@@ -854,7 +972,7 @@ async def api_emby_users_clone(
         sync_playlists=sync_playlists,
     )
     if tracker and operation:
-        tracker.finish(operation["id"], "Clonazione completata", result=result)
+        await run_in_threadpool(tracker.finish, operation["id"], "Clonazione completata", result=result)
 
     _publish_users_updated()
     _publish_users_updated("operations")

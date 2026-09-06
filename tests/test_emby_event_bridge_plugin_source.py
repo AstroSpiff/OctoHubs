@@ -6,7 +6,6 @@ import pytest
 
 PLUGIN_DIR = Path(
     os.getenv("OCTOHUBS_EVENT_BRIDGE_PLUGIN_DIR")
-    or os.getenv("OCTOHUB_EVENT_BRIDGE_PLUGIN_DIR")
     or Path(__file__).resolve().parents[2] / "emby_plugins" / "OctoHubs.EventBridge"
 )
 
@@ -22,8 +21,6 @@ def read_plugin_file(name: str) -> str:
 
 def test_event_bridge_plugin_source_files_exist():
     project_file = "OctoHubs.EventBridge.csproj"
-    if not (PLUGIN_DIR / project_file).exists():
-        project_file = "OctoHub.EventBridge.csproj"
     expected = {
         project_file,
         "Plugin.cs",
@@ -61,9 +58,9 @@ def test_event_bridge_plugin_posts_stable_webhook_envelope():
     assert '"X-OctoHubs-Server-Id"' in publisher
     websocket = read_plugin_file("EventBridgeWebSocketClient.cs")
     assert '"X-OctoHubs-Server-Id"' in websocket
-    assert any(header in publisher for header in ('"X-OctoHubs-Event-Bridge"', '"X-OctoHub-Event-Bridge"'))
-    assert any(schema in builder for schema in ('"octohubs.emby.event.v1"', '"octohub.emby.event.v1"'))
-    assert any(source in builder for source in ('"OctoHubs.EventBridge"', '"OctoHub.EventBridge"'))
+    assert '"X-OctoHubs-Event-Bridge"' in publisher
+    assert '"octohubs.emby.event.v1"' in builder
+    assert '"OctoHubs.EventBridge"' in builder
     assert '["event"] = new Dictionary<string, object?>' in builder
     assert 'envelope["session"]' in builder
     assert 'envelope["media"]' in builder

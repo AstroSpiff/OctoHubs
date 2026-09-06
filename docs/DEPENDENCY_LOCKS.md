@@ -12,13 +12,17 @@ Regenerate both locks in the pinned Python 3.11 build environment:
 ./scripts/compile_dependency_locks.sh
 ```
 
-Review the resulting version and hash changes before committing them. The PyTrakt
-source URL is tied to an immutable commit in `requirements.in`; update that commit
-deliberately when upgrading it.
+Review the resulting version and hash changes before committing them. Runtime
+integrations use the application's maintained HTTP clients; production locks do
+not include dependencies fetched from mutable or non-indexed Git sources.
 
-Docker base, PostgreSQL and Nginx references retain readable tags but are also pinned
-to immutable manifest-list digests. An intentional image upgrade must update the
-matching references in the Dockerfile, Compose, CI and local release-gate script.
+Docker base and test-only PostgreSQL references retain readable tags but are also
+pinned to immutable manifest-list digests. An intentional image upgrade must
+update the matching references in the Dockerfile, CI and local release-gate script.
+
+GitHub Actions are pinned to full commit SHAs. Their trailing version comments are
+human-readable update hints only; verify the upstream release and replace both the
+SHA and comment deliberately when upgrading an Action.
 
 The release gate builds the production image twice without cache and compares the
 installed Python packages, Alpine packages and compiled frontend hashes:
@@ -29,3 +33,8 @@ installed Python packages, Alpine packages and compiled frontend hashes:
 
 Passing an image tag keeps the first verified build for subsequent checks; without
 an argument both temporary images are removed.
+
+CI then runs `scripts/smoke_production_image.sh` against that unchanged image,
+using the job's external PostgreSQL 16 service. The smoke uses the production
+entrypoint and command, waits for `/health/ready`, verifies UID/GID `1000:1000`
+and prints container logs on failure.

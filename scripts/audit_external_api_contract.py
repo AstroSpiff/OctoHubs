@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import sys
 
@@ -11,11 +12,6 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-
-from asgi import app
-from web.external_api_audit import audit_external_openapi
-from web.external_api_catalog import build_external_openapi
-
 
 def _print_findings(label: str, findings, *, verbose: bool) -> None:
     print(f"{label}: {len(findings)}")
@@ -37,6 +33,13 @@ def main() -> int:
         help="Print every endpoint that still needs response or request typing.",
     )
     args = parser.parse_args()
+
+    # This command inspects schema only. Give startup validation an isolated,
+    # non-production encryption secret without requiring operator state.
+    os.environ.setdefault("PASSWORD_SECRET", "external-api-contract-audit-only-secret")
+    from asgi import app
+    from web.external_api_audit import audit_external_openapi
+    from web.external_api_catalog import build_external_openapi
 
     schema = build_external_openapi(app.openapi(), ["admin:all"])
     audit = audit_external_openapi(schema)

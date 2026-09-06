@@ -109,7 +109,7 @@ class PlaystateMergeRuleTests(unittest.TestCase):
             ],
         )
 
-    def test_delta_bidirectional_uses_latest_changed_snapshot_after_bootstrap(self):
+    def test_delta_bidirectional_rejects_two_conflicting_changed_snapshots(self):
         applied = []
 
         class Tracker:
@@ -168,21 +168,14 @@ class PlaystateMergeRuleTests(unittest.TestCase):
             state_tracker=Tracker(),
         )
 
-        result = manager._run_playstate_delta_sync(
-            [("server-a", "user-a"), ("server-b", "user-b")],
-            include_resume=True,
-        )
+        with self.assertRaisesRegex(RuntimeError, "Conflitto stato riproduzione"):
+            manager._run_playstate_delta_sync(
+                [("server-a", "user-a"), ("server-b", "user-b")],
+                include_resume=True,
+            )
+        self.assertEqual(applied, [])
 
-        self.assertEqual(result["delta"]["set"], 1)
-        desired_state, targets, include_resume = applied[0]
-        self.assertTrue(include_resume)
-        self.assertEqual(targets, [("server-a", "user-a"), ("server-b", "user-b")])
-        self.assertEqual(
-            desired_state["tmdb:42"]["last_played"],
-            "2026-07-15T10:00:00.0000000Z",
-        )
-
-    def test_delta_bidirectional_hide_from_resume_conflict_prefers_hidden(self):
+    def test_delta_bidirectional_hide_from_resume_conflict_is_explicit(self):
         applied = []
 
         class Tracker:
@@ -243,13 +236,12 @@ class PlaystateMergeRuleTests(unittest.TestCase):
             state_tracker=Tracker(),
         )
 
-        manager._run_playstate_delta_sync(
-            [("server-a", "user-a"), ("server-b", "user-b")],
-            include_resume=True,
-        )
-
-        desired_state, _targets, _include_resume = applied[0]
-        self.assertTrue(desired_state["tmdb:42"]["hide_from_resume"])
+        with self.assertRaisesRegex(RuntimeError, "Conflitto stato riproduzione"):
+            manager._run_playstate_delta_sync(
+                [("server-a", "user-a"), ("server-b", "user-b")],
+                include_resume=True,
+            )
+        self.assertEqual(applied, [])
 
     def _manager(self, *, source_items: dict[tuple[str, str], list[dict]], target_items: dict[tuple[str, str], list[dict]]):
         servers = {

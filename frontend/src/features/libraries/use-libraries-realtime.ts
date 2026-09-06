@@ -18,9 +18,20 @@ type LibrariesRealtimeCallbacks = {
   onScanChange: () => void;
 };
 
+type LibraryEventKind = "configuration" | "library" | "scan";
+
+function flushLibraryEventKinds(
+  kinds: ReadonlySet<LibraryEventKind>,
+  callbacks: LibrariesRealtimeCallbacks,
+) {
+  if (kinds.has("configuration")) callbacks.onConfigurationChange();
+  if (kinds.has("library")) callbacks.onLibraryChange();
+  if (kinds.has("scan")) callbacks.onScanChange();
+}
+
 function libraryEventKind(
   event: ApplicationEvent,
-): "configuration" | "library" | "scan" | null {
+): LibraryEventKind | null {
   const messageType = String(event.MessageType || "");
   if (messageType === "RefreshProgress") return "scan";
   if (messageType === librariesUpdatedMessage) {
@@ -78,7 +89,7 @@ function useLibrariesRealtime(
 
   useEffect(() => {
     let timer: number | undefined;
-    let pendingKind: "configuration" | "library" | "scan" | null = null;
+    const pendingKinds = new Set<LibraryEventKind>();
     const source = new EventSource("/api/emby/events-stream");
 
     source.onmessage = (message) => {
@@ -88,24 +99,12 @@ function useLibrariesRealtime(
           JSON.parse(message.data) as ApplicationEvent,
         );
         if (!kind) return;
-        if (
-          !pendingKind ||
-          kind === "configuration" ||
-          (kind === "library" && pendingKind === "scan")
-        ) {
-          pendingKind = kind;
-        }
-        if (timer) window.clearTimeout(timer);
+        pendingKinds.add(kind);
+        if (timer) return;
         timer = window.setTimeout(() => {
           timer = undefined;
-          if (pendingKind === "configuration") {
-            callbacksRef.current.onConfigurationChange();
-          } else if (pendingKind === "library") {
-            callbacksRef.current.onLibraryChange();
-          } else if (pendingKind === "scan") {
-            callbacksRef.current.onScanChange();
-          }
-          pendingKind = null;
+          flushLibraryEventKinds(pendingKinds, callbacksRef.current);
+          pendingKinds.clear();
         }, eventRefreshDelayMs);
       } catch {
         // React Query polling remains the fallback for malformed events.
@@ -125,11 +124,17 @@ function useLibrariesRealtime(
     let socket: WebSocket | undefined;
     let reconnectTimer: number | undefined;
     let refreshTimer: number | undefined;
+    let socketGeneration = 0;
     const clientId = `libraries-${crypto.randomUUID()}`;
     const subscriptions = jobIdsKey.split(",").filter(Boolean);
 
     const refresh = (completed: boolean) => {
-      if (refreshTimer) window.clearTimeout(refreshTimer);
+      if (completed && refreshTimer) {
+        window.clearTimeout(refreshTimer);
+        refreshTimer = undefined;
+      } else if (refreshTimer) {
+        return;
+      }
       refreshTimer = window.setTimeout(() => {
         refreshTimer = undefined;
         if (completed) callbacksRef.current.onLibraryChange();
@@ -137,15 +142,31 @@ function useLibrariesRealtime(
       }, completed ? 0 : eventRefreshDelayMs);
     };
 
+    const cancelReconnect = () => {
+      if (reconnectTimer !== undefined) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = undefined;
+      }
+    };
+
     const connect = () => {
       if (disposed || document.visibilityState === "hidden") return;
-      socket = new WebSocket(scanSocketUrl(clientId));
-      socket.addEventListener("open", () => {
+      cancelReconnect();
+      const generation = ++socketGeneration;
+      const currentSocket = new WebSocket(scanSocketUrl(clientId));
+      socket = currentSocket;
+      currentSocket.addEventListener("open", () => {
+        if (disposed || generation !== socketGeneration || socket !== currentSocket)
+          return;
         subscriptions.forEach((jobId) =>
-          socket?.send(JSON.stringify({ action: "subscribe", job_id: jobId })),
+          currentSocket.send(
+            JSON.stringify({ action: "subscribe", job_id: jobId }),
+          ),
         );
       });
-      socket.addEventListener("message", (message) => {
+      currentSocket.addEventListener("message", (message) => {
+        if (disposed || generation !== socketGeneration || socket !== currentSocket)
+          return;
         try {
           const type = String(
             (JSON.parse(message.data) as ScanSocketMessage).type || "",
@@ -156,16 +177,25 @@ function useLibrariesRealtime(
           // Polling covers a bad WebSocket payload without disrupting the page.
         }
       });
-      socket.addEventListener("close", () => {
-        if (!disposed && document.visibilityState !== "hidden") {
-          reconnectTimer = window.setTimeout(connect, reconnectDelayMs);
-        }
+      currentSocket.addEventListener("close", () => {
+        if (generation !== socketGeneration || socket !== currentSocket) return;
+        socket = undefined;
+        if (disposed || document.visibilityState === "hidden") return;
+        cancelReconnect();
+        reconnectTimer = window.setTimeout(() => {
+          reconnectTimer = undefined;
+          connect();
+        }, reconnectDelayMs);
       });
     };
 
     const handleVisibility = () => {
-      if (document.visibilityState === "hidden") socket?.close();
-      else if (!socket || socket.readyState === WebSocket.CLOSED) connect();
+      if (document.visibilityState === "hidden") {
+        cancelReconnect();
+        socket?.close();
+      } else if (!socket || socket.readyState === WebSocket.CLOSED) {
+        connect();
+      }
     };
 
     document.addEventListener("visibilitychange", handleVisibility);
@@ -173,12 +203,20 @@ function useLibrariesRealtime(
 
     return () => {
       disposed = true;
-      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      cancelReconnect();
       if (refreshTimer) window.clearTimeout(refreshTimer);
       document.removeEventListener("visibilitychange", handleVisibility);
-      socket?.close();
+      socketGeneration += 1;
+      const activeSocket = socket;
+      socket = undefined;
+      activeSocket?.close();
     };
   }, [jobIdsKey]);
 }
 
-export { librariesUpdatedMessage, libraryEventKind, useLibrariesRealtime };
+export {
+  flushLibraryEventKinds,
+  librariesUpdatedMessage,
+  libraryEventKind,
+  useLibrariesRealtime,
+};

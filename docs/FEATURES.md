@@ -8,9 +8,9 @@ This guide summarizes the main workflows available in the UI and how they connec
 
 ## Setup checklist (one-time)
 - Bootstrap the initial administrator through Docker with `ADMIN_USERNAME`, `ADMIN_PASSWORD` or `ADMIN_PASSWORD_FILE`, and `ADMIN_EMAIL`; browser account creation is disabled.
-- Add at least one Emby server in `config.json` with a valid API key.
+- Add at least one Emby server with a valid API key from the authenticated UI.
 - Add integration URLs and API keys for the services you plan to use.
-- After editing `config.json` outside the UI, restart the app container.
+- Current settings live in PostgreSQL and are managed from the authenticated UI.
 
 ## Dashboard and scans
 - Manual scan: run a full search against active requests.
@@ -31,7 +31,7 @@ Manual steps:
 - Enable qBittorrent Web UI and set `QBITTORRENT_*` if you want auto-send.
 
 ## Search rules
-Search rules are defined in `config.json` and can be updated in the UI. See `CONFIGURATION.md`.
+Search rules are stored in PostgreSQL and updated in the UI. See `CONFIGURATION.md`.
 
 ## Automations
 - Auto scan and auto refresh are scheduled via `AUTO_TASKS`.
@@ -58,11 +58,16 @@ Manual steps:
 
 ## Users and roles
 - Roles: `admin`, `user`, `viewer`.
-- Default admin is created on first start from env vars.
-- Use `manage_users.py` to list or create users.
+- `viewer` is read-only: it can inspect dashboards, data, and realtime state but
+  cannot change configuration, users, or services, or start manual searches.
+- The initial admin is created from one-time Docker bootstrap inputs only while
+  the PostgreSQL users table is empty.
+- Manage accounts from the authenticated Users page. For emergency CLI access,
+  use `python scripts/manage_users.py --help` inside the app container.
 
 Manual steps:
 - Keep PostgreSQL persistent storage available so users and application data survive restarts.
+- Remove `ADMIN_*` bootstrap inputs after the first successful login.
 - Use the CLI tool if you lose access to the admin account.
 
 ## Audit log

@@ -7,6 +7,25 @@ function query(path: string, values: Record<string, string | number | undefined>
   return `${path}?${parameters.toString()}`;
 }
 
+type ProbePage<Item, Key extends string> = {
+  success: boolean;
+  has_more?: boolean;
+  next_cursor?: number | null;
+} & Record<Key, Item[]>;
+
+function getProbePage<Item, Key extends string>(
+  path: string,
+  key: Key,
+  values: Record<string, string | number | undefined>,
+  cursor: number,
+  signal?: AbortSignal,
+): Promise<ProbePage<Item, Key>> {
+  return request<ProbePage<Item, Key>>(
+    query(path, { ...values, limit: 200, cursor }),
+    { signal },
+  );
+}
+
 export function getProbeLibraries(): Promise<ProbeLibrariesPayload> {
   return request<ProbeLibrariesPayload>("/api/v1/emby/probe/libraries");
 }
@@ -23,16 +42,16 @@ export function runProbeAction(path: string, body: Record<string, unknown> = {})
   return request<ProbeActionResponse>(path, { method: "POST", body: JSON.stringify(body) });
 }
 
-export function getProbeQueue(serverId: string, scope: ProbeScope): Promise<{ success: boolean; queue: ProbeQueueItem[] }> {
-  return request<{ success: boolean; queue: ProbeQueueItem[] }>(query("/api/v1/emby/probe/queue", { server_id: serverId, scope }));
+export function getProbeQueue(serverId: string, scope: ProbeScope, cursor = 0, signal?: AbortSignal): Promise<ProbePage<ProbeQueueItem, "queue">> {
+  return getProbePage("/api/v1/emby/probe/queue", "queue", { server_id: serverId, scope }, cursor, signal);
 }
 
-export function getProbeHistory(serverId: string, scope: ProbeScope): Promise<{ success: boolean; history: ProbeHistoryItem[] }> {
-  return request<{ success: boolean; history: ProbeHistoryItem[] }>(query("/api/v1/emby/probe/history", { server_id: serverId, scope, limit: 100 }));
+export function getProbeHistory(serverId: string, scope: ProbeScope, cursor = 0, signal?: AbortSignal): Promise<ProbePage<ProbeHistoryItem, "history">> {
+  return getProbePage("/api/v1/emby/probe/history", "history", { server_id: serverId, scope }, cursor, signal);
 }
 
-export function getProbeBlacklist(serverId: string, scope: ProbeScope, errorType: "error" | "incomplete"): Promise<{ success: boolean; blacklist: ProbeBlacklistItem[] }> {
-  return request<{ success: boolean; blacklist: ProbeBlacklistItem[] }>(query("/api/v1/emby/probe/blacklist", { server_id: serverId, scope, min_retry: 3, type: errorType }));
+export function getProbeBlacklist(serverId: string, scope: ProbeScope, errorType: "error" | "incomplete", cursor = 0, signal?: AbortSignal): Promise<ProbePage<ProbeBlacklistItem, "blacklist">> {
+  return getProbePage("/api/v1/emby/probe/blacklist", "blacklist", { server_id: serverId, scope, min_retry: 3, type: errorType }, cursor, signal);
 }
 
 export function deleteProbeQueue(input: { serverId: string; scope: ProbeScope; itemId?: string; mediaSourceId?: string }): Promise<ProbeActionResponse> {
@@ -58,6 +77,5 @@ export async function retryBlacklistedProbeItem(input: {
   itemId: string;
   mediaSourceId?: string;
 }): Promise<ProbeActionResponse> {
-  await deleteProbeBlacklist(input);
   return retryProbeItem(input);
 }

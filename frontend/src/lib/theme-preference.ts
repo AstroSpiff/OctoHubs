@@ -1,3 +1,9 @@
+import {
+  browserLocalStorage,
+  readStoredValue,
+  writeStoredValue,
+} from "@/lib/safe-web-storage";
+
 export type ApplicationTheme = "light" | "dark";
 
 const themeStorageKey = "octohubs.theme";
@@ -18,7 +24,7 @@ function systemApplicationTheme(prefersDark: boolean): ApplicationTheme {
 
 function storedApplicationTheme(storage: ThemeStorage | null): ApplicationTheme | null {
   if (!storage) return null;
-  const value = storage.getItem(themeStorageKey);
+  const value = readStoredValue(storage, themeStorageKey);
   return isApplicationTheme(value) ? value : null;
 }
 
@@ -32,7 +38,7 @@ function applyApplicationTheme(theme: ApplicationTheme, root: ThemeRoot): void {
 }
 
 function persistApplicationTheme(theme: ApplicationTheme, storage: ThemeStorage | null): void {
-  storage?.setItem(themeStorageKey, theme);
+  writeStoredValue(storage, themeStorageKey, theme);
 }
 
 function browserThemePreference(): boolean {
@@ -40,7 +46,7 @@ function browserThemePreference(): boolean {
 }
 
 function initializeApplicationTheme(): ApplicationTheme {
-  const storage = typeof window === "undefined" ? null : window.localStorage;
+  const storage = browserLocalStorage();
   const root = typeof document === "undefined" ? null : document.documentElement;
   const theme = resolveApplicationTheme(storage, browserThemePreference());
   if (root) applyApplicationTheme(theme, root);

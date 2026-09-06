@@ -27,6 +27,28 @@ const unconfiguredOverview = {
 } satisfies ResearchOverview;
 
 describe("JellyseerrRequestsWorkspace", () => {
+  it("keeps the TV tab reachable when there are no movie requests", () => {
+    const client = new QueryClient();
+    const tvOnly = {
+      ...unconfiguredOverview,
+      has_config: true,
+      requests: [{ id: 7, media_type: "tv", title: "Serie" }],
+      tv_requests: [{ id: 7, media_type: "tv", title: "Serie" }],
+      all_requests: [{ id: 7, media_type: "tv", title: "Serie" }],
+      all_tv_requests: [{ id: 7, media_type: "tv", title: "Serie" }],
+    } as ResearchOverview;
+    const markup = renderToStaticMarkup(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <JellyseerrRequestsWorkspace overview={tvOnly} onRefresh={() => undefined} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(markup).toContain("Serie TV");
+    expect(markup).not.toContain("Nessuna richiesta Jellyseerr da monitorare.");
+  });
+
   it("explains missing configuration instead of presenting an empty request list", () => {
     const client = new QueryClient();
     const markup = renderToStaticMarkup(

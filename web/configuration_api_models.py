@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
 
 
 class ConfigurationApiModel(BaseModel):
@@ -86,6 +86,7 @@ class TraktServiceSettings(ConfigurationApiModel):
     client_id: str = ""
     client_secret_configured: bool = False
     access_token_configured: bool = False
+    refresh_token_configured: bool = False
     expires_at: str = ""
 
 
@@ -110,36 +111,6 @@ class ConfigurationSettingsResponse(ConfigurationApiModel):
     message: str | None = None
 
 
-class DatabaseServiceSettingsInput(ConfigurationInputModel):
-    host: StrictStr = ""
-    port: StrictStr | StrictInt = ""
-    name: StrictStr = ""
-    user: StrictStr = ""
-    driver: StrictStr = "postgresql+psycopg2"
-    params: StrictStr = ""
-    password: StrictStr = ""
-    url: StrictStr = ""
-    clear_password: StrictBool = False
-    clear_url: StrictBool = False
-
-    @field_validator("port")
-    @classmethod
-    def validate_port(cls, value: str | int) -> str | int:
-        if value == "":
-            return value
-        if isinstance(value, bool):
-            raise ValueError("port must be an integer between 1 and 65535")
-        if isinstance(value, str):
-            if not value.isdigit():
-                raise ValueError("port must be an integer between 1 and 65535")
-            numeric_value = int(value)
-        else:
-            numeric_value = value
-        if not 1 <= numeric_value <= 65535:
-            raise ValueError("port must be an integer between 1 and 65535")
-        return value
-
-
 class ServiceConnectionInput(ConfigurationInputModel):
     url: StrictStr = ""
     api_key: StrictStr = ""
@@ -160,7 +131,7 @@ class TmdbConnectionInput(ConfigurationInputModel):
 
 
 class ApiKeyCollectionInput(ConfigurationInputModel):
-    api_keys: list[StrictStr] = Field(default_factory=list)
+    api_keys: list[StrictStr] = Field(default_factory=list, max_length=20)
     clear_api_keys: StrictBool = False
 
 
@@ -180,6 +151,8 @@ class TraktServiceSettingsInput(ConfigurationInputModel):
     client_secret: StrictStr = ""
     clear_client_secret: StrictBool = False
     access_token: StrictStr = ""
+    refresh_token: StrictStr = ""
+    expires_at: StrictStr = ""
 
 
 class JustWatchServiceSettingsInput(ConfigurationInputModel):
@@ -188,7 +161,6 @@ class JustWatchServiceSettingsInput(ConfigurationInputModel):
 
 
 class ConfigurationServicesUpdateRequest(ConfigurationInputModel):
-    database: DatabaseServiceSettingsInput = Field(default_factory=DatabaseServiceSettingsInput)
     connections: ConfigurationConnectionsInput = Field(default_factory=ConfigurationConnectionsInput)
     trakt: TraktServiceSettingsInput = Field(default_factory=TraktServiceSettingsInput)
     justwatch: JustWatchServiceSettingsInput = Field(default_factory=JustWatchServiceSettingsInput)

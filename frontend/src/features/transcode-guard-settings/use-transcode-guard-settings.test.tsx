@@ -127,4 +127,48 @@ describe("useTranscodeGuardSettings", () => {
     expect(latestSettings?.dirty).toBe(true);
     expect(latestSettings?.draft?.poll_interval_seconds).toBe(20);
   });
+
+  it("keeps the accepted server snapshot while the invalidated refetch is deferred", async () => {
+    const initial: GuardSettingsResponse = {
+      ok: true,
+      settings: settings(10),
+      servers: [],
+    };
+    const accepted = settings(15);
+    const refetch = deferred<GuardSettingsResponse>();
+    vi.mocked(getTranscodeGuardSettings)
+      .mockResolvedValueOnce(initial)
+      .mockReturnValueOnce(refetch.promise);
+    vi.mocked(saveTranscodeGuardSettings).mockResolvedValue({ ok: true, settings: accepted });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <GuardSettingsHarness />
+        </QueryClientProvider>,
+      );
+    });
+    await waitForDraft();
+
+    let savePromise: Promise<GuardSettingsSaveResult> | undefined;
+    act(() => {
+      latestSettings?.updateDraft(() => accepted);
+      savePromise = latestSettings?.save.mutateAsync(accepted);
+    });
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(latestSettings?.draft?.poll_interval_seconds).toBe(15);
+    expect(
+      queryClient.getQueryData<GuardSettingsSaveResult>(["transcode-guard-settings"])
+        ?.settings.poll_interval_seconds,
+    ).toBe(15);
+
+    await act(async () => {
+      refetch.resolve({ ...initial, settings: accepted });
+      await savePromise;
+    });
+    expect(latestSettings?.dirty).toBe(false);
+  });
 });

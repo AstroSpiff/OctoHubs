@@ -4,6 +4,34 @@ import { describe, expect, it } from "vitest";
 import { LiveServerCard } from "@/features/emby-live/components/live-server-card";
 
 describe("LiveServerCard", () => {
+  it("announces errors delivered by the live snapshot", () => {
+    const markup = renderToStaticMarkup(
+      <LiveServerCard
+        server={{
+          server: { id: "green", name: "Green", enabled: true },
+          status: { ok: false, error: "Stato server non disponibile" },
+          running_tasks: [],
+          tasks_error: null,
+          streams: [],
+          streams_error: null,
+        }}
+        controls={{
+          refreshing: false,
+          restarting: false,
+          restartDisabled: false,
+          stoppingTaskKeys: new Set(),
+          taskStopErrors: {},
+          onRefresh: () => undefined,
+          onRestart: () => undefined,
+          onStopTask: () => undefined,
+        }}
+      />,
+    );
+
+    expect(markup).toContain('role="alert"');
+    expect(markup).toContain("Stato server non disponibile");
+  });
+
   it("keeps the restart and task-stop controls beside the relevant live server", () => {
     const markup = renderToStaticMarkup(
       <LiveServerCard

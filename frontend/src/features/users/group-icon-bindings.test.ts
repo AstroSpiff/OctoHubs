@@ -4,6 +4,7 @@ import {
   groupIconBindingTargets,
   hasPendingGroupIconBinding,
 } from "@/features/users/group-icon-bindings";
+import { iconBindingOperationKey } from "@/features/user-icons/use-keyed-operation-state";
 import type { EmbyUserGroup } from "@/features/users/types";
 
 const linkedGroup = {
@@ -36,7 +37,7 @@ describe("group icon bindings", () => {
   });
 
   it("marks only the group whose icon bindings are being saved", () => {
-    const pending = groupIconBindingTargets(linkedGroup, "family");
+    const pending = new Set([iconBindingOperationKey("group", "group-1")]);
 
     expect(hasPendingGroupIconBinding(linkedGroup, pending)).toBe(true);
     expect(hasPendingGroupIconBinding(standaloneGroup, pending)).toBe(false);

@@ -13,6 +13,7 @@ import type {
   CollectionSourceInventoryInput,
   CollectionSourceInventoryItem,
 } from "@/features/collections/types";
+import { safeExternalHttpUrl } from "@/lib/external-url";
 
 type CollectionSourceInventorySectionProps = {
   options?: CollectionOptions;
@@ -100,13 +101,17 @@ function CollectionSourceInventorySection({
       </header>
       <WriteAction>
         <form className="collection-source-add" onSubmit={submit}>
+        <label className="sr-only" htmlFor="collection-source-name">Nome lista</label>
         <input
+          id="collection-source-name"
           value={name}
           disabled={disabled}
           onChange={(event) => setName(event.target.value)}
           placeholder="Nome lista (facoltativo)"
         />
+        <label className="sr-only" htmlFor="collection-source-type">Tipo di fonte</label>
         <select
+          id="collection-source-type"
           value={activeSourceType}
           disabled={disabled}
           onChange={(event) => setSourceType(event.target.value)}
@@ -117,7 +122,9 @@ function CollectionSourceInventorySection({
             </option>
           ))}
         </select>
+        <label className="sr-only" htmlFor="collection-source-value">Link o ID della fonte</label>
         <input
+          id="collection-source-value"
           value={sourceValue}
           disabled={disabled}
           onChange={(event) => {
@@ -208,9 +215,9 @@ function CollectionSourceRows({
             >
               Usa
             </Button>
-            {item.source_link ? (
+            {safeExternalHttpUrl(item.source_link) ? (
               <a
-                href={item.source_link}
+                href={safeExternalHttpUrl(item.source_link) || undefined}
                 target="_blank"
                 rel="noreferrer"
                 title="Apri lista"

@@ -20,6 +20,7 @@ export function useTranscodeGuardSettings() {
   const save = useMutation({
     mutationFn: saveTranscodeGuardSettings,
     onSuccess: async (result, submittedSettings) => {
+      queryClient.setQueryData(["transcode-guard-settings"], result);
       const hasNewerDraft = Boolean(
         draftRef.current
         && !transcodeGuardSettingsEqual(draftRef.current, submittedSettings),

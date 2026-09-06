@@ -17,10 +17,7 @@ from emby_latest.emby_api import (
 
 class LatestEmbyApiTests(unittest.TestCase):
     def setUp(self):
-        for cache_name in ("_EMBY_ITEM_CACHE", "_EMBY_USER_CACHE", "_EMBY_USER_ITEM_CACHE"):
-            cache = getattr(emby_api, cache_name, None)
-            if isinstance(cache, dict):
-                cache.clear()
+        emby_api.clear_emby_runtime_caches()
 
     def test_fetch_emby_episode_items_uses_series_episode_endpoint_and_filters_episode(self):
         calls = []

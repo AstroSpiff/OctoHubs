@@ -25,6 +25,7 @@ type ProbeComboCardProps = {
   status?: ProbeWorkerStatus;
   serverStatuses: ProbeComboServerStatus[];
   actions: WorkerAction[];
+  canMutate?: boolean;
 };
 
 function ProbeComboCard({
@@ -32,6 +33,7 @@ function ProbeComboCard({
   status,
   serverStatuses,
   actions,
+  canMutate = true,
 }: ProbeComboCardProps) {
   const [showLastRun, setShowLastRun] = useState(false);
   const tasks = useMemo(
@@ -71,6 +73,7 @@ function ProbeComboCard({
         </Button>
       }
       actions={actions}
+      canMutate={canMutate}
     >
       <ProbeComboBoard tasks={tasks} serverStatuses={serverStatuses} />
       {showLastRun ? <ProbeComboLastRuns runs={lastRuns} /> : null}

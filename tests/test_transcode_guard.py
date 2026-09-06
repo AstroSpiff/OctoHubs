@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+import json
+import threading
+
 import pytest
 
 from emby_runtime.transcode_guard import (
@@ -16,6 +20,24 @@ from emby_runtime.transcode_guard import (
     normalize_transcode_guard_settings,
 )
 from emby_runtime.streams import EmbyStreamsManager
+
+
+_SETTINGS_FIELDS = {
+    "enabled",
+    "poll_interval_seconds",
+    "stream_history_retention_days",
+    "rules",
+}
+
+
+def _save_settings(service, raw):
+    """Keep test scenarios explicit while exercising the current rule contract."""
+    canonical = {key: value for key, value in raw.items() if key in _SETTINGS_FIELDS}
+    if "rules" not in raw:
+        rule_fields = {key: value for key, value in raw.items() if key not in _SETTINGS_FIELDS}
+        if rule_fields:
+            canonical["rules"] = [{"id": "test-rule", "name": "Test rule", **rule_fields}]
+    return service.save_settings(canonical)
 
 
 def test_policy_blocks_only_real_4k_video_transcode():
@@ -136,7 +158,7 @@ def test_service_records_container_remux_as_direct_stream_information_not_violat
         send_message=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected message")),
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "stream_history_retention_days": 0,
         "rules": [{
@@ -162,7 +184,7 @@ def test_service_records_container_remux_as_direct_stream_information_not_violat
     assert row["transcode_reasons"] == ["ContainerNotSupported", "DirectPlayError"]
 
 
-def test_service_never_warns_or_stops_allowed_container_remux_with_legacy_stop_mode():
+def test_service_never_warns_or_stops_allowed_container_remux_with_stop_mode():
     storage = _Storage()
     clock = _Clock()
     server = {"id": "server-a", "name": "Blue", "enabled": True}
@@ -195,7 +217,7 @@ def test_service_never_warns_or_stops_allowed_container_remux_with_legacy_stop_m
         stop_session=lambda _server, session_id: stops.append(session_id) or (True, {}),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn_then_stop",
         "server_ids": ["server-a"],
@@ -232,7 +254,7 @@ def test_service_never_warns_or_stops_allowed_container_remux_with_legacy_stop_m
 def test_decorated_stream_does_not_inherit_stopped_state_when_current_decision_is_allowed():
     storage = _Storage()
     service = TranscodeGuardService(storage_provider=lambda: storage)
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn_then_stop",
         "server_ids": ["server-a"],
@@ -296,8 +318,11 @@ def test_policy_does_not_block_unknown_height_by_default():
 
 def test_policy_can_exclude_device_and_ip_networks():
     settings = normalize_transcode_guard_settings({
-        "excluded_devices": "Shield",
-        "excluded_ips": "192.168.1.0/24",
+        "rules": [{
+            "id": "network-exclusions",
+            "excluded_devices": ["Shield"],
+            "excluded_ips": ["192.168.1.0/24"],
+        }],
     })
 
     by_device = classify_stream({
@@ -328,25 +353,26 @@ def test_policy_can_exclude_device_and_ip_networks():
 def test_settings_normalization_keeps_safe_defaults():
     settings = normalize_transcode_guard_settings({
         "enabled": True,
-        "mode": "warn_then_stop",
-        "min_source_height": "2160",
-        "grace_seconds": "12",
-        "correction_window_seconds": "75",
         "poll_interval_seconds": "2",
-        "message_display_mode": "confirmation",
-        "warning_timeout_ms": "300000",
-        "max_warnings": "3",
-        "message_cooldown_seconds": "45",
-        "excluded_users": "roy, admin",
-        "excluded_devices": "Shield, Apple TV",
-        "excluded_ips": "10.0.0.0/24",
+        "rules": [{
+            "id": "bounded-settings",
+            "mode": "warn_then_stop",
+            "min_source_height": "2160",
+            "correction_window_seconds": "75",
+            "message_display_mode": "confirmation",
+            "warning_timeout_ms": "300000",
+            "max_warnings": "3",
+            "message_cooldown_seconds": "45",
+            "excluded_users": ["roy", "admin"],
+            "excluded_devices": ["Shield", "Apple TV"],
+            "excluded_ips": ["10.0.0.0/24"],
+        }],
     })
 
     assert DEFAULT_TRANSCODE_GUARD_SETTINGS["mode"] == "monitor"
     assert settings["enabled"] is True
     assert settings["mode"] == "warn_then_stop"
     assert settings["min_source_height"] == 2160
-    assert settings["grace_seconds"] == 0
     assert settings["correction_window_seconds"] == 75
     assert settings["poll_interval_seconds"] == 2
     assert settings["message_display_mode"] == "confirmation"
@@ -358,50 +384,36 @@ def test_settings_normalization_keeps_safe_defaults():
     assert settings["excluded_ips"] == ["10.0.0.0/24"]
 
 
-def test_pause_modes_are_not_available_and_legacy_values_map_to_stop_modes():
-    pause_settings = normalize_transcode_guard_settings({
-        "enabled": True,
-        "mode": "pause",
-        "server_ids": ["server-a"],
-    })
-    warn_pause_settings = normalize_transcode_guard_settings({
-        "enabled": True,
-        "mode": "warn_then_pause",
-        "server_ids": ["server-a"],
-    })
+def test_pause_modes_are_rejected_by_the_current_api_contract():
+    from pydantic import ValidationError
+    from emby_runtime.transcode_guard_api_models import TranscodeGuardSettingsRequest
 
     assert "pause" not in TRANSCODE_GUARD_MODES
     assert "warn_then_pause" not in TRANSCODE_GUARD_MODES
-    assert pause_settings["mode"] == "stop"
-    assert pause_settings["rules"][0]["mode"] == "stop"
-    assert warn_pause_settings["mode"] == "warn_then_stop"
-    assert warn_pause_settings["rules"][0]["mode"] == "warn_then_stop"
+    with pytest.raises(ValidationError):
+        TranscodeGuardSettingsRequest.model_validate({"rules": [{"mode": "pause"}]})
+    with pytest.raises(ValidationError):
+        TranscodeGuardSettingsRequest.model_validate({"rules": [{"mode": "warn_then_pause"}]})
 
 
-def test_settings_normalization_migrates_single_policy_to_initial_rule():
+def test_settings_without_rules_use_the_canonical_default_rule():
     settings = normalize_transcode_guard_settings({
         "enabled": True,
-        "mode": "warn_then_stop",
-        "min_source_height": 1440,
-        "message_header": "Vecchia policy",
-        "message_text": "Correggi {title}",
     })
 
     assert settings["enabled"] is True
-    assert settings["mode"] == "warn_then_stop"
+    assert settings["mode"] == "monitor"
     assert len(settings["rules"]) == 1
     rule = settings["rules"][0]
-    assert rule["id"] == "legacy-video-transcode"
+    assert rule["id"] == "default-video-transcode"
     assert rule["name"] == "Transcode video sopra soglia"
     assert rule["enabled"] is True
     assert rule["profile"] == "video_transcode_threshold"
-    assert rule["min_source_height"] == 1440
-    assert rule["mode"] == "warn_then_stop"
-    assert rule["message_header"] == "Vecchia policy"
-    assert rule["message_text"] == "Correggi {title}"
+    assert rule["min_source_height"] == 2160
+    assert rule["mode"] == "monitor"
 
 
-def test_legacy_profiles_migrate_to_explicit_stream_criteria():
+def test_profiles_apply_explicit_stream_criteria():
     settings = normalize_transcode_guard_settings({
         "enabled": True,
         "rules": [
@@ -701,13 +713,16 @@ def test_rule_without_server_scope_does_not_apply_to_any_server():
     assert decision["should_enforce"] is False
 
 
-def test_legacy_global_exclusions_migrate_into_the_initial_rule():
+def test_rule_exclusions_are_canonical():
     settings = normalize_transcode_guard_settings({
         "enabled": True,
-        "excluded_users": "roy, admin",
-        "excluded_clients": "Chrome",
-        "excluded_devices": "Shield",
-        "excluded_ips": "10.0.0.0/24",
+        "rules": [{
+            "id": "excluded-principals",
+            "excluded_users": ["roy", "admin"],
+            "excluded_clients": ["Chrome"],
+            "excluded_devices": ["Shield"],
+            "excluded_ips": ["10.0.0.0/24"],
+        }],
     })
 
     rule = settings["rules"][0]
@@ -717,10 +732,10 @@ def test_legacy_global_exclusions_migrate_into_the_initial_rule():
     assert rule["excluded_ips"] == ["10.0.0.0/24"]
 
 
-def test_legacy_global_server_scope_migrates_into_the_initial_rule():
+def test_rule_server_scope_is_canonical():
     settings = normalize_transcode_guard_settings({
         "enabled": True,
-        "server_ids": ["purple", "green"],
+        "rules": [{"id": "server-scope", "server_ids": ["purple", "green"]}],
     })
 
     assert settings["server_ids"] == ["purple", "green"]
@@ -778,7 +793,7 @@ def test_existing_rules_do_not_inherit_top_level_scope_fields():
     assert second["excluded_ips"] == []
 
 
-def test_legacy_rule_groups_are_flattened_to_ordered_rules_with_explicit_child_scope():
+def test_rule_groups_are_flattened_to_ordered_rules_with_explicit_child_scope():
     settings = normalize_transcode_guard_settings({
         "enabled": True,
         "rules": [
@@ -847,7 +862,7 @@ def test_legacy_rule_groups_are_flattened_to_ordered_rules_with_explicit_child_s
     assert audio_only["message_text"] == "Solo audio in transcode"
 
 
-def test_flattened_legacy_group_does_not_inherit_rule_scope_when_child_is_empty():
+def test_flattened_group_does_not_inherit_rule_scope_when_child_is_empty():
     settings = normalize_transcode_guard_settings({
         "enabled": True,
         "rules": [
@@ -900,7 +915,7 @@ def test_flattened_legacy_group_does_not_inherit_rule_scope_when_child_is_empty(
     assert empty_child["excluded_ips"] == []
 
 
-def test_flattened_legacy_group_without_matching_child_is_not_a_false_violation():
+def test_flattened_group_without_matching_child_is_not_a_false_violation():
     settings = normalize_transcode_guard_settings({
         "enabled": True,
         "rules": [
@@ -944,7 +959,7 @@ def test_service_rejects_enabled_rule_without_selected_server():
     service = TranscodeGuardService(storage_provider=lambda: storage)
 
     with pytest.raises(ValueError, match="Seleziona almeno un server"):
-        service.save_settings({
+        _save_settings(service, {
             "enabled": True,
             "rules": [
                 {
@@ -965,7 +980,7 @@ def test_service_rejects_enabled_rule_without_selected_server():
 def test_service_does_not_reapply_previous_global_servers_to_disabled_rule():
     storage = _Storage()
     service = TranscodeGuardService(storage_provider=lambda: storage)
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "rules": [
             {
@@ -980,7 +995,7 @@ def test_service_does_not_reapply_previous_global_servers_to_disabled_rule():
         ],
     })
 
-    settings = service.save_settings({
+    settings = _save_settings(service, {
         "enabled": True,
         "rules": [
             {
@@ -1003,7 +1018,7 @@ def test_service_does_not_reapply_previous_global_servers_to_disabled_rule():
 def test_service_save_settings_merges_existing_policy_fields():
     storage = _Storage()
     service = TranscodeGuardService(storage_provider=lambda: storage)
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn_then_stop",
         "min_source_height": 1080,
@@ -1024,12 +1039,11 @@ def test_service_save_settings_merges_existing_policy_fields():
         "excluded_ips": ["10.0.0.0/24"],
     })
 
-    settings = service.save_settings({"enabled": False})
+    settings = _save_settings(service, {"enabled": False})
 
     assert settings["enabled"] is False
     assert settings["mode"] == "warn_then_stop"
     assert settings["min_source_height"] == 1080
-    assert settings["grace_seconds"] == 0
     assert settings["correction_window_seconds"] == 120
     assert settings["poll_interval_seconds"] == 8
     assert settings["max_warnings"] == 2
@@ -1056,6 +1070,79 @@ class _Storage:
         self.values[key] = value
 
 
+class _AtomicStorage(_Storage):
+    def __init__(self):
+        super().__init__()
+        self._atomic_lock = threading.RLock()
+
+    def update_key_value(self, key, updater):
+        with self._atomic_lock:
+            updated = updater(deepcopy(self.values.get(key)))
+            self.values[key] = deepcopy(updated)
+            return deepcopy(updated)
+
+
+def test_independent_services_keep_concurrent_playback_events():
+    storage = _AtomicStorage()
+    first = TranscodeGuardService(storage_provider=lambda: storage, now=lambda: 1000.0)
+    second = TranscodeGuardService(storage_provider=lambda: storage, now=lambda: 1001.0)
+    barrier = threading.Barrier(2)
+
+    def record(service, session_id):
+        barrier.wait(timeout=2)
+        service._record_playback_event_row({
+            "server_id": "server-a",
+            "session_id": session_id,
+            "action": "start",
+            "event_name": "PlaybackStart",
+        })
+
+    threads = [
+        threading.Thread(target=record, args=(first, "session-a")),
+        threading.Thread(target=record, args=(second, "session-b")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    rows = storage.values[TRANSCODE_GUARD_PLAYBACK_EVENTS_KEY]
+    assert {row["session_id"] for row in rows} == {"session-a", "session-b"}
+
+
+def test_independent_services_merge_concurrent_partial_settings_updates():
+    storage = _AtomicStorage()
+    first = TranscodeGuardService(storage_provider=lambda: storage)
+    second = TranscodeGuardService(storage_provider=lambda: storage)
+    _save_settings(first, {"enabled": False, "server_ids": ["server-a"]})
+    barrier = threading.Barrier(2)
+
+    def save(service, update):
+        barrier.wait(timeout=2)
+        _save_settings(service, update)
+
+    threads = [
+        threading.Thread(
+            target=save,
+            args=(first, {"enabled": False, "poll_interval_seconds": 9}),
+        ),
+        threading.Thread(
+            target=save,
+            args=(second, {"enabled": False, "stream_history_retention_days": 31}),
+        ),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    saved = storage.values[TRANSCODE_GUARD_SETTINGS_KEY]
+    assert saved["poll_interval_seconds"] == 9
+    assert saved["stream_history_retention_days"] == 31
+
+
 class _Clock:
     def __init__(self):
         self.now = 1000.0
@@ -1067,7 +1154,7 @@ class _Clock:
         self.now += seconds
 
 
-def test_transcode_guard_loads_legacy_octohub_settings_key():
+def test_transcode_guard_does_not_load_retired_settings_keys():
     storage = _Storage()
     storage.set_key_value(
         "octohub_transcode_guard:settings:v1",
@@ -1077,8 +1164,8 @@ def test_transcode_guard_loads_legacy_octohub_settings_key():
 
     settings = service.load_settings()
 
-    assert settings["enabled"] is True
-    assert settings["poll_interval_seconds"] == 9
+    assert settings["enabled"] is False
+    assert settings["poll_interval_seconds"] == 5
     assert TRANSCODE_GUARD_SETTINGS_KEY not in storage.values
 
 
@@ -1121,6 +1208,50 @@ def test_start_wakes_existing_monitor_thread_after_settings_change():
     assert service._wake_event.is_set()
 
 
+def test_forget_server_clears_violations_and_rejects_late_scan_results():
+    storage = _Storage()
+    server = {"id": "server-a", "name": "Blue", "enabled": True}
+    stream = {
+        "session_id": "session-1",
+        "title": "Big Movie",
+        "video_height": 2160,
+        "video_mode": "transcodifica",
+        "audio_mode": "diretta",
+    }
+    fetch_started = threading.Event()
+    release_fetch = threading.Event()
+
+    def fetch_sessions(_server):
+        fetch_started.set()
+        assert release_fetch.wait(timeout=2)
+        return [stream], None
+
+    service = TranscodeGuardService(
+        storage_provider=lambda: storage,
+        load_config=lambda: ({"EMBY": {"SERVERS": [server]}}, True),
+        fetch_sessions=fetch_sessions,
+    )
+    _save_settings(service, {
+        "enabled": True,
+        "mode": "monitor",
+        "server_ids": ["server-a"],
+    })
+    worker = threading.Thread(target=service.check_once)
+    worker.start()
+    assert fetch_started.wait(timeout=2)
+
+    service.forget_server("server-a")
+    release_fetch.set()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert service.get_status()["active_violations"] == []
+    assert service.record_playback_event("server-a", {"MessageType": "PlaybackStop"}) is None
+
+    service.allow_server("server-a")
+    assert service._capture_server_generation("server-a") >= 0
+
+
 def test_service_warns_then_stops_persistent_video_transcode():
     storage = _Storage()
     clock = _Clock()
@@ -1146,7 +1277,7 @@ def test_service_warns_then_stops_persistent_video_transcode():
         operation_tracker_provider=lambda: tracker,
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn_then_stop",
         "server_ids": ["server-a"],
@@ -1166,7 +1297,7 @@ def test_service_warns_then_stops_persistent_video_transcode():
     assert tracker.finished[-1][1] == "Sessione fermata da Transcode Guard"
 
 
-def test_service_warns_immediately_even_when_legacy_grace_seconds_is_set():
+def test_service_warns_immediately_without_a_pre_warning_delay():
     storage = _Storage()
     clock = _Clock()
     server = {"id": "server-a", "name": "Blue", "enabled": True}
@@ -1188,7 +1319,7 @@ def test_service_warns_immediately_even_when_legacy_grace_seconds_is_set():
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn_then_stop",
         "server_ids": ["server-a"],
@@ -1224,7 +1355,7 @@ def test_service_status_marks_disappeared_violation_as_user_exit():
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn",
         "server_ids": ["server-a"],
@@ -1276,7 +1407,7 @@ def test_service_status_marks_same_session_corrected_stream_as_resolved():
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn",
         "server_ids": ["server-a"],
@@ -1320,7 +1451,7 @@ def test_service_updates_single_intervention_row_from_warning_to_stop():
         stop_session=lambda _server, session_id: stops.append(session_id) or (True, {}),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn_then_stop",
         "server_ids": ["server-a"],
@@ -1370,7 +1501,7 @@ def test_service_marks_matching_direct_playback_as_resolved_when_session_id_chan
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn",
         "server_ids": ["server-a"],
@@ -1416,7 +1547,7 @@ def test_service_treats_brief_disappearance_before_direct_playback_as_parameter_
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn",
         "server_ids": ["server-a"],
@@ -1466,7 +1597,7 @@ def test_service_marks_exit_after_resolution_and_never_reopens_that_row():
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn",
         "server_ids": ["server-a"],
@@ -1532,7 +1663,7 @@ def test_service_marks_corrected_playback_with_different_resolution_as_resolutio
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn",
         "server_ids": ["server-a"],
@@ -1586,7 +1717,7 @@ def test_service_does_not_resolve_with_corrected_playback_from_different_device(
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn",
         "server_ids": ["server-a"],
@@ -1639,7 +1770,7 @@ def test_service_marks_partial_resolution_when_same_playback_still_violates_late
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "rules": [
             {
@@ -1707,7 +1838,7 @@ def test_service_marks_old_session_as_exit_when_same_playback_still_violates_sam
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn",
         "server_ids": ["server-a"],
@@ -1760,7 +1891,7 @@ def test_service_records_later_success_after_user_exit_without_duplicates():
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn",
         "server_ids": ["server-a"],
@@ -1813,7 +1944,7 @@ def test_service_records_later_success_after_exit_even_within_stop_delay_when_mo
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn",
         "server_ids": ["server-a"],
@@ -1866,7 +1997,7 @@ def test_service_does_not_record_later_success_after_newer_resolved_event():
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn",
         "server_ids": ["server-a"],
@@ -1924,7 +2055,7 @@ def test_service_records_resolution_change_after_previous_exit_without_later_suf
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn",
         "server_ids": ["server-a"],
@@ -1981,7 +2112,7 @@ def test_service_does_not_record_resolution_change_after_resolved_exit():
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn",
         "server_ids": ["server-a"],
@@ -2033,7 +2164,7 @@ def test_service_prefixes_resolution_change_when_new_resolution_still_violates_a
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn",
         "server_ids": ["server-a"],
@@ -2087,7 +2218,7 @@ def test_service_reuses_recent_unresolved_exit_row_when_same_resolution_violatio
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn",
         "server_ids": ["server-a"],
@@ -2163,7 +2294,7 @@ def test_service_does_not_reopen_resolution_change_row_when_source_resolution_ch
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn",
         "server_ids": ["server-a"],
@@ -2219,7 +2350,7 @@ def test_service_records_warning_error_without_counting_it_as_warning():
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn",
         "server_ids": ["server-a"],
@@ -2257,7 +2388,7 @@ def test_service_persists_and_clears_intervention_rows():
         send_message=lambda *_args: (True, {}),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn",
         "server_ids": ["server-a"],
@@ -2294,7 +2425,7 @@ def test_service_does_not_delay_stop_with_extra_warning_when_correction_window_e
         stop_session=lambda _server, session_id: stops.append(session_id) or (True, {}),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn_then_stop",
         "server_ids": ["server-a"],
@@ -2338,7 +2469,7 @@ def test_service_message_template_supports_device_and_reasons_placeholders():
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         operation_tracker_provider=lambda: tracker,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn",
         "server_ids": ["server-a"],
@@ -2373,7 +2504,7 @@ def test_service_message_template_uses_stop_delay_only_when_rule_can_stop():
         send_message=lambda _server, session_id, header, text, timeout_ms: messages.append((session_id, header, text, timeout_ms)) or (True, {}),
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn_then_stop",
         "server_ids": ["server-a"],
@@ -2404,7 +2535,7 @@ def test_service_can_send_confirmation_message_without_timeout():
         send_message=lambda _server, session_id, header, text, timeout_ms: messages.append((session_id, timeout_ms)) or (True, {}),
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "mode": "warn",
         "server_ids": ["server-a"],
@@ -2418,7 +2549,7 @@ def test_service_can_send_confirmation_message_without_timeout():
     assert messages == [("session-confirm", None)]
 
 
-def test_service_maps_legacy_pause_mode_to_stop():
+def test_service_stops_for_a_canonical_stop_rule():
     storage = _Storage()
     tracker = _Tracker()
     server = {"id": "server-a", "name": "Blue", "enabled": True}
@@ -2438,7 +2569,10 @@ def test_service_maps_legacy_pause_mode_to_stop():
         stop_session=lambda _server, session_id: stops.append(session_id) or (True, {}),
         operation_tracker_provider=lambda: tracker,
     )
-    service.save_settings({"enabled": True, "mode": "pause", "server_ids": ["server-a"], "grace_seconds": 0})
+    _save_settings(service, {
+        "enabled": True,
+        "rules": [{"id": "stop-4k", "mode": "stop", "server_ids": ["server-a"]}],
+    })
 
     result = service.check_once()
 
@@ -2467,7 +2601,7 @@ def test_service_does_not_act_when_only_audio_is_transcoded():
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         operation_tracker_provider=lambda: tracker,
     )
-    service.save_settings({"enabled": True, "mode": "stop", "server_ids": ["server-a"]})
+    _save_settings(service, {"enabled": True, "mode": "stop", "server_ids": ["server-a"]})
 
     result = service.check_once()
 
@@ -2617,7 +2751,7 @@ def test_service_records_every_stream_with_technical_violation_tags():
         send_message=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected message")),
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "stream_history_retention_days": 0,
         "rules": [{
@@ -2663,7 +2797,7 @@ def test_service_stream_history_retention_keeps_forever_when_zero_and_prunes_whe
         load_config=lambda: ({"EMBY": {"SERVERS": [server]}}, True),
         fetch_sessions=lambda _server: ([], None),
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "stream_history_retention_days": 0,
         "rules": [{"id": "disabled", "enabled": False, "server_ids": []}],
@@ -2672,7 +2806,7 @@ def test_service_stream_history_retention_keeps_forever_when_zero_and_prunes_whe
     service.check_once()
     assert service.get_status()["stream_history"]["total"] == 1
 
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "stream_history_retention_days": 1,
         "rules": [{"id": "disabled", "enabled": False, "server_ids": []}],
@@ -2707,7 +2841,7 @@ def test_service_marks_relapse_on_same_playback_after_resolution():
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "rules": [{
             "id": "video-rule",
@@ -2767,7 +2901,7 @@ def test_service_starts_new_event_for_new_session_after_resolution():
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "rules": [{
             "id": "video-rule",
@@ -2826,7 +2960,7 @@ def test_service_playback_stopped_event_closes_violation_and_next_session_warns_
         stop_session=lambda _server, session_id: stops.append(session_id) or (True, {}),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "rules": [{
             "id": "video-rule",
@@ -2911,7 +3045,7 @@ def test_service_records_quality_audio_and_subtitle_changes_without_marking_exit
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "rules": [{
             "id": "video-rule",
@@ -2975,7 +3109,7 @@ def test_service_records_observed_stream_changes_only_in_stream_history():
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "rules": [{
             "id": "video-rule",
@@ -3032,7 +3166,7 @@ def test_service_does_not_write_observed_audio_subtitle_to_player_events_from_in
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "rules": [{
             "id": "video-rule",
@@ -3084,7 +3218,7 @@ def test_service_keeps_observed_quality_change_out_of_recent_intervention_and_pl
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "rules": [{
             "id": "video-rule",
@@ -3167,7 +3301,7 @@ def test_service_marks_resolved_intervention_as_exit_when_real_stop_arrives():
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "rules": [{
             "id": "video-rule",
@@ -3224,7 +3358,7 @@ def test_service_deduplicates_repeated_real_player_events():
     assert rows[0]["action"] == "audio_change"
 
 
-def test_service_filters_legacy_inferred_events_from_player_event_payload():
+def test_service_keeps_persisted_player_events_without_runtime_migration_filters():
     storage = _Storage()
     storage.values[TRANSCODE_GUARD_PLAYBACK_EVENTS_KEY] = [
         {
@@ -3253,7 +3387,7 @@ def test_service_filters_legacy_inferred_events_from_player_event_payload():
 
     rows = service.get_status()["playback_events"]["rows"]
 
-    assert [row["id"] for row in rows] == ["real-event"]
+    assert [row["id"] for row in rows] == ["real-event", "old-inferred"]
 
 
 def test_service_exposes_real_plugin_events_in_player_event_log():
@@ -3311,6 +3445,43 @@ def test_service_exposes_event_bridge_plugin_diagnostics_in_player_event_log():
     assert rows[0]["event_name"] == "PluginStart"
 
 
+def test_service_bounds_plugin_diagnostic_text_before_persistence():
+    storage = _Storage()
+    service = TranscodeGuardService(storage_provider=lambda: storage)
+
+    service.record_event_bridge_event({
+        "schema": "octohubs.emby.event.v1",
+        "server": {"id": "server-a"},
+        "event": {"type": "plugin.start", "name": "x" * 200_000},
+    })
+
+    rows = service.get_status()["playback_events"]["rows"]
+    assert len(rows[0]["event_name"]) == 256
+
+
+def test_service_bounds_total_plugin_diagnostic_history_bytes(monkeypatch):
+    from emby_runtime import transcode_guard_history
+
+    storage = _Storage()
+    service = TranscodeGuardService(storage_provider=lambda: storage)
+    monkeypatch.setattr(
+        transcode_guard_history,
+        "TRANSCODE_GUARD_PLAYBACK_EVENT_LOG_MAX_BYTES",
+        900,
+    )
+
+    for index in range(5):
+        service.record_event_bridge_event({
+            "schema": "octohubs.emby.event.v1",
+            "server": {"id": "server-a"},
+            "event": {"type": f"plugin.event_{index}", "name": "x" * 256},
+        })
+
+    persisted = storage.values[TRANSCODE_GUARD_PLAYBACK_EVENTS_KEY]
+    assert len(json.dumps(persisted, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) <= 900
+    assert len(persisted) < 5
+
+
 def test_service_playback_stopped_event_does_not_append_exit_after_guard_stop():
     storage = _Storage()
     clock = _Clock()
@@ -3335,7 +3506,7 @@ def test_service_playback_stopped_event_does_not_append_exit_after_guard_stop():
         stop_session=lambda *_args: (True, {}),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "rules": [{
             "id": "video-rule",
@@ -3386,7 +3557,7 @@ def test_service_marks_missing_stream_as_exit_after_four_second_fallback_settle(
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
         now=clock,
     )
-    service.save_settings({
+    _save_settings(service, {
         "enabled": True,
         "rules": [{
             "id": "video-rule",

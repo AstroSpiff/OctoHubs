@@ -5,10 +5,15 @@ import { Button } from "@/components/ui/button";
 import { WorkspaceChoiceGroup } from "@/components/ui/workspace-choice-group";
 import {
   latestItemSelectionKey,
+  latestPreviewRequestKey,
   reconcileLatestItemSelection,
 } from "@/features/emby-latest/latest-item-selection";
 import { latestPreviewItemLabel } from "@/features/emby-latest/presentation";
-import type { LatestItem, LatestPreview } from "@/features/emby-latest/types";
+import type {
+  LatestItem,
+  LatestPreview,
+  LatestPreviewRequest,
+} from "@/features/emby-latest/types";
 
 const previewKinds = ["movie", "series"] as const;
 type PreviewKind = (typeof previewKinds)[number];
@@ -53,6 +58,8 @@ function LatestNotificationPreview({
   movies,
   series,
   result,
+  request,
+  error,
   loading,
   onPreview,
 }: {
@@ -60,6 +67,8 @@ function LatestNotificationPreview({
   movies: LatestItem[];
   series: LatestItem[];
   result?: LatestPreview;
+  request?: LatestPreviewRequest;
+  error?: string;
   loading: boolean;
   onPreview: (items: Partial<Record<"movie" | "series", LatestItem>>) => void;
 }) {
@@ -82,6 +91,17 @@ function LatestNotificationPreview({
       ),
     [seriesKey, series],
   );
+  const currentRequestKey = latestPreviewRequestKey(template, {
+    movie,
+    series: show,
+  });
+  const resultMatchesSelection = Boolean(
+    result &&
+      request &&
+      latestPreviewRequestKey(request.template, request.items) ===
+        currentRequestKey,
+  );
+  const currentResult = resultMatchesSelection ? result : undefined;
 
   useEffect(() => {
     setMovieKey((current) => reconcileLatestItemSelection(movies, current));
@@ -162,6 +182,9 @@ function LatestNotificationPreview({
         />
         Aggiorna anteprima
       </Button>
+      {error && request && latestPreviewRequestKey(request.template, request.items) === currentRequestKey ? (
+        <p className="latest-form-error" role="alert">{error}</p>
+      ) : null}
       <WorkspaceChoiceGroup
         className="latest-preview-tabs"
         ariaLabel="Tipo anteprima"
@@ -186,13 +209,13 @@ function LatestNotificationPreview({
           <PreviewItem
             label="Film"
             item={movie}
-            preview={result?.previews.movie}
+            preview={currentResult?.previews.movie}
           />
         ) : (
           <PreviewItem
             label="Serie TV"
             item={show}
-            preview={result?.previews.series}
+            preview={currentResult?.previews.series}
           />
         )}
       </div>

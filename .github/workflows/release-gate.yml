@@ -19,10 +19,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
           cache: npm
@@ -33,6 +33,9 @@ jobs:
 
       - name: Run the complete Vitest suite
         run: npm test
+
+      - name: Audit production npm dependencies
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Run ESLint
         run: npm run lint
@@ -64,10 +67,29 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Verify patch integrity
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          zero_sha="0000000000000000000000000000000000000000"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git diff --check "$PR_BASE_SHA...$PR_HEAD_SHA"
+          elif [ "$EVENT_NAME" = "push" ] && [ -n "$PUSH_BEFORE_SHA" ] && [ "$PUSH_BEFORE_SHA" != "$zero_sha" ]; then
+            git diff --check "$PUSH_BEFORE_SHA..$TARGET_SHA"
+          else
+            git show --check --oneline "$TARGET_SHA"
+          fi
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
           cache: pip
@@ -81,15 +103,36 @@ jobs:
       - name: Run the complete backend suite against PostgreSQL 16
         run: python -m pytest -q
 
-      - name: Validate Compose ingress variants
+      - name: Audit production Python dependencies
+        run: python -m pip_audit -r requirements.txt
+
+      - name: Run Ruff
+        run: python -m ruff check .
+
+      - name: Reject cyclomatic-complexity regressions
+        run: python scripts/check_cyclomatic_complexity.py
+
+      - name: Run the incremental Pyright gate
+        run: python -m pyright
+
+      - name: Audit the external API contract
+        run: python scripts/audit_external_api_contract.py --strict
+
+      - name: Validate the app-only Compose deployment
         run: |
           docker compose --env-file .env.example config --quiet
-          docker compose --env-file .env.example \
-            -f docker-compose.yml -f docker-compose.direct.yml config --quiet
-          docker compose --env-file .env.example --profile proxy config --quiet
+          OCTOHUBS_DB_PASSWORD_FILE=/dev/null docker compose --env-file .env.example \
+            -f docker-compose.yml -f docker-compose.secrets.yml config --quiet
+          ADMIN_PASSWORD_FILE=/dev/null docker compose --env-file .env.example \
+            -f docker-compose.yml -f docker-compose.admin-bootstrap.yml config --quiet
+          base_services="$(docker compose --env-file .env.example config --services)"
+          test "$base_services" = "app"
 
       - name: Compare two clean production-build inventories
         run: ./scripts/verify_reproducible_build.sh octohubs:release-gate
+
+      - name: Start the production image and verify readiness
+        run: ./scripts/smoke_production_image.sh octohubs:release-gate
 
       - name: Verify the production runtime identity
         run: |

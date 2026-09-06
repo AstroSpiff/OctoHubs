@@ -4,13 +4,10 @@ Modulo per la gestione della configurazione statica e di default dell'applicazio
 """
 
 import copy
-import json
 import logging
-import os
 import uuid
 from typing import Any, Dict, Optional
 
-from core.env import octohubs_env
 from core.utils import (
     _split_csv_field,
     _coerce_request_bool,
@@ -24,8 +21,6 @@ from core.utils import (
 logger = logging.getLogger(__name__)
 
 # --- COSTANTI ---
-CONFIG_FILE = octohubs_env("OCTOHUBS_CONFIG_FILE", "config.json")
-RESULTS_FILE = octohubs_env("OCTOHUBS_RESULTS_FILE", "last_results.json")
 MAX_PRIMARY_QUERY_VARIANTS = 80
 
 DEFAULT_SORT_MODE = "seeders_desc"
@@ -91,7 +86,6 @@ DEFAULT_CONFIG = {
         "require_audio_language": True,
         "skip_available_content": True,
         "skip_unreleased_content": False,
-        "results_sort": "seeders_desc",
         "tv_sort_primary": "seeders_desc",
         "tv_sort_secondary": "size_desc",
         "movie_sort_primary": "seeders_desc",
@@ -583,11 +577,10 @@ def _normalize_sort_settings(rules: Optional[Dict]) -> Dict[str, Any]:
     """Normalizza e corregge le impostazioni di ordinamento per TV e film."""
     if not isinstance(rules, dict):
         rules = _default_search_rules()
-    legacy = rules.get("results_sort") or DEFAULT_SORT_MODE
     tv_primary = _clean_sort_mode(
         rules.get("tv_sort_primary"),
         TV_SORT_KEYS,
-        rules.get("results_sort") or DEFAULT_CONFIG["SEARCH_RULES"]["tv_sort_primary"]
+        DEFAULT_CONFIG["SEARCH_RULES"]["tv_sort_primary"]
     )
     tv_secondary = _clean_sort_mode(
         rules.get("tv_sort_secondary"),
@@ -600,7 +593,7 @@ def _normalize_sort_settings(rules: Optional[Dict]) -> Dict[str, Any]:
     movie_primary = _clean_sort_mode(
         rules.get("movie_sort_primary"),
         MOVIE_SORT_KEYS,
-        rules.get("results_sort") or DEFAULT_CONFIG["SEARCH_RULES"]["movie_sort_primary"]
+        DEFAULT_CONFIG["SEARCH_RULES"]["movie_sort_primary"]
     )
     movie_secondary = _clean_sort_mode(
         rules.get("movie_sort_secondary"),
@@ -614,66 +607,8 @@ def _normalize_sort_settings(rules: Optional[Dict]) -> Dict[str, Any]:
     rules["tv_sort_secondary"] = tv_secondary
     rules["movie_sort_primary"] = movie_primary
     rules["movie_sort_secondary"] = movie_secondary
-    rules["results_sort"] = tv_primary or movie_primary or legacy or DEFAULT_SORT_MODE
+    rules.pop("results_sort", None)
     return rules
-
-# Funzioni di I/O per il file di configurazione
-def read_raw_config() -> Optional[Dict]:
-    """Legge il file config.json e lo restituisce come dizionario."""
-    if not os.path.exists(CONFIG_FILE):
-        return None
-    try:
-        with open(CONFIG_FILE, 'r') as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError):
-        return None
-
-def _normalize_api_keys(value: Any) -> list[str]:
-    """Normalizza un valore in una lista di API keys."""
-    if not value:
-        return []
-    if isinstance(value, str):
-        # Split by comma and clean each key
-        keys = [k.strip() for k in value.split(',') if k.strip()]
-        return keys
-    if isinstance(value, list):
-        # Filter out empty strings and ensure all are strings
-        return [str(k).strip() for k in value if k and str(k).strip()]
-    return []
-
-def write_config_file(data: Dict):
-    """Scrive un dizionario nel file config.json."""
-    data = data or {}
-    persisted = read_raw_config() or {}
-    payload = {}
-    for key in CONNECTION_FIELDS:
-        # Use data value if explicitly provided (even if empty string), otherwise use persisted
-        value = data.get(key) if key in data else persisted.get(key)
-
-        # Special handling for API key arrays
-        if key == "OMDB_API_KEYS":
-            payload[key] = _normalize_api_keys(value)
-            # Backward compatibility: if OMDB_API_KEY is set and OMDB_API_KEYS is empty, use it
-            if not payload[key] and data.get("OMDB_API_KEY"):
-                payload[key] = _normalize_api_keys(data.get("OMDB_API_KEY"))
-        elif key == "MDBLIST_API_KEYS":
-            payload[key] = _normalize_api_keys(value)
-        else:
-            # Save all connection fields, even if empty (to allow clearing values)
-            payload[key] = value if value is not None else ""
-    database_settings = _merge_database_settings(data.get("DATABASE") or persisted.get("DATABASE"))
-    database_settings["ENABLED"] = True  # Forza l'abilitazione durante la scrittura
-    database_settings["PASSWORD"] = ""
-    database_settings["URL"] = ""
-    payload["DATABASE"] = database_settings
-    trakt_settings = data.get("TRAKT") or persisted.get("TRAKT")
-    payload["TRAKT"] = _merge_trakt_settings(trakt_settings)
-    justwatch_settings = data.get("JUSTWATCH") or persisted.get("JUSTWATCH")
-    payload["JUSTWATCH"] = _merge_justwatch_settings(justwatch_settings)
-    emby_settings = data.get("EMBY") or persisted.get("EMBY") or DEFAULT_CONFIG["EMBY"]
-    payload["EMBY"] = _merge_emby_settings(emby_settings)
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(payload, f, indent=4)
 
 def _get_request_rule(config, request_id):
     if not config:

@@ -7,6 +7,8 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
+from core.safe_output import safe_print as print
+
 
 def _media_type_for_entry(entry: Dict[str, Any]) -> str:
     return "movie" if entry.get("item_type") == "Movie" else "tv"
@@ -306,18 +308,32 @@ def enrich_entry_with_tmdb(
             # Try MDBList first (with Metacritic averaging for TV series)
             if mdblist_keys and safe_imdb_id:
                 print(f"[MDBLIST] Trying MDBList for TV IMDb {safe_imdb_id}, keys available: {len(mdblist_keys)}")
-                ratings_payload = _fetch_mdblist_tv_series_with_seasons(safe_imdb_id, mdblist_keys)
+                ratings_payload = _fetch_mdblist_tv_series_with_seasons(
+                    safe_imdb_id,
+                    mdblist_keys,
+                    **({"force_refresh": True} if force_omdb else {}),
+                )
                 print(f"[MDBLIST] TV result: {ratings_payload}")
 
             # Fallback to OMDb if MDBList didn't return data or keys not available
             if not ratings_payload and omdb_keys:
                 if safe_imdb_id:
                     print(f"[MDBLIST] Falling back to OMDb for TV IMDb {safe_imdb_id}")
-                    ratings_payload = _fetch_omdb_ratings(safe_imdb_id, omdb_keys, expected_type="series")
+                    ratings_payload = _fetch_omdb_ratings(
+                        safe_imdb_id,
+                        omdb_keys,
+                        expected_type="series",
+                        **({"force_refresh": True} if force_omdb else {}),
+                    )
                 if not ratings_payload:
                     title = entry.get("title") or entry.get("series_name") or ""
                     year = entry.get("year")
-                    ratings_payload = _fetch_omdb_series_by_title(title, year, omdb_keys)
+                    ratings_payload = _fetch_omdb_series_by_title(
+                        title,
+                        year,
+                        omdb_keys,
+                        **({"force_refresh": True} if force_omdb else {}),
+                    )
 
             if ratings_payload:
                 allowed_fields = {"imdb_id", "imdb_rating", "imdb_votes", "metacritic_rating"}
@@ -339,13 +355,23 @@ def enrich_entry_with_tmdb(
             # Try MDBList first
             if mdblist_keys:
                 print(f"[MDBLIST] Trying MDBList for IMDb {imdb_id}, keys available: {len(mdblist_keys)}")
-                ratings_payload = _fetch_mdblist_ratings_by_imdb(imdb_id, mdblist_keys, expected_type=media_type)
+                ratings_payload = _fetch_mdblist_ratings_by_imdb(
+                    imdb_id,
+                    mdblist_keys,
+                    expected_type=media_type,
+                    **({"force_refresh": True} if force_omdb else {}),
+                )
                 print(f"[MDBLIST] Result: {ratings_payload}")
 
             # Fallback to OMDb if MDBList didn't return data
             if not ratings_payload and omdb_keys:
                 print(f"[MDBLIST] Falling back to OMDb for IMDb {imdb_id}")
-                ratings_payload = _fetch_omdb_ratings(imdb_id, omdb_keys, expected_type=media_type)
+                ratings_payload = _fetch_omdb_ratings(
+                    imdb_id,
+                    omdb_keys,
+                    expected_type=media_type,
+                    **({"force_refresh": True} if force_omdb else {}),
+                )
 
             if ratings_payload:
                 allowed_fields = {"imdb_id", "imdb_rating", "imdb_votes", "metacritic_rating"}

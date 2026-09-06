@@ -7,9 +7,10 @@ import {
   resolveApplicationTheme,
   type ApplicationTheme,
 } from "@/lib/theme-preference";
+import { browserLocalStorage } from "@/lib/safe-web-storage";
 
 function initialApplicationTheme(): ApplicationTheme {
-  return resolveApplicationTheme(window.localStorage, browserThemePreference());
+  return resolveApplicationTheme(browserLocalStorage(), browserThemePreference());
 }
 
 function useApplicationTheme() {
@@ -17,7 +18,7 @@ function useApplicationTheme() {
 
   const updateTheme = useCallback((nextTheme: ApplicationTheme) => {
     applyApplicationTheme(nextTheme, document.documentElement);
-    persistApplicationTheme(nextTheme, window.localStorage);
+    persistApplicationTheme(nextTheme, browserLocalStorage());
     setTheme(nextTheme);
   }, []);
 

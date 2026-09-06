@@ -7,6 +7,7 @@ from typing import Any, Callable, Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
 
@@ -54,6 +55,18 @@ def _personal_tab_order(user_id: int, page: str) -> list[str] | None:
     from core.auth import get_user_interface_order
 
     return get_user_interface_order(user_id, page)
+
+
+async def _ui_storage_call(function: Callable[..., Any], *args: Any) -> Any:
+    from core.auth import AuthStorageError
+
+    try:
+        return await run_in_threadpool(function, *args)
+    except AuthStorageError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Database preferenze temporaneamente non disponibile",
+        ) from exc
 
 
 def _tab_order_response(order: list[str]) -> JSONResponse:
@@ -113,7 +126,7 @@ def _frontend_index_response() -> FileResponse | HTMLResponse:
 @router.get("/api/ui/session")
 async def frontend_session_route(request: Request):
     """Return the authenticated session data required by the SPA."""
-    user = _current_user(request)
+    user = await run_in_threadpool(_current_user, request)
     if user is None:
         raise HTTPException(status_code=401, detail="Autenticazione richiesta")
 
@@ -129,7 +142,10 @@ async def frontend_session_route(request: Request):
                 "email": str(getattr(user, "email", "") or ""),
                 "role": str(role or "user"),
             },
-            "preferences": get_user_interface_preferences(int(getattr(user, "id", 0) or 0)),
+            "preferences": await _ui_storage_call(
+                get_user_interface_preferences,
+                int(getattr(user, "id", 0) or 0),
+            ),
             "csrf_token": _csrf_token(request),
         },
         headers={"Cache-Control": "no-store"},
@@ -139,7 +155,7 @@ async def frontend_session_route(request: Request):
 @router.put("/api/ui/preferences")
 async def frontend_preferences_route(request: Request):
     """Save personal workspace presentation choices without requiring write access to data."""
-    user = _current_user(request)
+    user = await run_in_threadpool(_current_user, request)
     if user is None:
         raise HTTPException(status_code=401, detail="Autenticazione richiesta")
     if not _csrf_is_valid(request):
@@ -154,42 +170,54 @@ async def frontend_preferences_route(request: Request):
     from core.auth import (
         PRIMARY_NAVIGATION_MODES,
         SECONDARY_NAVIGATION_MODES,
-        get_user_interface_preferences,
+        normalize_interface_preferences,
         save_user_interface_preferences,
     )
 
-    current = get_user_interface_preferences(int(getattr(user, "id", 0) or 0))
-    primary = payload.get("primary_navigation", current["primary_navigation"])
-    secondary = payload.get("secondary_navigation", current["secondary_navigation"])
-    if primary not in PRIMARY_NAVIGATION_MODES or secondary not in SECONDARY_NAVIGATION_MODES:
+    supplied = {
+        key: payload[key]
+        for key in ("primary_navigation", "secondary_navigation")
+        if key in payload
+    }
+    if not supplied or (
+        "primary_navigation" in supplied
+        and supplied["primary_navigation"] not in PRIMARY_NAVIGATION_MODES
+    ) or (
+        "secondary_navigation" in supplied
+        and supplied["secondary_navigation"] not in SECONDARY_NAVIGATION_MODES
+    ):
         raise HTTPException(status_code=422, detail="Modalita di navigazione non supportata")
-    preferences = save_user_interface_preferences(
+    preferences = await _ui_storage_call(
+        save_user_interface_preferences,
         int(getattr(user, "id", 0) or 0),
-        {"primary_navigation": primary, "secondary_navigation": secondary},
+        supplied,
     )
     if preferences is None:
         raise HTTPException(status_code=500, detail="Impossibile salvare le preferenze interfaccia")
-    return JSONResponse({"success": True, "preferences": preferences}, headers={"Cache-Control": "no-store"})
+    return JSONResponse(
+        {"success": True, "preferences": normalize_interface_preferences(preferences)},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/api/ui/tab-order")
 async def frontend_tab_order_get_route(request: Request):
     """Return the account-specific UI order used by the React workspace."""
-    user = _current_user(request)
+    user = await run_in_threadpool(_current_user, request)
     if user is None:
         raise HTTPException(status_code=401, detail="Autenticazione richiesta")
     page = str(request.query_params.get("page") or "").strip()
     if not page or len(page) > 80:
         raise HTTPException(status_code=400, detail="Pagina interfaccia mancante")
     user_id = int(getattr(user, "id", 0) or 0)
-    order = _personal_tab_order(user_id, page)
+    order = await _ui_storage_call(_personal_tab_order, user_id, page)
     return _tab_order_response(order or [])
 
 
 @router.post("/api/ui/tab-order")
 async def frontend_tab_order_post_route(request: Request):
     """Save a UI-only order for the signed-in account, including read-only accounts."""
-    user = _current_user(request)
+    user = await run_in_threadpool(_current_user, request)
     if user is None:
         raise HTTPException(status_code=401, detail="Autenticazione richiesta")
     if not _csrf_is_valid(request):
@@ -201,7 +229,12 @@ async def frontend_tab_order_post_route(request: Request):
     page, order = _parse_tab_order(payload)
     from core.auth import save_user_interface_order
 
-    saved = save_user_interface_order(int(getattr(user, "id", 0) or 0), page, order)
+    saved = await _ui_storage_call(
+        save_user_interface_order,
+        int(getattr(user, "id", 0) or 0),
+        page,
+        order,
+    )
     if saved is None:
         raise HTTPException(status_code=500, detail="Impossibile salvare l'ordine interfaccia")
     return _tab_order_response(saved)
@@ -211,7 +244,7 @@ async def frontend_tab_order_post_route(request: Request):
 @router.get("/app/{path:path}", include_in_schema=False)
 async def frontend_application_route(request: Request, path: str = ""):
     """Serve compiled assets and fall back to the SPA entry point for client routes."""
-    if _current_user(request) is None:
+    if await run_in_threadpool(_current_user, request) is None:
         target_path = request.url.path
         if request.url.query:
             target_path = f"{target_path}?{request.url.query}"

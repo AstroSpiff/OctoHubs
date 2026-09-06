@@ -10,8 +10,7 @@ from __future__ import annotations
 from alembic import op
 from sqlalchemy import inspect, text
 
-from core.auth import Base as AuthBase
-from core.storage.storage_models import Base as StorageBase
+from core.database_baseline_20260829 import create_unified_baseline
 
 
 revision = "20260829_01"
@@ -50,14 +49,9 @@ def _add_missing_auth_columns(bind) -> None:
 def upgrade() -> None:
     bind = op.get_bind()
 
-    # checkfirst makes this baseline safe for both an empty database and the
-    # already-deployed schema created by the former internal migration runner.
-    # SQLite remains supported exclusively by isolated unit tests and legacy
-    # auth import fixtures. The application schema targets PostgreSQL because
-    # a few tables use PostgreSQL ARRAY columns.
-    if bind.dialect.name != "sqlite":
-        StorageBase.metadata.create_all(bind, checkfirst=True)
-    AuthBase.metadata.create_all(bind, checkfirst=True)
+    # This immutable snapshot must never import live model metadata: later
+    # revisions own every column, table and invariant added after this date.
+    create_unified_baseline(bind)
     _add_missing_auth_columns(bind)
 
 

@@ -23,6 +23,13 @@ async function updateCurrentPassword(input: { currentPassword: string; newPasswo
   });
 }
 
+async function logoutCurrentSession(): Promise<string> {
+  const response = await request<{ success: boolean; redirect?: string }>("/logout", {
+    method: "POST",
+  });
+  return response.redirect || "/login";
+}
+
 async function getAccounts(): Promise<OctoHubsAccount[]> {
   return (await request<{ accounts: OctoHubsAccount[] }>("/api/v1/admin/accounts")).accounts;
 }
@@ -91,6 +98,7 @@ export {
   getApiTokenAudit,
   getApiTokens,
   getCurrentAccount,
+  logoutCurrentSession,
   revokeApiToken,
   rotateApiToken,
   updateAccount,

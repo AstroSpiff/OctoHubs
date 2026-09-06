@@ -79,28 +79,56 @@ function searchResultDuplicates(result: SearchResult): SearchResult[] {
 }
 
 function indexSearchResults(results: SearchResult[]): IndexedSearchResult[] {
+  const occurrences = new Map<string, number>();
   return results.map((result, index) => {
-    const key = String(index);
+    const key = nextSearchResultKey(result, occurrences);
     return {
       index,
       key,
       result,
-      duplicates: searchResultDuplicates(result).map((duplicate, duplicateIndex) => ({
-        key: `${key}:duplicate:${duplicateIndex}`,
-        result: duplicate,
-      })),
+      duplicates: searchResultDuplicates(result).map((duplicate) => {
+        return {
+          key: nextSearchResultKey(duplicate, occurrences),
+          result: duplicate,
+        };
+      }),
     };
   });
 }
 
 function searchResultEntries(results: SearchResult[]): SearchResultEntry[] {
-  return results.flatMap((result, index) => [
-    { key: String(index), result },
-    ...searchResultDuplicates(result).map((duplicate, duplicateIndex) => ({
-      key: `${index}:duplicate:${duplicateIndex}`,
-      result: duplicate,
-    })),
+  return indexSearchResults(results).flatMap(({ key, result, duplicates }) => [
+    { key, result },
+    ...duplicates,
   ]);
+}
+
+function searchResultIdentity(result: SearchResult) {
+  if (typeof result.source_id === "string" && result.source_id.trim()) {
+    return result.source_id;
+  }
+  return JSON.stringify([
+    result.web,
+    result.indexer,
+    result.title,
+    result.year,
+    result.size_gb,
+    result.resolution,
+    result.resolution_bucket,
+    result.season_number,
+    result.season_label,
+    result.episode_code,
+  ]);
+}
+
+function nextSearchResultKey(
+  result: SearchResult,
+  occurrences: Map<string, number>,
+) {
+  const identity = searchResultIdentity(result);
+  const occurrence = occurrences.get(identity) || 0;
+  occurrences.set(identity, occurrence + 1);
+  return `${identity}:${occurrence}`;
 }
 
 function resultSeason(result: SearchResult): Omit<SearchResultSeasonGroup, "items"> {

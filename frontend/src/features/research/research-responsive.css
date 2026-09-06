@@ -1,0 +1,138 @@
+@media (max-width: 880px) {
+  .research-field-grid--three,
+  .research-toggle-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .research-sort-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .research-card-heading,
+  .research-results-card .research-card-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 15px;
+  }
+  .tmdb-selected-card {
+    grid-template-columns: 40px minmax(0, 1fr) auto;
+  }
+  .independent-search-form {
+    padding: 15px;
+  }
+  .research-query-row,
+  .research-field-grid,
+  .research-field-grid--three,
+  .research-toggle-grid {
+    grid-template-columns: 1fr;
+  }
+  .research-sort-grid fieldset {
+    grid-template-columns: 1fr;
+  }
+  .research-toggle-grid h3 {
+    grid-column: auto;
+  }
+  .research-options-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .research-options-row fieldset {
+    flex: initial;
+  }
+  .manual-search-history-list li {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 12px 15px;
+  }
+  .research-card-actions {
+    width: 100%;
+  }
+  .research-card-actions > * {
+    flex: 1 1 160px;
+  }
+  .global-search-rules-body {
+    padding: 15px;
+  }
+  .research-scan-status {
+    grid-template-columns: 1fr;
+    padding: 14px 15px;
+  }
+  .research-scan-actions {
+    justify-content: flex-start;
+  }
+  .research-summary-tabs,
+  .research-summary-toolbar,
+  .research-scan-selection {
+    padding-left: 15px;
+    padding-right: 15px;
+  }
+  .research-scan-selection {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .research-summary-toolbar {
+    align-items: center;
+  }
+  .research-summary-sort {
+    grid-template-columns: auto minmax(0, 1fr);
+    flex: 1 1 auto;
+  }
+  .research-scan-selection > div {
+    justify-content: flex-start;
+  }
+  .research-result-bucket-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .research-result-bucket-heading > div {
+    width: 100%;
+    grid-template-columns: 1fr;
+  }
+  .scan-summary-item > header {
+    grid-template-columns: 26px minmax(0, 1fr);
+    padding: 9px 10px;
+  }
+  .scan-summary-row-actions {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+  .scan-summary-item-details {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+  .research-request-warning,
+  .research-save-state,
+  .research-request-group-header,
+  .research-request-list-actions {
+    margin-left: 15px;
+    margin-right: 15px;
+    padding-left: 0;
+    padding-right: 0;
+  }
+  .research-request-list {
+    padding: 10px;
+  }
+  .research-request-seasons {
+    padding-left: 11px;
+  }
+  .research-request-rule-fields {
+    grid-template-columns: 1fr;
+  }
+  .research-request-filter-summary {
+    width: 100%;
+    margin-left: 0;
+  }
+  .research-dialog-details {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+  .manual-search-history-actions {
+    flex-wrap: wrap;
+  }
+}
+@media (min-width: 900px) {
+  .research-tabs--sidebar {
+    display: none;
+  }
+}

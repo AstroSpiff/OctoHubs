@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from app_state import _LIBRARY_SCAN_TRACKER
 from core.storage import StorageError
+from core.log_sanitization import format_exception_for_log
 from realtime.manager import publish_application_event
 from web.openapi_requests import no_request_body
 from emby_latest import settings as latest_settings_api
@@ -32,6 +35,8 @@ from emby_libraries.snapshots import (
     _build_item_details_snapshot,
     _build_availability_snapshot,
 )
+
+
 from emby_libraries.image_snapshots import _build_emby_image_stream, _build_emby_image_cache_meta
 from emby_libraries.media_api_models import (
     DebugVirtualFoldersResponse,
@@ -65,6 +70,7 @@ from emby_libraries.scan_api_models import (
     TrackedScanLibraryRequest,
     request_body_schema,
 )
+from emby_libraries.scan_coordination import scan_lifecycle_guard
 from emby_libraries.order_snapshots import (
     _build_server_order_snapshot,
     _build_group_order_get_snapshot,
@@ -72,6 +78,9 @@ from emby_libraries.order_snapshots import (
 )
 from web.openapi_responses import binary_response
 from web.request_validation import validated_json_payload
+
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -162,7 +171,7 @@ async def _clear_library_scan_state() -> None:
 
     await get_library_poller().clear_states()
     _LIBRARY_SCAN_TRACKER.clear_jobs()
-    latest_settings_api._clear_latest_state()
+    await run_in_threadpool(latest_settings_api._clear_latest_state)
 
 
 @router.get(
@@ -170,8 +179,8 @@ async def _clear_library_scan_state() -> None:
     responses={200: {"model": ActiveLibraryScansResponse}},
 )
 async def active_library_scans(request: Request):
-    _require_auth_dep(request)
-    payload = _build_active_library_scans_snapshot()
+    await run_in_threadpool(_require_auth_dep, request)
+    payload = await run_in_threadpool(_build_active_library_scans_snapshot)
     return JSONResponse(payload)
 
 
@@ -180,7 +189,7 @@ async def active_library_scans(request: Request):
     responses={200: {"model": ScanJobResponse}},
 )
 async def scan_job_status(job_id: str, request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     job = _LIBRARY_SCAN_TRACKER.get_job(job_id)
     if not job:
         return _error_response_dep("Job non trovato", 404)
@@ -192,7 +201,7 @@ async def scan_job_status(job_id: str, request: Request):
     responses={200: {"model": ScanJobsResponse}},
 )
 async def scan_jobs(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     jobs = _LIBRARY_SCAN_TRACKER.get_all_jobs()
     return _success_response_dep(jobs=jobs)
 
@@ -202,7 +211,7 @@ async def scan_jobs(request: Request):
     responses={200: {"model": ScanJobsResponse}},
 )
 async def scan_jobs_history(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     all_jobs = _LIBRARY_SCAN_TRACKER.get_all_jobs()
     completed_jobs = [
         job for job in all_jobs
@@ -221,21 +230,29 @@ async def scan_jobs_history(request: Request):
     openapi_extra=no_request_body(),
 )
 async def scan_jobs_reset(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_request(request)
 
-    config, is_valid = _load_config_dep()
+    config, is_valid = await run_in_threadpool(_load_config_dep)
     if not is_valid or not config:
         return JSONResponse({"success": False, "message": "Config non valida"}, status_code=400)
     try:
-        _ensure_db_backend_dep()
+        await run_in_threadpool(_ensure_db_backend_dep)
     except StorageError as exc:
-        return JSONResponse({"success": False, "message": f"Errore DB: {exc}"}, status_code=500)
+        logger.error("Reset scansioni: database non disponibile:\n%s", format_exception_for_log(exc))
+        return JSONResponse({"success": False, "message": "Database non disponibile"}, status_code=500)
 
-    try:
-        await _clear_library_scan_state()
-    except Exception as exc:
-        return JSONResponse({"success": False, "message": f"Impossibile azzerare lo stato: {exc}"}, status_code=500)
+    with scan_lifecycle_guard() as acquired:
+        if not acquired:
+            return JSONResponse(
+                {"success": False, "message": "Avvio scansione in corso; riprova al termine"},
+                status_code=409,
+            )
+        try:
+            await _clear_library_scan_state()
+        except Exception as exc:
+            logger.error("Reset stato scansioni non riuscito:\n%s", format_exception_for_log(exc))
+            return JSONResponse({"success": False, "message": "Impossibile azzerare lo stato"}, status_code=500)
     _publish_libraries_update("history")
     return JSONResponse({"success": True, "message": "Stato scansioni e metadata azzerato."})
 
@@ -248,7 +265,7 @@ async def active_scan_jobs(request: Request):
     """
     Restituisce tutte le scansioni attualmente attive o in coda.
     """
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
 
     all_jobs = _LIBRARY_SCAN_TRACKER.get_all_jobs()
 
@@ -280,9 +297,13 @@ async def active_scan_jobs(request: Request):
     responses={200: {"model": LibraryScanResetResponse}},
 )
 async def delete_scan_job(job_id: str, request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_request(request)
-    _LIBRARY_SCAN_TRACKER.delete_job(job_id)
+    outcome = _LIBRARY_SCAN_TRACKER.delete_job(job_id)
+    if outcome == "missing":
+        return _error_response_dep("Job non trovato", 404)
+    if outcome == "active":
+        return _error_response_dep("Una scansione attiva non può essere eliminata", 409)
     _publish_libraries_update("history")
     return _success_response_dep(message="Job eliminato")
 
@@ -292,8 +313,8 @@ async def delete_scan_job(job_id: str, request: Request):
     responses={200: {"model": ActiveEmbyScansResponse}},
 )
 async def active_scans(request: Request):
-    _require_auth_dep(request)
-    payload, status_code = _build_active_scans_snapshot()
+    await run_in_threadpool(_require_auth_dep, request)
+    payload, status_code = await run_in_threadpool(_build_active_scans_snapshot)
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -303,10 +324,10 @@ async def active_scans(request: Request):
     openapi_extra=request_body_schema(ScanLibraryRequest),
 )
 async def scan_library(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_request(request)
     payload = await validated_json_payload(request, ScanLibraryRequest)
-    data, status_code = _build_scan_library_snapshot(payload)
+    data, status_code = await run_in_threadpool(_build_scan_library_snapshot, payload)
     _publish_libraries_update_on_success(data, status_code, "scan")
     return JSONResponse(data, status_code=status_code)
 
@@ -317,28 +338,16 @@ async def scan_library(request: Request):
     openapi_extra=request_body_schema(TrackedScanLibraryRequest),
 )
 async def scan_library_tracked(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_request(request)
     payload = await validated_json_payload(request, TrackedScanLibraryRequest)
 
-    # Prova ad acquisire lock (opzionale: disabilitato per permettere scan multiple)
-    # Se vuoi abilitare lock esclusivo, decomment:
-    # if server_id and not await acquire_scan_lock(server_id):
-    #     return JSONResponse({
-    #         "success": False,
-    #         "message": "Una scansione è già in corso su questo server.",
-    #         "queued": False
-    #     }, status_code=409)
-
-    try:
-        data, status_code = _build_scan_library_tracked_snapshot(payload)
-        _publish_libraries_update_on_success(data, status_code, "scan")
-        return JSONResponse(data, status_code=status_code)
-    finally:
-        # Rilascia lock se acquisito (opzionale)
-        # if server_id:
-        #     await release_scan_lock(server_id)
-        pass
+    data, status_code = await run_in_threadpool(
+        _build_scan_library_tracked_snapshot,
+        payload,
+    )
+    _publish_libraries_update_on_success(data, status_code, "scan")
+    return JSONResponse(data, status_code=status_code)
 
 
 @router.post(
@@ -347,19 +356,19 @@ async def scan_library_tracked(request: Request):
     openapi_extra=request_body_schema(TrackedGroupScanRequest),
 )
 async def scan_group_tracked(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_request(request)
     payload = await validated_json_payload(request, TrackedGroupScanRequest)
 
-    data, status_code = _build_scan_group_tracked_snapshot(payload)
+    data, status_code = await run_in_threadpool(_build_scan_group_tracked_snapshot, payload)
     _publish_libraries_update_on_success(data, status_code, "scan")
     return JSONResponse(data, status_code=status_code)
 
 
 @router.get("/api/scan-status")
 async def scan_status_api(request: Request):
-    _require_auth_dep(request)
-    payload, status_code = _build_scan_status_snapshot()
+    await run_in_threadpool(_require_auth_dep, request)
+    payload, status_code = await run_in_threadpool(_build_scan_status_snapshot)
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -368,8 +377,8 @@ async def scan_status_api(request: Request):
     responses={200: {"model": LibraryAssociationsResponse}},
 )
 async def emby_associations_get(request: Request):
-    _require_auth_dep(request)
-    payload, status_code = _build_associations_get_snapshot()
+    await run_in_threadpool(_require_auth_dep, request)
+    payload, status_code = await run_in_threadpool(_build_associations_get_snapshot)
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -379,10 +388,10 @@ async def emby_associations_get(request: Request):
     openapi_extra=request_body_schema(LibraryAssociationsRequest),
 )
 async def emby_associations_post(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_request(request)
     payload = await validated_json_payload(request, LibraryAssociationsRequest)
-    data, status_code = _build_associations_post_snapshot(payload)
+    data, status_code = await run_in_threadpool(_build_associations_post_snapshot, payload)
     _publish_libraries_update_on_success(data, status_code, "associations")
     return JSONResponse(data, status_code=status_code)
 
@@ -392,8 +401,8 @@ async def emby_associations_post(request: Request):
     responses={200: {"model": DebugVirtualFoldersResponse}},
 )
 async def debug_vf_query(request: Request):
-    _require_auth_dep(request)
-    payload, status_code = _build_debug_vf_query_snapshot()
+    await run_in_threadpool(_require_auth_dep, request)
+    payload, status_code = await run_in_threadpool(_build_debug_vf_query_snapshot)
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -402,8 +411,8 @@ async def debug_vf_query(request: Request):
     responses={200: {"model": GroupedLibrariesResponse}},
 )
 async def grouped_libraries(request: Request):
-    _require_auth_dep(request)
-    payload, status_code = _build_grouped_libraries_snapshot()
+    await run_in_threadpool(_require_auth_dep, request)
+    payload, status_code = await run_in_threadpool(_build_grouped_libraries_snapshot)
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -416,10 +425,14 @@ async def grouped_libraries(request: Request):
     ),
 )
 async def movie_versions(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     server_id = request.query_params.get("server_id") or ""
     tmdb_id = request.query_params.get("tmdb_id") or ""
-    payload, status_code = _build_movie_versions_snapshot(server_id, tmdb_id)
+    payload, status_code = await run_in_threadpool(
+        _build_movie_versions_snapshot,
+        server_id,
+        tmdb_id,
+    )
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -432,10 +445,14 @@ async def movie_versions(request: Request):
     ),
 )
 async def series_seasons(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     server_id = request.query_params.get("server_id") or ""
     series_id = request.query_params.get("series_id") or ""
-    payload, status_code = _build_series_seasons_snapshot(server_id, series_id)
+    payload, status_code = await run_in_threadpool(
+        _build_series_seasons_snapshot,
+        server_id,
+        series_id,
+    )
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -448,10 +465,14 @@ async def series_seasons(request: Request):
     ),
 )
 async def season_episodes(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     server_id = request.query_params.get("server_id") or ""
     season_id = request.query_params.get("season_id") or ""
-    payload, status_code = _build_season_episodes_snapshot(server_id, season_id)
+    payload, status_code = await run_in_threadpool(
+        _build_season_episodes_snapshot,
+        server_id,
+        season_id,
+    )
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -464,10 +485,10 @@ async def season_episodes(request: Request):
     ),
 )
 async def emby_lookup(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     title = request.query_params.get("title") or ""
     year = request.query_params.get("year") or ""
-    payload, status_code = _build_lookup_snapshot(title, year)
+    payload, status_code = await run_in_threadpool(_build_lookup_snapshot, title, year)
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -480,10 +501,14 @@ async def emby_lookup(request: Request):
     ),
 )
 async def emby_item_details(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     server_id = request.query_params.get("server_id") or ""
     item_id = request.query_params.get("item_id") or ""
-    payload, status_code = _build_item_details_snapshot(server_id, item_id)
+    payload, status_code = await run_in_threadpool(
+        _build_item_details_snapshot,
+        server_id,
+        item_id,
+    )
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -493,10 +518,10 @@ async def emby_item_details(request: Request):
     openapi_extra=media_request_body_schema(EmbyAvailabilityRequest),
 )
 async def emby_availability(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_request(request)
     body = await validated_json_payload(request, EmbyAvailabilityRequest)
-    payload, status_code = _build_availability_snapshot(body)
+    payload, status_code = await run_in_threadpool(_build_availability_snapshot, body)
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -515,7 +540,7 @@ async def emby_availability(request: Request):
     ),
 )
 async def emby_image(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     server_id = request.query_params.get("server_id")
     item_id = request.query_params.get("item_id")
     image_type = request.query_params.get("type", "Primary")
@@ -539,8 +564,10 @@ async def emby_image(request: Request):
             return Response(status_code=304, headers={
                 "ETag": etag,
                 "Cache-Control": cache_control,
+                "Vary": "Cookie, Authorization",
             })
-    stream, content_type, error_payload, status_code = _build_emby_image_stream(
+    stream, content_type, error_payload, status_code = await run_in_threadpool(
+        _build_emby_image_stream,
         server_id,
         item_id,
         image_type=image_type,
@@ -553,6 +580,7 @@ async def emby_image(request: Request):
         return JSONResponse(error_payload, status_code=status_code)
     headers = {
         "Cache-Control": cache_control,
+        "Vary": "Cookie, Authorization",
     }
     if etag:
         headers["ETag"] = etag
@@ -566,10 +594,10 @@ async def emby_image(request: Request):
     openapi_extra=request_body_schema(ServerOrderRequest),
 )
 async def emby_server_order(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_request(request)
     body = await validated_json_payload(request, ServerOrderRequest)
-    payload, status_code = _build_server_order_snapshot(body)
+    payload, status_code = await run_in_threadpool(_build_server_order_snapshot, body)
     _publish_libraries_update_on_success(payload, status_code, "servers")
     return JSONResponse(payload, status_code=status_code)
 
@@ -579,8 +607,8 @@ async def emby_server_order(request: Request):
     responses={200: {"model": LibraryGroupOrderResponse}},
 )
 async def emby_group_order_get(request: Request):
-    _require_auth_dep(request)
-    payload, status_code = _build_group_order_get_snapshot()
+    await run_in_threadpool(_require_auth_dep, request)
+    payload, status_code = await run_in_threadpool(_build_group_order_get_snapshot)
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -590,9 +618,9 @@ async def emby_group_order_get(request: Request):
     openapi_extra=request_body_schema(LibraryGroupOrderRequest),
 )
 async def emby_group_order_post(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_request(request)
     body = await validated_json_payload(request, LibraryGroupOrderRequest)
-    payload, status_code = _build_group_order_post_snapshot(body)
+    payload, status_code = await run_in_threadpool(_build_group_order_post_snapshot, body)
     _publish_libraries_update_on_success(payload, status_code, "groups")
     return JSONResponse(payload, status_code=status_code)

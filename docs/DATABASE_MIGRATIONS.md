@@ -1,13 +1,21 @@
+[Italiano](DATABASE_MIGRATIONS_ita.md) | [English](DATABASE_MIGRATIONS.md)
+
 # Database Migrations
 
 OctoHubs has one PostgreSQL database and one migration history: Alembic.
+PostgreSQL 16 or newer is required. Startup checks `server_version_num` and stops
+before inspecting or changing the schema when the server is older.
 
 ## Ownership
 
+- The installer owns and provisions the PostgreSQL server, database, login role,
+  networking, TLS, availability and backups. OctoHubs never creates that
+  infrastructure and ships no PostgreSQL runtime service.
 - PostgreSQL stores application settings, workflow and media data, users, sessions, interface preferences, API tokens and audit logs.
-- Alembic owns every schema change. The authoritative registry is `alembic_version`.
-- `config.json` remains a bootstrap/configuration file, not a second persistent database.
-- SQLite is not supported as a runtime database. An old `auth.db` can be imported once by setting `OCTOHUBS_LEGACY_AUTH_SQLITE_PATH` before the first PostgreSQL start. The source file is never deleted.
+- Within the operator-supplied database, Alembic owns every table, index, sequence
+  and schema change. The authoritative registry is `alembic_version`.
+- PostgreSQL is the only runtime and configuration database. OctoHubs does not
+  read `config.json` or import SQLite databases.
 
 ## Lifecycle
 
@@ -40,6 +48,31 @@ provider and completed only after a confirmed delivery. Confirmed provider error
 release the claim for retry; an interrupted, outcome-unknown call remains claimed
 until the notification state is explicitly reset, preventing automatic duplicates.
 
+Revision `20260830_07` removes Emby credentials embedded in image URLs previously
+stored by Latest Publications. The application now reconstructs authenticated
+client image links through its own proxy, so removed credentials are intentionally
+not recoverable by downgrade.
+
+Revision `20260831_08` adds fenced Probe queue claims. Revision `20260831_09`
+enforces one persisted leader per Emby user group, and `20260831_10` adds the
+authentication epoch used to revoke existing browser sessions after a password
+change or reset.
+
+Revision `20260905_18` adds the durable Emby user-creation journal. A username is
+reserved before the remote create call and remains reserved while Emby identity
+visibility is unresolved, so a process restart cannot submit the same creation
+twice. The entry is removed after reconciliation or together with its server.
+
+Revision `20260906_19` materializes the canonical Latest state document once,
+when needed, and then permanently drops the five obsolete normalized state
+projections. Runtime reads and writes use only the canonical document; the
+downgrade intentionally does not recreate parallel sources of truth.
+
+Revision `20260906_20` removes obsolete `EMBY_LATEST.STATE` and
+`EMBY_LATEST.CACHE` payloads from application settings. Latest runtime state and
+cache now have one authoritative PostgreSQL representation and are never read
+from or written back to the settings document.
+
 ## PostgreSQL integration test
 
 The migration integration test uses an isolated temporary schema on a PostgreSQL 16
@@ -58,8 +91,12 @@ PostgreSQL 16 image.
 The automated release gate runs the complete backend suite with a PostgreSQL 16
 service and `OCTOHUBS_REQUIRE_POSTGRES_TESTS=1`. A missing database URL therefore
 fails the gate instead of silently skipping the integration coverage. Ordinary
-local `pytest` runs may still skip these three slower tests for fast feedback.
+local `pytest` runs may still skip the slower PostgreSQL tests for fast feedback.
 
 ## Bootstrap admin
 
-On an empty database, `ADMIN_USERNAME`, `ADMIN_PASSWORD` and optionally `ADMIN_EMAIL` create the first administrator. Those credentials are written only as a bcrypt hash in PostgreSQL. Subsequent users, roles, audit records and API tokens live in the same database.
+On an empty database, `ADMIN_USERNAME`, `ADMIN_PASSWORD` or
+`ADMIN_PASSWORD_FILE`, and optionally `ADMIN_EMAIL`, create the first
+administrator. The password is stored only as a bcrypt hash in PostgreSQL. Remove
+the bootstrap variables or secret after the first successful login; subsequent
+users, roles, audit records and API tokens remain in the same database.

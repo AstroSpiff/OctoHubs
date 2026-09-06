@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import uuid
 from typing import Any, Dict, List
 
 from core.config_manager import _ensure_db_backend
+from core.log_sanitization import format_exception_for_log
 from .collection_common import (
     SYNC_STATE_FIELDS,
     _enrich_definition,
@@ -19,6 +21,8 @@ from .collection_common import (
 from .collection_emby import _delete_emby_collection, _find_collection_ids_for_definition
 from .source_inventory import maybe_add_collection_source_to_inventory
 from .sources import SOURCE_TYPE_MAP
+from .source_references import normalize_source_reference
+from .sync_coordination import mutate_stored_collection, serialized_collection_mutation
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +117,7 @@ def delete_collection_backdrop_blob(definition_id: str) -> None:
     backend.delete_emby_collection_backdrop(definition_id)
 
 
+@serialized_collection_mutation
 def save_collection_definition(payload: Dict[str, Any]) -> Dict[str, Any]:
     backend = _ensure_db_backend()
     existing = backend.get_emby_collection_definition(payload.get("id") or "")
@@ -127,9 +132,7 @@ def save_collection_definition(payload: Dict[str, Any]) -> Dict[str, Any]:
     source_type = str(payload.get("source_type") or "").strip()
     if source_type not in SOURCE_TYPE_MAP:
         raise ValueError("Tipo di fonte non valido")
-    raw_value = str(payload.get("source_value") or "").strip()
-    if not raw_value:
-        raise ValueError("Valore della lista obbligatorio")
+    raw_value = normalize_source_reference(source_type, str(payload.get("source_value") or ""))
     source_origin = str(payload.get("source_origin") or existing_data.get("source_origin") or "manual").strip().lower()
     if source_origin not in {"manual", "personal", "inventory", "auto"}:
         source_origin = "manual"
@@ -214,11 +217,27 @@ def save_collection_definition(payload: Dict[str, Any]) -> Dict[str, Any]:
     for field in SYNC_STATE_FIELDS:
         if field in existing_data:
             definition[field] = existing_data[field]
-    backend.save_emby_collection_definition(definition)
+    if existing:
+        owned_fields = {
+            key: value
+            for key, value in definition.items()
+            if key not in SYNC_STATE_FIELDS
+        }
+
+        def apply_definition(current: Dict[str, Any]) -> Dict[str, Any]:
+            current.update(copy.deepcopy(owned_fields))
+            return current
+
+        stored = mutate_stored_collection(backend, definition_id, apply_definition)
+        if stored is None:
+            raise ValueError("Collezione non trovata")
+        definition = stored
+    else:
+        backend.save_emby_collection_definition(definition)
     try:
         maybe_add_collection_source_to_inventory(definition)
     except Exception as exc:
-        logger.warning("Impossibile aggiornare inventario liste per %s: %s", definition_id, exc)
+        logger.warning("Impossibile aggiornare inventario liste per %s:\n%s", definition_id, format_exception_for_log(exc))
     logger.info(
         "Saved collection definition '%s' (id=%s) for server=%s enabled=%s",
         name,
@@ -229,14 +248,22 @@ def save_collection_definition(payload: Dict[str, Any]) -> Dict[str, Any]:
     return _enrich_definition(definition, servers)
 
 
+@serialized_collection_mutation
 def set_collection_enabled(definition_id: str, enabled: bool) -> Dict[str, Any]:
     backend = _ensure_db_backend()
     existing = backend.get_emby_collection_definition(definition_id)
     if not isinstance(existing, dict):
         raise KeyError("Definizione non trovata")
-    existing["enabled"] = bool(enabled)
-    existing["updated_at"] = _now_iso()
-    backend.save_emby_collection_definition(existing)
+    updated_at = _now_iso()
+
+    def apply_enabled(current: Dict[str, Any]) -> Dict[str, Any]:
+        current["enabled"] = bool(enabled)
+        current["updated_at"] = updated_at
+        return current
+
+    existing = mutate_stored_collection(backend, definition_id, apply_enabled)
+    if existing is None:
+        raise KeyError("Definizione non trovata")
     servers = _server_map()
     enriched = _enrich_definition(existing, servers)
     if not enabled:
@@ -258,6 +285,7 @@ def set_collection_enabled(definition_id: str, enabled: bool) -> Dict[str, Any]:
     return enriched
 
 
+@serialized_collection_mutation
 def remove_collection_definition(definition_id: str) -> Dict[str, Any]:
     backend = _ensure_db_backend()
     existing = backend.get_emby_collection_definition(definition_id)
@@ -285,20 +313,18 @@ def remove_collection_definition(definition_id: str) -> Dict[str, Any]:
                 deleted_on_emby = True
             else:
                 pending = True
-    try:
-        backend.delete_emby_collection_poster(definition_id)
-    except Exception:
-        logger.warning("Impossibile eliminare il poster salvato per la collezione %s", definition_id)
-    try:
-        backend.delete_emby_collection_backdrop(definition_id)
-    except Exception:
-        logger.warning("Impossibile eliminare il backdrop salvato per la collezione %s", definition_id)
     if pending or not server_ids:
-        existing["delete_pending"] = True
-        existing["enabled"] = False
-        existing["delete_requested_at"] = _now_iso()
-        existing["updated_at"] = existing["delete_requested_at"]
-        backend.save_emby_collection_definition(existing)
+        delete_requested_at = _now_iso()
+
+        def mark_pending(current: Dict[str, Any]) -> Dict[str, Any]:
+            current["delete_pending"] = True
+            current["enabled"] = False
+            current["delete_requested_at"] = delete_requested_at
+            current["updated_at"] = delete_requested_at
+            return current
+
+        if mutate_stored_collection(backend, definition_id, mark_pending) is None:
+            raise KeyError("Definizione non trovata")
         logger.info(
             "Definizione collezione %s marcata per rimozione (Emby=%s pending=%s)",
             definition_id,
@@ -310,7 +336,7 @@ def remove_collection_definition(definition_id: str) -> Dict[str, Any]:
             "deleted_on_emby": deleted_on_emby,
             "delete_pending": True
         }
-    backend.delete_emby_collection_definition(definition_id)
+    backend.delete_emby_collection_bundle(definition_id)
     logger.info("Definizione collezione %s cancellata (Emby=%s)", definition_id, deleted_on_emby)
     return {
         "id": definition_id,

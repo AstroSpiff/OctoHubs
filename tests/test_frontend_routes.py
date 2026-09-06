@@ -73,8 +73,30 @@ async def test_frontend_preferences_are_saved_for_the_current_account(monkeypatc
     }
     assert saved == {
         "user_id": 7,
-        "preferences": {"primary_navigation": "sidebar", "secondary_navigation": "tabs"},
+        "preferences": {"primary_navigation": "sidebar"},
     }
+
+
+@pytest.mark.anyio
+async def test_frontend_preferences_report_storage_outage_as_503(monkeypatch):
+    from core.auth import AuthStorageError
+    from web import frontend_routes
+
+    frontend_routes.init_frontend_routes(
+        get_current_user_optional=lambda _request: SimpleNamespace(id=7, username="roy"),
+        get_csrf_token=lambda _request: "csrf-token",
+        validate_csrf=lambda _request, token: token == "csrf-token",
+    )
+
+    def unavailable(*_args):
+        raise AuthStorageError("database unavailable")
+
+    monkeypatch.setattr("core.auth.save_user_interface_preferences", unavailable)
+    with pytest.raises(HTTPException) as exc_info:
+        await frontend_routes.frontend_preferences_route(
+            _PreferencesRequest({"primary_navigation": "sidebar"}),
+        )
+    assert exc_info.value.status_code == 503
 
 
 @pytest.mark.anyio

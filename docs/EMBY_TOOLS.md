@@ -6,8 +6,25 @@ Docs: [README](../README.md) | [Docker Deploy](DOCKER_DEPLOY.md) | [Deployment](
 
 This document covers Emby-related tools in OctoHubs.
 
+## Emby Collections
+
+OctoHubs can maintain Emby collections from MDBList, Trakt and TMDB sources.
+The collections workspace lets an editor configure one or more list sources per
+server, run a synchronization, inspect its status and enable scheduled refreshes.
+Collection definitions and synchronization state are stored in PostgreSQL; the
+generated collections are tagged with the canonical `OctoHubs` tag in Emby.
+
+From the authenticated Collections page you can:
+
+- configure MDBList, Trakt and TMDB list sources;
+- target one or more configured Emby servers;
+- run an individual or global synchronization;
+- inspect missing items and per-server results;
+- configure the automatic collection scheduler.
+
 ## Manual setup
-- Add Emby servers in `config.json` with an admin API key.
+- Add and maintain Emby servers from the authenticated Configuration page;
+  PostgreSQL is the only settings store.
 - If you want STRM Extract automation, set `strm_task_id` for the server.
 
 How to find `strm_task_id`:
@@ -40,13 +57,10 @@ The Media Probe page lets you inspect and analyze video items without MediaInfo:
 - its per-server Probe configuration can include every video file without MediaInfo;
 - the policy is shared by Libraries and Recent items.
 - view source and metadata
-- inspect queue and history (when DB enabled)
+- inspect queue and history stored in the application database
 - verify Probe processing status
-
-Manual steps:
-- Enable `DATABASE.ENABLED=true` if you need history in the probe view.
 
 ## Troubleshooting
 - STRM task does not start: check `strm_task_id` and Emby API key.
 - Guard never starts: verify no active sessions and correct server URL.
-- Probe data missing: ensure app DB is enabled for history storage.
+- Probe data missing: verify PostgreSQL connectivity and the app logs.

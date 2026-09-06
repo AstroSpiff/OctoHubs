@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 import { DialogBackdrop } from "@/components/ui/dialog-backdrop";
 import { usePopoverDisclosure } from "@/components/ui/use-popover-disclosure";
+import { logoutCurrentSession } from "@/features/account-management/api";
 import type { ApplicationTheme } from "@/lib/theme-preference";
 import { cn } from "@/lib/utils";
 
@@ -179,6 +180,8 @@ function AccountActions({ onAction, onOpenPreferences, onToggleTheme, theme }: A
   const isDark = theme === "dark";
   const themeLabel = isDark ? "Attiva tema chiaro" : "Attiva tema scuro";
   const ThemeIcon = isDark ? Sun : Moon;
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState("");
 
   function openPreferences() {
     onAction?.();
@@ -188,6 +191,20 @@ function AccountActions({ onAction, onOpenPreferences, onToggleTheme, theme }: A
   function toggleTheme() {
     onAction?.();
     onToggleTheme();
+  }
+
+  async function logout() {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    setLogoutError("");
+    try {
+      const redirect = await logoutCurrentSession();
+      onAction?.();
+      window.location.assign(redirect);
+    } catch (error) {
+      setLogoutError(error instanceof Error ? error.message : "Disconnessione non riuscita.");
+      setLoggingOut(false);
+    }
   }
 
   return (
@@ -201,10 +218,16 @@ function AccountActions({ onAction, onOpenPreferences, onToggleTheme, theme }: A
         <span>{themeLabel}</span>
       </button>
       <div className="session-account-menu-separator" aria-hidden="true" />
-      <a className="session-account-menu-action is-danger" href="/logout" onClick={onAction}>
+      <button
+        type="button"
+        className="session-account-menu-action is-danger"
+        disabled={loggingOut}
+        onClick={() => void logout()}
+      >
         <LogOut size={16} aria-hidden="true" />
-        <span>Esci</span>
-      </a>
+        <span>{loggingOut ? "Disconnessione..." : "Esci"}</span>
+      </button>
+      {logoutError ? <p className="session-account-menu-error" role="alert">{logoutError}</p> : null}
     </div>
   );
 }

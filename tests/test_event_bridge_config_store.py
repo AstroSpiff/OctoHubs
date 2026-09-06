@@ -17,7 +17,12 @@ def _storage(tmp_path) -> tuple[DatabaseStorage, object]:
     storage = DatabaseStorage({"URL": database_url})
     storage._engine = engine
     storage._Session = sessionmaker(bind=engine, expire_on_commit=False)
-    storage.save_app_settings({"EVENT_BRIDGE": {"HTTP_TIMEOUT_SECONDS": 11}})
+    storage.save_app_settings(
+        {
+            "EMBY": {"SERVERS": [{"id": "green"}, {"id": "blue"}]},
+            "EVENT_BRIDGE": {"DEFAULT": {"HTTP_TIMEOUT_SECONDS": 11}, "SERVERS": {}},
+        }
+    )
     return storage, engine
 
 
@@ -74,4 +79,29 @@ def test_concurrent_plugin_reports_preserve_settings_for_both_servers(tmp_path, 
     active_servers = config_manager._ACTIVE_CONFIG["EVENT_BRIDGE"]["SERVERS"]
     assert active_servers["green"]["RETRY_COUNT"] == 2
     assert active_servers["blue"]["RETRY_COUNT"] == 4
+    engine.dispose()
+
+
+def test_plugin_report_cannot_recreate_settings_for_a_removed_server(tmp_path, monkeypatch):
+    from core import config_manager
+    from emby_runtime import event_bridge_config_store
+
+    storage, engine = _storage(tmp_path)
+    settings = storage.load_app_settings()
+    settings["EMBY"]["SERVERS"] = [{"id": "blue"}]
+    storage.save_app_settings(settings)
+    monkeypatch.setattr(config_manager, "_ACTIVE_CONFIG", {"EVENT_BRIDGE": {}})
+    monkeypatch.setattr(config_manager, "_ensure_db_backend", lambda: storage)
+
+    saved = event_bridge_config_store.apply_plugin_reported_settings(
+        {
+            "server": {"id": "green"},
+            "event": {"type": "plugin.config_saved"},
+            "plugin": {"retryCount": 3},
+        }
+    )
+
+    assert saved is False
+    persisted = storage.load_app_settings()
+    assert "green" not in persisted["EVENT_BRIDGE"]["SERVERS"]
     engine.dispose()

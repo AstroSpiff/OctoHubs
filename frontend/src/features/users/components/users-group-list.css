@@ -441,6 +441,10 @@
     transform 0.15s ease;
 }
 
+.user-row--read-only {
+  grid-template-columns: 40px minmax(0, 1fr) 88px;
+}
+
 .user-row:hover {
   border-color: var(--color-accent-border);
   box-shadow: var(--shadow-control);
@@ -948,6 +952,9 @@
     grid-template-columns: 15px 36px minmax(0, 1fr) 82px;
     gap: 7px;
     padding: 12px 8px 1px;
+  }
+  .user-row--read-only {
+    grid-template-columns: 36px minmax(0, 1fr) 82px;
   }
   .user-avatar-wrap,
   .user-row img,

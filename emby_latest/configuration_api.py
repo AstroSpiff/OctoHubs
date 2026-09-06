@@ -6,14 +6,21 @@ snapshots and mutations without browser redirects or flash-message state.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from jinja2 import TemplateSyntaxError
+
 from core.config_manager import _db_enabled, load_config
 from core.emby_servers import _emby_display_name
+from core.log_sanitization import format_exception_for_log
 from emby_latest import settings as latest_settings
 from telegram import _load_telegram_settings
+
+
+logger = logging.getLogger(__name__)
 
 
 def _failure(message: str, status_code: int = 400) -> tuple[dict[str, Any], int]:
@@ -98,6 +105,8 @@ def _duplicate_preset_name(presets: list[dict[str, Any]], name: str, current_id:
 
 
 def save_latest_preset(body: Any) -> tuple[dict[str, Any], int]:
+    from emby_latest.templates import validate_template
+
     config, error = _context()
     if error:
         return _failure(error)
@@ -109,6 +118,10 @@ def save_latest_preset(body: Any) -> tuple[dict[str, Any], int]:
     template = str(body.get("template") or "").strip()
     if not name or not template:
         return _failure("Nome e template preconfigurazione sono obbligatori")
+    try:
+        validate_template(template)
+    except (TemplateSyntaxError, ValueError) as exc:
+        return _failure(str(exc))
 
     current = latest_settings._load_latest_settings()
     presets = current.get("PRESETS") or []
@@ -292,12 +305,10 @@ def clear_latest_state() -> tuple[dict[str, Any], int]:
     if error:
         return _failure(error)
     try:
-        from emby_latest.db_state import clear_state
-
-        clear_state()
-        latest_settings._clear_latest_state()
+        latest_settings._clear_latest_notification_state()
     except Exception as exc:
-        return _failure(f"Errore durante l'azzeramento: {exc}", 500)
+        logger.error("Errore azzeramento stato Latest:\n%s", format_exception_for_log(exc))
+        return _failure("Errore durante l'azzeramento", 500)
     return {"success": True, "message": "Stato notifiche azzerato con successo"}, 200
 
 
@@ -308,5 +319,6 @@ def reset_latest_state_and_cache() -> tuple[dict[str, Any], int]:
     try:
         latest_settings._reset_latest_cache_state()
     except Exception as exc:
-        return _failure(f"Errore durante l'azzeramento: {exc}", 500)
-    return {"success": True, "message": "Dati Pubblicazioni azzerati (STATE + CACHE)"}, 200
+        logger.error("Errore reset Latest:\n%s", format_exception_for_log(exc))
+        return _failure("Errore durante l'azzeramento", 500)
+    return {"success": True, "message": "Dati Pubblicazioni azzerati (stato e cache)"}, 200

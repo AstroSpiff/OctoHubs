@@ -31,10 +31,12 @@ import {
   hasPendingGroupIconBinding,
 } from "@/features/users/group-icon-bindings";
 import { isUserOperationPending } from "@/features/users/user-operation-state";
-import { usePendingGroupIds } from "@/features/users/use-pending-group-ids";
+import { usePendingGroupIds, usePendingIds } from "@/features/users/use-pending-group-ids";
+import { useKeyedOperationState } from "@/lib/use-keyed-operation-state";
 import { clearVisibleUserSelection, defaultUsersFilters, isLeaderOrStandalone, replaceVisibleUserSelection, userSelectionKey, visibleUserGroups } from "@/features/users/presentation";
 import type { BulkCloneInput, EmbyUser, EmbyUserGroup, GroupSyncSettings, LinkUserSelection, LinkUsersInput, PasswordTarget, UsersFilters } from "@/features/users/types";
 import { useUsers } from "@/features/users/use-users";
+import { BulkClonePartialError, UserActionPartialError } from "@/features/users/api";
 
 type RenameTarget = { kind: "group"; group: EmbyUserGroup } | { kind: "user"; user: EmbyUser };
 type DeleteTarget = { kind: "group"; group: EmbyUserGroup } | { kind: "user"; user: EmbyUser };
@@ -53,9 +55,12 @@ function UsersPage() {
   const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [cloneSources, setCloneSources] = useState<EmbyUser[]>([]);
+  const [cloneRetryJobs, setCloneRetryJobs] = useState<BulkCloneInput["retryJobs"]>();
+  const [createRetryServerIds, setCreateRetryServerIds] = useState<string[]>([]);
   const [bulkSettingsUsers, setBulkSettingsUsers] = useState<EmbyUser[]>([]);
   const [linkSelections, setLinkSelections] = useState<LinkUserSelection[]>([]);
   const [detailsUser, setDetailsUser] = useState<EmbyUser | null>(null);
+  const [accessErrors, setAccessErrors] = useState<Record<string, string>>({});
   const [drafts, setDrafts] = useState<Record<UsersDraftScope, boolean>>({
     bulkSettings: false,
     clone: false,
@@ -70,7 +75,11 @@ function UsersPage() {
   const users = useUsers();
   const icons = useUserIcons();
   const pendingGroupSettings = usePendingGroupIds();
-  const pendingGroupSyncStarts = usePendingGroupIds();
+  const groupSyncOperations = useKeyedOperationState();
+  const pendingRemoteAccess = usePendingIds();
+  const pendingDownloadAccess = usePendingIds();
+  const leaderOperations = useKeyedOperationState();
+  const unlinkOperations = useKeyedOperationState();
   const dashboard = users.dashboard.data || { groups: [], servers: [] };
   const iconConfig = icons.config.data || emptyIconConfig;
   const activeConfiguredGroup = configuredGroup
@@ -102,7 +111,7 @@ function UsersPage() {
         icons.config.dataUpdatedAt,
       )
     : undefined;
-  const mutationError = users.remoteAccess.error || users.downloadAccess.error || users.link.error || users.leader.error || users.unlink.error || users.userRename.error || users.groupRename.error || users.password.error || users.removeUser.error || users.removeGroup.error || users.clone.error || users.settingsApply.error || users.create.error || icons.bindings.error;
+  const mutationError = users.link.error;
   const hasUnsavedDrafts = Object.values(drafts).some(Boolean);
   useBeforeUnloadWarning(hasUnsavedDrafts);
   useUnsavedChangesNavigationGuard(hasUnsavedDrafts, confirmation.confirm);
@@ -118,36 +127,74 @@ function UsersPage() {
   const updateNameDirty = useCallback((dirty: boolean) => updateDraft("name", dirty), [updateDraft]);
   const updatePasswordDirty = useCallback((dirty: boolean) => updateDraft("password", dirty), [updateDraft]);
   const updateSettingsDirty = useCallback((dirty: boolean) => updateDraft("settings", dirty), [updateDraft]);
-  const isUserChanging = useCallback((user: EmbyUser) => isUserOperationPending(user, {
-    remote: users.remoteAccess.isPending ? users.remoteAccess.variables : undefined,
-    download: users.downloadAccess.isPending ? users.downloadAccess.variables : undefined,
-    unlink: users.unlink.isPending ? users.unlink.variables : undefined,
+  const isUserChanging = useCallback((user: EmbyUser) => pendingRemoteAccess.pendingIds.has(userSelectionKey(user)) || pendingDownloadAccess.pendingIds.has(userSelectionKey(user)) || isUserOperationPending(user, {
+    unlink: unlinkOperations.pendingKeys.has(userSelectionKey(user)) ? user : undefined,
     rename: users.userRename.isPending ? users.userRename.variables : undefined,
     password: users.password.isPending ? users.password.variables : undefined,
     delete: users.removeUser.isPending ? users.removeUser.variables : undefined,
     clone: users.clone.isPending ? users.clone.variables : undefined,
     applySettings: users.settingsApply.isPending ? users.settingsApply.variables : undefined,
-    leader: users.leader.isPending ? users.leader.variables : undefined,
+    leader: leaderOperations.pendingKeys.has(userSelectionKey(user)) ? { user } : undefined,
   }), [
     users.clone.isPending,
     users.clone.variables,
-    users.downloadAccess.isPending,
-    users.downloadAccess.variables,
-    users.leader.isPending,
-    users.leader.variables,
+    pendingDownloadAccess.pendingIds,
+    pendingRemoteAccess.pendingIds,
+    leaderOperations.pendingKeys,
     users.password.isPending,
     users.password.variables,
-    users.remoteAccess.isPending,
-    users.remoteAccess.variables,
     users.removeUser.isPending,
     users.removeUser.variables,
     users.settingsApply.isPending,
     users.settingsApply.variables,
-    users.unlink.isPending,
-    users.unlink.variables,
+    unlinkOperations.pendingKeys,
     users.userRename.isPending,
     users.userRename.variables,
   ]);
+
+  async function toggleRemoteAccess(user: EmbyUser) {
+    const key = userSelectionKey(user);
+    if (!pendingRemoteAccess.begin(key)) return;
+    const errorKey = `remote:${key}`;
+    setAccessErrors((current) => {
+      const next = { ...current };
+      delete next[errorKey];
+      return next;
+    });
+    try {
+      await users.remoteAccess.mutateAsync(user);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Errore sconosciuto";
+      setAccessErrors((current) => ({
+        ...current,
+        [errorKey]: `${user.name} — accesso remoto: ${message}`,
+      }));
+    } finally {
+      pendingRemoteAccess.finish(key);
+    }
+  }
+
+  async function toggleDownloadAccess(user: EmbyUser) {
+    const key = userSelectionKey(user);
+    if (!pendingDownloadAccess.begin(key)) return;
+    const errorKey = `download:${key}`;
+    setAccessErrors((current) => {
+      const next = { ...current };
+      delete next[errorKey];
+      return next;
+    });
+    try {
+      await users.downloadAccess.mutateAsync(user);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Errore sconosciuto";
+      setAccessErrors((current) => ({
+        ...current,
+        [errorKey]: `${user.name} — download: ${message}`,
+      }));
+    } finally {
+      pendingDownloadAccess.finish(key);
+    }
+  }
 
   function updateFilters(updates: Partial<UsersFilters>) {
     setFilters((current) => ({ ...current, ...updates }));
@@ -187,7 +234,17 @@ function UsersPage() {
   }
 
   function create(input: { username: string; password: string; serverIds: string[]; linkGroup: boolean; presetId?: string | null }) {
-    users.create.mutate(input, { onSuccess: () => setCreating(false) });
+    users.create.mutate(input, {
+      onSuccess: () => { setCreateRetryServerIds([]); setCreating(false); },
+      onError: (error) => {
+        if (!(error instanceof UserActionPartialError)) return;
+        const outcome = error.outcome.result || error.outcome;
+        const failures = Array.isArray(outcome.failed) ? outcome.failed : [];
+        setCreateRetryServerIds(failures.flatMap((failure) =>
+          typeof failure === "string" || !failure.server_id ? [] : [failure.server_id],
+        ));
+      },
+    });
   }
 
   function saveGroupSettings(settings: GroupSyncSettings) {
@@ -213,11 +270,12 @@ function UsersPage() {
   }
 
   function syncGroup(group: EmbyUserGroup) {
-    if (group.last_sync_status === "running" || !pendingGroupSyncStarts.begin(group.id)) return;
+    if (group.last_sync_status === "running" || groupSyncOperations.isPending(group.id)) return;
     const groupId = group.id;
-    users.groupSync.mutate(groupId, {
-      onSettled: () => pendingGroupSyncStarts.finish(groupId),
-    });
+    groupSyncOperations.begin([groupId]);
+    void users.groupSync.mutateAsync(groupId).catch((error: unknown) => {
+      groupSyncOperations.fail([groupId], error);
+    }).finally(() => groupSyncOperations.finish([groupId]));
   }
 
   function saveName(name: string) {
@@ -237,22 +295,51 @@ function UsersPage() {
   }
 
   function cloneUsers(input: BulkCloneInput) {
-    users.clone.mutate(input, { onSuccess: () => setCloneSources([]) });
+    users.clone.mutate({ ...input, retryJobs: cloneRetryJobs }, {
+      onSuccess: () => { setCloneRetryJobs(undefined); setCloneSources([]); },
+      onError: (error) => {
+        if (error instanceof BulkClonePartialError) {
+          setCloneRetryJobs(error.result.failed.map(({ source, targetServerId }) => ({ source: { user: source, newUsername: input.sources.find((item) => item.user.server_id === source.server_id && item.user.user_id === source.user_id)?.newUsername || source.name, linkGroup: input.sources.find((item) => item.user.server_id === source.server_id && item.user.user_id === source.user_id)?.linkGroup || false }, targetServerId })));
+        }
+      },
+    });
   }
 
   async function unlinkUser(user: EmbyUser) {
     if (!await confirmation.confirm({ title: "Dissocia utente", description: `Dissociare ${user.name} dal gruppo?`, confirmLabel: "Dissocia", tone: "danger" })) return;
-    users.unlink.mutate(user);
+    const targetKey = userSelectionKey(user);
+    if (unlinkOperations.isPending(targetKey)) return;
+    unlinkOperations.begin([targetKey]);
+    try {
+      await users.unlink.mutateAsync(user);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Errore sconosciuto";
+      unlinkOperations.fail([targetKey], new Error(`${user.name} — dissociazione: ${message}`));
+    } finally {
+      unlinkOperations.finish([targetKey]);
+    }
   }
 
   async function setLeader(group: EmbyUserGroup, user: EmbyUser) {
     if (!await confirmation.confirm({ title: "Imposta leader", description: `Impostare ${user.name} come leader del gruppo ${group.name}?`, confirmLabel: "Imposta leader" })) return;
-    users.leader.mutate({ group, user });
+    const targetKey = userSelectionKey(user);
+    if (leaderOperations.isPending(targetKey)) return;
+    leaderOperations.begin([targetKey]);
+    try {
+      await users.leader.mutateAsync({ group, user });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Errore sconosciuto";
+      leaderOperations.fail([targetKey], new Error(`${user.name} — leader: ${message}`));
+    } finally {
+      leaderOperations.finish([targetKey]);
+    }
   }
 
   function saveGroupIconProfile(group: EmbyUserGroup, profileId: string) {
     const targets = groupIconBindingTargets(group, profileId);
-    if (targets.length) icons.bindings.mutate(targets);
+    if (targets.length && !hasPendingGroupIconBinding(group, icons.bindingOperations.pendingKeys)) {
+      icons.bindings.mutate(targets);
+    }
   }
 
   return (
@@ -264,6 +351,23 @@ function UsersPage() {
       />
       {users.dashboard.error ? <div className="inline-alert inline-alert--error" role="alert">{users.dashboard.error.message}</div> : null}
       {mutationError ? <div className="inline-alert inline-alert--error" role="alert">{mutationError.message}</div> : null}
+      {Object.entries(accessErrors).map(([key, message]) => (
+        <div key={key} className="inline-alert inline-alert--error" role="alert">{message}</div>
+      ))}
+      {([[
+        "leader",
+        leaderOperations.errors,
+      ], [
+        "unlink",
+        unlinkOperations.errors,
+      ]] as const).flatMap(([scope, errors]) =>
+        Object.entries(errors).map(([key, message]) => [scope, key, message] as const)
+      ).map(([scope, key, message]) => (
+        <div key={`${scope}:${key}`} className="inline-alert inline-alert--error" role="alert">{message}</div>
+      ))}
+      {Object.entries(icons.bindingOperations.errors).map(([key, message]) => (
+        <div key={key} className="inline-alert inline-alert--error" role="alert">Associazione profilo icona non riuscita: {message}</div>
+      ))}
       <UsersSelectionActions selectedCount={selectedUsers.length} hiddenCount={selectedHiddenCount} onLink={openLinkSelected} onBulkSettings={() => setBulkSettingsUsers(selectedUsers)} onBulkClone={() => setCloneSources(selectedUsers)} onDeselect={() => setSelected(new Set())} />
       <section className="users-workspace" aria-labelledby="users-groups-title">
         <UsersToolbar data={dashboard} iconProfiles={iconConfig.profiles} filters={filters} selection={{ visibleCount: visibleUsers.length, selectedVisibleCount: selectedVisibleUsers.length, leaderCount: leaders.length, selectedLeaderCount }} refreshing={users.dashboard.isFetching} onChange={updateFilters} onSelectAll={() => selectVisibleUsers(visibleUsers)} onSelectLeaders={() => selectVisibleUsers(leaders)} onDeselect={deselectVisibleUsers} onCreate={() => setCreating(true)} onRefresh={() => void users.dashboard.refetch()} />
@@ -282,12 +386,11 @@ function UsersPage() {
             iconConfig={iconConfig}
             iconRevision={icons.config.dataUpdatedAt}
             isGroupIconSaving={(group) =>
-              icons.bindings.isPending &&
-              hasPendingGroupIconBinding(group, icons.bindings.variables)
+              hasPendingGroupIconBinding(group, icons.bindingOperations.pendingKeys)
             }
             onToggle={toggleUser}
-            onToggleRemote={(user) => users.remoteAccess.mutate(user)}
-            onToggleDownload={(user) => users.downloadAccess.mutate(user)}
+            onToggleRemote={(user) => void toggleRemoteAccess(user)}
+            onToggleDownload={(user) => void toggleDownloadAccess(user)}
             onConfigure={setConfiguredGroup}
             onSettings={(group) => setSettingsTarget({ scope: "group", groupId: group.id, name: group.name, mismatchCount: group.settings_mismatch_count || 0 })}
             onPassword={(group) => setPasswordTarget({ scope: "group", groupId: group.id, name: group.name, mismatchCount: group.password_mismatch_count || 0 })}
@@ -304,9 +407,9 @@ function UsersPage() {
             onUserDetails={setDetailsUser}
             onSaveSyncSettings={saveInlineGroupSettings}
             onSync={syncGroup}
-            isGroupSyncing={(group) => pendingGroupSyncStarts.pendingIds.has(group.id) || group.last_sync_status === "running"}
+            isGroupSyncing={(group) => groupSyncOperations.pendingKeys.has(group.id) || group.last_sync_status === "running"}
             isGroupSettingsSaving={(group) => pendingGroupSettings.pendingIds.has(group.id)}
-            groupSyncError={(group) => users.groupSync.variables === group.id ? users.groupSync.error?.message : undefined}
+            groupSyncError={(group) => groupSyncOperations.errors[group.id]}
             groupSettingsError={(group) => users.groupSettings.variables?.group_id === group.id ? users.groupSettings.error?.message : undefined}
             isUserChanging={isUserChanging}
             showHeading={false}
@@ -314,13 +417,13 @@ function UsersPage() {
         </div>
       </section>
       <UserIconManagementSection icons={icons} servers={dashboard.servers} onDirtyChange={updateIconProfileDirty} />
-      <CreateUserDialog open={creating} servers={dashboard.servers} creating={users.create.isPending} onClose={() => setCreating(false)} onCreate={create} onDirtyChange={updateCreateDirty} />
+      <CreateUserDialog open={creating} servers={dashboard.servers} creating={users.create.isPending} mutationError={users.create.error?.message} retryServerIds={createRetryServerIds} onClose={() => { users.create.reset(); setCreateRetryServerIds([]); setCreating(false); }} onCreate={create} onDirtyChange={updateCreateDirty} />
       <LinkUsersDialog selections={linkSelections} linking={users.link.isPending} error={users.link.error?.message} onClose={() => setLinkSelections([])} onLink={linkSelected} onDirtyChange={updateLinkDirty} />
       {activeConfiguredGroup ? (
         <GroupSyncSettingsDialog
           group={activeConfiguredGroup}
           saving={pendingGroupSettings.pendingIds.has(activeConfiguredGroup.id)}
-          syncing={pendingGroupSyncStarts.pendingIds.has(activeConfiguredGroup.id) || activeConfiguredGroup.last_sync_status === "running"}
+          syncing={groupSyncOperations.pendingKeys.has(activeConfiguredGroup.id) || activeConfiguredGroup.last_sync_status === "running"}
           error={users.groupSettings.variables?.group_id === activeConfiguredGroup.id ? users.groupSettings.error?.message : undefined}
           onClose={() => setConfiguredGroup(null)}
           onSave={saveGroupSettings}
@@ -328,11 +431,11 @@ function UsersPage() {
         />
       ) : null}
       <SettingsEditorDialog target={settingsTarget} onClose={() => setSettingsTarget(null)} onSaved={users.refresh} onDirtyChange={updateSettingsDirty} />
-      <PasswordDialog target={passwordTarget} saving={users.password.isPending} onClose={() => setPasswordTarget(null)} onSave={savePassword} onDirtyChange={updatePasswordDirty} />
-      <NameDialog open={renameTarget !== null} title={renameTarget?.kind === "group" ? "Rinomina gruppo" : "Rinomina utente"} label={renameTarget?.kind === "group" ? "Nome gruppo" : "Nome utente"} initialValue={renameTarget?.kind === "group" ? renameTarget.group.name : renameTarget?.user.name || ""} saving={users.userRename.isPending || users.groupRename.isPending} onClose={() => setRenameTarget(null)} onSave={saveName} onDirtyChange={updateNameDirty} />
-      <DangerConfirmDialog open={deleteTarget !== null} title={deleteTarget?.kind === "group" ? "Elimina tutti gli utenti del gruppo" : "Elimina utente"} description={deleteTarget?.kind === "group" ? `Verranno eliminati da Emby tutti gli utenti del gruppo ${deleteTarget.group.name}.` : `Verrà eliminato da Emby l'utente ${deleteTarget?.user.name || ""}.`} expectedName={deleteTarget?.kind === "group" ? deleteTarget.group.name : deleteTarget?.user.name || ""} confirming={users.removeUser.isPending || users.removeGroup.isPending} onClose={() => setDeleteTarget(null)} onConfirm={deleteCurrentTarget} />
-      <BulkSettingsDialog users={bulkSettingsUsers} saving={users.settingsApply.isPending} onClose={() => setBulkSettingsUsers([])} onApply={(input) => users.settingsApply.mutate(input, { onSuccess: () => setBulkSettingsUsers([]) })} onDirtyChange={updateBulkSettingsDirty} />
-      <CloneUserDialog users={cloneSources} groups={dashboard.groups} servers={dashboard.servers} cloning={users.clone.isPending} onClose={() => setCloneSources([])} onClone={cloneUsers} onDirtyChange={updateCloneDirty} />
+      <PasswordDialog target={passwordTarget} saving={users.password.isPending} mutationError={users.password.error?.message} onClose={() => { users.password.reset(); setPasswordTarget(null); }} onSave={savePassword} onDirtyChange={updatePasswordDirty} />
+      <NameDialog open={renameTarget !== null} title={renameTarget?.kind === "group" ? "Rinomina gruppo" : "Rinomina utente"} label={renameTarget?.kind === "group" ? "Nome gruppo" : "Nome utente"} initialValue={renameTarget?.kind === "group" ? renameTarget.group.name : renameTarget?.user.name || ""} saving={users.userRename.isPending || users.groupRename.isPending} mutationError={renameTarget?.kind === "group" ? users.groupRename.error?.message : users.userRename.error?.message} onClose={() => { users.userRename.reset(); users.groupRename.reset(); setRenameTarget(null); }} onSave={saveName} onDirtyChange={updateNameDirty} />
+      <DangerConfirmDialog open={deleteTarget !== null} title={deleteTarget?.kind === "group" ? "Elimina tutti gli utenti del gruppo" : "Elimina utente"} description={deleteTarget?.kind === "group" ? `Verranno eliminati da Emby tutti gli utenti del gruppo ${deleteTarget.group.name}.` : `Verrà eliminato da Emby l'utente ${deleteTarget?.user.name || ""}.`} expectedName={deleteTarget?.kind === "group" ? deleteTarget.group.name : deleteTarget?.user.name || ""} confirming={users.removeUser.isPending || users.removeGroup.isPending} mutationError={deleteTarget?.kind === "group" ? users.removeGroup.error?.message : users.removeUser.error?.message} onClose={() => { users.removeUser.reset(); users.removeGroup.reset(); setDeleteTarget(null); }} onConfirm={deleteCurrentTarget} />
+      <BulkSettingsDialog users={bulkSettingsUsers} saving={users.settingsApply.isPending} mutationError={users.settingsApply.error?.message} onClose={() => { users.settingsApply.reset(); setBulkSettingsUsers([]); }} onApply={(input) => users.settingsApply.mutate(input, { onSuccess: () => setBulkSettingsUsers([]) })} onDirtyChange={updateBulkSettingsDirty} />
+      <CloneUserDialog users={cloneSources} groups={dashboard.groups} servers={dashboard.servers} cloning={users.clone.isPending} mutationError={users.clone.error?.message} onClose={() => { users.clone.reset(); setCloneRetryJobs(undefined); setCloneSources([]); }} onClone={cloneUsers} onDirtyChange={updateCloneDirty} />
       <UserDetailsDialog
         user={detailsUser}
         avatarUrl={detailsUserAvatarUrl}

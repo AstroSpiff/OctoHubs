@@ -141,5 +141,7 @@ class AccountCreateRequest(StrictRequestModel):
 class AccountUpdateRequest(StrictRequestModel):
     email: str | None = None
     role: Literal["admin", "user", "viewer"] | None = None
-    is_active: bool | None = None
+    # A default keeps PATCH omission valid; exclude_unset prevents it from
+    # becoming a mutation, while the non-optional type rejects explicit null.
+    is_active: bool = False
     password: str | None = None

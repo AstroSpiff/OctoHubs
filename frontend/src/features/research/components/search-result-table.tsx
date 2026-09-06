@@ -9,7 +9,10 @@ import {
 
 import { resultLink } from "@/features/research/api";
 import { SearchResultBucket } from "@/features/research/components/search-result-bucket";
-import type { SearchResultActionNotice } from "@/features/research/components/search-result-actions";
+import type {
+  OpenTermMenuAction,
+  SearchResultActionNotice,
+} from "@/features/research/components/search-result-actions";
 import { SearchResultBatchActions } from "@/features/research/components/search-result-batch-actions";
 import { EmbyResultLookupDialog } from "@/features/research/components/emby-result-lookup-dialog";
 import type { LookupTarget } from "@/features/research/components/emby-result-lookup-dialog";
@@ -30,17 +33,22 @@ import {
   magnetExportLink,
   torrentDownloadLink,
 } from "@/features/research/presentation";
+import { useWorkspaceCapabilities } from "@/features/session/workspace-capabilities-context";
 import type { SearchResult } from "@/features/research/types";
 
 function SearchResultTable({
   results,
   qbittorrentAvailable,
   onAddTerm,
+  resultSetId = "static",
 }: {
   results: SearchResult[];
   qbittorrentAvailable: boolean;
   onAddTerm?: AddTermAction;
+  resultSetId?: string | number;
 }) {
+  const { canMutate } = useWorkspaceCapabilities();
+  const writableAddTerm = canMutate ? onAddTerm : undefined;
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState<SearchResultActionNotice | null>(null);
   const [termMenu, setTermMenu] =
@@ -81,9 +89,17 @@ function SearchResultTable({
     [entries, selected],
   );
 
-  useEffect(() => setSelected(new Set()), [results]);
+  useEffect(() => setSelected(new Set()), [resultSetId]);
+  useEffect(() => {
+    const availableKeys = new Set(entries.map(({ key }) => key));
+    setSelected((current) => {
+      const next = new Set([...current].filter((key) => availableKeys.has(key)));
+      return next.size === current.size ? current : next;
+    });
+  }, [entries]);
   const closeTermMenu = useCallback((restoreFocus = false) => {
     setTermMenu(null);
+    termMenuSourceRef.current?.setAttribute("aria-expanded", "false");
     if (restoreFocus) {
       window.requestAnimationFrame(() => termMenuSourceRef.current?.focus());
     }
@@ -145,15 +161,31 @@ function SearchResultTable({
   }
 
   function openTermMenu(event: ReactMouseEvent<HTMLElement>) {
-    if (!onAddTerm) return;
+    if (!writableAddTerm) return;
     const term = selectedResultTerm(event.currentTarget, event);
     if (!term) return;
     event.preventDefault();
-    termMenuSourceRef.current = event.currentTarget;
+    showTermMenu(event.currentTarget, term, event.clientX, event.clientY);
+  }
+
+  const openTermMenuFromButton: OpenTermMenuAction = (source, title) => {
+    if (!writableAddTerm) return;
+    const term = title.trim();
+    if (!term) return;
+    const bounds = source.getBoundingClientRect();
+    showTermMenu(source, term, bounds.left, bounds.bottom + 4);
+  };
+
+  function showTermMenu(source: HTMLElement, term: string, x: number, y: number) {
+    if (termMenuSourceRef.current !== source) {
+      termMenuSourceRef.current?.setAttribute("aria-expanded", "false");
+    }
+    termMenuSourceRef.current = source;
+    source.setAttribute("aria-expanded", "true");
     setTermMenu({
       term,
-      x: Math.min(event.clientX, window.innerWidth - 240),
-      y: Math.min(event.clientY, window.innerHeight - 140),
+      x: Math.max(8, Math.min(x, Math.max(8, window.innerWidth - 240))),
+      y: Math.max(8, Math.min(y, Math.max(8, window.innerHeight - 140))),
     });
   }
 
@@ -167,14 +199,16 @@ function SearchResultTable({
           {notice.message}
         </div>
       ) : null}
-      <SearchResultBatchActions
-        selectedCount={selected.size}
-        canSend={qbittorrentAvailable}
-        resultLinks={selectedLinks}
-        torrentLinks={selectedTorrentLinks}
-        magnets={selectedMagnets}
-        onNotice={setNotice}
-      />
+      {canMutate ? (
+        <SearchResultBatchActions
+          selectedCount={selected.size}
+          canSend={qbittorrentAvailable}
+          resultLinks={selectedLinks}
+          torrentLinks={selectedTorrentLinks}
+          magnets={selectedMagnets}
+          onNotice={setNotice}
+        />
+      ) : null}
       <div className="research-result-season-groups">
         {seasonGroups.map((seasonGroup) => (
           <section
@@ -199,12 +233,14 @@ function SearchResultTable({
                 <SearchResultBucket
                   key={bucket.key}
                   bucket={bucket}
+                  selectable={canMutate}
                   canSend={qbittorrentAvailable}
                   selected={selected}
                   onToggle={toggle}
                   onToggleItems={toggleItems}
                   onNotice={setNotice}
-                  onTitleContextMenu={onAddTerm ? openTermMenu : undefined}
+                  onTitleContextMenu={writableAddTerm ? openTermMenu : undefined}
+                  onOpenTermMenu={writableAddTerm ? openTermMenuFromButton : undefined}
                   onLookupEmby={setEmbyLookup}
                 />
               ))}
@@ -215,9 +251,9 @@ function SearchResultTable({
       <SearchResultTermMenu
         menu={termMenu}
         menuRef={termMenuRef}
-        onAddTerm={onAddTerm}
+        onAddTerm={writableAddTerm}
         onNotice={setNotice}
-        onClose={closeTermMenu}
+        onClose={() => closeTermMenu(true)}
       />
       {embyLookup ? (
         <EmbyResultLookupDialog

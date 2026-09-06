@@ -15,6 +15,7 @@ describe("PrimaryNavigationLinks", () => {
     expect(markup).toContain("navigation-submenu--sidebar");
     expect(markup).toContain("navigation-reorder-grip");
     expect(markup).toContain('draggable="true"');
+    expect(markup).toContain('aria-live="polite"');
     expect(markup).toContain('href="/users"');
     expect(markup).toContain("Statistiche stream");
   });

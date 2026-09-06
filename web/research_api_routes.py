@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -9,6 +10,8 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
+from core.log_sanitization import format_exception_for_log
+from search.download_references import protect_download_references
 from services.research_overview import build_research_overview_snapshot
 from services.search_rule_settings import update_search_rule_settings
 from emby_libraries.scan_snapshots import _build_run_scan_snapshot
@@ -24,6 +27,7 @@ from web.openapi_requests import no_request_body
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _require_auth: Optional[Callable[[Request], Any]] = None
 _validate_csrf: Optional[Callable[[Request, Optional[str]], bool]] = None
@@ -42,10 +46,10 @@ def init_research_api_routes(
     _load_config = load_config
 
 
-def _require_auth_dep(request: Request) -> None:
+def _require_auth_dep(request: Request) -> Any:
     if _require_auth is None:
         raise RuntimeError("Research API routes not initialized: require_auth missing")
-    _require_auth(request)
+    return _require_auth(request)
 
 
 def _load_config_dep() -> tuple[dict[str, Any], bool]:
@@ -66,34 +70,48 @@ def _validate_csrf_dep(request: Request) -> None:
 @router.get("/api/research/overview", response_model=ResearchOverviewResponse)
 async def research_overview_api_route(request: Request):
     """Return the sanitized state consumed by the research workspace."""
-    _require_auth_dep(request)
-    config, is_valid = _load_config_dep()
-    return JSONResponse(jsonable_encoder(build_research_overview_snapshot(config, is_valid)))
+    owner_id = await run_in_threadpool(_require_auth_dep, request)
+    config, is_valid = await run_in_threadpool(_load_config_dep)
+    snapshot = await run_in_threadpool(build_research_overview_snapshot, config, is_valid)
+    snapshot = await run_in_threadpool(
+        protect_download_references,
+        snapshot,
+        int(owner_id),
+    )
+    return JSONResponse(jsonable_encoder(snapshot))
 
 
 @router.put("/api/research/search-rules", response_model=ResearchActionResponse)
 async def update_search_rules_api_route(request: Request, payload: SearchRulesPayload):
     """Persist global search rules for the research workspace."""
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_dep(request)
-    config, is_valid = _load_config_dep()
+    config, is_valid = await run_in_threadpool(_load_config_dep)
     if not is_valid:
         raise HTTPException(status_code=409, detail="Configurazione non valida")
     try:
-        updated = update_search_rule_settings(payload.model_dump(by_alias=True), config)
+        updated = await run_in_threadpool(
+            update_search_rule_settings,
+            payload.model_dump(by_alias=True, exclude_none=True),
+            config,
+        )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Impossibile salvare le regole: {exc}") from exc
+        logger.error("Salvataggio regole ricerca non riuscito:\n%s", format_exception_for_log(exc))
+        raise HTTPException(status_code=500, detail="Impossibile salvare le regole") from exc
     return JSONResponse({"success": True, "message": "Regole di ricerca aggiornate", **jsonable_encoder(updated)})
 
 
 @router.post("/api/research/request-rules", response_model=ResearchActionResponse)
 async def update_request_rules_api_route(request: Request, payload: RequestRulesPayload):
     """Persist the per-request rules displayed in the research workspace."""
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_dep(request)
     from services.research_request_actions import update_request_rules
 
-    data, status_code = update_request_rules(payload.model_dump(by_alias=True))
+    data, status_code = await run_in_threadpool(
+        update_request_rules,
+        payload.model_dump(by_alias=True, exclude_none=True),
+    )
     return JSONResponse(data, status_code=status_code)
 
 
@@ -108,13 +126,13 @@ async def update_request_rules_api_route(request: Request, payload: RequestRules
 )
 async def refresh_requests_api_route(request: Request):
     """Refresh Jellyseerr requests, optionally as a tracked background operation."""
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_dep(request)
     background = str(request.query_params.get("background") or "").lower() in {"1", "true", "yes"}
     if background:
         from services.research_request_actions import start_background_refresh
 
-        data, status_code = start_background_refresh()
+        data, status_code = await run_in_threadpool(start_background_refresh)
         return JSONResponse(data, status_code=status_code)
 
     from services.research_request_actions import refresh_requests
@@ -126,18 +144,21 @@ async def refresh_requests_api_route(request: Request):
 @router.get("/api/research/requests/refresh-status", response_model=ResearchRefreshStatusResponse)
 async def refresh_requests_status_api_route(request: Request):
     """Return the current background-refresh state for requests."""
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     from services.research_request_actions import get_request_refresh_status
 
-    return JSONResponse(get_request_refresh_status())
+    return JSONResponse(await run_in_threadpool(get_request_refresh_status))
 
 
 @router.post("/api/research/scan/start", response_model=ResearchActionResponse)
 async def start_scan_api_route(request: Request, payload: ScanStartPayload):
     """Start the request scan selected in the research summary."""
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_dep(request)
-    data, status_code = _build_run_scan_snapshot(payload.model_dump(by_alias=True))
+    data, status_code = await run_in_threadpool(
+        _build_run_scan_snapshot,
+        payload.model_dump(by_alias=True),
+    )
     return JSONResponse(data, status_code=status_code)
 
 
@@ -148,9 +169,9 @@ async def start_scan_api_route(request: Request, payload: ScanStartPayload):
 )
 async def stop_scan_api_route(request: Request):
     """Request a cooperative stop for the research scan."""
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_dep(request)
     from services.scheduler_manager import scan_manager
 
-    scan_manager.stop_scan()
+    await run_in_threadpool(scan_manager.stop_scan)
     return JSONResponse({"success": True, "message": "Richiesta di stop inviata."})

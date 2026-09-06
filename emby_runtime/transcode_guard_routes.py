@@ -2,27 +2,33 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
+from core.log_sanitization import format_exception_for_log
 from emby_runtime.event_bridge_auth import (
     authenticate_event_bridge,
+    event_bridge_principal_is_current,
     validate_event_bridge_payload_identity,
 )
 from emby_runtime.event_bridge_manager import get_event_bridge_manager
 from emby_runtime.event_bridge_config_store import apply_plugin_reported_settings
 from emby_runtime.event_bridge_limits import (
-    EventBridgeInvalidJson,
+    EventBridgePayloadError,
+    EventBridgeIngressRateExceeded,
     EventBridgePayloadShapeError,
     EventBridgePayloadTooLarge,
     consume_event_bridge_ingress,
+    consume_event_bridge_auth_attempt,
+    consume_event_bridge_bytes,
     read_event_bridge_http_json,
     validate_event_bridge_payload_shape,
 )
-from emby_runtime.event_bridge_network_policy import validate_event_bridge_source
+from emby_runtime.event_bridge_network_policy import event_bridge_peer_key, validate_event_bridge_source
 from emby_runtime.event_bridge_payloads import (
     EVENT_BRIDGE_BATCH_SCHEMAS,
     event_bridge_payloads,
@@ -48,6 +54,8 @@ from emby_runtime.transcode_guard_api_models import (
 from web.openapi_requests import json_request_body, no_request_body
 from web.request_validation import validated_json_payload
 
+
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _require_auth: Optional[Callable[[Request], Any]] = None
@@ -87,6 +95,12 @@ def _validate_csrf_request(request: Request) -> None:
 
 async def _validate_event_bridge_request(request: Request):
     validate_event_bridge_source(request)
+    if not consume_event_bridge_auth_attempt(event_bridge_peer_key(request)):
+        raise HTTPException(
+            status_code=429,
+            detail="Troppi tentativi Event Bridge",
+            headers={"Retry-After": "1"},
+        )
     return await run_in_threadpool(
         authenticate_event_bridge,
         getattr(request, "headers", {}) or {},
@@ -128,7 +142,8 @@ def _reported_plugin_settings_response(payloads: list[dict[str, Any]]) -> dict[s
     for item in payloads or []:
         if not isinstance(item, dict):
             continue
-        event = item.get("event") if isinstance(item.get("event"), dict) else {}
+        raw_event = item.get("event")
+        event: dict[str, Any] = raw_event if isinstance(raw_event, dict) else {}
         event_type = str(event.get("type") or item.get("eventType") or "").strip().lower()
         plugin = item.get("plugin") if isinstance(item.get("plugin"), dict) else {}
         if event_type == "plugin.config_saved" and plugin:
@@ -148,7 +163,10 @@ def _plugin_settings_response(payloads: list[dict[str, Any]]) -> dict[str, Any] 
         except TypeError:
             raw_settings = _get_event_bridge_settings()
     except Exception as exc:
-        print(f"[EVENT_BRIDGE] Impossibile includere settings nella risposta HTTP: {exc}")
+        logger.error(
+            "[EVENT_BRIDGE] Impossibile includere settings nella risposta HTTP:\n%s",
+            format_exception_for_log(exc),
+        )
         return None
     return build_plugin_settings_payload(normalize_event_bridge_settings(raw_settings or {}))
 
@@ -166,21 +184,41 @@ def _server_id_from_payloads(payloads: list[dict[str, Any]]) -> str | None:
     return None
 
 
+def _event_bridge_http_error(error: EventBridgePayloadError) -> HTTPException:
+    if isinstance(error, EventBridgePayloadTooLarge):
+        return HTTPException(status_code=413, detail=str(error))
+    if isinstance(error, EventBridgeIngressRateExceeded):
+        return HTTPException(
+            status_code=429,
+            detail=str(error),
+            headers={"Retry-After": "1"},
+        )
+    if isinstance(error, EventBridgePayloadShapeError):
+        return HTTPException(status_code=422, detail=str(error))
+    return HTTPException(status_code=400, detail=str(error))
+
+
 @router.post("/api/emby/event-bridge/events")
 @router.post("/api/emby/transcode-guard/player-event")
 async def api_transcode_guard_plugin_event(request: Request):
     principal = await _validate_event_bridge_request(request)
     try:
-        payload = await read_event_bridge_http_json(request)
-    except EventBridgePayloadTooLarge as exc:
-        raise HTTPException(status_code=413, detail=str(exc)) from exc
-    except EventBridgeInvalidJson as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    try:
+        payload = await read_event_bridge_http_json(
+            request,
+            byte_consumer=lambda byte_count: consume_event_bridge_bytes(
+                principal.server_id,
+                byte_count,
+            ),
+        )
         payload = validate_event_bridge_payload_shape(payload)
-    except EventBridgePayloadShapeError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except EventBridgePayloadError as exc:
+        raise _event_bridge_http_error(exc) from exc
     validate_event_bridge_payload_identity(principal, payload)
+    if not await run_in_threadpool(event_bridge_principal_is_current, principal):
+        raise HTTPException(
+            status_code=403,
+            detail="Credenziale Event Bridge revocata",
+        )
     if not consume_event_bridge_ingress(principal.server_id, payload):
         raise HTTPException(
             status_code=429,
@@ -194,6 +232,11 @@ async def api_transcode_guard_plugin_event(request: Request):
     def _record_payloads() -> list[Any]:
         results = []
         for item in payloads:
+            if not event_bridge_principal_is_current(principal):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Credenziale Event Bridge revocata",
+                )
             apply_plugin_reported_settings(item)
             results.append(service.record_event_bridge_event(item))
         return results
@@ -217,7 +260,7 @@ async def api_transcode_guard_plugin_event(request: Request):
 
 @router.get("/api/emby/transcode-guard/settings", response_model=TranscodeGuardSettingsResponse)
 async def api_transcode_guard_settings(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     settings = await run_in_threadpool(_service().load_settings)
     return {"ok": True, "settings": settings, "servers": _configured_emby_servers()}
 
@@ -228,7 +271,7 @@ async def api_transcode_guard_settings(request: Request):
     openapi_extra=json_request_body(TranscodeGuardSettingsRequest),
 )
 async def api_transcode_guard_settings_save(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_request(request)
     payload = await validated_json_payload(request, TranscodeGuardSettingsRequest)
     service = _service()
@@ -245,14 +288,14 @@ async def api_transcode_guard_settings_save(request: Request):
 
 @router.get("/api/emby/transcode-guard/status", response_model=TranscodeGuardStatusResponse)
 async def api_transcode_guard_status(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     status = await run_in_threadpool(_service().get_status)
     return status
 
 
 @router.get("/api/emby/transcode-guard/stats", response_model=TranscodeGuardStatsResponse)
 async def api_transcode_guard_user_stats(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     query = getattr(request, "query_params", {}) or {}
     filters = {
         "period": query.get("period", "7d"),
@@ -271,7 +314,7 @@ async def api_transcode_guard_user_stats(request: Request):
     responses={200: {"model": TranscodeGuardStreamDetailResponse}, 404: {"model": TranscodeGuardErrorResponse}},
 )
 async def api_transcode_guard_stream_detail(request: Request, stream_id: str):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     stream = await run_in_threadpool(_service().get_stream_history_detail, stream_id)
     if stream is None:
         raise HTTPException(status_code=404, detail="Stream monitorato non trovato")
@@ -284,7 +327,7 @@ async def api_transcode_guard_stream_detail(request: Request, stream_id: str):
     openapi_extra=no_request_body(),
 )
 async def api_transcode_guard_check_now(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_request(request)
     service = _service()
     settings = await run_in_threadpool(service.load_settings) or {}
@@ -300,7 +343,7 @@ async def api_transcode_guard_check_now(request: Request):
     openapi_extra=json_request_body(TranscodeGuardCleanupRequest, required=False),
 )
 async def api_transcode_guard_events_cleanup(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_request(request)
     payload = await validated_json_payload(
         request,
@@ -318,7 +361,7 @@ async def api_transcode_guard_events_cleanup(request: Request):
     openapi_extra=json_request_body(TranscodeGuardCleanupRequest, required=False),
 )
 async def api_transcode_guard_streams_cleanup(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_request(request)
     payload = await validated_json_payload(
         request,
@@ -336,7 +379,7 @@ async def api_transcode_guard_streams_cleanup(request: Request):
     openapi_extra=no_request_body(),
 )
 async def api_transcode_guard_start(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_request(request)
     service = _service()
     settings = await run_in_threadpool(service.load_settings) or {}
@@ -351,7 +394,7 @@ async def api_transcode_guard_start(request: Request):
     openapi_extra=no_request_body(),
 )
 async def api_transcode_guard_stop(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_request(request)
     service = _service()
     settings = await run_in_threadpool(service.load_settings)

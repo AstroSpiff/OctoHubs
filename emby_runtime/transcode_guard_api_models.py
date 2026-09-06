@@ -2,11 +2,38 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
+from emby_runtime.transcode_guard_validation import (
+    MAX_TRANSCODE_GUARD_GROUP_CHILDREN,
+    MAX_TRANSCODE_GUARD_IDENTIFIER_LENGTH,
+    MAX_TRANSCODE_GUARD_LIST_ITEMS,
+    MAX_TRANSCODE_GUARD_MESSAGE_LENGTH,
+    MAX_TRANSCODE_GUARD_NAME_LENGTH,
+    MAX_TRANSCODE_GUARD_RULES,
+    validate_transcode_guard_settings_payload,
+)
 from web.request_validation import StrictRequestModel
+
+
+GuardIdentifier = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_TRANSCODE_GUARD_IDENTIFIER_LENGTH),
+]
+GuardName = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_TRANSCODE_GUARD_NAME_LENGTH),
+]
+GuardMessage = Annotated[
+    str,
+    StringConstraints(max_length=MAX_TRANSCODE_GUARD_MESSAGE_LENGTH),
+]
+GuardScopeList = Annotated[list[GuardIdentifier], Field(max_length=MAX_TRANSCODE_GUARD_LIST_ITEMS)]
+GuardMode = Literal["monitor", "warn", "stop", "warn_then_stop"]
+GuardStreamState = Literal["any", "transcode", "direct"]
+GuardPresenceState = Literal["any", "present", "absent"]
 
 
 class TranscodeGuardErrorResponse(BaseModel):
@@ -31,13 +58,58 @@ class TranscodeGuardSettingsMutationResponse(BaseModel):
     settings: dict[str, Any]
 
 
-class TranscodeGuardSettingsRequest(BaseModel):
-    """Persisted guard settings, deliberately extensible as rules evolve."""
+class TranscodeGuardRuleRequest(StrictRequestModel):
+    """One bounded Transcode Guard rule or rule group."""
 
-    model_config = ConfigDict(extra="allow")
+    id: GuardIdentifier | None = None
+    name: GuardName | None = None
+    type: Literal["rule", "group"] | None = None
+    enabled: bool | None = None
+    profile: GuardIdentifier | None = None
+    mode: GuardMode | None = None
+    video_state: GuardStreamState | None = None
+    audio_state: GuardStreamState | None = None
+    remux_state: GuardPresenceState | None = None
+    transformation_state: GuardPresenceState | None = None
+    min_source_height: int | None = Field(default=None, ge=0, le=4320)
+    correction_window_seconds: int | None = Field(default=None, ge=0, le=1800)
+    message_display_mode: Literal["toast", "confirmation"] | None = None
+    warning_timeout_ms: int | None = Field(default=None, ge=1000, le=300000)
+    max_warnings: int | None = Field(default=None, ge=1, le=10)
+    message_cooldown_seconds: int | None = Field(default=None, ge=0, le=3600)
+    allow_audio_only_transcode: bool | None = None
+    allow_container_remux: bool | None = None
+    ignore_paused: bool | None = None
+    server_ids: GuardScopeList | None = None
+    excluded_users: GuardScopeList | None = None
+    excluded_clients: GuardScopeList | None = None
+    excluded_devices: GuardScopeList | None = None
+    excluded_ips: GuardScopeList | None = None
+    message_header: GuardMessage | None = None
+    message_text: GuardMessage | None = None
+    stop_processing: bool | None = None
+    children: Annotated[
+        list["TranscodeGuardRuleRequest"],
+        Field(max_length=MAX_TRANSCODE_GUARD_GROUP_CHILDREN),
+    ] | None = None
+
+
+class TranscodeGuardSettingsRequest(StrictRequestModel):
+    """Strict, bounded contract for persisted Transcode Guard settings."""
 
     enabled: bool | None = None
-    rules: list[dict[str, Any]] | None = None
+    poll_interval_seconds: int | None = Field(default=None, ge=2, le=120)
+    stream_history_retention_days: int | None = Field(default=None, ge=0, le=3650)
+    rules: Annotated[
+        list[TranscodeGuardRuleRequest],
+        Field(max_length=MAX_TRANSCODE_GUARD_RULES),
+    ] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_expansive_rule_trees(cls, value: Any) -> Any:
+        validate_transcode_guard_settings_payload(value)
+        return value
 
 
 class TranscodeGuardCleanupRequest(StrictRequestModel):

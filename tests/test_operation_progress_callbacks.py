@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 
 from emby_users.settings_manager import SettingsManager
+from emby_users.mutation_coordinator import UserMutationCoordinator
 from emby_users.settings_target_applier import SettingsApplyResult
 from emby_users.sync_manager import SyncManager
 from emby_users.user_lifecycle_manager import UserLifecycleManager
@@ -14,12 +15,36 @@ class _Storage:
     def __init__(self):
         self.values = {}
         self.backups = []
+        self.creation_journal = {}
 
     def create_user_backup(self, *args):
         self.backups.append(args)
 
     def set_key_value(self, key, value):
         self.values[key] = value
+
+    @staticmethod
+    def _creation_key(server_id, username):
+        return str(server_id), str(username).strip().casefold()
+
+    def get_emby_user_creation(self, server_id, username):
+        value = self.creation_journal.get(self._creation_key(server_id, username))
+        return dict(value) if value is not None else None
+
+    def reserve_emby_user_creation(self, server_id, username):
+        key = self._creation_key(server_id, username)
+        if key in self.creation_journal:
+            return False
+        self.creation_journal[key] = {"status": "creating"}
+        return True
+
+    def mark_emby_user_creation_remote(self, server_id, username):
+        self.creation_journal[self._creation_key(server_id, username)]["status"] = (
+            "remote_created"
+        )
+
+    def clear_emby_user_creation(self, server_id, username):
+        self.creation_journal.pop(self._creation_key(server_id, username), None)
 
 
 class OperationProgressCallbackTests(unittest.TestCase):
@@ -92,6 +117,7 @@ class OperationProgressCallbackTests(unittest.TestCase):
 
     def test_apply_settings_to_users_reports_per_target_progress(self):
         manager = SettingsManager.__new__(SettingsManager)
+        manager._mutation_coordinator = UserMutationCoordinator(object())
         manager._build_library_group_index = lambda: ({}, {}, {}, {})
         manager._normalize_settings_payload = lambda settings, protect_fields=True: settings
         manager._get_server_by_id = lambda server_id: {"id": server_id, "name": "Server"}

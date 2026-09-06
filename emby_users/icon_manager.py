@@ -1,6 +1,5 @@
 import base64
 import logging
-import os
 import uuid
 from typing import Dict, Any, Optional, Tuple, Callable
 
@@ -8,18 +7,15 @@ import requests
 
 from emby_runtime.api_clients import _emby_base_url
 from core.image_uploads import ImageUploadError, sanitize_image_bytes, sanitize_image_file
+from core.log_sanitization import (
+    format_exception_for_log,
+    sanitize_diagnostic_text,
+    sanitize_url_for_log,
+)
+from core.outbound_redirects import response_is_redirect
 from core.utils import get_nested
 
 logger = logging.getLogger(__name__)
-
-
-def _versioned_icon_path(path: object) -> str:
-    """Return the public v1 URL for an icon path stored by older releases."""
-
-    normalized = str(path or "")
-    if normalized.startswith("/api/emby/icons/image/"):
-        return f"/api/v1{normalized.removeprefix('/api')}"
-    return normalized
 
 
 class IconManager:
@@ -32,37 +28,6 @@ class IconManager:
         self.storage = storage
         self._get_users_dashboard_data = get_users_dashboard_data
         self._get_server_by_id = get_server_by_id
-
-    def migrate_icons_to_db(self) -> None:
-        """
-        Migrates existing file-based icons to the database.
-        """
-        try:
-            rules = self.storage.get_icon_rules()
-            for rule in rules:
-                if not rule.get("has_data") and rule.get("icon_path"):
-                    path = rule["icon_path"]
-                    if path.startswith("user_icons/"):
-                        full_path = os.path.join(os.getcwd(), "static", path)
-                        if os.path.exists(full_path):
-                            try:
-                                with open(full_path, "rb") as f:
-                                    data = f.read()
-                                image = sanitize_image_bytes(data)
-
-                                new_path = f"/api/v1/emby/icons/image/{rule['profile_id']}/{rule['column_key']}"
-                                self.storage.save_icon_rule(
-                                    rule['profile_id'],
-                                    rule['column_key'],
-                                    new_path,
-                                    image.data,
-                                    image.mime_type,
-                                )
-                                logger.info("Migrated icon to DB: %s", full_path)
-                            except Exception as exc:
-                                logger.error("Failed to migrate icon %s: %s", full_path, exc)
-        except Exception as exc:
-            logger.error("Migration error: %s", exc)
 
     def get_icon_dashboard_data(self) -> Dict[str, Any]:
         """
@@ -77,7 +42,7 @@ class IconManager:
         for r in rules:
             if r["profile_id"] not in matrix:
                 matrix[r["profile_id"]] = {}
-            matrix[r["profile_id"]][r["column_key"]] = _versioned_icon_path(r["icon_path"])
+            matrix[r["profile_id"]][r["column_key"]] = r["icon_path"]
 
         binding_map = {}
         for b in bindings:
@@ -107,6 +72,7 @@ class IconManager:
         if not (profile_id or "").strip():
             self.storage.delete_icon_binding(target_type, target_id)
             return
+        self._require_icon_profile(profile_id)
         self.storage.save_icon_binding(target_type, target_id, profile_id)
         self._sync_icons_for_binding(target_type, target_id)
 
@@ -115,6 +81,7 @@ class IconManager:
         Saves an uploaded icon file to DB and creates the rule. Triggers sync.
         file_storage: FastAPI UploadFile or similar
         """
+        self._require_icon_profile(profile_id)
         image = sanitize_image_file(file_storage.file)
 
         rel_path = f"/api/v1/emby/icons/image/{profile_id}/{column_key}"
@@ -128,6 +95,11 @@ class IconManager:
         )
         self._sync_icons_for_rule(profile_id, column_key)
         return rel_path
+
+    def _require_icon_profile(self, profile_id: str) -> None:
+        exists = getattr(self.storage, "icon_profile_exists", None)
+        if callable(exists) and not exists(profile_id):
+            raise ValueError(f"Icon profile not found: {profile_id}")
 
     def delete_icon_rule(self, profile_id: str, column_key: str) -> None:
         """
@@ -147,10 +119,10 @@ class IconManager:
             image = sanitize_image_bytes(stored[0])
         except ImageUploadError as exc:
             logger.warning(
-                "Rejected unsafe stored icon %s/%s: %s",
-                profile_id,
-                column_key,
-                exc,
+                "Rejected unsafe stored icon %s/%s:\n%s",
+                sanitize_diagnostic_text(profile_id),
+                sanitize_diagnostic_text(column_key),
+                format_exception_for_log(exc),
             )
             return None
         return image.data, image.mime_type
@@ -197,7 +169,11 @@ class IconManager:
 
                 if group_profile_id:
                     if not group_ref_server_id:
-                        logger.warning("[ICON_LOGIC] Group %s (%s) has binding but NO LEADER. Skipping.", group['name'], group_id)
+                        logger.warning(
+                            "[ICON_LOGIC] Group %s (%s) has binding but NO LEADER. Skipping.",
+                            sanitize_diagnostic_text(group['name']),
+                            sanitize_diagnostic_text(group_id),
+                        )
                         continue
                     profile_id = group_profile_id
                     reference_server_id = group_ref_server_id
@@ -211,7 +187,12 @@ class IconManager:
                         is_group_application = False
 
                 if not is_group_application:
-                    logger.info("[ICON_DEBUG] Check User: %s | Key=%s | Profile=%s", user['name'], user_binding_key, profile_id)
+                    logger.info(
+                        "[ICON_DEBUG] Check User: %s | Key=%s | Profile=%s",
+                        sanitize_diagnostic_text(user['name']),
+                        sanitize_diagnostic_text(user_binding_key),
+                        sanitize_diagnostic_text(profile_id),
+                    )
 
                 if not profile_id:
                     continue
@@ -227,13 +208,13 @@ class IconManager:
                 if is_group_application:
                     logger.info(
                         "[ICON_DEBUG] Group Apply: Group=%s | Leader=%s@%s | Member=%s@%s | Profile=%s | RefServer=%s | Icon=%s",
-                        group['name'],
-                        (leader_user['name'] if leader_user else 'Unknown'),
-                        group_ref_server_id,
-                        user['name'],
-                        server_id,
-                        profile_id,
-                        reference_server_id,
+                        sanitize_diagnostic_text(group['name']),
+                        sanitize_diagnostic_text(leader_user['name'] if leader_user else 'Unknown'),
+                        sanitize_diagnostic_text(group_ref_server_id),
+                        sanitize_diagnostic_text(user['name']),
+                        sanitize_diagnostic_text(server_id),
+                        sanitize_diagnostic_text(profile_id),
+                        sanitize_diagnostic_text(reference_server_id),
                         'FOUND' if icon_path else 'EMPTY'
                     )
 
@@ -243,59 +224,93 @@ class IconManager:
     def _upload_icon_to_emby(self, server_id: str, user_id: str, profile_id: str, column_key: str) -> None:
         server = self._get_server_by_id(server_id)
         if not server:
-            logger.error("[ICON_UPLOAD] Server not found: %s", server_id)
+            logger.error("[ICON_UPLOAD] Server not found: %s", sanitize_diagnostic_text(server_id))
             return
 
         try:
             data_tuple = self.get_icon_image(profile_id, column_key)
             if not data_tuple:
-                logger.error("[ICON_UPLOAD] Icon data not found for %s/%s", profile_id, column_key)
+                logger.error(
+                    "[ICON_UPLOAD] Icon data not found for %s/%s",
+                    sanitize_diagnostic_text(profile_id),
+                    sanitize_diagnostic_text(column_key),
+                )
                 return
 
             raw_bytes, mime_type = data_tuple
             b64_data = base64.b64encode(raw_bytes)
         except Exception as exc:
-            logger.error("[ICON_UPLOAD] Failed to read file: %s", exc)
+            logger.error("[ICON_UPLOAD] Failed to read file:\n%s", format_exception_for_log(exc))
             return
 
         base_url = _emby_base_url(server)
-        token = server.get("api_key")
+        token = str(server.get("api_key") or "")
 
         user_url = f"{base_url}/Users/{user_id}"
         image_url = f"{base_url}/Users/{user_id}/Images/Primary"
-        headers = {"X-Emby-Token": token}
+        headers: Dict[str, str] = {"X-Emby-Token": token}
 
         old_tag = "N/A"
         try:
-            r = requests.get(user_url, headers=headers, timeout=10)
+            r = requests.get(user_url, headers=headers, allow_redirects=False, timeout=10)
+            if response_is_redirect(r):
+                raise requests.TooManyRedirects("Redirect Emby rifiutato")
             if r.ok:
                 old_tag = r.json().get("PrimaryImageTag", "None")
-            logger.info("[ICON_UPLOAD] Pre-check %s@%s: OldTag=%s", user_id, server['name'], old_tag)
+            logger.info(
+                "[ICON_UPLOAD] Pre-check %s@%s: OldTag=%s",
+                sanitize_diagnostic_text(user_id),
+                sanitize_diagnostic_text(server['name']),
+                sanitize_diagnostic_text(old_tag),
+            )
         except Exception as exc:
-            logger.warning("[ICON_UPLOAD] Pre-check failed: %s", exc)
+            logger.warning("[ICON_UPLOAD] Pre-check failed:\n%s", format_exception_for_log(exc))
 
         headers["Content-Type"] = mime_type
         try:
-            logger.info("[ICON_UPLOAD] Uploading Base64 to %s (Original Size: %s)", image_url, len(raw_bytes))
-            response = requests.post(image_url, headers=headers, data=b64_data, timeout=30)
+            logger.info(
+                "[ICON_UPLOAD] Uploading Base64 to %s (Original Size: %s)",
+                sanitize_url_for_log(image_url),
+                len(raw_bytes),
+            )
+            response = requests.post(
+                image_url,
+                headers=headers,
+                data=b64_data,
+                allow_redirects=False,
+                timeout=30,
+            )
+            if response_is_redirect(response):
+                raise requests.TooManyRedirects("Redirect Emby rifiutato")
             if not response.ok:
-                logger.error("[ICON_UPLOAD] Status: %s - %s", response.status_code, response.text)
+                logger.error("[ICON_UPLOAD] Status: %s", response.status_code)
             response.raise_for_status()
         except Exception as exc:
-            logger.error("[ICON_UPLOAD] Upload Failed: %s", exc)
+            logger.error("[ICON_UPLOAD] Upload Failed:\n%s", format_exception_for_log(exc))
             return
 
         try:
-            r = requests.get(user_url, headers={"X-Emby-Token": token}, timeout=10)
+            r = requests.get(
+                user_url,
+                headers={"X-Emby-Token": token},
+                allow_redirects=False,
+                timeout=10,
+            )
+            if response_is_redirect(r):
+                raise requests.TooManyRedirects("Redirect Emby rifiutato")
             new_tag = "N/A"
             if r.ok:
                 new_tag = r.json().get("PrimaryImageTag", "None")
 
-            logger.info("[ICON_UPLOAD] Post-check: NewTag=%s", new_tag)
+            logger.info("[ICON_UPLOAD] Post-check: NewTag=%s", sanitize_diagnostic_text(new_tag))
 
             if new_tag != old_tag:
-                logger.info("[ICON_UPLOAD] SUCCESS: Tag changed %s -> %s", old_tag, new_tag)
+                logger.info(
+                    "[ICON_UPLOAD] SUCCESS: Tag changed %s -> %s",
+                    sanitize_diagnostic_text(old_tag),
+                    sanitize_diagnostic_text(new_tag),
+                )
             elif new_tag == "None":
                 logger.warning("[ICON_UPLOAD] FAILURE: Tag is None (Image not set?)")
         except Exception as exc:
-            logger.warning("[ICON_UPLOAD] Verify failed: %s", exc)
+            logger.warning("[ICON_UPLOAD] Verify failed:\n%s", format_exception_for_log(exc))

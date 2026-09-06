@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   collectionEditorState,
   collectionEditorStateMatches,
+  promoteNewCollectionEditorDraft,
   shouldRefreshCollectionEditorDraft,
 } from "@/features/collections/collection-editor-state";
 
@@ -101,5 +102,31 @@ describe("collectionEditorState", () => {
     expect(
       shouldRefreshCollectionEditorDraft(draft, saved, "collection-1", "collection-2"),
     ).toBe(true);
+  });
+
+  it("preserves pending image files when a newly saved collection receives its id", () => {
+    const saved = collectionEditorState(
+      {
+        id: "collection-1",
+        name: "Cinema",
+        enabled: true,
+        source_type: "trakt",
+        source_value: "cinema",
+        server_ids: ["green"],
+      },
+      undefined,
+    );
+    const poster = new File(["poster"], "poster.png", { type: "image/png" });
+    const backdrop = new File(["backdrop"], "backdrop.webp", {
+      type: "image/webp",
+    });
+
+    const promoted = promoteNewCollectionEditorDraft(
+      { ...saved, name: "Bozza prima del salvataggio", poster, backdrop },
+      saved,
+    );
+
+    expect(promoted).toMatchObject({ name: "Cinema", poster, backdrop });
+    expect(collectionEditorStateMatches(promoted, saved)).toBe(false);
   });
 });

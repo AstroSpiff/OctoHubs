@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import copy
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, cast
 
 from fastapi import APIRouter, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from core.emby_servers import (
-    EMBY_SERVER_DISABLED_MESSAGE,
     _emby_display_name,
     _emby_server_is_enabled,
-    _find_emby_server_with_index,
 )
+from core.log_sanitization import format_exception_for_log
+from core.safe_output import safe_print as print
+from core.configuration_redaction import public_connection_url
 from core.storage import StorageError
 from core.config import _normalize_emby_server
 from emby_actions import EMBY_ACTIONS, _execute_emby_action
@@ -24,7 +26,7 @@ from emby_actions.api_models import (
     EmbyActionTargetsResponse,
     request_body_schema,
 )
-from emby_runtime.settings_manager import _load_emby_settings_from_db, _save_emby_settings_to_db
+from emby_runtime.settings_manager import _load_emby_settings_from_db, _mutate_emby_settings_in_db
 from core.utils import get_nested
 from web.request_validation import validated_json_payload
 
@@ -88,18 +90,21 @@ def _api_error(message: str, status_code: int = 400) -> JSONResponse:
 
 def _api_action_targets() -> list[dict[str, str]]:
     emby_section = _load_emby_settings_from_db()
-    servers = emby_section.get("SERVERS") or []
+    raw_servers = emby_section.get("SERVERS") or []
+    servers = raw_servers if isinstance(raw_servers, list) else []
     return [
         {
             "id": str(server.get("id") or ""),
             "name": _emby_display_name(server),
-            "url": str(server.get("url") or ""),
+            "url": public_connection_url(server.get("url")),
             "icon": str(server.get("icon") or "fa-server"),
             "icon_style": str(server.get("icon_style") or "solid"),
             "icon_color": str(server.get("icon_color") or "#3b82f6"),
         }
         for server in servers
-        if server.get("id") and _emby_server_is_enabled(server)
+        if isinstance(server, dict)
+        and server.get("id")
+        and _emby_server_is_enabled(server)
     ]
 
 
@@ -109,7 +114,8 @@ def _api_action_targets() -> list[dict[str, str]]:
 )
 async def emby_action_targets(request: Request):
     """Return the enabled Emby servers available to the React operations UI."""
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
+    servers = await run_in_threadpool(_api_action_targets)
     return JSONResponse({
         "success": True,
         "actions": [
@@ -117,7 +123,7 @@ async def emby_action_targets(request: Request):
             for key, value in EMBY_ACTIONS.items()
             if key in {"refresh_libraries", "refresh_metadata"}
         ],
-        "servers": _api_action_targets(),
+        "servers": servers,
     })
 
 
@@ -128,12 +134,15 @@ async def emby_action_targets(request: Request):
 )
 async def emby_action_api(request: Request):
     """Run a library maintenance operation for one enabled server or all of them."""
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     csrf_token = request.headers.get("X-CSRF-Token")
     if not _validate_csrf_dep(request, csrf_token):
         return _api_error("CSRF token non valido", 403)
 
-    payload = await validated_json_payload(request, EmbyActionRequest)
+    payload = cast(
+        dict[str, Any],
+        await validated_json_payload(request, EmbyActionRequest),
+    )
 
     action = str(payload.get("action") or "")
     requested_server_id = str(payload.get("server_id") or "")
@@ -141,11 +150,16 @@ async def emby_action_api(request: Request):
         return _api_error("Azione non supportata")
 
     try:
-        _ensure_db_backend_dep()
+        await run_in_threadpool(_ensure_db_backend_dep)
     except StorageError as exc:
-        return _api_error(f"Errore DB: {exc}", 500)
+        print(
+            "[EMBY ACTIONS] Database non disponibile:",
+            format_exception_for_log(exc),
+            sep="\n",
+        )
+        return _api_error("Database Emby non disponibile", 500)
 
-    emby_section = _load_emby_settings_from_db()
+    emby_section = await run_in_threadpool(_load_emby_settings_from_db)
     servers = copy.deepcopy(emby_section.get("SERVERS") or [])
     selected = [
         (index, server)
@@ -161,7 +175,7 @@ async def emby_action_api(request: Request):
     action_label = str(get_nested(EMBY_ACTIONS, action, "label") or action)
     results = []
     for index, server in selected:
-        success, response = _execute_emby_action(server, action)
+        success, response = await run_in_threadpool(_execute_emby_action, server, action)
         timestamp = datetime.now(timezone.utc).astimezone().isoformat()
         server["last_action"] = {
             "name": action_label,
@@ -176,8 +190,23 @@ async def emby_action_api(request: Request):
             "message": "Operazione inviata" if success else str(response),
         })
 
-    _save_emby_settings_to_db({"SERVERS": servers})
-    _load_config_dep()
+    action_updates = {
+        str(server.get("id") or ""): copy.deepcopy(server.get("last_action"))
+        for _index, server in selected
+        if server.get("id")
+    }
+
+    def persist_actions(emby):
+        current_servers = copy.deepcopy(emby.get("SERVERS") or [])
+        for server in current_servers:
+            server_id = str(server.get("id") or "")
+            if server_id in action_updates:
+                server["last_action"] = copy.deepcopy(action_updates[server_id])
+        emby["SERVERS"] = current_servers
+        return emby
+
+    await run_in_threadpool(_mutate_emby_settings_in_db, persist_actions)
+    await run_in_threadpool(_load_config_dep)
     failed = [result for result in results if not result["success"]]
     succeeded = len(results) - len(failed)
     if failed and succeeded:

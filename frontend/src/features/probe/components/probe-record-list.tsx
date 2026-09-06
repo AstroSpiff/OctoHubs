@@ -36,17 +36,17 @@ function ProbeRecordList({
       aria-label={recordListLabel(kind)}
     >
       <div className="probe-record-heading" role="row">
-        <span>{kind === "history" ? "Data" : "Ultimo tentativo"}</span>
-        <span>Titolo</span>
-        <span>{kind === "history" ? "Stato" : "Tentativi"}</span>
-        <span>
+        <span role="columnheader">{kind === "history" ? "Data" : "Ultimo tentativo"}</span>
+        <span role="columnheader">Titolo</span>
+        <span role="columnheader">{kind === "history" ? "Stato" : "Tentativi"}</span>
+        <span role="columnheader">
           {kind === "history"
             ? "Dettagli"
             : kind === "error"
               ? "Ultimo errore"
               : "Dettagli"}
         </span>
-        <span>Azioni</span>
+        <span role="columnheader">Azioni</span>
       </div>
       {items.map((item, index) => (
         <ProbeRecordRow
@@ -90,18 +90,19 @@ function ProbeRecordRow({
         className="probe-record-date"
         dateTime={date}
         data-label={kind === "history" ? "Data" : "Ultimo tentativo"}
+        role="cell"
       >
         {formatProbeDate(date)}
       </time>
-      <strong data-label="Titolo">{probeItemLabel(item)}</strong>
+      <strong data-label="Titolo" role="cell">{probeItemLabel(item)}</strong>
       {kind === "history" ? (
-        <span className="probe-record-status" data-label="Stato">
+        <span className="probe-record-status" data-label="Stato" role="cell">
           <StatusBadge severity={historySeverity(status)}>
             {historyLabel(status)}
           </StatusBadge>
         </span>
       ) : (
-        <span className="probe-record-status" data-label="Tentativi">
+        <span className="probe-record-status" data-label="Tentativi" role="cell">
           <span className={`probe-retry-count probe-retry-count--${kind}`}>
             {item.retry_count || 0}
           </span>
@@ -116,10 +117,11 @@ function ProbeRecordRow({
               ? "Ultimo errore"
               : "Dettagli"
         }
+        role="cell"
       >
         {historyDetail(kind, item)}
       </span>
-      <span className="probe-record-actions" data-label="Azioni">
+      <span className="probe-record-actions" data-label="Azioni" role="cell">
         {canRetry ? (
           <Button
             type="button"

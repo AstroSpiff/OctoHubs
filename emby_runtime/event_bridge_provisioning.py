@@ -7,7 +7,7 @@ from typing import Any
 
 from emby_runtime.event_bridge_credentials import (
     generate_event_bridge_credential,
-    save_event_bridge_credential,
+    save_event_bridge_credential_if_server_exists,
 )
 from emby_runtime.event_bridge_plugin_client import push_event_bridge_settings_to_plugin
 
@@ -40,7 +40,12 @@ def provision_event_bridge_credential(
             "Il plugin non supporta le credenziali per-server: aggiornalo e riprova",
             response,
         )
-    save_event_bridge_credential(server_id, credential)
+    if not save_event_bridge_credential_if_server_exists(server_id, credential):
+        return EventBridgeProvisioningResult(
+            False,
+            "Il server Emby è stato rimosso durante il collegamento; la credenziale non è stata attivata",
+            response,
+        )
     return EventBridgeProvisioningResult(True, response=response)
 
 

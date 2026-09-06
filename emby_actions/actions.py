@@ -1,6 +1,8 @@
 from typing import Any, Dict, List, Tuple
 import copy
 
+from core.safe_output import safe_print as print
+
 from emby_runtime.api_clients import (
     _call_emby_api,
     _fetch_emby_scheduled_tasks,

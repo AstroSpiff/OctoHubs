@@ -4,6 +4,9 @@ from typing import Any, Dict
 
 import requests
 
+from core.log_sanitization import sanitize_text_for_log
+from telegram.limits import validate_telegram_settings_limits
+
 
 def _default_telegram_settings() -> Dict[str, Any]:
     return {"BOTS": [], "GROUPS": [], "CHANNELS": [], "PRESETS": []}
@@ -42,7 +45,7 @@ def _normalize_telegram_bots(entries: Any) -> list[Dict[str, Any]]:
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        token = str(entry.get("token") or entry.get("BOT_TOKEN") or "").strip()
+        token = str(entry.get("token") or "").strip()
         if not token:
             continue
         alias = str(entry.get("alias") or entry.get("name") or "").strip()
@@ -135,21 +138,6 @@ def _load_telegram_settings() -> Dict[str, Any]:
         telegram = {}
     merged = _default_telegram_settings()
     bots = _normalize_telegram_bots(telegram.get("BOTS"))
-    if not bots:
-        legacy_token = str(telegram.get("BOT_TOKEN") or "").strip()
-        if legacy_token:
-            bots = [{
-                "id": str(uuid.uuid4()),
-                "alias": "Bot principale",
-                "original_name": "",
-                "token": legacy_token,
-                "username": "",
-                "user_id": "",
-                "verified": False,
-                "verified_at": "",
-                "last_check": "",
-                "last_error": ""
-            }]
     merged["BOTS"] = bots
     merged["GROUPS"] = _normalize_telegram_entries(telegram.get("GROUPS"))
     merged["CHANNELS"] = _normalize_telegram_entries(telegram.get("CHANNELS"))
@@ -166,6 +154,7 @@ def _save_telegram_settings(telegram_settings: Dict[str, Any]) -> None:
     normalized["GROUPS"] = _normalize_telegram_entries(telegram_settings.get("GROUPS"))
     normalized["CHANNELS"] = _normalize_telegram_entries(telegram_settings.get("CHANNELS"))
     normalized["PRESETS"] = _normalize_telegram_presets(telegram_settings.get("PRESETS"))
+    validate_telegram_settings_limits(normalized)
     settings["TELEGRAM"] = normalized
     _save_app_settings_snapshot(settings)
 
@@ -178,10 +167,11 @@ def _telegram_api_request(bot_token: str, method: str, params: Dict[str, Any]) -
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
         payload = response.json()
-    except (requests.RequestException, ValueError) as exc:
-        return False, f"Errore richiesta Telegram: {exc}", {}
+    except (requests.RequestException, ValueError):
+        return False, "Errore richiesta Telegram.", {}
     if not payload.get("ok"):
-        return False, payload.get("description") or "Errore Telegram.", {}
+        description = sanitize_text_for_log(payload.get("description") or "Errore Telegram.")
+        return False, description, {}
     return True, "OK", payload.get("result") or {}
 
 

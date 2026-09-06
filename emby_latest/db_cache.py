@@ -3,7 +3,17 @@ DB cache operations for Latest Publications system.
 Handles loading, saving, clearing, and managing cache data in the database.
 """
 
+import logging
 from typing import Any, Dict, Optional
+
+from core.log_sanitization import format_exception_for_log
+
+
+logger = logging.getLogger(__name__)
+
+
+class LatestCachePersistenceError(RuntimeError):
+    """Raised when a Latest cache publication cannot be persisted."""
 
 
 class LatestCacheRepository:
@@ -27,6 +37,21 @@ class LatestCacheRepository:
             payload,
             limit,
             per_server_limit,
+            db_storage=self.db_storage,
+        )
+
+    def publish_refresh(
+        self,
+        payload: Dict[str, Any],
+        limit: int,
+        per_server_limit: int,
+        latest_state: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        publish_refresh(
+            payload,
+            limit,
+            per_server_limit,
+            latest_state=latest_state,
             db_storage=self.db_storage,
         )
 
@@ -65,15 +90,23 @@ def load_cache(cache_kind: str, db_storage=None) -> Dict[str, Any]:
         db_storage: Optional explicit database storage backend
 
     Returns:
-        Dict containing cache payload and metadata, or empty dict on error
+        Dict containing cache payload and metadata. Missing data is represented
+        by an empty dict; read failures are raised so callers cannot publish an
+        empty replacement by mistake.
     """
     try:
         backend = _get_db_backend(db_storage)
         payload = backend.load_latest_cache(cache_kind)
         return payload if isinstance(payload, dict) else {}
     except Exception as exc:
-        print(f"[LATEST_DB] Error loading cache {cache_kind}: {exc}")
-        return {}
+        logger.error(
+            "[LATEST_DB] Error loading cache %s:\n%s",
+            cache_kind,
+            format_exception_for_log(exc),
+        )
+        raise LatestCachePersistenceError(
+            f"Lettura cache Latest {cache_kind} non riuscita"
+        ) from exc
 
 
 def save_cache(
@@ -97,7 +130,44 @@ def save_cache(
         backend = _get_db_backend(db_storage)
         backend.save_latest_cache(cache_kind, payload, limit, per_server_limit)
     except Exception as exc:
-        print(f"[LATEST_DB] Error saving cache {cache_kind}: {exc}")
+        logger.error(
+            "[LATEST_DB] Error saving cache %s:\n%s",
+            cache_kind,
+            format_exception_for_log(exc),
+        )
+        raise LatestCachePersistenceError(
+            f"Unable to persist Latest {cache_kind} cache"
+        ) from exc
+
+
+def publish_refresh(
+    payload: Dict[str, Any],
+    limit: int,
+    per_server_limit: int,
+    *,
+    latest_state: Optional[Dict[str, Any]] = None,
+    db_storage=None,
+) -> None:
+    """Publish batch, feed and collector state as one durable transaction."""
+    try:
+        backend = _get_db_backend(db_storage)
+        publish = getattr(backend, "publish_latest_refresh", None)
+        if not callable(publish):
+            raise RuntimeError("Latest backend does not support atomic publication")
+        publish(
+            payload,
+            limit,
+            per_server_limit,
+            latest_state=latest_state,
+        )
+    except Exception as exc:
+        logger.error(
+            "[LATEST_DB] Error publishing refresh:\n%s",
+            format_exception_for_log(exc),
+        )
+        raise LatestCachePersistenceError(
+            "Unable to publish Latest refresh"
+        ) from exc
 
 
 def clear_cache(cache_kind: Optional[str] = None, db_storage=None) -> None:
@@ -108,11 +178,8 @@ def clear_cache(cache_kind: Optional[str] = None, db_storage=None) -> None:
         cache_kind: Cache type to clear, or None to clear all
         db_storage: Optional explicit database storage backend
     """
-    try:
-        backend = _get_db_backend(db_storage)
-        backend.clear_latest_cache(cache_kind)
-    except Exception as exc:
-        print(f"[LATEST_DB] Error clearing cache {cache_kind or 'all'}: {exc}")
+    backend = _get_db_backend(db_storage)
+    backend.clear_latest_cache(cache_kind)
 
 
 def delete_cache_for_server(server_id: str, cache_kind: Optional[str] = None, db_storage=None) -> None:
@@ -128,7 +195,11 @@ def delete_cache_for_server(server_id: str, cache_kind: Optional[str] = None, db
         backend = _get_db_backend(db_storage)
         backend.delete_latest_cache_for_server(server_id, cache_kind)
     except Exception as exc:
-        print(f"[LATEST_DB] Error deleting cache for server {server_id}: {exc}")
+        logger.error(
+            "[LATEST_DB] Error deleting cache for server %s:\n%s",
+            server_id,
+            format_exception_for_log(exc),
+        )
 
 
 def build_cache_maps(cache_payload: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:

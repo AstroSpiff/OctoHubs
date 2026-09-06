@@ -51,22 +51,24 @@ function testConfigurationConnections(): Promise<ConnectionCheckPayload> {
   return request<ConnectionCheckPayload>("/api/v1/test-connections", { method: "POST" });
 }
 
-function startTraktDeviceFlow(clientId: string): Promise<TraktDeviceStart> {
+function startTraktDeviceFlow(clientId: string, signal?: AbortSignal): Promise<TraktDeviceStart> {
   return request<TraktDeviceStart>("/api/v1/trakt/device/start", {
     method: "POST",
     body: JSON.stringify({ client_id: clientId }),
+    signal,
   });
 }
 
-function pollTraktDeviceFlow(clientId: string, clientSecret: string, deviceCode: string): Promise<TraktDevicePoll> {
+function pollTraktDeviceFlow(clientId: string, clientSecret: string, deviceCode: string, configRevision: string, signal?: AbortSignal): Promise<TraktDevicePoll> {
   return request<TraktDevicePoll>("/api/v1/trakt/device/poll", {
     method: "POST",
-    body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, device_code: deviceCode }),
+    body: JSON.stringify({ client_id: clientId, client_secret: clientSecret, device_code: deviceCode, config_revision: configRevision }),
+    signal,
   });
 }
 
-function clearTraktDeviceFlow(): Promise<{ success: boolean; message: string }> {
-  return request<{ success: boolean; message: string }>("/api/v1/trakt/clear", { method: "POST" });
+function clearTraktDeviceFlow(signal?: AbortSignal): Promise<{ success: boolean; message: string }> {
+  return request<{ success: boolean; message: string }>("/api/v1/trakt/clear", { method: "POST", signal });
 }
 
 function getTelegramSettings(): Promise<TelegramSettingsPayload> {

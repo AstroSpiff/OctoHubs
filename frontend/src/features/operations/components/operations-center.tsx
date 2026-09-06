@@ -10,7 +10,7 @@ function OperationsCenter() {
     fetching={operations.isFetching}
     clearing={clearCompleted.isPending}
     stopping={stopActiveWorkflow.isPending}
-    error={clearCompleted.error || stopActiveWorkflow.error}
+    error={operations.error || clearCompleted.error || stopActiveWorkflow.error}
     onRefresh={() => void operations.refetch()}
     onClear={() => clearCompleted.mutate()}
     onStop={() => stopActiveWorkflow.mutate()}

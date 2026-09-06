@@ -14,6 +14,8 @@ function ProbeSettings({
   serverName,
   config,
   disabled,
+  loading,
+  loadError,
   saving,
   error,
   saved,
@@ -27,6 +29,8 @@ function ProbeSettings({
   serverName?: string;
   config?: ProbeConfig;
   disabled: boolean;
+  loading?: boolean;
+  loadError?: string;
   saving: boolean;
   error?: string;
   saved: boolean;
@@ -36,7 +40,7 @@ function ProbeSettings({
   onSave: (config: ProbeConfig) => Promise<ProbeConfig>;
   onDirtyChange?: (dirty: boolean) => void;
 }) {
-  const savedConfig = config || probeConfigDefaults;
+  const savedConfig = config;
   const { accept, dirty, discard, draft, setDraft } = useSynchronizedDraft(
     savedConfig,
     copyProbeConfig,
@@ -60,7 +64,28 @@ function ProbeSettings({
     }
   }
 
-  if (!draft) return null;
+  if (!draft) {
+    return (
+      <section className="probe-settings" aria-labelledby="probe-settings-title">
+        <header>
+          <div>
+            <h3 id="probe-settings-title" className="contextual-heading">
+              Configurazione {scope === "libraries" ? "librerie" : "ultimi aggiunti"}
+            </h3>
+          </div>
+        </header>
+        {loadError ? (
+          <p className="probe-settings-feedback is-error" role="alert">
+            Impossibile caricare la configurazione Probe: {loadError}
+          </p>
+        ) : (
+          <p className="probe-settings-feedback" role="status">
+            {loading ? "Caricamento configurazione Probe..." : "Seleziona un server specifico per configurare Probe."}
+          </p>
+        )}
+      </section>
+    );
+  }
 
   return (
     <section className="probe-settings" aria-labelledby="probe-settings-title">

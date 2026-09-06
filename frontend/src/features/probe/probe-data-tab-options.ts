@@ -13,10 +13,10 @@ function probeDataTabOptions({
   incompleteCount,
   showSettings,
 }: {
-  queueCount: number;
-  historyCount: number;
-  errorCount: number;
-  incompleteCount: number;
+  queueCount?: number;
+  historyCount?: number;
+  errorCount?: number;
+  incompleteCount?: number;
   showSettings: boolean;
 }): ProbeDataTabOption[] {
   return [

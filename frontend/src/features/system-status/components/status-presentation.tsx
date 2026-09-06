@@ -105,6 +105,7 @@ function SystemStatusSection({
               type="button"
               variant="secondary"
               size="compact"
+              requiresWriteAccess
               onClick={() => onRefresh(true)}
               disabled={refreshing}
             >

@@ -5,7 +5,7 @@ import {
   Square,
   Trash2,
 } from "@/components/ui/icons";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,12 @@ import type {
   Operation,
   OperationWorkflowStep,
 } from "@/features/operations/types";
+import { useWorkspaceCapabilities } from "@/features/session/workspace-capabilities-context";
+import {
+  browserLocalStorage,
+  readStoredValue,
+  writeStoredValue,
+} from "@/lib/safe-web-storage";
 import { cn } from "@/lib/utils";
 
 type OperationsCenterViewProps = {
@@ -55,18 +61,26 @@ function OperationsCenterView({
   className,
 }: OperationsCenterViewProps) {
   const confirmation = useConfirmationDialog();
+  const { canMutate } = useWorkspaceCapabilities();
   const [open, setOpen] = useState(
-    () => window.localStorage.getItem(storageKey) === "true",
+    () => readStoredValue(browserLocalStorage(), storageKey) === "true",
   );
+  const previousErrorRef = useRef<Error | null | undefined>(undefined);
   const completedCount = operations.filter(
     (operation) => !isActiveOperation(operation),
   ).length;
 
   useEffect(() => {
-    window.localStorage.setItem(storageKey, open ? "true" : "false");
+    writeStoredValue(browserLocalStorage(), storageKey, open ? "true" : "false");
   }, [open, storageKey]);
 
-  if (!operations.length) return null;
+  useEffect(() => {
+    if (error && !previousErrorRef.current && !operations.length) setOpen(true);
+    previousErrorRef.current = error;
+  }, [error, operations.length]);
+
+  if (!operations.length && !error) return null;
+  const panelOpen = open;
 
   async function requestStopWorkflow() {
     if (
@@ -106,7 +120,7 @@ function OperationsCenterView({
       )}
       aria-label={label}
     >
-      {open ? (
+      {panelOpen ? (
         <section
           className="operations-center-panel"
           aria-label={`${label} recenti`}
@@ -115,7 +129,9 @@ function OperationsCenterView({
             <div>
               <strong>{label}</strong>
               <span>
-                {activeCount
+                {error && !operations.length
+                  ? "Caricamento non riuscito"
+                  : activeCount
                   ? `${activeCount} in corso`
                   : `${operations.length} recenti`}
               </span>
@@ -136,17 +152,19 @@ function OperationsCenterView({
                   aria-hidden="true"
                 />
               </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                title="Pulisci operazioni completate"
-                aria-label="Pulisci operazioni completate"
-                onClick={() => void requestClearCompleted()}
-                disabled={!completedCount || clearing}
-              >
-                <Trash2 size={15} aria-hidden="true" />
-              </Button>
+              {canMutate ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  title="Pulisci operazioni completate"
+                  aria-label="Pulisci operazioni completate"
+                  onClick={() => void requestClearCompleted()}
+                  disabled={!completedCount || clearing}
+                >
+                  <Trash2 size={15} aria-hidden="true" />
+                </Button>
+              ) : null}
               <Button
                 type="button"
                 variant="ghost"
@@ -170,7 +188,7 @@ function OperationsCenterView({
                 key={operation.id}
                 operation={operation}
                 stopping={stopping}
-                onStop={onStop ? () => void requestStopWorkflow() : undefined}
+                onStop={canMutate && onStop ? () => void requestStopWorkflow() : undefined}
               />
             ))}
           </div>
@@ -181,7 +199,7 @@ function OperationsCenterView({
         className="operations-center-toggle"
         variant="secondary"
         onClick={() => setOpen((current) => !current)}
-        aria-expanded={open}
+        aria-expanded={panelOpen}
         aria-label={
           open ? `Riduci ${label.toLowerCase()}` : `Apri ${label.toLowerCase()}`
         }

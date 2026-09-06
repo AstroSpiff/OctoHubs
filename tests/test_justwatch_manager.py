@@ -125,6 +125,18 @@ class JustWatchManagerTests(unittest.TestCase):
             ],
         )
 
+    def test_justwatch_transport_applies_default_connect_and_read_timeout(self):
+        from unittest.mock import patch
+
+        from core.justwatch_manager import JW_HTTP_TIMEOUT, _TimeoutSession
+
+        sentinel = object()
+        with patch("requests.Session.request", return_value=sentinel) as request:
+            response = _TimeoutSession().get("https://apis.justwatch.com/test")
+
+        self.assertIs(response, sentinel)
+        self.assertEqual(request.call_args.kwargs["timeout"], JW_HTTP_TIMEOUT)
+
 
 if __name__ == "__main__":
     unittest.main()

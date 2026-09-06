@@ -6,6 +6,7 @@ import os
 import requests
 
 from core.config import DEFAULT_CONFIG, _merge_database_settings, _merge_trakt_settings, _merge_justwatch_settings
+from core.safe_output import safe_print as print
 from core.config_manager import _db_enabled, _get_db_backend
 from core.http_error_messages import safe_http_error_message
 from core.integrations import (
@@ -20,6 +21,21 @@ from core.storage import StorageError
 from emby_runtime.api_clients import _ping_api_service, _ping_jellyseerr, _ping_prowlarr, _ping_qbittorrent
 from search.indexers import _jackett_configured, _prowlarr_configured, _search_rules
 
+
+SERVICE_HEALTH_MAX_API_KEYS = 20
+
+
+def _bounded_api_keys(value) -> list[str]:
+    """Normalize legacy single values without iterating over their characters."""
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, (list, tuple)):
+        values = value
+    else:
+        values = []
+    return [str(item) for item in values if str(item or "").strip()][
+        :SERVICE_HEALTH_MAX_API_KEYS
+    ]
 
 def validate_connections(config):
     """Verifica rapidamente che Jellyseerr, gli indexer e il database rispondano."""
@@ -101,7 +117,7 @@ def _ping_justwatch(config):
 
 def _ping_mdblist(config):
     """Test connessione MDBList API."""
-    api_keys = (config or {}).get("MDBLIST_API_KEYS", [])
+    api_keys = _bounded_api_keys((config or {}).get("MDBLIST_API_KEYS", []))
     if not api_keys:
         return False, "API Keys non configurate", False
 
@@ -149,7 +165,7 @@ def _ping_mdblist(config):
 
 def _ping_omdb(config):
     """Test connessione OMDB API."""
-    api_keys = (config or {}).get("OMDB_API_KEYS", [])
+    api_keys = _bounded_api_keys((config or {}).get("OMDB_API_KEYS", []))
     if not api_keys:
         api_key = (config or {}).get("OMDB_API_KEY")
         if not api_key:

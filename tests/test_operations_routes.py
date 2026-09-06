@@ -84,7 +84,10 @@ class OperationRouteTests(unittest.IsolatedAsyncioTestCase):
         response = await api_operations(object())
 
         self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.body.decode(), '{"ok":false,"error":"DB non disponibile"}')
+        self.assertEqual(
+            response.body.decode(),
+            '{"ok":false,"error":"Centro operazioni temporaneamente non disponibile"}',
+        )
 
 
 if __name__ == "__main__":

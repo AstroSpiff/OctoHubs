@@ -47,6 +47,14 @@ def _bearer_token(request: Request) -> str:
     return token.strip()
 
 
+def bearer_credentials_present(request: Request) -> bool:
+    """Return whether the caller explicitly selected Bearer authentication."""
+    headers = getattr(request, "headers", {}) or {}
+    authorization = str(headers.get("Authorization") or "").strip()
+    scheme, _, _token = authorization.partition(" ")
+    return scheme.lower() == "bearer"
+
+
 def _mark_api_token_auth(request: Request, result: dict[str, Any]) -> None:
     state = getattr(request, "state", None)
     if state is None:
@@ -57,15 +65,67 @@ def _mark_api_token_auth(request: Request, result: dict[str, Any]) -> None:
 
 
 def _api_token_result(request: Request) -> dict[str, Any] | None:
+    state = getattr(request, "state", None)
+    if state is not None and bool(getattr(state, "api_token_checked", False)):
+        cached = getattr(state, "api_token_result", None)
+        return cached if isinstance(cached, dict) else None
     token = _bearer_token(request)
     if not token:
+        if state is not None:
+            setattr(state, "api_token_checked", True)
+            setattr(state, "api_token_result", None)
         return None
-    from core.auth import verify_api_token
+    from core.client_address import resolve_client_address
+    from web.api_token_rate_limit import api_token_pre_auth_rate_limiter
 
-    result = verify_api_token(token)
+    client_address = resolve_client_address(
+        request,
+        trust_proxy_env="API_TOKEN_TRUST_PROXY_HEADERS",
+    )
+    # A real ASGI peer always has an address. Keep direct internal/test calls
+    # from sharing one artificial global bucket named ``unknown``.
+    if client_address != "unknown":
+        allowed, retry_after = api_token_pre_auth_rate_limiter.consume(client_address)
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail="Troppi tentativi di autenticazione API token",
+                headers={"Retry-After": str(retry_after)},
+            )
+    from core.auth import AuthStorageError, verify_api_token
+
+    try:
+        result = verify_api_token(token)
+    except AuthStorageError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Database autenticazione temporaneamente non disponibile",
+        ) from exc
+    if state is not None:
+        setattr(state, "api_token_checked", True)
+        setattr(state, "api_token_result", result)
     if result is not None:
+        from web.api_token_rate_limit import api_token_rate_limiter
+
+        token_id = int(getattr(result.get("token"), "id", 0) or 0)
+        allowed, retry_after = api_token_rate_limiter.consume(token_id)
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail="Limite richieste API token superato",
+                headers={"Retry-After": str(retry_after)},
+            )
         _mark_api_token_auth(request, result)
     return result
+
+
+def authenticate_bearer_request(request: Request) -> bool:
+    """Authenticate an explicit Bearer header without falling back to cookies."""
+    if not bearer_credentials_present(request):
+        return False
+    if _api_token_result(request) is None:
+        raise HTTPException(status_code=401, detail="API token non valido")
+    return True
 
 
 def required_api_scope(
@@ -82,10 +142,6 @@ def required_api_scope(
     from web.api_versioning import canonical_v1_external_api_path
 
     path = canonical_v1_external_api_path(path) or path
-
-    def has_truthy_query_param(name: str) -> bool:
-        values = (query_values or {}).get(name, [])
-        return any(str(value).strip().lower() in {"1", "true", "yes", "on"} for value in values)
 
     if path == "/api/account/me":
         return "read:account"
@@ -108,15 +164,24 @@ def required_api_scope(
     if path.startswith("/api/event-bridge/"):
         return "read:event_bridge" if is_safe else "write:event_bridge"
     if path.startswith("/api/system/status"):
-        return "read:status"
+        values = query_values or {}
+        live_check = any(
+            str(value).strip().lower() in {"1", "true", "yes", "on"}
+            for value in values.get("check_services", [])
+        )
+        return "run:operations" if live_check else "read:status"
     if path in {
         "/api/research/overview",
         "/api/research/requests/refresh-status",
         "/api/research/tmdb/check-availability",
-        "/api/research/torrents/proxy",
-        "/api/research/torrents/archive",
     }:
         return "read:research"
+    if path in {
+        "/api/research/torrents/proxy",
+        "/api/research/torrents/archive",
+        "/api/research/torrents/magnets",
+    }:
+        return "write:research"
     if (
         path.startswith("/api/research/tmdb/")
         or path.startswith("/api/research/media/details")
@@ -150,6 +215,8 @@ def required_api_scope(
         path.startswith("/api/emby/scan-library")
         or path.startswith("/api/emby/scan-group")
     ):
+        return "run:operations"
+    if path == "/api/emby/scan-jobs/reset":
         return "run:operations"
     if (
         path.startswith("/api/emby/active-library-scans")
@@ -202,7 +269,7 @@ def required_api_scope(
         if path in {
             "/api/emby/collections/trakt-lists",
             "/api/emby/collections/mdblist-lists",
-        } and has_truthy_query_param("background"):
+        } and not is_safe:
             return "run:operations"
         return "read:collections" if is_safe else "write:collections"
     if path == "/api/emby/latest/preview":
@@ -220,7 +287,9 @@ def required_api_scope(
             return "read:libraries" if is_safe else "write:libraries"
         if path.startswith("/api/emby/probe/config"):
             return "read:libraries" if is_safe else "write:libraries"
-        if path.startswith("/api/emby/probe/export-csv") or path.startswith("/api/emby/probe/debug-recent-items"):
+        if path.startswith("/api/emby/probe/debug-recent-items"):
+            return "run:operations"
+        if path.startswith("/api/emby/probe/export-csv"):
             return "read:libraries"
         return "run:operations"
     if path.startswith("/api/emby/transcode-guard/check-now"):
@@ -235,7 +304,7 @@ def required_api_scope(
     ):
         return "read:status" if is_safe else "run:operations"
     if path.startswith("/api/test-connections"):
-        return "read:configuration"
+        return "read:configuration" if is_safe else "run:operations"
     if path.startswith("/api/trakt/"):
         return "read:configuration" if is_safe else "write:configuration"
     if path.startswith("/api/configuration/") or path.startswith("/api/telegram/"):
@@ -339,11 +408,57 @@ def get_current_user_id(request: Request) -> Optional[int]:
 def set_current_user(request: Request, user_id: int) -> None:
     """Set current user ID in Starlette session."""
     request.session["user_id"] = user_id
+    state = getattr(request, "state", None)
+    if state is not None and hasattr(state, "authenticated_user"):
+        delattr(state, "authenticated_user")
 
 
 def clear_current_user(request: Request) -> None:
     """Clear current user from Starlette session (logout)."""
     request.session.pop("user_id", None)
+    request.session.pop("auth_epoch", None)
+    state = getattr(request, "state", None)
+    if state is not None and hasattr(state, "authenticated_user"):
+        delattr(state, "authenticated_user")
+
+
+def _active_bearer_user(request: Request, state: Any) -> Optional[Any]:
+    token_result = _api_token_result(request)
+    if token_result is None:
+        raise HTTPException(status_code=401, detail="API token non valido")
+    user = token_result.get("user")
+    if not user or not bool(getattr(user, "is_active", False)):
+        return None
+    _require_api_scope(request, token_result)
+    _require_write_access(request, user)
+    _log_allowed_api_token_usage(request, token_result)
+    if state is not None:
+        setattr(state, "authenticated_user", user)
+    return user
+
+
+def _active_session_user(request: Request, state: Any) -> Optional[Any]:
+    from core.auth import AuthStorageError, get_user_by_id
+
+    user_id = get_current_user_id(request)
+    if not user_id:
+        return None
+    try:
+        user = get_user_by_id(user_id)
+    except AuthStorageError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Database autenticazione temporaneamente non disponibile",
+        ) from exc
+    if not user or not bool(getattr(user, "is_active", False)):
+        return None
+    session_epoch = int(request.session.get("auth_epoch") or 0)
+    if session_epoch != int(getattr(user, "auth_epoch", 0) or 0):
+        clear_current_user(request)
+        return None
+    if state is not None:
+        setattr(state, "authenticated_user", user)
+    return user
 
 
 def get_current_user(request: Request) -> Optional[Any]:
@@ -351,25 +466,14 @@ def get_current_user(request: Request) -> Optional[Any]:
     Get current authenticated User object from session.
     Returns User object if authenticated, None otherwise.
     """
-    from core.auth import get_user_by_id
+    state = getattr(request, "state", None)
+    cached_user = getattr(state, "authenticated_user", None)
+    if cached_user is not None:
+        return cached_user
 
-    user_id = get_current_user_id(request)
-    if not user_id:
-        token_result = _api_token_result(request)
-        if token_result is None:
-            return None
-        user = token_result.get("user")
-        if not user or not bool(getattr(user, "is_active", False)):
-            return None
-        _require_api_scope(request, token_result)
-        _require_write_access(request, user)
-        _log_allowed_api_token_usage(request, token_result)
-        return user
-
-    user = get_user_by_id(user_id)
-    if not user or not bool(getattr(user, "is_active", False)):
-        return None
-    return user
+    if bearer_credentials_present(request):
+        return _active_bearer_user(request, state)
+    return _active_session_user(request, state)
 
 
 def _user_role(user: Any) -> str:
@@ -396,9 +500,15 @@ def _require_write_access(request: Request, user: Any) -> None:
     scope = getattr(request, "scope", {}) or {}
     scope_type = str(scope.get("type", "")) if isinstance(scope, dict) else ""
     path = str(scope.get("path", "")) if isinstance(scope, dict) else ""
-    is_interactive_search_socket = scope_type == "websocket" and path.startswith("/ws/search/")
+    is_interactive_socket = scope_type == "websocket" and path.startswith(
+        ("/ws/search/", "/ws/scan/")
+    )
     is_http_mutation = bool(method and method not in _SAFE_HTTP_METHODS)
-    if (is_http_mutation or is_interactive_search_socket) and _user_role(user) == _READ_ONLY_ROLE:
+    required_scope = _required_api_scope(request)
+    privileged_safe_request = bool(path) and method in _SAFE_HTTP_METHODS and required_scope.startswith(
+        ("run:", "write:", "manage:", "admin:")
+    )
+    if (is_http_mutation or is_interactive_socket or privileged_safe_request) and _user_role(user) == _READ_ONLY_ROLE:
         raise HTTPException(
             status_code=403,
             detail="Questo account e in sola lettura e non puo modificare dati.",
@@ -412,14 +522,19 @@ def require_auth(request: Request) -> int:
     Raises 403 when a viewer attempts an HTTP mutation.
     Returns user_id if authenticated.
     """
-    token_result = _api_token_result(request)
-    if token_result is not None:
+    if bearer_credentials_present(request):
+        token_result = _api_token_result(request)
+        if token_result is None:
+            raise HTTPException(status_code=401, detail="API token non valido")
         user = token_result.get("user")
         if not user:
             raise HTTPException(status_code=401, detail="Authentication required")
         _require_api_scope(request, token_result)
         _require_write_access(request, user)
         _log_allowed_api_token_usage(request, token_result)
+        state = getattr(request, "state", None)
+        if state is not None:
+            setattr(state, "authenticated_user", user)
         return int(user.id)
 
     user = get_current_user(request)
@@ -427,6 +542,73 @@ def require_auth(request: Request) -> int:
         raise HTTPException(status_code=401, detail="Authentication required")
     _require_write_access(request, user)
     return int(user.id)
+
+
+def _revalidate_bearer_subject(request: Request, expected_id: int, bearer: str) -> bool:
+    from core.auth import AuthStorageError, verify_api_token
+    try:
+        result = verify_api_token(bearer)
+    except AuthStorageError:
+        return False
+    user = result.get("user") if result else None
+    token = result.get("token") if result else None
+    expected_token_id = int(getattr(getattr(request, "state", None), "api_token_id", 0) or 0)
+    if not (
+        user
+        and token
+        and bool(getattr(user, "is_active", False))
+        and int(getattr(user, "id", 0) or 0) == expected_id
+        and int(getattr(token, "id", 0) or 0) == expected_token_id
+    ):
+        return False
+    assert result is not None
+    try:
+        if _request_path(request):
+            _require_api_scope(request, result)
+        _require_write_access(request, user)
+    except HTTPException:
+        return False
+    return True
+
+
+def _revalidate_session_subject(request: Request, expected_id: int) -> bool:
+    from core.auth import AuthStorageError, get_user_by_id
+    session = getattr(request, "session", {}) or {}
+    try:
+        session_user_id = int(session.get("user_id") or 0)
+        session_epoch = int(session.get("auth_epoch") or 0)
+    except (TypeError, ValueError):
+        return False
+    if session_user_id != expected_id:
+        return False
+    try:
+        user = get_user_by_id(session_user_id)
+    except AuthStorageError:
+        return False
+    identity_is_current = bool(
+        user
+        and bool(getattr(user, "is_active", False))
+        and int(getattr(user, "auth_epoch", 0) or 0) == session_epoch
+    )
+    if not identity_is_current:
+        return False
+    try:
+        _require_write_access(request, user)
+    except HTTPException:
+        return False
+    return True
+
+
+def revalidate_authenticated_subject(request: Request, expected_user_id: int) -> bool:
+    """Revalidate a long-lived channel against current account/token state."""
+    try:
+        expected_id = int(expected_user_id)
+    except (TypeError, ValueError):
+        return False
+    bearer = _bearer_token(request)
+    if bearer:
+        return _revalidate_bearer_subject(request, expected_id, bearer)
+    return _revalidate_session_subject(request, expected_id)
 
 
 def get_current_user_optional(request: Request) -> Optional[Any]:

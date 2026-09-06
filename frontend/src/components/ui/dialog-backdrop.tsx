@@ -25,6 +25,17 @@ const focusableSelector = [
   "[tabindex]:not([tabindex='-1'])",
 ].join(",");
 
+function isVisibleFocusable(element: HTMLElement, dialog: HTMLElement | null) {
+  for (let current: HTMLElement | null = element; current && current !== dialog; current = current.parentElement) {
+    if (current.hidden || current.hasAttribute("inert") || current.getAttribute("aria-hidden") === "true") {
+      return false;
+    }
+    const style = window.getComputedStyle(current);
+    if (style.display === "none" || style.visibility === "hidden") return false;
+  }
+  return element.tabIndex >= 0;
+}
+
 function DialogBackdrop({
   children,
   className,
@@ -46,12 +57,17 @@ function DialogBackdrop({
   }, []);
 
   const focusableElements = useCallback(() => {
+    const dialog = activeDialog();
     return Array.from(
-      activeDialog()?.querySelectorAll<HTMLElement>(focusableSelector) || [],
-    ).filter(
-      (element) =>
-        element.getAttribute("aria-hidden") !== "true" && element.tabIndex >= 0,
-    );
+      dialog?.querySelectorAll<HTMLElement>(focusableSelector) || [],
+    ).filter((element) => isVisibleFocusable(element, dialog));
+  }, [activeDialog]);
+
+  const focusDialog = useCallback(() => {
+    const dialog = activeDialog();
+    if (!dialog) return;
+    if (!dialog.hasAttribute("tabindex")) dialog.setAttribute("tabindex", "-1");
+    dialog.focus();
   }, [activeDialog]);
 
   useEffect(() => {
@@ -61,14 +77,16 @@ function DialogBackdrop({
         : null;
 
     const frame = window.requestAnimationFrame(() => {
-      focusableElements()[0]?.focus();
+      const first = focusableElements()[0];
+      if (first) first.focus();
+      else focusDialog();
     });
 
     return () => {
       window.cancelAnimationFrame(frame);
       if (triggerRef.current?.isConnected) triggerRef.current.focus();
     };
-  }, [focusableElements]);
+  }, [focusDialog, focusableElements]);
 
   useEffect(() => lockDocumentScroll(document.body), []);
 
@@ -90,11 +108,19 @@ function DialogBackdrop({
 
       if (event.key !== "Tab") return;
       const focusable = focusableElements();
-      if (!focusable.length) return;
+      if (!focusable.length) {
+        event.preventDefault();
+        focusDialog();
+        return;
+      }
 
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
+      const dialog = activeDialog();
+      if (!dialog?.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && document.activeElement === first) {
         event.preventDefault();
         last.focus();
       } else if (!event.shiftKey && document.activeElement === last) {
@@ -105,7 +131,7 @@ function DialogBackdrop({
 
     document.addEventListener("keydown", handleKeyboard);
     return () => document.removeEventListener("keydown", handleKeyboard);
-  }, [dismissible, focusableElements]);
+  }, [activeDialog, dismissible, focusDialog, focusableElements]);
 
   function dismissOnBackdrop(event: MouseEvent<HTMLDivElement>) {
     if (dismissible && event.target === event.currentTarget) onDismiss();

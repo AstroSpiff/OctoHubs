@@ -6,6 +6,21 @@ from types import SimpleNamespace
 CANARY = "sensitive-log-canary"
 
 
+def test_search_query_log_value_is_redacted_and_bounded():
+    from search.query_safety import MAX_SEARCH_QUERY_LOG_LENGTH, search_query_for_log
+
+    value = f"https://user:{CANARY}@indexer.test/search?apikey={CANARY}&q=" + ("x" * 300)
+    sanitized = search_query_for_log(value)
+
+    assert CANARY not in sanitized
+    assert "[REDACTED]" in sanitized
+    assert len(sanitized) <= MAX_SEARCH_QUERY_LOG_LENGTH + 1
+
+    truncated = search_query_for_log("x" * 300)
+    assert truncated.endswith("…")
+    assert len(truncated) == MAX_SEARCH_QUERY_LOG_LENGTH
+
+
 def test_url_and_mapping_redaction_preserve_diagnostic_structure():
     from core.log_sanitization import (
         REDACTED,
@@ -41,6 +56,57 @@ def test_url_and_mapping_redaction_preserve_diagnostic_structure():
     assert sanitized_config["nested"]["mode"] == "device"
 
 
+def test_text_and_nested_mapping_redact_standalone_secret_assignments():
+    from core.log_sanitization import REDACTED, redact_mapping_for_log, sanitize_text_for_log
+
+    payload = {
+        "error": f"provider rejected apikey={CANARY}",
+        "headers": {"Set-Cookie": f"session={CANARY}"},
+    }
+
+    sanitized_text = sanitize_text_for_log(f'{{"apikey":"{CANARY}"}}')
+    sanitized_payload = redact_mapping_for_log(payload)
+
+    assert CANARY not in sanitized_text
+    assert REDACTED in sanitized_text
+    assert CANARY not in repr(sanitized_payload)
+    assert sanitized_payload["headers"]["Set-Cookie"] == REDACTED
+
+
+def test_mdblist_response_diagnostics_redact_headers_and_body(monkeypatch, capsys):
+    from emby_latest import enrichment_sources
+
+    class Response:
+        status_code = 200
+        headers = {"Set-Cookie": f"session={CANARY}"}
+        text = f'{{"error":"apikey={CANARY}"}}'
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"error": f"apikey={CANARY}"}
+
+    monkeypatch.setattr(
+        enrichment_sources.requests,
+        "get",
+        lambda *_args, **_kwargs: Response(),
+    )
+
+    result = enrichment_sources._fetch_mdblist_ratings_by_imdb(
+        "tt-r13-redaction",
+        ["request-key"],
+        force_refresh=True,
+    )
+
+    assert result == {}
+    output = capsys.readouterr().out
+    assert CANARY not in output
+    assert "Response headers" in output
+    assert "Raw response" in output
+    assert "Parsed JSON payload" in output
+
+
 def test_emby_websocket_log_redacts_key_but_connection_uses_original_url(monkeypatch):
     from emby_runtime import websocket_manager
 
@@ -74,6 +140,34 @@ def test_emby_websocket_log_redacts_key_but_connection_uses_original_url(monkeyp
     assert CANARY not in logs
     assert "wss://emby.example:8096/embywebsocket" in logs
     assert "api_key=[REDACTED]" in logs
+
+
+def test_emby_realtime_unknown_event_logs_only_structural_context(monkeypatch, caplog, capsys):
+    import logging
+
+    from realtime import manager
+
+    canary = "CANARY_EMBY_EVENT_SECRET"
+    monkeypatch.setattr(manager, "_broadcast_sse_event", lambda _event: None)
+
+    with caplog.at_level(logging.DEBUG, logger=manager.logger.name):
+        manager._handle_emby_websocket_event(
+            "server-1",
+            {
+                "MessageType": "PluginCustomEvent",
+                "Data": {
+                    "nested": {"access_token": canary},
+                    "url": f"https://user:{canary}@emby.example/item?token={canary}",
+                    "path": f"/private/media/{canary}/movie.mkv",
+                },
+            },
+        )
+
+    emitted = caplog.text + capsys.readouterr().out
+    assert canary not in emitted
+    assert "/private/media/" not in emitted
+    assert "PluginCustomEvent" in emitted
+    assert "Payload omitted" in emitted
 
 
 def test_trakt_warning_keeps_config_shape_without_credentials(monkeypatch):

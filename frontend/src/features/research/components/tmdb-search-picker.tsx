@@ -1,5 +1,5 @@
 import { Check, Film, LoaderCircle, Search, Tv, X } from "@/components/ui/icons";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,10 @@ import {
   displayMediaType,
   tmdbPosterUrl,
 } from "@/features/research/presentation";
-import { nextTmdbSuggestionIndex } from "@/features/research/tmdb-suggestion-navigation";
+import {
+  nextTmdbSuggestionIndex,
+  tmdbSuggestionDomId,
+} from "@/features/research/tmdb-suggestion-navigation";
 import type { TmdbSearchResult } from "@/features/research/types";
 
 type TmdbSearchPickerProps = {
@@ -32,6 +35,13 @@ function TmdbSearchPicker({
   const [error, setError] = useState("");
   const [activeServerId, setActiveServerId] = useState("");
   const [activeSuggestion, setActiveSuggestion] = useState(-1);
+  const pickerRef = useRef<HTMLDivElement>(null);
+  const suggestionsDismissedRef = useRef(false);
+  const closeSuggestions = useCallback(() => {
+    suggestionsDismissedRef.current = true;
+    setSuggestions([]);
+    setActiveSuggestion(-1);
+  }, []);
   const availability = useQuery({
     queryKey: ["emby-availability", selected?.tmdb_id, selected?.media_type],
     queryFn: () =>
@@ -42,18 +52,21 @@ function TmdbSearchPicker({
 
   useEffect(() => {
     if (selected || query.trim().length < 3) {
+      suggestionsDismissedRef.current = true;
       setSuggestions([]);
       setActiveSuggestion(-1);
       setLoading(false);
+      setError("");
       return;
     }
+    suggestionsDismissedRef.current = false;
     let active = true;
     const timeout = window.setTimeout(async () => {
       setLoading(true);
       setError("");
       try {
         const response = await searchTmdb(query.trim());
-        if (active) {
+        if (active && !suggestionsDismissedRef.current) {
           setSuggestions(response.results || []);
           setActiveSuggestion(-1);
         }
@@ -76,6 +89,23 @@ function TmdbSearchPicker({
       window.clearTimeout(timeout);
     };
   }, [query, selected]);
+
+  useEffect(() => {
+    if (!suggestions.length) return undefined;
+
+    function closeOnOutsidePointer(event: PointerEvent) {
+      if (
+        event.target instanceof Node &&
+        !pickerRef.current?.contains(event.target)
+      ) {
+        closeSuggestions();
+      }
+    }
+
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    return () =>
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+  }, [closeSuggestions, suggestions.length]);
 
   if (selected) {
     const poster = tmdbPosterUrl(selected.poster_path);
@@ -171,17 +201,11 @@ function TmdbSearchPicker({
 
   function selectSuggestion(item: TmdbSearchResult) {
     setActiveServerId("");
-    setActiveSuggestion(-1);
+    closeSuggestions();
     onSelect(item);
   }
 
   function handleSuggestionKeys(event: React.KeyboardEvent<HTMLInputElement>) {
-    if (event.key === "Escape" && suggestions.length) {
-      event.preventDefault();
-      setSuggestions([]);
-      setActiveSuggestion(-1);
-      return;
-    }
     if (!suggestions.length) return;
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
@@ -200,19 +224,44 @@ function TmdbSearchPicker({
     }
   }
 
+  function closeWhenFocusLeaves(event: React.FocusEvent<HTMLDivElement>) {
+    if (
+      event.relatedTarget instanceof Node &&
+      event.currentTarget.contains(event.relatedTarget)
+    ) {
+      return;
+    }
+    closeSuggestions();
+  }
+
+  function closeOnEscape(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "Escape" || !suggestions.length) return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeSuggestions();
+  }
+
   return (
-    <div className="tmdb-picker">
+    <div
+      className="tmdb-picker"
+      ref={pickerRef}
+      onBlur={closeWhenFocusLeaves}
+      onKeyDown={closeOnEscape}
+    >
       <div className="research-search-input">
         <Search size={17} aria-hidden="true" />
         <input
           id="research-query"
           role="combobox"
           aria-autocomplete="list"
-          aria-controls="tmdb-suggestions"
+          aria-controls={suggestions.length ? "tmdb-suggestions" : undefined}
           aria-expanded={suggestions.length > 0}
           aria-activedescendant={
             activeSuggestion >= 0
-              ? `tmdb-suggestion-${suggestions[activeSuggestion]?.tmdb_id}`
+              ? tmdbSuggestionDomId(
+                  suggestions[activeSuggestion]?.media_type || "unknown",
+                  suggestions[activeSuggestion]?.tmdb_id || 0,
+                )
               : undefined
           }
           value={query}
@@ -239,7 +288,7 @@ function TmdbSearchPicker({
           {suggestions.map((item, index) => (
             <li key={`${item.media_type}-${item.tmdb_id}`}>
               <button
-                id={`tmdb-suggestion-${item.tmdb_id}`}
+                id={tmdbSuggestionDomId(item.media_type, item.tmdb_id)}
                 type="button"
                 role="option"
                 aria-selected={activeSuggestion === index}

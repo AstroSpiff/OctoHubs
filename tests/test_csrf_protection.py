@@ -34,6 +34,13 @@ def test_session_mutations_require_a_csrf_token():
     assert csrf_request_is_valid(request) is False
 
 
+def test_logout_post_requires_a_csrf_token():
+    request = _request("POST", "/logout", {"user_id": 7})
+
+    assert request_requires_csrf(request) is True
+    assert csrf_request_is_valid(request) is False
+
+
 def test_matching_session_and_header_tokens_are_accepted():
     request = _request(
         "PATCH",

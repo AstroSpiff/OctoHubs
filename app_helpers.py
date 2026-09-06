@@ -6,7 +6,7 @@ import json
 from datetime import datetime, date
 from typing import Any
 
-from core.auth import get_all_users
+from core.auth import has_users
 from core.config_manager import load_config, _ensure_db_backend
 from core.storage import StorageError
 from core.utils import get_emby_servers
@@ -56,7 +56,7 @@ def _resolve_next_url(next_url: str | None, fallback_endpoint: str) -> str:
 
 def _has_users() -> bool:
     """Return True if at least one user exists."""
-    return bool(get_all_users())
+    return has_users()
 
 
 def _get_total_blacklist_counts() -> tuple[int, int]:

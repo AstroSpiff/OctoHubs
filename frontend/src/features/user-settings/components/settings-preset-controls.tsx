@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Copy, Download, Save, Trash2, Upload } from "@/components/ui/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -33,6 +33,30 @@ function SettingsPresetControls({
   const [error, setError] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [loadingPreset, setLoadingPreset] = useState(false);
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
+
+  const selectPreset = useCallback((preset: SettingsPreset | null) => {
+    const nextId = preset?.id || "";
+    selectedIdRef.current = nextId;
+    setSelectedId(nextId);
+    setLabel(preset?.label || "");
+    setConfirmDelete(false);
+  }, []);
+
+  const cachePreset = useCallback((preset: SettingsPreset) => {
+    client.setQueryData<{ ok: boolean; presets: SettingsPreset[] }>(
+      ["user-settings-presets"],
+      (current) => ({
+        ok: true,
+        presets: [
+          ...(current?.presets || []).filter((item) => item.id !== preset.id),
+          preset,
+        ].sort((left, right) => left.label.localeCompare(right.label)),
+      }),
+    );
+    selectPreset(preset);
+  }, [client, selectPreset]);
   const refresh = useCallback(
     () => client.invalidateQueries({ queryKey: ["user-settings-presets"] }),
     [client],
@@ -44,8 +68,7 @@ function SettingsPresetControls({
   const save = useMutation({
     mutationFn: saveSettingsPreset,
     onSuccess: (result) => {
-      setSelectedId(result.preset.id);
-      setLabel(result.preset.label);
+      cachePreset(result.preset);
       setError("");
       void refresh();
     },
@@ -53,8 +76,7 @@ function SettingsPresetControls({
   const duplicate = useMutation({
     mutationFn: duplicateSettingsPreset,
     onSuccess: (result) => {
-      setSelectedId(result.preset.id);
-      setLabel(result.preset.label);
+      cachePreset(result.preset);
       setError("");
       void refresh();
     },
@@ -62,9 +84,7 @@ function SettingsPresetControls({
   const remove = useMutation({
     mutationFn: deleteSettingsPreset,
     onSuccess: () => {
-      setSelectedId("");
-      setLabel("");
-      setConfirmDelete(false);
+      selectPreset(null);
       setError("");
       void refresh();
     },
@@ -77,9 +97,14 @@ function SettingsPresetControls({
     remove.isPending;
 
   useEffect(() => {
+    if (!selectedId || !presets.data) return;
     const preset = presets.data?.presets.find((item) => item.id === selectedId);
-    if (preset) setLabel(preset.label);
-  }, [presets.data?.presets, selectedId]);
+    if (preset) {
+      setLabel(preset.label);
+      return;
+    }
+    selectPreset(null);
+  }, [presets.data, selectPreset, selectedId]);
 
   async function load() {
     if (!selectedId) return setError("Seleziona un preset.");
@@ -89,7 +114,7 @@ function SettingsPresetControls({
     setError("");
     try {
       const result = await getSettingsPreset(presetId);
-      if (presetId !== selectedId) return;
+      if (presetId !== selectedIdRef.current) return;
       onLoad(result.preset);
       setError("");
     } catch (reason) {
@@ -147,8 +172,10 @@ function SettingsPresetControls({
           value={selectedId}
           disabled={working || presets.isLoading}
           onChange={(event) => {
-            setSelectedId(event.target.value);
-            setConfirmDelete(false);
+            const preset = presets.data?.presets.find(
+              (item) => item.id === event.target.value,
+            );
+            selectPreset(preset || null);
           }}
         >
           <option value="">

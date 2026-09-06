@@ -18,8 +18,11 @@ describe("user icons route", () => {
       removeProfile: { isPending: false, variables: undefined, error: null, mutate: () => undefined },
       binding: { isPending: false, variables: undefined, error: null, mutate: () => undefined },
       bindings: { isPending: false, variables: undefined, error: null, mutate: () => undefined },
+      bindingOperations: { pendingKeys: new Set(), errors: {} },
       rule: { isPending: false, variables: undefined, error: null, mutate: () => undefined },
       removeRule: { isPending: false, variables: undefined, error: null, mutate: () => undefined },
+      profileOperations: { pendingKeys: new Set(), errors: {} },
+      ruleOperations: { pendingKeys: new Set(), errors: {} },
       refresh: () => Promise.resolve(),
     } as never;
 

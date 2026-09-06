@@ -27,6 +27,7 @@ def _bearer_request(secret: str, method: str, path: str, payload: dict | None = 
         session = {}
         scope = {"path": path}
         state = SimpleNamespace()
+        client = SimpleNamespace(host="172.18.0.2")
 
         def __init__(self):
             self.method = method
@@ -53,6 +54,8 @@ async def test_api_token_can_read_system_status_without_csrf(initialized_auth, m
     from web.session_auth import require_auth
 
     secret = _api_secret(initialized_auth, ["read:status"])
+    monkeypatch.setenv("LOGIN_TRUST_PROXY_HEADERS", "true")
+    monkeypatch.setenv("LOGIN_TRUSTED_PROXY_CIDRS", "172.18.0.0/16")
     config_routes.init_config_routes(
         require_auth=require_auth,
     )

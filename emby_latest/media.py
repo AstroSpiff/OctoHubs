@@ -6,6 +6,21 @@ from typing import Any, Dict, List, Optional
 
 from core.config import _merge_resolution_settings
 from core.utils import DEFAULT_RESOLUTION_RULES, _resolution_label_from_dims
+from emby_runtime.media_formatting import (
+    _detect_audio_format,
+    _detect_hdr_type,
+    _format_audio_details,
+    _format_video_details,
+)
+
+__all__ = [
+    "_detect_audio_format",
+    "_detect_hdr_type",
+    "_extract_emby_media_sources",
+    "_format_audio_details",
+    "_format_video_details",
+    "get_resolution_rules",
+]
 
 
 def get_resolution_rules(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -20,207 +35,6 @@ def _normalize_media_source_id(value: Any) -> str:
     if not value:
         return ""
     return str(value).strip()
-
-
-def _detect_hdr_type(streams: Any) -> str:
-    """
-    Detect HDR/Dolby Vision type from video streams.
-    """
-    if not isinstance(streams, list):
-        return ""
-
-    for stream in streams:
-        stream_type = (stream.get("type") or "").lower() if isinstance(stream, dict) else ""
-        if not isinstance(stream, dict) or stream_type != "video":
-            continue
-
-        hdr_type = str(stream.get("hdr_type") or "").upper()
-        video_range = str(stream.get("video_range") or "").upper()
-        color_transfer = str(stream.get("color_transfer") or "").upper()
-
-        if "DOLBY" in hdr_type or "DOVI" in hdr_type or "DV" in hdr_type:
-            return "Dolby Vision"
-        if "DOLBY" in video_range or "DOVI" in video_range:
-            return "Dolby Vision"
-
-        if "HDR10+" in hdr_type or "HDR10PLUS" in hdr_type:
-            return "HDR10+"
-        if "SMPTE2094" in color_transfer:
-            return "HDR10+"
-
-        if "HDR10" in hdr_type:
-            return "HDR10"
-        if "HDR" in video_range or "SMPTE2084" in color_transfer:
-            return "HDR10"
-
-        if "HDR" in hdr_type:
-            return "HDR"
-
-    return ""
-
-
-def _detect_audio_format(codec: Any, channels: Any, title: str = "", profile: str = "", display_title: str = "") -> str:
-    """
-    Detect advanced audio format (Atmos, DTS:X, etc).
-    """
-    codec_upper = (codec or "").upper()
-    combined_upper = " ".join([
-        (title or ""), (profile or ""), (display_title or "")
-    ]).upper()
-
-    if "ATMOS" in codec_upper or "ATMOS" in combined_upper:
-        return "Dolby Atmos"
-
-    if "DTS:X" in codec_upper or "DTS:X" in combined_upper or "DTSX" in codec_upper:
-        return "DTS:X"
-
-    if "DTS-HD MA" in codec_upper or "DTSHD MA" in codec_upper or "DTSHDMA" in codec_upper:
-        if channels and channels >= 6:
-            return f"DTS-HD MA {channels-1}.1"
-        return "DTS-HD MA"
-
-    if "TRUEHD" in codec_upper or "TRUE-HD" in codec_upper:
-        if channels and channels >= 6:
-            return f"Dolby TrueHD {channels-1}.1"
-        return "Dolby TrueHD"
-
-    if "EAC3" in codec_upper or "E-AC-3" in codec_upper or "DD+" in codec_upper:
-        if channels and channels >= 6:
-            return f"Dolby Digital+ {channels-1}.1"
-        return "Dolby Digital+"
-
-    if "AC3" in codec_upper or "AC-3" in codec_upper or "DOLBY DIGITAL" in combined_upper:
-        if channels and channels >= 6:
-            return f"Dolby Digital {channels-1}.1"
-        return "Dolby Digital"
-
-    if "DTS" in codec_upper:
-        if channels and channels >= 6:
-            return f"DTS {channels-1}.1"
-        return "DTS"
-
-    if "AAC" in codec_upper:
-        if channels and channels >= 6:
-            return f"AAC {channels-1}.1"
-        return "AAC"
-
-    if codec and channels and channels >= 6:
-        return f"{codec} {channels-1}.1"
-    if codec:
-        return str(codec)
-
-    return ""
-
-
-def _format_video_details(streams: Any) -> str:
-    """
-    Format video details for notifications.
-    Example: "HEVC · HDR10 · Dolby Vision"
-    """
-    if not isinstance(streams, list):
-        return ""
-
-    parts: List[str] = []
-    video_stream = None
-    for stream in streams:
-        stream_type = (stream.get("type") or "").lower() if isinstance(stream, dict) else ""
-        if isinstance(stream, dict) and stream_type == "video":
-            video_stream = stream
-            break
-
-    if not video_stream:
-        return ""
-
-    codec = video_stream.get("codec", "")
-    if codec:
-        codec_upper = str(codec).upper()
-        if codec_upper in ["H264", "AVC"]:
-            parts.append("H.264")
-        elif codec_upper in ["H265", "HEVC"]:
-            parts.append("HEVC")
-        elif codec_upper == "AV1":
-            parts.append("AV1")
-        elif codec_upper == "VP9":
-            parts.append("VP9")
-        else:
-            parts.append(str(codec))
-
-    hdr = _detect_hdr_type(streams)
-    if hdr:
-        parts.append(hdr)
-
-    return " · ".join(parts) if parts else ""
-
-
-def _format_audio_details(streams: Any, language_filter: Optional[str] = None) -> str:
-    """
-    Format audio details for notifications.
-    """
-    if not isinstance(streams, list):
-        return ""
-
-    audio_parts: List[str] = []
-
-    for stream in streams:
-        stream_type = (stream.get("type") or "").lower() if isinstance(stream, dict) else ""
-        if not isinstance(stream, dict) or stream_type != "audio":
-            continue
-
-        language = (stream.get("language") or "").lower()
-
-        if language_filter:
-            lang_filter_lower = language_filter.lower()
-            if lang_filter_lower not in language:
-                lang_map = {
-                    "ita": ["ita", "italian", "italiano"],
-                    "eng": ["eng", "english", "inglese"],
-                    "spa": ["spa", "spanish", "spagnolo", "español"],
-                    "fre": ["fre", "fra", "french", "francese", "français"],
-                    "ger": ["ger", "deu", "german", "tedesco", "deutsch"],
-                    "jpn": ["jpn", "japanese", "giapponese"]
-                }
-                matched = False
-                for variants in lang_map.values():
-                    if lang_filter_lower in variants and any(v in language for v in variants):
-                        matched = True
-                        break
-                if not matched:
-                    continue
-
-        lang_display = ""
-        if "ita" in language or "italian" in language:
-            lang_display = "Italiano"
-        elif "eng" in language or "english" in language:
-            lang_display = "Inglese"
-        elif "spa" in language or "spanish" in language:
-            lang_display = "Spagnolo"
-        elif "fre" in language or "fra" in language or "french" in language:
-            lang_display = "Francese"
-        elif "ger" in language or "deu" in language or "german" in language:
-            lang_display = "Tedesco"
-        elif "jpn" in language or "japanese" in language:
-            lang_display = "Giapponese"
-        elif language:
-            lang_display = language.capitalize()
-
-        codec = stream.get("codec", "")
-        channels = stream.get("channels")
-        title = stream.get("title", "")
-        profile = stream.get("profile", "")
-        display_title = stream.get("display_title", "") or stream.get("DisplayTitle", "")
-        audio_format = _detect_audio_format(codec, channels, title, profile, display_title)
-
-        track_parts = []
-        if lang_display:
-            track_parts.append(lang_display)
-        if audio_format:
-            track_parts.append(audio_format)
-
-        if track_parts:
-            audio_parts.append(" ".join(track_parts))
-
-    return " · ".join(audio_parts) if audio_parts else ""
-
 
 def _extract_emby_media_sources(
     item: Dict[str, Any],

@@ -9,14 +9,14 @@ from .sources_common import PROVIDER_LABEL_MAP
 from .sources_mdblist import _fetch_mdblist_items, is_mdblist_enabled, list_mdblist_user_lists
 from .sources_tmdb import _fetch_tmdb_collection_from_value, _fetch_tmdb_list_from_value
 from .sources_trakt import list_trakt_lists, _fetch_trakt_list_items
+from .source_references import normalize_source_reference
 
 
 def build_source_link(source_type: str, source_value: str) -> str:
-    value = (source_value or "").strip()
-    if not value:
+    try:
+        value = normalize_source_reference(source_type, source_value)
+    except ValueError:
         return ""
-    if value.startswith("http://") or value.startswith("https://"):
-        return value
     if source_type == "trakt_list":
         base_value, _, query = value.partition("?")
         parts = base_value.split("/", 1)
@@ -33,10 +33,10 @@ def build_source_link(source_type: str, source_value: str) -> str:
     if source_type == "tmdb_collection":
         return f"https://www.themoviedb.org/collection/{value}"
     if source_type == "mdblist":
-        if value.lower().startswith("http"):
-            return value
+        if value.lower().startswith("external:"):
+            return f"https://mdblist.com/external/lists/{urllib.parse.quote(value.split(':', 1)[1])}"
         return f"https://mdblist.com/list/{value}"
-    return value
+    return ""
 
 
 SourceFetchFunc = Callable[[str], List[Dict[str, Any]]]
@@ -107,7 +107,8 @@ def fetch_source_items(source_type: str, source_value: str) -> List[Dict[str, An
     fetcher = SOURCE_FETCHERS.get(source_type)
     if not fetcher:
         raise RuntimeError(f"Fonte {source_type} non supportata")
-    result = fetcher(source_value)
+    canonical_value = normalize_source_reference(source_type, source_value)
+    result = fetcher(canonical_value)
     if not isinstance(result, list):
         raise RuntimeError("Risposta fonte non valida")
     return result

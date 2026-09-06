@@ -21,13 +21,13 @@ def test_dockerfile_base_images_are_digest_pinned() -> None:
     assert all(DIGEST_PATTERN.search(line) for line in from_lines)
 
 
-def test_release_service_images_are_digest_pinned() -> None:
+def test_runtime_and_test_service_images_are_digest_pinned() -> None:
     compose = _read("docker-compose.yml")
     workflow = _read(".github/workflows/release-gate.yml")
     local_gate = _read("scripts/run_postgresql_release_gate.sh")
 
-    assert re.search(r"image: postgres:16-alpine@sha256:[0-9a-f]{64}", compose)
-    assert re.search(r"image: nginx:alpine@sha256:[0-9a-f]{64}", compose)
+    assert "image: postgres:" not in compose
+    assert "image: nginx:" not in compose
     assert re.search(r"image: postgres:16-alpine@sha256:[0-9a-f]{64}", workflow)
     assert re.search(r"postgres:16-alpine@sha256:[0-9a-f]{64}", local_gate)
 
@@ -45,10 +45,7 @@ def test_python_installs_enforce_hashed_locks() -> None:
     assert "pytest==" in development_lock
     assert "--hash=sha256:" in development_lock
     assert "git+" not in production_lock
-    assert (
-        "python-pytrakt/archive/"
-        "db7a1b6d51496f4f91668f760a3cd83d6ae15137.tar.gz" in production_lock
-    )
+    assert "pytrakt" not in production_lock.lower()
     assert "--hash=sha256:" in production_lock
 
 
@@ -64,6 +61,17 @@ def test_release_gate_compares_clean_build_inventories() -> None:
     assert "diff -u" in verifier
 
 
+def test_release_gate_starts_the_unmodified_production_image() -> None:
+    workflow = _read(".github/workflows/release-gate.yml")
+    smoke = _read("scripts/smoke_production_image.sh")
+
+    assert "smoke_production_image.sh octohubs:release-gate" in workflow
+    assert "docker run --detach" in smoke
+    assert "--entrypoint" not in smoke
+    assert "/health/ready" in smoke
+    assert "docker logs" in smoke
+
+
 def test_release_gate_runs_all_frontend_p0_checks() -> None:
     workflow = _read(".github/workflows/release-gate.yml")
 
@@ -75,3 +83,19 @@ def test_release_gate_runs_all_frontend_p0_checks() -> None:
     assert "run: npm test" in workflow
     assert "run: npm run lint" in workflow
     assert "run: npm run build" in workflow
+
+
+def test_github_actions_are_pinned_to_full_commit_shas() -> None:
+    workflow = _read(".github/workflows/release-gate.yml")
+    action_refs = re.findall(r"^\s*uses:\s+[^@\s]+@([^\s#]+)", workflow, re.MULTILINE)
+
+    assert action_refs
+    assert all(re.fullmatch(r"[0-9a-f]{40}", ref) for ref in action_refs)
+
+
+def test_vite_proxy_default_matches_the_backend_development_port() -> None:
+    vite = _read("frontend/vite.config.ts")
+    start_dev = _read("start_dev.sh")
+
+    assert 'OCTOHUBS_API_PROXY_TARGET || "http://127.0.0.1:5050"' in vite
+    assert 'OCTOHUBS_PORT="${OCTOHUBS_PORT:-5050}"' in start_dev

@@ -17,7 +17,8 @@ type LibraryScanHistoryProps = {
   jobs: LibraryScanHistoryJob[];
   loading: boolean;
   resetting: boolean;
-  deletingId?: string;
+  deletingIds?: ReadonlySet<string>;
+  deleteErrors?: Readonly<Record<string, string>>;
   onRefresh: () => void;
   onReset: () => void;
   onDelete: (job: LibraryScanHistoryJob) => void;
@@ -27,7 +28,8 @@ function LibraryScanHistory({
   jobs,
   loading,
   resetting,
-  deletingId,
+  deletingIds = new Set(),
+  deleteErrors = {},
   onRefresh,
   onReset,
   onDelete,
@@ -75,7 +77,8 @@ function LibraryScanHistory({
             <LibraryScanHistoryItem
               key={job.id}
               job={job}
-              deleting={deletingId === job.id}
+              deleting={deletingIds.has(job.id)}
+              deleteError={deleteErrors[job.id]}
               onDelete={onDelete}
             />
           ))}
@@ -88,10 +91,12 @@ function LibraryScanHistory({
 function LibraryScanHistoryItem({
   job,
   deleting,
+  deleteError,
   onDelete,
 }: {
   job: LibraryScanHistoryJob;
   deleting: boolean;
+  deleteError?: string;
   onDelete: (job: LibraryScanHistoryJob) => void;
 }) {
   const completedAt = job.completed_at || job.updated_at;
@@ -117,6 +122,7 @@ function LibraryScanHistoryItem({
         </div>
         <span>{details}</span>
         {job.message ? <small title={job.message}>{job.message}</small> : null}
+        {deleteError ? <small className="configuration-form-error" role="alert">{deleteError}</small> : null}
         {progress !== undefined ? (
           <div className="library-history-progress" aria-label={`Avanzamento finale ${progress}%`}>
             <i><b style={{ width: `${progress}%` }} /></i>

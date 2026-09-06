@@ -4,11 +4,20 @@ import logging
 from datetime import datetime, timezone
 
 from emby_runtime.api_clients import _call_emby_api
+from core.pagination import MAX_EMBY_ITEMS, MAX_EMBY_PAGES, PaginationGuard, pagination_error
 from emby_users.item_matching import get_safe_fallback_signature, matches_safe_fallback_signature
 
 logger = logging.getLogger(__name__)
 
 USER_ITEM_FIELDS = "ProviderIds,SeriesProviderIds,SeriesId,UserData,SeriesName,ParentIndexNumber,IndexNumber,ProductionYear,Name,OriginalTitle,RunTimeTicks,Type"
+
+
+def _emby_items_page_complete(page_items, total, start_index, page_size):
+    if not page_items:
+        return True
+    if total is None:
+        return len(page_items) < page_size
+    return start_index + len(page_items) >= total
 
 
 def _format_emby_date_played(value):
@@ -247,6 +256,7 @@ def _fetch_emby_items_paged(server, user_id, params, page_size=200, label=None, 
 
     items = []
     start_index = 0
+    guard = PaginationGuard(MAX_EMBY_PAGES, MAX_EMBY_ITEMS)
 
     while True:
         page_params = dict(params)
@@ -262,17 +272,13 @@ def _fetch_emby_items_paged(server, user_id, params, page_size=200, label=None, 
             return [], "Risposta Emby inattesa"
 
         page_items = payload.get("Items", []) or []
+        page_error = pagination_error(guard, page_items)
+        if page_error:
+            return [], page_error
         items.extend(page_items)
 
         total = payload.get("TotalRecordCount")
-        if total is None:
-            if len(page_items) < page_size:
-                break
-        else:
-            if start_index + len(page_items) >= total:
-                break
-
-        if len(page_items) == 0:
+        if _emby_items_page_complete(page_items, total, start_index, page_size):
             break
 
         start_index += len(page_items)

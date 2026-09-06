@@ -7,6 +7,7 @@ import { useConfirmationDialog } from "@/components/ui/use-confirmation-dialog";
 import { WorkspaceHeading } from "@/components/ui/workspace-heading";
 import { WorkspacePage } from "@/components/ui/workspace-layout";
 import { ProbeDataPanel } from "@/features/probe/components/probe-data-panel";
+import type { ProbeDataTab } from "@/features/probe/probe-data-tab-options";
 import { LibraryProbeControls } from "@/features/probe/components/library-probe-controls";
 import { RecentProbeControls } from "@/features/probe/components/recent-probe-controls";
 import { ProbeSettings } from "@/features/probe/components/probe-settings";
@@ -32,10 +33,12 @@ import { useProbeContextSelection } from "@/features/probe/use-probe-context-sel
 import { useEmbyLive } from "@/features/emby-live/use-emby-live";
 import { useBeforeUnloadWarning } from "@/lib/use-before-unload-warning";
 import { useUnsavedChangesNavigationGuard } from "@/lib/use-unsaved-changes-navigation-guard";
+import { useWorkspaceCapabilities } from "@/features/session/workspace-capabilities-context";
 
 type ProbeWorkerKind = "combo" | "discovery" | "processing";
 
 function ProbePage() {
+  const { canMutate } = useWorkspaceCapabilities();
   const { scope: routeScope } = useParams();
   const scope = probeScopeFromRoute(routeScope);
   const confirmation = useConfirmationDialog();
@@ -44,6 +47,7 @@ function ProbePage() {
   const libraries = useProbeLibraries();
   const [probeConfigDirty, setProbeConfigDirty] = useState(false);
   const [recentConfigServerId, setRecentConfigServerId] = useState("");
+  const [dataTab, setDataTab] = useState<ProbeDataTab>("queue");
   useBeforeUnloadWarning(probeConfigDirty);
   useUnsavedChangesNavigationGuard(probeConfigDirty, confirmation.confirm);
   const servers = useMemo<ProbeServer[]>(
@@ -95,7 +99,15 @@ function ProbePage() {
     setProcessingLibraries,
     targetIds,
   } = context;
-  const data = useProbeScopeData(scope, targetIds);
+  const data = useProbeScopeData(scope, targetIds, dataTab);
+  const activeDataQuery =
+    dataTab === "history"
+      ? data.history
+      : dataTab === "errors"
+        ? data.errors
+        : dataTab === "incomplete"
+          ? data.incomplete
+          : data.queue;
   const probeConfigServerId =
     scope === "recent"
       ? (recentServerId === "all"
@@ -125,10 +137,7 @@ function ProbePage() {
     live.error ||
     libraries.error ||
     probeConfig.error ||
-    data.queue.error ||
-    data.history.error ||
-    data.errors.error ||
-    data.incomplete.error ||
+    activeDataQuery.error ||
     data.action.error ||
     data.removeQueue.error ||
     data.clearHistory.error ||
@@ -322,6 +331,7 @@ function ProbePage() {
             comboStatus={selectedScopeStatus.combo}
             comboServerStatuses={comboServerStatuses}
             disabled={busy || libraries.isFetching}
+            canMutate={canMutate}
             onDiscoverySelectionChange={setDiscoveryLibraries}
             onProcessingSelectionChange={setProcessingLibraries}
             onRunCombo={(mode) => runLibraries("combo", mode)}
@@ -341,6 +351,7 @@ function ProbePage() {
             processingStatus={selectedScopeStatus.processing}
             comboServerStatuses={comboServerStatuses}
             disabled={busy || !targetIds.length}
+            canMutate={canMutate}
             onRunCombo={(mode) => runRecent("combo", mode)}
             onStopCombo={() => stopRecent("combo")}
             onRunDiscovery={() => runRecent("discovery")}
@@ -354,16 +365,19 @@ function ProbePage() {
       <ProbeDataPanel
         scope={scope}
         queue={data.queue.data || []}
+        queueLoaded={data.queue.isFetched}
         history={data.history.data || []}
+        historyLoaded={data.history.isFetched}
         errors={data.errors.data || []}
+        errorsLoaded={data.errors.isFetched}
         incomplete={data.incomplete.data || []}
+        incompleteLoaded={data.incomplete.isFetched}
         serverNames={serverNames}
         loading={
-          data.queue.isFetching ||
-          data.history.isFetching ||
-          data.errors.isFetching ||
-          data.incomplete.isFetching
+          activeDataQuery.isFetching && !activeDataQuery.isFetchingNextPage
         }
+        hasMore={Boolean(activeDataQuery.hasNextPage)}
+        loadingMore={activeDataQuery.isFetchingNextPage}
         busy={busy}
         downloadUrl={downloadUrl}
         settings={
@@ -372,7 +386,13 @@ function ProbePage() {
             scope={scope}
             serverName={selectedServerName}
             config={probeConfig.data?.config}
-            disabled={!probeConfigServerId}
+            disabled={
+              !probeConfigServerId
+              || !probeConfig.isSuccess
+              || !probeConfig.data?.config
+            }
+            loading={Boolean(probeConfigServerId) && probeConfig.isPending}
+            loadError={probeConfig.error?.message}
             saving={data.saveConfig.isPending}
             error={data.saveConfig.error?.message}
             saved={Boolean(data.saveConfig.data?.success) && !data.saveConfig.error}
@@ -405,6 +425,8 @@ function ProbePage() {
           />
         }
         onRefresh={() => void data.refresh()}
+        onLoadMore={() => void activeDataQuery.fetchNextPage()}
+        onActiveTabChange={setDataTab}
         onClearQueue={() => void dataActions.clearQueue()}
         onClearHistory={() => void dataActions.clearHistory()}
         onClearBlacklist={(type) => void dataActions.clearBlacklist(type)}

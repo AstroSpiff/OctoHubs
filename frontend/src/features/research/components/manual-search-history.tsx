@@ -16,6 +16,7 @@ import {
   getManualSearchHistory,
 } from "@/features/research/api";
 import { manualSearchInputFromHistory } from "@/features/research/manual-search-history";
+import { WriteAction } from "@/features/session/workspace-capabilities";
 import {
   displayMediaType,
   formatResearchDate,
@@ -41,6 +42,8 @@ function ManualSearchHistory({
   const confirmation = useConfirmationDialog();
   const client = useQueryClient();
   const [repeatingId, setRepeatingId] = useState<number | null>(null);
+  const [removingId, setRemovingId] = useState<number | null>(null);
+  const [failedRemovalId, setFailedRemovalId] = useState<number | null>(null);
   const history = useQuery({
     queryKey: ["manual-search-history", refreshToken],
     queryFn: getManualSearchHistory,
@@ -48,8 +51,9 @@ function ManualSearchHistory({
   });
   const remove = useMutation({
     mutationFn: deleteManualSearch,
-    onSuccess: () =>
-      client.invalidateQueries({ queryKey: ["manual-search-history"] }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["manual-search-history"] }),
+    onError: (_error, searchId) => setFailedRemovalId(searchId),
+    onSettled: () => setRemovingId(null),
   });
   const entries = history.data?.searches || [];
   const actionsDisabled = searching || repeatingId !== null || remove.isPending;
@@ -77,6 +81,9 @@ function ManualSearchHistory({
       }))
     )
       return;
+    remove.reset();
+    setFailedRemovalId(null);
+    setRemovingId(searchId);
     remove.mutate(searchId);
   }
 
@@ -106,6 +113,11 @@ function ManualSearchHistory({
           {history.error.message}
         </div>
       ) : null}
+      {remove.error ? (
+        <div className="inline-alert inline-alert--error" role="alert">
+          Eliminazione della ricerca {failedRemovalId !== null ? `#${failedRemovalId} ` : ""}non riuscita: {remove.error.message}
+        </div>
+      ) : null}
       {!history.isLoading && !history.error && !entries.length ? (
         <div className="research-empty-state">
           Nessuna ricerca manuale salvata.
@@ -118,6 +130,7 @@ function ManualSearchHistory({
             const results = first?.results || [];
             const input = manualSearchInputFromHistory(entry);
             const repeating = repeatingId === entry.id;
+            const removing = removingId === entry.id;
             return (
               <li key={entry.id}>
                 <div>
@@ -147,17 +160,19 @@ function ManualSearchHistory({
                   >
                     <Eye size={15} aria-hidden="true" /> Apri
                   </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    title="Modifica ricerca"
-                    aria-label="Modifica ricerca"
-                    disabled={!input || actionsDisabled}
-                    onClick={() => input && onEdit(input)}
-                  >
-                    <Pencil size={15} aria-hidden="true" />
-                  </Button>
+                  <WriteAction>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      title="Modifica ricerca"
+                      aria-label="Modifica ricerca"
+                      disabled={!input || actionsDisabled}
+                      onClick={() => input && onEdit(input)}
+                    >
+                      <Pencil size={15} aria-hidden="true" />
+                    </Button>
+                  </WriteAction>
                   <Button
                     type="button"
                     requiresWriteAccess
@@ -188,7 +203,15 @@ function ManualSearchHistory({
                     disabled={actionsDisabled}
                     onClick={() => void removeEntry(entry.id)}
                   >
-                    <Trash2 size={15} aria-hidden="true" />
+                    {removing ? (
+                      <LoaderCircle
+                        size={15}
+                        className="animate-spin"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <Trash2 size={15} aria-hidden="true" />
+                    )}
                   </Button>
                 </div>
               </li>

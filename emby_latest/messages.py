@@ -467,16 +467,16 @@ def default_message_template() -> str:
         Default template string with common tokens
     """
     return "\n".join([
-        "🎬 {title} ({year})",
-        "🆕 {update_label} · {type}",
-        "🟢 {server}",
-        "⭐ {rating} · {official_rating}",
-        "⏱ {runtime}",
-        "🎞 {quality} {video_codec} {audio_codec}",
-        "📅 {added_at}",
-        "{genres}",
-        "{overview}",
-        "{poster_url}"
+        "🎬 {{ title }} ({{ year }})",
+        "🆕 {{ update_label }} · {{ type }}",
+        "🟢 {{ server }}",
+        "⭐ {{ rating }} · {{ official_rating }}",
+        "⏱ {{ runtime }}",
+        "🎞 {{ quality }} {{ video_codec }} {{ audio_codec }}",
+        "📅 {{ added_at }}",
+        "{{ genres }}",
+        "{{ overview }}",
+        "{{ poster_url }}"
     ])
 
 

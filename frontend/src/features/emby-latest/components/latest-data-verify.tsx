@@ -1,5 +1,5 @@
 import { RefreshCw, SearchCheck, X } from "@/components/ui/icons";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { DialogBackdrop } from "@/components/ui/dialog-backdrop";
@@ -26,6 +26,7 @@ function LatestDataVerify({
   error,
   onClose,
   onEnrich,
+  onResetError,
 }: {
   open: boolean;
   servers: LatestServer[];
@@ -35,19 +36,25 @@ function LatestDataVerify({
   error?: string;
   onClose: () => void;
   onEnrich: (item: LatestItem) => Promise<LatestItem>;
+  onResetError: () => void;
 }) {
   const [serverId, setServerId] = useState("");
   const [kind, setKind] = useState<"movie" | "series">("movie");
   const [itemKey, setItemKey] = useState("");
-  const [enriched, setEnriched] = useState<LatestItem>();
+  const [enriched, setEnriched] = useState<{ key: string; item: LatestItem }>();
   const [verification, setVerification] = useState<LatestVerification>();
+  const generation = useRef(0);
+  const snapshotRevision = JSON.stringify({ servers, movies, series });
   const sourceItems = kind === "movie" ? movies : series;
   const items = useMemo(
     () => sourceItems.filter((item) => item.server_id === serverId),
     [serverId, sourceItems],
   );
+  const selectionKey = `${serverId}:${kind}:${itemKey}`;
+  const activeTarget = useRef("");
+  activeTarget.current = open ? selectionKey : "";
   const selected =
-    enriched ||
+    (enriched?.key === selectionKey ? enriched.item : undefined) ||
     items.find(
       (item, index) =>
         latestItemSelectionKey(item, index) === itemKey,
@@ -64,10 +71,35 @@ function LatestDataVerify({
         items.some(
           (item, index) => latestItemSelectionKey(item, index) === itemKey,
         )
+        && current.key === selectionKey
         ? current
         : undefined;
     });
-  }, [itemKey, items]);
+  }, [itemKey, items, selectionKey]);
+
+  useEffect(() => {
+    generation.current += 1;
+    setServerId("");
+    setKind("movie");
+    setItemKey("");
+    setEnriched(undefined);
+    setVerification(undefined);
+    onResetError();
+  }, [onResetError, open]);
+
+  useEffect(() => {
+    generation.current += 1;
+    setEnriched(undefined);
+    setVerification(undefined);
+    onResetError();
+  }, [onResetError, snapshotRevision]);
+
+  function resetSelectionState() {
+    generation.current += 1;
+    setEnriched(undefined);
+    setVerification(undefined);
+    onResetError();
+  }
 
   if (!open) return null;
   return (
@@ -111,8 +143,7 @@ function LatestDataVerify({
               onChange={(event) => {
                 setServerId(event.target.value);
                 setItemKey("");
-                setEnriched(undefined);
-                setVerification(undefined);
+                resetSelectionState();
               }}
             >
               <option value="">Seleziona un server...</option>
@@ -131,8 +162,7 @@ function LatestDataVerify({
               onChange={(event) => {
                 setKind(event.target.value as "movie" | "series");
                 setItemKey("");
-                setEnriched(undefined);
-                setVerification(undefined);
+                resetSelectionState();
               }}
             >
               <option value="movie">Film</option>
@@ -146,8 +176,7 @@ function LatestDataVerify({
               disabled={!serverId || enriching}
               onChange={(event) => {
                 setItemKey(event.target.value);
-                setEnriched(undefined);
-                setVerification(undefined);
+                resetSelectionState();
               }}
             >
               <option value="">Seleziona contenuto...</option>
@@ -189,12 +218,23 @@ function LatestDataVerify({
                 disabled={enriching}
                 onClick={() => {
                   const baseline = selected;
+                  const targetKey = selectionKey;
+                  const requestGeneration = ++generation.current;
                   void onEnrich(selected)
                     .then((next) => {
-                      setEnriched(next);
+                      if (
+                        generation.current !== requestGeneration
+                        || activeTarget.current !== targetKey
+                      ) return;
+                      setEnriched({ key: targetKey, item: next });
                       setVerification(latestVerification(next, kind, baseline));
                     })
-                    .catch(() => undefined);
+                    .catch(() => {
+                      if (
+                        generation.current !== requestGeneration
+                        || activeTarget.current !== targetKey
+                      ) onResetError();
+                    });
                 }}
               >
                 <RefreshCw

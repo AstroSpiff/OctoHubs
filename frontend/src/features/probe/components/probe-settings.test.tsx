@@ -2,62 +2,41 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { ProbeSettings } from "@/features/probe/components/probe-settings";
-import { probeConfigDefaults } from "@/features/probe/presentation";
 
-describe("ProbeSettings", () => {
-  it("shows shared media settings for libraries", () => {
+
+describe("ProbeSettings loading contract", () => {
+  it("does not expose editable defaults before the server configuration loads", () => {
     const markup = renderToStaticMarkup(
       <ProbeSettings
         scope="libraries"
-        serverName="Green"
-        config={probeConfigDefaults}
-        disabled={false}
-        saving={false}
-        saved
-        onSave={async (config) => config}
-      />,
-    );
-
-    expect(markup).toContain("Solo file STRM");
-    expect(markup).toContain("File video senza MediaInfo");
-    expect(markup).toContain("Configurazione Probe salvata.");
-    expect(markup).not.toContain("Finestra scorrevole");
-  });
-
-  it("adds recent-only settings for latest items", () => {
-    const markup = renderToStaticMarkup(
-      <ProbeSettings
-        scope="recent"
-        config={probeConfigDefaults}
-        disabled={false}
+        config={undefined}
+        disabled
+        loading
         saving={false}
         saved={false}
         onSave={async (config) => config}
       />,
     );
 
-    expect(markup).toContain("Finestra scorrevole");
-    expect(markup).toContain("Intervallo di ricerca");
+    expect(markup).toContain("Caricamento configurazione Probe");
+    expect(markup).not.toContain("File da analizzare");
+    expect(markup).not.toContain("Salva");
   });
 
-  it("allows choosing a configuration target while recent operations use all servers", () => {
+  it("shows a read failure without constructing a resettable draft", () => {
     const markup = renderToStaticMarkup(
       <ProbeSettings
         scope="recent"
-        serverName="Green"
-        config={probeConfigDefaults}
-        disabled={false}
+        config={undefined}
+        disabled
+        loadError="Servizio non disponibile"
         saving={false}
         saved={false}
-        configServers={[{ id: "green", name: "Green" }, { id: "purple", name: "Purple" }]}
-        configServerId="green"
-        onConfigServerChange={() => true}
         onSave={async (config) => config}
       />,
     );
 
-    expect(markup).toContain("Server da configurare");
-    expect(markup).toContain("Green");
-    expect(markup).toContain("Purple");
+    expect(markup).toContain("Impossibile caricare la configurazione Probe");
+    expect(markup).not.toContain("Ripristina");
   });
 });

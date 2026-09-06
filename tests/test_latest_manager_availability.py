@@ -55,7 +55,10 @@ class LatestManagerSnapshotTests(unittest.TestCase):
 
         manager = EmbyLatestManager.__new__(EmbyLatestManager)
         manager._lock = threading.Lock()
+        manager._refresh_condition = threading.Condition(manager._lock)
         manager._refreshing = False
+        manager._refresh_generation = 0
+        manager._refresh_outcomes = {}
         manager.db_cache = db_cache.bind(_Storage())
         manager.progress_tracker = type(
             "ProgressTracker",
@@ -100,7 +103,10 @@ class LatestManagerRefreshTests(unittest.TestCase):
     def _manager(self):
         manager = EmbyLatestManager.__new__(EmbyLatestManager)
         manager._lock = threading.Lock()
+        manager._refresh_condition = threading.Condition(manager._lock)
         manager._refreshing = False
+        manager._refresh_generation = 0
+        manager._refresh_outcomes = {}
         manager.progress_tracker = type(
             "ProgressTracker",
             (),
@@ -109,7 +115,7 @@ class LatestManagerRefreshTests(unittest.TestCase):
         manager.db_cache = type(
             "Cache",
             (),
-            {"save_cache": lambda _self, *_args, **_kwargs: None},
+            {"publish_refresh": lambda _self, *_args, **_kwargs: None},
         )()
         manager.db_state = object()
         return manager
@@ -118,7 +124,7 @@ class LatestManagerRefreshTests(unittest.TestCase):
         manager = self._manager()
         collect_calls = []
         saved_caches = []
-        manager.db_cache.save_cache = lambda *args, **kwargs: saved_caches.append((args, kwargs))
+        manager.db_cache.publish_refresh = lambda *args, **kwargs: saved_caches.append((args, kwargs))
 
         def fake_load_cache(mode):
             if mode == "batch":
@@ -154,13 +160,29 @@ class LatestManagerRefreshTests(unittest.TestCase):
         self.assertEqual("batch", payload["movies"][0]["mode"])
         self.assertEqual([True], [call["apply_batch_gap"] for call in collect_calls])
         self.assertEqual([False], [call["skip_existing_complete"] for call in collect_calls])
-        self.assertEqual(["feed"], [args[0] for args, _kwargs in saved_caches])
+        self.assertEqual(1, len(saved_caches))
+
+    def test_incremental_cache_read_failure_is_terminal_and_does_not_publish(self):
+        manager = self._manager()
+        published = []
+        manager.db_cache.load_cache = lambda _mode: (_ for _ in ()).throw(
+            db_cache.LatestCachePersistenceError("read failed")
+        )
+        manager.db_cache.publish_refresh = lambda *args, **kwargs: published.append((args, kwargs))
+
+        payload, error = manager.refresh_incremental(100, 25, enrich=False)
+
+        self.assertIsNone(payload)
+        self.assertEqual("Persistenza cache Latest non riuscita", error)
+        self.assertEqual([], published)
+        outcome = manager.wait_for_refresh(1, 0)
+        self.assertEqual("Persistenza cache Latest non riuscita", outcome["error"])
 
     def test_full_refresh_builds_batch_and_feed_from_one_batch_collection(self):
         manager = self._manager()
         collect_calls = []
         saved_caches = []
-        manager.db_cache.save_cache = lambda *args, **kwargs: saved_caches.append((args, kwargs))
+        manager.db_cache.publish_refresh = lambda *args, **kwargs: saved_caches.append((args, kwargs))
 
         def fake_collect_entries(**kwargs):
             collect_calls.append(kwargs)
@@ -187,13 +209,13 @@ class LatestManagerRefreshTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual("batch", payload["movies"][0]["mode"])
         self.assertEqual([True], [call["apply_batch_gap"] for call in collect_calls])
-        self.assertEqual(["feed"], [args[0] for args, _kwargs in saved_caches])
+        self.assertEqual(1, len(saved_caches))
 
     def test_incremental_refresh_updates_batch_and_feed_from_one_batch_collection_when_snapshots_exist(self):
         manager = self._manager()
         collect_calls = []
         saved_caches = []
-        manager.db_cache.save_cache = lambda *args, **kwargs: saved_caches.append((args, kwargs))
+        manager.db_cache.publish_refresh = lambda *args, **kwargs: saved_caches.append((args, kwargs))
 
         def fake_load_cache(mode):
             return {
@@ -215,7 +237,7 @@ class LatestManagerRefreshTests(unittest.TestCase):
         self.assertEqual({"movies": [], "series": [], "errors": []}, payload)
         self.assertEqual([True], [call["apply_batch_gap"] for call in collect_calls])
         self.assertEqual([True], [call["skip_existing_complete"] for call in collect_calls])
-        self.assertEqual(["feed"], [args[0] for args, _kwargs in saved_caches])
+        self.assertEqual(1, len(saved_caches))
 
 
 if __name__ == "__main__":

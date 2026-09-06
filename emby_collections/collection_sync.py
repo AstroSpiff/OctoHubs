@@ -6,6 +6,7 @@ import logging
 from typing import Any, Dict, List
 
 from core.config_manager import _ensure_db_backend
+from core.log_sanitization import sanitize_diagnostic_text
 from .collection_common import (
     _enrich_definition,
     _extract_octohubs_definition_id,
@@ -37,8 +38,11 @@ from .collection_store import (
     get_collection_poster_blob,
 )
 from .sources import PROVIDER_LABEL_MAP, fetch_source_items
+from .sync_coordination import mutate_stored_collection, serialized_collection_mutation
 
 logger = logging.getLogger(__name__)
+
+_SOURCE_SYNC_FAILURE_MESSAGE = "Impossibile sincronizzare la collezione con la fonte configurata"
 
 
 def _collect_source_items(definition: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -76,15 +80,20 @@ def _save_sync_state(
     if not existing:
         raise KeyError("Definizione non trovata")
     now = _now_iso()
-    existing["last_sync_at"] = now
-    existing["last_sync_status"] = status
-    existing["last_sync_message"] = message
-    existing["last_sync_items"] = matched
-    existing["last_sync_candidates"] = total
-    if per_server is not None:
-        existing["last_sync_per_server"] = per_server
-    existing["updated_at"] = now
-    backend.save_emby_collection_definition(existing)
+    def apply_sync_state(current: Dict[str, Any]) -> Dict[str, Any]:
+        current["last_sync_at"] = now
+        current["last_sync_status"] = status
+        current["last_sync_message"] = message
+        current["last_sync_items"] = matched
+        current["last_sync_candidates"] = total
+        if per_server is not None:
+            current["last_sync_per_server"] = per_server
+        current["updated_at"] = now
+        return current
+
+    existing = mutate_stored_collection(backend, definition_id, apply_sync_state)
+    if existing is None:
+        raise KeyError("Definizione non trovata")
     servers = _server_map()
     logger.info("Stato sync salvato per collezione %s: %s", definition_id, status)
     return _enrich_definition(existing, servers)
@@ -242,6 +251,7 @@ def _sync_collection_to_server(
     }
 
 
+@serialized_collection_mutation
 def run_collection_sync(definition_id: str) -> Dict[str, Any]:
     backend = _ensure_db_backend()
     existing = backend.get_emby_collection_definition(definition_id)
@@ -390,11 +400,17 @@ def run_collection_sync(definition_id: str) -> Dict[str, Any]:
             }
         }
     except Exception as exc:
-        logger.exception("Errore sincronizzazione collezione %s", definition_id)
-        _save_sync_state(definition_id, "error", str(exc), 0, total_candidates)
+        logger.error(
+            "Errore sincronizzazione collezione %s (%s): %s",
+            definition_id,
+            type(exc).__name__,
+            sanitize_diagnostic_text(exc),
+        )
+        _save_sync_state(definition_id, "error", _SOURCE_SYNC_FAILURE_MESSAGE, 0, total_candidates)
         raise
 
 
+@serialized_collection_mutation
 def sync_all_collections() -> Dict[str, Any]:
     backend = _ensure_db_backend()
     servers = _server_map()
@@ -431,10 +447,15 @@ def sync_all_collections() -> Dict[str, Any]:
             run_collection_sync(definition["id"])
             summary["synced"] += 1
         except Exception as exc:
-            logger.exception("Errore sync globale per collezione %s", definition.get("id"))
+            logger.error(
+                "Errore sync globale per collezione %s (%s): %s",
+                definition.get("id"),
+                type(exc).__name__,
+                sanitize_diagnostic_text(exc),
+            )
             summary["errors"].append({
                 "id": definition.get("id"),
-                "error": str(exc)
+                "error": _SOURCE_SYNC_FAILURE_MESSAGE,
             })
     deleted_ids: set[tuple[str, str]] = set()
     for server_id, server in servers.items():
@@ -502,15 +523,7 @@ def sync_all_collections() -> Dict[str, Any]:
                 if not _delete_emby_collection(server, collection_id):
                     pending = True
         if not pending:
-            try:
-                backend.delete_emby_collection_poster(definition_id)
-            except Exception:
-                logger.warning("Impossibile eliminare il poster salvato per la collezione %s", definition_id)
-            try:
-                backend.delete_emby_collection_backdrop(definition_id)
-            except Exception:
-                logger.warning("Impossibile eliminare il backdrop salvato per la collezione %s", definition_id)
-            backend.delete_emby_collection_definition(definition_id)
+            backend.delete_emby_collection_bundle(definition_id)
             summary["removed_pending"] += 1
     for definition in active_definitions:
         pending_servers = _normalize_pending_servers(definition.get("delete_pending_servers"))
@@ -538,11 +551,15 @@ def sync_all_collections() -> Dict[str, Any]:
             else:
                 remaining.append(server_id)
         if remaining != pending_servers:
-            stored = backend.get_emby_collection_definition(definition.get("id") or "")
-            if isinstance(stored, dict):
-                stored["delete_pending_servers"] = remaining
-                stored["updated_at"] = _now_iso()
-                backend.save_emby_collection_definition(stored)
+            definition_id = str(definition.get("id") or "")
+            updated_at = _now_iso()
+
+            def apply_pending_servers(current: Dict[str, Any]) -> Dict[str, Any]:
+                current["delete_pending_servers"] = remaining
+                current["updated_at"] = updated_at
+                return current
+
+            mutate_stored_collection(backend, definition_id, apply_pending_servers)
     logger.info(
         "Sync globale collezioni completato: %s",
         summary

@@ -19,17 +19,16 @@ class _MemoryProbeConfig(StorageProbeMixin):
         self.values.pop(key, None)
 
 
-def test_probe_config_migrates_the_old_recent_key_once():
+def test_probe_config_ignores_the_removed_recent_key():
     storage = _MemoryProbeConfig(
         {"probe_recent_config:green": {"probe_parallelism": 3}}
     )
 
     config = storage.get_probe_config("green")
 
-    assert config["probe_parallelism"] == 3
+    assert config["probe_parallelism"] == 1
     assert config["media_policy"] == "strm_only"
-    assert "probe_recent_config:green" not in storage.values
-    assert storage.values["probe_config:green"] == {"probe_parallelism": 3}
+    assert storage.values == {"probe_recent_config:green": {"probe_parallelism": 3}}
 
 
 def test_media_policy_defaults_to_strm_and_expands_to_video_items():

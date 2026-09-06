@@ -5,15 +5,20 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+import tempfile
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from core.secret_strength import MIN_SECRET_BYTES, is_strong_secret
+
 
 PASSWORD_SECRET_ENV = "PASSWORD_SECRET"
 PASSWORD_SECRET_PREVIOUS_ENV = "PASSWORD_SECRET_PREVIOUS"
-MIN_PASSWORD_SECRET_LENGTH = 32
+PASSWORD_SECRET_ROTATION_ENV_FILE = "PASSWORD_SECRET_ROTATION_ENV_FILE"
+PASSWORD_SECRET_ROTATION_MARKER_ENV = "PASSWORD_SECRET_ROTATION_MARKER"
+MIN_PASSWORD_SECRET_LENGTH = MIN_SECRET_BYTES
 _TOKEN_VERSION = "v1"
 _INSECURE_PASSWORD_SECRETS = frozenset(
     {
@@ -46,7 +51,7 @@ def is_insecure_password_secret(value: object) -> bool:
     normalized = str(value or "").strip()
     return (
         normalized.lower() in _INSECURE_PASSWORD_SECRETS
-        or len(normalized) < MIN_PASSWORD_SECRET_LENGTH
+        or not is_strong_secret(normalized)
     )
 
 
@@ -59,7 +64,7 @@ def _cipher_key(secret: str) -> _CipherKey:
 
 
 class PasswordCipher:
-    """Encrypt with the current key and decrypt current or previous versions."""
+    """Encrypt versioned tokens and decrypt the current or explicit rotation key."""
 
     def __init__(self, current_secret: str, previous_secret: Optional[str] = None):
         self._current = _cipher_key(current_secret)
@@ -86,12 +91,6 @@ class PasswordCipher:
             plaintext = self._decrypt_with_key(key, parts[2])
             return plaintext, plaintext is not None and key.key_id != self._current.key_id
 
-        # Legacy ciphertexts had no version/key identifier. Try the current key
-        # first, then the explicitly configured previous key used during rotation.
-        for key in self._keys:
-            plaintext = self._decrypt_with_key(key, token_value)
-            if plaintext is not None:
-                return plaintext, True
         return None, False
 
     @staticmethod
@@ -125,7 +124,7 @@ def rotate_stored_password_ciphertexts(
     storage: Any,
     cipher: Optional[PasswordCipher] = None,
 ) -> int:
-    """Validate and re-encrypt every legacy/previous-key password atomically in intent."""
+    """Validate and re-encrypt every previous-key password atomically."""
     resolved_cipher = cipher or password_cipher_from_environment()
     pending: list[tuple[str, str]] = []
 
@@ -140,7 +139,77 @@ def rotate_stored_password_ciphertexts(
         if needs_rotation:
             pending.append((group_id, resolved_cipher.encrypt(plaintext)))
 
-    # Do not modify any row until every ciphertext has been validated.
-    for group_id, ciphertext in pending:
-        storage.save_group_password(group_id, ciphertext)
+    # The storage boundary performs one commit for the complete set. A failed
+    # rotation must stop startup rather than leave a mixture of old/new keys.
+    try:
+        storage.replace_group_password_ciphertexts(pending)
+    except Exception as exc:
+        raise PasswordCiphertextError(
+            "Rotazione password Emby annullata senza modifiche; verifica il database "
+            "e riprova mantenendo PASSWORD_SECRET_PREVIOUS configurata"
+        ) from exc
     return len(pending)
+
+
+def finalize_password_secret_rotation(
+    environment: Mapping[str, str] = os.environ,
+) -> bool:
+    """Commit the persisted Docker key only after DB ciphertext rotation succeeds."""
+    marker_value = str(environment.get(PASSWORD_SECRET_ROTATION_MARKER_ENV) or "").strip()
+    env_file_value = str(environment.get(PASSWORD_SECRET_ROTATION_ENV_FILE) or "").strip()
+    if not marker_value or not env_file_value:
+        return False
+
+    marker_path = os.path.abspath(marker_value)
+    env_path = os.path.abspath(env_file_value)
+    if not os.path.isfile(marker_path):
+        return False
+
+    current_secret = str(environment.get(PASSWORD_SECRET_ENV) or "").strip()
+    if is_insecure_password_secret(current_secret):
+        raise PasswordSecretError("Impossibile completare la rotazione senza PASSWORD_SECRET valida")
+    expected_id = open(marker_path, encoding="utf-8").read().strip()
+    actual_id = hashlib.sha256(current_secret.encode("utf-8")).hexdigest()
+    if not expected_id or expected_id != actual_id:
+        raise PasswordSecretError("Il marker di rotazione PASSWORD_SECRET non corrisponde alla chiave corrente")
+
+    try:
+        with open(env_path, encoding="utf-8") as handle:
+            retained_lines = [
+                line
+                for line in handle.readlines()
+                if not line.startswith("PASSWORD_SECRET=")
+                and not line.startswith("PASSWORD_SECRET_PREVIOUS=")
+            ]
+    except FileNotFoundError:
+        retained_lines = []
+
+    directory = os.path.dirname(env_path)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    temporary_path = ""
+    try:
+        descriptor, temporary_path = tempfile.mkstemp(prefix=".octohubs-env-", dir=directory)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.writelines(retained_lines)
+            if retained_lines and not retained_lines[-1].endswith("\n"):
+                handle.write("\n")
+            handle.write(
+                "# Chiave dedicata per le password Emby cifrate. "
+                "Non modificare senza rotazione.\n"
+            )
+            handle.write(f"PASSWORD_SECRET={current_secret}\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary_path, 0o600)
+        os.replace(temporary_path, env_path)
+        os.unlink(marker_path)
+    except OSError as exc:
+        if temporary_path:
+            try:
+                os.unlink(temporary_path)
+            except OSError:
+                pass
+        raise PasswordSecretError(
+            "Impossibile rendere persistente il completamento della rotazione PASSWORD_SECRET"
+        ) from exc
+    return True

@@ -74,5 +74,14 @@ class RequestAwareSessionRegistry:
             return
         session.close()
 
+    def close_all(self) -> None:
+        """Close thread-local and request-bound sessions at process shutdown."""
+        self._thread_sessions.remove()
+        with self._request_sessions_lock:
+            sessions = tuple(self._request_sessions.values())
+            self._request_sessions.clear()
+        for session in sessions:
+            session.close()
+
     def __getattr__(self, name: str) -> Any:
         return getattr(self(), name)

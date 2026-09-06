@@ -17,6 +17,7 @@ class TerminalLibraryUpdate:
     state_key: str
     server_id: str
     library_id: str
+    job_id: str
     tracker_status: str
     progress: float
     message: str
@@ -100,7 +101,8 @@ def _apply_terminal_update(
     message: str,
     now: datetime,
 ) -> TerminalLibraryUpdate:
-    metadata = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+    raw_metadata = state.get("metadata")
+    metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
     metadata["state"] = internal_state
     metadata["scan_stage"] = state.get("scan_stage", "file")
     state.update(
@@ -118,6 +120,7 @@ def _apply_terminal_update(
         state_key=state_key,
         server_id=str(state.get("server_id") or ""),
         library_id=str(state.get("library_id") or ""),
+        job_id=str(state.get("job_id") or ""),
         tracker_status=tracker_status,
         progress=progress,
         message=message,
@@ -140,8 +143,9 @@ def interrupt_persisted_state(
     if not isinstance(persisted, dict) or persisted.get("state") not in {"running", "waiting"}:
         return copy.deepcopy(persisted), False
 
-    updated = copy.deepcopy(persisted)
-    metadata = updated.get("metadata") if isinstance(updated.get("metadata"), dict) else {}
+    updated: dict[str, Any] = copy.deepcopy(persisted)
+    raw_metadata = updated.get("metadata")
+    metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
     metadata.update(
         {
             "state": "interrupted",

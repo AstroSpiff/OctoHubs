@@ -144,8 +144,8 @@ function LatestPresetManager({
             </Button>
           </div>
           <p>
-            Sintassi Jinja2 e i vecchi pattern <code>{"{title}"}</code>{" "}
-            sono compatibili. I token rapidi restano qui, il catalogo contiene tutti i campi disponibili.
+            Usa la sintassi Jinja2, per esempio <code>{"{{ title }}"}</code>. I token rapidi
+            restano qui, il catalogo contiene tutti i campi disponibili.
           </p>
           <div className="latest-token-quick-list">
             {quickTokens.map((token) => (

@@ -2,29 +2,30 @@
 
 from __future__ import annotations
 
+import copy
 from datetime import datetime, timezone
+import threading
 from typing import Any, Dict, List, Optional, Protocol
 
+from core.emby_image_urls import build_latest_emby_image_urls
 from core.storage.storage_errors import StorageError
+from core.storage.storage_latest_state_merge import merge_notification_updates
+from core.storage.storage_locks import lock_latest_refresh, lock_latest_state
 from core.storage.storage_models import (
     SQLAlchemyError,
     EmbyLatestCacheMeta,
     EmbyLatestCacheItem,
     EmbyLatestCacheChange,
     EmbyLatestCacheError,
-    EmbyLatestStateMovie,
-    EmbyLatestStateSeries,
-    EmbyLatestStateEpisode,
-    EmbyLatestStateSeriesGroup,
-    EmbyLatestStateSeriesChange,
+    EmbyLatestStateDocument,
     EmbyLatestNotificationDelivery,
     EmbyLatestProgress,
     _utcnow,
+    text,
 )
 from core.storage.storage_utils import (
     _parse_datetime_value,
     _normalize_text_array,
-    _normalize_int_array,
     _parse_int,
     _normalize_text_value,
     _truncate_text_value,
@@ -33,6 +34,190 @@ from core.storage.storage_utils import (
 
 class _SessionProvider(Protocol):
     def _get_session(self) -> Any: ...
+
+
+_LATEST_CACHE_ADVISORY_LOCKS = {
+    "batch": 6_103_601_282_114_701_101,
+    "feed": 6_103_601_282_114_701_102,
+}
+_latest_cache_write_lock = threading.RLock()
+
+
+def _lock_latest_cache_write(session: Any, kind: str) -> None:
+    get_bind = getattr(session, "get_bind", None)
+    if not callable(get_bind):
+        return
+    bind = get_bind()
+    if getattr(getattr(bind, "dialect", None), "name", "") != "postgresql":
+        return
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(:lock_id)"),
+        {"lock_id": _LATEST_CACHE_ADVISORY_LOCKS[kind]},
+    )
+
+
+def _configure_latest_cache_read_snapshot(session: Any) -> None:
+    """Keep all cache tables on one PostgreSQL MVCC snapshot."""
+    get_bind = getattr(session, "get_bind", None)
+    if not callable(get_bind):
+        return
+    bind = get_bind()
+    if getattr(getattr(bind, "dialect", None), "name", "") != "postgresql":
+        return
+    session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+
+
+def _cache_text(value: Any, max_len: Optional[int] = None) -> Optional[str]:
+    if max_len is None:
+        return _normalize_text_value(value)
+    return _truncate_text_value(value, max_len)
+
+
+def _build_latest_cache_item(kind: str, entry: Dict[str, Any]) -> Any:
+    item_type = _cache_text(entry.get("item_type"), 20)
+    is_series = str(item_type or "").lower() in ("series", "episode")
+    image_urls = build_latest_emby_image_urls(
+        entry.get("server_id"),
+        entry.get("item_id"),
+        primary_tag=entry.get("image_tag"),
+    )
+    row = EmbyLatestCacheItem(
+        cache_kind=kind,
+        item_type=item_type,
+        server_id=_cache_text(entry.get("server_id"), 36),
+        item_id=_cache_text(entry.get("item_id"), 36),
+        signature=_cache_text(entry.get("signature"), 255),
+        batch_id=_cache_text(entry.get("batch_id"), 255),
+        title=_cache_text(entry.get("title"), 500),
+        original_title=_cache_text(entry.get("original_title"), 500),
+        series_name=_cache_text(entry.get("series_name"), 500),
+        season_name=_cache_text(entry.get("season_name"), 500),
+        season_number=_parse_int(entry.get("season_number")),
+        episode_number=_parse_int(entry.get("episode_number")),
+        episode_title=_cache_text(entry.get("episode_title"), 500),
+        year=_parse_int(entry.get("year")),
+        overview=_normalize_text_value(entry.get("overview")),
+        genres=_normalize_text_array(entry.get("genres")),
+        community_rating=_cache_text(entry.get("community_rating"), 50),
+        official_rating=_cache_text(entry.get("official_rating"), 50),
+        runtime_minutes=_parse_int(entry.get("runtime_minutes")),
+        added_at=_parse_datetime_value(entry.get("added_at")),
+        premiere_date=_parse_datetime_value(entry.get("premiere_date")),
+        child_count=_parse_int(entry.get("child_count")),
+        season_count=_parse_int(entry.get("season_count")),
+        episode_count=_parse_int(entry.get("episode_count")),
+        image_tag=_cache_text(entry.get("image_tag"), 255),
+        image_url=_cache_text(image_urls["image_url"]),
+        poster_url=_cache_text(image_urls["poster_url"]),
+        backdrop_url=_cache_text(image_urls["backdrop_url"]),
+        banner_url=_cache_text(image_urls["banner_url"]),
+        thumb_url=_cache_text(image_urls["thumb_url"]),
+        logo_url=_cache_text(image_urls["logo_url"]),
+        emby_url=_cache_text(entry.get("emby_url")),
+        tagline=_cache_text(entry.get("tagline")),
+        studios=_normalize_text_array(entry.get("studios")),
+        cast_members=_normalize_text_array(entry.get("cast")),
+        directors=_normalize_text_array(entry.get("directors")) if not is_series else [],
+        creators=_normalize_text_array(entry.get("creators")) if is_series else [],
+        tmdb_id=_cache_text(entry.get("tmdb_id"), 50),
+        imdb_id=_cache_text(entry.get("imdb_id"), 50),
+        tvdb_id=_cache_text(entry.get("tvdb_id"), 50),
+        trakt_id=_cache_text(entry.get("trakt_id"), 100),
+        library_id=_cache_text(entry.get("library_id"), 36),
+        library_name=_cache_text(entry.get("library_name"), 500),
+        server_name=_cache_text(entry.get("server_name"), 255),
+        server_icon=_cache_text(entry.get("server_icon"), 100),
+        server_icon_color=_cache_text(entry.get("server_icon_color"), 50),
+        server_icon_style=_cache_text(entry.get("server_icon_style"), 50),
+        update_type=_cache_text(entry.get("update_type"), 20),
+        update_label=_cache_text(entry.get("update_label"), 200),
+        tmdb_poster_url=_cache_text(entry.get("tmdb_poster_url")),
+        tmdb_backdrop_url=None,
+        tmdb_banner_url=None,
+        tmdb_thumb_url=None,
+        tmdb_rating=_cache_text(entry.get("tmdb_rating"), 50),
+        tmdb_votes=_cache_text(entry.get("tmdb_votes"), 50),
+        imdb_rating=_cache_text(entry.get("imdb_rating"), 50),
+        imdb_votes=_cache_text(entry.get("imdb_votes"), 50),
+        metacritic_rating=_cache_text(entry.get("metacritic_rating"), 50),
+        trakt_rating=_cache_text(entry.get("trakt_rating"), 50),
+        trakt_votes=_cache_text(entry.get("trakt_votes"), 50),
+        omdb_fetched_at=_parse_datetime_value(entry.get("omdb_fetched_at")),
+        trakt_fetched_at=_parse_datetime_value(entry.get("trakt_fetched_at")),
+    )
+    row.sort_ts = row.added_at or row.premiere_date or datetime(1970, 1, 1, tzinfo=timezone.utc)  # type: ignore[assignment]
+    return row
+
+
+def _build_latest_cache_change(kind: str, item_id: int, index: int, change: Dict[str, Any]) -> Any:
+    return EmbyLatestCacheChange(
+        cache_kind=kind,
+        cache_item_id=item_id,
+        sort_index=index,
+        kind=_cache_text(change.get("kind"), 50),
+        label=_cache_text(change.get("label"), 200),
+        season_number=_parse_int(change.get("season_number")),
+        episode_number=_parse_int(change.get("episode_number")),
+        episode_title=_cache_text(change.get("episode_title"), 500),
+        quality=_cache_text(change.get("quality"), 100),
+        resolution=_cache_text(change.get("resolution"), 100),
+        video_codec=_cache_text(change.get("video_codec"), 100),
+        audio_codec=_cache_text(change.get("audio_codec"), 100),
+        audio_channels=_cache_text(change.get("audio_channels"), 50),
+        container=_cache_text(change.get("container"), 50),
+        bitrate=_cache_text(change.get("bitrate"), 50),
+        source_name=_cache_text(change.get("source_name"), 200),
+        path=_cache_text(change.get("path")),
+        size=_parse_int(change.get("size")),
+        media_source_id=_cache_text(change.get("media_source_id"), 100),
+        added_at=_parse_datetime_value(change.get("added_at")),
+        video_details=_cache_text(change.get("video_details")),
+        audio_details=_cache_text(change.get("audio_details")),
+        audio_ita=_cache_text(change.get("audio_ita")),
+        audio_eng=_cache_text(change.get("audio_eng")),
+        audio_fra=_cache_text(change.get("audio_fra")),
+        audio_spa=_cache_text(change.get("audio_spa")),
+        audio_ger=_cache_text(change.get("audio_ger")),
+        audio_jpn=_cache_text(change.get("audio_jpn")),
+        audio_langs=_cache_text(change.get("audio_langs")),
+        subtitle_langs=_cache_text(change.get("subtitle_langs")),
+    )
+
+
+def _add_latest_cache_items(session: Any, kind: str, entries: Any) -> List[tuple[Any, Dict[str, Any]]]:
+    added: List[tuple[Any, Dict[str, Any]]] = []
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        row = _build_latest_cache_item(kind, entry)
+        session.add(row)
+        added.append((row, entry))
+    return added
+
+
+def _add_latest_cache_changes(session: Any, kind: str, items: List[tuple[Any, Dict[str, Any]]]) -> None:
+    for row, entry in items:
+        changes = entry.get("changes")
+        if not isinstance(changes, list):
+            continue
+        for index, change in enumerate(changes):
+            if isinstance(change, dict):
+                session.add(_build_latest_cache_change(kind, row.id, index, change))
+
+
+def _add_latest_cache_errors(session: Any, kind: str, errors: Any, stamp: datetime) -> None:
+    if not isinstance(errors, list):
+        return
+    for entry in errors:
+        if isinstance(entry, dict):
+            session.add(
+                EmbyLatestCacheError(
+                    cache_kind=kind,
+                    server_id=_cache_text(entry.get("server_id")),
+                    message=_cache_text(entry.get("message")),
+                    created_at=stamp,
+                )
+            )
 
 
 class StorageLatestMixin(_SessionProvider):
@@ -60,6 +245,12 @@ class StorageLatestMixin(_SessionProvider):
         else:
             creators = []
 
+        image_urls = build_latest_emby_image_urls(
+            row.server_id,
+            row.item_id,
+            primary_tag=row.image_tag,
+        )
+
         return {
             "item_id": row.item_id,
             "title": row.title,
@@ -81,12 +272,12 @@ class StorageLatestMixin(_SessionProvider):
             "season_count": row.season_count,
             "episode_count": row.episode_count,
             "image_tag": row.image_tag,
-            "image_url": row.image_url,
-            "poster_url": row.poster_url,
-            "backdrop_url": row.backdrop_url,
-            "banner_url": row.banner_url,
-            "thumb_url": row.thumb_url,
-            "logo_url": row.logo_url,
+            "image_url": image_urls["image_url"],
+            "poster_url": image_urls["poster_url"],
+            "backdrop_url": image_urls["backdrop_url"],
+            "banner_url": image_urls["banner_url"],
+            "thumb_url": image_urls["thumb_url"],
+            "logo_url": image_urls["logo_url"],
             "emby_url": row.emby_url,
             "tagline": row.tagline,
             "studios": list(row.studios or []),
@@ -129,6 +320,7 @@ class StorageLatestMixin(_SessionProvider):
         session = self._get_session()
         try:
             kind = self._normalize_latest_cache_kind(cache_kind)
+            _configure_latest_cache_read_snapshot(session)
             meta = session.get(EmbyLatestCacheMeta, kind)
             if not meta:
                 return {}
@@ -224,174 +416,118 @@ class StorageLatestMixin(_SessionProvider):
         per_server_limit: int,
         updated_at: Optional[datetime] = None
     ) -> None:
+        kind = self._normalize_latest_cache_kind(cache_kind)
+        with _latest_cache_write_lock:
+            self._save_latest_cache_locked(
+                kind,
+                payload,
+                limit,
+                per_server_limit,
+                updated_at,
+            )
+
+    def _save_latest_cache_locked(
+        self,
+        kind: str,
+        payload: Dict[str, Any],
+        limit: int,
+        per_server_limit: int,
+        updated_at: Optional[datetime],
+    ) -> None:
         session = self._get_session()
         try:
-            kind = self._normalize_latest_cache_kind(cache_kind)
-            session.query(EmbyLatestCacheChange).filter(EmbyLatestCacheChange.cache_kind == kind).delete(synchronize_session=False)  # type: ignore[attr-defined]
-            session.query(EmbyLatestCacheItem).filter(EmbyLatestCacheItem.cache_kind == kind).delete(synchronize_session=False)  # type: ignore[attr-defined]
-            session.query(EmbyLatestCacheError).filter(EmbyLatestCacheError.cache_kind == kind).delete(synchronize_session=False)  # type: ignore[attr-defined]
-
-            movies = payload.get("movies") if isinstance(payload, dict) else []
-            series = payload.get("series") if isinstance(payload, dict) else []
-            errors = payload.get("errors") if isinstance(payload, dict) else []
-            items = []
-
-            def _parse_int(value: Any) -> Optional[int]:
-                try:
-                    return int(value) if value is not None else None
-                except (TypeError, ValueError):
-                    return None
-
-            def _string(value: Any) -> Optional[str]:
-                return _normalize_text_value(value)
-
-            def _string_max(value: Any, max_len: Optional[int]) -> Optional[str]:
-                return _truncate_text_value(value, max_len)
-
-            for entry in (movies or []) + (series or []):
-                if not isinstance(entry, dict):
-                    continue
-                item_type = _string_max(entry.get("item_type"), 20)
-                is_series = str(item_type or "").lower() in ("series", "episode")
-                directors = _normalize_text_array(entry.get("directors")) if not is_series else []
-                creators = _normalize_text_array(entry.get("creators")) if is_series else []
-                imdb_rating = _string_max(entry.get("imdb_rating"), 50)
-                metacritic_rating = _string_max(entry.get("metacritic_rating"), 50)
-                row = EmbyLatestCacheItem(
-                    cache_kind=kind,
-                    item_type=item_type,
-                    server_id=_string_max(entry.get("server_id"), 36),
-                    item_id=_string_max(entry.get("item_id"), 36),
-                    signature=_string_max(entry.get("signature"), 255),
-                    batch_id=_string_max(entry.get("batch_id"), 255),
-                    title=_string_max(entry.get("title"), 500),
-                    original_title=_string_max(entry.get("original_title"), 500),
-                    series_name=_string_max(entry.get("series_name"), 500),
-                    season_name=_string_max(entry.get("season_name"), 500),
-                    season_number=_parse_int(entry.get("season_number")),
-                    episode_number=_parse_int(entry.get("episode_number")),
-                    episode_title=_string_max(entry.get("episode_title"), 500),
-                    year=_parse_int(entry.get("year")),
-                    overview=_normalize_text_value(entry.get("overview")),
-                    genres=_normalize_text_array(entry.get("genres")),
-                    community_rating=_string_max(entry.get("community_rating"), 50),
-                    official_rating=_string_max(entry.get("official_rating"), 50),
-                    runtime_minutes=_parse_int(entry.get("runtime_minutes")),
-                    added_at=_parse_datetime_value(entry.get("added_at")),
-                    premiere_date=_parse_datetime_value(entry.get("premiere_date")),
-                    child_count=_parse_int(entry.get("child_count")),
-                    season_count=_parse_int(entry.get("season_count")),
-                    episode_count=_parse_int(entry.get("episode_count")),
-                    image_tag=_string_max(entry.get("image_tag"), 255),
-                    image_url=_string(entry.get("image_url")),
-                    poster_url=_string(entry.get("poster_url")),
-                    backdrop_url=None,
-                    banner_url=None,
-                    thumb_url=None,
-                    logo_url=None,
-                    emby_url=_string(entry.get("emby_url")),
-                    tagline=_string(entry.get("tagline")),
-                    studios=_normalize_text_array(entry.get("studios")),
-                    cast_members=_normalize_text_array(entry.get("cast")),
-                    directors=directors,
-                    creators=creators,
-                    tmdb_id=_string_max(entry.get("tmdb_id"), 50),
-                    imdb_id=_string_max(entry.get("imdb_id"), 50),
-                    tvdb_id=_string_max(entry.get("tvdb_id"), 50),
-                    trakt_id=_string_max(entry.get("trakt_id"), 100),
-                    library_id=_string_max(entry.get("library_id"), 36),
-                    library_name=_string_max(entry.get("library_name"), 500),
-                    server_name=_string_max(entry.get("server_name"), 255),
-                    server_icon=_string_max(entry.get("server_icon"), 100),
-                    server_icon_color=_string_max(entry.get("server_icon_color"), 50),
-                    server_icon_style=_string_max(entry.get("server_icon_style"), 50),
-                    update_type=_string_max(entry.get("update_type"), 20),
-                    update_label=_string_max(entry.get("update_label"), 200),
-                    tmdb_poster_url=_string(entry.get("tmdb_poster_url")),
-                    tmdb_backdrop_url=None,
-                    tmdb_banner_url=None,
-                    tmdb_thumb_url=None,
-                    tmdb_rating=_string_max(entry.get("tmdb_rating"), 50),
-                    tmdb_votes=_string_max(entry.get("tmdb_votes"), 50),
-                    imdb_rating=imdb_rating,
-                    imdb_votes=_string_max(entry.get("imdb_votes"), 50),
-                    metacritic_rating=metacritic_rating,
-                    trakt_rating=_string_max(entry.get("trakt_rating"), 50),
-                    trakt_votes=_string_max(entry.get("trakt_votes"), 50),
-                    omdb_fetched_at=_parse_datetime_value(entry.get("omdb_fetched_at")),
-                    trakt_fetched_at=_parse_datetime_value(entry.get("trakt_fetched_at"))
-                )
-                row.sort_ts = row.added_at or row.premiere_date or datetime(1970, 1, 1, tzinfo=timezone.utc)  # type: ignore[assignment]
-                session.add(row)
-                items.append((row, entry))
-
-            session.flush()
-
-            for row, entry in items:
-                changes = entry.get("changes")
-                if not isinstance(changes, list):
-                    continue
-                for idx, change in enumerate(changes):
-                    if not isinstance(change, dict):
-                        continue
-                    change_row = EmbyLatestCacheChange(
-                        cache_kind=kind,
-                        cache_item_id=row.id,
-                        sort_index=idx,
-                        kind=_string_max(change.get("kind"), 50),
-                        label=_string_max(change.get("label"), 200),
-                        season_number=_parse_int(change.get("season_number")),
-                        episode_number=_parse_int(change.get("episode_number")),
-                        episode_title=_string_max(change.get("episode_title"), 500),
-                        quality=_string_max(change.get("quality"), 100),
-                        resolution=_string_max(change.get("resolution"), 100),
-                        video_codec=_string_max(change.get("video_codec"), 100),
-                        audio_codec=_string_max(change.get("audio_codec"), 100),
-                        audio_channels=_string_max(change.get("audio_channels"), 50),
-                        container=_string_max(change.get("container"), 50),
-                        bitrate=_string_max(change.get("bitrate"), 50),
-                        source_name=_string_max(change.get("source_name"), 200),
-                        path=_string(change.get("path")),
-                        size=_parse_int(change.get("size")),
-                        media_source_id=_string_max(change.get("media_source_id"), 100),
-                        added_at=_parse_datetime_value(change.get("added_at")),
-                        video_details=_string(change.get("video_details")),
-                        audio_details=_string(change.get("audio_details")),
-                        audio_ita=_string(change.get("audio_ita")),
-                        audio_eng=_string(change.get("audio_eng")),
-                        audio_fra=_string(change.get("audio_fra")),
-                        audio_spa=_string(change.get("audio_spa")),
-                        audio_ger=_string(change.get("audio_ger")),
-                        audio_jpn=_string(change.get("audio_jpn")),
-                        audio_langs=_string(change.get("audio_langs")),
-                        subtitle_langs=_string(change.get("subtitle_langs"))
-                    )
-                    session.add(change_row)
-
-            stamp = updated_at or _utcnow()
-            if isinstance(errors, list):
-                for entry in errors:
-                    if not isinstance(entry, dict):
-                        continue
-                    error_row = EmbyLatestCacheError(
-                        cache_kind=kind,
-                        server_id=_string(entry.get("server_id")),
-                        message=_string(entry.get("message")),
-                        created_at=stamp
-                    )
-                    session.add(error_row)
-
-            meta = session.get(EmbyLatestCacheMeta, kind)
-            if not meta:
-                meta = EmbyLatestCacheMeta(cache_kind=kind)
-            meta.updated_at = stamp  # type: ignore[assignment]
-            meta.limit = int(limit or 0)  # type: ignore[assignment]
-            meta.per_server_limit = int(per_server_limit or 0)  # type: ignore[assignment]
-            session.add(meta)
+            self._replace_latest_cache_in_session(
+                session,
+                kind,
+                payload,
+                limit,
+                per_server_limit,
+                updated_at,
+            )
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
             session.rollback()
             raise StorageError(f"Errore salvataggio latest cache: {exc}") from exc
+        finally:
+            session.close()
+
+    def _replace_latest_cache_in_session(
+        self,
+        session: Any,
+        kind: str,
+        payload: Dict[str, Any],
+        limit: int,
+        per_server_limit: int,
+        updated_at: Optional[datetime],
+    ) -> None:
+        _lock_latest_cache_write(session, kind)
+        session.query(EmbyLatestCacheChange).filter(EmbyLatestCacheChange.cache_kind == kind).delete(synchronize_session=False)  # type: ignore[attr-defined]
+        session.query(EmbyLatestCacheItem).filter(EmbyLatestCacheItem.cache_kind == kind).delete(synchronize_session=False)  # type: ignore[attr-defined]
+        session.query(EmbyLatestCacheError).filter(EmbyLatestCacheError.cache_kind == kind).delete(synchronize_session=False)  # type: ignore[attr-defined]
+
+        source = payload if isinstance(payload, dict) else {}
+        items = _add_latest_cache_items(
+            session,
+            kind,
+            (source.get("movies") or []) + (source.get("series") or []),
+        )
+        session.flush()
+        _add_latest_cache_changes(session, kind, items)
+
+        stamp = updated_at or _utcnow()
+        _add_latest_cache_errors(session, kind, source.get("errors"), stamp)
+        meta = session.get(EmbyLatestCacheMeta, kind)
+        if not meta:
+            meta = EmbyLatestCacheMeta(cache_kind=kind)
+        meta.updated_at = stamp  # type: ignore[assignment]
+        meta.limit = int(limit or 0)  # type: ignore[assignment]
+        meta.per_server_limit = int(per_server_limit or 0)  # type: ignore[assignment]
+        session.add(meta)
+
+    def publish_latest_refresh(
+        self,
+        payload: Dict[str, Any],
+        limit: int,
+        per_server_limit: int,
+        latest_state: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Atomically replace both caches and optional collector state."""
+        session = self._get_session()
+        try:
+            lock_latest_refresh(session)
+            with _latest_cache_write_lock:
+                published_at = _utcnow()
+                self._replace_latest_cache_in_session(
+                    session,
+                    "batch",
+                    payload,
+                    limit,
+                    per_server_limit,
+                    published_at,
+                )
+                self._replace_latest_cache_in_session(
+                    session,
+                    "feed",
+                    payload,
+                    limit,
+                    per_server_limit,
+                    published_at,
+                )
+                if latest_state is not None:
+                    lock_latest_state(session)
+                    persisted_state = self._load_latest_state_in_session(session)
+                    merged_state = merge_notification_updates(
+                        latest_state,
+                        persisted_state,
+                    )
+                    self._replace_latest_state_in_session(session, merged_state)
+                session.commit()
+        except SQLAlchemyError as exc:  # pragma: no cover
+            session.rollback()
+            raise StorageError(f"Errore pubblicazione Latest: {exc}") from exc
+        except Exception:
+            session.rollback()
+            raise
         finally:
             session.close()
 
@@ -447,273 +583,21 @@ class StorageLatestMixin(_SessionProvider):
     def load_latest_state(self) -> Dict[str, Any]:
         session = self._get_session()
         try:
-            state: Dict[str, Any] = {}
-
-            def _ensure_server(server_id: str) -> Dict[str, Any]:
-                server_state = state.setdefault(server_id, {})
-                if not isinstance(server_state.get("movies"), dict):
-                    server_state["movies"] = {"items": {}}
-                if not isinstance(server_state.get("series"), dict):
-                    server_state["series"] = {"items": {}}
-                return server_state
-
-            movie_rows = session.query(EmbyLatestStateMovie).all()
-            for row in movie_rows:
-                server_state = _ensure_server(row.server_id)
-                items = server_state["movies"].setdefault("items", {})
-                entry = {
-                    "title": row.title,
-                    "year": row.year,
-                    "last_seen_at": row.last_seen_at.isoformat() if isinstance(row.last_seen_at, datetime) else None,
-                    "media_source_keys": list(row.media_source_keys or []),
-                    "notified": bool(row.notified),
-                    "notified_at": row.notified_at.isoformat() if isinstance(row.notified_at, datetime) else "",
-                }
-                if row.item_id:
-                    entry["item_id"] = row.item_id
-                if row.signature:
-                    entry["signature"] = row.signature
-                items[row.state_key] = entry
-
-            series_rows = session.query(EmbyLatestStateSeries).all()
-            for row in series_rows:
-                server_state = _ensure_server(row.server_id)
-                series_items = server_state["series"].setdefault("items", {})
-                series_items[row.series_id] = {
-                    "series_id": row.series_id,
-                    "item_id": row.series_id,
-                    "title": row.title or "",
-                    "year": row.year,
-                    "last_seen_at": row.last_seen_at.isoformat() if isinstance(row.last_seen_at, datetime) else "",
-                    "episodes": {},
-                    "seasons": list(row.seasons or []),
-                    "last_changes": [],
-                    "notified": bool(row.notified),
-                    "notified_at": row.notified_at.isoformat() if isinstance(row.notified_at, datetime) else ""
-                }
-
-            episode_rows = session.query(EmbyLatestStateEpisode).all()
-            for row in episode_rows:
-                server_state = _ensure_server(row.server_id)
-                series_items = server_state["series"].setdefault("items", {})
-                series_entry = series_items.get(row.series_id)
-                if not isinstance(series_entry, dict):
-                    series_entry = {
-                        "series_id": row.series_id,
-                        "title": "",
-                        "year": None,
-                        "last_seen_at": "",
-                        "episodes": {},
-                        "seasons": [],
-                        "last_changes": [],
-                        "notified": False,
-                        "notified_at": ""
-                    }
-                    series_items[row.series_id] = series_entry
-                episodes = series_entry.setdefault("episodes", {})
-                episode_key = row.episode_key or row.episode_id or ""
-                if not episode_key:
-                    continue
-                episodes[episode_key] = {
-                    "season": row.season_number,
-                    "episode": row.episode_number,
-                    "title": row.title or "",
-                    "last_seen_at": row.last_seen_at.isoformat() if isinstance(row.last_seen_at, datetime) else "",
-                    "media_source_keys": list(row.media_source_keys or []),
-                    "key": row.episode_key,
-                    "episode_id": row.episode_id
-                }
-
-            group_rows = (
-                session.query(EmbyLatestStateSeriesGroup)
-                .order_by(EmbyLatestStateSeriesGroup.sort_index.asc(), EmbyLatestStateSeriesGroup.id.asc())  # type: ignore[attr-defined]
-                .all()
-            )
-            change_rows = (
-                session.query(EmbyLatestStateSeriesChange)
-                .order_by(EmbyLatestStateSeriesChange.sort_index.asc(), EmbyLatestStateSeriesChange.id.asc())  # type: ignore[attr-defined]
-                .all()
-            )
-
-            groups_by_id: Dict[int, Dict[str, Any]] = {}
-            groups_by_series: Dict[tuple[str, str], List[Dict[str, Any]]] = {}
-            for row in group_rows:
-                group = {
-                    "update_type": row.update_type,
-                    "update_label": row.update_label,
-                    "changes": [],
-                    "batch_id": row.batch_id,
-                    "added_at": row.added_at.isoformat() if isinstance(row.added_at, datetime) else ""
-                }
-                groups_by_id[row.id] = group
-                key = (row.server_id, row.series_id)
-                groups_by_series.setdefault(key, []).append(group)
-
-            for row in change_rows:
-                group = groups_by_id.get(row.group_id)
-                if not group:
-                    continue
-                group["changes"].append({
-                    "kind": row.kind,
-                    "label": row.label,
-                    "season_number": row.season_number,
-                    "episode_number": row.episode_number,
-                    "episode_title": row.episode_title,
-                    "quality": row.quality,
-                    "resolution": row.resolution,
-                    "video_codec": row.video_codec,
-                    "audio_codec": row.audio_codec,
-                    "audio_channels": row.audio_channels,
-                    "container": row.container,
-                    "bitrate": row.bitrate,
-                    "source_name": row.source_name,
-                    "path": row.path,
-                    "size": row.size,
-                    "media_source_id": row.media_source_id,
-                    "added_at": row.added_at.isoformat() if isinstance(row.added_at, datetime) else "",
-                    "video_details": row.video_details,
-                    "audio_details": row.audio_details,
-                    "audio_ita": row.audio_ita,
-                    "audio_eng": row.audio_eng,
-                    "audio_fra": row.audio_fra,
-                    "audio_spa": row.audio_spa,
-                    "audio_ger": row.audio_ger,
-                    "audio_jpn": row.audio_jpn,
-                    "audio_langs": row.audio_langs,
-                    "subtitle_langs": row.subtitle_langs
-                })
-
-            for (server_id, series_id), groups in groups_by_series.items():
-                server_state = _ensure_server(server_id)
-                series_items = server_state["series"].setdefault("items", {})
-                series_entry = series_items.get(series_id)
-                if isinstance(series_entry, dict):
-                    series_entry["last_changes"] = groups
-
-            return state
+            return self._load_latest_state_in_session(session)
         finally:
             session.close()
+
+    def _load_latest_state_in_session(self, session: Any) -> Dict[str, Any]:
+        document = session.get(EmbyLatestStateDocument, 1)
+        if document is not None and isinstance(document.payload, dict):
+            return copy.deepcopy(document.payload)
+
+        return {}
 
     def save_latest_state(self, state: Dict[str, Any]) -> None:
         session = self._get_session()
         try:
-            session.query(EmbyLatestStateSeriesChange).delete(synchronize_session=False)
-            session.query(EmbyLatestStateSeriesGroup).delete(synchronize_session=False)
-            session.query(EmbyLatestStateEpisode).delete(synchronize_session=False)
-            session.query(EmbyLatestStateMovie).delete(synchronize_session=False)
-            session.query(EmbyLatestStateSeries).delete(synchronize_session=False)
-
-            for server_id, server_state in (state or {}).items():
-                if not isinstance(server_state, dict):
-                    continue
-                movies_state = server_state.get("movies", {})
-                movie_items = movies_state.get("items") if isinstance(movies_state, dict) else {}
-                if isinstance(movie_items, dict):
-                    for state_key, entry in movie_items.items():
-                        if not state_key or not isinstance(entry, dict):
-                            continue
-                        row = EmbyLatestStateMovie(
-                            server_id=str(server_id),
-                            state_key=str(state_key),
-                            item_id=_normalize_text_value(entry.get("item_id")),
-                            signature=_normalize_text_value(entry.get("signature")),
-                            title=_normalize_text_value(entry.get("title")),
-                            year=_parse_int(entry.get("year")),
-                            last_seen_at=_parse_datetime_value(entry.get("last_seen_at")),
-                            media_source_keys=_normalize_text_array(entry.get("media_source_keys")),
-                            notified=bool(entry.get("notified")),
-                            notified_at=_parse_datetime_value(entry.get("notified_at"))
-                        )
-                        session.add(row)
-
-                series_state = server_state.get("series", {})
-                series_items = series_state.get("items") if isinstance(series_state, dict) else {}
-                if isinstance(series_items, dict):
-                    for series_id, entry in series_items.items():
-                        if not series_id or not isinstance(entry, dict):
-                            continue
-                        row = EmbyLatestStateSeries(
-                            server_id=str(server_id),
-                            series_id=str(series_id),
-                            title=_normalize_text_value(entry.get("title")),
-                            year=_parse_int(entry.get("year")),
-                            last_seen_at=_parse_datetime_value(entry.get("last_seen_at")),
-                            seasons=_normalize_int_array(entry.get("seasons")),
-                            notified=bool(entry.get("notified")),
-                            notified_at=_parse_datetime_value(entry.get("notified_at"))
-                        )
-                        session.add(row)
-
-                        episodes = entry.get("episodes")
-                        if isinstance(episodes, dict):
-                            for episode_key, ep_entry in episodes.items():
-                                if not episode_key or not isinstance(ep_entry, dict):
-                                    continue
-                                session.add(EmbyLatestStateEpisode(
-                                    server_id=str(server_id),
-                                    series_id=str(series_id),
-                                    episode_key=str(episode_key),
-                                    episode_id=_normalize_text_value(ep_entry.get("episode_id")),
-                                    season_number=_parse_int(ep_entry.get("season") or ep_entry.get("season_number")),
-                                    episode_number=_parse_int(ep_entry.get("episode") or ep_entry.get("episode_number")),
-                                    title=_normalize_text_value(ep_entry.get("title")),
-                                    last_seen_at=_parse_datetime_value(ep_entry.get("last_seen_at")),
-                                    media_source_keys=_normalize_text_array(ep_entry.get("media_source_keys"))
-                                ))
-
-                        last_changes = entry.get("last_changes")
-                        if isinstance(last_changes, list):
-                            for group_index, group in enumerate(last_changes):
-                                if not isinstance(group, dict):
-                                    continue
-                                group_row = EmbyLatestStateSeriesGroup(
-                                    server_id=str(server_id),
-                                    series_id=str(series_id),
-                                    sort_index=group_index,
-                                    update_type=_normalize_text_value(group.get("update_type")),
-                                    update_label=_normalize_text_value(group.get("update_label")),
-                                    batch_id=_normalize_text_value(group.get("batch_id")),
-                                    added_at=_parse_datetime_value(group.get("added_at"))
-                                )
-                                session.add(group_row)
-                                session.flush()
-                                changes = group.get("changes")
-                                if isinstance(changes, list):
-                                    for idx, change in enumerate(changes):
-                                        if not isinstance(change, dict):
-                                            continue
-                                        session.add(EmbyLatestStateSeriesChange(
-                                            group_id=group_row.id,
-                                            sort_index=idx,
-                                            kind=_normalize_text_value(change.get("kind")),
-                                            label=_normalize_text_value(change.get("label")),
-                                            season_number=_parse_int(change.get("season_number")),
-                                            episode_number=_parse_int(change.get("episode_number")),
-                                            episode_title=_normalize_text_value(change.get("episode_title")),
-                                            quality=_normalize_text_value(change.get("quality")),
-                                            resolution=_normalize_text_value(change.get("resolution")),
-                                            video_codec=_normalize_text_value(change.get("video_codec")),
-                                            audio_codec=_normalize_text_value(change.get("audio_codec")),
-                                            audio_channels=_normalize_text_value(change.get("audio_channels")),
-                                            container=_normalize_text_value(change.get("container")),
-                                            bitrate=_normalize_text_value(change.get("bitrate")),
-                                            source_name=_normalize_text_value(change.get("source_name")),
-                                            path=_normalize_text_value(change.get("path")),
-                                            size=_parse_int(change.get("size")),
-                                            media_source_id=_normalize_text_value(change.get("media_source_id")),
-                                            added_at=_parse_datetime_value(change.get("added_at")),
-                                            video_details=_normalize_text_value(change.get("video_details")),
-                                            audio_details=_normalize_text_value(change.get("audio_details")),
-                                            audio_ita=_normalize_text_value(change.get("audio_ita")),
-                                            audio_eng=_normalize_text_value(change.get("audio_eng")),
-                                            audio_fra=_normalize_text_value(change.get("audio_fra")),
-                                            audio_spa=_normalize_text_value(change.get("audio_spa")),
-                                            audio_ger=_normalize_text_value(change.get("audio_ger")),
-                                            audio_jpn=_normalize_text_value(change.get("audio_jpn")),
-                                            audio_langs=_normalize_text_value(change.get("audio_langs")),
-                                            subtitle_langs=_normalize_text_value(change.get("subtitle_langs"))
-                                        ))
-
+            self._replace_latest_state_in_session(session, state)
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
             session.rollback()
@@ -721,15 +605,24 @@ class StorageLatestMixin(_SessionProvider):
         finally:
             session.close()
 
+    def _replace_latest_state_in_session(
+        self,
+        session: Any,
+        state: Dict[str, Any],
+    ) -> None:
+        document = session.get(EmbyLatestStateDocument, 1)
+        if document is None:
+            document = EmbyLatestStateDocument(id=1, payload={})
+        document.payload = copy.deepcopy(state or {})  # type: ignore[assignment]
+        document.updated_at = _utcnow()  # type: ignore[assignment]
+        session.add(document)
+
+
     def clear_latest_state(self) -> None:
         session = self._get_session()
         try:
+            session.query(EmbyLatestStateDocument).delete(synchronize_session=False)
             session.query(EmbyLatestNotificationDelivery).delete(synchronize_session=False)
-            session.query(EmbyLatestStateSeriesChange).delete(synchronize_session=False)
-            session.query(EmbyLatestStateSeriesGroup).delete(synchronize_session=False)
-            session.query(EmbyLatestStateEpisode).delete(synchronize_session=False)
-            session.query(EmbyLatestStateMovie).delete(synchronize_session=False)
-            session.query(EmbyLatestStateSeries).delete(synchronize_session=False)
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
             session.rollback()
@@ -742,15 +635,14 @@ class StorageLatestMixin(_SessionProvider):
             return
         session = self._get_session()
         try:
+            document = session.get(EmbyLatestStateDocument, 1)
+            if document is not None and isinstance(document.payload, dict):
+                payload = copy.deepcopy(document.payload)
+                payload.pop(server_id, None)
+                document.payload = payload  # type: ignore[assignment]
+                document.updated_at = _utcnow()  # type: ignore[assignment]
+                session.add(document)
             session.query(EmbyLatestNotificationDelivery).filter(EmbyLatestNotificationDelivery.server_id == server_id).delete(synchronize_session=False)  # type: ignore[attr-defined]
-            groups = session.query(EmbyLatestStateSeriesGroup).filter(EmbyLatestStateSeriesGroup.server_id == server_id).all()  # type: ignore[attr-defined]
-            group_ids = [row.id for row in groups]
-            if group_ids:
-                session.query(EmbyLatestStateSeriesChange).filter(EmbyLatestStateSeriesChange.group_id.in_(group_ids)).delete(synchronize_session=False)  # type: ignore[attr-defined]
-            session.query(EmbyLatestStateSeriesGroup).filter(EmbyLatestStateSeriesGroup.server_id == server_id).delete(synchronize_session=False)  # type: ignore[attr-defined]
-            session.query(EmbyLatestStateEpisode).filter(EmbyLatestStateEpisode.server_id == server_id).delete(synchronize_session=False)  # type: ignore[attr-defined]
-            session.query(EmbyLatestStateMovie).filter(EmbyLatestStateMovie.server_id == server_id).delete(synchronize_session=False)  # type: ignore[attr-defined]
-            session.query(EmbyLatestStateSeries).filter(EmbyLatestStateSeries.server_id == server_id).delete(synchronize_session=False)  # type: ignore[attr-defined]
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
             session.rollback()

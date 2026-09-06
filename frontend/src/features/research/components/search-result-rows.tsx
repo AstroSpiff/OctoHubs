@@ -2,6 +2,7 @@ import type { MouseEvent as ReactMouseEvent } from "react";
 
 import {
   SearchResultActions,
+  type OpenTermMenuAction,
   type SearchResultActionNotice,
 } from "@/features/research/components/search-result-actions";
 import type { SearchResultEntry } from "@/features/research/search-result-groups";
@@ -10,6 +11,7 @@ import type { SearchResult } from "@/features/research/types";
 
 type SearchResultRowProps = {
   result: SearchResult;
+  selectable?: boolean;
   selected: boolean;
   selectedKeys: Set<string>;
   canSend: boolean;
@@ -19,11 +21,13 @@ type SearchResultRowProps = {
   onToggleDuplicate: (key: string) => void;
   onNotice: (notice: SearchResultActionNotice) => void;
   onTitleContextMenu?: (event: ReactMouseEvent<HTMLElement>) => void;
+  onOpenTermMenu?: OpenTermMenuAction;
   onLookupEmby?: (target: { title: string; year?: string | number }) => void;
 };
 
 function SearchResultRow({
   result,
+  selectable = true,
   selected,
   selectedKeys,
   canSend,
@@ -33,18 +37,19 @@ function SearchResultRow({
   onToggleDuplicate,
   onNotice,
   onTitleContextMenu,
+  onOpenTermMenu,
   onLookupEmby,
 }: SearchResultRowProps) {
   return (
     <tr className={result.in_library ? "is-in-library" : undefined}>
-      <td>
+      {selectable ? <td>
         <input
           type="checkbox"
           checked={selected}
           onChange={onToggle}
           aria-label={`Seleziona ${result.title || "risultato"}`}
         />
-      </td>
+      </td> : null}
       {hasEpisodes ? <td>{result.episode_code || "-"}</td> : null}
       <td>
         <strong
@@ -63,8 +68,10 @@ function SearchResultRow({
             canSend={canSend}
             onNotice={onNotice}
             onTitleContextMenu={onTitleContextMenu}
+            onOpenTermMenu={onOpenTermMenu}
             onLookupEmby={onLookupEmby}
             selectedKeys={selectedKeys}
+            selectable={selectable}
             onToggle={onToggleDuplicate}
           />
         ) : null}
@@ -82,6 +89,7 @@ function SearchResultRow({
           result={result}
           canSend={canSend}
           onNotice={onNotice}
+          onOpenTermMenu={onOpenTermMenu}
           onLookupEmby={onLookupEmby}
         />
       </td>
@@ -93,9 +101,11 @@ type DuplicateSourcesProps = {
   duplicates: SearchResultEntry[];
   canSend: boolean;
   selectedKeys: Set<string>;
+  selectable: boolean;
   onToggle: (key: string) => void;
   onNotice: (notice: SearchResultActionNotice) => void;
   onTitleContextMenu?: (event: ReactMouseEvent<HTMLElement>) => void;
+  onOpenTermMenu?: OpenTermMenuAction;
   onLookupEmby?: (target: { title: string; year?: string | number }) => void;
 };
 
@@ -103,9 +113,11 @@ function DuplicateSources({
   duplicates,
   canSend,
   selectedKeys,
+  selectable,
   onToggle,
   onNotice,
   onTitleContextMenu,
+  onOpenTermMenu,
   onLookupEmby,
 }: DuplicateSourcesProps) {
   return (
@@ -114,12 +126,12 @@ function DuplicateSources({
       <ul>
         {duplicates.map(({ key, result }) => (
           <li key={key}>
-            <input
+            {selectable ? <input
               type="checkbox"
               checked={selectedKeys.has(key)}
               onChange={() => onToggle(key)}
               aria-label={`Seleziona fonte ${result.title || "duplicata"}`}
-            />
+            /> : null}
             <div className="research-duplicate-copy">
               <strong
                 className={onTitleContextMenu ? "research-result-title" : undefined}
@@ -133,6 +145,7 @@ function DuplicateSources({
               result={result}
               canSend={canSend}
               onNotice={onNotice}
+              onOpenTermMenu={onOpenTermMenu}
               onLookupEmby={onLookupEmby}
             />
           </li>

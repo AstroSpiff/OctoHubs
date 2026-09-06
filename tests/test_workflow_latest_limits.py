@@ -58,10 +58,14 @@ class _SlowPollingRefreshManager(_RefreshManager):
         self.is_refreshing_calls = 0
 
     def is_refreshing(self):
-        self.is_refreshing_calls += 1
-        if self.is_refreshing_calls == 1:
-            return False
-        return self.is_refreshing_calls <= self.refreshing_polls
+        return True
+
+    def active_refresh_generation(self):
+        return 17
+
+    def wait_for_refresh(self, generation, timeout_seconds):
+        self.waited = (generation, timeout_seconds)
+        return {"generation": generation, "payload": self.snapshot["payload"], "error": None}
 
 
 class _ImmediateThread:
@@ -163,13 +167,8 @@ class WorkflowLatestLimitsTests(unittest.TestCase):
 
         self.assertEqual(1, refresh_lightweight.call_count)
 
-    def test_refresh_cache_waits_longer_than_five_minutes_for_running_refresh(self):
+    def test_refresh_cache_waits_for_the_exact_running_generation(self):
         manager = _SlowPollingRefreshManager(refreshing_polls=170)
-        time_value = {"now": 0}
-
-        def fake_time():
-            time_value["now"] += 2
-            return time_value["now"]
 
         with patch("emby_latest.settings._load_latest_settings", return_value={"SETTINGS": {"max_movies": 10, "max_series": 10}}), patch(
             "services.workflows.load_config",
@@ -180,16 +179,11 @@ class WorkflowLatestLimitsTests(unittest.TestCase):
         ), patch(
             "threading.Thread",
             side_effect=lambda target, daemon=True: _ImmediateThread(target, daemon=daemon),
-        ), patch(
-            "time.time",
-            side_effect=fake_time,
-        ), patch(
-            "time.sleep",
-            return_value=None,
         ):
             workflows._wf_refresh_cache({})
 
-        self.assertGreater(time_value["now"], 300)
+        self.assertEqual(17, manager.waited[0])
+        self.assertGreater(manager.waited[1], 300)
 
     def test_refresh_cache_raises_refresh_error_from_background_thread(self):
         manager = _FailingRefreshManager("forced refresh failure")
@@ -226,7 +220,7 @@ class WorkflowLatestLimitsTests(unittest.TestCase):
             "time.sleep",
             return_value=None,
         ):
-            with self.assertRaisesRegex(RuntimeError, "Cache DB non disponibile"):
+            with self.assertRaisesRegex(RuntimeError, "completato senza payload"):
                 workflows._wf_refresh_cache({})
 
     def test_notify_uses_latest_workflow_limits(self):

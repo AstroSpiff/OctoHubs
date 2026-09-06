@@ -5,16 +5,24 @@ Extracted from the legacy monolith to reduce module size.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any, Dict, Tuple
 
 from core import config_manager
 from core.config_manager import _db_enabled, _ensure_db_backend, load_config
+from core.log_sanitization import format_exception_for_log, redact_mapping_for_log
+from core.safe_output import safe_print as print
 from core.utils import get_emby_servers
+from core.workflow_context import workflow_context_summary
 from emby_latest import get_manager as get_emby_latest_manager
 from emby_latest import get_manager_unavailable_reason as get_emby_latest_manager_unavailable_reason
 from emby_probe import get_probe_manager
 from emby_runtime.api_clients import _call_emby_api, _fetch_emby_scheduled_tasks
 from emby_users.registry import get_emby_user_manager as _get_emby_user_manager
+
+
+def _log_workflow_exception(context: str, error: BaseException) -> None:
+    print(f"[WORKFLOW] {context}:", format_exception_for_log(error), sep="\n")
 
 
 def _wf_positive_int(value: Any, default: int) -> int:
@@ -94,8 +102,8 @@ def _wf_trigger_sync() -> bool:
         get_operation_tracker,
     )
     if manager:
-        manager.auto_sync_manager.run_auto_sync()
-        return True
+        outcome = manager.auto_sync_manager.run_auto_sync()
+        return bool(isinstance(outcome, dict) and outcome.get("ok"))
     return False
 
 
@@ -112,7 +120,7 @@ def _wf_trigger_scan(context: Dict[str, Any]) -> bool:
     from emby_libraries.scan_snapshots import _build_scan_group_tracked_snapshot
 
     print("[WORKFLOW] [SCAN] Inizio _wf_trigger_scan()")
-    print(f"[WORKFLOW] [SCAN] Context: {context}")
+    print(f"[WORKFLOW] [SCAN] Context: {workflow_context_summary(context)}")
 
     # Il workflow usa il sistema di scan gruppo esistente
     group_name = context.get("group_name")
@@ -123,7 +131,7 @@ def _wf_trigger_scan(context: Dict[str, Any]) -> bool:
 
     # Se ci sono librerie nel context, usale (scan di gruppo specifico)
     if libraries and isinstance(libraries, list) and len(libraries) > 0:
-        print(f"[WORKFLOW] [SCAN] Modalità gruppo '{group_name or 'custom'}' con {len(libraries)} librerie")
+        print(f"[WORKFLOW] [SCAN] Modalità gruppo con {len(libraries)} librerie")
 
         payload = {
             "group_name": group_name or "Workflow",
@@ -221,7 +229,10 @@ def _wf_check_scan(context: Dict[str, Any] | None = None) -> bool:
     """
     from emby_libraries.scan_snapshots import _get_task_value
 
-    print(f"[WORKFLOW] [CHECK_SCAN] Inizio verifica stato scan - context ricevuto: {context}")
+    print(
+        "[WORKFLOW] [CHECK_SCAN] Inizio verifica stato scan - "
+        f"{workflow_context_summary(context)}"
+    )
 
     # Check tracked jobs first if available
     job_ids_to_check: list[str] = []
@@ -251,8 +262,15 @@ def _wf_check_scan(context: Dict[str, Any] | None = None) -> bool:
                 if status in ("active", "queued"):
                     print(f"[WORKFLOW] [CHECK_SCAN] ⏳ Job {job_id} ancora in corso")
                     all_completed = False
+                elif status in ("error", "failed", "cancelled"):
+                    raise RuntimeError(
+                        f"Scan {job_id} terminata con stato {status}: {job.get('message') or ''}"
+                    )
+                elif status != "completed":
+                    all_completed = False
             else:
                 print(f"[WORKFLOW] [CHECK_SCAN] ⚠️ Job {job_id} non trovato nel tracker")
+                all_completed = False
 
         if all_completed:
             print(f"[WORKFLOW] [CHECK_SCAN] ✓ Tutti i {len(job_ids_to_check)} job completati")
@@ -263,8 +281,7 @@ def _wf_check_scan(context: Dict[str, Any] | None = None) -> bool:
 
     config, is_valid = load_config()
     if not is_valid or not config:
-        print("[WORKFLOW] [CHECK_SCAN] Config non valida, assumo completato")
-        return True  # Assume completato se config non disponibile
+        raise RuntimeError("Configurazione non disponibile durante il controllo scan")
 
     emby_servers = (config.get("EMBY") or {}).get("SERVERS") or []
     enabled_servers = [
@@ -281,7 +298,10 @@ def _wf_check_scan(context: Dict[str, Any] | None = None) -> bool:
     try:
         for server in enabled_servers:
             server_name = server.get("name", "unknown")
-            tasks = _fetch_emby_scheduled_tasks(server) or []
+            tasks, fetch_error = _fetch_emby_scheduled_tasks(server)
+            if fetch_error:
+                raise RuntimeError(f"Impossibile leggere i task Emby di {server_name}: {fetch_error}")
+            tasks = tasks or []
             print(f"[WORKFLOW] [CHECK_SCAN] Server {server_name}: controllo {len(tasks)} tasks")
             for task in tasks:
                 if isinstance(task, dict):
@@ -297,10 +317,8 @@ def _wf_check_scan(context: Dict[str, Any] | None = None) -> bool:
         print("[WORKFLOW] [CHECK_SCAN] ✓ Tutti gli scan sono completati")
         return True
     except Exception as exc:
-        print(f"[WORKFLOW] [CHECK_SCAN] ✗ Errore check scan: {exc}")
-        import traceback
-        traceback.print_exc()
-        return True  # Assume completato in caso di errore
+        _log_workflow_exception("[CHECK_SCAN] ✗ Errore check scan", exc)
+        raise
 
 
 def _wf_trigger_probe(context: Dict[str, Any]) -> bool:
@@ -314,7 +332,7 @@ def _wf_trigger_probe(context: Dict[str, Any]) -> bool:
         bool: True se avviato con successo
     """
     print("[WORKFLOW] [PROBE] Inizio _wf_trigger_probe()")
-    print(f"[WORKFLOW] [PROBE] Context: {context}")
+    print(f"[WORKFLOW] [PROBE] Context: {workflow_context_summary(context)}")
 
     config, is_valid = load_config()
     if not is_valid or not config:
@@ -346,11 +364,11 @@ def _wf_trigger_probe(context: Dict[str, Any]) -> bool:
     library_server_ids = list({sid for sid in library_server_ids if sid})
 
     if library_server_ids:
-        print(f"[WORKFLOW] [PROBE] Server da librerie: {library_server_ids}")
+        print(f"[WORKFLOW] [PROBE] Server da librerie: {len(library_server_ids)}")
         enabled_servers = [s for s in enabled_servers if str(s.get("id")) in library_server_ids]
         print(f"[WORKFLOW] [PROBE] Server dopo filtro librerie: {len(enabled_servers)}")
     elif server_id:
-        print(f"[WORKFLOW] [PROBE] Filtro per server_id: {server_id}")
+        print("[WORKFLOW] [PROBE] Filtro server attivo")
         enabled_servers = [s for s in enabled_servers if s.get("id") == server_id]
         print(f"[WORKFLOW] [PROBE] Server dopo filtro: {len(enabled_servers)}")
 
@@ -377,12 +395,18 @@ def _wf_trigger_probe(context: Dict[str, Any]) -> bool:
         mode = "forced"  # Usa modalità forced per processare tutti i file STRM
         scope = "recent"  # Scope "ultimi aggiunti"
         print(f"[WORKFLOW] [PROBE] Chiamata start_combo_workflow_all_servers() con mode={mode}, scope={scope}")
+        probe_run_id = uuid.uuid4().hex
         started = get_probe_manager().start_combo_workflow_all_servers(
             servers_payload,
             mode=mode,
             scope=scope,
+            run_id=probe_run_id,
         )
         if started:
+            context["_probe_run_id"] = probe_run_id
+            context["_probe_server_ids"] = [
+                str(server["id"]) for server in servers_payload
+            ]
             print(f"[WORKFLOW] [PROBE] ✓ Combo workflow avviato con successo su {len(servers_payload)} server(s)")
             print("[WORKFLOW] [PROBE]   Fase 1: Discovery ultimi aggiunti")
             print("[WORKFLOW] [PROBE]   Fase 2: Processing file STRM trovati")
@@ -390,9 +414,7 @@ def _wf_trigger_probe(context: Dict[str, Any]) -> bool:
             print("[WORKFLOW] [PROBE] ✗ Combo workflow NON avviato (started=False)")
         return started
     except Exception as exc:
-        print(f"[WORKFLOW] [PROBE] ✗ Errore avvio combo workflow: {exc}")
-        import traceback
-        traceback.print_exc()
+        _log_workflow_exception("[PROBE] ✗ Errore avvio combo workflow", exc)
         return False
 
 
@@ -416,7 +438,7 @@ def _wf_stop_probe(context: Dict[str, Any] | None = None) -> bool:
         if manager.stop_recent_processing_sequence():
             stopped_any = True
     except Exception as exc:
-        print(f"[WORKFLOW] [PROBE] ⚠ Errore stop globale probe: {exc}")
+        _log_workflow_exception("[PROBE] ⚠ Errore stop globale probe", exc)
 
     config, is_valid = load_config()
     if not is_valid or not config:
@@ -457,6 +479,30 @@ def _wf_stop_probe(context: Dict[str, Any] | None = None) -> bool:
     return stopped_any
 
 
+def _expected_probe_servers(
+    enabled_servers: list[dict[str, Any]],
+    expected_server_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Resolve the immutable Probe target set or fail when it changed."""
+    if not expected_server_ids:
+        return enabled_servers
+    enabled_server_ids = {
+        str(server.get("id")) for server in enabled_servers if server.get("id")
+    }
+    missing_server_ids = expected_server_ids - enabled_server_ids
+    if missing_server_ids:
+        missing_labels = ", ".join(sorted(missing_server_ids))
+        raise RuntimeError(
+            "Target Probe eliminato o disabilitato durante la run: "
+            f"{missing_labels}"
+        )
+    return [
+        server
+        for server in enabled_servers
+        if str(server.get("id")) in expected_server_ids
+    ]
+
+
 def _wf_check_probe(context: Dict[str, Any] | None = None) -> bool:
     """
     Verifica se il combo workflow (discovery + processing) è completato.
@@ -483,8 +529,7 @@ def _wf_check_probe(context: Dict[str, Any] | None = None) -> bool:
 
         config, is_valid = load_config()
         if not is_valid or not config:
-            print("[WORKFLOW] [CHECK_PROBE] Config non valida, assumo completato")
-            return True
+            raise RuntimeError("Configurazione non valida durante la verifica Probe")
 
         emby_servers = (config.get("EMBY") or {}).get("SERVERS") or []
         enabled_servers = [
@@ -494,6 +539,15 @@ def _wf_check_probe(context: Dict[str, Any] | None = None) -> bool:
 
         print(f"[WORKFLOW] [CHECK_PROBE] Controllo {len(enabled_servers)} server abilitati")
 
+        expected_run_id = str((context or {}).get("_probe_run_id") or "")
+        expected_server_ids = {
+            str(value) for value in ((context or {}).get("_probe_server_ids") or [])
+        }
+        enabled_servers = _expected_probe_servers(
+            enabled_servers,
+            expected_server_ids,
+        )
+
         for server in enabled_servers:
             server_id = server.get("id")
             if not server_id:
@@ -502,6 +556,8 @@ def _wf_check_probe(context: Dict[str, Any] | None = None) -> bool:
 
             # Verifica combo_recent workflow
             combo_state = status.get("combo_recent") or {}
+            if expected_run_id and combo_state.get("run_id") != expected_run_id:
+                raise RuntimeError(f"Stato Probe obsoleto per server {server_id}")
             combo_running = combo_state.get("running", False) if isinstance(combo_state, dict) else False
 
             # Verifica anche discovery e processing separatamente (fallback)
@@ -520,13 +576,29 @@ def _wf_check_probe(context: Dict[str, Any] | None = None) -> bool:
                 print(f"[WORKFLOW] [CHECK_PROBE] ⏳ Combo workflow ancora in corso su server {server_id}")
                 return False
 
+            _require_probe_terminal_state(combo_state, server_id, expected_run_id)
+
         print("[WORKFLOW] [CHECK_PROBE] ✓ Combo workflow completato su tutti i server")
         return True
     except Exception as exc:
-        print(f"[WORKFLOW] [CHECK_PROBE] ✗ Errore check probe: {exc}")
-        import traceback
-        traceback.print_exc()
-        return True  # Assume completato in caso di errore
+        _log_workflow_exception("[CHECK_PROBE] ✗ Errore check probe", exc)
+        raise RuntimeError("Impossibile verificare il completamento Probe") from exc
+
+
+def _require_probe_terminal_state(
+    combo_state: Dict[str, Any], server_id: str, expected_run_id: str
+) -> None:
+    last_run = combo_state.get("last_run")
+    if not isinstance(last_run, dict):
+        raise RuntimeError(f"Esito Probe assente per server {server_id}")
+    if expected_run_id and last_run.get("run_id") != expected_run_id:
+        raise RuntimeError(f"Esito Probe obsoleto per server {server_id}")
+    terminal_status = str(last_run.get("status") or "")
+    if terminal_status != "completed":
+        raise RuntimeError(
+            f"Probe terminato con stato {terminal_status or 'sconosciuto'} "
+            f"sul server {server_id}"
+        )
 
 
 def _wf_refresh_cache(context: Dict[str, Any]) -> None:
@@ -538,12 +610,9 @@ def _wf_refresh_cache(context: Dict[str, Any]) -> None:
         context: dict (non usato al momento)
     """
     print("[WORKFLOW] [CACHE] Inizio _wf_refresh_cache()")
-    print(f"[WORKFLOW] [CACHE] Context: {context}")
+    print(f"[WORKFLOW] [CACHE] Context: {workflow_context_summary(context)}")
 
     try:
-        import time
-        import threading
-
         config, is_valid = load_config()
         if not is_valid or not config:
             config = {}
@@ -570,7 +639,10 @@ def _wf_refresh_cache(context: Dict[str, Any]) -> None:
                     f"({refresh_snapshot.get('message')})"
                 )
         except Exception as exc:
-            print(f"[WORKFLOW] [CACHE] ⚠ Aggiornamento Jellyseerr fallito (continuo): {exc}")
+            _log_workflow_exception(
+                "[CACHE] ⚠ Aggiornamento Jellyseerr fallito (continuo)",
+                exc,
+            )
 
         # Get manager instance
         manager = get_emby_latest_manager()
@@ -584,72 +656,39 @@ def _wf_refresh_cache(context: Dict[str, Any]) -> None:
 
         print("[WORKFLOW] [CACHE] Manager trovato")
 
-        # Verifica che il refresh non sia già in corso
+        joined_generation = None
+        # Join the exact in-flight generation. A boolean "refreshing" flag is
+        # not a terminal outcome and cannot prove which snapshot was published.
         if manager.is_refreshing():
             print("[WORKFLOW] [CACHE] Cache refresh già in corso, attendo completamento...")
-            refresh_result = {"payload": None, "error": None, "exception": None}
+            generation_getter = getattr(manager, "active_refresh_generation", None)
+            waiter = getattr(manager, "wait_for_refresh", None)
+            if not callable(generation_getter) or not callable(waiter):
+                raise RuntimeError("Latest manager non espone l'esito del refresh attivo")
+            joined_generation = generation_getter()
+            if joined_generation is None:
+                raise RuntimeError("Generazione refresh Latest non disponibile")
         else:
-            # Avvia il refresh in background thread
-            print("[WORKFLOW] [CACHE] Avvio refresh in background thread...")
-            refresh_result = {"payload": None, "error": None, "exception": None}
-
-            def _do_refresh():
-                try:
-                    payload, error = manager.refresh_incremental(
-                        limit,
-                        per_server_limit,
-                        enrich=True,
-                        force_omdb=False,
-                    )
-                    refresh_result["payload"] = payload
-                    refresh_result["error"] = error
-                except Exception as exc:
-                    refresh_result["exception"] = exc
-                    print(f"[WORKFLOW] [CACHE] Errore in refresh: {exc}")
-                    import traceback
-                    traceback.print_exc()
-
-            refresh_thread = threading.Thread(target=_do_refresh, daemon=True)
-            refresh_thread.start()
-            print("[WORKFLOW] [CACHE] Thread refresh avviato, attendo completamento...")
-
-        # Polling loop: attende fino a quando is_refreshing diventa False
+            # Il workflow è già eseguito da un worker: il refresh resta nello
+            # stesso worker, eliminando la race fra Thread.start() e is_refreshing().
+            print("[WORKFLOW] [CACHE] Avvio refresh...")
+            payload, error = manager.refresh_incremental(
+                limit,
+                per_server_limit,
+                enrich=True,
+                force_omdb=False,
+            )
         max_wait_seconds = _wf_latest_refresh_timeout_seconds()
-        start_time = time.time()
-        poll_interval = 2  # Controlla ogni 2 secondi
-
-        print(f"[WORKFLOW] [CACHE] Inizio polling (max {max_wait_seconds}s, interval {poll_interval}s)")
-
-        poll_count = 0
-        timed_out = False
-        while True:
-            elapsed = time.time() - start_time
-            poll_count += 1
-
-            # Log ogni 10 poll (ogni 20 secondi)
-            if poll_count % 10 == 0:
-                progress = manager.progress_tracker.get_snapshot()
-                print(f"[WORKFLOW] [CACHE] Polling #{poll_count}: elapsed={elapsed:.1f}s, progress={progress}")
-
-            # Timeout check
-            if elapsed > max_wait_seconds:
-                print(f"[WORKFLOW] [CACHE] ⚠️ TIMEOUT cache refresh dopo {max_wait_seconds}s")
-                timed_out = True
-                break
-
-            # Check se il refresh è completato
-            if not manager.is_refreshing():
-                print(f"[WORKFLOW] [CACHE] ✓ Cache refresh completato in {elapsed:.1f}s ({poll_count} polls)")
-                break
-
-            time.sleep(poll_interval)
-
-        if refresh_result.get("exception") is not None:
-            raise RuntimeError(str(refresh_result["exception"]))
-        if refresh_result.get("error"):
-            raise RuntimeError(str(refresh_result["error"]))
-        if timed_out:
-            raise RuntimeError("Timeout aggiornamento Pubblicazioni")
+        if joined_generation is not None:
+            outcome = waiter(joined_generation, max_wait_seconds)
+            if outcome is None:
+                raise RuntimeError("Timeout aggiornamento Pubblicazioni")
+            payload = outcome.get("payload")
+            error = outcome.get("error")
+        if error:
+            raise RuntimeError(str(error))
+        if not isinstance(payload, dict):
+            raise RuntimeError("Refresh Pubblicazioni completato senza payload")
 
         snapshot = manager.get_snapshot(mode="batch")
         latest_payload = snapshot.get("payload") if isinstance(snapshot, dict) else None
@@ -657,9 +696,7 @@ def _wf_refresh_cache(context: Dict[str, Any]) -> None:
             raise RuntimeError("Cache DB non disponibile dopo aggiornamento Pubblicazioni")
 
     except Exception as exc:
-        print(f"[WORKFLOW] [CACHE] ✗ Errore refresh cache: {exc}")
-        import traceback
-        traceback.print_exc()
+        _log_workflow_exception("[CACHE] ✗ Errore refresh cache", exc)
         raise
 
 
@@ -671,7 +708,7 @@ def _wf_notify(context: Dict[str, Any]) -> dict:
         context: dict con 'server_id' opzionale come filtro
     """
     print("[WORKFLOW] [NOTIFY] Inizio _wf_notify()")
-    print(f"[WORKFLOW] [NOTIFY] Context: {context}")
+    print(f"[WORKFLOW] [NOTIFY] Context: {workflow_context_summary(context)}")
 
     try:
         # Validazione state persistence
@@ -700,7 +737,7 @@ def _wf_notify(context: Dict[str, Any]) -> dict:
 
         print(
             "[WORKFLOW] [NOTIFY] Parametri: "
-            f"per_server_limit={per_server_limit}, server_filter={server_filter}"
+            f"per_server_limit={per_server_limit}, server_filter={bool(server_filter)}"
         )
 
         from emby_latest.notifications import send_notifications as _send_notifications
@@ -713,7 +750,7 @@ def _wf_notify(context: Dict[str, Any]) -> dict:
             db_storage=_ensure_db_backend(),
         )
 
-        print(f"[WORKFLOW] [NOTIFY] Result: {result}")
+        print(f"[WORKFLOW] [NOTIFY] Result: {redact_mapping_for_log(result)}")
 
         if result.get("success"):
             print(
@@ -725,7 +762,5 @@ def _wf_notify(context: Dict[str, Any]) -> dict:
 
         return result
     except Exception as exc:
-        print(f"[WORKFLOW] [NOTIFY] ✗ Errore invio notifiche: {exc}")
-        import traceback
-        traceback.print_exc()
+        _log_workflow_exception("[NOTIFY] ✗ Errore invio notifiche", exc)
         raise

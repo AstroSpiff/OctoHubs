@@ -6,6 +6,8 @@ Provides formatting, validation, and helper functions.
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.safe_output import safe_print as print
+
 
 def is_blank_value(value: Any) -> bool:
     """

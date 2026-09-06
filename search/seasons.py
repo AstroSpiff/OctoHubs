@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import logging
+
+from core.log_sanitization import format_exception_for_log
+from core.safe_output import safe_print as print
 from core.scanner import extract_title_and_year
 from core.utils import (
     _normalize_media_type,
@@ -18,6 +22,7 @@ from search.parsing import _extract_year_from_title, _try_parse_int
 
 _JUSTWATCH_METADATA_CACHE: dict = {}
 _JUSTWATCH_MEDIA_CACHE: dict = {}
+logger = logging.getLogger(__name__)
 
 
 def _collect_metadata_sources(source):
@@ -163,14 +168,14 @@ def _describe_trakt_episode_statuses(request_item, season_number):
         print(f"   -> Trakt: recupero episodi per TMDB {tmdb_id} stagione {season_number}")
         trakt_payload = client.get_season(tmdb_id, season_number)
     except TraktAPIError as exc:
-        print(f"   -> Trakt: errore stagione {season_number} per TMDB {tmdb_id}: {exc}")
+        logger.error("Trakt: errore stagione %s per TMDB %s:\n%s", season_number, tmdb_id, format_exception_for_log(exc))
         return None
     if trakt_payload is None:
         return []
     try:
         collection_map = client.get_collection_map()
     except TraktAPIError as exc:
-        print(f"   -> Trakt: impossibile recuperare collezione: {exc}")
+        logger.error("Trakt: impossibile recuperare collezione:\n%s", format_exception_for_log(exc))
         collection_map = {}
     collected = set()
     if collection_map:
@@ -304,7 +309,13 @@ def _apply_justwatch_overrides(request_item, season_number, described):
                 updated_entry["justwatch_providers"] = providers
             updated.append(updated_entry)
         except JustWatchError as exc:
-            print(f"   -> JustWatch: errore verifica {show_name} S{season_number:02d}E{ep_number}: {exc}")
+            logger.error(
+                "JustWatch: errore verifica %s S%02dE%s:\n%s",
+                show_name,
+                season_number,
+                ep_number,
+                format_exception_for_log(exc),
+            )
             return described
     return updated
 

@@ -69,10 +69,8 @@ function EventBridgeWorkspace({ embedded = false, onDirtyChange }: { embedded?: 
         const saveError = bridge.save.isError && bridge.save.variables?.serverId === server.id
           ? bridge.save.error.message
           : "";
-        const provisioning = bridge.provision.isPending && bridge.provision.variables === server.id;
-        const provisionError = bridge.provision.isError && bridge.provision.variables === server.id
-          ? bridge.provision.error.message
-          : "";
+        const provisioning = bridge.provisionOperations.pendingKeys.has(server.id);
+        const provisionError = bridge.provisionOperations.errors[server.id] || "";
         return (
           <EventBridgeServerCard
             key={server.id}

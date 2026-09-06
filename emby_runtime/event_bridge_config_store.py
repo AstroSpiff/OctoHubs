@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from typing import Any
 
 from core import config_manager as _config_manager
+from core.log_sanitization import format_exception_for_log
 from core.storage import StorageError
 from emby_runtime.event_bridge_settings import (
     event_bridge_settings_from_plugin_payload,
@@ -13,6 +15,7 @@ from emby_runtime.event_bridge_settings import (
 )
 
 _plugin_report_lock = threading.RLock()
+logger = logging.getLogger(__name__)
 
 
 def apply_plugin_reported_settings(payload: dict[str, Any]) -> bool:
@@ -33,22 +36,42 @@ def apply_plugin_reported_settings(payload: dict[str, Any]) -> bool:
 
     server_settings = event_bridge_settings_from_plugin_payload(plugin_settings)
     try:
-        _save_plugin_server_settings(server_id, server_settings)
+        saved = _save_plugin_server_settings(server_id, server_settings)
     except StorageError as exc:
-        print(f"[EVENT_BRIDGE] Impossibile salvare config plugin per {server_id}: {exc}")
+        logger.error(
+            "[EVENT_BRIDGE] Impossibile salvare config plugin per %s:\n%s",
+            server_id,
+            format_exception_for_log(exc),
+        )
         return False
-    return True
+    return saved
 
 
-def _save_plugin_server_settings(server_id: str, settings: dict[str, Any]) -> None:
-    def update_server(current: Any) -> dict[str, Any]:
-        bridge_config = normalize_event_bridge_config(current if isinstance(current, dict) else {})
+@_config_manager.serialized_config_update
+def _save_plugin_server_settings(server_id: str, settings: dict[str, Any]) -> bool:
+    saved = False
+
+    def update_all(current: dict[str, Any]) -> dict[str, Any]:
+        nonlocal saved
+        emby = current.get("EMBY") if isinstance(current.get("EMBY"), dict) else {}
+        servers = emby.get("SERVERS") if isinstance(emby, dict) else []
+        if not any(
+            isinstance(server, dict)
+            and str(server.get("id") or server.get("server_id") or "").strip() == server_id
+            for server in (servers or [])
+        ):
+            return current
+        bridge_config = normalize_event_bridge_config(current.get("EVENT_BRIDGE"))
         bridge_config["SERVERS"][server_id] = settings
-        return bridge_config
+        current["EVENT_BRIDGE"] = bridge_config
+        saved = True
+        return current
 
     with _plugin_report_lock:
         backend = _config_manager._ensure_db_backend()
-        persisted = backend.update_app_settings_section("EVENT_BRIDGE", update_server)
+        persisted = backend.mutate_app_settings(update_all)
+        if not saved:
+            return False
         bridge_config = normalize_event_bridge_config(persisted.get("EVENT_BRIDGE"))
-        if _config_manager._ACTIVE_CONFIG is not None:
-            _config_manager._ACTIVE_CONFIG["EVENT_BRIDGE"] = bridge_config
+        _config_manager.publish_active_config_updates({"EVENT_BRIDGE": bridge_config})
+        return True

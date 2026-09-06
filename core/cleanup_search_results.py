@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 import argparse
+import logging
 import sys
 
 from core.config_manager import _ensure_db_backend, load_config
+from core.log_sanitization import format_exception_for_log
+from core.safe_output import safe_print as print
 from core.storage import StorageError
+
+
+logger = logging.getLogger(__name__)
 
 
 def main() -> int:
@@ -43,7 +49,7 @@ def main() -> int:
     try:
         backend = _ensure_db_backend()
     except StorageError as exc:
-        print(f"Errore backend DB: {exc}")
+        logger.error("Errore backend DB:\n%s", format_exception_for_log(exc))
         return 1
 
     keep_last = max(0, int(args.keep_last or 0))

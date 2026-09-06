@@ -121,7 +121,30 @@ export type UsersFilters = {
   sort: UserSort;
 };
 
-export type UserActionResult = { ok: boolean; error?: string; result?: { created?: unknown[] } };
+export type UserActionFailure = {
+  server_id?: string;
+  user_id?: string | null;
+  username?: string;
+  stage?: string;
+  error?: unknown;
+};
+
+export type UserActionResult = {
+  ok: boolean;
+  status?: "success" | "partial" | "error" | string;
+  error?: string;
+  message?: string;
+  failed?: UserActionFailure[] | string[];
+  created?: unknown[];
+  reconciliation_required?: boolean;
+  result?: {
+    ok?: boolean;
+    status?: string;
+    created?: unknown[];
+    failed?: UserActionFailure[] | string[];
+    reconciliation_required?: boolean;
+  };
+};
 
 export type LinkUserSelection = {
   user: EmbyUser;
@@ -170,6 +193,7 @@ export type BulkCloneInput = {
   syncFavorites: boolean;
   syncPlaylists: boolean;
   configCategories: string[];
+  retryJobs?: Array<{ source: BulkCloneSource; targetServerId: string }>;
 };
 
 export type BulkCloneResult = {

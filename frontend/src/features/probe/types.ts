@@ -38,6 +38,7 @@ export type ProbeConfig = {
 };
 
 export type ProbeQueueItem = {
+  id?: number;
   server_id?: string;
   library_id?: string;
   item_id: string;
@@ -62,6 +63,7 @@ export type ProbeQueueItem = {
 };
 
 export type ProbeHistoryItem = {
+  id?: number;
   server_id?: string;
   library_id?: string;
   item_id: string;

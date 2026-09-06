@@ -5,9 +5,15 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createStreamingSearch } from "@/features/research/api";
-import { useStreamingSearch } from "@/features/research/use-streaming-search";
+import { SearchResultTable } from "@/features/research/components/search-result-table";
+import { WorkspaceCapabilitiesProvider } from "@/features/session/workspace-capabilities";
+import {
+  streamingSearchClientTimeoutMs,
+  useStreamingSearch,
+} from "@/features/research/use-streaming-search";
 
-vi.mock("@/features/research/api", () => ({
+vi.mock("@/features/research/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/features/research/api")>()),
   createStreamingSearch: vi.fn(),
 }));
 
@@ -64,6 +70,19 @@ const bladeRunnerSearch = {
 function Harness() {
   latest = useStreamingSearch();
   return null;
+}
+
+function StreamingTableHarness() {
+  latest = useStreamingSearch();
+  return (
+    <WorkspaceCapabilitiesProvider canMutate>
+      <SearchResultTable
+        results={latest.results}
+        qbittorrentAvailable={false}
+        resultSetId={1}
+      />
+    </WorkspaceCapabilitiesProvider>
+  );
 }
 
 describe("useStreamingSearch", () => {
@@ -220,5 +239,211 @@ describe("useStreamingSearch", () => {
 
     expect(latest?.results.map((result) => result.title)).toEqual(["Current result"]);
     expect(latest?.error).toBe("");
+  });
+
+  it("terminates an open socket that never sends a terminal frame", async () => {
+    vi.useFakeTimers();
+    vi.mocked(createStreamingSearch).mockResolvedValue({
+      success: true,
+      session_id: "timeout",
+      websocket_url: "/ws/search/timeout",
+    });
+    let run!: Promise<void>;
+    await act(async () => {
+      run = latest!.start(alienSearch);
+      await Promise.resolve();
+    });
+    const timedOut = expect(run).rejects.toThrow("tempo massimo");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(streamingSearchClientTimeoutMs);
+    });
+
+    await timedOut;
+    expect(FakeWebSocket.instances[0].closed).toBe(true);
+    expect(latest?.running).toBe(false);
+    vi.useRealTimers();
+  });
+
+  it("applies the same deadline while the streaming session request is pending", async () => {
+    vi.useFakeTimers();
+    vi.mocked(createStreamingSearch).mockImplementation((signal) => new Promise(
+      (_resolve, reject) => signal?.addEventListener("abort", () => reject(new Error("aborted"))),
+    ));
+    let run!: Promise<void>;
+    act(() => {
+      run = latest!.start(alienSearch);
+    });
+    const timedOut = expect(run).rejects.toThrow("tempo massimo");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(streamingSearchClientTimeoutMs);
+    });
+
+    await timedOut;
+    expect(latest?.running).toBe(false);
+    vi.useRealTimers();
+  });
+
+  it("supports explicit cancellation and clears the active socket", async () => {
+    vi.mocked(createStreamingSearch).mockResolvedValue({
+      success: true,
+      session_id: "cancel",
+      websocket_url: "/ws/search/cancel",
+    });
+    let run!: Promise<void>;
+    await act(async () => {
+      run = latest!.start(alienSearch);
+      await Promise.resolve();
+    });
+
+    act(() => latest!.cancel());
+    await expect(run).resolves.toBeUndefined();
+
+    expect(FakeWebSocket.instances[0].closed).toBe(true);
+    expect(latest?.running).toBe(false);
+  });
+
+  it("supports explicit cancellation while the session request is pending", async () => {
+    vi.mocked(createStreamingSearch).mockImplementation((signal) => new Promise(
+      (_resolve, reject) => signal?.addEventListener("abort", () => reject(new Error("aborted"))),
+    ));
+    let run!: Promise<void>;
+    act(() => {
+      run = latest!.start(alienSearch);
+    });
+
+    act(() => latest!.cancel());
+    await expect(run).resolves.toBeUndefined();
+
+    expect(FakeWebSocket.instances).toHaveLength(0);
+    expect(latest?.running).toBe(false);
+    expect(latest?.error).toBe("");
+  });
+
+  it("preserves the exact source when all_completed rotates refs and swaps duplicate placement", async () => {
+    vi.mocked(createStreamingSearch).mockResolvedValue({
+      success: true,
+      session_id: "selection",
+      websocket_url: "/ws/search/selection",
+    });
+    act(() => root.render(<StreamingTableHarness />));
+
+    let run!: Promise<void>;
+    await act(async () => {
+      run = latest!.start(alienSearch);
+      await Promise.resolve();
+    });
+    const socket = FakeWebSocket.instances[0];
+    act(() => {
+      socket.emit("open");
+      socket.emit("message", {
+        data: JSON.stringify({
+          type: "result",
+          data: {
+            title: "Film A",
+            resolution: "1080p",
+            indexer: "Prowlarr",
+            size_gb: 1.5,
+            source_id: "ohsid_source_a",
+            torrent_ref: "ohsdl_stream_primary",
+          },
+        }),
+      });
+      socket.emit("message", {
+        data: JSON.stringify({
+          type: "result",
+          data: {
+            title: "Film A",
+            resolution: "1080p",
+            indexer: "Prowlarr",
+            size_gb: 1.5,
+            source_id: "ohsid_source_b",
+            torrent_ref: "ohsdl_stream_duplicate",
+          },
+        }),
+      });
+    });
+    const streamedRows = container.querySelectorAll<HTMLInputElement>(
+      '[aria-label="Seleziona Film A"]',
+    );
+    act(() => streamedRows[1]?.click());
+
+    act(() => {
+      socket.emit("message", {
+        data: JSON.stringify({
+          type: "all_completed",
+          filtered_results: [
+            {
+              title: "Film A",
+              resolution: "1080p",
+              indexer: "Prowlarr",
+              size_gb: 1.5,
+              source_id: "ohsid_source_b",
+              torrent_ref: "ohsdl_final_source_b",
+              duplicates: [
+                {
+                  title: "Film A",
+                  resolution: "1080p",
+                  indexer: "Prowlarr",
+                  size_gb: 1.5,
+                  source_id: "ohsid_source_a",
+                  torrent_ref: "ohsdl_final_source_a",
+                },
+              ],
+            },
+          ],
+        }),
+      });
+    });
+    await act(async () => run);
+
+    expect(
+      container.querySelector<HTMLInputElement>('[aria-label="Seleziona Film A"]')
+        ?.checked,
+    ).toBe(true);
+    expect(
+      container.querySelector<HTMLInputElement>(
+        '[aria-label="Seleziona fonte Film A"]',
+      )?.checked,
+    ).toBe(false);
+  });
+
+  it("rejects an explicit partial terminal instead of reporting success", async () => {
+    vi.mocked(createStreamingSearch).mockResolvedValue({
+      success: true,
+      session_id: "partial",
+      websocket_url: "/ws/search/partial",
+    });
+
+    let run!: Promise<void>;
+    await act(async () => {
+      run = latest!.start(alienSearch);
+      await Promise.resolve();
+    });
+    const socket = FakeWebSocket.instances[0];
+    act(() => {
+      socket.emit("open");
+      socket.emit("message", {
+        data: JSON.stringify({ type: "result", data: { title: "Available result" } }),
+      });
+      socket.emit("message", {
+        data: JSON.stringify({
+          type: "all_completed",
+          status: "partial",
+          message: "Storico non salvato",
+          history_saved: false,
+        }),
+      });
+    });
+
+    await expect(run).rejects.toMatchObject({
+      name: "StreamingSearchPartialError",
+      message: "Storico non salvato",
+      historySaved: false,
+    });
+    expect(latest?.running).toBe(false);
+    expect(latest?.results).toEqual([{ title: "Available result" }]);
+    expect(latest?.warning).toBe("Storico non salvato");
   });
 });

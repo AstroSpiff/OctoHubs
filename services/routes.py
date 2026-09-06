@@ -4,6 +4,7 @@ from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from services.api_models import (
     ConnectionCheckResponse,
@@ -41,11 +42,11 @@ def _require_auth_dep(request: Request):
     openapi_extra=no_request_body(),
 )
 async def test_connections_api(request: Request):
-    _require_auth_dep(request)
-    from services.manager import _build_test_connections_snapshot
+    await run_in_threadpool(_require_auth_dep, request)
+    from services.manager import build_test_connections_snapshot_guarded
 
     try:
-        payload, status_code = _build_test_connections_snapshot()
+        payload, status_code = await run_in_threadpool(build_test_connections_snapshot_guarded)
     except Exception:
         payload = {
             "success": False,
@@ -61,12 +62,16 @@ async def test_connections_api(request: Request):
     openapi_extra=request_body_schema(TraktDeviceStartRequest),
 )
 async def trakt_device_start_api(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     payload = await validated_json_payload(request, TraktDeviceStartRequest)
     from services.manager import _build_trakt_device_start_snapshot
 
-    data, status_code = _build_trakt_device_start_snapshot(payload)
-    return JSONResponse(data, status_code=status_code)
+    data, status_code = await run_in_threadpool(_build_trakt_device_start_snapshot, payload)
+    return JSONResponse(
+        data,
+        status_code=status_code,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post(
@@ -75,11 +80,11 @@ async def trakt_device_start_api(request: Request):
     openapi_extra=request_body_schema(TraktDevicePollRequest),
 )
 async def trakt_device_poll_api(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     payload = await validated_json_payload(request, TraktDevicePollRequest)
     from services.manager import _build_trakt_device_poll_snapshot
 
-    data, status_code = _build_trakt_device_poll_snapshot(payload)
+    data, status_code = await run_in_threadpool(_build_trakt_device_poll_snapshot, payload)
     return JSONResponse(data, status_code=status_code)
 
 
@@ -89,8 +94,8 @@ async def trakt_device_poll_api(request: Request):
     openapi_extra=no_request_body(),
 )
 async def trakt_clear_api(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     from services.manager import _build_trakt_clear_snapshot
 
-    data, status_code = _build_trakt_clear_snapshot()
+    data, status_code = await run_in_threadpool(_build_trakt_clear_snapshot)
     return JSONResponse(data, status_code=status_code)

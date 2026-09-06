@@ -9,14 +9,25 @@ import { ApiTokenPanel } from "@/features/account-management/components/api-toke
 import { ApiTokenAuditPanel } from "@/features/account-management/components/api-token-audit-panel";
 import type { ApiTokenAuditFilters } from "@/features/account-management/types";
 import { useAccountManagement, useApiTokenAudit } from "@/features/account-management/use-account-management";
+import { useWorkspaceCapabilities } from "@/features/session/workspace-capabilities-context";
 
-function AccountsWorkspace() {
+function AccountsWorkspace({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void } = {}) {
   const accounts = useAccountManagement();
+  const { canMutate } = useWorkspaceCapabilities();
   const profile = accounts.profile.data;
   const [auditFilters, setAuditFilters] = useState<ApiTokenAuditFilters>({});
   const audit = useApiTokenAudit(auditFilters, Boolean(profile));
-  const managementActionError = accounts.create.error || accounts.update.error || accounts.remove.error;
-  const tokenActionError = accounts.createToken.error || accounts.revokeToken.error || accounts.rotateToken.error;
+  const resetManagementErrors = (accountId?: number) => {
+    accounts.create.reset();
+    accounts.update.reset();
+    accounts.remove.reset();
+    accounts.accountOperations.clear(accountId === undefined ? undefined : [String(accountId)]);
+  };
+  const resetTokenErrors = () => {
+    accounts.createToken.reset();
+    accounts.revokeToken.reset();
+    accounts.rotateToken.reset();
+  };
 
   return (
     <WorkspaceSection className="accounts-workspace">
@@ -30,12 +41,19 @@ function AccountsWorkspace() {
               tokens={accounts.apiTokens.data.tokens}
               loading={accounts.apiTokens.isLoading}
               creating={accounts.createToken.isPending}
-              revokingTokenId={accounts.revokeToken.variables}
-              rotatingTokenId={accounts.rotateToken.variables}
-              error={tokenActionError?.message}
-              onCreate={accounts.createApiToken}
-              onRevoke={accounts.revokeToken.mutateAsync}
-              onRotate={accounts.rotateToken.mutateAsync}
+              actionPending={
+                accounts.createToken.isPending ||
+                accounts.revokeToken.isPending ||
+                accounts.rotateToken.isPending
+              }
+              revokingTokenId={accounts.revokeToken.isPending ? accounts.revokeToken.variables : undefined}
+              rotatingTokenId={accounts.rotateToken.isPending ? accounts.rotateToken.variables : undefined}
+              error={(accounts.createToken.error || accounts.revokeToken.error || accounts.rotateToken.error)?.message}
+              onResetErrors={resetTokenErrors}
+              onCreate={(input) => { resetTokenErrors(); return accounts.createApiToken(input); }}
+              onRevoke={(tokenId) => { resetTokenErrors(); return accounts.revokeToken.mutateAsync(tokenId); }}
+              onRotate={(tokenId) => { resetTokenErrors(); return accounts.rotateToken.mutateAsync(tokenId); }}
+              onSecretPendingChange={onDirtyChange}
             /> : null}
           </QueryStateBoundary>
           <QueryStateBoundary error={audit.error} hasData={Boolean(audit.data)} loadingLabel="Caricamento audit token..." retrying={audit.isFetching} onRetry={() => void audit.refetch()}>
@@ -49,8 +67,20 @@ function AccountsWorkspace() {
               onRefresh={() => void audit.refetch()}
             /> : null}
           </QueryStateBoundary>
-          {profile.role === "admin" ? <QueryStateBoundary error={accounts.accounts.error} hasData={Boolean(accounts.accounts.data)} loadingLabel="Caricamento accessi OctoHubs..." retrying={accounts.accounts.isFetching} onRetry={() => void accounts.accounts.refetch()}>
-            {accounts.accounts.data ? <AccountManagementPanel accounts={accounts.accounts.data} busyAccountId={accounts.update.variables?.accountId || accounts.remove.variables} creating={accounts.create.isPending} currentAccountId={profile.id} error={managementActionError?.message} loading={accounts.accounts.isLoading} onCreate={accounts.createAccount} onDelete={accounts.remove.mutateAsync} onUpdate={(accountId, input) => accounts.update.mutateAsync({ accountId, input })} /> : null}
+          {canMutate && profile.role === "admin" ? <QueryStateBoundary error={accounts.accounts.error} hasData={Boolean(accounts.accounts.data)} loadingLabel="Caricamento accessi OctoHubs..." retrying={accounts.accounts.isFetching} onRetry={() => void accounts.accounts.refetch()}>
+            {accounts.accounts.data ? <AccountManagementPanel
+              accounts={accounts.accounts.data}
+              busyAccountIds={accounts.accountOperations.pendingKeys}
+              creating={accounts.create.isPending}
+              currentAccountId={profile.id}
+              createError={accounts.create.error?.message}
+              operationErrors={accounts.accountOperations.errors}
+              loading={accounts.accounts.isLoading}
+              onResetErrors={resetManagementErrors}
+              onCreate={(input) => { resetManagementErrors(); return accounts.createAccount(input); }}
+              onDelete={accounts.deleteAccount}
+              onUpdate={accounts.updateAccount}
+            /> : null}
           </QueryStateBoundary> : null}
         </> : null}
       </QueryStateBoundary>

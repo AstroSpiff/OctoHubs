@@ -29,4 +29,18 @@ describe("latest display preferences", () => {
     expect(readLatestDisplayLimit(storage)).toBe(10);
     expect(storage.getItem("octohubs_latest_display_limit")).toBe("15");
   });
+
+  it("falls back when storage is unavailable", () => {
+    const storage = {
+      getItem: () => {
+        throw new DOMException("denied", "SecurityError");
+      },
+      setItem: () => {
+        throw new DOMException("quota", "QuotaExceededError");
+      },
+    };
+
+    expect(readLatestDisplayLimit(storage)).toBe(10);
+    expect(() => saveLatestDisplayLimit(20, storage)).not.toThrow();
+  });
 });

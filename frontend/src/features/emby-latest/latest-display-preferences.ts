@@ -1,11 +1,17 @@
+import {
+  browserLocalStorage,
+  readStoredValue,
+  writeStoredValue,
+} from "@/lib/safe-web-storage";
+
 const latestDisplayLimitStorageKey = "octohubs_latest_display_limit";
 const latestDisplayLimits = [10, 20, 50, 100] as const;
 type LatestDisplayStorage = Pick<Storage, "getItem" | "setItem">;
 
 function readLatestDisplayLimit(
-  storage: LatestDisplayStorage | null = window.localStorage,
+  storage: LatestDisplayStorage | null = browserLocalStorage(),
 ) {
-  const stored = Number(storage?.getItem(latestDisplayLimitStorageKey));
+  const stored = Number(readStoredValue(storage, latestDisplayLimitStorageKey));
   return latestDisplayLimits.includes(stored as (typeof latestDisplayLimits)[number])
     ? stored
     : latestDisplayLimits[0];
@@ -13,11 +19,11 @@ function readLatestDisplayLimit(
 
 function saveLatestDisplayLimit(
   limit: number,
-  storage: LatestDisplayStorage | null = window.localStorage,
+  storage: LatestDisplayStorage | null = browserLocalStorage(),
 ) {
   if (!latestDisplayLimits.includes(limit as (typeof latestDisplayLimits)[number]))
     return;
-  storage?.setItem(latestDisplayLimitStorageKey, String(limit));
+  writeStoredValue(storage, latestDisplayLimitStorageKey, String(limit));
 }
 
 export {

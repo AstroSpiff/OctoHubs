@@ -145,7 +145,7 @@ def test_event_bridge_config_supports_server_overrides_with_default_fallback():
     assert blue["PLAYBACK_EVENT_NAMES"] == ["PlaybackStart"]
 
 
-def test_event_bridge_config_keeps_legacy_flat_settings_as_default():
+def test_event_bridge_config_ignores_removed_flat_settings_shape():
     from emby_runtime.event_bridge_settings import normalize_event_bridge_config
 
     config = normalize_event_bridge_config(
@@ -155,6 +155,6 @@ def test_event_bridge_config_keeps_legacy_flat_settings_as_default():
         }
     )
 
-    assert config["DEFAULT"]["WEBSOCKET_ENABLED"] is False
-    assert config["DEFAULT"]["PLAYBACK_EVENT_NAMES"] == ["PlaybackStart", "QualityChange"]
+    assert config["DEFAULT"]["WEBSOCKET_ENABLED"] is True
+    assert config["DEFAULT"]["PLAYBACK_EVENT_NAMES"] != ["PlaybackStart", "QualityChange"]
     assert config["SERVERS"] == {}

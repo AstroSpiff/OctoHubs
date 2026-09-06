@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { accountRoleLabels, formatAccountDate, navigationPreferenceLabels } from "@/features/account-management/account-presentation";
 import type { CurrentOctoHubsAccount } from "@/features/account-management/types";
+import { WriteAction } from "@/features/session/workspace-capabilities";
 
 type AccountProfilePanelProps = {
   account?: CurrentOctoHubsAccount;
@@ -63,17 +64,19 @@ function AccountProfilePanel({ account, error, saving, onChangePassword }: Accou
         <div><LayoutPanelLeft size={16} aria-hidden="true" /><span><strong>Menu secondario</strong><small>{navigation.secondary}</small></span></div>
       </section>
 
-      <form className="account-password-form" onSubmit={(event) => void submitPassword(event)}>
-        <header><div><KeyRound size={16} aria-hidden="true" /><strong>Modifica password</strong></div><small>Minimo 8 caratteri.</small></header>
-        <div>
-          <label>Password attuale<input type="password" autoComplete="current-password" value={currentPassword} disabled={saving} onChange={(event) => setCurrentPassword(event.target.value)} required /></label>
-          <label>Nuova password<input type="password" autoComplete="new-password" minLength={8} value={newPassword} disabled={saving} onChange={(event) => setNewPassword(event.target.value)} required /></label>
-          <label>Conferma password<input type="password" autoComplete="new-password" minLength={8} value={repeatPassword} disabled={saving} onChange={(event) => setRepeatPassword(event.target.value)} required /></label>
-        </div>
-        {error || formError ? <p className="account-form-feedback is-error" role="alert">{formError || error}</p> : null}
-        {notice ? <p className="account-form-feedback is-success" role="status">{notice}</p> : null}
-        <footer><Button type="submit" variant="secondary" disabled={saving || !currentPassword || !newPassword || !repeatPassword}>{saving ? "Aggiornamento..." : "Aggiorna password"}</Button></footer>
-      </form>
+      <WriteAction>
+        <form className="account-password-form" onSubmit={(event) => void submitPassword(event)}>
+          <header><div><KeyRound size={16} aria-hidden="true" /><strong>Modifica password</strong></div><small>Minimo 8 caratteri.</small></header>
+          <div>
+            <label>Password attuale<input type="password" autoComplete="current-password" value={currentPassword} disabled={saving} onChange={(event) => setCurrentPassword(event.target.value)} required /></label>
+            <label>Nuova password<input type="password" autoComplete="new-password" minLength={8} value={newPassword} disabled={saving} onChange={(event) => setNewPassword(event.target.value)} required /></label>
+            <label>Conferma password<input type="password" autoComplete="new-password" minLength={8} value={repeatPassword} disabled={saving} onChange={(event) => setRepeatPassword(event.target.value)} required /></label>
+          </div>
+          {error || formError ? <p className="account-form-feedback is-error" role="alert">{formError || error}</p> : null}
+          {notice ? <p className="account-form-feedback is-success" role="status">{notice}</p> : null}
+          <footer><Button type="submit" variant="secondary" disabled={saving || !currentPassword || !newPassword || !repeatPassword}>{saving ? "Aggiornamento..." : "Aggiorna password"}</Button></footer>
+        </form>
+      </WriteAction>
     </section>
   );
 }

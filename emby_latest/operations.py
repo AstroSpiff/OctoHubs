@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Optional, Tuple
+
+from core.log_sanitization import format_exception_for_log
+
+
+logger = logging.getLogger(__name__)
+_LATEST_OPERATION_FAILURE = "Aggiornamento Pubblicazioni non completato. Verifica i log."
 
 
 def get_latest_operation_tracker():
@@ -12,7 +19,7 @@ def get_latest_operation_tracker():
 
         return get_operation_tracker()
     except Exception as exc:  # pragma: no cover - defensive integration boundary
-        print(f"[LATEST] Operation tracker non disponibile: {exc}")
+        logger.error("[LATEST] Operation tracker non disponibile:\n%s", format_exception_for_log(exc))
         return None
 
 
@@ -41,7 +48,7 @@ def start_latest_refresh_operation(
         operation_id = operation.get("id") if isinstance(operation, dict) else None
         return tracker, operation_id
     except Exception as exc:  # pragma: no cover - defensive integration boundary
-        print(f"[LATEST] Errore creazione operazione Pubblicazioni: {exc}")
+        logger.error("[LATEST] Errore creazione operazione Pubblicazioni:\n%s", format_exception_for_log(exc))
         return None, None
 
 
@@ -77,20 +84,22 @@ def finish_latest_refresh_operation(
     result = _result_from_payload(payload)
     try:
         if error:
-            operation_tracker.fail(operation_id, f"Aggiornamento Pubblicazioni fallito: {error}", result=result)
+            logger.error("Aggiornamento Pubblicazioni fallito: %s", format_exception_for_log(RuntimeError(str(error))))
+            operation_tracker.fail(operation_id, _LATEST_OPERATION_FAILURE, result=result)
         else:
             operation_tracker.finish(operation_id, "Aggiornamento Pubblicazioni completato", result=result)
     except Exception as exc:  # pragma: no cover - defensive integration boundary
-        print(f"[LATEST] Errore chiusura operazione Pubblicazioni: {exc}")
+        logger.error("Chiusura operazione Pubblicazioni non riuscita:\n%s", format_exception_for_log(exc))
 
 
 def fail_latest_refresh_operation(operation_tracker, operation_id: Optional[str], error: Any) -> None:
     if not operation_tracker or not operation_id:
         return
     try:
-        operation_tracker.fail(operation_id, f"Aggiornamento Pubblicazioni fallito: {error}")
+        logger.error("Aggiornamento Pubblicazioni fallito: %s", format_exception_for_log(RuntimeError(str(error))))
+        operation_tracker.fail(operation_id, _LATEST_OPERATION_FAILURE)
     except Exception as exc:  # pragma: no cover - defensive integration boundary
-        print(f"[LATEST] Errore fallimento operazione Pubblicazioni: {exc}")
+        logger.error("Fallimento operazione Pubblicazioni non registrato:\n%s", format_exception_for_log(exc))
 
 
 class LatestOperationProgressBridge:
@@ -112,6 +121,11 @@ class LatestOperationProgressBridge:
         self._refresh_label = "Completo" if full_refresh else "Incrementale"
         self._limit = int(limit)
         self._per_server_limit = int(per_server_limit)
+
+    def bind_base_progress_tracker(self, base_progress_tracker):
+        """Bind the operation bridge to the refresh dependency snapshot."""
+        self._base = base_progress_tracker
+        return self
 
     def update(
         self,
@@ -154,7 +168,7 @@ class LatestOperationProgressBridge:
         try:
             self._operation_tracker.update(self._operation_id, **kwargs)
         except Exception as exc:  # pragma: no cover - defensive integration boundary
-            print(f"[LATEST] Errore aggiornamento operazione Pubblicazioni: {exc}")
+            logger.error("[LATEST] Errore aggiornamento operazione Pubblicazioni:\n%s", format_exception_for_log(exc))
 
 
 def _progress_from_snapshot(snapshot: Dict[str, Any]) -> Optional[int]:

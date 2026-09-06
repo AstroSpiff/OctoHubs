@@ -4,7 +4,7 @@ from .database import DatabaseStorage, is_sqlalchemy_available
 from .storage_app_settings import StorageAppSettingsMixin
 from .storage_collections import StorageCollectionsMixin
 from .storage_core import StorageCoreMixin
-from .storage_errors import StorageError
+from .storage_errors import CollectionDefinitionNotFoundError, StorageError
 from .storage_image_cache import StorageImageCacheMixin
 from .storage_jellyseerr import StorageJellyseerrMixin
 from .storage_justwatch import StorageJustWatchMixin
@@ -34,11 +34,7 @@ from .storage_models import (
     EmbyLatestCacheChange,
     EmbyLatestCacheError,
     EmbyImageCache,
-    EmbyLatestStateMovie,
-    EmbyLatestStateSeries,
-    EmbyLatestStateEpisode,
-    EmbyLatestStateSeriesGroup,
-    EmbyLatestStateSeriesChange,
+    EmbyLatestStateDocument,
     EmbyLatestNotificationDelivery,
     EmbyCollectionDefinition,
     EmbyCollectionPoster,
@@ -58,6 +54,7 @@ from .storage_models import (
     KeyValueEntry,
     EmbyUserLink,
     EmbyUserBackup,
+    EmbyUserCreationJournal,
     EmbyIconProfile,
     EmbyIconRule,
     EmbyIconBinding,
@@ -81,6 +78,7 @@ __all__ = [
     "DatabaseStorage",
     "is_sqlalchemy_available",
     "StorageError",
+    "CollectionDefinitionNotFoundError",
     "StorageAppSettingsMixin",
     "StorageCollectionsMixin",
     "StorageCoreMixin",
@@ -111,11 +109,7 @@ __all__ = [
     "EmbyLatestCacheChange",
     "EmbyLatestCacheError",
     "EmbyImageCache",
-    "EmbyLatestStateMovie",
-    "EmbyLatestStateSeries",
-    "EmbyLatestStateEpisode",
-    "EmbyLatestStateSeriesGroup",
-    "EmbyLatestStateSeriesChange",
+    "EmbyLatestStateDocument",
     "EmbyLatestNotificationDelivery",
     "EmbyCollectionDefinition",
     "EmbyCollectionPoster",
@@ -135,6 +129,7 @@ __all__ = [
     "KeyValueEntry",
     "EmbyUserLink",
     "EmbyUserBackup",
+    "EmbyUserCreationJournal",
     "EmbyIconProfile",
     "EmbyIconRule",
     "EmbyIconBinding",

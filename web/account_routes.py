@@ -5,9 +5,11 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
+from core.password_policy import PasswordTooLongError, bcrypt_password_bytes
 from web.account_api_models import (
     AccountActionResponse,
     AccountCreateRequest,
@@ -26,11 +28,18 @@ from web.openapi_requests import json_request_body, no_request_body, query_param
 from web.request_validation import validated_json_payload
 
 
-router = APIRouter()
-
 _get_current_user_optional: Optional[Callable[[Request], Optional[Any]]] = None
 _validate_csrf: Optional[Callable[[Request, Optional[str]], bool]] = None
 _require_auth: Optional[Callable[[Request], Any]] = None
+
+
+def _account_auth_dependency(request: Request) -> Any:
+    if _require_auth is None:
+        raise RuntimeError("Account routes not initialized: require_auth missing")
+    return _require_auth(request)
+
+
+router = APIRouter(dependencies=[Depends(_account_auth_dependency)])
 
 _USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]{3,80}$")
 _MINIMUM_PASSWORD_LENGTH = 8
@@ -51,8 +60,6 @@ def init_account_routes(
 def _current_user(request: Request) -> Any:
     if _get_current_user_optional is None:
         raise RuntimeError("Account routes not initialized: current user helper missing")
-    if _require_auth is not None:
-        _require_auth(request)
     user = _get_current_user_optional(request)
     if user is None:
         raise HTTPException(status_code=401, detail="Autenticazione richiesta")
@@ -108,7 +115,7 @@ def _timestamp(value: Any) -> str | None:
     return value.isoformat() if hasattr(value, "isoformat") else None
 
 
-def _account_payload(user: Any, *, include_preferences: bool = False) -> dict[str, Any]:
+def _account_payload(user: Any, *, preferences: dict[str, Any] | None = None) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "id": int(getattr(user, "id", 0) or 0),
         "username": str(getattr(user, "username", "")),
@@ -118,10 +125,8 @@ def _account_payload(user: Any, *, include_preferences: bool = False) -> dict[st
         "created_at": _timestamp(getattr(user, "created_at", None)),
         "last_login": _timestamp(getattr(user, "last_login", None)),
     }
-    if include_preferences:
-        from core.auth import get_user_interface_preferences
-
-        payload["preferences"] = get_user_interface_preferences(payload["id"])
+    if preferences is not None:
+        payload["preferences"] = preferences
     return payload
 
 
@@ -163,6 +168,18 @@ async def _payload(request: Request, model) -> dict[str, Any]:
     return body if isinstance(body, dict) else {}
 
 
+async def _account_storage_call(function, *args, **kwargs):
+    from core.auth import AuthStorageError
+
+    try:
+        return await run_in_threadpool(function, *args, **kwargs)
+    except AuthStorageError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Database account temporaneamente non disponibile",
+        ) from exc
+
+
 def _text(payload: dict[str, Any], key: str, *, required: bool = False) -> str | None:
     value = payload.get(key)
     if value is None and not required:
@@ -175,12 +192,20 @@ def _text(payload: dict[str, Any], key: str, *, required: bool = False) -> str |
     return normalized
 
 
+def _validated_password(value: str) -> str:
+    if len(value) < _MINIMUM_PASSWORD_LENGTH:
+        raise HTTPException(status_code=422, detail=f"La password deve avere almeno {_MINIMUM_PASSWORD_LENGTH} caratteri")
+    try:
+        bcrypt_password_bytes(value)
+    except PasswordTooLongError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return value
+
+
 def _password(payload: dict[str, Any], key: str) -> str:
     value = _text(payload, key, required=True)
     assert value is not None
-    if len(value) < _MINIMUM_PASSWORD_LENGTH:
-        raise HTTPException(status_code=422, detail=f"La password deve avere almeno {_MINIMUM_PASSWORD_LENGTH} caratteri")
-    return value
+    return _validated_password(value)
 
 
 def _email(payload: dict[str, Any]) -> str | None:
@@ -249,7 +274,14 @@ def _audit_query(request: Request) -> tuple[int | None, str | None, str | None, 
 @router.get("/api/account/me", response_model=CurrentAccountResponse)
 async def account_profile_route(request: Request):
     """Return the authenticated account and its private presentation preferences."""
-    return JSONResponse({"account": _account_payload(_current_user(request), include_preferences=True)})
+    user = _current_user(request)
+    from core.auth import get_user_interface_preferences
+
+    preferences = await run_in_threadpool(
+        get_user_interface_preferences,
+        int(getattr(user, "id", 0) or 0),
+    )
+    return JSONResponse({"account": _account_payload(user, preferences=preferences)})
 
 
 @router.put(
@@ -265,16 +297,29 @@ async def update_own_password_route(request: Request):
     current_password = _text(payload, "current_password", required=True)
     next_password = _password(payload, "new_password")
     assert current_password is not None
-    if not callable(getattr(user, "check_password", None)) or not user.check_password(current_password):
+    password_matches = callable(getattr(user, "check_password", None)) and await run_in_threadpool(
+        user.check_password,
+        current_password,
+    )
+    if not password_matches:
         raise HTTPException(status_code=422, detail="Password attuale non corretta")
     if current_password == next_password:
         raise HTTPException(status_code=422, detail="La nuova password deve essere diversa da quella attuale")
 
     from core.auth import log_audit_event, update_user_password
 
-    if not update_user_password(user, next_password):
+    if not await _account_storage_call(update_user_password, user, next_password):
         raise HTTPException(status_code=500, detail="Impossibile aggiornare la password")
-    log_audit_event(user, "account_password_updated", "Password account aggiornata", request)
+    session = getattr(request, "session", None)
+    if session is not None:
+        session["auth_epoch"] = int(getattr(user, "auth_epoch", 0) or 0)
+    await run_in_threadpool(
+        log_audit_event,
+        user,
+        "account_password_updated",
+        "Password account aggiornata",
+        request,
+    )
     return JSONResponse({"success": True, "message": "Password aggiornata"})
 
 
@@ -285,7 +330,8 @@ async def list_api_tokens_route(request: Request):
     user_id = int(getattr(user, "id", 0) or 0)
     from core.auth import get_api_token_audit_summaries, list_api_token_permission_profiles, list_api_tokens
 
-    audit_summaries = get_api_token_audit_summaries(user_id)
+    audit_summaries = await _account_storage_call(get_api_token_audit_summaries, user_id)
+    tokens = await _account_storage_call(list_api_tokens, user_id)
 
     return JSONResponse(
         {
@@ -294,7 +340,7 @@ async def list_api_tokens_route(request: Request):
             ),
             "tokens": [
                 _api_token_payload(token, audit_summaries.get(int(getattr(token, "id", 0) or 0)))
-                for token in list_api_tokens(user_id)
+                for token in tokens
             ],
         }
     )
@@ -316,7 +362,8 @@ async def api_token_audit_route(request: Request):
     token_id, result, api_version, limit = _audit_query(request)
     from core.api_token_audit import list_api_token_audit_events
 
-    events = list_api_token_audit_events(
+    events = await _account_storage_call(
+        list_api_token_audit_events,
         int(getattr(user, "id", 0) or 0),
         token_id=token_id,
         result=result,
@@ -352,7 +399,8 @@ async def api_token_audit_export_route(request: Request):
     from core.api_token_audit import api_token_audit_export
 
     return JSONResponse(
-        api_token_audit_export(
+        await _account_storage_call(
+            api_token_audit_export,
             int(getattr(user, "id", 0) or 0),
             token_id=token_id,
             result=result,
@@ -385,11 +433,17 @@ async def create_api_token_route(request: Request):
     if permission_profile == "administrator" and not _is_admin(user):
         raise HTTPException(status_code=403, detail="Il profilo amministratore richiede un account amministratore")
     _validate_child_token_scopes(request, scopes)
-    result = create_api_token(user, name or "", scopes, expires_in_days=expires_in_days)
+    result = await _account_storage_call(
+        create_api_token,
+        user,
+        name or "",
+        scopes,
+        expires_in_days=expires_in_days,
+    )
     if result is None:
         raise HTTPException(status_code=422, detail="Nome o permessi API token non validi")
     token, secret = result
-    log_audit_event(user, "api_token_created", f"Creato API token {token.name}", request)
+    await run_in_threadpool(log_audit_event, user, "api_token_created", f"Creato API token {token.name}", request)
     return JSONResponse(
         {
             "success": True,
@@ -398,6 +452,7 @@ async def create_api_token_route(request: Request):
             "message": "API token creato. Copialo ora: non sara mostrato di nuovo.",
         },
         status_code=201,
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -413,9 +468,9 @@ async def revoke_api_token_route(token_id: int, request: Request):
 
     from core.auth import log_audit_event, revoke_api_token
 
-    if not revoke_api_token(int(getattr(user, "id", 0) or 0), token_id):
+    if not await _account_storage_call(revoke_api_token, int(getattr(user, "id", 0) or 0), token_id):
         raise HTTPException(status_code=404, detail="API token non trovato")
-    log_audit_event(user, "api_token_revoked", f"Revocato API token {token_id}", request)
+    await run_in_threadpool(log_audit_event, user, "api_token_revoked", f"Revocato API token {token_id}", request)
     return JSONResponse({"success": True})
 
 
@@ -431,11 +486,11 @@ async def rotate_api_token_route(token_id: int, request: Request):
     _validate_csrf_request(request)
     from core.auth import log_audit_event, rotate_api_token
 
-    result = rotate_api_token(int(getattr(user, "id", 0) or 0), token_id)
+    result = await _account_storage_call(rotate_api_token, int(getattr(user, "id", 0) or 0), token_id)
     if result is None:
         raise HTTPException(status_code=409, detail="API token non attivo o scaduto")
     token, secret = result
-    log_audit_event(user, "api_token_rotated", f"Ruotato API token {token_id}", request)
+    await run_in_threadpool(log_audit_event, user, "api_token_rotated", f"Ruotato API token {token_id}", request)
     return JSONResponse(
         {
             "success": True,
@@ -444,6 +499,7 @@ async def rotate_api_token_route(token_id: int, request: Request):
             "message": "API token ruotato. Copialo ora: non sara mostrato di nuovo.",
         },
         status_code=201,
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -453,7 +509,8 @@ async def list_accounts_route(request: Request):
     _require_admin(request)
     from core.auth import get_all_users
 
-    return JSONResponse({"accounts": [_account_payload(user) for user in get_all_users()]})
+    accounts = await _account_storage_call(get_all_users)
+    return JSONResponse({"accounts": [_account_payload(user) for user in accounts]})
 
 
 @router.post(
@@ -477,12 +534,24 @@ async def create_account_route(request: Request):
 
     from core.auth import create_user, get_user_by_username, log_audit_event
 
-    if get_user_by_username(username) is not None:
+    if await _account_storage_call(get_user_by_username, username) is not None:
         raise HTTPException(status_code=409, detail="Username gia in uso")
-    account = create_user(username, password, email=email or None, role=role)
+    account = await _account_storage_call(
+        create_user,
+        username,
+        password,
+        email=email or None,
+        role=role,
+    )
     if account is None:
         raise HTTPException(status_code=409, detail="Impossibile creare l'account: verifica username ed email")
-    log_audit_event(actor, "account_created", f"Creato account {account.username} ({account.get_role()})", request)
+    await run_in_threadpool(
+        log_audit_event,
+        actor,
+        "account_created",
+        f"Creato account {account.username} ({account.get_role()})",
+        request,
+    )
     return JSONResponse({"success": True, "account": _account_payload(account)}, status_code=201)
 
 
@@ -496,30 +565,39 @@ async def update_account_route(account_id: int, request: Request):
     actor = _require_admin(request)
     _validate_csrf_request(request)
     payload = await _payload(request, AccountUpdateRequest)
-    account = _target_account(account_id)
+    account = await _account_storage_call(_target_account, account_id)
     email = _email(payload)
     role = _requested_role(payload)
     is_active = _requested_active(payload)
     password = _text(payload, "password")
-    if password is not None and len(password) < _MINIMUM_PASSWORD_LENGTH:
-        raise HTTPException(status_code=422, detail=f"La password deve avere almeno {_MINIMUM_PASSWORD_LENGTH} caratteri")
+    if password is not None:
+        password = _validated_password(password)
     if not any(("email" in payload, role is not None, is_active is not None, password is not None)):
         raise HTTPException(status_code=422, detail="Nessuna modifica account richiesta")
     if int(getattr(account, "id", 0) or 0) == int(getattr(actor, "id", 0) or 0) and password is not None:
         raise HTTPException(status_code=422, detail="Usa Il mio account per modificare la tua password")
 
-    from core.auth import log_audit_event, update_user_details, update_user_password
+    from core.auth import AccountUpdateStorageError, log_audit_event, update_user_account
 
-    if "email" in payload or role is not None or is_active is not None:
-        details: dict[str, Any] = {"role": role, "is_active": is_active}
-        if "email" in payload:
-            details["email"] = email
-        if not update_user_details(account, **details):
-            raise HTTPException(status_code=409, detail="Impossibile aggiornare l'account: controlla email e amministratori attivi")
-    if password is not None and not update_user_password(account, password):
-        raise HTTPException(status_code=500, detail="Impossibile reimpostare la password")
+    changes: dict[str, Any] = {"role": role, "is_active": is_active}
+    if "email" in payload:
+        changes["email"] = email
+    if password is not None:
+        changes["password"] = password
+    try:
+        updated = await run_in_threadpool(update_user_account, account, **changes)
+    except AccountUpdateStorageError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Database account temporaneamente non disponibile",
+        ) from exc
+    if not updated:
+        raise HTTPException(
+            status_code=409,
+            detail="Impossibile aggiornare l'account: controlla email e amministratori attivi",
+        )
 
-    log_audit_event(actor, "account_updated", f"Aggiornato account {account.username}", request)
+    await run_in_threadpool(log_audit_event, actor, "account_updated", f"Aggiornato account {account.username}", request)
     return JSONResponse({"success": True, "account": _account_payload(account)})
 
 
@@ -532,14 +610,14 @@ async def delete_account_route(account_id: int, request: Request):
     """Delete another access account while preserving an active administrator."""
     actor = _require_admin(request)
     _validate_csrf_request(request)
-    account = _target_account(account_id)
+    account = await _account_storage_call(_target_account, account_id)
     if int(getattr(account, "id", 0) or 0) == int(getattr(actor, "id", 0) or 0):
         raise HTTPException(status_code=422, detail="Non puoi eliminare l'account con cui sei connesso")
 
     from core.auth import delete_user, log_audit_event
 
     account_name = str(getattr(account, "username", ""))
-    if not delete_user(account):
+    if not await _account_storage_call(delete_user, account):
         raise HTTPException(status_code=409, detail="Impossibile eliminare l'ultimo amministratore attivo")
-    log_audit_event(actor, "account_deleted", f"Eliminato account {account_name}", request)
+    await run_in_threadpool(log_audit_event, actor, "account_deleted", f"Eliminato account {account_name}", request)
     return JSONResponse({"success": True})

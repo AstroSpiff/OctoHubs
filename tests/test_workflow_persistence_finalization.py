@@ -77,7 +77,7 @@ def test_step_failure_terminalizes_the_persisted_execution_as_failed():
     workflow_id = manager.get_status()["workflow_id"]
     assert manager.get_status()["status"] == "failed"
     assert storage.execution_updates == [
-        (workflow_id, "failed", "Errore: Impossibile avviare la scansione")
+        (workflow_id, "failed", "Errore durante l'esecuzione del workflow")
     ]
     assert storage.executions[workflow_id]["status"] == "failed"
 
@@ -118,7 +118,7 @@ def test_unexpected_loop_error_is_terminalized_by_finally():
 
     workflow_id = manager.get_status()["workflow_id"]
     assert storage.execution_updates == [
-        (workflow_id, "failed", "Errore critico: boom")
+        (workflow_id, "failed", "Errore durante l'esecuzione del workflow")
     ]
 
 
@@ -130,7 +130,7 @@ def test_thread_start_failure_terminalizes_the_created_execution():
         assert manager.start("full") is False
 
     workflow_id = manager.get_status()["workflow_id"]
-    expected_error = "Impossibile avviare il thread workflow: thread unavailable"
+    expected_error = "Errore durante l'esecuzione del workflow"
     assert manager.get_status()["status"] == "failed"
     assert storage.execution_updates == [(workflow_id, "failed", expected_error)]
 

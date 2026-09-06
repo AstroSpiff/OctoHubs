@@ -3,6 +3,7 @@ from typing import Any, Dict
 import uuid
 
 from core.config_manager import load_config
+from core.safe_output import safe_print as print
 from core.utils import get_emby_servers
 
 EMBY_SERVER_DISABLED_MESSAGE = "Server disabilitato"

@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy.engine import URL
+
 
 def _parse_datetime_value(value: Any) -> Optional[datetime]:
     if value is None:
@@ -79,23 +81,27 @@ def _truncate_text_value(value: Any, max_len: Optional[int]) -> Optional[str]:
     return text
 
 
-def _build_connection_url(settings: Dict[str, Any]) -> str:
+def _build_connection_url(settings: Dict[str, Any]) -> str | URL:
     if settings.get("URL"):
         return settings["URL"]
-    driver = settings.get("DRIVER") or "postgresql+psycopg2"
-    host = settings.get("HOST") or "localhost"
-    port = settings.get("PORT") or 5432
-    database = settings.get("NAME") or "octohubs"
-    user = settings.get("USER") or ""
-    password = settings.get("PASSWORD") or ""
-    auth = ""
-    if user:
-        auth = user
-        if password:
-            from urllib.parse import quote_plus
+    from urllib.parse import parse_qsl
 
-            auth += f":{quote_plus(password)}"
-        auth += "@"
-    params = settings.get("PARAMS") or ""
-    suffix = f"?{params}" if params else ""
-    return f"{driver}://{auth}{host}:{port}/{database}{suffix}"
+    driver = settings.get("DRIVER") or "postgresql+psycopg2"
+    host = str(settings.get("HOST") or "localhost").strip()
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    port = int(settings.get("PORT") or 5432)
+    database = str(settings.get("NAME") or "octohubs")
+    user = str(settings.get("USER") or "") or None
+    password = str(settings.get("PASSWORD") or "") or None
+    raw_params = str(settings.get("PARAMS") or "").lstrip("?")
+    query = dict(parse_qsl(raw_params, keep_blank_values=True))
+    return URL.create(
+        drivername=str(driver),
+        username=user,
+        password=password,
+        host=host,
+        port=port,
+        database=database,
+        query=query,
+    )

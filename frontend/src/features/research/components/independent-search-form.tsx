@@ -23,7 +23,10 @@ import type {
   StreamingSearchInput,
   TmdbSearchResult,
 } from "@/features/research/types";
-import { StreamingSearchSupersededError } from "@/features/research/use-streaming-search";
+import {
+  StreamingSearchPartialError,
+  StreamingSearchSupersededError,
+} from "@/features/research/use-streaming-search";
 
 type IndependentSearchFormProps = {
   overview: ResearchOverview;
@@ -38,6 +41,7 @@ type IndependentSearchFormProps = {
     customRules?: CustomSearchRules;
   }) => Promise<void>;
   onSearchStart: () => void;
+  onCancel?: () => void;
 };
 
 function IndependentSearchForm({
@@ -46,10 +50,11 @@ function IndependentSearchForm({
   searching,
   onSearch,
   onSearchStart,
+  onCancel,
 }: IndependentSearchFormProps) {
   const initialized = useRef(false);
-  const pendingCustomRulesRef = useRef<CustomSearchRules | null>(null);
   const initializedSeasonSelectionRef = useRef<string | null>(null);
+  const jellyseerrRequestGenerationRef = useRef(0);
   const [query, setQuery] = useState("");
   const [mediaType, setMediaType] = useState<ResearchMediaType>("unknown");
   const [selected, setSelected] = useState<TmdbSearchResult | null>(null);
@@ -87,23 +92,13 @@ function IndependentSearchForm({
     setUseProwlarr(overview.search_rules.use_prowlarr !== false);
     setUseJackett(Boolean(overview.search_rules.use_jackett));
     const restored = loadStoredCustomRules(defaultCustomRules);
-    pendingCustomRulesRef.current = restored.value;
-    setCustomize(restored.found);
+    setCustomize(restored.enabled);
     setCustomRules(restored.value);
   }, [
     overview.search_rules.use_jackett,
     overview.search_rules.use_prowlarr,
     defaultCustomRules,
   ]);
-
-  useEffect(() => {
-    const pending = pendingCustomRulesRef.current;
-    if (pending) {
-      if (customRules !== pending) return;
-      pendingCustomRulesRef.current = null;
-    }
-    if (initialized.current) storeCustomRules(customRules);
-  }, [customRules]);
 
   useEffect(() => {
     const selectionKey = seasonSelectionKey(selected);
@@ -123,6 +118,8 @@ function IndependentSearchForm({
 
   useEffect(() => {
     if (!initialSearch) return;
+    jellyseerrRequestGenerationRef.current += 1;
+    setRequesting(false);
     setQuery(initialSearch.query);
     setMediaType(initialSearch.mediaType);
     if (isStreamingSearchInput(initialSearch)) {
@@ -151,6 +148,8 @@ function IndependentSearchForm({
   }, [initialSearch]);
 
   function selectTitle(title: TmdbSearchResult) {
+    jellyseerrRequestGenerationRef.current += 1;
+    setRequesting(false);
     initializedSeasonSelectionRef.current = null;
     setSelected(title);
     setQuery([title.title, title.year].filter(Boolean).join(" "));
@@ -160,6 +159,19 @@ function IndependentSearchForm({
   }
 
   function clearTitle() {
+    jellyseerrRequestGenerationRef.current += 1;
+    setRequesting(false);
+    initializedSeasonSelectionRef.current = null;
+    setSelected(null);
+    setSeasons([]);
+    setNotice(null);
+  }
+
+  function changeMediaType(nextMediaType: ResearchMediaType) {
+    setMediaType(nextMediaType);
+    if (!selected || selected.media_type === nextMediaType) return;
+    jellyseerrRequestGenerationRef.current += 1;
+    setRequesting(false);
     initializedSeasonSelectionRef.current = null;
     setSelected(null);
     setSeasons([]);
@@ -198,6 +210,10 @@ function IndependentSearchForm({
       });
     } catch (reason) {
       if (reason instanceof StreamingSearchSupersededError) return;
+      if (reason instanceof StreamingSearchPartialError) {
+        setNotice({ message: reason.message, tone: "warning" });
+        return;
+      }
       setNotice({
         message:
           reason instanceof Error ? reason.message : "Ricerca non riuscita.",
@@ -208,19 +224,32 @@ function IndependentSearchForm({
 
   async function createJellyseerrRequest() {
     if (!selected) return;
+    if (selected.media_type === "tv" && tvSeasonSelectionUnavailable) {
+      setNotice({
+        message: "Seleziona almeno una stagione prima di inviare la richiesta.",
+        tone: "error",
+      });
+      return;
+    }
+    const requestGeneration = jellyseerrRequestGenerationRef.current + 1;
+    jellyseerrRequestGenerationRef.current = requestGeneration;
+    const requestedTitle = selected;
+    const requestedSeasons = [...seasons];
     setRequesting(true);
     setNotice(null);
     try {
       const response = await requestFromJellyseerr(
-        selected.tmdb_id,
-        selected.media_type,
-        seasons,
+        requestedTitle.tmdb_id,
+        requestedTitle.media_type,
+        requestedSeasons,
       );
+      if (jellyseerrRequestGenerationRef.current !== requestGeneration) return;
       setNotice({
         message: response.message || "Richiesta inviata a Jellyseerr.",
         tone: response.success ? "success" : "error",
       });
     } catch (reason) {
+      if (jellyseerrRequestGenerationRef.current !== requestGeneration) return;
       setNotice({
         message:
           reason instanceof Error
@@ -229,11 +258,19 @@ function IndependentSearchForm({
         tone: "error",
       });
     } finally {
-      setRequesting(false);
+      if (jellyseerrRequestGenerationRef.current === requestGeneration) {
+        setRequesting(false);
+      }
     }
   }
 
   const availableSeasons = tvDetails.data?.details.seasons || [];
+  const tvSeasonSelectionUnavailable =
+    selected?.media_type === "tv" &&
+    (tvDetails.isLoading ||
+      tvDetails.isError ||
+      availableSeasons.length === 0 ||
+      seasons.length === 0);
   return (
     <section
       className="research-card"
@@ -266,7 +303,7 @@ function IndependentSearchForm({
               id="research-media-type"
               value={mediaType}
               onChange={(event) =>
-                setMediaType(event.target.value as ResearchMediaType)
+                changeMediaType(event.target.value as ResearchMediaType)
               }
             >
               <option value="unknown">Non definito</option>
@@ -283,7 +320,14 @@ function IndependentSearchForm({
                 <LoaderCircle size={14} className="animate-spin" /> Caricamento
                 stagioni...
               </span>
-            ) : (
+            ) : tvDetails.isError ? (
+              <span className="inline-alert inline-alert--error" role="alert">
+                {tvDetails.error.message}
+                <Button type="button" variant="ghost" size="compact" onClick={() => void tvDetails.refetch()}>
+                  Riprova
+                </Button>
+              </span>
+            ) : availableSeasons.length ? (
               availableSeasons.map((season) => (
                 <label key={season.season_number}>
                   <input
@@ -306,6 +350,10 @@ function IndependentSearchForm({
                     : `S${String(season.season_number).padStart(2, "0")}`}
                 </label>
               ))
+            ) : (
+              <span className="inline-alert inline-alert--error" role="alert">
+                Nessuna stagione disponibile per questa serie.
+              </span>
             )}
           </fieldset>
         ) : null}
@@ -333,7 +381,11 @@ function IndependentSearchForm({
             <input
               type="checkbox"
               checked={customize}
-              onChange={(event) => setCustomize(event.target.checked)}
+              onChange={(event) => {
+                const enabled = event.target.checked;
+                setCustomize(enabled);
+                storeCustomRules(enabled, customRules);
+              }}
             />
             <span>Personalizza regole</span>
           </label>
@@ -343,7 +395,10 @@ function IndependentSearchForm({
             defaultOpen
             mediaType={mediaType}
             value={customRules}
-            onChange={setCustomRules}
+            onChange={(value) => {
+              setCustomRules(value);
+              storeCustomRules(true, value);
+            }}
             movieOptions={overview.movie_sort_options}
             tvOptions={overview.tv_sort_options}
           />
@@ -373,13 +428,23 @@ function IndependentSearchForm({
               </>
             )}
           </Button>
+          {searching && onCancel ? (
+            <Button
+              type="button"
+              requiresWriteAccess
+              variant="secondary"
+              onClick={onCancel}
+            >
+              Annulla
+            </Button>
+          ) : null}
           {selected ? (
             <Button
               type="button"
               requiresWriteAccess
               variant="secondary"
               onClick={() => void createJellyseerrRequest()}
-              disabled={requesting}
+              disabled={requesting || tvSeasonSelectionUnavailable}
             >
               <Send size={16} aria-hidden="true" />
               {requesting ? "Invio..." : "Richiedi a Jellyseerr"}

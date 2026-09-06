@@ -22,14 +22,15 @@ const tabs = [
   { id: "third", label: "Terza" },
 ] as const;
 
-function ReorderHarness() {
-  const tabOrder = usePersistedTabOrder({ page: "primary", tabs });
+function ReorderHarness({ page = "primary", instance = "only" }: { page?: string; instance?: string }) {
+  const tabOrder = usePersistedTabOrder({ page, tabs });
 
   return (
-    <div data-order={tabOrder.order.join("|")}>
+    <div data-instance={instance} data-order={tabOrder.order.join("|")}>
       {tabOrder.order.map((id) => (
         <button key={id} type="button" data-tab-id={id} {...tabOrder.interaction(id)}>{id}</button>
       ))}
+      <span aria-live="polite">{tabOrder.announcement}</span>
     </div>
   );
 }
@@ -82,6 +83,99 @@ describe("usePersistedTabOrder", () => {
       { tab_key: "second", position: 0 },
       { tab_key: "first", position: 1 },
       { tab_key: "third", position: 2 },
+    ]);
+  });
+
+  it("rolls back the optimistic order and announces a save failure", async () => {
+    vi.mocked(saveTabOrder).mockRejectedValueOnce(new Error("offline"));
+    await act(async () => {
+      root.render(<ReorderHarness page="rollback-test" />);
+      await Promise.resolve();
+    });
+    const first = container.querySelector('[data-tab-id="first"]') as HTMLButtonElement;
+
+    await act(async () => {
+      first.dispatchEvent(new KeyboardEvent("keydown", {
+        altKey: true,
+        bubbles: true,
+        cancelable: true,
+        key: "ArrowRight",
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.firstElementChild?.getAttribute("data-order")).toBe("first|second|third");
+    expect(container.querySelector("[aria-live='polite']")?.textContent).toBe(
+      "Impossibile salvare l'ordine delle schede.",
+    );
+  });
+
+  it("serializes saves for the same page across mounted navigation variants", async () => {
+    let resolveFirstSave: ((value: { success: boolean; order: Array<{ tab_key: string; position: number }> }) => void) | undefined;
+    const firstSave = new Promise<{ success: boolean; order: Array<{ tab_key: string; position: number }> }>((resolve) => {
+      resolveFirstSave = resolve;
+    });
+    vi.mocked(saveTabOrder)
+      .mockImplementationOnce(() => firstSave)
+      .mockImplementationOnce(async (_page, order) => ({ success: true, order }));
+
+    await act(async () => {
+      root.render(<><ReorderHarness page="shared-queue-test" instance="sidebar" /><ReorderHarness page="shared-queue-test" instance="topbar" /></>);
+      await Promise.resolve();
+    });
+
+    const sidebar = container.querySelector('[data-instance="sidebar"]') as HTMLElement;
+    const topbar = container.querySelector('[data-instance="topbar"]') as HTMLElement;
+    await act(async () => {
+      (sidebar.querySelector('[data-tab-id="first"]') as HTMLButtonElement).dispatchEvent(new KeyboardEvent("keydown", {
+        altKey: true,
+        bubbles: true,
+        cancelable: true,
+        key: "ArrowRight",
+      }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      (topbar.querySelector('[data-tab-id="first"]') as HTMLButtonElement).dispatchEvent(new KeyboardEvent("keydown", {
+        altKey: true,
+        bubbles: true,
+        cancelable: true,
+        key: "ArrowRight",
+      }));
+      await Promise.resolve();
+    });
+
+    expect(sidebar.getAttribute("data-order")).toBe("second|third|first");
+    expect(topbar.getAttribute("data-order")).toBe("second|third|first");
+    expect(saveTabOrder).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveFirstSave?.({
+        success: true,
+        order: [
+          { tab_key: "second", position: 0 },
+          { tab_key: "first", position: 1 },
+          { tab_key: "third", position: 2 },
+        ],
+      });
+      await firstSave;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(saveTabOrder).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(saveTabOrder).mock.calls).toEqual([
+      ["shared-queue-test", [
+        { tab_key: "second", position: 0 },
+        { tab_key: "first", position: 1 },
+        { tab_key: "third", position: 2 },
+      ]],
+      ["shared-queue-test", [
+        { tab_key: "second", position: 0 },
+        { tab_key: "third", position: 1 },
+        { tab_key: "first", position: 2 },
+      ]],
     ]);
   });
 });

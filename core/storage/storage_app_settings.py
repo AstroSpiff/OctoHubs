@@ -7,7 +7,20 @@ import threading
 from typing import Any, Callable, Dict, Optional, Protocol
 
 from core.storage.storage_errors import StorageError
-from core.storage.storage_models import SQLAlchemyError, AppSettings
+from core.storage.storage_models import SQLAlchemyError, AppSettings, text
+
+
+_APP_SETTINGS_ADVISORY_LOCK_ID = 4_872_221_935_817_104_003
+
+
+def _lock_app_settings_row(session: Any) -> None:
+    """Lock the singleton key even before its first row exists."""
+    bind = session.get_bind()
+    if getattr(getattr(bind, "dialect", None), "name", "") == "postgresql":
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_id)"),
+            {"lock_id": _APP_SETTINGS_ADVISORY_LOCK_ID},
+        )
 
 
 class _SessionProvider(Protocol):
@@ -33,9 +46,17 @@ def _merge_snapshot_changes(
     """Apply a snapshot's changes without discarding concurrent nested edits."""
     merged = copy.deepcopy(latest)
     for key in original.keys() - submitted.keys():
+        if key in latest and latest[key] != original[key]:
+            raise StorageError(
+                f"Conflitto aggiornamento configurazione per la chiave {key!r}"
+            )
         merged.pop(key, None)
     for key, value in submitted.items():
         if key not in original:
+            if key in latest and latest[key] != value:
+                raise StorageError(
+                    f"Conflitto aggiornamento configurazione per la chiave {key!r}"
+                )
             merged[key] = copy.deepcopy(value)
             continue
         previous = original[key]
@@ -45,6 +66,10 @@ def _merge_snapshot_changes(
         if isinstance(previous, dict) and isinstance(value, dict) and isinstance(current, dict):
             merged[key] = _merge_snapshot_changes(current, previous, value)
         else:
+            if key in latest and current != previous and current != value:
+                raise StorageError(
+                    f"Conflitto aggiornamento configurazione per la chiave {key!r}"
+                )
             merged[key] = copy.deepcopy(value)
     return merged
 
@@ -58,6 +83,8 @@ class StorageAppSettingsMixin(_SessionProvider):
                 return None
             data = entry.data if isinstance(entry.data, dict) else {}
             return _AppSettingsSnapshot(data)
+        except SQLAlchemyError as exc:  # pragma: no cover - runtime guard
+            raise StorageError(f"Errore lettura configurazione: {exc}") from exc
         finally:
             session.close()
 
@@ -68,6 +95,7 @@ class StorageAppSettingsMixin(_SessionProvider):
         with self._app_settings_lock:
             session = self._get_session()
             try:
+                _lock_app_settings_row(session)
                 entry = (
                     session.query(AppSettings)
                     .filter(AppSettings.id == 1)  # type: ignore[attr-defined]
@@ -99,6 +127,7 @@ class StorageAppSettingsMixin(_SessionProvider):
         with self._app_settings_lock:
             session = self._get_session()
             try:
+                _lock_app_settings_row(session)
                 entry = (
                     session.query(AppSettings)
                     .filter(AppSettings.id == 1)  # type: ignore[attr-defined]
@@ -119,6 +148,33 @@ class StorageAppSettingsMixin(_SessionProvider):
             finally:
                 session.close()
 
+    def save_app_settings_changes(
+        self,
+        original: Dict[str, Any],
+        submitted: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Atomically merge changes made from an explicit settings snapshot."""
+        if not isinstance(original, dict) or not isinstance(submitted, dict):
+            raise StorageError("Aggiornamento configurazione non valido")
+
+        def merge(latest: Dict[str, Any]) -> Dict[str, Any]:
+            return _merge_snapshot_changes(latest, original, submitted)
+
+        return self.mutate_app_settings(merge)
+
+    def seed_app_settings(self, defaults: Dict[str, Any]) -> Dict[str, Any]:
+        """Insert missing top-level settings without replacing concurrent values."""
+        if not isinstance(defaults, dict):
+            raise StorageError("Configurazione iniziale non valida")
+
+        def seed(current: Dict[str, Any]) -> Dict[str, Any]:
+            for key, value in defaults.items():
+                if key not in current:
+                    current[key] = copy.deepcopy(value)
+            return current
+
+        return self.mutate_app_settings(seed)
+
     def update_app_settings_section(
         self,
         section: str,
@@ -131,6 +187,7 @@ class StorageAppSettingsMixin(_SessionProvider):
         with self._app_settings_lock:
             session = self._get_session()
             try:
+                _lock_app_settings_row(session)
                 entry = (
                     session.query(AppSettings)
                     .filter(AppSettings.id == 1)  # type: ignore[attr-defined]
@@ -150,5 +207,42 @@ class StorageAppSettingsMixin(_SessionProvider):
             except SQLAlchemyError as exc:  # pragma: no cover - runtime guard
                 session.rollback()
                 raise StorageError(f"Errore aggiornamento configurazione: {exc}") from exc
+            finally:
+                session.close()
+
+    def mutate_app_settings(
+        self,
+        updater: Callable[[Dict[str, Any]], Optional[Dict[str, Any]]],
+    ) -> Dict[str, Any]:
+        """Atomically transform the complete settings document."""
+        if not callable(updater):
+            raise StorageError("Aggiornamento configurazione non valido")
+        with self._app_settings_lock:
+            session = self._get_session()
+            try:
+                _lock_app_settings_row(session)
+                entry = (
+                    session.query(AppSettings)
+                    .filter(AppSettings.id == 1)  # type: ignore[attr-defined]
+                    .with_for_update()
+                    .one_or_none()
+                )
+                if entry is None:
+                    entry = AppSettings(id=1, data={})
+                current = copy.deepcopy(entry.data) if isinstance(entry.data, dict) else {}
+                result = updater(copy.deepcopy(current))
+                persisted = current if result is None else result
+                if not isinstance(persisted, dict):
+                    raise StorageError("Aggiornamento configurazione non valido")
+                entry.data = copy.deepcopy(persisted)  # type: ignore[assignment]
+                session.add(entry)
+                session.commit()
+                return copy.deepcopy(persisted)
+            except SQLAlchemyError as exc:  # pragma: no cover - runtime guard
+                session.rollback()
+                raise StorageError(f"Errore aggiornamento configurazione: {exc}") from exc
+            except Exception:
+                session.rollback()
+                raise
             finally:
                 session.close()

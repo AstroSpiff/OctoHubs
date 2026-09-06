@@ -11,9 +11,11 @@ describe("research presentation", () => {
     expect(displayMediaType("tv")).toBe("Serie TV");
     expect(tmdbPosterUrl("/cover.jpg")).toBe("https://image.tmdb.org/t/p/w154/cover.jpg");
     expect(tmdbPosterUrl("https://example.test/cover.jpg")).toBe("https://example.test/cover.jpg");
-    expect(torrentDownloadLink({ magnet: "magnet:?xt=urn:btih:hash", torrent: "https://example.test/file.torrent" })).toBe("https://example.test/file.torrent");
+    expect(torrentDownloadLink({ torrent_ref: "ohsdl_torrent-token" })).toBe("ohsdl_torrent-token");
+    expect(torrentDownloadLink({ magnet: "magnet:?xt=urn:btih:hash", torrent: "https://example.test/file.torrent" })).toBeNull();
     expect(torrentDownloadLink({ link: "magnet:?xt=urn:btih:hash" })).toBeNull();
-    expect(magnetExportLink({ magnetUri: "magnet:?xt=urn:btih:hash" })).toBe("magnet:?xt=urn:btih:hash");
+    expect(magnetExportLink({ magnet_ref: "ohsdl_magnet-token" })).toBe("ohsdl_magnet-token");
+    expect(magnetExportLink({ magnetUri: "magnet:?xt=urn:btih:hash" })).toBeNull();
     expect(magnetExportLink({ magnet: "https://example.test/file.torrent" })).toBeNull();
   });
 

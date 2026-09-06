@@ -113,7 +113,7 @@ def test_normalize_emby_playback_event_accepts_octohubs_plugin_payload():
     assert event["subtitle_stream_index"] == 3
 
 
-def test_normalize_emby_playback_event_accepts_legacy_octohub_plugin_source():
+def test_normalize_emby_playback_event_rejects_removed_octohub_plugin_source_alias():
     event = normalize_emby_playback_event("green", {
         "source": "OctoHub.EventBridge",
         "messageType": "PlaybackProgress",
@@ -121,4 +121,4 @@ def test_normalize_emby_playback_event_accepts_legacy_octohub_plugin_source():
         "sessionId": "session-1",
     })
 
-    assert event["source"] == "plugin"
+    assert event["source"] == "player"

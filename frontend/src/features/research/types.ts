@@ -5,6 +5,16 @@ export type ResearchNotice = {
   tone: "success" | "error" | "warning";
 };
 
+export type ResearchRefreshStatus = {
+  running: boolean;
+  last_status?: string | null;
+  last_error?: string | null;
+  last_warning?: string | null;
+  last_warning_at?: string | null;
+  completed_at?: string | null;
+  counts?: Record<string, number> | null;
+};
+
 export type ResearchSearchRules = {
   use_prowlarr?: boolean;
   use_jackett?: boolean;
@@ -201,6 +211,11 @@ export type SearchResult = {
   magnetUri?: string;
   magnetUrl?: string;
   torrent?: string;
+  magnet_ref?: string;
+  torrent_ref?: string;
+  source_id?: string;
+  has_magnet?: boolean;
+  has_torrent?: boolean;
   web?: string;
   link?: string;
   guid?: string;

@@ -1,4 +1,5 @@
 import inspect
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,6 +30,23 @@ async def test_setup_index_redirects_initialized_installation_to_login():
 
     assert response.status_code == 303
     assert response.headers["location"] == "/login"
+
+
+@pytest.mark.anyio
+async def test_setup_user_lookup_runs_outside_the_event_loop_thread():
+    from services import setup_routes
+
+    caller_thread = threading.get_ident()
+    worker_threads = []
+    setup_routes.init_setup_routes(
+        has_users=lambda: worker_threads.append(threading.get_ident()) or True,
+        templates=_Templates(),
+    )
+
+    response = await setup_routes.setup_index_route(SimpleNamespace())
+
+    assert response.status_code == 303
+    assert worker_threads and worker_threads[0] != caller_thread
 
 
 @pytest.mark.anyio

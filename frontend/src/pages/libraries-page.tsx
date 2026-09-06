@@ -5,6 +5,11 @@ import { Button } from "@/components/ui/button";
 import { useConfirmationDialog } from "@/components/ui/use-confirmation-dialog";
 import { WorkspaceHeading } from "@/components/ui/workspace-heading";
 import { WorkspacePage, WorkspaceSection } from "@/components/ui/workspace-layout";
+import {
+  browserLocalStorage,
+  readStoredValue,
+  writeStoredValue,
+} from "@/lib/safe-web-storage";
 import { useBeforeUnloadWarning } from "@/lib/use-before-unload-warning";
 import { useUnsavedChangesNavigationGuard } from "@/lib/use-unsaved-changes-navigation-guard";
 import { LibrariesBoard } from "@/features/libraries/components/libraries-board";
@@ -34,7 +39,10 @@ function LibrariesPage() {
   const [drafts, setDrafts] = useState({ associations: false, order: false });
   const [workflowMode, setWorkflowMode] = useState(
     () =>
-      window.localStorage.getItem("octohubs.library-workflow-mode") !== "false",
+      readStoredValue(
+        browserLocalStorage(),
+        "octohubs.library-workflow-mode",
+      ) !== "false",
   );
   const libraries = useLibraries();
   const hasUnsavedChanges = drafts.associations || drafts.order;
@@ -69,15 +77,17 @@ function LibrariesPage() {
     libraries.history.error ||
     libraries.associations.error ||
     libraries.actionTargets.error ||
-    libraries.scan.error ||
-    libraries.libraryScan.error ||
     libraries.saveAssociations.error ||
     libraries.saveGroupOrder.error ||
     libraries.saveServerOrder.error ||
     libraries.action.error ||
     libraries.resetHistory.error ||
-    libraries.deleteHistoryJob.error ||
-    libraries.workflow.error;
+    null;
+  const operationErrors = [
+    ...Object.values(libraries.groupScanOperations.errors),
+    ...Object.values(libraries.libraryScanOperations.errors),
+    ...Object.values(libraries.workflowMaintenanceOperations.errors),
+  ];
   const actionResult = libraries.action.data;
 
   function runMaintenance(
@@ -92,7 +102,8 @@ function LibrariesPage() {
   }
 
   useEffect(() => {
-    window.localStorage.setItem(
+    writeStoredValue(
+      browserLocalStorage(),
       "octohubs.library-workflow-mode",
       String(workflowMode),
     );
@@ -179,10 +190,6 @@ function LibrariesPage() {
     await libraries.saveServerOrder.mutateAsync(serverIds);
   }
 
-  const scanLibraryKey = libraries.libraryScan.isPending && libraries.libraryScan.variables
-    ? `${libraries.libraryScan.variables.library.server_id}:${libraries.libraryScan.variables.library.library_id || libraries.libraryScan.variables.library.id || ""}`
-    : undefined;
-
   return (
     <WorkspacePage>
       <WorkspaceSection
@@ -246,6 +253,9 @@ function LibrariesPage() {
             {error.message}
           </div>
         ) : null}
+        {operationErrors.map((message, index) => (
+          <div key={`${message}-${index}`} className="inline-alert inline-alert--error" role="alert">{message}</div>
+        ))}
         {libraries.scan.isSuccess ? (
           <div className="inline-alert inline-alert--success" role="status">
             Scansione del gruppo avviata. Lo stato si aggiorna automaticamente.
@@ -285,19 +295,12 @@ function LibrariesPage() {
         <LibrariesBoard
           groups={visible}
           workflowMode={workflowMode}
-          scanningId={
-            (libraries.scan.isPending
-              ? libraries.scan.variables?.group.group_name
-              : undefined) ||
-            (libraries.workflow.isPending
-              ? libraries.workflow.variables?.group_name
-              : undefined)
-          }
+          scanningIds={libraries.groupScanOperations.pendingKeys}
           scanJobs={libraries.activeJobs.data?.jobs || []}
           scanHistory={libraries.history.data?.jobs || []}
-          scanningLibraryKey={scanLibraryKey}
+          scanningLibraryKeys={libraries.libraryScanOperations.pendingKeys}
           libraryScanBusy={
-            libraries.libraryScan.isPending || libraries.workflow.isPending
+            libraries.libraryScanOperations.pendingKeys.size > 0
           }
           onScan={startGroupScan}
           onScanLibrary={startSingleLibraryScan}
@@ -318,11 +321,8 @@ function LibrariesPage() {
           jobs={libraries.history.data?.jobs || []}
           loading={libraries.history.isFetching}
           resetting={libraries.resetHistory.isPending}
-          deletingId={
-            libraries.deleteHistoryJob.isPending
-              ? libraries.deleteHistoryJob.variables
-              : undefined
-          }
+          deletingIds={libraries.historyDeleteOperations.pendingKeys}
+          deleteErrors={libraries.historyDeleteOperations.errors}
           onRefresh={() => void libraries.history.refetch()}
           onReset={resetHistory}
           onDelete={(job) => void deleteHistoryJob(job)}

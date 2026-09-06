@@ -65,12 +65,26 @@ def test_event_bridge_ignores_proxy_headers_unless_explicitly_trusted(monkeypatc
 def test_event_bridge_uses_x_real_ip_from_trusted_proxy(monkeypatch):
     monkeypatch.setenv("WEBHOOK_IP_WHITELIST", "198.51.100.0/24")
     monkeypatch.setenv("WEBHOOK_TRUST_PROXY_HEADERS", "true")
+    monkeypatch.setenv("WEBHOOK_TRUSTED_PROXY_CIDRS", "10.0.0.0/8")
     connection = _connection(
         "10.0.0.20",
         {"X-Real-IP": "198.51.100.8", "X-Forwarded-For": "203.0.113.99"},
     )
 
     validate_event_bridge_source(connection)
+
+
+def test_event_bridge_rejects_forged_proxy_header_from_an_untrusted_peer(monkeypatch):
+    monkeypatch.setenv("WEBHOOK_IP_WHITELIST", "198.51.100.0/24")
+    monkeypatch.setenv("WEBHOOK_TRUST_PROXY_HEADERS", "true")
+    monkeypatch.setenv("WEBHOOK_TRUSTED_PROXY_CIDRS", "10.0.0.0/8")
+
+    with pytest.raises(HTTPException) as raised:
+        validate_event_bridge_source(
+            _connection("203.0.113.77", {"X-Real-IP": "198.51.100.8"})
+        )
+
+    assert raised.value.status_code == 403
 
 
 @pytest.mark.parametrize("allowlist", ["not-an-ip", "10.0.0.1,,192.0.2.1"])

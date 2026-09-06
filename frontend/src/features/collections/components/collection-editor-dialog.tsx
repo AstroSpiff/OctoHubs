@@ -1,4 +1,4 @@
-import { ListPlus, RotateCcw } from "@/components/ui/icons";
+import { ListPlus, RotateCcw, X } from "@/components/ui/icons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import {
   collectionEditorState,
   collectionEditorStateMatches,
   emptyCollectionEditorState,
+  promoteNewCollectionEditorDraft,
   shouldRefreshCollectionEditorDraft,
   type CollectionEditorState,
 } from "@/features/collections/collection-editor-state";
@@ -28,8 +29,11 @@ type CollectionEditorDialogProps = {
   saving: boolean;
   onClose: () => void;
   onOpenSources: () => void;
+  onCloseSources: () => void;
+  sourcesOpen: boolean;
   onSelectSource: (selection: SourceSelection) => void;
   sourceSelection?: SourceSelection | null;
+  sourcesDirty?: boolean;
   onDirtyChange?: (dirty: boolean) => void;
   onSourcesDirtyChange?: (dirty: boolean) => void;
   onSave: (
@@ -48,8 +52,11 @@ function CollectionEditorDialog({
   saving,
   onClose,
   onOpenSources,
+  onCloseSources,
+  sourcesOpen,
   onSelectSource,
   sourceSelection,
+  sourcesDirty = false,
   onDirtyChange,
   onSourcesDirtyChange,
   onSave,
@@ -68,9 +75,17 @@ function CollectionEditorDialog({
     poster: false,
     backdrop: false,
   });
+  const [sourcesHidden, setSourcesHidden] = useState(false);
+  const [sourcesBusy, setSourcesBusy] = useState(false);
   const formRef = useRef(form);
   const baselineRef = useRef(baseline);
+  const formRevisionRef = useRef(0);
+  const sourcesBusyRef = useRef(false);
+  const sourcesDirtyRef = useRef(sourcesDirty);
   const collectionKeyRef = useRef<string | null>(null);
+  const sourcesButtonRef = useRef<HTMLButtonElement>(null);
+  const sourcesCloseButtonRef = useRef<HTMLButtonElement>(null);
+  const sourcesWasOpenRef = useRef(false);
   const collectionKey =
     collection === undefined ? null : collection?.id || "__new_collection__";
   const savedForm = useMemo(
@@ -81,10 +96,37 @@ function CollectionEditorDialog({
     [collection, options],
   );
 
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") {
+      return undefined;
+    }
+    const media = window.matchMedia("(max-width: 680px)");
+    const update = () => setSourcesHidden(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
+  useEffect(() => {
+    if (!sourcesHidden) {
+      sourcesWasOpenRef.current = sourcesOpen;
+      return;
+    }
+    if (sourcesOpen) {
+      sourcesCloseButtonRef.current?.focus();
+    } else if (sourcesWasOpenRef.current) {
+      sourcesButtonRef.current?.focus();
+    }
+    sourcesWasOpenRef.current = sourcesOpen;
+  }, [sourcesHidden, sourcesOpen]);
+
   const replaceForm = useCallback((nextForm: CollectionEditorState) => {
+    formRevisionRef.current += 1;
     formRef.current = nextForm;
     setForm(nextForm);
   }, []);
+
+  sourcesDirtyRef.current = sourcesDirty;
 
   const acceptSavedForm = useCallback((nextForm: CollectionEditorState) => {
     formRef.current = nextForm;
@@ -93,21 +135,41 @@ function CollectionEditorDialog({
     setBaseline(nextForm);
   }, []);
 
+  const handleSourcesBusyChange = useCallback((nextBusy: boolean) => {
+    sourcesBusyRef.current = nextBusy;
+    setSourcesBusy(nextBusy);
+  }, []);
+
   useEffect(() => {
     if (!collectionKey || !savedForm) {
       collectionKeyRef.current = null;
       return;
     }
 
+    const previousCollectionKey = collectionKeyRef.current;
     if (
       shouldRefreshCollectionEditorDraft(
         formRef.current,
         baselineRef.current,
-        collectionKeyRef.current,
+        previousCollectionKey,
         collectionKey,
       )
     ) {
-      acceptSavedForm(savedForm);
+      if (
+        previousCollectionKey === "__new_collection__" &&
+        collectionKey !== "__new_collection__"
+      ) {
+        const promotedDraft = promoteNewCollectionEditorDraft(
+          formRef.current,
+          savedForm,
+        );
+        formRef.current = promotedDraft;
+        baselineRef.current = savedForm;
+        setForm(promotedDraft);
+        setBaseline(savedForm);
+      } else {
+        acceptSavedForm(savedForm);
+      }
       setError("");
       setRemovedMedia({ poster: false, backdrop: false });
     }
@@ -149,8 +211,8 @@ function CollectionEditorDialog({
   }
 
   async function requestClose() {
-    if (saving) return;
-    if (!dirty) {
+    if (saving || sourcesBusy) return;
+    if (!dirty && !sourcesDirty) {
       onClose();
       return;
     }
@@ -166,6 +228,13 @@ function CollectionEditorDialog({
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (saving || sourcesBusy) return;
+    if (sourcesDirtyRef.current) {
+      setError(
+        "Salva o svuota prima la bozza della fonte: non fa parte del salvataggio della collezione.",
+      );
+      return;
+    }
     if (
       !form.name.trim() ||
       !form.source_type ||
@@ -177,6 +246,7 @@ function CollectionEditorDialog({
       );
     }
     setError("");
+    const submittedRevision = formRevisionRef.current;
     try {
       const { poster, backdrop, ...input } = form;
       await onSave(
@@ -193,7 +263,17 @@ function CollectionEditorDialog({
         },
         { poster, backdrop },
       );
-      onClose();
+      if (
+        formRevisionRef.current === submittedRevision &&
+        !sourcesDirtyRef.current &&
+        !sourcesBusyRef.current
+      ) {
+        onClose();
+      } else {
+        setError(
+          "Collezione salvata. Le modifiche iniziate durante il salvataggio restano aperte e non sono state scartate.",
+        );
+      }
     } catch (reason) {
       setError(
         reason instanceof Error
@@ -224,7 +304,7 @@ function CollectionEditorDialog({
     <>
       <DialogBackdrop
         className="users-dialog-backdrop"
-        dismissible={!saving}
+        dismissible={!saving && !sourcesBusy}
         onDismiss={() => void requestClose()}
       >
         <section
@@ -233,7 +313,12 @@ function CollectionEditorDialog({
           aria-modal="true"
           aria-labelledby="collection-editor-title"
         >
-          <form className="collection-editor-form" onSubmit={submit}>
+          <form
+            className="collection-editor-form"
+            onSubmit={submit}
+            aria-hidden={(sourcesHidden && sourcesOpen) || undefined}
+            inert={sourcesHidden && sourcesOpen ? true : undefined}
+          >
             <header>
               <div>
                 <h2 id="collection-editor-title" className="contextual-heading" title="Definizione collezione">
@@ -247,11 +332,12 @@ function CollectionEditorDialog({
                 </p>
               </div>
               <Button
+                ref={sourcesButtonRef}
                 type="button"
                 variant="secondary"
                 className="collection-editor-mobile-sources"
                 onClick={onOpenSources}
-                disabled={saving}
+                disabled={saving || sourcesBusy}
               >
                 <ListPlus size={16} aria-hidden="true" />
                 Fonti
@@ -287,7 +373,7 @@ function CollectionEditorDialog({
               type="button"
               variant="ghost"
               onClick={() => void requestClose()}
-              disabled={saving}
+              disabled={saving || sourcesBusy}
             >
               Annulla
             </Button>
@@ -300,21 +386,50 @@ function CollectionEditorDialog({
             >
               <RotateCcw size={15} aria-hidden="true" /> Ripristina
             </Button>
-            <Button type="submit" variant="primary" disabled={saving || !options}>
+            <Button type="submit" variant="primary" disabled={saving || sourcesBusy || !options}>
               {saving ? "Salvataggio..." : "Salva collezione"}
             </Button>
           </footer>
           </form>
-          <aside className="collection-editor-sources" aria-label="Fonti collezione">
+          <aside
+            className={`collection-editor-sources${sourcesHidden && sourcesOpen ? " collection-editor-sources--mobile-open" : ""}`}
+            aria-label="Fonti collezione"
+            aria-hidden={(sourcesHidden && !sourcesOpen) || undefined}
+            inert={sourcesHidden && !sourcesOpen ? true : undefined}
+            onKeyDown={(event) => {
+              if (sourcesHidden && sourcesOpen && !sourcesBusy && event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                onCloseSources();
+              }
+            }}
+          >
             <header>
-              <h3>Fonti</h3>
-              <p>Usa liste salvate o personali per compilare la fonte della collezione.</p>
+              <div>
+                <h3>Fonti</h3>
+                <p>Usa liste salvate o personali per compilare la fonte della collezione.</p>
+              </div>
+              <Button
+                ref={sourcesCloseButtonRef}
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="collection-editor-sources-close"
+                title="Chiudi fonti"
+                aria-label="Chiudi fonti"
+                onClick={onCloseSources}
+                disabled={sourcesBusy}
+              >
+                <X size={17} aria-hidden="true" />
+              </Button>
             </header>
             <CollectionSourcesPanel
               enabled={collection !== undefined}
+              disabled={saving}
               options={options}
               onSelect={onSelectSource}
               onDirtyChange={onSourcesDirtyChange}
+              onBusyChange={handleSourcesBusyChange}
             />
           </aside>
         </section>

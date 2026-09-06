@@ -2,32 +2,51 @@
 
 from __future__ import annotations
 
+import logging
 import threading
+from contextlib import contextmanager
 from typing import Any, Optional
 
 from core.database_migrations import (
+    DatabaseMigrationError,
     get_migration_status as get_alembic_migration_status,
     upgrade_database,
     validate_migrations as validate_alembic_migrations,
 )
+from core.database_timeouts import postgres_engine_options
+from core.log_sanitization import format_exception_for_log
 from core.storage.storage_models import create_engine, sessionmaker, text
+
+
+logger = logging.getLogger(__name__)
 
 
 class StorageCoreMixin:
     _engine: Any
     _Session: Any
     _lock: threading.Lock
-    url: str
+    url: Any
 
     def _ensure_engine(self) -> None:
         if self._engine is None:
-            self._engine = create_engine(self.url, future=True, echo=False)
+            self._engine = create_engine(
+                self.url,
+                future=True,
+                echo=False,
+                **postgres_engine_options(self.url),
+            )
             self._Session = sessionmaker(bind=self._engine, expire_on_commit=False)
 
     def ensure_ready(self) -> None:
         with self._lock:
             if self._engine is None:
                 self._apply_migrations()
+                validation = self.validate_migrations()
+                if not validation.get("ok"):
+                    raise DatabaseMigrationError(
+                        "Schema database non conforme: "
+                        + "; ".join(validation.get("errors") or [])
+                    )
                 self._ensure_engine()
 
     def _apply_migrations(self) -> None:
@@ -57,3 +76,61 @@ class StorageCoreMixin:
             return True, None
         except Exception as exc:  # pragma: no cover - runtime guard
             return False, str(exc)
+
+    @contextmanager
+    def advisory_lock(self, key: str):
+        """Hold a cross-process PostgreSQL lock for the duration of an operation."""
+        session = self._get_session()
+        acquired = True
+        body_error: BaseException | None = None
+        try:
+            if session.get_bind().dialect.name == "postgresql":
+                acquired = bool(
+                    session.execute(
+                        text("SELECT pg_try_advisory_lock(1868787060, hashtext(:key))"),
+                        {"key": key},
+                    ).scalar()
+                )
+            yield acquired
+        except BaseException as exc:
+            body_error = exc
+            raise
+        finally:
+            try:
+                if acquired and session.get_bind().dialect.name == "postgresql":
+                    session.execute(
+                        text("SELECT pg_advisory_unlock(1868787060, hashtext(:key))"),
+                        {"key": key},
+                    )
+            except Exception as unlock_error:
+                try:
+                    try:
+                        session.rollback()
+                    except Exception:
+                        pass
+                    invalidate = getattr(session, "invalidate", None)
+                    if callable(invalidate):
+                        try:
+                            invalidate()
+                        except Exception:
+                            pass
+                finally:
+                    if body_error is not None:
+                        logger.warning(
+                            "Advisory lock %s cleanup failed while propagating the primary error: %s",
+                            key,
+                            format_exception_for_log(unlock_error),
+                        )
+                    else:
+                        raise
+            finally:
+                session.close()
+
+    def close(self) -> None:
+        """Dispose the shared engine; it will be recreated lazily if needed."""
+        with self._lock:
+            engine = self._engine
+            self._engine = None
+            self._Session = None
+        if engine is not None:
+            engine.dispose()

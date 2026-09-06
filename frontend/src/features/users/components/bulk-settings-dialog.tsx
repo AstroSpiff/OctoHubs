@@ -31,12 +31,13 @@ const blockedFields: Record<SettingsScope, Set<string>> = {
 type BulkSettingsDialogProps = {
   users: EmbyUser[];
   saving: boolean;
+  mutationError?: string;
   onClose: () => void;
   onApply: (input: { users: EmbyUser[]; settings: UserSettings; applyLibraries: boolean }) => void;
   onDirtyChange?: (dirty: boolean) => void;
 };
 
-function BulkSettingsDialog({ users, saving, onClose, onApply, onDirtyChange }: BulkSettingsDialogProps) {
+function BulkSettingsDialog({ users, saving, mutationError, onClose, onApply, onDirtyChange }: BulkSettingsDialogProps) {
   const confirmation = useConfirmationDialog();
   const [schema, setSchema] = useState<SettingsSchema | null>(null);
   const [libraryItems, setLibraryItems] = useState<LibrarySettingItem[]>([]);
@@ -137,7 +138,7 @@ function BulkSettingsDialog({ users, saving, onClose, onApply, onDirtyChange }: 
           selectedFieldCount={selectedFields.size}
           applyLibraries={applyLibraries}
         />
-        {error ? <p className="users-dialog-error" role="alert">{error}</p> : null}
+        {error || mutationError ? <p className="users-dialog-error" role="alert">{error || mutationError}</p> : null}
         {loading ? <p className="user-settings-loading">Caricamento schema impostazioni...</p> : null}
         {schema ? <>
           <SettingsPresetControls

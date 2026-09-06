@@ -11,6 +11,7 @@ type NameDialogProps = {
   label: string;
   initialValue: string;
   saving: boolean;
+  mutationError?: string;
   onClose: () => void;
   onSave: (value: string) => void;
   onDirtyChange?: (dirty: boolean) => void;
@@ -22,6 +23,7 @@ function NameDialog({
   label,
   initialValue,
   saving,
+  mutationError,
   onClose,
   onSave,
   onDirtyChange,
@@ -77,6 +79,7 @@ function NameDialog({
         <header>
           <h2 id="name-dialog-title" className="contextual-heading" title="Gestione utenti">{title}</h2>
         </header>
+        {mutationError ? <p className="users-dialog-error" role="alert">{mutationError}</p> : null}
         <label>
           {label}
           <input

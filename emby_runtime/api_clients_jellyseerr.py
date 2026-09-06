@@ -1,12 +1,26 @@
-import requests
+import logging
 import time
 
+import requests
+
+from core.log_sanitization import format_exception_for_log
+from core.safe_output import safe_print as print
 from core.utils import _normalize_media_type
+from core.outbound_redirects import response_is_redirect
 from emby_runtime.api_client_urls import build_jellyseerr_api_url
 from emby_runtime.api_clients_tmdb import _extract_tmdb_id, _fetch_tmdb_payload
 
 
 # --- FUNZIONI JELLYSEERR ---
+
+JELLYSEERR_REQUEST_PAGE_SIZE = 100
+JELLYSEERR_REQUEST_MAX_ITEMS = 5000
+_JELLYSEERR_REQUEST_ERROR = "Jellyseerr non disponibile"
+logger = logging.getLogger(__name__)
+
+
+def _log_jellyseerr_error(context: str, exc: BaseException) -> None:
+    logger.warning("%s:\n%s", context, format_exception_for_log(exc))
 
 def get_jellyseerr_requests(config, silent=False, return_status=False):
     """Recupera le richieste in sospeso da Jellyseerr."""
@@ -15,26 +29,60 @@ def get_jellyseerr_requests(config, silent=False, return_status=False):
     headers = {"X-Api-Key": config["JELLYSEERR_API_KEY"]}
     try:
         all_results = []
+        seen_ids = set()
         # Recupera richieste in attesa, approvate e disponibili (soddisfatte)
         for status in ["pending", "approved", "available"]:
             if not silent:
                 print(f"   - Stato interrogato: {status}")
-            params = {"take": 100, "skip": 0, "filter": status, "sort": "added"}
-            response = requests.get(
-                build_jellyseerr_api_url(config, "/api/v1/request"),
-                headers=headers,
-                params=params,
-                timeout=10
-            )
-            response.raise_for_status()
-            data = response.json()
-            all_results.extend(data.get("results", []))
+            skip = 0
+            while len(all_results) < JELLYSEERR_REQUEST_MAX_ITEMS:
+                params = {
+                    "take": JELLYSEERR_REQUEST_PAGE_SIZE,
+                    "skip": skip,
+                    "filter": status,
+                    "sort": "added",
+                }
+                response = requests.get(
+                    build_jellyseerr_api_url(config, "/api/v1/request"),
+                    headers=headers,
+                    params=params,
+                    allow_redirects=False,
+                    timeout=10,
+                )
+                if response_is_redirect(response):
+                    raise requests.TooManyRedirects("Redirect Jellyseerr rifiutato")
+                response.raise_for_status()
+                data = response.json()
+                page_results = data.get("results", []) if isinstance(data, dict) else []
+                if not isinstance(page_results, list):
+                    raise ValueError("Risposta Jellyseerr non valida")
+                added_on_page = 0
+                for entry in page_results:
+                    entry_id = entry.get("id") if isinstance(entry, dict) else None
+                    dedupe_key = str(entry_id) if entry_id is not None else repr(entry)
+                    if dedupe_key in seen_ids:
+                        continue
+                    seen_ids.add(dedupe_key)
+                    all_results.append(entry)
+                    added_on_page += 1
+                    if len(all_results) >= JELLYSEERR_REQUEST_MAX_ITEMS:
+                        break
+                page_info = data.get("pageInfo") if isinstance(data, dict) else None
+                total = page_info.get("results") if isinstance(page_info, dict) else None
+                if len(page_results) < JELLYSEERR_REQUEST_PAGE_SIZE:
+                    break
+                if added_on_page == 0:
+                    break
+                skip += len(page_results)
+                if isinstance(total, int) and skip >= total:
+                    break
         if not silent:
             print(f"   -> Recuperate {len(all_results)} richieste (pendenti + approvate + disponibili).")
         return (all_results, True) if return_status else all_results
-    except (requests.exceptions.RequestException, ValueError) as e:
+    except (requests.exceptions.RequestException, ValueError) as exc:
+        _log_jellyseerr_error("Recupero richieste Jellyseerr non riuscito", exc)
         if not silent:
-            print(f"   -> Impossibile contattare Jellyseerr: {e}")
+            print(f"   -> {_JELLYSEERR_REQUEST_ERROR}")
         return ([], False) if return_status else []
 
 
@@ -66,8 +114,11 @@ def fetch_request_details(request_id, config, cache, max_retries=2):
             response = requests.get(
                 url,
                 headers=headers,
+                allow_redirects=False,
                 timeout=15  # Aumentato timeout da 10 a 15 secondi
             )
+            if response_is_redirect(response):
+                return None
             response.raise_for_status()
             data = response.json()
             cache[request_id] = data
@@ -86,12 +137,18 @@ def fetch_request_details(request_id, config, cache, max_retries=2):
                 time.sleep(1)  # Attendi 1 secondo prima di riprovare
                 continue
             else:
-                print(f"   -> [ERRORE] Timeout definitivo per richiesta {request_id} dopo {max_retries + 1} tentativi: {exc}")
+                _log_jellyseerr_error(
+                    f"Timeout definitivo richiesta Jellyseerr {request_id}", exc
+                )
+                print(f"   -> [ERRORE] Timeout definitivo per richiesta {request_id}")
                 return None
 
         except requests.exceptions.HTTPError as exc:
             status_code = exc.response.status_code if exc.response else "unknown"
-            print(f"   -> [ERRORE] HTTP {status_code} recuperando dettagli richiesta {request_id}: {exc}")
+            _log_jellyseerr_error(
+                f"Errore HTTP {status_code} richiesta Jellyseerr {request_id}", exc
+            )
+            print(f"   -> [ERRORE] HTTP {status_code} recuperando dettagli richiesta {request_id}")
             # Non ritentare per errori HTTP 4xx (client errors)
             if exc.response and 400 <= exc.response.status_code < 500:
                 return None
@@ -103,7 +160,10 @@ def fetch_request_details(request_id, config, cache, max_retries=2):
             return None
 
         except requests.exceptions.RequestException as exc:
-            print(f"   -> [ERRORE] Impossibile ottenere dettagli per la richiesta {request_id}: {type(exc).__name__} - {exc}")
+            _log_jellyseerr_error(
+                f"Recupero dettagli richiesta Jellyseerr {request_id} non riuscito", exc
+            )
+            print(f"   -> [ERRORE] Impossibile ottenere dettagli per la richiesta {request_id}")
             if attempt < max_retries:
                 print(f"   -> Ritento richiesta {request_id}... (tentativo {attempt + 1}/{max_retries + 1})")
                 time.sleep(1)
@@ -146,7 +206,15 @@ def search_jellyseerr(query, config):
     headers = {"X-Api-Key": config["JELLYSEERR_API_KEY"]}
     try:
         url = build_jellyseerr_api_url(config, "/api/v1/search")
-        response = requests.get(url, headers=headers, params={"query": query}, timeout=10)
+        response = requests.get(
+            url,
+            headers=headers,
+            params={"query": query},
+            allow_redirects=False,
+            timeout=10,
+        )
+        if response_is_redirect(response):
+            return []
         response.raise_for_status()
         data = response.json()
         if isinstance(data, dict):
@@ -171,13 +239,17 @@ def submit_jellyseerr_request(payload, config):
             build_jellyseerr_api_url(config, "/api/v1/request"),
             headers=headers,
             json=payload,
+            allow_redirects=False,
             timeout=15
         )
+        if response_is_redirect(response):
+            return False, "Redirect Jellyseerr rifiutato", None
         response.raise_for_status()
         data = response.json() if response.content else {}
         return True, "Richiesta inviata", data
     except requests.exceptions.RequestException as exc:
-        return False, f"Errore Jellyseerr: {exc}", None
+        _log_jellyseerr_error("Invio richiesta Jellyseerr non riuscito", exc)
+        return False, _JELLYSEERR_REQUEST_ERROR, None
 
 
 def _coerce_jellyseerr_status(value):

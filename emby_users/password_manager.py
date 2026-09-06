@@ -2,6 +2,8 @@ import logging
 from typing import Dict, Any, Optional, Tuple, List, Callable
 
 from .password_crypto import PasswordCipher, password_cipher_from_environment
+from .mutation_coordinator import UserMutationCoordinator, group_sync_key, user_mutation_keys
+from core.log_sanitization import format_exception_for_log
 
 logger = logging.getLogger(__name__)
 
@@ -14,12 +16,14 @@ class PasswordManager:
         get_group_users: Callable[[str], List[Tuple[str, str, Optional[str]]]],
         get_unlinked_group_id: Callable[[str, str], str],
         update_user_password: Callable[[Dict[str, Any], str, str], Tuple[bool, Optional[str]]],
+        mutation_coordinator: UserMutationCoordinator | None = None,
     ):
         self.storage = storage
         self._get_server_by_id = get_server_by_id
         self._get_group_users = get_group_users
         self._get_unlinked_group_id = get_unlinked_group_id
         self._update_user_password = update_user_password
+        self._mutation_coordinator = mutation_coordinator or UserMutationCoordinator(storage)
         self._password_cipher: Optional[PasswordCipher] = None
 
     def _get_password_cipher(self) -> PasswordCipher:
@@ -40,7 +44,7 @@ class PasswordManager:
         return plaintext
 
     def decrypt_saved_password(self, group_id: str, token: str) -> Optional[str]:
-        """Decrypt one stored password and lazily rotate legacy ciphertexts."""
+        """Decrypt one stored password and lazily rotate previous-key ciphertexts."""
         cipher = self._get_password_cipher()
         plaintext, needs_rotation = cipher.decrypt(token)
         if plaintext is None:
@@ -109,7 +113,16 @@ class PasswordManager:
         if not group_id:
             if not server_id or not user_id:
                 return {"ok": False, "error": "Missing target"}
+            if not self._get_server_by_id(server_id):
+                return {"ok": False, "error": "Server not found"}
             group_id = self._get_unlinked_group_id(server_id, user_id)
+        elif group_id.startswith("unlinked_"):
+            # Synthetic IDs are storage details, not public group identities.
+            # User-scoped reads must provide server_id + user_id so ownership
+            # can be checked without parsing an ambiguous compound identifier.
+            return {"ok": False, "error": "Invalid target"}
+        elif not self._get_group_users(group_id):
+            return {"ok": False, "error": "Group not found"}
         return self.get_group_password_info(group_id, include_password=include_password)
 
     def set_group_password(self, group_id: str, new_password: str) -> Dict[str, Any]:
@@ -118,46 +131,111 @@ class PasswordManager:
         if not users:
             return {"ok": False, "error": "Group has no users", "group_id": group_id}
 
+        keys = [
+            group_sync_key(group_id),
+            *(key for server_id, user_id, _ in users for key in user_mutation_keys(server_id, user_id)),
+        ]
+        with self._mutation_coordinator.guard(keys) as acquired:
+            if not acquired:
+                return {"ok": False, "busy": True, "error": "Operazione utenti già in corso", "group_id": group_id}
+            current_users = self._get_group_users(group_id)
+            if {(server_id, user_id) for server_id, user_id, _ in current_users} != {
+                (server_id, user_id) for server_id, user_id, _ in users
+            }:
+                return {"ok": False, "busy": True, "error": "Il gruppo utenti è cambiato; riprova", "group_id": group_id}
+            return self._set_group_password_guarded(group_id, new_password, current_users)
+
+    def _set_group_password_guarded(
+        self,
+        group_id: str,
+        new_password: str,
+        users: List[Tuple[str, str, Optional[str]]],
+    ) -> Dict[str, Any]:
+
         logger.info("[PASSWORD] Apply: group=%s users=%s", group_id, len(users))
         failures = []
         applied = 0
+        encrypted_password = self.encrypt_password(new_password) if new_password else None
         for server_id, user_id, _ in users:
             server = self._get_server_by_id(server_id)
             if not server:
                 failures.append({"server_id": server_id, "user_id": user_id, "error": "Server not found"})
                 continue
-            ok, _ = self._update_user_password(server, user_id, new_password)
+            ok, update_error = self._update_user_password(server, user_id, new_password)
             if ok:
                 applied += 1
+                user_password_id = self._get_unlinked_group_id(server_id, user_id)
+                try:
+                    if encrypted_password:
+                        self.storage.save_group_password(user_password_id, encrypted_password)
+                    else:
+                        self.storage.delete_group_password(user_password_id)
+                except Exception as exc:
+                    logger.error(
+                        "[PASSWORD] Local persistence failed after remote update for %s/%s:\n%s",
+                        server_id,
+                        user_id,
+                        format_exception_for_log(exc),
+                    )
+                    failures.append({
+                        "server_id": server_id,
+                        "user_id": user_id,
+                        "stage": "persistence",
+                        "error": "Password applicata, persistenza locale non completata",
+                    })
             else:
-                failures.append({"server_id": server_id, "user_id": user_id, "error": "Update failed"})
+                failures.append({
+                    "server_id": server_id,
+                    "user_id": user_id,
+                    "error": update_error or "Update failed",
+                })
 
         if failures:
             logger.error("[PASSWORD] Group update failed for %s: %s", group_id, failures)
-            return {"ok": False, "group_id": group_id, "applied": applied, "failed": failures}
+            return {
+                "ok": False,
+                "status": "partial" if applied else "error",
+                "group_id": group_id,
+                "applied": applied,
+                "failed": failures,
+                "reconciliation_required": bool(applied),
+            }
 
-        if new_password:
-            enc = self.encrypt_password(new_password)
-            self.storage.save_group_password(group_id, enc)
-            # Overwrite per-user saved passwords to match the group
-            for server_id, user_id, _ in users:
-                self.storage.save_group_password(
-                    self._get_unlinked_group_id(server_id, user_id),
-                    enc
-                )
-            logger.info("[PASSWORD] Saved group password: %s", group_id)
-        else:
-            self.storage.delete_group_password(group_id)
-            # Clear per-user saved passwords when group password is removed
-            for server_id, user_id, _ in users:
-                self.storage.delete_group_password(
-                    self._get_unlinked_group_id(server_id, user_id)
-                )
-            logger.info("[PASSWORD] Cleared group password: %s", group_id)
+        try:
+            if new_password:
+                self.storage.save_group_password(group_id, encrypted_password)
+                logger.info("[PASSWORD] Saved group password: %s", group_id)
+            else:
+                self.storage.delete_group_password(group_id)
+                logger.info("[PASSWORD] Cleared group password: %s", group_id)
+        except Exception as exc:
+            logger.error(
+                "[PASSWORD] Group snapshot persistence failed after remote updates for %s:\n%s",
+                group_id,
+                format_exception_for_log(exc),
+            )
+            return {
+                "ok": False,
+                "status": "partial",
+                "group_id": group_id,
+                "applied": applied,
+                "failed": [{
+                    "group_id": group_id,
+                    "stage": "persistence",
+                    "error": "Password applicata, riepilogo del gruppo non salvato",
+                }],
+                "reconciliation_required": True,
+            }
 
         return {"ok": True, "group_id": group_id, "applied": applied, "failed": []}
 
     def update_user_password(self, server_id: str, user_id: str, new_password: str) -> Dict[str, Any]:
+        with self._mutation_coordinator.guard(user_mutation_keys(server_id, user_id)) as acquired:
+            if not acquired:
+                return {"ok": False, "busy": True, "error": "Operazione utente già in corso"}
+            return self._update_user_password_guarded(server_id, user_id, new_password)
+
+    def _update_user_password_guarded(self, server_id: str, user_id: str, new_password: str) -> Dict[str, Any]:
         server = self._get_server_by_id(server_id)
         if not server:
             return {"ok": False, "error": "Server not found"}
@@ -171,11 +249,31 @@ class PasswordManager:
             return {"ok": False, "error": "Update failed"}
 
         user_password_id = self._get_unlinked_group_id(server_id, user_id)
-        if new_password:
-            enc = self.encrypt_password(new_password)
-            self.storage.save_group_password(user_password_id, enc)
-            logger.info("[PASSWORD] Saved user password: %s/%s", server_id, user_id)
-        else:
-            self.storage.delete_group_password(user_password_id)
-            logger.info("[PASSWORD] Cleared user password: %s/%s", server_id, user_id)
+        try:
+            if new_password:
+                enc = self.encrypt_password(new_password)
+                self.storage.save_group_password(user_password_id, enc)
+                logger.info("[PASSWORD] Saved user password: %s/%s", server_id, user_id)
+            else:
+                self.storage.delete_group_password(user_password_id)
+                logger.info("[PASSWORD] Cleared user password: %s/%s", server_id, user_id)
+        except Exception as exc:
+            logger.error(
+                "[PASSWORD] Local persistence failed after remote update for %s/%s:\n%s",
+                server_id,
+                user_id,
+                format_exception_for_log(exc),
+            )
+            return {
+                "ok": False,
+                "status": "partial",
+                "applied": 1,
+                "failed": [{
+                    "server_id": server_id,
+                    "user_id": user_id,
+                    "stage": "persistence",
+                    "error": "Password applicata, persistenza locale non completata",
+                }],
+                "reconciliation_required": True,
+            }
         return {"ok": True}

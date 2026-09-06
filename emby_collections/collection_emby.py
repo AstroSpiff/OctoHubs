@@ -9,6 +9,11 @@ from typing import Any, Dict, List, Tuple
 
 import requests
 
+from core.log_sanitization import (
+    format_exception_for_log,
+    sanitize_diagnostic_text,
+    sanitize_url_for_log,
+)
 from emby_runtime.api_clients import _call_emby_api, _emby_base_url, EMBY_REQUEST_TIMEOUT
 from .collection_common import (
     COLLECTION_BATCH_SIZE,
@@ -251,7 +256,11 @@ def _set_collection_poster(server: Dict[str, Any], collection_id: str, poster_ur
         json_payload=payload
     )
     if success:
-        logger.info("Poster della collezione %s aggiornato da %s", collection_id, poster_url)
+        logger.info(
+            "Poster della collezione %s aggiornato da %s",
+            sanitize_diagnostic_text(collection_id),
+            sanitize_diagnostic_text(sanitize_url_for_log(poster_url)),
+        )
     else:
         logger.warning("Impossibile impostare poster per %s: %s", collection_id, response)
 
@@ -271,7 +280,11 @@ def _set_collection_background(server: Dict[str, Any], collection_id: str, backg
         json_payload=payload
     )
     if success:
-        logger.info("Backdrop della collezione %s aggiornato da %s", collection_id, background_url)
+        logger.info(
+            "Backdrop della collezione %s aggiornato da %s",
+            sanitize_diagnostic_text(collection_id),
+            sanitize_diagnostic_text(sanitize_url_for_log(background_url)),
+        )
     else:
         logger.warning("Impossibile impostare backdrop per %s: %s", collection_id, response)
 
@@ -293,24 +306,25 @@ def _set_collection_poster_blob(
         "X-Emby-Token": token,
         "Content-Type": mime_type or "application/octet-stream"
     }
-    params = {"api_key": token}
     target = f"{base_url}/Items/{collection_id}/Images/Primary"
     try:
         encoded = base64.b64encode(poster_blob)
         response = requests.post(
             target,
             headers=headers,
-            params=params,
             data=encoded,
+            allow_redirects=False,
             timeout=EMBY_REQUEST_TIMEOUT
         )
+        if response.is_redirect or response.is_permanent_redirect:
+            logger.warning("Redirect rifiutato durante upload poster %s", collection_id)
+            return
         if response.status_code in (200, 204):
             logger.info("Poster della collezione %s caricato da blob", collection_id)
         else:
-            body = (response.text or "").strip()
-            logger.warning("Impossibile caricare poster %s: %s %s", collection_id, response.status_code, body)
+            logger.warning("Impossibile caricare poster %s: HTTP %s", collection_id, response.status_code)
     except requests.RequestException as exc:
-        logger.warning("Errore upload poster %s: %s", collection_id, exc)
+        logger.warning("Errore upload poster %s:\n%s", collection_id, format_exception_for_log(exc))
 
 
 def _set_collection_background_blob(
@@ -330,24 +344,25 @@ def _set_collection_background_blob(
         "X-Emby-Token": token,
         "Content-Type": mime_type or "application/octet-stream"
     }
-    params = {"api_key": token}
     target = f"{base_url}/Items/{collection_id}/Images/Backdrop"
     try:
         encoded = base64.b64encode(background_blob)
         response = requests.post(
             target,
             headers=headers,
-            params=params,
             data=encoded,
+            allow_redirects=False,
             timeout=EMBY_REQUEST_TIMEOUT
         )
+        if response.is_redirect or response.is_permanent_redirect:
+            logger.warning("Redirect rifiutato durante upload backdrop %s", collection_id)
+            return
         if response.status_code in (200, 204):
             logger.info("Backdrop della collezione %s caricato da blob", collection_id)
         else:
-            body = (response.text or "").strip()
-            logger.warning("Impossibile caricare backdrop %s: %s %s", collection_id, response.status_code, body)
+            logger.warning("Impossibile caricare backdrop %s: HTTP %s", collection_id, response.status_code)
     except requests.RequestException as exc:
-        logger.warning("Errore upload backdrop %s: %s", collection_id, exc)
+        logger.warning("Errore upload backdrop %s:\n%s", collection_id, format_exception_for_log(exc))
 
 
 def _build_item_path(server: Dict[str, Any], item_id: str) -> str:

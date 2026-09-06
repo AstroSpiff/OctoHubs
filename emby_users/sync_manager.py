@@ -1,8 +1,16 @@
 import logging
 from typing import Dict, Any, Optional, Tuple, List, Callable
 
+from core.log_sanitization import (
+    format_exception_for_log,
+    redact_mapping_for_log,
+    sanitize_diagnostic_text,
+)
+
 from emby_users.operation_progress import emit_progress
+from emby_users.mutation_coordinator import UserMutationCoordinator, server_mutation_key
 from emby_users.settings_manager import USER_SETTINGS_SCHEMA
+from emby_users.sync_results import SyncStepError, validate_sync_result
 from emby_users.settings_scope import (
     build_allowed_fields,
     can_sync_config_field,
@@ -12,6 +20,13 @@ from emby_users.settings_scope import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _server_label(server: Optional[Dict[str, Any]]) -> str:
+    if not server:
+        return "server:<?>"
+    name = server.get("alias") or server.get("name") or server.get("id") or "server"
+    return f"{name} ({server.get('id')})"
 
 
 class SyncManager:
@@ -34,6 +49,7 @@ class SyncManager:
         map_config_for_server: Optional[
             Callable[[Dict[str, Any], str, Optional[str]], Dict[str, Any]]
         ] = None,
+        mutation_coordinator: UserMutationCoordinator | None = None,
     ):
         self.storage = storage
         self._get_server_by_id = get_server_by_id
@@ -48,6 +64,7 @@ class SyncManager:
         self._link_clone_to_group = link_clone_to_group
         self._apply_config_patch = apply_config_patch
         self._map_config_for_server = map_config_for_server
+        self._mutation_coordinator = mutation_coordinator or UserMutationCoordinator(storage)
 
     def _backup_user(self, server: Dict[str, Any], user_id: str, reason: str) -> None:
         """
@@ -95,7 +112,10 @@ class SyncManager:
         if self._fetch_user_display_preferences:
             src_display, display_err = self._fetch_user_display_preferences(source_server, source_user_id)
             if display_err:
-                logger.warning("[SYNC_CONFIG] Source DisplayPreferences unavailable: %s", display_err)
+                logger.warning(
+                    "[SYNC_CONFIG] Source DisplayPreferences unavailable: %s",
+                    sanitize_diagnostic_text(display_err),
+                )
                 src_display = {}
         categories = normalize_config_categories(config_categories)
         allowed_policy, allowed_config, allowed_display = build_allowed_fields(USER_SETTINGS_SCHEMA, categories)
@@ -171,6 +191,49 @@ class SyncManager:
         sync_playlists: bool = False,
         link_group: bool = False,
         config_categories: Optional[List[str]] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
+        keys = {
+            server_mutation_key(source_server_id),
+            server_mutation_key(target_server_id),
+        }
+        with self._mutation_coordinator.guard(keys) as acquired:
+            if not acquired:
+                return {
+                    "ok": False,
+                    "busy": True,
+                    "error": "Operazione utenti in corso sul server; riprova al termine.",
+                }
+            return self._clone_user_guarded(
+                source_server_id,
+                source_user_id,
+                target_server_id,
+                new_username,
+                sync_config,
+                sync_playstate,
+                sync_resume,
+                sync_library_access,
+                sync_favorites,
+                sync_playlists,
+                link_group,
+                config_categories,
+                progress_callback,
+            )
+
+    def _clone_user_guarded(
+        self,
+        source_server_id: str,
+        source_user_id: str,
+        target_server_id: str,
+        new_username: Optional[str] = None,
+        sync_config: bool = True,
+        sync_playstate: bool = True,
+        sync_resume: bool = False,
+        sync_library_access: bool = False,
+        sync_favorites: bool = False,
+        sync_playlists: bool = False,
+        link_group: bool = False,
+        config_categories: Optional[List[str]] = None,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
     ) -> Dict[str, Any]:
         """
@@ -178,16 +241,13 @@ class SyncManager:
         Creates the user if missing (matching by Name).
         Syncs Config, Policy and Playstate based on flags.
         """
-        def _srv_label(srv: Optional[Dict[str, Any]]) -> str:
-            if not srv:
-                return "server:<?>"
-            name = srv.get("alias") or srv.get("name") or srv.get("id") or "server"
-            return f"{name} ({srv.get('id')})"
+        domain_failures: Dict[str, str] = {}
+        successful_domains: list[str] = []
 
         logger.info(
             "[CLONE][1/4] Start: source_user_id=%s target_server_id=%s sync_config=%s sync_playstate=%s sync_resume=%s sync_library_access=%s sync_favorites=%s sync_playlists=%s link_group=%s",
-            source_user_id,
-            target_server_id,
+            sanitize_diagnostic_text(source_user_id),
+            sanitize_diagnostic_text(target_server_id),
             sync_config,
             sync_playstate,
             sync_resume,
@@ -196,17 +256,15 @@ class SyncManager:
             sync_playlists,
             link_group
         )
-        enabled_domains = [
-            enabled for enabled in [
+        total_steps = 3 + sum(
+            (
                 sync_config,
                 sync_playstate,
                 sync_library_access,
                 sync_favorites,
                 sync_playlists,
-            ]
-            if enabled
-        ]
-        total_steps = 3 + len(enabled_domains)
+            )
+        )
         current_step = 0
         emit_progress(
             progress_callback,
@@ -238,210 +296,427 @@ class SyncManager:
         )
         logger.info(
             "[CLONE][2/4] Source resolved: %s -> user=%s (%s)",
-            _srv_label(src_server),
-            src_user.get("Name"),
-            source_user_id
+            sanitize_diagnostic_text(_server_label(src_server)),
+            sanitize_diagnostic_text(src_user.get("Name")),
+            sanitize_diagnostic_text(source_user_id),
         )
 
         target_username = new_username.strip() if new_username and new_username.strip() else src_user["Name"]
         if new_username and new_username.strip() and new_username.strip() != src_user.get("Name"):
             logger.info(
                 "[CLONE][2/4] Target username override: '%s' -> '%s'",
-                src_user.get("Name"),
-                target_username
+                sanitize_diagnostic_text(src_user.get("Name")),
+                sanitize_diagnostic_text(target_username),
             )
 
-        tgt_users, _ = self._fetch_users_list(tgt_server)
-        target_matches = [u for u in tgt_users if u.get("Name", "").lower() == target_username.lower()]
-        target_user = target_matches[0] if target_matches else None
-        if len(target_matches) > 1:
-            try:
-                ids = [u.get("Id") for u in target_matches]
-                logger.warning(
-                    "[CLONE][2/4] Multiple target users match name '%s' on %s: %s",
-                    target_username,
-                    _srv_label(tgt_server),
-                    ids
-                )
-            except Exception:
-                pass
+        tgt_user_id, target_created, target_error, current_step = self._resolve_clone_target(
+            tgt_server,
+            target_server_id,
+            target_username,
+            current_step,
+            total_steps,
+            progress_callback,
+        )
+        if target_error or tgt_user_id is None:
+            return {"error": target_error or "Failed to resolve target user ID"}
 
-        tgt_user_id = None
-        if target_user:
-            tgt_user_id = target_user["Id"]
-            logger.info(
-                "[CLONE][2/4] Target exists: %s -> user=%s (%s)",
-                _srv_label(tgt_server),
-                target_user.get("Name"),
-                tgt_user_id
-            )
-            current_step += 1
-            emit_progress(
-                progress_callback,
-                "target",
-                f"Utente destinazione esistente: {target_username}",
-                current_step,
-                total_steps,
-                {"target_server_id": target_server_id, "target_user_id": tgt_user_id, "target_username": target_username},
-            )
-        else:
+        current_step = self._link_clone_group(
+            enabled=link_group,
+            source_server_id=source_server_id,
+            source_user_id=source_user_id,
+            source_username=src_user.get("Name"),
+            target_server_id=target_server_id,
+            target_user_id=tgt_user_id,
+            target_username=target_username,
+            failures=domain_failures,
+            successes=successful_domains,
+            current_step=current_step,
+            total_steps=total_steps,
+            progress_callback=progress_callback,
+        )
+
+        target = [(target_server_id, tgt_user_id)]
+        res_config, current_step = self._clone_domain_step(
+            enabled=sync_config,
+            name="config",
+            work=lambda: self.sync_user_config(
+                source_server_id,
+                source_user_id,
+                target,
+                config_categories=config_categories,
+            ),
+            start_log=(
+                "[CLONE][3/4] Sync config: %s user=%s (%s) -> %s user=%s (%s)",
+                _server_label(src_server), src_user.get("Name"), source_user_id,
+                _server_label(tgt_server), target_username, tgt_user_id,
+            ),
+            skipped_log="[CLONE][3/4] Sync config skipped",
+            success_message="Impostazioni copiate",
+            failure_message="Copia impostazioni non riuscita",
+            failures=domain_failures,
+            successes=successful_domains,
+            current_step=current_step,
+            total_steps=total_steps,
+            progress_callback=progress_callback,
+        )
+        res_play, current_step = self._clone_domain_step(
+            enabled=sync_playstate,
+            name="playstate",
+            work=lambda: self._playstate_sync(
+                source_server_id, source_user_id, target, sync_resume
+            ),
+            start_log=(
+                "[CLONE][4/4] Sync playstate: %s user=%s (%s) -> %s user=%s (%s) resume=%s",
+                _server_label(src_server), src_user.get("Name"), source_user_id,
+                _server_label(tgt_server), target_username, tgt_user_id, sync_resume,
+            ),
+            skipped_log="[CLONE][4/4] Sync playstate skipped",
+            success_message="Visti e resume copiati",
+            failure_message="Copia visti e resume non riuscita",
+            failures=domain_failures,
+            successes=successful_domains,
+            current_step=current_step,
+            total_steps=total_steps,
+            progress_callback=progress_callback,
+            result_logger=self._log_clone_playstate_result,
+        )
+        res_library_access, current_step = self._clone_domain_step(
+            enabled=sync_library_access,
+            name="library_access",
+            work=lambda: self._library_access_sync(
+                source_server_id, source_user_id, target
+            ),
+            start_log=(
+                "[CLONE][4/4] Sync library access: source=%s target=%s",
+                source_user_id, tgt_user_id,
+            ),
+            skipped_log="[CLONE][4/4] Sync library access skipped",
+            success_message="Accessi librerie copiati",
+            failure_message="Copia accessi librerie non riuscita",
+            failures=domain_failures,
+            successes=successful_domains,
+            current_step=current_step,
+            total_steps=total_steps,
+            progress_callback=progress_callback,
+        )
+        res_favorites, current_step = self._clone_domain_step(
+            enabled=sync_favorites,
+            name="favorites",
+            work=lambda: self._favorites_sync(source_server_id, source_user_id, target),
+            start_log=(
+                "[CLONE][4/4] Sync favorites: source=%s target=%s",
+                source_user_id, tgt_user_id,
+            ),
+            skipped_log="[CLONE][4/4] Sync favorites skipped",
+            success_message="Preferiti copiati",
+            failure_message="Copia preferiti non riuscita",
+            failures=domain_failures,
+            successes=successful_domains,
+            current_step=current_step,
+            total_steps=total_steps,
+            progress_callback=progress_callback,
+        )
+        res_playlists, current_step = self._clone_domain_step(
+            enabled=sync_playlists,
+            name="playlists",
+            work=lambda: self._playlists_sync(source_server_id, source_user_id, target),
+            start_log=(
+                "[CLONE][4/4] Sync playlists: source=%s target=%s",
+                source_user_id, tgt_user_id,
+            ),
+            skipped_log="[CLONE][4/4] Sync playlists skipped",
+            success_message="Playlist copiate",
+            failure_message="Copia playlist non riuscita",
+            failures=domain_failures,
+            successes=successful_domains,
+            current_step=current_step,
+            total_steps=total_steps,
+            progress_callback=progress_callback,
+        )
+        return self._clone_result(
+            target_server_id=target_server_id,
+            target_user_id=tgt_user_id,
+            target_username=target_username,
+            target_created=target_created,
+            failures=domain_failures,
+            successes=successful_domains,
+            stats={
+                "config_stats": res_config,
+                "playstate_stats": res_play,
+                "library_access_stats": res_library_access,
+                "favorites_stats": res_favorites,
+                "playlists_stats": res_playlists,
+            },
+            total_steps=total_steps,
+            progress_callback=progress_callback,
+        )
+
+    def _resolve_clone_target(
+        self,
+        server: Dict[str, Any],
+        server_id: str,
+        username: str,
+        current_step: int,
+        total_steps: int,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]],
+    ) -> tuple[Optional[str], bool, Optional[str], int]:
+        users, _ = self._fetch_users_list(server)
+        matches = [
+            user
+            for user in users
+            if user.get("Name", "").lower() == username.lower()
+        ]
+        self._log_duplicate_clone_targets(server, username, matches)
+        target_user = matches[0] if matches else None
+        created = target_user is None
+        if created:
             logger.info(
                 "[CLONE][2/4] Creating target user: %s -> user=%s",
-                _srv_label(tgt_server),
-                target_username
+                sanitize_diagnostic_text(_server_label(server)),
+                sanitize_diagnostic_text(username),
             )
-            ok, res = self._create_user(tgt_server, target_username)
+            ok, payload = self._create_user(server, username)
             if not ok:
-                emit_progress(progress_callback, "error", f"Creazione utente fallita: {target_username}", total_steps, total_steps)
-                return {"error": f"Failed to create user: {res}"}
-            tgt_user_id = res.get("Id")
-            logger.info(
-                "[CLONE][2/4] Target created: %s -> user=%s (%s)",
-                _srv_label(tgt_server),
-                target_username,
-                tgt_user_id
-            )
-            current_step += 1
+                emit_progress(
+                    progress_callback,
+                    "error",
+                    f"Creazione utente fallita: {username}",
+                    total_steps,
+                    total_steps,
+                )
+                return None, False, f"Failed to create user: {payload}", current_step
+            target_user = payload
+
+        target_user_id = target_user.get("Id") if isinstance(target_user, dict) else None
+        logger.info(
+            "[CLONE][2/4] Target %s: %s -> user=%s (%s)",
+            "created" if created else "exists",
+            sanitize_diagnostic_text(_server_label(server)),
+            sanitize_diagnostic_text(username),
+            sanitize_diagnostic_text(target_user_id),
+        )
+        current_step += 1
+        emit_progress(
+            progress_callback,
+            "target",
+            f"{'Creato utente destinazione' if created else 'Utente destinazione esistente'}: {username}",
+            current_step,
+            total_steps,
+            {
+                "target_server_id": server_id,
+                "target_user_id": target_user_id,
+                "target_username": username,
+            },
+        )
+        if not target_user_id:
             emit_progress(
                 progress_callback,
-                "target",
-                f"Creato utente destinazione: {target_username}",
-                current_step,
+                "error",
+                "ID utente destinazione non risolto",
                 total_steps,
-                {"target_server_id": target_server_id, "target_user_id": tgt_user_id, "target_username": target_username},
+                total_steps,
             )
+            return None, created, "Failed to resolve target user ID", current_step
+        return str(target_user_id), created, None, current_step
 
-        if not tgt_user_id:
-            emit_progress(progress_callback, "error", "ID utente destinazione non risolto", total_steps, total_steps)
-            return {"error": "Failed to resolve target user ID"}
+    @staticmethod
+    def _log_duplicate_clone_targets(
+        server: Dict[str, Any],
+        username: str,
+        matches: List[Dict[str, Any]],
+    ) -> None:
+        if len(matches) <= 1:
+            return
+        logger.warning(
+            "[CLONE][2/4] Multiple target users match name '%s' on %s: %s",
+            sanitize_diagnostic_text(username),
+            sanitize_diagnostic_text(_server_label(server)),
+            sanitize_diagnostic_text([user.get("Id") for user in matches]),
+        )
 
-        if link_group:
+    def _link_clone_group(
+        self,
+        *,
+        enabled: bool,
+        source_server_id: str,
+        source_user_id: str,
+        source_username: Optional[str],
+        target_server_id: str,
+        target_user_id: str,
+        target_username: str,
+        failures: Dict[str, str],
+        successes: list[str],
+        current_step: int,
+        total_steps: int,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]],
+    ) -> int:
+        if enabled:
             try:
                 group_id = self._link_clone_to_group(
                     source_server_id,
                     source_user_id,
-                    src_user.get("Name"),
+                    source_username,
                     target_server_id,
-                    tgt_user_id,
-                    target_username
+                    target_user_id,
+                    target_username,
                 )
+                if not group_id:
+                    raise RuntimeError("Associazione al gruppo non confermata")
                 logger.info(
                     "[CLONE][2/4] Linked target to source group: %s",
-                    group_id
+                    sanitize_diagnostic_text(group_id),
                 )
+                successes.append("group_link")
             except Exception as exc:
-                logger.error("[CLONE][2/4] Failed to link target to group: %s", exc)
+                logger.error(
+                    "[CLONE][2/4] Failed to link target to group:\n%s",
+                    format_exception_for_log(exc),
+                )
+                failures["group_link"] = "Associazione al gruppo non riuscita"
         else:
             logger.info("[CLONE][2/4] Group link skipped (link_group=False)")
         current_step += 1
-        emit_progress(progress_callback, "group", "Associazione gruppo verificata", current_step, total_steps)
+        emit_progress(
+            progress_callback,
+            "group",
+            "Associazione gruppo verificata",
+            current_step,
+            total_steps,
+        )
+        return current_step
 
-        if sync_config:
-            logger.info(
-                "[CLONE][3/4] Sync config: %s user=%s (%s) -> %s user=%s (%s)",
-                _srv_label(src_server),
-                src_user.get("Name"),
-                source_user_id,
-                _srv_label(tgt_server),
-                target_username,
-                tgt_user_id
-            )
-            self.sync_user_config(
-                source_server_id,
-                source_user_id,
-                [(target_server_id, tgt_user_id)],
-                config_categories=config_categories
-            )
-            current_step += 1
-            emit_progress(progress_callback, "config", "Impostazioni copiate", current_step, total_steps)
-        else:
-            logger.info("[CLONE][3/4] Sync config skipped")
+    def _clone_domain_step(
+        self,
+        *,
+        enabled: bool,
+        name: str,
+        work: Callable[[], Dict[str, Any]],
+        start_log: tuple[Any, ...],
+        skipped_log: str,
+        success_message: str,
+        failure_message: str,
+        failures: Dict[str, str],
+        successes: list[str],
+        current_step: int,
+        total_steps: int,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]],
+        result_logger: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> tuple[Optional[Dict[str, Any]], int]:
+        if not enabled:
+            logger.info("%s", sanitize_diagnostic_text(skipped_log))
+            return None, current_step
+        logger.info(
+            sanitize_diagnostic_text(start_log[0]),
+            *(
+                value
+                if isinstance(value, (bool, int, float)) or value is None
+                else sanitize_diagnostic_text(value)
+                for value in start_log[1:]
+            ),
+        )
+        result = self._run_clone_domain(name, work, failures, successes)
+        current_step += 1
+        emit_progress(
+            progress_callback,
+            name,
+            failure_message if name in failures else success_message,
+            current_step,
+            total_steps,
+        )
+        if result_logger is not None:
+            result_logger(result)
+        return result, current_step
 
-        res_play = None
-        if sync_playstate:
-            logger.info(
-                "[CLONE][4/4] Sync playstate: %s user=%s (%s) -> %s user=%s (%s) resume=%s",
-                _srv_label(src_server),
-                src_user.get("Name"),
-                source_user_id,
-                _srv_label(tgt_server),
-                target_username,
-                tgt_user_id,
-                sync_resume
+    @staticmethod
+    def _run_clone_domain(
+        name: str,
+        work: Callable[[], Dict[str, Any]],
+        failures: Dict[str, str],
+        successes: list[str],
+    ) -> Dict[str, Any]:
+        result: Any = None
+        try:
+            result = work()
+            validate_sync_result(result)
+        except SyncStepError as exc:
+            failures[name] = str(exc)
+            if SyncManager._has_structured_domain_success(result):
+                successes.append(name)
+            return result if isinstance(result, dict) else {"error": str(exc)}
+        except Exception as exc:
+            failures[name] = "Errore durante la copia"
+            logger.error(
+                "[CLONE] Domain %s failed:\n%s",
+                sanitize_diagnostic_text(name),
+                format_exception_for_log(exc),
             )
-            res_play = self._playstate_sync(
-                source_server_id,
-                source_user_id,
-                [(target_server_id, tgt_user_id)],
-                sync_resume
-            )
-            current_step += 1
-            emit_progress(progress_callback, "playstate", "Visti e resume copiati", current_step, total_steps)
-            try:
-                counts = res_play.get("counts", {}) if isinstance(res_play, dict) else {}
-                resume_counts = res_play.get("resume_counts", {}) if isinstance(res_play, dict) else {}
-                logger.info(
-                    "[CLONE][4/4] Sync playstate result: counts=%s resume=%s",
-                    counts,
-                    resume_counts
-                )
-            except Exception:
-                pass
-        else:
-            logger.info("[CLONE][4/4] Sync playstate skipped")
+            return {"error": "Errore durante la copia"}
+        successes.append(name)
+        return result
 
-        res_library_access = None
-        if sync_library_access:
-            logger.info("[CLONE][4/4] Sync library access: source=%s target=%s", source_user_id, tgt_user_id)
-            res_library_access = self._library_access_sync(
-                source_server_id,
-                source_user_id,
-                [(target_server_id, tgt_user_id)]
-            )
-            current_step += 1
-            emit_progress(progress_callback, "library_access", "Accessi librerie copiati", current_step, total_steps)
-        else:
-            logger.info("[CLONE][4/4] Sync library access skipped")
+    @staticmethod
+    def _has_structured_domain_success(result: Any) -> bool:
+        if not isinstance(result, dict):
+            return False
+        success = result.get("success")
+        return isinstance(success, (list, tuple, set, dict)) and bool(success)
 
-        res_favorites = None
-        if sync_favorites:
-            logger.info("[CLONE][4/4] Sync favorites: source=%s target=%s", source_user_id, tgt_user_id)
-            res_favorites = self._favorites_sync(
-                source_server_id,
-                source_user_id,
-                [(target_server_id, tgt_user_id)]
-            )
-            current_step += 1
-            emit_progress(progress_callback, "favorites", "Preferiti copiati", current_step, total_steps)
-        else:
-            logger.info("[CLONE][4/4] Sync favorites skipped")
+    @staticmethod
+    def _log_clone_playstate_result(result: Dict[str, Any]) -> None:
+        logger.info(
+            "[CLONE][4/4] Sync playstate result: counts=%s resume=%s",
+            redact_mapping_for_log(result.get("counts", {})),
+            redact_mapping_for_log(result.get("resume_counts", {})),
+        )
 
-        res_playlists = None
-        if sync_playlists:
-            logger.info("[CLONE][4/4] Sync playlists: source=%s target=%s", source_user_id, tgt_user_id)
-            res_playlists = self._playlists_sync(
-                source_server_id,
-                source_user_id,
-                [(target_server_id, tgt_user_id)]
+    @staticmethod
+    def _clone_result(
+        *,
+        target_server_id: str,
+        target_user_id: str,
+        target_username: str,
+        target_created: bool,
+        failures: Dict[str, str],
+        successes: list[str],
+        stats: Dict[str, Optional[Dict[str, Any]]],
+        total_steps: int,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]],
+    ) -> Dict[str, Any]:
+        partial = bool(failures) and (target_created or bool(successes))
+        result = {
+            "ok": not failures,
+            "status": "partial" if partial else "error" if failures else "success",
+            "target_user_id": target_user_id,
+            **stats,
+            "failed_domains": failures,
+        }
+        if failures:
+            result["partial"] = partial
+            result["error"] = "Clonazione non completata per tutti i domini richiesti"
+            emit_progress(
+                progress_callback,
+                "error",
+                result["error"],
+                total_steps,
+                total_steps,
+                {
+                    "target_server_id": target_server_id,
+                    "target_user_id": target_user_id,
+                    "target_username": target_username,
+                    "failed_domains": sorted(failures),
+                },
             )
-            current_step += 1
-            emit_progress(progress_callback, "playlists", "Playlist copiate", current_step, total_steps)
-        else:
-            logger.info("[CLONE][4/4] Sync playlists skipped")
-
+            return result
         emit_progress(
             progress_callback,
             "complete",
             f"Clonazione completata: {target_username}",
             total_steps,
             total_steps,
-            {"target_server_id": target_server_id, "target_user_id": tgt_user_id, "target_username": target_username},
+            {
+                "target_server_id": target_server_id,
+                "target_user_id": target_user_id,
+                "target_username": target_username,
+            },
         )
-        return {
-            "ok": True,
-            "target_user_id": tgt_user_id,
-            "playstate_stats": res_play,
-            "library_access_stats": res_library_access,
-            "favorites_stats": res_favorites,
-            "playlists_stats": res_playlists
-        }
+        return result

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Iterable, List, Tuple
 
+from emby_users.sync_results import require_complete_snapshots
+
 
 UserTarget = Tuple[str, str]
 
@@ -30,6 +32,12 @@ def refresh_sync_states(
         domains.append("favorites")
     if sync_playlists:
         domains.append("playlists")
+    checkpoint_states = []
     for domain in domains:
-        state_tracker.refresh_many(domain, unique_targets, origin)
+        states = require_complete_snapshots(
+            state_tracker.observe_many(domain, unique_targets, origin),
+            len(unique_targets),
+        )
+        checkpoint_states.extend(states)
+    state_tracker.commit_many(checkpoint_states)
     return domains

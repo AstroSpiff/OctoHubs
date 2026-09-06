@@ -15,15 +15,15 @@ function resultSortBySeeders(results: SearchResult[]) {
 }
 
 function torrentDownloadLink(result: SearchResult) {
-  return [result.torrent, result.link].find((candidate): candidate is string =>
-    typeof candidate === "string" && /^https?:\/\//i.test(candidate),
-  ) || null;
+  return typeof result.torrent_ref === "string" && result.torrent_ref.startsWith("ohsdl_")
+    ? result.torrent_ref
+    : null;
 }
 
 function magnetExportLink(result: SearchResult) {
-  return [result.magnet, result.magnetUri, result.magnetUrl].find((candidate): candidate is string =>
-    typeof candidate === "string" && /^magnet:/i.test(candidate),
-  ) || null;
+  return typeof result.magnet_ref === "string" && result.magnet_ref.startsWith("ohsdl_")
+    ? result.magnet_ref
+    : null;
 }
 
 function tmdbPosterUrl(path: string | undefined) {

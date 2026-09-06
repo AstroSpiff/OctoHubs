@@ -25,6 +25,7 @@ export function useSystemStatus() {
   const refreshingRef = useRef<Set<string>>(new Set());
   const fullRefreshRunningRef = useRef(false);
   const snapshotVersionRef = useRef(0);
+  const dataVersionRef = useRef(0);
 
   useEffect(() => {
     sectionsRef.current = sections;
@@ -68,12 +69,15 @@ export function useSystemStatus() {
   const refreshAll = useCallback(async () => {
     if (fullRefreshRunningRef.current) return;
     fullRefreshRunningRef.current = true;
+    const dataVersion = dataVersionRef.current;
     setLoading(true);
     setError("");
     try {
       const payload = await getSystemStatus();
+      if (dataVersion !== dataVersionRef.current) return;
       const now = Date.now();
       snapshotVersionRef.current += 1;
+      dataVersionRef.current += 1;
       sectionsRef.current = payload.sections;
       setSections(payload.sections);
       setSectionErrors({});
@@ -85,7 +89,9 @@ export function useSystemStatus() {
         }),
       );
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Impossibile leggere lo stato del sistema");
+      if (dataVersion === dataVersionRef.current) {
+        setError(requestError instanceof Error ? requestError.message : "Impossibile leggere lo stato del sistema");
+      }
     } finally {
       fullRefreshRunningRef.current = false;
       setLoading(false);
@@ -103,6 +109,7 @@ export function useSystemStatus() {
       if (!section) throw new Error("La sezione richiesta non e' disponibile");
       if (snapshotVersion === snapshotVersionRef.current) {
         mergeSection(section, payload.generated_at);
+        dataVersionRef.current += 1;
         const delay = systemStatusRefreshDelayMs(section.refresh_interval_seconds);
         if (delay === null) {
           delete nextRefreshRef.current[sectionId];
@@ -111,10 +118,12 @@ export function useSystemStatus() {
         }
       }
     } catch (requestError) {
-      setSectionError(
-        sectionId,
-        requestError instanceof Error ? requestError.message : "Impossibile aggiornare questa area",
-      );
+      if (snapshotVersion === snapshotVersionRef.current) {
+        setSectionError(
+          sectionId,
+          requestError instanceof Error ? requestError.message : "Impossibile aggiornare questa area",
+        );
+      }
     } finally {
       setSectionRefreshing(sectionId, false);
     }

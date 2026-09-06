@@ -34,6 +34,39 @@
  - Do not rename template variables unless all references are updated.
  - Do not rename CSS classes/IDs or JS selectors unless all references are updated.
 
+ Remediation completeness standard:
+ - Apply this standard whenever fixing code-review findings, defects, regressions, or security issues; the user does not need to request it explicitly.
+ - Start from the root cause and identify the invariant that the corrected system must preserve. Do not stop at the first local patch that makes the reported reproduction pass.
+ - Search every analogous implementation and caller for the same failure pattern. When multiple findings share a cause, prefer one canonical, reusable solution over duplicated local fixes.
+ - Pay particular attention to cross-cutting invariants for transactions and concurrency; lifecycle, reset, shutdown, and server deletion; WebSocket ownership, generation, timeout, cancellation, backpressure, and bounded queues; backend authorization and frontend capabilities; credential and URL redaction; and OpenAPI/backend/TypeScript contract alignment.
+ - Add a focused regression test for every reported reproduction. Also add an invariant, parametrized, or contract test that covers analogous implementations when the defect class can recur elsewhere.
+ - Exercise failure and concurrency paths deliberately: overlapping requests, stale snapshots, rollback, cancellation, restart, client backpressure, timeout, and partial external failure where relevant.
+ - Trace side effects beyond the originally reported file and continue the remediation when a complete fix requires adjacent in-scope changes. Preserve public routes, methods, response formats, selectors, and stored data unless an incompatible change is indispensable and explicitly approved.
+ - After implementation, perform an independent review of the remediation specifically looking for incomplete coverage, parallel implementations, and newly introduced regressions.
+ - Update the current code-review report with the root cause, applied solution, regression and invariant tests, analogous paths reviewed, and any residual risk. Update English and Italian operational documentation whenever configuration or deployment behavior changes.
+ - Before declaring remediation complete, run targeted tests first and then the applicable full gate: backend suite, real PostgreSQL suite, Ruff, Pyright, frontend tests, ESLint, TypeScript/Vite production build, dependency audits, Compose validation, and `git diff --check`.
+ - A green pre-existing test suite is not sufficient evidence by itself. Add and run deterministic canaries for the reported edge case, especially for races and blocked I/O.
+ - Stop for user direction only when remediation requires a product decision, an incompatible external contract, destructive data handling, or authority outside the requested scope. Otherwise continue through implementation, independent review, documentation, and verification.
+
+ Review and remediation lifecycle:
+ - Treat each completed review/remediation pair as a versioned quality cycle. Record the base commit, whether the worktree was already dirty, the report ID, and the exact final gate results. Do not silently move the review baseline while the cycle is in progress.
+ - Keep analysis and remediation as separate phases. A review phase may add only its report and must not fix candidates; a remediation phase updates that same report rather than creating a second competing source of truth.
+ - Assign every finding a stable ID and a root-cause family. Before accepting it as new, compare it with all earlier reports and classify it as new, explicit reopening/incomplete remediation, analogous surface, or accepted decision.
+ - During remediation, build a caller and analogous-surface inventory before editing. Close the finding only after the original reproduction, every identified analogous path, and a failure-path canary pass against the corrected invariant.
+ - If a finding reopens a previously closed family, strengthen the canonical abstraction and add a repository-wide invariant or static gate where practical. A second local patch without a class-level guard is not sufficient closure.
+ - Use one final verification snapshot: after the last source change, run targeted regressors and then every applicable full gate. Any failure found by a later gate invalidates the earlier closure until it is fixed and the affected gate sequence is repeated.
+ - A report may use only these terminal states: `resolved`, `accepted decision`, or `blocked pending user decision`. `Resolved` requires recorded evidence; an accepted decision must identify the approving product/deployment constraint and must not be counted as an open defect.
+ - At the end of each cycle, include a recurrence audit: open actionable findings, accepted decisions, explicit reopenings, analogous variants, and recurring families that still lack complete closure. State the counting method and deduplicate repeated headings in review/remediation sections.
+ - Once a cycle is green, recommend a local checkpoint commit before beginning another complete review. Create the commit only when the user explicitly requests it. Use that verified commit as the next baseline and prefer delta-first review between periodic full-project reviews.
+ - Do not start an unbounded sequence of full-project reviews on an ever-changing worktree. Finish the current cycle, document residual risk, establish the checkpoint, and review subsequent changes against it; perform another full-project pass only when explicitly requested or before a release milestone.
+
+ Accepted architecture and deployment decisions:
+ - PostgreSQL is always external and provisioned and administered by the installer; OctoHubs must not create, bundle, or manage its own PostgreSQL service.
+ - Direct HTTP operation is supported. Reverse proxies and TLS are external and optional; OctoHubs must not depend internally on Nginx.
+ - The supported deployment model is a single application worker unless the user explicitly changes that decision.
+ - Release tags are created and numbered manually by the user.
+ - Do not reintroduce runtime legacy paths or compatibility layers that have already been removed unless the user explicitly requests them.
+
  UI migration standards:
  - The legacy interface is the primary visual and functional contract during the React migration. Reproduce its information hierarchy, page composition, tab structure, action placement, compactness, and successful interaction details before considering an alternative layout.
  - React replaces rendering and state management; it is not permission to redesign an established workflow. Preserve a legacy arrangement unless there is a concrete usability, accessibility, responsiveness, or consistency defect to solve.

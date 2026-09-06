@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  flushLibraryEventKinds,
   librariesUpdatedMessage,
   libraryEventKind,
 } from "@/features/libraries/use-libraries-realtime";
@@ -31,5 +32,17 @@ describe("libraries realtime events", () => {
         Data: { scope: "history" },
       }),
     ).toBe("library");
+  });
+
+  it("flushes every distinct domain accumulated in one debounce window", () => {
+    const calls: string[] = [];
+
+    flushLibraryEventKinds(new Set(["configuration", "library", "scan"]), {
+      onConfigurationChange: () => calls.push("configuration"),
+      onLibraryChange: () => calls.push("library"),
+      onScanChange: () => calls.push("scan"),
+    });
+
+    expect(calls).toEqual(["configuration", "library", "scan"]);
   });
 });

@@ -72,6 +72,20 @@ def _event(log: Any) -> dict[str, Any] | None:
     }
 
 
+def _event_matches(
+    event: dict[str, Any],
+    *,
+    token_id: int | None,
+    result: str,
+    api_version: str,
+) -> bool:
+    return not (
+        (token_id is not None and event["token_id"] != token_id)
+        or (result and event["result"] != result)
+        or (api_version and event["api_version"] != api_version)
+    )
+
+
 def list_api_token_audit_events(
     user_id: int,
     *,
@@ -101,19 +115,22 @@ def list_api_token_audit_events(
             .limit(fetch_limit)
             .all()
         )
-    except (TypeError, ValueError, SQLAlchemyError):
+    except (TypeError, ValueError):
         return []
+    except SQLAlchemyError as exc:
+        raise auth.AuthStorageError("Audit API token non disponibile") from exc
 
     events: list[dict[str, Any]] = []
     for record in records:
         event = _event(record)
         if event is None:
             continue
-        if normalized_token_id is not None and event["token_id"] != normalized_token_id:
-            continue
-        if requested_result and event["result"] != requested_result:
-            continue
-        if requested_version and event["api_version"] != requested_version:
+        if not _event_matches(
+            event,
+            token_id=normalized_token_id,
+            result=requested_result,
+            api_version=requested_version,
+        ):
             continue
         events.append(event)
         if len(events) >= normalized_limit:

@@ -7,3 +7,10 @@ export function nextTmdbSuggestionIndex(
   if (current < 0) return direction > 0 ? 0 : total - 1;
   return (current + direction + total) % total;
 }
+
+export function tmdbSuggestionDomId(
+  mediaType: string,
+  tmdbId: number,
+): string {
+  return `tmdb-suggestion-${encodeURIComponent(mediaType)}-${tmdbId}`;
+}

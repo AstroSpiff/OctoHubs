@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 import math
 import os
 import threading
@@ -14,10 +13,12 @@ from typing import Any, Callable
 
 import bcrypt
 
+from core.password_policy import PasswordTooLongError, bcrypt_password_bytes
+from core.client_address import resolve_client_address
+
 
 _DUMMY_PASSWORD = b"octohubs-login-dummy-password"
 _DUMMY_PASSWORD_HASH = b"$2b$12$oyRhoXUPOLd3r40DAx0Tg.qTxruvtdsIv17rrsU/Ourr0MnoWBPX2"
-_BCRYPT_MAX_PASSWORD_BYTES = 72
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,14 @@ class LoginAttemptLimiter:
         self._events.move_to_end(key)
         return events
 
+    def _evict_expired(self, now: float) -> None:
+        cutoff = now - self.window_seconds
+        while self._events:
+            key, events = next(iter(self._events.items()))
+            if events and events[-1] > cutoff:
+                break
+            self._events.pop(key, None)
+
     def consume(self, address: str, username: str) -> LoginRateLimitDecision:
         """Consume one login attempt or return when the caller may retry."""
         now = self._clock()
@@ -68,6 +77,7 @@ class LoginAttemptLimiter:
             (self._identity_key(address, username), self.per_identity_attempts),
         )
         with self._lock:
+            self._evict_expired(now)
             buckets = [
                 (self._active_events(key, now), limit)
                 for key, limit in keys_and_limits
@@ -97,10 +107,12 @@ class LoginAttemptLimiter:
 
 def login_password_matches(user: Any, password: str) -> bool:
     """Perform exactly one normal bcrypt check for valid and invalid accounts."""
-    candidate = str(password or "").encode("utf-8")
-    invalid_length = len(candidate) > _BCRYPT_MAX_PASSWORD_BYTES
-    if invalid_length:
+    try:
+        candidate = bcrypt_password_bytes(str(password or ""))
+        invalid_length = False
+    except PasswordTooLongError:
         candidate = _DUMMY_PASSWORD
+        invalid_length = True
 
     active_user = user is not None and bool(getattr(user, "is_active", False))
     password_hash = str(getattr(user, "password_hash", "") or "") if active_user else ""
@@ -119,24 +131,7 @@ def login_password_matches(user: Any, password: str) -> bool:
 
 def login_client_address(request: Any) -> str:
     """Resolve a bounded, normalized address key for login throttling."""
-    trust_proxy = str(os.environ.get("LOGIN_TRUST_PROXY_HEADERS", "")).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    candidates: list[Any] = []
-    if trust_proxy:
-        headers = getattr(request, "headers", {}) or {}
-        candidates.append(headers.get("X-Real-IP"))
-    candidates.append(getattr(getattr(request, "client", None), "host", None))
-
-    for candidate in candidates:
-        try:
-            return ipaddress.ip_address(str(candidate or "").strip()).compressed
-        except ValueError:
-            continue
-    return "unknown"
+    return resolve_client_address(request)
 
 
 def _environment_int(key: str, default: int, minimum: int, maximum: int) -> int:

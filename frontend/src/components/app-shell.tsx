@@ -3,6 +3,11 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 
 import { AccountMenu } from "@/components/account-menu";
+import {
+  isAuthenticatedAccessState,
+  workspaceAccessState,
+  type WorkspaceAccessState,
+} from "@/components/app-shell-access";
 import { Button } from "@/components/ui/button";
 import { RefreshCw } from "@/components/ui/icons";
 import { EmbyWorkspaceHeader } from "@/features/emby-navigation/components/emby-workspace-header";
@@ -24,25 +29,26 @@ function AppShell() {
   const session = useQuery({
     queryKey: ["session"],
     queryFn: getSession,
-    staleTime: 10 * 60_000,
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: "always",
+    refetchOnReconnect: "always",
   });
   const { pathname, search } = useLocation();
   const { theme, toggleTheme } = useApplicationTheme();
   const navigationPreferences = useNavigationPreferences(session.data?.preferences);
-  const accessState: WorkspaceAccessState = session.isPending
-    ? "loading"
-    : session.isError || !session.data
-      ? "error"
-      : session.data.user.role?.trim().toLowerCase() === "viewer"
-        ? "viewer"
-        : "editor";
-  const sessionVerified = accessState === "viewer" || accessState === "editor";
+  const accessState = workspaceAccessState(session);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
+  const hasAuthenticatedAccess = isAuthenticatedAccessState(accessState);
   useDeepLinkFocus(search);
 
   useEffect(() => {
     document.title = applicationTitle(pathname);
   }, [pathname]);
+
+  useEffect(() => {
+    if (!hasAuthenticatedAccess) setPreferencesOpen(false);
+  }, [hasAuthenticatedAccess]);
 
   return (
     <NavigationPreferencesProvider value={navigationPreferences}>
@@ -91,7 +97,7 @@ function AppShell() {
               accessState={accessState}
               onRetry={() => void session.refetch()}
             >
-              <Outlet />
+              <Outlet key={accessState === "editor" ? "write" : "read"} />
             </WorkspaceCapabilityBoundary>
           </div>
         </main>
@@ -99,7 +105,7 @@ function AppShell() {
         {accessState === "editor" && !isUsersPath(pathname) ? <OperationsCenter /> : null}
       </div>
       <NavigationPreferencesDialog
-        open={preferencesOpen && sessionVerified}
+        open={preferencesOpen && hasAuthenticatedAccess}
         preferences={navigationPreferences.preferences}
         isSaving={navigationPreferences.isSaving}
         error={navigationPreferences.error}
@@ -148,8 +154,6 @@ function WorkspaceCapabilityBoundary({
     </WorkspaceCapabilitiesProvider>
   );
 }
-
-type WorkspaceAccessState = "loading" | "error" | "viewer" | "editor";
 
 function BrandLockup({ compact = false }: { compact?: boolean }) {
   return (

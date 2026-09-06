@@ -18,6 +18,8 @@ type CreateUserDialogProps = {
   open: boolean;
   servers: EmbyUserServer[];
   creating: boolean;
+  mutationError?: string;
+  retryServerIds?: string[];
   onClose: () => void;
   onCreate: (input: {
     username: string;
@@ -33,6 +35,8 @@ function CreateUserDialog({
   open,
   servers,
   creating,
+  mutationError,
+  retryServerIds,
   onClose,
   onCreate,
   onDirtyChange,
@@ -54,6 +58,9 @@ function CreateUserDialog({
   useEffect(() => {
     if (!open) {
       openedRef.current = false;
+      const empty = createUserDraft(servers);
+      setDraft(empty);
+      setBaseline(empty);
       return;
     }
     if (openedRef.current) return;
@@ -63,6 +70,11 @@ function CreateUserDialog({
     setDraft(nextDraft);
     setBaseline(nextDraft);
   }, [open, servers]);
+
+  useEffect(() => {
+    if (!open || !retryServerIds?.length) return;
+    setDraft((current) => ({ ...current, serverIds: retryServerIds }));
+  }, [open, retryServerIds]);
 
   const dirty = !createUserDraftMatches(draft, baseline);
   useDirtyChange(open, dirty, onDirtyChange);
@@ -122,6 +134,7 @@ function CreateUserDialog({
           <header>
             <h2 id="create-user-title">Crea utente</h2>
           </header>
+        {mutationError ? <p className="users-dialog-error" role="alert">{mutationError}</p> : null}
 
         <label>
           Nome utente

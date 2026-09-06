@@ -12,6 +12,7 @@ const device = {
   verification_url: "https://trakt.tv/activate",
   expires_in: 600,
   interval: 5,
+  config_revision: "revision-at-start",
 };
 
 describe("Trakt device attempt", () => {

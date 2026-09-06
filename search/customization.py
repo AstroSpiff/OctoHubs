@@ -8,6 +8,7 @@ from typing import Any, Iterable
 from core.config import DEFAULT_CONFIG
 from core.scanner import build_search_queries
 from core.utils import _normalize_media_type
+from search.rule_contracts import CustomSearchRulesInput
 
 
 def normalize_seasons(raw_seasons: Any) -> list[int]:
@@ -30,6 +31,8 @@ def apply_custom_search_rules(config: dict[str, Any], custom_rules: dict[str, An
     if not isinstance(custom_rules, dict):
         effective_config["SEARCH_RULES"] = effective_rules
         return effective_config, effective_rules
+
+    custom_rules = CustomSearchRulesInput.model_validate(custom_rules).model_dump(exclude_none=True)
 
     overrides = {}
     if isinstance(custom_rules.get("SEARCH_RULES"), dict):
@@ -82,7 +85,7 @@ def build_independent_query_variants(
     selected_seasons = normalize_seasons(seasons or [])
     season_targets: list[int | None] = [None]
     if normalized_media_type == "tv" and selected_seasons:
-        season_targets = selected_seasons
+        season_targets = list(selected_seasons)
 
     generated = []
     seen = set()

@@ -2,7 +2,12 @@
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from core.emby_identifiers import OpaqueEmbyIdentifier, OpaqueEmbyServerIdentifier
+
+
+MAX_USER_BATCH_TARGETS = 100
 
 
 class ApiRequest(BaseModel):
@@ -12,8 +17,8 @@ class ApiRequest(BaseModel):
 
 
 class ServerUserTarget(ApiRequest):
-    server_id: str = Field(min_length=1)
-    user_id: str = Field(min_length=1)
+    server_id: OpaqueEmbyServerIdentifier
+    user_id: OpaqueEmbyIdentifier
 
 
 class AccessToggleRequest(ServerUserTarget):
@@ -21,15 +26,23 @@ class AccessToggleRequest(ServerUserTarget):
 
 
 class UserLink(ApiRequest):
-    server_id: str = Field(min_length=1)
-    user_id: str = Field(min_length=1)
+    server_id: OpaqueEmbyServerIdentifier
+    user_id: OpaqueEmbyIdentifier
     username: str = ""
     is_leader: bool = False
 
 
 class LinkUsersRequest(ApiRequest):
-    links: List[UserLink] = Field(min_length=1)
+    links: List[UserLink] = Field(min_length=1, max_length=MAX_USER_BATCH_TARGETS)
     group_id: Optional[str] = None
+
+    @field_validator("links")
+    @classmethod
+    def reject_duplicate_links(cls, links: List[UserLink]) -> List[UserLink]:
+        keys = [(link.server_id, link.user_id) for link in links]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Ogni utente può comparire una sola volta nel batch")
+        return links
 
 
 class RenameGroupRequest(ApiRequest):
@@ -76,9 +89,23 @@ class BulkSettingsTarget(ServerUserTarget):
 
 
 class BulkSettingsApplyRequest(ApiRequest):
-    targets: List[BulkSettingsTarget] = Field(min_length=1)
+    targets: List[BulkSettingsTarget] = Field(
+        min_length=1,
+        max_length=MAX_USER_BATCH_TARGETS,
+    )
     settings: Dict[str, Any]
     apply_libraries: bool = False
+
+    @field_validator("targets")
+    @classmethod
+    def reject_duplicate_targets(
+        cls,
+        targets: List[BulkSettingsTarget],
+    ) -> List[BulkSettingsTarget]:
+        keys = [(target.server_id, target.user_id) for target in targets]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Ogni utente può comparire una sola volta nel batch")
+        return targets
 
 
 class GroupSyncSettingsRequest(ApiRequest):
@@ -102,23 +129,37 @@ class GroupIdRequest(ApiRequest):
 
 
 class CheckUserRequest(ApiRequest):
-    server_id: str = Field(min_length=1)
+    server_id: OpaqueEmbyServerIdentifier
     username: str = Field(min_length=1)
 
 
 class CreateUserTarget(ApiRequest):
-    server_id: str = Field(min_length=1)
+    server_id: OpaqueEmbyServerIdentifier
     username: str = Field(min_length=1)
 
 
 class CreateUsersRequest(ApiRequest):
-    targets: List[CreateUserTarget] = Field(min_length=1)
+    targets: List[CreateUserTarget] = Field(
+        min_length=1,
+        max_length=MAX_USER_BATCH_TARGETS,
+    )
     settings: Dict[str, Any] = Field(default_factory=dict)
     preset_id: Optional[str] = None
     apply_libraries: bool = False
     password: str = ""
     link_group: bool = False
     group_name: str = ""
+
+    @field_validator("targets")
+    @classmethod
+    def reject_duplicate_create_targets(
+        cls,
+        targets: List[CreateUserTarget],
+    ) -> List[CreateUserTarget]:
+        keys = [(target.server_id, target.username.casefold()) for target in targets]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Ogni utente può comparire una sola volta nel batch")
+        return targets
 
 
 class DeleteUserRequest(ServerUserTarget):
@@ -130,9 +171,9 @@ class DeleteGroupUsersRequest(GroupIdRequest):
 
 
 class CloneUserRequest(ApiRequest):
-    source_server_id: str = Field(min_length=1)
-    source_user_id: str = Field(min_length=1)
-    target_server_id: str = Field(min_length=1)
+    source_server_id: OpaqueEmbyServerIdentifier
+    source_user_id: OpaqueEmbyIdentifier
+    target_server_id: OpaqueEmbyServerIdentifier
     new_username: Optional[str] = None
     sync_config: bool = True
     sync_playstate: bool = True

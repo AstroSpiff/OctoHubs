@@ -7,10 +7,13 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+import logging
 import threading
 from typing import Optional
 
 from core.storage import StorageError
+from core.log_sanitization import format_exception_for_log
+from core.safe_output import safe_print as print
 from core.config_manager import _ensure_db_backend, load_config
 from core import config_manager
 from core.utils import json_error, json_success
@@ -18,16 +21,27 @@ from emby_libraries.client import EmbyApiClient
 from emby_libraries.manager import EmbyLibrariesManager
 from emby_libraries.scan_manager import EmbyLibraryScanManager
 from emby_libraries.tracker import LibraryScanTracker
-from emby_runtime.api_clients import _trigger_library_scan as _api_trigger_library_scan
+from emby_runtime.api_clients import (
+    _fetch_emby_libraries as _api_fetch_emby_libraries,
+    _trigger_library_scan as _api_trigger_library_scan,
+)
+from emby_users.mutation_coordinator import UserMutationCoordinator, server_mutation_key
 from emby_users.registry import get_emby_user_manager as _get_emby_user_manager
 
 
+logger = logging.getLogger(__name__)
 _APP_EVENT_LOOP: Optional[asyncio.AbstractEventLoop] = None
 
 
 def register_app_event_loop(loop: asyncio.AbstractEventLoop) -> None:
     global _APP_EVENT_LOOP
     _APP_EVENT_LOOP = loop
+
+
+def clear_app_event_loop() -> None:
+    """Drop the runtime loop reference before the loop is closed."""
+    global _APP_EVENT_LOOP
+    _APP_EVENT_LOOP = None
 
 
 def get_app_event_loop() -> Optional[asyncio.AbstractEventLoop]:
@@ -133,14 +147,33 @@ def get_operation_tracker():
 
             _OPERATION_TRACKER = OperationTracker(_ensure_db_backend())
         if not _OPERATION_TRACKER_RECOVERED:
-            _OPERATION_TRACKER_RECOVERED = True
             try:
-                interrupted = _OPERATION_TRACKER.interrupt_active("Interrotta da riavvio OctoHubs")
+                interrupted = _OPERATION_TRACKER.interrupt_stale()
+                _OPERATION_TRACKER_RECOVERED = True
                 if interrupted:
                     print(f"[OPERATIONS] {interrupted} operazioni attive marcate come interrotte dopo riavvio.")
             except Exception as exc:
-                print(f"[OPERATIONS] Recovery operazioni non riuscita: {exc}")
+                logger.error(
+                    "[OPERATIONS] Recovery operazioni non riuscita:\n%s",
+                    format_exception_for_log(exc),
+                )
     return _OPERATION_TRACKER
+
+
+def initialize_operation_tracker():
+    """Open the process-owned operation heartbeat lifecycle."""
+    tracker = get_operation_tracker()
+    tracker.initialize()
+    return tracker
+
+
+def shutdown_operation_tracker(timeout_seconds: float = 5.0) -> bool:
+    """Stop an existing tracker without creating database state at shutdown."""
+    with _OPERATION_TRACKER_LOCK:
+        tracker = _OPERATION_TRACKER
+    if tracker is None:
+        return True
+    return bool(tracker.shutdown(timeout_seconds, interrupt_active=True))
 
 
 def get_emby_libraries_manager():
@@ -164,8 +197,12 @@ def get_emby_library_scan_manager():
             json_success=json_success,
             scan_tracker=_LIBRARY_SCAN_TRACKER,
             trigger_library_scan=_api_trigger_library_scan,
+            fetch_libraries=_api_fetch_emby_libraries,
             get_app_event_loop=_get_app_event_loop,
             emby_api_client_cls=EmbyApiClient,
             log_flush=_log_flush,
+            server_mutation_guard=lambda server_id: UserMutationCoordinator(
+                _ensure_db_backend()
+            ).guard([server_mutation_key(server_id)]),
         )
     return _EMBY_LIBRARY_SCAN_MANAGER

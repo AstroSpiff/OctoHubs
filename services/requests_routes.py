@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from emby_runtime.jellyseerr_snapshots import (
@@ -52,14 +53,17 @@ async def media_details(
     tmdb_id: int | str | None = None,
     media_type: str = "",
 ):
-    _require_auth_dep(request)
-    payload, status_code = _build_media_details_snapshot(tmdb_id, media_type)
+    await run_in_threadpool(_require_auth_dep, request)
+    payload, status_code = await run_in_threadpool(_build_media_details_snapshot, tmdb_id, media_type)
     return JSONResponse(payload, status_code=status_code)
 
 
 @router.post("/api/research/requests/create", response_model=ResearchActionResponse)
 async def jellyseerr_request(request: Request, payload: JellyseerrRequestPayload):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_dep(request)
-    data, status_code = _build_jellyseerr_request_snapshot(payload.model_dump(by_alias=True))
+    data, status_code = await run_in_threadpool(
+        _build_jellyseerr_request_snapshot,
+        payload.model_dump(by_alias=True),
+    )
     return JSONResponse(data, status_code=status_code)

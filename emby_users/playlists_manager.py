@@ -4,6 +4,7 @@ import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from emby_users.item_matching import get_item_sync_keys
+from core.log_sanitization import sanitize_diagnostic_text
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,19 @@ class PlaylistsManager:
         self._remove_playlist_entries = remove_playlist_entries
         self._delete_playlist = delete_playlist
 
+    @staticmethod
+    def _record_incomplete_removal(
+        results: Dict[str, Any],
+        target_label: str,
+        playlist_name: str,
+        not_removable: int,
+    ) -> None:
+        if not_removable:
+            results["failed"].append(
+                f"{target_label}: remove '{playlist_name}' incomplete "
+                f"({not_removable} item(s))"
+            )
+
     def _source_provider_keys(self, source_payload: List[Dict[str, Any]]) -> List[str]:
         keys = []
         seen = set()
@@ -55,7 +69,7 @@ class PlaylistsManager:
         label = server.get("alias") or server.get("name") or server.get("id")
         logger.warning(
             "[SYNC][PLAYLISTS] target %s provider map start keys=%s",
-            label,
+            sanitize_diagnostic_text(label),
             len(provider_keys),
         )
         items, err = self._fetch_items_by_provider_ids(server, user_id, provider_keys, True)
@@ -70,7 +84,7 @@ class PlaylistsManager:
                 key_map.setdefault(key, item_id)
         logger.warning(
             "[SYNC][PLAYLISTS] target %s provider map done items=%s keys=%s",
-            label,
+            sanitize_diagnostic_text(label),
             len(items),
             len(key_map),
         )
@@ -82,10 +96,11 @@ class PlaylistsManager:
         target_key_map: Dict[str, str],
         target_server: Dict[str, Any],
         target_user_id: str,
-    ) -> Tuple[List[str], int]:
+    ) -> Tuple[List[str], int, List[str]]:
         ordered_ids = []
         seen_ids = set()
         missing = 0
+        lookup_errors = []
         for item in source_items:
             match_id = None
             keys = get_item_sync_keys(item)
@@ -96,7 +111,8 @@ class PlaylistsManager:
             if not match_id and not keys and (item.get("Type") or item.get("ItemType")) != "Episode":
                 matches, err = self._fetch_items_by_safe_fallback(target_server, target_user_id, item)
                 if err:
-                    logger.warning("[SYNC][PLAYLISTS] fallback lookup failed: %s", err)
+                    logger.warning("[SYNC][PLAYLISTS] fallback lookup failed: %s", sanitize_diagnostic_text(err))
+                    lookup_errors.append(str(err))
                 elif matches:
                     match_id = matches[0].get("Id")
             if not match_id:
@@ -106,7 +122,57 @@ class PlaylistsManager:
                 continue
             ordered_ids.append(match_id)
             seen_ids.add(match_id)
-        return ordered_ids, missing
+        return ordered_ids, missing, lookup_errors
+
+    def _load_source_playlist_payload(
+        self,
+        server: Dict[str, Any],
+        user_id: str,
+        playlists: List[Dict[str, Any]],
+        *,
+        exact: bool,
+    ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+        payload = []
+        scope = "[SYNC][PLAYLISTS][EXACT]" if exact else "[SYNC][PLAYLISTS]"
+        for index, playlist in enumerate(playlists, start=1):
+            playlist_id = playlist.get("Id")
+            name = playlist.get("Name") or playlist.get("SortName") or "Playlist"
+            if not playlist_id:
+                continue
+            logger.warning(
+                "%s source playlist %s/%s read start: %s",
+                scope,
+                index,
+                len(playlists),
+                sanitize_diagnostic_text(name),
+            )
+            items, error = self._fetch_playlist_items(server, user_id, playlist_id)
+            if error:
+                logger.warning(
+                    "[SYNC][PLAYLISTS] failed reading source playlist %s: %s",
+                    sanitize_diagnostic_text(name),
+                    sanitize_diagnostic_text(error),
+                )
+                return [], f"Failed to read source playlist '{name}': {error}"
+            logger.warning(
+                "%s source playlist %s/%s read done: %s items=%s",
+                scope,
+                index,
+                len(playlists),
+                sanitize_diagnostic_text(name),
+                len(items),
+            )
+            payload.append({"name": name, "items": items})
+        return payload, None
+
+    @staticmethod
+    def _record_target_success(
+        results: Dict[str, Any],
+        target_label: str,
+        failure_count_before: int,
+    ) -> None:
+        if len(results["failed"]) == failure_count_before:
+            results["success"].append(target_label)
 
     def sync_user_playlists(
         self,
@@ -123,30 +189,14 @@ class PlaylistsManager:
         if err:
             return {"error": f"Failed to fetch source playlists: {err}"}
 
-        source_payload = []
-        for index, playlist in enumerate(source_playlists, start=1):
-            playlist_id = playlist.get("Id")
-            name = playlist.get("Name") or playlist.get("SortName") or "Playlist"
-            if not playlist_id:
-                continue
-            logger.warning(
-                "[SYNC][PLAYLISTS] source playlist %s/%s read start: %s",
-                index,
-                len(source_playlists),
-                name,
-            )
-            items, item_err = self._fetch_playlist_items(source_server, source_user_id, playlist_id)
-            if item_err:
-                logger.warning("[SYNC][PLAYLISTS] failed reading source playlist %s: %s", name, item_err)
-                continue
-            logger.warning(
-                "[SYNC][PLAYLISTS] source playlist %s/%s read done: %s items=%s",
-                index,
-                len(source_playlists),
-                name,
-                len(items),
-            )
-            source_payload.append({"name": name, "items": items})
+        source_payload, payload_error = self._load_source_playlist_payload(
+            source_server,
+            source_user_id,
+            source_playlists,
+            exact=False,
+        )
+        if payload_error:
+            return {"error": payload_error}
 
         results = {"success": [], "failed": [], "counts": {}, "missing_counts": {}}
         provider_keys = self._source_provider_keys(source_payload)
@@ -163,20 +213,21 @@ class PlaylistsManager:
                 continue
 
             target_label = target_server.get("alias") or target_server.get("name") or target_server.get("id")
-            logger.warning("[SYNC][PLAYLISTS] target %s start", target_label)
+            failure_count_before = len(results["failed"])
+            logger.warning("[SYNC][PLAYLISTS] target %s start", sanitize_diagnostic_text(target_label))
             target_key_map, map_err = self._build_target_key_map(target_server, target_user_id, provider_keys)
             if map_err:
                 results["failed"].append(f"{target_label}: Fetch error")
                 continue
 
-            logger.warning("[SYNC][PLAYLISTS] target %s playlists fetch start", target_label)
+            logger.warning("[SYNC][PLAYLISTS] target %s playlists fetch start", sanitize_diagnostic_text(target_label))
             target_playlists, target_err = self._fetch_playlists(target_server, target_user_id)
             if target_err:
                 results["failed"].append(f"{target_label}: Playlist fetch error")
                 continue
             logger.warning(
                 "[SYNC][PLAYLISTS] target %s playlists fetch done: %s",
-                target_label,
+                sanitize_diagnostic_text(target_label),
                 len(target_playlists),
             )
             target_by_name = {
@@ -191,13 +242,18 @@ class PlaylistsManager:
 
             for source_entry in source_payload:
                 playlist_name = source_entry["name"]
-                ordered_ids, missing = self._resolve_ordered_target_ids(
+                ordered_ids, missing, lookup_errors = self._resolve_ordered_target_ids(
                     source_entry["items"],
                     target_key_map,
                     target_server,
                     target_user_id,
                 )
                 missing_total += missing
+                if lookup_errors:
+                    results["failed"].append(
+                        f"{target_label}: lookup '{playlist_name}' failed"
+                    )
+                    continue
 
                 target_playlist = target_by_name.get(playlist_name.strip().lower())
                 target_playlist_id = target_playlist.get("Id") if target_playlist else None
@@ -226,15 +282,15 @@ class PlaylistsManager:
                     playlists_changed += 1
                     items_added += len(ids_to_add)
                 else:
-                    logger.warning("[SYNC][PLAYLISTS] failed adding items to %s on %s: %s", playlist_name, target_label, add_err)
+                    logger.warning("[SYNC][PLAYLISTS] failed adding items to %s on %s: %s", sanitize_diagnostic_text(playlist_name), sanitize_diagnostic_text(target_label), sanitize_diagnostic_text(add_err))
                     results["failed"].append(f"{target_label}: update '{playlist_name}' failed")
 
-            results["success"].append(target_label)
+            self._record_target_success(results, target_label, failure_count_before)
             results["counts"][target_label] = {"playlists": playlists_changed, "items": items_added}
             results["missing_counts"][target_label] = missing_total
             logger.warning(
                 "[SYNC][PLAYLISTS] target %s done playlists_changed=%s items_added=%s missing=%s",
-                target_label,
+                sanitize_diagnostic_text(target_label),
                 playlists_changed,
                 items_added,
                 missing_total,
@@ -257,30 +313,14 @@ class PlaylistsManager:
         if err:
             return {"error": f"Failed to fetch source playlists: {err}"}
 
-        source_payload = []
-        for index, playlist in enumerate(source_playlists, start=1):
-            playlist_id = playlist.get("Id")
-            name = playlist.get("Name") or playlist.get("SortName") or "Playlist"
-            if not playlist_id:
-                continue
-            logger.warning(
-                "[SYNC][PLAYLISTS][EXACT] source playlist %s/%s read start: %s",
-                index,
-                len(source_playlists),
-                name,
-            )
-            items, item_err = self._fetch_playlist_items(source_server, source_user_id, playlist_id)
-            if item_err:
-                logger.warning("[SYNC][PLAYLISTS] failed reading source playlist %s: %s", name, item_err)
-                continue
-            logger.warning(
-                "[SYNC][PLAYLISTS][EXACT] source playlist %s/%s read done: %s items=%s",
-                index,
-                len(source_playlists),
-                name,
-                len(items),
-            )
-            source_payload.append({"name": name, "items": items})
+        source_payload, payload_error = self._load_source_playlist_payload(
+            source_server,
+            source_user_id,
+            source_playlists,
+            exact=True,
+        )
+        if payload_error:
+            return {"error": payload_error}
 
         results = {"success": [], "failed": [], "counts": {}, "missing_counts": {}, "not_removed_counts": {}}
         provider_keys = self._source_provider_keys(source_payload)
@@ -297,20 +337,21 @@ class PlaylistsManager:
                 continue
 
             target_label = target_server.get("alias") or target_server.get("name") or target_server.get("id")
-            logger.warning("[SYNC][PLAYLISTS][EXACT] target %s start", target_label)
+            failure_count_before = len(results["failed"])
+            logger.warning("[SYNC][PLAYLISTS][EXACT] target %s start", sanitize_diagnostic_text(target_label))
             target_key_map, map_err = self._build_target_key_map(target_server, target_user_id, provider_keys)
             if map_err:
                 results["failed"].append(f"{target_label}: Fetch error")
                 continue
 
-            logger.warning("[SYNC][PLAYLISTS][EXACT] target %s playlists fetch start", target_label)
+            logger.warning("[SYNC][PLAYLISTS][EXACT] target %s playlists fetch start", sanitize_diagnostic_text(target_label))
             target_playlists, target_err = self._fetch_playlists(target_server, target_user_id)
             if target_err:
                 results["failed"].append(f"{target_label}: Playlist fetch error")
                 continue
             logger.warning(
                 "[SYNC][PLAYLISTS][EXACT] target %s playlists fetch done: %s",
-                target_label,
+                sanitize_diagnostic_text(target_label),
                 len(target_playlists),
             )
             target_by_name = {
@@ -345,21 +386,26 @@ class PlaylistsManager:
                 else:
                     logger.warning(
                         "[SYNC][PLAYLISTS][EXACT] failed deleting extra playlist %s on %s: %s",
-                        target_name,
-                        target_label,
-                        delete_err,
+                        sanitize_diagnostic_text(target_name),
+                        sanitize_diagnostic_text(target_label),
+                        sanitize_diagnostic_text(delete_err),
                     )
                     results["failed"].append(f"{target_label}: delete '{target_name}' failed")
 
             for source_entry in source_payload:
                 playlist_name = source_entry["name"]
-                ordered_ids, missing = self._resolve_ordered_target_ids(
+                ordered_ids, missing, lookup_errors = self._resolve_ordered_target_ids(
                     source_entry["items"],
                     target_key_map,
                     target_server,
                     target_user_id,
                 )
                 missing_total += missing
+                if lookup_errors:
+                    results["failed"].append(
+                        f"{target_label}: lookup '{playlist_name}' failed"
+                    )
+                    continue
 
                 target_playlist = target_by_name.get(playlist_name.strip().lower())
                 target_playlist_id = target_playlist.get("Id") if target_playlist else None
@@ -389,7 +435,7 @@ class PlaylistsManager:
                         playlists_changed += 1
                         items_added += len(ids_to_add)
                     else:
-                        logger.warning("[SYNC][PLAYLISTS] failed adding items to %s on %s: %s", playlist_name, target_label, add_err)
+                        logger.warning("[SYNC][PLAYLISTS] failed adding items to %s on %s: %s", sanitize_diagnostic_text(playlist_name), sanitize_diagnostic_text(target_label), sanitize_diagnostic_text(add_err))
                         results["failed"].append(f"{target_label}: update '{playlist_name}' failed")
 
                 entry_ids_to_remove = []
@@ -418,10 +464,13 @@ class PlaylistsManager:
                         items_removed += len(entry_ids_to_remove)
                     else:
                         not_removable += len(entry_ids_to_remove)
-                        logger.warning("[SYNC][PLAYLISTS] failed removing items from %s on %s: %s", playlist_name, target_label, remove_err)
+                        logger.warning("[SYNC][PLAYLISTS] failed removing items from %s on %s: %s", sanitize_diagnostic_text(playlist_name), sanitize_diagnostic_text(target_label), sanitize_diagnostic_text(remove_err))
+                self._record_incomplete_removal(
+                    results, target_label, playlist_name, not_removable
+                )
                 not_removed_total += not_removable
 
-            results["success"].append(target_label)
+            self._record_target_success(results, target_label, failure_count_before)
             results["counts"][target_label] = {
                 "playlists": playlists_changed,
                 "playlists_deleted": playlists_deleted,
@@ -432,7 +481,7 @@ class PlaylistsManager:
             results["not_removed_counts"][target_label] = not_removed_total
             logger.warning(
                 "[SYNC][PLAYLISTS][EXACT] target %s done playlists_changed=%s deleted=%s added=%s removed=%s missing=%s not_removed=%s",
-                target_label,
+                sanitize_diagnostic_text(target_label),
                 playlists_changed,
                 playlists_deleted,
                 items_added,
@@ -479,7 +528,8 @@ class PlaylistsManager:
                 continue
 
             target_label = target_server.get("alias") or target_server.get("name") or target_server.get("id")
-            logger.warning("[SYNC][PLAYLISTS][PAYLOAD] target %s start", target_label)
+            failure_count_before = len(results["failed"])
+            logger.warning("[SYNC][PLAYLISTS][PAYLOAD] target %s start", sanitize_diagnostic_text(target_label))
             target_key_map, map_err = self._build_target_key_map(target_server, target_user_id, provider_keys)
             if map_err:
                 results["failed"].append(f"{target_label}: Fetch error")
@@ -515,9 +565,9 @@ class PlaylistsManager:
                 else:
                     logger.warning(
                         "[SYNC][PLAYLISTS][PAYLOAD] failed deleting playlist %s on %s: %s",
-                        deleted_name,
-                        target_label,
-                        delete_err,
+                        sanitize_diagnostic_text(deleted_name),
+                        sanitize_diagnostic_text(target_label),
+                        sanitize_diagnostic_text(delete_err),
                     )
                     results["failed"].append(f"{target_label}: delete '{deleted_name}' failed")
 
@@ -565,7 +615,7 @@ class PlaylistsManager:
                         playlists_changed += 1
                         items_added += len(ids_to_add)
                     else:
-                        logger.warning("[SYNC][PLAYLISTS][PAYLOAD] failed adding items to %s on %s: %s", playlist_name, target_label, add_err)
+                        logger.warning("[SYNC][PLAYLISTS][PAYLOAD] failed adding items to %s on %s: %s", sanitize_diagnostic_text(playlist_name), sanitize_diagnostic_text(target_label), sanitize_diagnostic_text(add_err))
                         results["failed"].append(f"{target_label}: update '{playlist_name}' failed")
 
                 entry_ids_to_remove = []
@@ -594,10 +644,13 @@ class PlaylistsManager:
                         items_removed += len(entry_ids_to_remove)
                     else:
                         not_removable += len(entry_ids_to_remove)
-                        logger.warning("[SYNC][PLAYLISTS][PAYLOAD] failed removing items from %s on %s: %s", playlist_name, target_label, remove_err)
+                        logger.warning("[SYNC][PLAYLISTS][PAYLOAD] failed removing items from %s on %s: %s", sanitize_diagnostic_text(playlist_name), sanitize_diagnostic_text(target_label), sanitize_diagnostic_text(remove_err))
+                self._record_incomplete_removal(
+                    results, target_label, playlist_name, not_removable
+                )
                 not_removed_total += not_removable
 
-            results["success"].append(target_label)
+            self._record_target_success(results, target_label, failure_count_before)
             results["counts"][target_label] = {
                 "playlists": playlists_changed,
                 "playlists_deleted": playlists_deleted,
@@ -608,7 +661,7 @@ class PlaylistsManager:
             results["not_removed_counts"][target_label] = not_removed_total
             logger.warning(
                 "[SYNC][PLAYLISTS][PAYLOAD] target %s done playlists_changed=%s deleted=%s added=%s removed=%s missing=%s not_removed=%s",
-                target_label,
+                sanitize_diagnostic_text(target_label),
                 playlists_changed,
                 playlists_deleted,
                 items_added,
@@ -624,51 +677,37 @@ class PlaylistsManager:
         results = {"success": [], "failed": [], "counts": {}, "missing_counts": {}}
         desired_playlists: Dict[str, Dict[str, Any]] = {}
         skipped_items = 0
+        source_failures = []
 
         logger.warning("[SYNC][PLAYLISTS][MERGE] start targets=%s", len(targets))
         for index, (source_server_id, source_user_id) in enumerate(targets, start=1):
             source_server = self._get_server_by_id(source_server_id)
             if not source_server:
-                results["failed"].append(f"Server {source_server_id} not found")
+                source_failures.append(f"Server {source_server_id} not found")
                 continue
             source_label = source_server.get("alias") or source_server.get("name") or source_server.get("id")
             logger.warning(
                 "[SYNC][PLAYLISTS][MERGE] source %s/%s fetch start: %s user=%s",
                 index,
                 len(targets),
-                source_label,
-                source_user_id,
+                sanitize_diagnostic_text(source_label),
+                sanitize_diagnostic_text(source_user_id),
             )
             source_playlists, err = self._fetch_playlists(source_server, source_user_id)
             if err:
-                results["failed"].append(f"{source_label}: Playlist fetch error")
-                logger.warning("[SYNC][PLAYLISTS][MERGE] source %s/%s failed: %s", index, len(targets), err)
+                source_failures.append(f"{source_label}: Playlist fetch error")
+                logger.warning("[SYNC][PLAYLISTS][MERGE] source %s/%s failed: %s", index, len(targets), sanitize_diagnostic_text(err))
                 continue
 
-            for playlist in source_playlists:
-                playlist_id = playlist.get("Id")
-                playlist_name = str(playlist.get("Name") or playlist.get("SortName") or "Playlist").strip()
-                if not playlist_id or not playlist_name:
-                    continue
-                items, item_err = self._fetch_playlist_items(source_server, source_user_id, playlist_id)
-                if item_err:
-                    results["failed"].append(f"{source_label}: read '{playlist_name}' failed")
-                    logger.warning("[SYNC][PLAYLISTS][MERGE] failed reading %s on %s: %s", playlist_name, source_label, item_err)
-                    continue
-
-                playlist_key = playlist_name.lower()
-                desired = desired_playlists.setdefault(playlist_key, {"name": playlist_name, "items": []})
-                existing_keys = set(desired.get("items") or [])
-                for item in items:
-                    item_keys = get_item_sync_keys(item)
-                    if not item_keys:
-                        skipped_items += 1
-                        continue
-                    for key in item_keys:
-                        if key in existing_keys:
-                            continue
-                        desired["items"].append(key)
-                        existing_keys.add(key)
+            read_failures, skipped = self._merge_source_playlists(
+                source_server,
+                source_user_id,
+                source_label,
+                source_playlists,
+                desired_playlists,
+            )
+            source_failures.extend(read_failures)
+            skipped_items += skipped
 
             logger.warning(
                 "[SYNC][PLAYLISTS][MERGE] source %s/%s done playlists=%s desired_playlists=%s",
@@ -677,6 +716,13 @@ class PlaylistsManager:
                 len(source_playlists),
                 len(desired_playlists),
             )
+
+        if source_failures:
+            return {
+                **results,
+                "failed": source_failures,
+                "error": "Playlists bootstrap aborted: incomplete source snapshot",
+            }
 
         logger.warning(
             "[SYNC][PLAYLISTS][MERGE] union done playlists=%s keys=%s skipped_items=%s",
@@ -690,5 +736,53 @@ class PlaylistsManager:
         results["success"] = applied.get("success", [])
         results["counts"] = applied.get("counts", {})
         results["missing_counts"] = applied.get("missing_counts", {})
-        logger.warning("[SYNC][PLAYLISTS][MERGE] done results=%s", results)
+        logger.warning(
+            "[SYNC][PLAYLISTS][MERGE] done success=%s failed=%s",
+            len(results["success"]),
+            len(results["failed"]),
+        )
         return results
+
+    def _merge_source_playlists(
+        self,
+        source_server: Dict[str, Any],
+        source_user_id: str,
+        source_label: str,
+        source_playlists: List[Dict[str, Any]],
+        desired_playlists: Dict[str, Dict[str, Any]],
+    ) -> tuple[List[str], int]:
+        failures = []
+        skipped_items = 0
+        for playlist in source_playlists:
+            playlist_id = playlist.get("Id")
+            playlist_name = str(
+                playlist.get("Name") or playlist.get("SortName") or "Playlist"
+            ).strip()
+            if not playlist_id or not playlist_name:
+                continue
+            items, item_err = self._fetch_playlist_items(
+                source_server, source_user_id, playlist_id
+            )
+            if item_err:
+                failures.append(f"{source_label}: read '{playlist_name}' failed")
+                logger.warning(
+                    "[SYNC][PLAYLISTS][MERGE] failed reading %s on %s: %s",
+                    sanitize_diagnostic_text(playlist_name),
+                    sanitize_diagnostic_text(source_label),
+                    sanitize_diagnostic_text(item_err),
+                )
+                continue
+            desired = desired_playlists.setdefault(
+                playlist_name.lower(), {"name": playlist_name, "items": []}
+            )
+            existing_keys = set(desired.get("items") or [])
+            for item in items:
+                item_keys = get_item_sync_keys(item)
+                if not item_keys:
+                    skipped_items += 1
+                    continue
+                for key in item_keys:
+                    if key not in existing_keys:
+                        desired["items"].append(key)
+                        existing_keys.add(key)
+        return failures, skipped_items

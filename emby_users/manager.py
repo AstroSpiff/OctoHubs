@@ -51,6 +51,7 @@ from .user_lifecycle_manager import UserLifecycleManager
 from .item_matching import get_item_sync_keys
 from .state_tracker import UserSyncStateTracker
 from .operation_tracker import OperationTracker
+from .mutation_coordinator import UserMutationCoordinator
 
 class EmbyUserManager:
     def __init__(
@@ -61,6 +62,7 @@ class EmbyUserManager:
     ):
         self.storage = storage
         self.config = config
+        self.mutation_coordinator = UserMutationCoordinator(self.storage)
         self.operation_tracker = operation_tracker or OperationTracker(self.storage)
         self.group_user_resolver = GroupUserResolver(self.storage)
         self.settings_manager = SettingsManager(
@@ -73,14 +75,16 @@ class EmbyUserManager:
             update_user_config=_update_emby_user_configuration,
             fetch_user_display_preferences=_fetch_emby_user_display_preferences,
             update_user_display_preferences=_update_emby_user_display_preferences,
-            fetch_server_features=_fetch_emby_features
+            fetch_server_features=_fetch_emby_features,
+            mutation_coordinator=self.mutation_coordinator,
         )
         self.password_manager = PasswordManager(
             storage=self.storage,
             get_server_by_id=self._get_server_by_id,
             get_group_users=self.group_user_resolver.get_group_users,
             get_unlinked_group_id=self.group_user_resolver.get_unlinked_group_id,
-            update_user_password=_update_emby_user_password
+            update_user_password=_update_emby_user_password,
+            mutation_coordinator=self.mutation_coordinator,
         )
         self.dashboard_manager = UsersDashboardManager(
             storage=self.storage,
@@ -93,11 +97,13 @@ class EmbyUserManager:
         self.group_manager = GroupManager(
             storage=self.storage,
             password_manager=self.password_manager,
-            get_users_dashboard_data=self.dashboard_manager.get_users_dashboard_data
+            get_users_dashboard_data=self.dashboard_manager.get_users_dashboard_data,
+            mutation_coordinator=self.mutation_coordinator,
         )
         self.settings_preset_manager = SettingsPresetManager(
             storage=self.storage,
-            settings_manager=self.settings_manager
+            settings_manager=self.settings_manager,
+            mutation_coordinator=self.mutation_coordinator,
         )
         self.user_lifecycle_manager = UserLifecycleManager(
             storage=self.storage,
@@ -109,7 +115,8 @@ class EmbyUserManager:
             fetch_users_list=_fetch_emby_users_list,
             fetch_user_details=_fetch_emby_user_details,
             create_user=_create_emby_user,
-            delete_user=_delete_emby_user
+            delete_user=_delete_emby_user,
+            mutation_coordinator=self.mutation_coordinator,
         )
         self.icon_manager = IconManager(
             storage=self.storage,
@@ -172,7 +179,8 @@ class EmbyUserManager:
             link_clone_to_group=self.group_manager.link_clone_to_source_group,
             apply_config_patch=self.settings_manager.apply_config_sync_patch_to_user,
             fetch_user_display_preferences=_fetch_emby_user_display_preferences,
-            map_config_for_server=self.settings_manager.remap_config_for_server
+            map_config_for_server=self.settings_manager.remap_config_for_server,
+            mutation_coordinator=self.mutation_coordinator,
         )
         self.user_ops_manager = UserOpsManager(
             get_server_by_id=self._get_server_by_id,
@@ -180,7 +188,8 @@ class EmbyUserManager:
             fetch_users_list=_fetch_emby_users_list,
             update_user_policy=_update_emby_user_policy,
             rename_user=_rename_emby_user,
-            fetch_user_last_playback=_fetch_emby_user_last_playback
+            fetch_user_last_playback=_fetch_emby_user_last_playback,
+            mutation_coordinator=self.mutation_coordinator,
         )
         self.auto_sync_manager = AutoSyncManager(
             get_users_dashboard_data=self.dashboard_manager.get_users_dashboard_data,
@@ -201,10 +210,9 @@ class EmbyUserManager:
             mark_group_bootstrap_done=self.group_manager.mark_group_bootstrap_done,
             mark_group_sync_result=self.group_manager.mark_group_sync_result,
             state_tracker=self.state_tracker,
-            operation_tracker=self.operation_tracker
+            operation_tracker=self.operation_tracker,
+            group_sync_guard=self.group_manager.sync_guard,
         )
-        self.icon_manager.migrate_icons_to_db()
-
     def update_config(self, config: Dict[str, Any]) -> None:
         """Propagate a refreshed config to all sub-managers that cache it."""
         self.config = config

@@ -154,11 +154,30 @@ def test_system_database_reports_a_connection_failure_without_claiming_it_is_con
 
     assert by_id["database-connection"]["status_code"] == "disconnected"
     assert by_id["database-connection"]["summary"] == "Connessione non disponibile"
-    assert by_id["database-connection"]["detail"] == "connection refused"
+    assert by_id["database-connection"]["detail"] == (
+        "Dettagli disponibili nei log dell'applicazione."
+    )
     assert by_id["database-connection"]["href"] == "/app/configuration/services?focus=configuration-database"
     assert by_id["database-migrations"]["status_code"] == "unknown"
     assert by_id["database-migrations"]["summary"] == "Migrazioni non verificabili"
     assert by_id["database-migrations"]["href"] == "/app/configuration/services?focus=configuration-database"
+    assert by_id["database-backups"]["status_code"] == "external"
+    assert by_id["database-backups"]["severity"] == "unknown"
+    assert by_id["database-backups"]["status_label"] == "Gestito dall'operatore"
+    assert by_id["database-backups"]["summary"] == "Gestito esternamente"
+
+
+def test_system_backup_status_never_infers_success_from_local_json(monkeypatch, tmp_path):
+    from web import config_routes
+
+    (tmp_path / "not-a-backup.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("OCTOHUBS_DB_BACKUP_DIR", str(tmp_path))
+
+    item = config_routes._system_backup_item()
+
+    assert item["status_code"] == "external"
+    assert item["severity"] == "unknown"
+    assert "not-a-backup.json" not in str(item)
 
 
 def test_system_status_can_return_one_operational_section(monkeypatch):
@@ -316,7 +335,15 @@ async def test_event_bridge_settings_api_saves_and_prefers_http_push(monkeypatch
         async def push_configuration(self, *_args):
             raise AssertionError("WebSocket must not be used after a successful HTTP push")
 
-    monkeypatch.setattr(event_bridge_api_routes, "_save_event_bridge_settings", lambda settings: saved.update(settings))
+    def save_settings(settings):
+        bridge_config = event_bridge_configuration._merged_event_bridge_config(
+            config["EVENT_BRIDGE"],
+            settings,
+        )
+        saved.update(bridge_config)
+        return bridge_config
+
+    monkeypatch.setattr(event_bridge_api_routes, "_save_event_bridge_settings", save_settings)
     monkeypatch.setattr(event_bridge_configuration, "get_event_bridge_manager", lambda: _Manager())
 
     def _push_http(server, server_id, settings):

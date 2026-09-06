@@ -3,6 +3,44 @@ import type { UserSettings } from "@/features/user-settings/types";
 import { linkRequestPayload } from "@/features/users/link-user-association";
 import type { BulkCloneInput, BulkCloneResult, CloneUserInput, EmbyUser, EmbyUserDetails, EmbyUserGroup, LinkUsersInput, PasswordTarget, SaveGroupSyncSettingsInput, UserActionResult, UsersDashboard } from "@/features/users/types";
 
+function actionFailureMessage(result: UserActionResult, label: string): string {
+  const outcome = result.result && typeof result.result === "object" ? result.result : result;
+  const failures = Array.isArray(outcome.failed) ? outcome.failed : [];
+  const journal = failures.map((entry) => {
+    if (typeof entry === "string") return entry;
+    const target = [entry.username, entry.server_id, entry.stage].filter(Boolean).join(" / ");
+    const detail = typeof entry.error === "string" ? entry.error : "operazione non completata";
+    return target ? `${target}: ${detail}` : detail;
+  }).join("; ");
+  return journal || result.error || result.message || `${label} non completata`;
+}
+
+export function requireCompleteUserAction(result: UserActionResult, label: string): UserActionResult {
+  const outcome = result.result && typeof result.result === "object" ? result.result : result;
+  const failed = Array.isArray(outcome.failed) && outcome.failed.length > 0;
+  const incomplete = result.ok === false || outcome.ok === false || outcome.status === "partial" || outcome.status === "error" || failed || outcome.reconciliation_required === true;
+  if (incomplete) throw new UserActionPartialError(actionFailureMessage(result, label), result);
+  return result;
+}
+
+export class UserActionPartialError extends Error {
+  constructor(message: string, readonly outcome: UserActionResult) {
+    super(message);
+    this.name = "UserActionPartialError";
+  }
+}
+
+export class BulkClonePartialError extends Error {
+  constructor(message: string, readonly result: BulkCloneResult) {
+    super(message);
+    this.name = "BulkClonePartialError";
+  }
+}
+
+function completeAction(promise: Promise<UserActionResult>, label: string): Promise<UserActionResult> {
+  return promise.then((result) => requireCompleteUserAction(result, label));
+}
+
 export function getUsersDashboard(): Promise<UsersDashboard> {
   return request<UsersDashboard>("/api/v1/emby/users/list");
 }
@@ -12,25 +50,25 @@ export function getUserDetails(user: EmbyUser): Promise<EmbyUserDetails> {
 }
 
 export function toggleRemoteAccess(user: EmbyUser): Promise<UserActionResult> {
-  return request<UserActionResult>("/api/v1/emby/users/toggle-remote", {
+  return completeAction(request<UserActionResult>("/api/v1/emby/users/toggle-remote", {
     method: "POST",
     body: JSON.stringify({
       server_id: user.server_id,
       user_id: user.user_id,
       enable: !user.enable_remote_access,
     }),
-  });
+  }), "Aggiornamento accesso remoto");
 }
 
 export function toggleDownloadAccess(user: EmbyUser): Promise<UserActionResult> {
-  return request<UserActionResult>("/api/v1/emby/users/toggle-download", {
+  return completeAction(request<UserActionResult>("/api/v1/emby/users/toggle-download", {
     method: "POST",
     body: JSON.stringify({
       server_id: user.server_id,
       user_id: user.user_id,
       enable: !user.enable_downloading,
     }),
-  });
+  }), "Aggiornamento permessi download");
 }
 
 export function syncUserGroup(groupId: string): Promise<UserActionResult> {
@@ -119,7 +157,7 @@ export function deleteGroupUsers({ group, expectedName }: { group: EmbyUserGroup
 }
 
 export function cloneUser(input: CloneUserInput): Promise<UserActionResult> {
-  return request<UserActionResult>("/api/v1/emby/users/clone", {
+  return completeAction(request<UserActionResult>("/api/v1/emby/users/clone", {
     method: "POST",
     body: JSON.stringify({
       source_server_id: input.source.server_id,
@@ -135,15 +173,17 @@ export function cloneUser(input: CloneUserInput): Promise<UserActionResult> {
       link_group: input.linkGroup,
       config_categories: input.configCategories,
     }),
-  });
+  }), "Clonazione");
 }
 
 export async function cloneUsers(input: BulkCloneInput): Promise<BulkCloneResult> {
   const failed: BulkCloneResult["failed"] = [];
   let completed = 0;
 
-  for (const source of input.sources) {
-    for (const targetServerId of input.targetServerIds) {
+  const jobs = input.retryJobs || input.sources.flatMap((source) =>
+    input.targetServerIds.map((targetServerId) => ({ source, targetServerId })),
+  );
+  for (const { source, targetServerId } of jobs) {
       if (targetServerId === source.user.server_id) continue;
       try {
         await cloneUser({
@@ -167,10 +207,14 @@ export async function cloneUsers(input: BulkCloneInput): Promise<BulkCloneResult
           message: reason instanceof Error ? reason.message : "Clonazione non riuscita",
         });
       }
-    }
   }
 
-  if (!completed && failed.length) throw new Error(failed.map((item) => item.message).join("; "));
+  if (failed.length) {
+    throw new BulkClonePartialError(
+      `Clonazione parziale (${completed} completate, ${failed.length} fallite): ${failed.map((item) => `${item.source.name} → ${item.targetServerId}: ${item.message}`).join("; ")}`,
+      { completed, failed },
+    );
+  }
   return { completed, failed };
 }
 
@@ -182,19 +226,19 @@ export function checkUserName(serverId: string, username: string): Promise<{ exi
 }
 
 export function applySettingsToUsers({ users, settings, applyLibraries }: { users: EmbyUser[]; settings: UserSettings; applyLibraries: boolean }): Promise<UserActionResult> {
-  return request<UserActionResult>("/api/v1/emby/users/settings-apply", {
+  return completeAction(request<UserActionResult>("/api/v1/emby/users/settings-apply", {
     method: "POST",
     body: JSON.stringify({
       targets: users.map((user) => ({ server_id: user.server_id, user_id: user.user_id })),
       settings,
       apply_libraries: applyLibraries,
     }),
-  });
+  }), "Applicazione impostazioni");
 }
 
 export function createUsers({ username, password, serverIds, linkGroup, presetId }: { username: string; password: string; serverIds: string[]; linkGroup: boolean; presetId?: string | null }): Promise<UserActionResult> {
-  return request<UserActionResult>("/api/v1/emby/users/create", {
+  return completeAction(request<UserActionResult>("/api/v1/emby/users/create", {
     method: "POST",
     body: JSON.stringify({ targets: serverIds.map((server_id) => ({ server_id, username })), preset_id: presetId || null, password, link_group: linkGroup, group_name: username }),
-  });
+  }), "Creazione utenti");
 }

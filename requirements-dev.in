@@ -1,4 +1,7 @@
 # Test-only dependencies. Production constraints remain authoritative.
 -c requirements.txt
 
-pytest
+pytest==9.1.1
+pip-audit==2.10.1
+ruff==0.16.5
+pyright==1.1.411

@@ -1,6 +1,8 @@
 from types import SimpleNamespace
+import json
 
 import pytest
+from fastapi import HTTPException
 from starlette.responses import HTMLResponse
 
 
@@ -48,6 +50,8 @@ async def test_login_submit_uses_react_workspace_as_the_safe_default(monkeypatch
 
     async def _run_in_threadpool(callable_obj, *args):
         threadpool_calls.append((callable_obj, args))
+        if args == ("roy",):
+            return user
         return True
 
     monkeypatch.setattr("core.auth.get_user_by_username", lambda _username: user)
@@ -65,12 +69,13 @@ async def test_login_submit_uses_react_workspace_as_the_safe_default(monkeypatch
 
     assert response.status_code == 303
     assert response.headers["location"] == "/app/operations"
-    assert threadpool_calls == [(auth_routes.login_password_matches, (user, "password"))]
+    assert len(threadpool_calls) == 4
+    assert threadpool_calls[0][1] == ("roy",)
+    assert threadpool_calls[1] == (auth_routes.login_password_matches, (user, "password"))
 
 
 @pytest.mark.anyio
 async def test_login_rate_limit_returns_429_before_database_lookup(monkeypatch):
-    from web import auth_routes
     from web.login_security import LoginRateLimitDecision
 
     class _BlockedLimiter:
@@ -109,3 +114,45 @@ def test_bcrypt_password_over_72_bytes_is_a_normal_authentication_failure():
     user.set_password("valid-password")
 
     assert user.check_password("è" * 37) is False
+
+
+def test_logout_is_only_exposed_as_a_post_mutation():
+    auth_routes = _init_auth_routes()
+    logout_route = next(route for route in auth_routes.router.routes if route.path == "/logout")
+
+    assert logout_route.methods == {"POST"}
+
+
+@pytest.mark.anyio
+async def test_logout_requires_csrf_and_preserves_the_session_on_failure(monkeypatch):
+    auth_routes = _init_auth_routes(current_user=lambda _request: SimpleNamespace(id=7))
+    monkeypatch.setattr(
+        "core.auth.log_audit_event",
+        lambda *_args: pytest.fail("invalid CSRF reached the audit log"),
+    )
+    request = SimpleNamespace(session={"user_id": 7}, headers={})
+
+    with pytest.raises(HTTPException) as exc_info:
+        await auth_routes.logout(request)
+
+    assert exc_info.value.status_code == 403
+    assert request.session == {"user_id": 7}
+
+
+@pytest.mark.anyio
+async def test_logout_clears_the_session_and_returns_the_login_destination(monkeypatch):
+    user = SimpleNamespace(id=7, username="roy")
+    auth_routes = _init_auth_routes(current_user=lambda _request: user)
+    audit_calls = []
+    monkeypatch.setattr("core.auth.log_audit_event", lambda *args: audit_calls.append(args))
+    request = SimpleNamespace(
+        session={"user_id": 7, "permanent": True},
+        headers={"X-CSRF-Token": "csrf"},
+    )
+
+    response = await auth_routes.logout(request)
+
+    assert response.status_code == 200
+    assert json.loads(response.body) == {"success": True, "redirect": "/login"}
+    assert request.session == {}
+    assert audit_calls == [(user, "logout", "success", request)]

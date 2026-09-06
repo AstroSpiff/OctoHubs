@@ -7,6 +7,7 @@ import type {
   EmbySeason,
   ManualSearchHistoryEntry,
   ResearchOverview,
+  ResearchRefreshStatus,
   RequestSearchRule,
   ScanTarget,
   SearchResult,
@@ -14,7 +15,13 @@ import type {
   TmdbTvDetails,
 } from "@/features/research/types";
 
-type ActionResult = { success: boolean; message: string; sent?: number };
+type ActionResult = {
+  success: boolean;
+  message: string;
+  sent?: number;
+  failed?: number;
+  total?: number;
+};
 
 function getResearchOverview(): Promise<ResearchOverview> {
   return request<ResearchOverview>("/api/v1/research/overview");
@@ -85,7 +92,7 @@ function refreshJellyseerrRequests(): Promise<ActionResult & { background?: bool
   return request("/api/v1/research/requests/refresh?background=1", { method: "POST" });
 }
 
-function getJellyseerrRefreshStatus(): Promise<{ running: boolean; last_status?: string; last_error?: string; last_warning?: string; completed_at?: string }> {
+function getJellyseerrRefreshStatus(): Promise<ResearchRefreshStatus> {
   return request("/api/v1/research/requests/refresh-status");
 }
 
@@ -113,6 +120,13 @@ function downloadTorrentArchive(links: string[]): Promise<Blob> {
   return requestBlob("/api/v1/research/torrents/archive", { method: "POST", body: JSON.stringify({ links }) });
 }
 
+function resolveMagnetReferences(references: string[]): Promise<{ success: boolean; magnets: string[] }> {
+  return request("/api/v1/research/torrents/magnets", {
+    method: "POST",
+    body: JSON.stringify({ references }),
+  });
+}
+
 function requestFromJellyseerr(mediaId: number, mediaType: string, seasons: number[]): Promise<ActionResult> {
   return request("/api/v1/research/requests/create", {
     method: "POST",
@@ -129,7 +143,7 @@ function deleteManualSearch(searchId: number): Promise<ActionResult> {
 }
 
 function resultLink(result: SearchResult): string | null {
-  const candidate = result.magnet || result.magnetUri || result.magnetUrl || result.torrent || result.link || result.guid;
+  const candidate = result.magnet_ref || result.torrent_ref;
   return typeof candidate === "string" && candidate.trim() ? candidate : null;
 }
 
@@ -148,6 +162,7 @@ export {
   getResearchOverview,
   getTmdbTvDetails,
   requestFromJellyseerr,
+  resolveMagnetReferences,
   resultLink,
   refreshJellyseerrRequests,
   runScan,

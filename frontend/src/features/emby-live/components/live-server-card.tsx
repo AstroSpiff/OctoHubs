@@ -31,6 +31,7 @@ function LiveServerCard({
 }) {
   const presentation = serverPresentation(server);
   const error = server.status.error || server.tasks_error || server.streams_error;
+  const announcedError = [...new Set([error, controls.refreshError].filter(Boolean))].join(" · ");
   const lastAction = server.server.last_action;
   const lastCheck = formatLiveTime(server.status.last_check);
   const [lastCheckDate, lastCheckTime = ""] = lastCheck.split(", ");
@@ -62,8 +63,7 @@ function LiveServerCard({
         <div className="emby-live-server-fact-count"><dt>Stream</dt><dd>{server.streams.length}</dd></div>
         <div className="emby-live-server-fact-count"><dt>Attività</dt><dd>{server.running_tasks.length}</dd></div>
       </dl>
-      {error ? <p className="emby-live-server-error"><CircleAlert size={15} aria-hidden="true" />{error}</p> : null}
-      {controls.refreshError ? <p className="emby-live-server-error" role="alert"><CircleAlert size={15} aria-hidden="true" />{controls.refreshError}</p> : null}
+      {announcedError ? <p className="emby-live-server-error" role="alert"><CircleAlert size={15} aria-hidden="true" />{announcedError}</p> : null}
       <div className="emby-live-server-command">
         <Button
           type="button"

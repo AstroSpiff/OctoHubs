@@ -1,3 +1,5 @@
+[Italiano](API_V1_MIGRATION_ita.md) | [English](API_V1_MIGRATION.md)
+
 # Migrazione API v1
 
 ## Obiettivo

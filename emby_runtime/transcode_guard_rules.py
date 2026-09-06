@@ -5,12 +5,10 @@ from __future__ import annotations
 from ipaddress import ip_address, ip_network
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from emby_runtime.transcode_guard_validation import validate_transcode_guard_settings_payload
+
 
 TRANSCODE_GUARD_MODES = {"monitor", "warn", "stop", "warn_then_stop"}
-_LEGACY_MODE_ALIASES = {
-    "pause": "stop",
-    "warn_then_pause": "warn_then_stop",
-}
 TRANSCODE_GUARD_RULE_TYPES = {"rule"}
 TRANSCODE_GUARD_RULE_PROFILES = {
     "video_transcode_threshold",
@@ -26,7 +24,7 @@ TRANSCODE_GUARD_REMUX_STATES = {"any", "present", "absent"}
 TRANSCODE_GUARD_TRANSFORMATION_STATES = {"any", "present", "absent"}
 TRANSCODE_GUARD_QUALITY_THRESHOLDS = {0, 480, 576, 720, 1080, 1440, 2160}
 
-_LEGACY_PROFILE_CRITERIA: Dict[str, Dict[str, Any]] = {
+_PROFILE_DEFAULT_CRITERIA: Dict[str, Dict[str, Any]] = {
     "video_transcode_threshold": {
         "video_state": "transcode",
         "audio_state": "any",
@@ -79,7 +77,7 @@ _LEGACY_PROFILE_CRITERIA: Dict[str, Dict[str, Any]] = {
 }
 
 DEFAULT_TRANSCODE_GUARD_RULE: Dict[str, Any] = {
-    "id": "legacy-video-transcode",
+    "id": "default-video-transcode",
     "name": "Transcode video sopra soglia",
     "type": "rule",
     "enabled": True,
@@ -90,7 +88,6 @@ DEFAULT_TRANSCODE_GUARD_RULE: Dict[str, Any] = {
     "remux_state": "any",
     "transformation_state": "any",
     "min_source_height": 2160,
-    "grace_seconds": 0,
     "correction_window_seconds": 60,
     "message_display_mode": "toast",
     "warning_timeout_ms": 45000,
@@ -121,7 +118,6 @@ DEFAULT_TRANSCODE_GUARD_SETTINGS: Dict[str, Any] = {
     "remux_state": "any",
     "transformation_state": "any",
     "min_source_height": 2160,
-    "grace_seconds": 0,
     "correction_window_seconds": 60,
     "poll_interval_seconds": 5,
     "stream_history_retention_days": 0,
@@ -146,6 +142,7 @@ DEFAULT_TRANSCODE_GUARD_SETTINGS: Dict[str, Any] = {
 def normalize_transcode_guard_settings(raw: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Return safe Transcode Guard settings from persisted or API input."""
 
+    validate_transcode_guard_settings_payload(raw)
     raw = raw if isinstance(raw, dict) else {}
     settings = dict(DEFAULT_TRANSCODE_GUARD_SETTINGS)
     settings["enabled"] = _to_bool(raw.get("enabled"), settings["enabled"])
@@ -173,13 +170,10 @@ def normalize_transcode_guard_settings(raw: Optional[Dict[str, Any]]) -> Dict[st
                 continue
             rules.extend(_normalize_transcode_guard_rule_entries(item, fallback_id=f"rule-{index + 1}"))
         settings["rules"] = rules
-    else:
-        settings["rules"] = [_legacy_rule_from_settings(raw)]
-
     if not settings["rules"]:
-        settings["rules"] = [_legacy_rule_from_settings({})]
+        settings["rules"] = [normalize_transcode_guard_rule(DEFAULT_TRANSCODE_GUARD_RULE)]
 
-    _copy_primary_rule_compat_fields(settings)
+    _copy_primary_rule_runtime_fields(settings)
     return settings
 
 
@@ -194,21 +188,20 @@ def normalize_transcode_guard_rule(raw: Optional[Dict[str, Any]], *, fallback_id
 
     profile = str(raw.get("profile") or rule["profile"]).strip()
     rule["profile"] = profile if profile in TRANSCODE_GUARD_RULE_PROFILES else "video_transcode_threshold"
-    legacy_criteria = _legacy_profile_criteria(rule["profile"])
+    profile_defaults = _profile_default_criteria(rule["profile"])
 
     rule["mode"] = _normalize_mode(raw.get("mode"), DEFAULT_TRANSCODE_GUARD_RULE["mode"])
     rule["enabled"] = _to_bool(raw.get("enabled"), rule["enabled"])
     rule["stop_processing"] = _to_bool(raw.get("stop_processing"), rule["stop_processing"])
-    rule["video_state"] = _normalize_stream_state(raw.get("video_state"), legacy_criteria["video_state"])
-    rule["audio_state"] = _normalize_stream_state(raw.get("audio_state"), legacy_criteria["audio_state"])
-    rule["remux_state"] = _normalize_remux_state(raw.get("remux_state"), legacy_criteria["remux_state"])
+    rule["video_state"] = _normalize_stream_state(raw.get("video_state"), profile_defaults["video_state"])
+    rule["audio_state"] = _normalize_stream_state(raw.get("audio_state"), profile_defaults["audio_state"])
+    rule["remux_state"] = _normalize_remux_state(raw.get("remux_state"), profile_defaults["remux_state"])
     rule["transformation_state"] = _normalize_transformation_state(
         raw.get("transformation_state"),
-        legacy_criteria["transformation_state"],
+        profile_defaults["transformation_state"],
     )
-    min_source_default = legacy_criteria["min_source_height"]
+    min_source_default = profile_defaults["min_source_height"]
     rule["min_source_height"] = _normalize_quality_threshold(raw.get("min_source_height"), min_source_default)
-    rule["grace_seconds"] = 0
     rule["correction_window_seconds"] = _bounded_int(
         raw.get("correction_window_seconds"),
         0,
@@ -254,37 +247,6 @@ def classify_stream(stream: Dict[str, Any], settings: Optional[Dict[str, Any]] =
     return _fallback_decision(stream, resolved, features)
 
 
-def _legacy_rule_from_settings(raw: Dict[str, Any]) -> Dict[str, Any]:
-    payload = dict(DEFAULT_TRANSCODE_GUARD_RULE)
-    for key in (
-        "mode",
-        "video_state",
-        "audio_state",
-        "remux_state",
-        "transformation_state",
-        "min_source_height",
-        "grace_seconds",
-        "correction_window_seconds",
-        "message_display_mode",
-        "warning_timeout_ms",
-        "max_warnings",
-        "message_cooldown_seconds",
-        "allow_audio_only_transcode",
-        "allow_container_remux",
-        "ignore_paused",
-        "server_ids",
-        "excluded_users",
-        "excluded_clients",
-        "excluded_devices",
-        "excluded_ips",
-        "message_header",
-        "message_text",
-    ):
-        if key in raw:
-            payload[key] = raw.get(key)
-    return normalize_transcode_guard_rule(payload, fallback_id="legacy-video-transcode")
-
-
 _GROUP_INHERITED_RULE_FIELDS = (
     "profile",
     "video_state",
@@ -293,7 +255,6 @@ _GROUP_INHERITED_RULE_FIELDS = (
     "transformation_state",
     "min_source_height",
     "mode",
-    "grace_seconds",
     "correction_window_seconds",
     "message_display_mode",
     "warning_timeout_ms",
@@ -362,12 +323,11 @@ def _has_rule_value(value: Any) -> bool:
 
 def _normalize_mode(value: Any, default: str) -> str:
     mode = str(value or default).strip()
-    mode = _LEGACY_MODE_ALIASES.get(mode, mode)
     return mode if mode in TRANSCODE_GUARD_MODES else default
 
 
-def _legacy_profile_criteria(profile: str) -> Dict[str, Any]:
-    return dict(_LEGACY_PROFILE_CRITERIA.get(profile) or _LEGACY_PROFILE_CRITERIA["video_transcode_threshold"])
+def _profile_default_criteria(profile: str) -> Dict[str, Any]:
+    return dict(_PROFILE_DEFAULT_CRITERIA.get(profile) or _PROFILE_DEFAULT_CRITERIA["video_transcode_threshold"])
 
 
 def _normalize_stream_state(value: Any, default: str) -> str:
@@ -397,7 +357,7 @@ def _normalize_quality_threshold(value: Any, default: int) -> int:
     return _bounded_int(threshold, 360, 4320, int(default))
 
 
-def _copy_primary_rule_compat_fields(settings: Dict[str, Any]) -> None:
+def _copy_primary_rule_runtime_fields(settings: Dict[str, Any]) -> None:
     primary = _first_rule(settings.get("rules") or []) or DEFAULT_TRANSCODE_GUARD_RULE
     for key in (
         "mode",
@@ -406,7 +366,6 @@ def _copy_primary_rule_compat_fields(settings: Dict[str, Any]) -> None:
         "remux_state",
         "transformation_state",
         "min_source_height",
-        "grace_seconds",
         "correction_window_seconds",
         "message_display_mode",
         "warning_timeout_ms",
@@ -586,7 +545,6 @@ def _rule_settings(settings: Dict[str, Any], rule: Dict[str, Any]) -> Dict[str, 
         "remux_state",
         "transformation_state",
         "min_source_height",
-        "grace_seconds",
         "correction_window_seconds",
         "message_display_mode",
         "warning_timeout_ms",
@@ -687,7 +645,6 @@ def _decision(
         "warning_timeout_ms": settings.get("warning_timeout_ms"),
         "max_warnings": settings.get("max_warnings"),
         "message_cooldown_seconds": settings.get("message_cooldown_seconds"),
-        "grace_seconds": settings.get("grace_seconds"),
         "correction_window_seconds": settings.get("correction_window_seconds"),
         "message_header": settings.get("message_header"),
         "message_text": settings.get("message_text"),

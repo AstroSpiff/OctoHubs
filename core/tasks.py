@@ -1,14 +1,30 @@
 # core/tasks.py
 """Background task management: ScanManager and AutoScheduler."""
 
-import threading
 import copy
 import json
+import logging
+import threading
+import time
+import uuid
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, Optional
 
 from core.config import _normalize_auto_settings, _default_auto_tasks, _coerce_request_int
+from core.auto_scheduler_workers import AutoSchedulerWorkerPool
+from core.log_sanitization import format_exception_for_log
+from core.safe_output import safe_print as print
 from core.utils import _normalize_scan_targets, _serialize_target_map
+from core.workflow_context import normalize_workflow_context
+from services.scheduler_occurrences import SchedulerOccurrenceLease
+
+
+logger = logging.getLogger(__name__)
+_WORKFLOW_FAILURE_MESSAGE = "Errore durante l'esecuzione del workflow"
+
+
+def _log_task_exception(message: str, error: BaseException) -> None:
+    logger.error("%s:\n%s", message, format_exception_for_log(error))
 
 
 def _is_notification_noop_result(result: Dict[str, Any]) -> bool:
@@ -53,8 +69,26 @@ class ScanManager:
         }
         self._thread = None
         self._stop_event = threading.Event()
+        self._accept_scans = True
 
-    def start_scan(self, config, targets=None, process_requests_func=None):
+    def start_accepting(self) -> None:
+        """Open the scan lifecycle for a newly started application lifespan."""
+        with self._lock:
+            self._accept_scans = True
+
+    def begin_shutdown(self) -> None:
+        """Fence new scans before waiting for any active worker."""
+        with self._lock:
+            self._accept_scans = False
+            self._stop_event.set()
+
+    def start_scan(
+        self,
+        config,
+        targets=None,
+        process_requests_func=None,
+        completion_callback: Optional[Callable[[bool], None]] = None,
+    ):
         """
         Starts a scan in a background thread.
 
@@ -65,7 +99,7 @@ class ScanManager:
         """
         normalized_targets = _normalize_scan_targets(targets)
         with self._lock:
-            if self._status["running"]:
+            if not self._accept_scans or self._status["running"]:
                 return False
             self._status.update({
                 "running": True,
@@ -77,21 +111,38 @@ class ScanManager:
                 "target_map": _serialize_target_map(normalized_targets)
             })
             self._stop_event.clear()
-
-        # Store the process_requests function for use in the thread
-        self._process_requests_func = process_requests_func
-        self._thread = threading.Thread(
-            target=self._run_scan,
-            args=(config, normalized_targets),
-            daemon=True
-        )
-        self._thread.start()
+            # Registration and start form one lifecycle transition. A concurrent
+            # wait must never observe ``running`` before the worker is joinable.
+            self._process_requests_func = process_requests_func
+            worker = threading.Thread(
+                target=self._run_scan,
+                args=(config, normalized_targets, completion_callback),
+                daemon=True,
+            )
+            self._thread = worker
+            try:
+                worker.start()
+            except Exception:
+                self._status["running"] = False
+                self._status["message"] = "Ricerca non avviata"
+                self._status["target_map"] = None
+                self._thread = None
+                raise
         return True
 
     def stop_scan(self):
         self._stop_event.set()
 
-    def _run_scan(self, config, targets=None):
+    def wait(self, timeout_seconds: float | None = None) -> bool:
+        """Wait for the active scan worker without blocking indefinitely."""
+        with self._lock:
+            thread = self._thread
+        if thread is None or thread is threading.current_thread():
+            return True
+        thread.join(timeout=timeout_seconds)
+        return not thread.is_alive()
+
+    def _run_scan(self, config, targets=None, completion_callback=None):
         def _progress_callback(done, total, title, season):
             with self._lock:
                 self._status.update({
@@ -115,6 +166,7 @@ class ScanManager:
         except Exception as exc:  # Keep the manager reusable after worker failures.
             error = exc
         finally:
+            succeeded = error is None and not self._stop_event.is_set()
             with self._lock:
                 self._status["running"] = False
                 self._status["last_summary"] = summary
@@ -125,6 +177,11 @@ class ScanManager:
                 self._status["current_title"] = None
                 self._status["season"] = None
                 self._status["target_map"] = None
+            if completion_callback is not None:
+                try:
+                    completion_callback(succeeded)
+                except Exception as exc:
+                    _log_task_exception("Finalizzazione occurrence scan non riuscita", exc)
 
     def get_status(self):
         with self._lock:
@@ -138,7 +195,7 @@ class ScanManager:
 class AutoScheduler:
     """Gestisce ricerche e refresh automatici su base temporale."""
 
-    def __init__(self, scan_manager_instance=None):
+    def __init__(self, scan_manager_instance=None, occurrence_coordinator=None):
         """
         Initialize AutoScheduler.
 
@@ -153,25 +210,32 @@ class AutoScheduler:
         self._config = None
         self._refresh_running = False
         self._scan_manager = scan_manager_instance
-        self._summarize_func = None
-        self._save_overview_func = None
+        self._occurrence_coordinator = occurrence_coordinator
+        self._worker_pool = AutoSchedulerWorkerPool()
+        self._occurrence_runs: Dict[str, Dict[str, Any]] = {}
+        self._occurrence_leases: set[SchedulerOccurrenceLease] = set()
+        self._occurrence_retries: Dict[str, tuple[dict[str, Any], datetime]] = {}
+        self._refresh_snapshot_func = None
         self._process_requests_func = None
         self._sync_users_func = None
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
 
-    def set_callbacks(self, summarize_func, save_overview_func, process_requests_func, sync_users_func=None):
+    def set_callbacks(
+        self,
+        process_requests_func,
+        sync_users_func=None,
+        refresh_snapshot_func=None,
+    ):
         """
         Set callback functions to avoid circular imports.
 
         Args:
-            summarize_func: Function to summarize requests for dashboard
-            save_overview_func: Function to save cached overview
             process_requests_func: Function to process requests
             sync_users_func: Function to sync users
+            refresh_snapshot_func: Canonical request snapshot refresh function
         """
-        self._summarize_func = summarize_func
-        self._save_overview_func = save_overview_func
+        self._refresh_snapshot_func = refresh_snapshot_func
         self._process_requests_func = process_requests_func
         self._sync_users_func = sync_users_func
 
@@ -192,6 +256,7 @@ class AutoScheduler:
                 self._next_run.setdefault(kind, None)
                 if previous_settings.get(kind) != updated_settings.get(kind):
                     self._next_run[kind] = None
+                    self._occurrence_retries.pop(kind, None)
             settings_snapshot = copy.deepcopy(self._settings)
         self._wake.set()
         # Only log next runs on initial config or when explicitly changed
@@ -231,6 +296,34 @@ class AutoScheduler:
     def stop(self):
         self._stop.set()
         self._wake.set()
+        self._worker_pool.stop()
+        with self._lock:
+            occurrence_leases = list(self._occurrence_leases)
+        for lease in occurrence_leases:
+            lease.stop_renewing(0)
+
+    def wait(self, timeout_seconds: float | None = None) -> bool:
+        """Wait for the scheduler worker without blocking indefinitely."""
+        deadline = None
+        if timeout_seconds is not None:
+            deadline = time.monotonic() + max(0.0, timeout_seconds)
+        thread = self._thread
+        if thread is not threading.current_thread():
+            thread.join(timeout=timeout_seconds)
+        scheduler_stopped = thread is threading.current_thread() or not thread.is_alive()
+        remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+        workers_stopped = self._worker_pool.wait(remaining)
+        with self._lock:
+            occurrence_leases = list(self._occurrence_leases)
+        leases_stopped = True
+        for lease in occurrence_leases:
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            leases_stopped = lease.wait(remaining) and leases_stopped
+        with self._lock:
+            self._occurrence_leases.difference_update(
+                lease for lease in occurrence_leases if lease.wait(0)
+            )
+        return scheduler_stopped and workers_stopped and leases_stopped
 
     def _current_config(self):
         with self._lock:
@@ -246,32 +339,51 @@ class AutoScheduler:
                 self._wake.clear()
 
     def _evaluate_tasks(self):
+        self._prune_occurrence_leases()
         config = self._current_config()
         if not config:
             return 120
         now = datetime.now()
         min_wait = None
         for kind in ("scan", "refresh", "workflow", "sync"):
-            entry = self._settings.get(kind)
+            with self._lock:
+                entry = copy.deepcopy(self._settings.get(kind))
             if not entry or not entry.get("enabled"):
                 continue
-            next_target = self._next_run.get(kind)
-            if next_target is None:
-                next_target = self._calculate_next_run(entry, now)
-                self._next_run[kind] = next_target
+            with self._lock:
+                next_target = self._next_run.get(kind)
+                if next_target is None:
+                    next_target = self._calculate_next_run(entry, now)
+                    self._next_run[kind] = next_target
+                retry = self._occurrence_retries.get(kind)
+                scheduled_target = retry[1] if retry is not None else next_target
             if next_target and now >= next_target:
-                if kind == "scan":
-                    executed = self._trigger_scan(config)
-                elif kind == "refresh":
-                    executed = self._trigger_refresh(config)
-                elif kind == "workflow":
-                    executed = self._trigger_workflow(config)
+                outcome = self._execute_scheduled_occurrence(
+                    kind,
+                    config,
+                    entry,
+                    scheduled_target or next_target,
+                )
+                evaluated_at = datetime.now()
+                if outcome == "started":
+                    # The callback can finish before Thread.start() returns. In
+                    # that case it already selected success or retry atomically.
+                    with self._lock:
+                        if kind in self._occurrence_runs:
+                            self._next_run[kind] = self._calculate_next_run(entry, evaluated_at)
+                elif outcome == "consumed":
+                    with self._lock:
+                        self._occurrence_retries.pop(kind, None)
+                        self._next_run[kind] = self._calculate_next_run(entry, evaluated_at)
                 else:
-                    executed = self._trigger_sync()
-                self._next_run[kind] = self._calculate_next_run(entry, datetime.now())
-                if not executed and self._next_run[kind] is None:
-                    # Ritenta dopo un minuto in caso di errore continuo
-                    self._next_run[kind] = datetime.now() + timedelta(minutes=1)
+                    # A busy or temporarily unavailable worker must not consume the
+                    # scheduled occurrence. Retry shortly, then advance the calendar
+                    # only after the operation has actually started.
+                    with self._lock:
+                        self._occurrence_retries[kind] = (entry, scheduled_target or next_target)
+                        self._next_run[kind] = evaluated_at + timedelta(minutes=1)
+                    if min_wait is None or min_wait > 60:
+                        min_wait = 60
             elif next_target:
                 delta = (next_target - now).total_seconds()
                 if delta > 0:
@@ -280,6 +392,153 @@ class AutoScheduler:
         if min_wait is None:
             return 60
         return max(10, min(300, min_wait))
+
+    def _prune_occurrence_leases(self):
+        with self._lock:
+            leases = list(self._occurrence_leases)
+        stopped = {lease for lease in leases if lease.wait(0)}
+        if stopped:
+            with self._lock:
+                self._occurrence_leases.difference_update(stopped)
+
+    def _execute_scheduled_occurrence(self, kind, config, entry, next_target):
+        coordinator = self._occurrence_coordinator
+        if coordinator is None:
+            return "consumed" if self._safe_trigger_kind(kind, config) else "retry"
+        try:
+            claim_with_status = getattr(coordinator, "claim_with_status", None)
+            if callable(claim_with_status):
+                claim_result: Any = claim_with_status(kind, entry, next_target)
+                claim, claim_status = claim_result
+            else:
+                claim = coordinator.claim(kind, entry, next_target)
+                claim_status = "claimed" if claim is not None else "completed"
+        except Exception as exc:
+            _log_task_exception(
+                f"AutoScheduler: claim occurrence {kind} non riuscito",
+                exc,
+            )
+            return "retry"
+        if claim is None:
+            return "consumed" if claim_status == "completed" else "retry"
+
+        def finished(succeeded: bool) -> None:
+            self._finish_scheduled_occurrence(kind, claim, entry, next_target, succeeded)
+
+        lease = SchedulerOccurrenceLease(
+            coordinator,
+            claim,
+            on_lost=lambda: self._lose_scheduled_occurrence(kind, claim),
+        )
+        with self._lock:
+            self._occurrence_leases.add(lease)
+            self._occurrence_runs[kind] = {
+                "claim": claim,
+                "lease": lease,
+                "entry": copy.deepcopy(entry),
+                "scheduled_for": next_target,
+            }
+        try:
+            lease.start()
+        except Exception as exc:
+            _log_task_exception(
+                f"AutoScheduler: rinnovo occurrence {kind} non avviato",
+                exc,
+            )
+            self._finish_scheduled_occurrence(kind, claim, entry, next_target, False)
+            return "retry"
+
+        executed = self._safe_trigger_kind(kind, config, finished)
+        if not executed:
+            self._finish_scheduled_occurrence(kind, claim, entry, next_target, False)
+            return "retry"
+        return "started"
+
+    def _finish_scheduled_occurrence(
+        self,
+        kind,
+        claim,
+        entry,
+        scheduled_for,
+        succeeded,
+    ):
+        with self._lock:
+            run = self._occurrence_runs.get(kind)
+            if run is None or run.get("claim") != claim:
+                return
+            self._occurrence_runs.pop(kind, None)
+        final_succeeded = bool(succeeded)
+        try:
+            finalized = run["lease"].finish(final_succeeded)
+            if final_succeeded and not finalized:
+                final_succeeded = False
+        except Exception as exc:
+            final_succeeded = False
+            _log_task_exception(
+                f"AutoScheduler: finalizzazione occurrence {kind} non riuscita",
+                exc,
+            )
+        if run["lease"].wait(0):
+            with self._lock:
+                self._occurrence_leases.discard(run["lease"])
+        now = datetime.now()
+        with self._lock:
+            current_entry = self._settings.get(kind)
+            if current_entry != entry or not entry.get("enabled"):
+                self._occurrence_retries.pop(kind, None)
+            elif final_succeeded:
+                self._occurrence_retries.pop(kind, None)
+                self._next_run[kind] = self._calculate_next_run(entry, now)
+            else:
+                self._occurrence_retries[kind] = (copy.deepcopy(entry), scheduled_for)
+                self._next_run[kind] = now + timedelta(minutes=1)
+        self._wake.set()
+
+    def _lose_scheduled_occurrence(self, kind, claim):
+        self._cancel_scheduled_kind(kind)
+        with self._lock:
+            run = self._occurrence_runs.get(kind)
+            if run is None or run.get("claim") != claim:
+                return
+            entry = run["entry"]
+            scheduled_for = run["scheduled_for"]
+        self._finish_scheduled_occurrence(kind, claim, entry, scheduled_for, False)
+
+    def _cancel_scheduled_kind(self, kind):
+        if kind in ("refresh", "sync"):
+            self._worker_pool.cancel(kind)
+        elif kind == "scan" and self._scan_manager is not None:
+            self._scan_manager.stop_scan()
+        elif kind == "workflow":
+            workflow_manager.stop()
+
+    def _safe_trigger_kind(self, kind, config, completion_callback=None):
+        try:
+            return self._trigger_kind(kind, config, completion_callback)
+        except Exception as exc:
+            _log_task_exception(f"AutoScheduler: avvio {kind} non riuscito", exc)
+            return False
+
+    def _trigger_kind(self, kind, config, completion_callback=None):
+        if kind == "scan":
+            return (
+                self._trigger_scan(config)
+                if completion_callback is None
+                else self._trigger_scan(config, completion_callback)
+            )
+        if kind == "refresh":
+            return (
+                self._trigger_refresh(config)
+                if completion_callback is None
+                else self._trigger_refresh(config, completion_callback)
+            )
+        if kind == "workflow":
+            return (
+                self._trigger_workflow(config)
+                if completion_callback is None
+                else self._trigger_workflow(config, completion_callback)
+            )
+        return self._trigger_sync() if completion_callback is None else self._trigger_sync(completion_callback)
 
     def _calculate_next_run(self, entry, reference):
         reference = reference or datetime.now()
@@ -304,60 +563,79 @@ class AutoScheduler:
         minutes = _coerce_request_int(entry.get("interval_minutes"), 60, min_value=1)
         return reference + timedelta(minutes=minutes)
 
-    def _trigger_sync(self):
-        if not self._sync_users_func:
+    def _trigger_sync(self, completion_callback=None):
+        sync_users = self._sync_users_func
+        if sync_users is None:
             print("   -> AutoScheduler: sync non avviato (callback sync non impostata).")
             return False
-        try:
-            print("   -> AutoScheduler: avvio sincronizzazione automatica utenti...")
-            self._sync_users_func()
-            print("   -> AutoScheduler: sincronizzazione utenti completata.")
-            return True
-        except Exception as exc:
-            print(f"   -> AutoScheduler: errore sincronizzazione utenti: {exc}")
-            return False
 
-    def _trigger_scan(self, config):
+        def run(stop_event):
+            if stop_event.is_set():
+                return False
+            try:
+                print("   -> AutoScheduler: avvio sincronizzazione automatica utenti...")
+                result = sync_users()
+                print("   -> AutoScheduler: sincronizzazione utenti completata.")
+                return result is not False and not stop_event.is_set()
+            except Exception as exc:
+                _log_task_exception("AutoScheduler: errore sincronizzazione utenti", exc)
+                return False
+
+        return self._worker_pool.start("sync", run, on_complete=completion_callback)
+
+    def _trigger_scan(self, config, completion_callback=None):
         if not self._scan_manager:
             print("   -> AutoScheduler: scan non avviato (ScanManager non impostato).")
             return False
         if self._scan_manager.is_running():
             print("   -> AutoScheduler: scan non avviato (scan già in esecuzione).")
             return False
-        started = self._scan_manager.start_scan(config, process_requests_func=self._process_requests_func)
+        started = self._scan_manager.start_scan(
+            config,
+            process_requests_func=self._process_requests_func,
+            completion_callback=completion_callback,
+        )
         if started:
             print("   -> AutoScheduler: avviata una ricerca programmata.")
         else:
             print("   -> AutoScheduler: scan non avviato (start_scan ha ritornato False).")
         return started
 
-    def _trigger_refresh(self, config):
-        with self._lock:
-            if self._refresh_running:
-                print("   -> AutoScheduler: refresh non avviato (refresh già in esecuzione).")
-                return False
-            self._refresh_running = True
-        try:
-            if self._summarize_func and self._save_overview_func:
-                overview = self._summarize_func(config)
-                self._save_overview_func(overview or [])
+    def _trigger_refresh(self, config, completion_callback=None):
+        refresh_snapshot = self._refresh_snapshot_func
+        if refresh_snapshot is None:
+            print("   -> AutoScheduler: refresh non avviato (callback snapshot non impostata).")
+            return False
+        if self._worker_pool.is_running("refresh"):
+            print("   -> AutoScheduler: refresh non avviato (refresh già in esecuzione).")
+            return False
+
+        def run(stop_event):
+            with self._lock:
+                self._refresh_running = True
+            try:
+                if stop_event.is_set():
+                    return False
+                refresh_snapshot(config)
                 print("   -> AutoScheduler: elenco richieste aggiornato automaticamente.")
                 return True
-            else:
-                print("   -> AutoScheduler: refresh non avviato (callback functions non impostate).")
+            except Exception as exc:
+                _log_task_exception("AutoScheduler: aggiornamento automatico non riuscito", exc)
                 return False
-        except Exception as exc:
-            print(f"   -> AutoScheduler: aggiornamento automatico non riuscito: {exc}")
-            return False
-        finally:
-            with self._lock:
-                self._refresh_running = False
+            finally:
+                with self._lock:
+                    self._refresh_running = False
 
-    def _trigger_workflow(self, config):
+        return self._worker_pool.start("refresh", run, on_complete=completion_callback)
+
+    def _trigger_workflow(self, config, completion_callback=None):
         if workflow_manager.is_running():
             print("   -> AutoScheduler: workflow non avviato (workflow già in esecuzione).")
             return False
-        started = workflow_manager.start(workflow_type="full")
+        started = workflow_manager.start(
+            workflow_type="full",
+            completion_callback=completion_callback,
+        )
         if started:
             print("   -> AutoScheduler: avviato workflow completo.")
         else:
@@ -393,6 +671,26 @@ class WorkflowManager:
         self._db_storage = None  # DatabaseStorage instance
         self._operation_tracker = None
         self._finalized_workflow_id = None
+        self._finalizing_workflow_id = None
+        self._workflow_owner_id = str(uuid.uuid4())
+        self._workflow_lease = None
+        self._workflow_heartbeat_stop = None
+        self._workflow_heartbeat_thread = None
+        self._accept_workflows = True
+
+    def start_accepting(self) -> None:
+        """Reopen workflow admission for a new application lifespan."""
+        with self._lock:
+            thread = self._thread
+            if thread is not None and thread.is_alive():
+                raise RuntimeError("Workflow ancora attivo durante la riapertura")
+            self._accept_workflows = True
+
+    def begin_shutdown(self) -> None:
+        """Close workflow admission before concurrent runtime drains begin."""
+        with self._lock:
+            self._accept_workflows = False
+            self._stop_event.set()
 
     def set_callbacks(self, trigger_scan_func, check_scan_func,
                      trigger_probe_func, check_probe_func,
@@ -427,6 +725,12 @@ class WorkflowManager:
         """
         self._db_storage = db_storage
         print(f"[WORKFLOW] DatabaseStorage {'abilitato' if db_storage else 'disabilitato'}")
+        recover = getattr(db_storage, "recover_and_prune_workflows", None)
+        if callable(recover):
+            try:
+                recover()
+            except Exception as exc:
+                _log_task_exception("Recovery workflow non riuscito", exc)
 
     def set_operation_tracker(self, operation_tracker):
         """Imposta il tracker globale usato dal centro operazioni."""
@@ -448,7 +752,7 @@ class WorkflowManager:
             self._status["operation_id"] = operation_id
             return operation_id
         except Exception as exc:
-            print(f"[WORKFLOW] ⚠️ Errore creazione operazione workflow: {exc}")
+            _log_task_exception("Errore creazione operazione workflow", exc)
             return None
 
     def _workflow_operation_details_locked(self, context=None):
@@ -512,7 +816,7 @@ class WorkflowManager:
                 details=self._workflow_operation_details_locked(),
             )
         except Exception as exc:
-            print(f"[WORKFLOW] ⚠️ Errore aggiornamento operazione workflow: {exc}")
+            _log_task_exception("Errore aggiornamento operazione workflow", exc)
 
     def _complete_workflow_operation(self, completion_status, message, workflow_id=None):
         with self._lock:
@@ -539,7 +843,7 @@ class WorkflowManager:
             else:
                 operation_tracker.fail(operation_id, message=message, result=result)
         except Exception as exc:
-            print(f"[WORKFLOW] ⚠️ Errore chiusura operazione workflow: {exc}")
+            _log_task_exception("Errore chiusura operazione workflow", exc)
 
     def _finalize_workflow(
         self,
@@ -549,36 +853,162 @@ class WorkflowManager:
         completion_status,
         completion_message,
     ):
-        """Terminalize memory, persistence, and operation tracking exactly once."""
+        """Terminalize persistence before publishing the final local outcome."""
         with self._lock:
             if not self._is_current_workflow_locked(workflow_id):
                 return False
-            if self._finalized_workflow_id == workflow_id:
+            if (
+                self._finalized_workflow_id == workflow_id
+                or self._finalizing_workflow_id == workflow_id
+            ):
                 return False
-            self._finalized_workflow_id = workflow_id
-            self._status["status"] = workflow_status
-            self._status["error"] = error
+            self._finalizing_workflow_id = workflow_id
             db_storage = self._db_storage
 
-        if db_storage:
-            try:
-                db_storage.update_workflow_execution(
-                    workflow_id=workflow_id,
-                    status=workflow_status,
-                    error=error,
-                )
-                print(f"[WORKFLOW] Stato workflow ({workflow_status}) salvato su database")
-            except Exception as db_exc:
-                print(f"[WORKFLOW] ⚠️ Errore aggiornamento workflow su DB: {db_exc}")
+        self._stop_workflow_heartbeat(workflow_id)
+
+        if not self._persist_workflow_finalization(
+            db_storage,
+            workflow_id,
+            workflow_status,
+            error,
+        ):
+            failure_message = "Finalizzazione workflow non persistita"
+            with self._lock:
+                if self._is_current_workflow_locked(workflow_id):
+                    self._status["status"] = "failed"
+                    self._status["error"] = failure_message
+                self._finalizing_workflow_id = None
+            self._complete_workflow_operation(
+                "error",
+                failure_message,
+                workflow_id,
+            )
+            self._release_workflow_lease(db_storage)
+            return False
+
+        with self._lock:
+            if not self._is_current_workflow_locked(workflow_id):
+                self._finalizing_workflow_id = None
+                return False
+            self._status["status"] = workflow_status
+            self._status["error"] = error
+            self._finalized_workflow_id = workflow_id
+            self._finalizing_workflow_id = None
 
         self._complete_workflow_operation(
             completion_status,
             completion_message,
             workflow_id,
         )
+        self._release_workflow_lease(db_storage)
         return True
 
-    def start(self, workflow_type="full", context=None):
+    def _persist_workflow_finalization(
+        self,
+        db_storage,
+        workflow_id,
+        workflow_status,
+        error,
+    ):
+        if not db_storage:
+            return True
+        for attempt in range(1, 4):
+            try:
+                finalize = getattr(db_storage, "finalize_workflow_execution", None)
+                if callable(finalize):
+                    persisted = finalize(
+                        workflow_id=workflow_id,
+                        owner_id=self._workflow_owner_id,
+                        status=workflow_status,
+                        error=error,
+                    )
+                    if persisted is False:
+                        raise RuntimeError("Ownership workflow non più valida durante la finalizzazione")
+                else:
+                    db_storage.update_workflow_execution(
+                        workflow_id=workflow_id,
+                        status=workflow_status,
+                        error=error,
+                    )
+                print(f"[WORKFLOW] Stato workflow ({workflow_status}) salvato su database")
+                return True
+            except Exception as db_exc:
+                _log_task_exception(
+                    f"Errore aggiornamento workflow su DB (tentativo {attempt}/3)",
+                    db_exc,
+                )
+                if attempt < 3:
+                    time.sleep(0.05 * attempt)
+        return False
+
+    def _release_workflow_lease(self, db_storage):
+        with self._lock:
+            lease = self._workflow_lease
+            self._workflow_lease = None
+        release = getattr(db_storage, "release_workflow_lease", None) if db_storage else None
+        if callable(release):
+            try:
+                release(lease)
+            except Exception as exc:
+                _log_task_exception("Rilascio lease workflow non riuscito", exc)
+
+    def _start_workflow_heartbeat_locked(self, workflow_id):
+        heartbeat = getattr(self._db_storage, "heartbeat_workflow_execution", None)
+        if not callable(heartbeat):
+            return
+        heartbeat_stop = threading.Event()
+        self._workflow_heartbeat_stop = heartbeat_stop
+
+        def renew():
+            consecutive_failures = 0
+            while not heartbeat_stop.wait(2.0):
+                try:
+                    renewed = heartbeat(workflow_id, self._workflow_owner_id)
+                    if not renewed:
+                        self._stop_event.set()
+                        return
+                    consecutive_failures = 0
+                except Exception as exc:
+                    consecutive_failures += 1
+                    _log_task_exception("Heartbeat workflow non riuscito", exc)
+                    if consecutive_failures >= 3:
+                        # Cooperative fencing: polling steps stop promptly. A
+                        # synchronous external callback already in progress is
+                        # not forcibly cancellable by Python.
+                        self._stop_event.set()
+                        return
+
+        heartbeat_thread = threading.Thread(
+            target=renew,
+            name=f"workflow-heartbeat-{workflow_id[:8]}",
+            daemon=True,
+        )
+        self._workflow_heartbeat_thread = heartbeat_thread
+        heartbeat_thread.start()
+
+    def _stop_workflow_heartbeat(self, workflow_id):
+        with self._lock:
+            if not self._is_current_workflow_locked(workflow_id):
+                return
+            heartbeat_stop = self._workflow_heartbeat_stop
+            heartbeat_thread = self._workflow_heartbeat_thread
+            self._workflow_heartbeat_stop = None
+            self._workflow_heartbeat_thread = None
+        if heartbeat_stop is not None:
+            heartbeat_stop.set()
+        if heartbeat_thread is not None and heartbeat_thread is not threading.current_thread():
+            heartbeat_thread.join(timeout=3.0)
+
+    def _can_start_workflow_locked(self) -> bool:
+        current_thread = self._thread
+        return bool(
+            self._accept_workflows
+            and self._status["status"] not in ("running", "stopping")
+            and (current_thread is None or not current_thread.is_alive())
+        )
+
+    def start(self, workflow_type="full", context=None, completion_callback=None):
         """
         Avvia un workflow in background.
 
@@ -589,15 +1019,12 @@ class WorkflowManager:
         Returns:
             bool: True se avviato con successo, False se già in esecuzione
         """
+        context = normalize_workflow_context(context)
         with self._lock:
-            current_thread = self._thread
-            if self._status["status"] in ("running", "stopping") or (
-                current_thread is not None and current_thread.is_alive()
-            ):
+            if not self._can_start_workflow_locked():
                 return False
 
             # Genera UUID per questo workflow
-            import uuid
             workflow_id = str(uuid.uuid4())
 
             # Inizializza gli step in base al workflow type
@@ -622,41 +1049,69 @@ class WorkflowManager:
                 "context": copy.deepcopy(context or {})
             }
             self._finalized_workflow_id = None
+            self._finalizing_workflow_id = None
             stop_event = threading.Event()
             self._stop_event = stop_event
 
-            # Crea record su database se disponibile
+            # Claim cross-process and persist execution + steps atomically when
+            # the backend supports the workflow lease contract.
             if self._db_storage:
-                try:
-                    self._db_storage.create_workflow_execution(
-                        workflow_id=workflow_id,
-                        workflow_type=workflow_type,
-                        context=context or {}
-                    )
-                    # Crea record per ogni step
-                    for idx, step in enumerate(steps):
-                        self._db_storage.create_workflow_step(
+                acquire = getattr(self._db_storage, "acquire_workflow_lease", None)
+                claim = getattr(self._db_storage, "try_start_workflow_execution", None)
+                if callable(acquire) and callable(claim):
+                    try:
+                        lease = acquire()
+                        if lease is None:
+                            self._status["status"] = "idle"
+                            return False
+                        claimed = claim(
                             workflow_id=workflow_id,
-                            step_id=step["id"],
-                            step_index=idx
+                            workflow_type=workflow_type,
+                            context=context or {},
+                            owner_id=self._workflow_owner_id,
+                            steps=[(step["id"], idx) for idx, step in enumerate(steps)],
                         )
-                    print(f"[WORKFLOW] Workflow {workflow_id} salvato su database")
-                except Exception as exc:
-                    print(f"[WORKFLOW] ⚠️ Errore salvataggio workflow su DB: {exc}")
+                        if not claimed:
+                            self._db_storage.release_workflow_lease(lease)
+                            self._status["status"] = "idle"
+                            return False
+                        self._workflow_lease = lease
+                        self._start_workflow_heartbeat_locked(workflow_id)
+                    except Exception as exc:
+                        if 'lease' in locals() and lease is not None:
+                            self._db_storage.release_workflow_lease(lease)
+                        self._status["status"] = "idle"
+                        _log_task_exception("Lease workflow non acquisita", exc)
+                        return False
+                else:
+                    try:
+                        self._db_storage.create_workflow_execution(
+                            workflow_id=workflow_id,
+                            workflow_type=workflow_type,
+                            context=context or {}
+                        )
+                        for idx, step in enumerate(steps):
+                            self._db_storage.create_workflow_step(
+                                workflow_id=workflow_id,
+                                step_id=step["id"],
+                                step_index=idx
+                            )
+                    except Exception as exc:
+                        _log_task_exception("Errore salvataggio workflow su DB", exc)
+                print(f"[WORKFLOW] Workflow {workflow_id} salvato su database")
 
             self._start_operation_tracking_locked(context or {})
 
-            thread = threading.Thread(
-                target=self._run_workflow,
-                args=(context or {}, workflow_id, stop_event),
-                daemon=True,
+            start_error = self._start_workflow_thread_locked(
+                context or {},
+                workflow_id,
+                stop_event,
+                completion_callback,
             )
-            self._thread = thread
 
-        try:
-            thread.start()
-        except RuntimeError as exc:
-            error_message = f"Impossibile avviare il thread workflow: {exc}"
+        if start_error is not None:
+            _log_task_exception("Impossibile avviare il thread workflow", start_error)
+            error_message = _WORKFLOW_FAILURE_MESSAGE
             self._finalize_workflow(
                 workflow_id,
                 "failed",
@@ -666,6 +1121,48 @@ class WorkflowManager:
             )
             return False
         return True
+
+    def _start_workflow_thread_locked(
+        self,
+        context,
+        workflow_id,
+        stop_event,
+        completion_callback,
+    ):
+        thread = threading.Thread(
+            target=self._run_workflow_and_notify,
+            args=(context, workflow_id, stop_event, completion_callback),
+            daemon=True,
+        )
+        self._thread = thread
+        try:
+            thread.start()
+        except Exception as exc:
+            self._thread = None
+            return exc
+        return None
+
+    def _run_workflow_and_notify(
+        self,
+        context,
+        workflow_id,
+        stop_event,
+        completion_callback,
+    ):
+        self._run_workflow(context, workflow_id, stop_event)
+        if completion_callback is None:
+            return
+        with self._lock:
+            succeeded = (
+                self._is_current_workflow_locked(workflow_id)
+                and self._status.get("status") == "completed"
+                and self._status.get("error") is None
+                and not stop_event.is_set()
+            )
+        try:
+            completion_callback(succeeded)
+        except Exception as exc:
+            _log_task_exception("Finalizzazione occurrence workflow non riuscita", exc)
 
     def stop(self):
         """Richiede l'interruzione del workflow corrente."""
@@ -687,11 +1184,18 @@ class WorkflowManager:
                 if current_step.get("id") == "probe" and self._stop_probe_func:
                     stop_probe_func = self._stop_probe_func
                     stop_probe_context = copy.deepcopy(self._status.get("context") or {})
+            db_storage = self._db_storage
+        request_stop = getattr(db_storage, "request_active_workflow_stop", None) if db_storage else None
+        if callable(request_stop):
+            try:
+                request_stop()
+            except Exception as exc:
+                _log_task_exception("Richiesta stop persistente non riuscita", exc)
         if stop_probe_func:
             try:
                 stop_probe_func(stop_probe_context or {})
             except Exception as exc:
-                print(f"[WORKFLOW] ⚠️ Errore stop probe workflow: {exc}")
+                _log_task_exception("Errore stop probe workflow", exc)
         if operation_tracker and operation_id:
             try:
                 operation_tracker.update(
@@ -700,18 +1204,65 @@ class WorkflowManager:
                     details=operation_details,
                 )
             except Exception as exc:
-                print(f"[WORKFLOW] ⚠️ Errore aggiornamento operazione workflow: {exc}")
+                _log_task_exception("Errore aggiornamento operazione workflow", exc)
+
+    def wait(self, timeout_seconds: float | None = None) -> bool:
+        """Wait for the workflow worker without blocking indefinitely."""
+        with self._lock:
+            thread = self._thread
+        if thread is None or thread is threading.current_thread():
+            return True
+        thread.join(timeout=timeout_seconds)
+        return not thread.is_alive()
+
+    def shutdown(self, timeout_seconds: float = 5.0) -> bool:
+        """Request workflow cancellation and wait for its worker to exit."""
+        self.begin_shutdown()
+        self.stop()
+        return self.wait(timeout_seconds)
 
     def get_status(self):
         """Restituisce lo stato corrente del workflow in formato JSON per l'UI."""
         with self._lock:
-            return dict(self._status)
+            local = copy.deepcopy(self._status)
+            db_storage = self._db_storage
+        if local.get("status") not in ("running", "stopping") and db_storage is not None:
+            get_active = getattr(db_storage, "get_active_workflow_status", None)
+            if callable(get_active):
+                try:
+                    remote = get_active()
+                    if isinstance(remote, dict):
+                        return remote
+                except Exception:
+                    pass
+        return local
 
     def is_running(self):
         """Verifica se un workflow è in esecuzione."""
         with self._lock:
             thread_alive = self._thread is not None and self._thread.is_alive()
-            return self._status["status"] in ("running", "stopping") or thread_alive
+            local_running = self._status["status"] in ("running", "stopping") or thread_alive
+            db_storage = self._db_storage
+        if local_running:
+            return True
+        get_active = getattr(db_storage, "get_active_workflow_status", None) if db_storage else None
+        if callable(get_active):
+            try:
+                return bool(get_active())
+            except Exception:
+                return False
+        return False
+
+    def _sync_persisted_stop(self, workflow_id, stop_event):
+        if stop_event.is_set() or self._db_storage is None:
+            return
+        requested = getattr(self._db_storage, "workflow_stop_requested", None)
+        if callable(requested):
+            try:
+                if requested(workflow_id, self._workflow_owner_id):
+                    stop_event.set()
+            except Exception as exc:
+                _log_task_exception("Verifica stop persistente non riuscita", exc)
 
     def _is_current_workflow_locked(self, workflow_id):
         """Treat the workflow UUID as a generation token for worker updates."""
@@ -781,6 +1332,7 @@ class WorkflowManager:
             steps = self._get_steps(workflow_id)
 
             for i, step in enumerate(steps):
+                self._sync_persisted_stop(workflow_id, stop_event)
                 print(f"[WORKFLOW] [DEBUG] ===== Starting step {i}: {step['id']} =====")
 
                 # Verifica se è stato richiesto lo stop
@@ -871,7 +1423,12 @@ class WorkflowManager:
                             workflow_id=workflow_id,
                         )
                     else:
-                        workflow_error = f"Errore: {str(exc)}"
+                        logger.error(
+                            "Errore nello step workflow %s:\n%s",
+                            step.get("id") or i,
+                            format_exception_for_log(exc),
+                        )
+                        workflow_error = _WORKFLOW_FAILURE_MESSAGE
                         completion_message = workflow_error
                         self._update_step_status(
                             i,
@@ -917,7 +1474,11 @@ class WorkflowManager:
 
         except Exception as exc:
             # Errore inaspettato nel loop principale
-            workflow_error = f"Errore critico: {str(exc)}"
+            logger.error(
+                "Errore critico nel workflow:\n%s",
+                format_exception_for_log(exc),
+            )
+            workflow_error = _WORKFLOW_FAILURE_MESSAGE
             completion_message = workflow_error
         finally:
             self._finalize_workflow(
@@ -948,6 +1509,7 @@ class WorkflowManager:
             workflow_id=workflow_id,
         )
         print("[WORKFLOW] [SCAN] Avvio scansione file librerie...")
+        self._ensure_workflow_scan_active(stop_event)
         success = self._trigger_scan_func(context)
 
         if not success:
@@ -979,6 +1541,9 @@ class WorkflowManager:
         start_time = time.time()
 
         while not stop_event.is_set():
+            self._sync_persisted_stop(workflow_id, stop_event)
+            if stop_event.is_set():
+                break
             # Check timeout
             elapsed = time.time() - start_time
             if elapsed > max_timeout:
@@ -1005,6 +1570,11 @@ class WorkflowManager:
 
         print("[WORKFLOW] [SCAN] Step completato, passaggio al prossimo step")
 
+    @staticmethod
+    def _ensure_workflow_scan_active(stop_event):
+        if stop_event.is_set():
+            raise Exception("Scansione interrotta")
+
     def _execute_probe_step(self, step_index, context, workflow_id, stop_event):
         """
         Esegue lo step di probe con polling.
@@ -1025,6 +1595,8 @@ class WorkflowManager:
             workflow_id=workflow_id,
         )
         print("[WORKFLOW] [PROBE] Avvio Media Probe su tutti i server coinvolti...")
+        if stop_event.is_set():
+            raise Exception("Probe interrotto")
         success = self._trigger_probe_func(context)
 
         if not success:
@@ -1050,6 +1622,9 @@ class WorkflowManager:
         start_time = time.time()
 
         while not stop_event.is_set():
+            self._sync_persisted_stop(workflow_id, stop_event)
+            if stop_event.is_set():
+                break
             # Check timeout
             elapsed = time.time() - start_time
             if elapsed > max_timeout:
@@ -1221,7 +1796,7 @@ class WorkflowManager:
                             details=details
                         )
                     except Exception as exc:
-                        print(f"[WORKFLOW] ⚠️ Errore aggiornamento step su DB: {exc}")
+                        _log_task_exception("Errore aggiornamento step su DB", exc)
                 step_label = step.get("label") or step.get("id") or "Workflow"
                 self._update_workflow_operation_locked(f"{step_label}: {details}")
                 return True

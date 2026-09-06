@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 from starlette.websockets import WebSocketState
 
 from realtime.routes import init_realtime_routes, websocket_search_endpoint
@@ -26,12 +27,14 @@ from search.state import (
 from search.stream_limits import (
     MAX_CONCURRENT_OUTBOUND_SEARCHES,
     MAX_SEARCH_FRAME_BYTES,
+    MAX_SEARCH_QUERY_LENGTH,
     MAX_SEARCH_TASKS,
     SearchClientDisconnected,
     SearchWorkloadLimitError,
 )
 from search.stream_protocol import SearchStreamProtocolError, receive_search_start
 from search.streaming import search_streaming_parallel
+from web.research_api_models import ManualSearchPayload
 
 
 class _WebSocket:
@@ -79,6 +82,41 @@ def _start_frame(**overrides):
     }
     payload.update(overrides)
     return {"type": "websocket.receive", "text": json.dumps(payload)}
+
+
+def test_http_manual_search_uses_the_shared_query_length_limit():
+    accepted = ManualSearchPayload(query="q" * MAX_SEARCH_QUERY_LENGTH, indexers=["prowlarr"])
+    assert len(accepted.query) == MAX_SEARCH_QUERY_LENGTH
+
+    with pytest.raises(ValidationError):
+        ManualSearchPayload(
+            query="q" * (MAX_SEARCH_QUERY_LENGTH + 1),
+            indexers=["prowlarr"],
+        )
+
+
+def test_manual_search_runner_defensively_skips_oversized_queries(monkeypatch):
+    from search import manual_search_results
+
+    calls = []
+    monkeypatch.setattr(manual_search_results, "_prowlarr_configured", lambda _config: True)
+    monkeypatch.setattr(
+        manual_search_results,
+        "search_prowlarr",
+        lambda *args: calls.append(args) or [],
+    )
+
+    results, warnings, debug_queries = manual_search_results.run_manual_searches(
+        ["q" * (MAX_SEARCH_QUERY_LENGTH + 1)],
+        "movie",
+        {"prowlarr"},
+        {},
+    )
+
+    assert results == []
+    assert debug_queries == []
+    assert warnings == ["Query ignorata perché troppo lunga"]
+    assert calls == []
 
 
 @pytest.fixture(autouse=True)
@@ -254,6 +292,7 @@ async def test_generated_search_workload_has_a_hard_task_cap():
                 config={},
                 websocket=websocket,
                 session_id="bounded-session",
+                owner_id=41,
             )
 
     assert called is False
@@ -328,6 +367,7 @@ async def test_disconnected_client_cancels_search_before_outbound_calls():
                 config={},
                 websocket=_DisconnectedWebSocket(),
                 session_id="disconnected-session",
+                owner_id=41,
             )
 
     assert calls == []

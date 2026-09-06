@@ -5,7 +5,20 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Callable
 
+from core.log_sanitization import format_exception_for_log
+from core.safe_output import safe_print as print
 from core.utils import get_nested
+
+
+def _terminal_scan_result(library_status: dict) -> tuple[str, Optional[str]]:
+    failed_count = sum(
+        1 for library in library_status.values()
+        if library.get("status") == "error"
+    )
+    if not failed_count:
+        return "completed", None
+    noun = "libreria" if failed_count == 1 else "librerie"
+    return "error", f"Scansione non riuscita per {failed_count} {noun}"
 
 
 class LibraryScanTracker:
@@ -61,6 +74,29 @@ class LibraryScanTracker:
             self._log_flush("[TRACKER]   lock releasing...")
         self._log_flush(f"[TRACKER] ✓ create_job completed, returning job_id: {job_id}")
         return job_id
+
+    def create_job_unless_active(
+        self,
+        server_id: str,
+        library_ids: list,
+        group_name: Optional[str] = None,
+        scan_type: str = "content",
+    ) -> tuple[Optional[str], list[str]]:
+        """Atomically reserve libraries or return the jobs already tracking them."""
+        normalized_ids = {str(library_id) for library_id in library_ids}
+        with self._lock:
+            conflicting_jobs = sorted(
+                job_id
+                for job_id, job in self._jobs.items()
+                if job.get("status") in ("queued", "active")
+                and str(job.get("server_id")) == str(server_id)
+                and normalized_ids.intersection(
+                    str(library_id) for library_id in job.get("library_ids", [])
+                )
+            )
+            if conflicting_jobs:
+                return None, conflicting_jobs
+            return self.create_job(server_id, library_ids, group_name, scan_type), []
 
     def get_job(self, job_id: str) -> Optional[dict]:
         """Get job data by ID."""
@@ -142,7 +178,9 @@ class LibraryScanTracker:
 
             # Update job status
             if completed >= job["total_libraries"]:
-                job["status"] = "completed"
+                job["status"], job["error"] = _terminal_scan_result(
+                    job["library_status"]
+                )
                 job["completed_at"] = datetime.now(timezone.utc).isoformat()
                 job_completed = True
                 job_data_copy = copy.deepcopy(job)
@@ -173,10 +211,16 @@ class LibraryScanTracker:
         if job_completed and job_data_copy:
             self._broadcast_scan_completion(job_id, job_data_copy)
 
-    def delete_job(self, job_id: str):
-        """Delete a job."""
+    def delete_job(self, job_id: str) -> str:
+        """Delete terminal history without detaching a live poller owner."""
         with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return "missing"
+            if job.get("status") not in ("completed", "error", "timeout"):
+                return "active"
             self._jobs.pop(job_id, None)
+            return "deleted"
 
     def cleanup_old_jobs(self, max_age_hours: int = 24):
         """Remove jobs older than max_age_hours."""
@@ -231,16 +275,23 @@ class LibraryScanTracker:
     def _enforce_job_limits(self, server_id: str):
         """Remove oldest jobs for the server if we exceed limits."""
         with self._lock:
-            server_jobs = [
+            terminal_jobs = [
                 (job_id, job)
                 for job_id, job in self._jobs.items()
                 if job.get("server_id") == server_id
+                and job.get("status") in ("completed", "error", "timeout")
             ]
-            if len(server_jobs) <= self._max_jobs_per_server:
+            server_job_count = sum(
+                1 for job in self._jobs.values() if job.get("server_id") == server_id
+            )
+            if server_job_count <= self._max_jobs_per_server:
                 return
-            server_jobs.sort(key=lambda pair: self._parse_iso(pair[1].get("created_at")) or datetime.min)
-            excess = len(server_jobs) - self._max_jobs_per_server
-            for job_id, _ in server_jobs[:excess]:
+            terminal_jobs.sort(
+                key=lambda pair: self._parse_iso(pair[1].get("created_at"))
+                or datetime.min.replace(tzinfo=timezone.utc)
+            )
+            excess = server_job_count - self._max_jobs_per_server
+            for job_id, _ in terminal_jobs[:excess]:
                 self._jobs.pop(job_id, None)
 
     def limit_jobs(self, max_per_server: int, max_age_hours: int = 24):
@@ -346,23 +397,27 @@ class LibraryScanTracker:
             loop = self._get_app_event_loop()
 
             if loop and loop.is_running():
-                asyncio.run_coroutine_threadsafe(
-                    manager.broadcast_to_job(job_id, message),
-                    loop
-                )
+                manager.schedule_broadcast(loop, job_id, message)
 
                 server_id = job_data.get("server_id")
                 library_ids = job_data.get("library_ids", [])
                 if server_id:
                     for library_id in library_ids:
                         asyncio.run_coroutine_threadsafe(
-                            library_poller.stop_tracking_library(str(server_id), str(library_id)),
+                            library_poller.stop_tracking_library(
+                                str(server_id),
+                                str(library_id),
+                                expected_job_id=str(job_id),
+                            ),
                             loop
                         )
             else:
                 print(f"[SCAN_BROADCAST] Warning: no event loop available for job {job_id}")
-        except Exception as e:
-            print(f"[SCAN_BROADCAST] Error broadcasting completion for job {job_id}: {e}")
+        except Exception as exc:
+            self._log_flush(
+                f"[SCAN_BROADCAST] Error broadcasting completion for job {job_id}:\n"
+                f"{format_exception_for_log(exc)}"
+            )
 
     def _broadcast_scan_progress(self, job_id: str, library_id: str, progress: float, message: Optional[str] = None, metadata: Optional[dict] = None):
         """
@@ -392,10 +447,7 @@ class LibraryScanTracker:
                 if metadata:
                     ws_message["metadata"] = metadata
 
-                asyncio.run_coroutine_threadsafe(
-                    manager.broadcast_to_job(job_id, ws_message),
-                    loop
-                )
+                manager.schedule_broadcast(loop, job_id, ws_message)
                 self._log_flush(
                     f"[SCAN_PROGRESS] ✓ Broadcast scheduled: job={job_id}, lib={library_id}, progress={progress:.1%}, msg='{message}'"
                 )

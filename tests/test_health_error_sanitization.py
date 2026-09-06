@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 import requests
@@ -120,3 +121,94 @@ async def test_connection_check_api_uses_a_generic_message_when_collection_fails
     assert "Verifica dei servizi non riuscita" in serialized
     assert CANARY_SECRET not in serialized
     assert CANARY_URL not in serialized
+
+
+def test_live_connection_checks_are_singleflight_and_cached(monkeypatch):
+    from services.connection_check_guard import ConnectionCheckCoordinator
+
+    monkeypatch.setenv("SERVICE_CONNECTION_CHECK_COOLDOWN_SECONDS", "30")
+    coordinator = ConnectionCheckCoordinator()
+    entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def build():
+        nonlocal calls
+        calls += 1
+        entered.set()
+        release.wait(1)
+        return {"success": True, "statuses": {}}, 200
+
+    first_result = []
+    worker = threading.Thread(target=lambda: first_result.append(coordinator.run(build)))
+    worker.start()
+    assert entered.wait(0.5)
+    duplicate_payload, duplicate_status = coordinator.run(build)
+    assert duplicate_status == 409
+    assert duplicate_payload["success"] is False
+    release.set()
+    worker.join(1)
+
+    assert first_result == [({"success": True, "statuses": {}}, 200)]
+    assert coordinator.run(build) == ({"success": True, "statuses": {}}, 200)
+    assert calls == 1
+
+
+def test_connection_check_cache_is_not_reused_after_builder_replacement():
+    from services.connection_check_guard import ConnectionCheckCoordinator
+
+    coordinator = ConnectionCheckCoordinator()
+    assert coordinator.run(lambda: ({"success": True}, 200)) == (
+        {"success": True},
+        200,
+    )
+
+    def replacement():
+        raise RuntimeError("replacement failed")
+
+    with pytest.raises(RuntimeError, match="replacement failed"):
+        coordinator.run(replacement)
+
+
+def test_live_health_checks_bound_provider_key_lists(monkeypatch):
+    from services import health
+
+    calls = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"title": "Example", "Title": "Example", "Response": "True"}
+
+    monkeypatch.setattr(
+        health.requests,
+        "get",
+        lambda *_args, **kwargs: calls.append(kwargs["params"]) or Response(),
+    )
+    assert health._ping_mdblist({"MDBLIST_API_KEYS": [str(i) for i in range(50)]})[0]
+    assert len(calls) == health.SERVICE_HEALTH_MAX_API_KEYS
+
+    calls.clear()
+    assert health._ping_omdb({"OMDB_API_KEYS": [str(i) for i in range(50)]})[0]
+    assert len(calls) == health.SERVICE_HEALTH_MAX_API_KEYS
+
+
+def test_connection_check_coordinator_resets_between_lifespans(monkeypatch):
+    from services.connection_check_guard import ConnectionCheckCoordinator
+
+    monkeypatch.setenv("SERVICE_CONNECTION_CHECK_COOLDOWN_SECONDS", "30")
+    coordinator = ConnectionCheckCoordinator()
+    calls = []
+
+    def build():
+        calls.append(len(calls) + 1)
+        return {"success": True, "generation": calls[-1]}, 200
+
+    assert coordinator.run(build)[0]["generation"] == 1
+    assert coordinator.run(build)[0]["generation"] == 1
+    coordinator.reset()  # shutdown of lifespan one
+    coordinator.reset()  # startup of lifespan two
+    assert coordinator.run(build)[0]["generation"] == 2
+    assert calls == [1, 2]

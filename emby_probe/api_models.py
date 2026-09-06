@@ -77,6 +77,7 @@ class ProbeModeAllRequest(StrictRequestModel):
 
 
 class ProbeQueueItem(ProbeApiModel):
+    id: int | None = None
     item_id: str
     server_id: str | None = None
     library_id: str | None = None
@@ -90,6 +91,9 @@ class ProbeQueueResponse(ProbeApiModel):
     success: Literal[True]
     queue: list[ProbeQueueItem] = Field(default_factory=list)
     library_totals: dict[str, Any] = Field(default_factory=dict)
+    has_more: bool = False
+    next_offset: int | None = None
+    next_cursor: int | None = None
 
 
 class ProbeHistoryItem(ProbeQueueItem):
@@ -103,11 +107,17 @@ class ProbeHistoryItem(ProbeQueueItem):
 class ProbeHistoryResponse(ProbeApiModel):
     success: Literal[True]
     history: list[ProbeHistoryItem] = Field(default_factory=list)
+    has_more: bool = False
+    next_offset: int | None = None
+    next_cursor: int | None = None
 
 
 class ProbeBlacklistResponse(ProbeApiModel):
     success: Literal[True]
     blacklist: list[ProbeHistoryItem] = Field(default_factory=list)
+    has_more: bool = False
+    next_offset: int | None = None
+    next_cursor: int | None = None
 
 
 class ProbeQueueDeleteRequest(ProbeServerRequest):

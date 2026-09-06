@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from core.config_manager import load_config
+from core.emby_identifiers import quote_emby_identifier
 from core.utils import (
     _normalize_media_type,
     get_emby_servers,
@@ -424,6 +425,9 @@ def _build_lookup_snapshot(title: str, year_value):
 def _build_item_details_snapshot(server_id: str, item_id: str):
     if not server_id or not item_id:
         return json_error("Parametri mancanti")
+    quoted_item_id = quote_emby_identifier(item_id)
+    if quoted_item_id is None:
+        return json_error("ID elemento Emby non valido")
     config, is_valid = load_config()
     if not is_valid or not config:
         return json_error("Config non valida")
@@ -435,11 +439,11 @@ def _build_item_details_snapshot(server_id: str, item_id: str):
     params = {
         "Fields": "MediaSources,MediaStreams,Path,ProductionYear,IndexNumber,ParentIndexNumber,SeriesName,SeasonName"
     }
-    success, payload = _call_emby_api(server, f"Items/{item_id}", params=params)
+    success, payload = _call_emby_api(server, f"Items/{quoted_item_id}", params=params)
     item_payload = payload if isinstance(payload, dict) else None
     if not success or item_payload is None:
         fallback_params = {
-            "Ids": item_id,
+            "Ids": quoted_item_id,
             "Fields": params.get("Fields")
         }
         fallback_success, fallback_payload = _call_emby_api(server, "Items", params=fallback_params)

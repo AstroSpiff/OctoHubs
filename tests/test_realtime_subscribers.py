@@ -62,7 +62,7 @@ async def test_threaded_publish_reaches_every_subscriber():
 
 
 @pytest.mark.anyio
-async def test_slow_subscriber_drops_new_event_when_its_queue_is_full():
+async def test_slow_subscriber_keeps_newest_event_when_its_queue_is_full():
     registry = RealtimeSubscriberRegistry()
     subscriber = registry.subscribe(maxsize=1)
 
@@ -72,7 +72,7 @@ async def test_slow_subscriber_drops_new_event_when_its_queue_is_full():
         registry.publish({"sequence": 2})
         await asyncio.sleep(0)
 
-        assert await subscriber.get(timeout=0.5) == {"sequence": 1}
+        assert await subscriber.get(timeout=0.5) == {"sequence": 2}
         with pytest.raises(asyncio.TimeoutError):
             await subscriber.get(timeout=0.01)
     finally:

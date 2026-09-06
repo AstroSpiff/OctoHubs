@@ -33,8 +33,13 @@ function customRulesFromSearchRules(rules: ResearchSearchRules): CustomSearchRul
 }
 
 type StoredCustomRules = {
-  found: boolean;
+  enabled: boolean;
   value: CustomSearchRules;
+};
+
+type PersistedCustomRules = {
+  enabled: boolean;
+  rules: unknown;
 };
 
 function customRulesFromStoredValue(
@@ -42,11 +47,22 @@ function customRulesFromStoredValue(
   stored: unknown,
 ): StoredCustomRules {
   if (!stored || typeof stored !== "object" || Array.isArray(stored)) {
-    return { found: false, value: fallback };
+    return { enabled: false, value: fallback };
   }
-  const storedRules = stored as Partial<CustomSearchRules>;
+  const persisted = stored as Partial<PersistedCustomRules>;
+  const hasExplicitPreference = typeof persisted.enabled === "boolean";
+  const storedRules = (hasExplicitPreference ? persisted.rules : stored) as
+    | Partial<CustomSearchRules>
+    | undefined;
+
+  if (!storedRules || typeof storedRules !== "object" || Array.isArray(storedRules)) {
+    return { enabled: false, value: fallback };
+  }
+
   return {
-    found: true,
+    // Legacy entries contained only the rules. Preserve them as a draft, but do
+    // not infer that the user explicitly enabled customization.
+    enabled: hasExplicitPreference && persisted.enabled === true,
     value: {
       ...fallback,
       ...storedRules,
@@ -58,18 +74,21 @@ function customRulesFromStoredValue(
 }
 
 function loadStoredCustomRules(fallback: CustomSearchRules): StoredCustomRules {
-  if (typeof window === "undefined") return { found: false, value: fallback };
+  if (typeof window === "undefined") return { enabled: false, value: fallback };
   try {
     const stored = JSON.parse(window.localStorage.getItem(customRulesStorageKey) || "null") as unknown;
     return customRulesFromStoredValue(fallback, stored);
   } catch {
-    return { found: false, value: fallback };
+    return { enabled: false, value: fallback };
   }
 }
 
-function storeCustomRules(value: CustomSearchRules) {
+function storeCustomRules(enabled: boolean, value: CustomSearchRules) {
   try {
-    window.localStorage.setItem(customRulesStorageKey, JSON.stringify(value));
+    window.localStorage.setItem(
+      customRulesStorageKey,
+      JSON.stringify({ enabled, rules: value } satisfies PersistedCustomRules),
+    );
   } catch {
     // A manual search remains usable when browser storage is unavailable.
   }

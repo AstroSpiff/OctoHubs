@@ -1,25 +1,18 @@
 # services/scan_results.py
 import copy
-
 from core.config_manager import _ensure_db_backend
-from core.storage import StorageError
 
 
 def save_results(summary):
-    try:
-        backend = _ensure_db_backend()
-        backend.save_scan_result(summary)
-    except StorageError as exc:
-        print(f"   -> Non riesco a salvare i risultati nel database: {exc}")
+    """Persist a completed scan or propagate the storage failure to its owner."""
+    backend = _ensure_db_backend()
+    backend.save_scan_result(summary)
 
 
 def load_results_file():
-    try:
-        backend = _ensure_db_backend()
-        return backend.load_last_result()
-    except StorageError as exc:
-        print(f"   -> Non riesco a leggere gli ultimi risultati dal database: {exc}")
-        return None
+    """Load the authoritative previous scan or propagate a storage failure."""
+    backend = _ensure_db_backend()
+    return backend.load_last_result()
 
 
 def _merge_scan_summaries(previous, current):

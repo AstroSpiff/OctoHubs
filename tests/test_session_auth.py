@@ -40,6 +40,17 @@ def test_require_auth_rejects_deleted_or_inactive_users(monkeypatch, user):
     assert error.value.status_code == 401
 
 
+def test_password_epoch_change_revokes_an_existing_session(monkeypatch):
+    user = SimpleNamespace(id=7, is_active=True, role="user", auth_epoch=2)
+    monkeypatch.setattr("core.auth.get_user_by_id", lambda _user_id: user)
+    request = _request_with_user(7)
+    request.session["auth_epoch"] = 1
+
+    assert get_current_user_optional(request) is None
+    assert "user_id" not in request.session
+    assert "auth_epoch" not in request.session
+
+
 @pytest.mark.parametrize("dependency", [require_auth, require_user])
 def test_viewer_can_read_but_cannot_mutate(monkeypatch, dependency):
     viewer = SimpleNamespace(id=7, is_active=True, role="viewer")
@@ -66,6 +77,25 @@ def test_viewer_cannot_start_an_interactive_search_socket(monkeypatch):
     monkeypatch.setattr("core.auth.get_user_by_id", lambda _user_id: viewer)
     request = _request_with_user(7, "")
     request.scope = {"type": "websocket", "path": "/ws/search/session-1"}
+
+    with pytest.raises(HTTPException) as error:
+        require_auth(request)
+
+    assert error.value.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/emby/collections/trakt-lists",
+        "/api/emby/collections/mdblist-lists",
+    ],
+)
+def test_viewer_cannot_start_collection_source_refresh(monkeypatch, path):
+    viewer = SimpleNamespace(id=7, is_active=True, role="viewer")
+    monkeypatch.setattr("core.auth.get_user_by_id", lambda _user_id: viewer)
+    request = _request_with_user(7, "POST")
+    request.scope = {"type": "http", "path": path}
 
     with pytest.raises(HTTPException) as error:
         require_auth(request)
@@ -350,7 +380,7 @@ def test_library_mutation_api_token_requires_library_write_scope(monkeypatch):
     assert entries[0][1] == {"allowed": False}
 
 
-def test_library_history_reset_api_token_requires_library_write_scope(monkeypatch):
+def test_library_history_reset_api_token_requires_operations_scope(monkeypatch):
     user = SimpleNamespace(id=7, is_active=True, role="admin")
     token = SimpleNamespace(id=3, name="External AI", token_prefix="ohs_visible")
     entries = []
@@ -364,9 +394,26 @@ def test_library_history_reset_api_token_requires_library_write_scope(monkeypatc
         require_auth(_request_with_bearer("secret", "POST", "/api/emby/scan-jobs/reset"))
 
     assert error.value.status_code == 403
-    assert "write:libraries" in str(error.value.detail)
-    assert entries[0][0][:4] == (user, token, ["read:libraries"], "write:libraries")
+    assert "run:operations" in str(error.value.detail)
+    assert entries[0][0][:4] == (user, token, ["read:libraries"], "run:operations")
     assert entries[0][1] == {"allowed": False}
+
+
+def test_library_history_reset_accepts_operations_scope(monkeypatch):
+    user = SimpleNamespace(id=7, is_active=True, role="admin")
+    monkeypatch.setattr(
+        "core.auth.verify_api_token",
+        lambda _token: {
+            "user": user,
+            "token": SimpleNamespace(id=3),
+            "scopes": ["run:operations"],
+        },
+    )
+    monkeypatch.setattr("core.auth.log_api_token_usage", lambda *args, **kwargs: None)
+
+    assert require_auth(
+        _request_with_bearer("secret", "POST", "/api/emby/scan-jobs/reset")
+    ) == 7
 
 
 @pytest.mark.parametrize(
@@ -377,7 +424,6 @@ def test_library_history_reset_api_token_requires_library_write_scope(monkeypatc
         "/api/emby/probe/history",
         "/api/emby/probe/blacklist",
         "/api/emby/probe/export-csv",
-        "/api/emby/probe/debug-recent-items",
     ],
 )
 def test_probe_read_api_tokens_accept_library_read_scope(monkeypatch, path):
@@ -393,6 +439,29 @@ def test_probe_read_api_tokens_accept_library_read_scope(monkeypatch, path):
     assert require_auth(_request_with_bearer("secret", "GET", path)) == 7
     assert entries[0][0][:4] == (user, token, ["read:libraries"], "read:libraries")
     assert entries[0][1] == {"allowed": True}
+
+
+def test_probe_debug_recent_requires_operations_scope(monkeypatch):
+    user = SimpleNamespace(id=7, is_active=True, role="admin")
+    monkeypatch.setattr(
+        "core.auth.verify_api_token",
+        lambda _token: {
+            "user": user,
+            "token": SimpleNamespace(id=3),
+            "scopes": ["read:libraries"],
+        },
+    )
+    monkeypatch.setattr("core.auth.log_api_token_usage", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(HTTPException) as error:
+        require_auth(
+            _request_with_bearer(
+                "secret", "GET", "/api/emby/probe/debug-recent-items"
+            )
+        )
+
+    assert error.value.status_code == 403
+    assert "run:operations" in str(error.value.detail)
 
 
 @pytest.mark.parametrize(
@@ -480,6 +549,7 @@ def test_probe_worker_api_tokens_accept_run_operations(monkeypatch):
         "/api/emby/collections/collection-1/backdrop",
         "/api/emby/collections/collection-1/sync-details",
         "/api/emby/collections/trakt-lists",
+        "/api/emby/collections/trakt-lists?background=1",
         "/api/emby/collections/mdblist-lists",
         "/api/emby/collections/source-inventory",
     ],
@@ -552,8 +622,8 @@ def test_collection_mutation_api_tokens_require_collection_write_scope(monkeypat
     [
         ("POST", "/api/emby/collections/collection-1/sync"),
         ("POST", "/api/emby/collections/sync-all"),
-        ("GET", "/api/emby/collections/trakt-lists?background=1"),
-        ("GET", "/api/emby/collections/mdblist-lists?background=true"),
+        ("POST", "/api/emby/collections/trakt-lists"),
+        ("POST", "/api/emby/collections/mdblist-lists"),
     ],
 )
 def test_collection_operational_api_tokens_require_run_operations(monkeypatch, method, path):
@@ -571,7 +641,7 @@ def test_collection_operational_api_tokens_require_run_operations(monkeypatch, m
     assert entries[0][1] == {"allowed": True}
 
 
-def test_collection_write_scope_does_not_start_sync_without_run_operations(monkeypatch):
+def test_collection_write_scope_does_not_start_source_refresh_without_run_operations(monkeypatch):
     user = SimpleNamespace(id=7, is_active=True, role="admin")
     token = SimpleNamespace(id=3, name="External AI", token_prefix="ohs_visible")
     entries = []
@@ -582,7 +652,7 @@ def test_collection_write_scope_does_not_start_sync_without_run_operations(monke
     monkeypatch.setattr("core.auth.log_api_token_usage", lambda *args, **kwargs: entries.append((args, kwargs)))
 
     with pytest.raises(HTTPException) as error:
-        require_auth(_request_with_bearer("secret", "GET", "/api/emby/collections/trakt-lists?background=1"))
+        require_auth(_request_with_bearer("secret", "POST", "/api/emby/collections/trakt-lists"))
 
     assert error.value.status_code == 403
     assert "run:operations" in str(error.value.detail)
@@ -828,9 +898,6 @@ def test_operations_mutation_api_token_accepts_run_operations(monkeypatch):
         ("POST", "/api/research/tmdb/check-availability"),
         ("GET", "/api/research/media/details"),
         ("GET", "/api/research/manual/history"),
-        ("GET", "/api/research/torrents/proxy"),
-        ("POST", "/api/research/torrents/proxy"),
-        ("POST", "/api/research/torrents/archive"),
     ],
 )
 def test_research_read_api_tokens_accept_research_read_scope(monkeypatch, method, path):
@@ -846,6 +913,33 @@ def test_research_read_api_tokens_accept_research_read_scope(monkeypatch, method
     assert require_auth(_request_with_bearer("secret", method, path)) == 7
     assert entries[0][0][:4] == (user, token, ["read:research"], "read:research")
     assert entries[0][1] == {"allowed": True}
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("GET", "/api/research/torrents/proxy"),
+        ("POST", "/api/research/torrents/proxy"),
+        ("POST", "/api/research/torrents/archive"),
+        ("POST", "/api/research/torrents/magnets"),
+    ],
+)
+def test_sensitive_research_downloads_require_write_scope(monkeypatch, method, path):
+    user = SimpleNamespace(id=7, is_active=True, role="admin")
+    monkeypatch.setattr(
+        "core.auth.verify_api_token",
+        lambda _token: {
+            "user": user,
+            "token": SimpleNamespace(id=3),
+            "scopes": ["read:research"],
+        },
+    )
+
+    with pytest.raises(HTTPException) as error:
+        require_auth(_request_with_bearer("secret", method, path))
+
+    assert error.value.status_code == 403
+    assert "write:research" in str(error.value.detail)
 
 
 def test_research_write_scope_can_read_research_data(monkeypatch):
@@ -990,13 +1084,7 @@ def test_research_operational_api_tokens_accept_run_operations(monkeypatch):
     assert entries[0][1] == {"allowed": True}
 
 
-@pytest.mark.parametrize(
-    "method,path",
-    [
-        ("GET", "/api/configuration/settings"),
-        ("POST", "/api/test-connections"),
-    ],
-)
+@pytest.mark.parametrize("method,path", [("GET", "/api/configuration/settings")])
 def test_configuration_read_api_tokens_accept_configuration_read_scope(monkeypatch, method, path):
     user = SimpleNamespace(id=7, is_active=True, role="admin")
     token = SimpleNamespace(id=3, name="External AI", token_prefix="ohs_visible")
@@ -1010,6 +1098,24 @@ def test_configuration_read_api_tokens_accept_configuration_read_scope(monkeypat
     assert require_auth(_request_with_bearer("secret", method, path)) == 7
     assert entries[0][0][:4] == (user, token, ["read:configuration"], "read:configuration")
     assert entries[0][1] == {"allowed": True}
+
+
+def test_connection_checks_require_operational_scope(monkeypatch):
+    user = SimpleNamespace(id=7, is_active=True, role="admin")
+    token = SimpleNamespace(id=3, name="External AI", token_prefix="ohs_visible")
+    entries = []
+    monkeypatch.setattr(
+        "core.auth.verify_api_token",
+        lambda _token: {"user": user, "token": token, "scopes": ["read:configuration"]},
+    )
+    monkeypatch.setattr("core.auth.log_api_token_usage", lambda *args, **kwargs: entries.append((args, kwargs)))
+
+    with pytest.raises(HTTPException) as denied:
+        require_auth(_request_with_bearer("secret", "POST", "/api/test-connections"))
+
+    assert denied.value.status_code == 403
+    assert entries[0][0][:4] == (user, token, ["read:configuration"], "run:operations")
+    assert entries[0][1] == {"allowed": False}
 
 
 @pytest.mark.parametrize(
@@ -1152,3 +1258,182 @@ def test_admin_api_token_can_reach_unclassified_api_paths(monkeypatch):
     )
 
     assert require_auth(_request_with_bearer("secret", "GET", "/api/unclassified")) == 7
+def test_invalid_bearer_tokens_are_rate_limited_before_database_verification(monkeypatch):
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    from core import auth
+    from web import session_auth
+
+    calls = 0
+
+    def verify(_token):
+        nonlocal calls
+        calls += 1
+        return None
+
+    monkeypatch.setenv("API_TOKEN_PREAUTH_RATE_LIMIT_PER_MINUTE", "10")
+    monkeypatch.setattr(auth, "verify_api_token", verify)
+
+    def request(index: int) -> Request:
+        return Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/api/system/status",
+                "headers": [(b"authorization", f"Bearer invalid-{index}".encode())],
+                "client": ("2001:db8::606", 1234),
+                "query_string": b"",
+            }
+        )
+
+    for index in range(10):
+        assert session_auth._api_token_result(request(index)) is None
+    with pytest.raises(HTTPException) as raised:
+        session_auth._api_token_result(request(10))
+
+    assert raised.value.status_code == 429
+    assert calls == 10
+
+
+def test_preauth_limiter_has_a_hard_lru_cap(monkeypatch):
+    from web.api_token_rate_limit import ApiTokenPreAuthRateLimiter
+
+    monkeypatch.setenv("API_TOKEN_PREAUTH_RATE_LIMIT_PER_MINUTE", "120")
+    limiter = ApiTokenPreAuthRateLimiter()
+    for index in range(10_050):
+        assert limiter.consume(f"2001:db8::{index:x}")[0] is True
+
+    assert len(limiter._events) == 10_000
+    assert "2001:db8::0" not in limiter._events
+
+
+@pytest.mark.parametrize("role", ["user", "admin"])
+def test_editor_and_admin_can_run_live_system_checks(monkeypatch, role):
+    user = SimpleNamespace(id=7, is_active=True, role=role)
+    monkeypatch.setattr("core.auth.get_user_by_id", lambda _user_id: user)
+    request = _request_with_user(7, "GET")
+    request.scope = {
+        "type": "http",
+        "path": "/api/system/status",
+        "query_string": b"section=services&check_services=true",
+    }
+
+    assert require_auth(request) == 7
+
+
+def test_viewer_cannot_run_live_system_checks(monkeypatch):
+    viewer = SimpleNamespace(id=7, is_active=True, role="viewer")
+    monkeypatch.setattr("core.auth.get_user_by_id", lambda _user_id: viewer)
+    request = _request_with_user(7, "GET")
+    request.scope = {
+        "type": "http",
+        "path": "/api/system/status",
+        "query_string": b"section=services&check_services=true",
+    }
+
+    with pytest.raises(HTTPException) as error:
+        require_auth(request)
+
+    assert error.value.status_code == 403
+
+
+def test_read_status_bearer_cannot_run_live_system_checks(monkeypatch):
+    user = SimpleNamespace(id=7, is_active=True, role="admin")
+    monkeypatch.setattr(
+        "core.auth.verify_api_token",
+        lambda _token: {
+            "user": user,
+            "token": SimpleNamespace(id=3),
+            "scopes": ["read:status"],
+        },
+    )
+    monkeypatch.setattr("core.auth.log_api_token_usage", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(HTTPException) as error:
+        require_auth(
+            _request_with_bearer(
+                "secret",
+                "GET",
+                "/api/system/status?section=services&check_services=true",
+            )
+        )
+
+    assert error.value.status_code == 403
+    assert "run:operations" in str(error.value.detail)
+
+
+def test_realtime_session_revalidation_observes_epoch_and_account_revocation(monkeypatch):
+    from web.session_auth import revalidate_authenticated_subject
+
+    user = SimpleNamespace(id=7, is_active=True, auth_epoch=3)
+    monkeypatch.setattr("core.auth.get_user_by_id", lambda _user_id: user)
+    request = SimpleNamespace(
+        session={"user_id": 7, "auth_epoch": 3},
+        headers={},
+        state=SimpleNamespace(),
+    )
+
+    assert revalidate_authenticated_subject(request, 7) is True
+    user.auth_epoch = 4
+    assert revalidate_authenticated_subject(request, 7) is False
+    user.auth_epoch = 3
+    user.is_active = False
+    assert revalidate_authenticated_subject(request, 7) is False
+
+
+def test_realtime_session_revalidation_observes_viewer_demotion(monkeypatch):
+    from web.session_auth import revalidate_authenticated_subject
+
+    user = SimpleNamespace(id=7, is_active=True, role="user", auth_epoch=3)
+    monkeypatch.setattr("core.auth.get_user_by_id", lambda _user_id: user)
+    request = SimpleNamespace(
+        session={"user_id": 7, "auth_epoch": 3},
+        method="",
+        scope={"type": "websocket", "path": "/ws/search/session-1"},
+        headers={},
+        state=SimpleNamespace(),
+    )
+
+    assert revalidate_authenticated_subject(request, 7) is True
+    user.role = "viewer"
+    assert revalidate_authenticated_subject(request, 7) is False
+
+
+def test_realtime_token_revalidation_observes_token_revocation(monkeypatch):
+    from web.session_auth import revalidate_authenticated_subject
+
+    user = SimpleNamespace(id=7, is_active=True)
+    token = SimpleNamespace(id=11)
+    result = {"user": user, "token": token, "scopes": ["read:status"]}
+    monkeypatch.setattr("core.auth.verify_api_token", lambda _secret: result)
+    request = SimpleNamespace(
+        session={},
+        headers={"Authorization": "Bearer secret"},
+        state=SimpleNamespace(api_token_id=11),
+    )
+
+    assert revalidate_authenticated_subject(request, 7) is True
+    result.clear()
+    assert revalidate_authenticated_subject(request, 7) is False
+
+
+def test_realtime_token_revalidation_observes_viewer_demotion(monkeypatch):
+    from web.session_auth import revalidate_authenticated_subject
+
+    user = SimpleNamespace(id=7, is_active=True, role="user")
+    token = SimpleNamespace(id=11)
+    result = {"user": user, "token": token, "scopes": ["admin:all"]}
+    monkeypatch.setattr("core.auth.verify_api_token", lambda _secret: result)
+    monkeypatch.setattr("core.auth.log_api_token_usage", lambda *_args, **_kwargs: None)
+    request = SimpleNamespace(
+        session={},
+        method="",
+        scope={"type": "websocket", "path": "/ws/scan/client-1"},
+        headers={"Authorization": "Bearer secret"},
+        state=SimpleNamespace(api_token_id=11),
+    )
+
+    assert revalidate_authenticated_subject(request, 7) is True
+    user.role = "viewer"
+    assert revalidate_authenticated_subject(request, 7) is False

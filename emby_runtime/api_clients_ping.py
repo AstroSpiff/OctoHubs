@@ -1,6 +1,7 @@
 import requests
 
 from core.http_error_messages import safe_http_error_message
+from core.outbound_redirects import response_is_redirect
 from emby_runtime.api_client_urls import build_jellyseerr_api_url
 
 
@@ -18,7 +19,15 @@ def _ping_api_service(url, headers=None, params=None, timeout=10):
         Tupla (success: bool, message: str)
     """
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=timeout)
+        response = requests.get(
+            url,
+            headers=headers,
+            params=params,
+            allow_redirects=False,
+            timeout=timeout,
+        )
+        if response_is_redirect(response):
+            return False, "Redirect del servizio rifiutato"
         response.raise_for_status()
         return True, "Connessione OK"
     except requests.exceptions.RequestException as exc:
@@ -51,8 +60,11 @@ def _ping_qbittorrent(config):
         login_resp = session.post(
             f"{qb_url.rstrip('/')}/api/v2/auth/login",
             data={"username": qb_user, "password": qb_pass},
+            allow_redirects=False,
             timeout=10
         )
+        if response_is_redirect(login_resp):
+            return False, "Redirect qBittorrent rifiutato"
         if login_resp.status_code == 200 and login_resp.text.strip() == "Ok.":
             return True, "Connessione OK"
         if login_resp.status_code != 200:

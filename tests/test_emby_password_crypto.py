@@ -9,6 +9,7 @@ import pytest
 from cryptography.fernet import Fernet
 
 from emby_users.password_crypto import (
+    PasswordCipher,
     PasswordCiphertextError,
     PasswordSecretError,
     is_insecure_password_secret,
@@ -25,12 +26,13 @@ class _PasswordStorage:
     def get_group_passwords(self):
         return list(self.entries.values())
 
-    def save_group_password(self, group_id, password_enc):
-        self.saved.append((group_id, password_enc))
-        self.entries[group_id] = {"group_id": group_id, "password_enc": password_enc}
+    def replace_group_password_ciphertexts(self, updates):
+        self.saved.extend(updates)
+        for group_id, password_enc in updates:
+            self.entries[group_id] = {"group_id": group_id, "password_enc": password_enc}
 
 
-def _legacy_token(secret: str, plaintext: str) -> str:
+def _unversioned_token(secret: str, plaintext: str) -> str:
     digest = hashlib.sha256(secret.encode("utf-8")).digest()
     cipher = Fernet(base64.urlsafe_b64encode(digest))
     return cipher.encrypt(plaintext.encode("utf-8")).decode("ascii")
@@ -44,6 +46,30 @@ def test_password_secret_rejects_missing_placeholders_and_short_values(secret):
     assert is_insecure_password_secret(secret)
     with pytest.raises(PasswordSecretError):
         password_cipher_from_environment({"PASSWORD_SECRET": secret})
+
+
+@pytest.mark.parametrize("secret", ["a" * 32, "abc" * 20])
+def test_password_secret_rejects_long_but_trivial_values(secret):
+    assert is_insecure_password_secret(secret)
+    with pytest.raises(PasswordSecretError):
+        password_cipher_from_environment({"PASSWORD_SECRET": secret})
+
+
+def test_weak_previous_secret_remains_available_only_for_explicit_rotation():
+    previous_secret = "a" * 32
+    previous_cipher = PasswordCipher(previous_secret)
+    storage = _PasswordStorage(
+        [{"group_id": "group-1", "password_enc": previous_cipher.encrypt("secret")}]
+    )
+    current_cipher = password_cipher_from_environment(
+        {
+            "PASSWORD_SECRET": "current-password-secret-that-is-long-enough",
+            "PASSWORD_SECRET_PREVIOUS": previous_secret,
+        }
+    )
+
+    assert rotate_stored_password_ciphertexts(storage, current_cipher) == 1
+    assert current_cipher.decrypt(storage.saved[0][1]) == ("secret", False)
 
 
 def test_password_cipher_uses_versioned_ciphertexts():
@@ -60,13 +86,13 @@ def test_password_cipher_uses_versioned_ciphertexts():
     assert needs_rotation is False
 
 
-def test_previous_secret_rotates_legacy_ciphertexts_to_the_current_key():
+def test_unversioned_ciphertexts_are_rejected_even_with_a_previous_key():
     previous_secret = "previous-password-secret-that-is-long-enough"
     storage = _PasswordStorage(
         [
             {
                 "group_id": "group-1",
-                "password_enc": _legacy_token(previous_secret, "legacy-password"),
+                "password_enc": _unversioned_token(previous_secret, "unversioned-password"),
             }
         ]
     )
@@ -77,12 +103,9 @@ def test_previous_secret_rotates_legacy_ciphertexts_to_the_current_key():
         }
     )
 
-    assert rotate_stored_password_ciphertexts(storage, cipher) == 1
-    assert storage.saved[0][0] == "group-1"
-    assert storage.saved[0][1].startswith("v1:")
-    plaintext, needs_rotation = cipher.decrypt(storage.saved[0][1])
-    assert plaintext == "legacy-password"
-    assert needs_rotation is False
+    with pytest.raises(PasswordCiphertextError):
+        rotate_stored_password_ciphertexts(storage, cipher)
+    assert storage.saved == []
 
 
 def test_previous_secret_rotates_versioned_ciphertexts_to_the_current_key():
@@ -126,6 +149,35 @@ def test_rotation_validates_every_ciphertext_before_writing():
         rotate_stored_password_ciphertexts(storage, cipher)
 
     assert storage.saved == []
+
+
+def test_rotation_storage_failure_is_fatal_and_does_not_fall_back_to_row_writes():
+    previous_secret = "previous-password-secret-that-is-long-enough"
+    previous_cipher = password_cipher_from_environment({"PASSWORD_SECRET": previous_secret})
+    original = previous_cipher.encrypt("previous-password")
+
+    class _FailingAtomicStorage(_PasswordStorage):
+        def replace_group_password_ciphertexts(self, updates):
+            self.saved.append(("attempted-batch", len(updates)))
+            raise RuntimeError("database commit failed")
+
+        def save_group_password(self, _group_id, _password_enc):
+            raise AssertionError("row-by-row fallback must never run")
+
+    storage = _FailingAtomicStorage(
+        [{"group_id": "group-1", "password_enc": original}]
+    )
+    cipher = password_cipher_from_environment(
+        {
+            "PASSWORD_SECRET": "current-password-secret-that-is-long-enough",
+            "PASSWORD_SECRET_PREVIOUS": previous_secret,
+        }
+    )
+
+    with pytest.raises(PasswordCiphertextError, match="annullata senza modifiche"):
+        rotate_stored_password_ciphertexts(storage, cipher)
+
+    assert storage.entries["group-1"]["password_enc"] == original
 
 
 def test_application_factory_fails_before_bootstrap_without_password_secret(monkeypatch):

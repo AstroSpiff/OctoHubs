@@ -26,7 +26,7 @@ def test_configuration_routes_publish_typed_snapshots_and_request_bodies():
         "#/components/schemas/ConfigurationServicesUpdateRequest"
     )
     services_input = schema["components"]["schemas"]["ConfigurationServicesUpdateRequest"]
-    assert "database" in services_input["properties"]
+    assert "database" not in services_input["properties"]
     assert services_input["additionalProperties"] is False
     assert "422" in services["responses"]
 

@@ -4,16 +4,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import asyncio
+from contextlib import asynccontextmanager
 import logging
-from typing import Any
+from typing import Any, Awaitable, cast
 from uuid import uuid4
 
+from core.log_sanitization import format_exception_for_log
+from core.configuration_redaction import public_connection_url
+from core.log_sanitization import sanitize_text_for_log
+from emby_runtime.event_bridge_limits import bounded_event_bridge_text
 from emby_runtime.event_bridge_payloads import event_bridge_payloads
 from emby_runtime.event_bridge_settings import build_plugin_settings_payload, event_bridge_settings_from_plugin_payload
 
 logger = logging.getLogger(__name__)
 
 EVENT_BRIDGE_UPDATED_MESSAGE = "OctoHubsEventBridgeUpdated"
+EVENT_BRIDGE_SEND_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass
@@ -40,6 +47,7 @@ class EventBridgeServerState:
     last_event_type: str = ""
     last_event_name: str = ""
     received_count: int = 0
+    generation: int = 0
     websocket: Any = field(default=None, repr=False)
 
     def snapshot(self) -> dict[str, Any]:
@@ -56,34 +64,58 @@ class EventBridgeServerState:
             "last_config_ack_at": self.last_config_ack_at,
             "last_config_transport": self.last_config_transport,
             "last_config_ack_status": self.last_config_ack_status,
-            "last_config_ack_error": self.last_config_ack_error,
+            "last_config_ack_error": sanitize_text_for_log(self.last_config_ack_error),
             "last_config_message_id": self.last_config_message_id,
             "last_config_ack_message_id": self.last_config_ack_message_id,
             "last_plugin_settings_at": self.last_plugin_settings_at,
             "plugin_settings": dict(self.plugin_settings),
             "plugin_target_count": self.plugin_target_count,
-            "plugin_targets": list(self.plugin_targets),
+            "plugin_targets": [
+                {**target, "url": public_connection_url(target.get("url"))}
+                for target in self.plugin_targets
+            ],
             "last_event_type": self.last_event_type,
             "last_event_name": self.last_event_name,
             "received_count": self.received_count,
+            "generation": self.generation,
         }
 
 
 class EventBridgeConnectionManager:
     def __init__(self):
         self._servers: dict[str, EventBridgeServerState] = {}
-        self._websocket_servers: dict[int, str] = {}
+        self._websocket_servers: dict[int, tuple[str, int]] = {}
+        self._dispatch_locks: dict[str, asyncio.Lock] = {}
+        self._accepting = True
+
+    def _dispatch_lock(self, server_id: str) -> asyncio.Lock:
+        return self._dispatch_locks.setdefault(server_id, asyncio.Lock())
 
     async def register(self, websocket: Any, hello: dict[str, Any] | None = None) -> EventBridgeServerState:
+        if not self._accepting:
+            raise RuntimeError("Event Bridge manager is shutting down")
         hello = hello or {}
         server_id, server_name = _server_identity(hello)
-        previous_server_id = self._websocket_servers.get(id(websocket))
+        async with self._dispatch_lock(server_id):
+            return await self._register_unlocked(websocket, hello, server_id, server_name)
+
+    async def _register_unlocked(
+        self,
+        websocket: Any,
+        hello: dict[str, Any],
+        server_id: str,
+        server_name: str,
+    ) -> EventBridgeServerState:
+        previous = self._websocket_servers.get(id(websocket))
+        previous_server_id = previous[0] if previous else None
         if previous_server_id and previous_server_id != server_id:
             disconnected_server_id = self._detach_websocket(websocket)
             if disconnected_server_id:
                 self._publish_update([disconnected_server_id], "disconnected")
         now = _utc_now()
         state = self._servers.get(server_id) or EventBridgeServerState(server_id=server_id)
+        previous_socket = state.websocket
+        state.generation += 1
         state.server_name = server_name or state.server_name
         state.plugin_version = str(hello.get("pluginVersion") or hello.get("version") or state.plugin_version or "")
         state.transport = "websocket"
@@ -92,36 +124,115 @@ class EventBridgeConnectionManager:
         state.last_seen_at = now
         state.websocket = websocket
         self._servers[server_id] = state
-        self._websocket_servers[id(websocket)] = server_id
+        self._websocket_servers[id(websocket)] = (server_id, state.generation)
+        if previous_socket is not None and previous_socket is not websocket:
+            close = getattr(previous_socket, "close", None)
+            if callable(close):
+                try:
+                    await asyncio.wait_for(
+                        cast(Awaitable[Any], close(code=1012)),
+                        timeout=EVENT_BRIDGE_SEND_TIMEOUT_SECONDS,
+                    )
+                except Exception:
+                    pass
         self._publish_update([server_id], "connected")
         return state
+
+    @asynccontextmanager
+    async def websocket_dispatch(self, websocket: Any):
+        """Fence one frame's side effects against socket replacement."""
+        if not self._accepting:
+            yield False
+            return
+        ownership = self._websocket_servers.get(id(websocket))
+        if not ownership:
+            yield False
+            return
+        server_id, generation = ownership
+        async with self._dispatch_lock(server_id):
+            current = self._servers.get(server_id)
+            yield bool(
+                current
+                and current.websocket is websocket
+                and current.generation == generation
+                and self._websocket_servers.get(id(websocket)) == ownership
+            )
 
     async def disconnect(self, websocket: Any) -> None:
         server_id = self._detach_websocket(websocket)
         if server_id:
             self._publish_update([server_id], "disconnected")
 
+    async def shutdown(self) -> None:
+        """Close transports and discard every event-loop-bound primitive."""
+        self._accepting = False
+        websockets = {
+            id(state.websocket): state.websocket
+            for state in self._servers.values()
+            if state.websocket is not None
+        }
+        self._websocket_servers.clear()
+        self._servers.clear()
+        self._dispatch_locks.clear()
+
+        async def close(websocket: Any) -> None:
+            callback = getattr(websocket, "close", None)
+            if not callable(callback):
+                return
+            try:
+                await asyncio.wait_for(
+                    cast(Awaitable[Any], callback(code=1001)),
+                    timeout=EVENT_BRIDGE_SEND_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                logger.debug("Event Bridge transport close failed during shutdown")
+
+        await asyncio.gather(*(close(websocket) for websocket in websockets.values()))
+
     async def close_server_connection(self, server_id: str, code: int = 1008) -> bool:
         """Close the current transport after a credential rotation."""
-        state = self._servers.get(str(server_id or "").strip())
-        websocket = state.websocket if state else None
-        if websocket is None:
+        if not self._accepting:
             return False
-        try:
-            await websocket.close(code=code)
-        finally:
-            detached_server_id = self._detach_websocket(websocket)
-            if detached_server_id:
-                self._publish_update([detached_server_id], "credential_rotated")
-        return True
+        server_key = str(server_id or "").strip()
+        async with self._dispatch_lock(server_key):
+            state = self._servers.get(server_key)
+            websocket = state.websocket if state else None
+            if websocket is None:
+                return False
+            try:
+                await asyncio.wait_for(
+                    websocket.close(code=code),
+                    timeout=EVENT_BRIDGE_SEND_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                logger.debug("Event Bridge close timed out or failed for server %s", server_key)
+            finally:
+                detached_server_id = self._detach_websocket(websocket)
+                if detached_server_id:
+                    self._publish_update([detached_server_id], "credential_rotated")
+            return True
+
+    def websocket_is_current(self, websocket: Any) -> bool:
+        """Return whether this socket still owns its registered generation."""
+        ownership = self._websocket_servers.get(id(websocket))
+        if not ownership:
+            return False
+        server_id, generation = ownership
+        state = self._servers.get(server_id)
+        return bool(
+            state
+            and state.websocket is websocket
+            and state.generation == generation
+        )
 
     def _detach_websocket(self, websocket: Any) -> str | None:
         """Remove only the state still owned by this exact WebSocket instance."""
-        server_id = self._websocket_servers.pop(id(websocket), None)
-        if not server_id:
+        ownership = self._websocket_servers.pop(id(websocket), None)
+        if not ownership:
             return None
+        server_id, generation = ownership
         state = self._servers.get(server_id)
-        if state and state.websocket is websocket:
+        if state and state.websocket is websocket and state.generation == generation:
             state.connected = False
             state.websocket = None
             state.last_seen_at = _utc_now()
@@ -129,11 +240,11 @@ class EventBridgeConnectionManager:
         return None
 
     async def push_configuration(self, server_id: str | None, settings: dict[str, Any]) -> int:
-        pushed = 0
-        for state in self._target_states(server_id):
+        async def push_one(state: EventBridgeServerState) -> bool:
             websocket = state.websocket
             if websocket is None:
-                continue
+                return False
+            generation = state.generation
             now = _utc_now()
             message_id = f"cfg-{state.server_id}-{uuid4().hex}"
             payload = {
@@ -142,43 +253,63 @@ class EventBridgeConnectionManager:
                 "sentAt": now,
                 "settings": build_plugin_settings_payload(settings),
             }
-            await websocket.send_json(payload)
+            try:
+                await asyncio.wait_for(
+                    websocket.send_json(payload),
+                    timeout=EVENT_BRIDGE_SEND_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                self._detach_websocket(websocket)
+                self._publish_update([state.server_id], "configuration_send_failed")
+                return False
+            current = self._servers.get(state.server_id)
+            if current is not state or state.websocket is not websocket or state.generation != generation:
+                return False
             state.last_seen_at = now
             state.last_config_sent_at = now
             state.last_config_transport = "websocket"
             state.last_config_message_id = message_id
             state.last_config_ack_status = "pending"
             state.last_config_ack_error = ""
-            pushed += 1
             self._publish_update([state.server_id], "configuration_sent")
-        return pushed
+            return True
+
+        outcomes = await asyncio.gather(
+            *(push_one(state) for state in self._target_states(server_id)),
+            return_exceptions=False,
+        )
+        return sum(1 for pushed in outcomes if pushed)
 
     def record_config_ack(self, websocket: Any, payload: dict[str, Any]) -> EventBridgeServerState | None:
-        server_id = self._websocket_servers.get(id(websocket)) or str(payload.get("serverId") or "").strip()
-        if not server_id:
+        if not self._accepting:
             return None
+        ownership = self._websocket_servers.get(id(websocket))
+        if not ownership:
+            return None
+        server_id, generation = ownership
 
         now = _utc_now()
-        state = self._servers.get(server_id) or EventBridgeServerState(server_id=server_id)
-        state.transport = "websocket"
-        state.connected = True
-        state.websocket = websocket
+        state = self._servers.get(server_id)
+        if not state or state.websocket is not websocket or state.generation != generation:
+            return None
+        ack_message_id = str(payload.get("id") or payload.get("configureId") or "").strip()
+        if not ack_message_id or ack_message_id != state.last_config_message_id:
+            return None
         state.last_seen_at = now
         state.last_config_ack_at = now
         state.last_config_transport = "websocket"
-        state.last_config_ack_message_id = str(payload.get("id") or payload.get("configureId") or "").strip()
+        state.last_config_ack_message_id = ack_message_id
         ok = payload.get("ok")
         applied = payload.get("applied")
         state.last_config_ack_status = "applied" if ok is not False and applied is not False else "error"
         state.last_config_ack_error = "" if state.last_config_ack_status == "applied" else str(payload.get("error") or "").strip()
         self._servers[server_id] = state
-        self._websocket_servers[id(websocket)] = server_id
         self._publish_update([server_id], "configuration_acknowledged")
         return state
 
     def record_plugin_configuration_response(self, server_id: str | None, response: dict[str, Any] | None) -> None:
         """Record settings returned by the Emby plugin configuration endpoint."""
-        if not server_id or not isinstance(response, dict):
+        if not self._accepting or not server_id or not isinstance(response, dict):
             return
 
         now = _utc_now()
@@ -211,6 +342,8 @@ class EventBridgeConnectionManager:
         self._publish_update([server_id], "configuration_applied")
 
     def record_http_event(self, payload: dict[str, Any]) -> None:
+        if not self._accepting:
+            return
         payloads = event_bridge_payloads(payload)
         for item in payloads:
             server_id, server_name = _server_identity(item)
@@ -228,14 +361,22 @@ class EventBridgeConnectionManager:
             self._servers[server_id] = state
         self._publish_update(_event_server_ids(payloads), "event_received")
 
-    def record_websocket_event(self, websocket: Any, payload: dict[str, Any]) -> None:
-        server_id = self._websocket_servers.get(id(websocket))
+    def record_websocket_event(self, websocket: Any, payload: dict[str, Any]) -> bool:
+        if not self._accepting:
+            return False
+        ownership = self._websocket_servers.get(id(websocket))
+        if not ownership:
+            return False
+        server_id, generation = ownership
+        current_state = self._servers.get(server_id)
+        if not current_state or current_state.websocket is not websocket or current_state.generation != generation:
+            return False
         payloads = event_bridge_payloads(payload)
         updated_server_ids: list[str] = []
         for item in payloads:
             event_server_id, event_server_name = _server_identity(item)
             key = server_id or event_server_id
-            state = self._servers.get(key) or EventBridgeServerState(server_id=key)
+            state = current_state
             state.server_name = event_server_name or state.server_name
             state.transport = "websocket"
             state.connected = True
@@ -251,6 +392,7 @@ class EventBridgeConnectionManager:
             if key and key != "unknown" and key not in updated_server_ids:
                 updated_server_ids.append(key)
         self._publish_update(updated_server_ids, "event_received")
+        return True
 
     def status(self) -> dict[str, Any]:
         servers = sorted(self._servers.values(), key=lambda item: (item.server_name or item.server_id).lower())
@@ -284,14 +426,24 @@ class EventBridgeConnectionManager:
                     "reason": reason,
                 },
             )
-        except Exception:
-            logger.debug("Impossibile pubblicare aggiornamento Event Bridge", exc_info=True)
+        except Exception as exc:
+            logger.debug(
+                "Impossibile pubblicare aggiornamento Event Bridge:\n%s",
+                format_exception_for_log(exc),
+            )
 
 
 _manager = EventBridgeConnectionManager()
 
 
 def get_event_bridge_manager() -> EventBridgeConnectionManager:
+    return _manager
+
+
+def initialize_event_bridge_manager() -> EventBridgeConnectionManager:
+    """Install a fresh manager for the current application lifespan."""
+    global _manager
+    _manager = EventBridgeConnectionManager()
     return _manager
 
 
@@ -308,9 +460,10 @@ def _server_identity(payload: dict[str, Any]) -> tuple[str, str]:
 
 
 def _record_event_identity(state: EventBridgeServerState, payload: dict[str, Any]) -> None:
-    event = payload.get("event") if isinstance(payload.get("event"), dict) else {}
-    state.last_event_type = str(event.get("type") or payload.get("eventType") or "").strip()
-    state.last_event_name = str(event.get("name") or payload.get("eventName") or "").strip()
+    raw_event = payload.get("event")
+    event: dict[str, Any] = raw_event if isinstance(raw_event, dict) else {}
+    state.last_event_type = bounded_event_bridge_text(event.get("type") or payload.get("eventType"))
+    state.last_event_name = bounded_event_bridge_text(event.get("name") or payload.get("eventName"))
 
 
 def _event_server_ids(payloads: list[dict[str, Any]]) -> list[str]:

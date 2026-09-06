@@ -4,16 +4,17 @@ import { Button } from "@/components/ui/button";
 import { useWorkspaceCapabilities } from "@/features/session/workspace-capabilities-context";
 import { iconImageUrl } from "@/features/user-icons/presentation";
 import type { IconProfile, UserIconConfig } from "@/features/user-icons/types";
+import { iconProfileOperationKey, iconRuleOperationKey } from "@/features/user-icons/use-keyed-operation-state";
 import type { EmbyUserServer } from "@/features/users/types";
 
 type IconProfilesMatrixProps = {
   config: UserIconConfig;
   servers: EmbyUserServer[];
   revision: number;
-  changingProfileId?: string;
-  changingRule?: { profileId: string; serverId: string };
-  profileError?: (profile: IconProfile) => string | undefined;
-  ruleError?: (profileId: string, serverId: string) => string | undefined;
+  pendingProfileKeys?: ReadonlySet<string>;
+  pendingRuleKeys?: ReadonlySet<string>;
+  profileErrors?: Readonly<Record<string, string>>;
+  ruleErrors?: Readonly<Record<string, string>>;
   showHeader?: boolean;
   onCreate: () => void;
   onEdit: (profile: IconProfile) => void;
@@ -22,7 +23,7 @@ type IconProfilesMatrixProps = {
   onDeleteRule: (profileId: string, serverId: string) => void;
 };
 
-function IconProfilesMatrix({ config, servers, revision, changingProfileId, changingRule, profileError, ruleError, showHeader = true, onCreate, onEdit, onDeleteProfile, onUpload, onDeleteRule }: IconProfilesMatrixProps) {
+function IconProfilesMatrix({ config, servers, revision, pendingProfileKeys, pendingRuleKeys, profileErrors, ruleErrors, showHeader = true, onCreate, onEdit, onDeleteProfile, onUpload, onDeleteRule }: IconProfilesMatrixProps) {
   return (
     <section className="user-icons-profiles" aria-labelledby="icon-profiles-title">
       {showHeader ? <header>
@@ -40,7 +41,7 @@ function IconProfilesMatrix({ config, servers, revision, changingProfileId, chan
       >
         <table className="user-icons-matrix">
           <thead><tr><th>Profilo</th>{servers.map((server) => <th key={server.id}>{server.name}</th>)}</tr></thead>
-          <tbody>{config.profiles.map((profile) => <ProfileRow key={profile.id} profile={profile} servers={servers} matrix={config.matrix[profile.id] || {}} revision={revision} changing={changingProfileId === profile.id || changingRule?.profileId === profile.id} changingRule={changingRule} error={profileError?.(profile)} ruleError={ruleError} onEdit={onEdit} onDeleteProfile={onDeleteProfile} onUpload={onUpload} onDeleteRule={onDeleteRule} />)}</tbody>
+          <tbody>{config.profiles.map((profile) => <ProfileRow key={profile.id} profile={profile} servers={servers} matrix={config.matrix[profile.id] || {}} revision={revision} changing={Boolean(pendingProfileKeys?.has(iconProfileOperationKey(profile.id)) || servers.some((server) => pendingRuleKeys?.has(iconRuleOperationKey(profile.id, server.id))))} pendingRuleKeys={pendingRuleKeys} error={profileErrors?.[iconProfileOperationKey(profile.id)]} ruleErrors={ruleErrors} onEdit={onEdit} onDeleteProfile={onDeleteProfile} onUpload={onUpload} onDeleteRule={onDeleteRule} />)}</tbody>
         </table>
         {!config.profiles.length ? <p className="user-icons-empty">Non ci sono ancora profili icona.</p> : null}
       </div>
@@ -48,7 +49,7 @@ function IconProfilesMatrix({ config, servers, revision, changingProfileId, chan
   );
 }
 
-function ProfileRow({ profile, servers, matrix, revision, changing, changingRule, error, ruleError, onEdit, onDeleteProfile, onUpload, onDeleteRule }: { profile: IconProfile; servers: EmbyUserServer[]; matrix: Record<string, string>; revision: number; changing: boolean; changingRule?: { profileId: string; serverId: string }; error?: string; ruleError?: IconProfilesMatrixProps["ruleError"]; onEdit: (profile: IconProfile) => void; onDeleteProfile: (profile: IconProfile) => void; onUpload: (profileId: string, serverId: string, file: File) => void; onDeleteRule: (profileId: string, serverId: string) => void }) {
+function ProfileRow({ profile, servers, matrix, revision, changing, pendingRuleKeys, error, ruleErrors, onEdit, onDeleteProfile, onUpload, onDeleteRule }: { profile: IconProfile; servers: EmbyUserServer[]; matrix: Record<string, string>; revision: number; changing: boolean; pendingRuleKeys?: ReadonlySet<string>; error?: string; ruleErrors?: Readonly<Record<string, string>>; onEdit: (profile: IconProfile) => void; onDeleteProfile: (profile: IconProfile) => void; onUpload: (profileId: string, serverId: string, file: File) => void; onDeleteRule: (profileId: string, serverId: string) => void }) {
   return (
     <tr>
       <th scope="row">
@@ -60,7 +61,10 @@ function ProfileRow({ profile, servers, matrix, revision, changing, changingRule
           </span>
         </div>
       </th>
-      {servers.map((server) => <IconRuleCell key={server.id} profile={profile} server={server} iconPath={matrix[server.id]} revision={revision} changing={changingRule?.profileId === profile.id && changingRule.serverId === server.id} error={ruleError?.(profile.id, server.id)} onUpload={onUpload} onDelete={onDeleteRule} />)}
+      {servers.map((server) => {
+        const operationKey = iconRuleOperationKey(profile.id, server.id);
+        return <IconRuleCell key={server.id} profile={profile} server={server} iconPath={matrix[server.id]} revision={revision} changing={Boolean(pendingRuleKeys?.has(operationKey))} error={ruleErrors?.[operationKey]} onUpload={onUpload} onDelete={onDeleteRule} />;
+      })}
     </tr>
   );
 }

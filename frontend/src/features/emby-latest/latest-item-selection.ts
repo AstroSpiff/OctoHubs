@@ -27,4 +27,35 @@ function reconcileLatestItemSelection(
   return items.length ? latestItemSelectionKey(items[0], 0) : "";
 }
 
-export { latestItemSelectionKey, reconcileLatestItemSelection };
+function latestPreviewRequestKey(
+  template: string,
+  items: Partial<Record<"movie" | "series", LatestItem>>,
+) {
+  const itemKey = (item: LatestItem | undefined) =>
+    item ? canonicalPreviewValue(item) : "";
+  return [template, itemKey(items.movie), itemKey(items.series)].join("\u001e");
+}
+
+function canonicalPreviewValue(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value) ?? "null";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalPreviewValue).join(",")}]`;
+  }
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .filter((key) => record[key] !== undefined)
+    .sort()
+    .map(
+      (key) =>
+        `${JSON.stringify(key)}:${canonicalPreviewValue(record[key])}`,
+    )
+    .join(",")}}`;
+}
+
+export {
+  latestItemSelectionKey,
+  latestPreviewRequestKey,
+  reconcileLatestItemSelection,
+};

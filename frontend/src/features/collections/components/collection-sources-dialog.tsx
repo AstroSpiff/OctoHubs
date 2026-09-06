@@ -23,7 +23,7 @@ function CollectionSourcesDialog({
 }) {
   const confirmation = useConfirmationDialog();
   const [inventoryDirty, setInventoryDirty] = useState(false);
-  const busy = false;
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     onDirtyChange?.(open && inventoryDirty);
@@ -96,6 +96,7 @@ function CollectionSourcesDialog({
           options={options}
           onSelect={(selection) => void choose(selection)}
           onDirtyChange={setInventoryDirty}
+          onBusyChange={setBusy}
         />
       </section>
       {confirmation.dialog}

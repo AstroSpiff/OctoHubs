@@ -3,6 +3,9 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 from datetime import datetime, timezone
 import threading
+import uuid
+
+from core.safe_output import safe_print as print
 
 from .constants import PROBE_SCOPE_LIBRARIES, PROBE_SCOPE_RECENT
 from .protocols import ProbeManagerProtocol
@@ -16,7 +19,8 @@ class ComboProbeMixin(ProbeManagerProtocol):
         server_id: str,
         mode: str = "smart",
         scope: str = PROBE_SCOPE_RECENT,
-        target_libraries: Optional[list[str]] = None
+        target_libraries: Optional[list[str]] = None,
+        run_id: str | None = None,
     ) -> bool:
         """
         Start combo workflow: Discovery → Processing (single server).
@@ -29,6 +33,8 @@ class ComboProbeMixin(ProbeManagerProtocol):
             target_libraries: Optional list of library IDs (for libraries scope only)
         """
         with self._lock:
+            if not self._can_start_worker_locked(server_id):
+                return False
             worker_key = f"combo_{scope}"
             if server_id not in self._workers:
                 self._workers[server_id] = {}
@@ -54,6 +60,7 @@ class ComboProbeMixin(ProbeManagerProtocol):
                 library_ids=target_libraries if scope == PROBE_SCOPE_LIBRARIES else None
             )
             previous_last_run = self._status.get(server_id, {}).get(worker_key, {}).get("last_run")
+            effective_run_id = run_id or uuid.uuid4().hex
             self._status[server_id][worker_key] = {
                 "running": True,
                 "phase": "discovery",
@@ -65,16 +72,21 @@ class ComboProbeMixin(ProbeManagerProtocol):
                 "board_mode": "combo",
                 "board_library_ids": [str(lib_id) for lib_id in (target_libraries or [])],
                 "last_run": previous_last_run,
-                "started_at": datetime.now(timezone.utc).isoformat()
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "run_id": effective_run_id,
             }
 
             worker = threading.Thread(
                 target=self._combo_workflow_worker,
-                args=(server, server_id, mode, scope, target_libraries, stop_flag),
+                args=(server, server_id, mode, scope, target_libraries, stop_flag, effective_run_id),
                 daemon=True
             )
-            worker.start()
-            self._workers[server_id][worker_key] = worker
+            self._start_local_worker_locked(
+                server_id,
+                worker_key,
+                worker,
+                stop_flag,
+            )
 
         return True
 
@@ -82,7 +94,8 @@ class ComboProbeMixin(ProbeManagerProtocol):
         self,
         servers: list[Dict[str, Any]],
         mode: str = "smart",
-        scope: str = PROBE_SCOPE_RECENT
+        scope: str = PROBE_SCOPE_RECENT,
+        run_id: str | None = None,
     ) -> bool:
         """
         Start combo workflow for all servers.
@@ -93,6 +106,7 @@ class ComboProbeMixin(ProbeManagerProtocol):
             scope: PROBE_SCOPE_RECENT (libraries scope not supported for all servers)
         """
         enabled_servers = [s for s in servers if s and s.get("enabled") and s.get("id")]
+        effective_run_id = run_id or uuid.uuid4().hex
         print(f"[COMBO_ALL] Avvio combo workflow per {len(enabled_servers)} server(s), scope={scope}, mode={mode}")
         if scope == PROBE_SCOPE_RECENT:
             any_started = False
@@ -103,7 +117,9 @@ class ComboProbeMixin(ProbeManagerProtocol):
                     continue
                 server_name = server.get("name") or server.get("url") or server_id
                 print(f"[COMBO_ALL] Server {idx}/{len(enabled_servers)} ({server_name}): tentativo avvio combo workflow...")
-                started = self.start_combo_workflow(server, server_id, mode, scope=scope)
+                started = self.start_combo_workflow(
+                    server, server_id, mode, scope=scope, run_id=effective_run_id
+                )
                 if started:
                     print(f"[COMBO_ALL] Server {idx}/{len(enabled_servers)} ({server_name}): ✓ combo workflow avviato")
                     any_started = True
@@ -113,6 +129,8 @@ class ComboProbeMixin(ProbeManagerProtocol):
             return any_started
 
         with self._lock:
+            if not self._can_start_worker_locked():
+                return False
             worker_key = f"combo_all_{scope}"
             worker = self._global_workers.get(worker_key)
             if worker and worker.is_alive():
@@ -123,11 +141,14 @@ class ComboProbeMixin(ProbeManagerProtocol):
 
             sequence = threading.Thread(
                 target=self._combo_workflow_all_servers_worker,
-                args=(servers, mode, scope, stop_flag),
+                args=(servers, mode, scope, stop_flag, effective_run_id),
                 daemon=True
             )
-            self._global_workers[worker_key] = sequence
-            sequence.start()
+            self._start_global_worker_locked(
+                worker_key,
+                sequence,
+                stop_flag,
+            )
 
         return True
 
@@ -355,9 +376,15 @@ class ComboProbeMixin(ProbeManagerProtocol):
             task_entry["result"] = result
             task_entry["note"] = note
             tasks.append(task_entry)
+        task_results = {str(task.get("result") or "") for task in tasks}
+        terminal_status = "interrupted" if interrupted else (
+            "error" if "error" in task_results else
+            "partial" if "warning" in task_results else
+            "completed"
+        )
         return {
             "finished_at": datetime.now(timezone.utc).isoformat(),
-            "status": "interrupted" if interrupted else "completed",
+            "status": terminal_status,
             "tasks": tasks
         }
 
@@ -368,7 +395,8 @@ class ComboProbeMixin(ProbeManagerProtocol):
         mode: str,
         scope: str,
         target_libraries: Optional[list[str]],
-        stop_flag: threading.Event
+        stop_flag: threading.Event,
+        run_id: str,
         ) -> None:
         """Orchestrate Discovery → Processing for a single server."""
         worker_key = f"combo_{scope}"
@@ -439,6 +467,7 @@ class ComboProbeMixin(ProbeManagerProtocol):
                         interrupted,
                         library_ids=library_ids
                     )
+                    self._status[server_id][worker_key]["last_run"]["run_id"] = run_id
                     self._status[server_id][worker_key]["board_reset"] = True
 
     def _combo_workflow_all_servers_worker(
@@ -446,7 +475,8 @@ class ComboProbeMixin(ProbeManagerProtocol):
         servers: list[Dict[str, Any]],
         mode: str,
         scope: str,
-        stop_flag: threading.Event
+        stop_flag: threading.Event,
+        run_id: str,
     ) -> None:
         """Orchestrate Discovery (all servers sequential) → Processing (all servers sequential)."""
         enabled_servers: list = []
@@ -461,6 +491,8 @@ class ComboProbeMixin(ProbeManagerProtocol):
                 srv_id = srv.get("id")
                 if srv_id:
                     with self._lock:
+                        if self._is_server_quiescing_locked(srv_id):
+                            continue
                         if srv_id not in self._workers:
                             self._workers[srv_id] = {}
                         if srv_id not in self._status:
@@ -478,7 +510,8 @@ class ComboProbeMixin(ProbeManagerProtocol):
                             "queue": [dict(entry) for entry in combo_queue],
                             "board_reset": False,
                             "last_run": previous_last_run,
-                            "started_at": datetime.now(timezone.utc).isoformat()
+                            "started_at": datetime.now(timezone.utc).isoformat(),
+                            "run_id": run_id,
                         }
 
             # Phase 1: Discovery on all servers (sequential)
@@ -574,6 +607,7 @@ class ComboProbeMixin(ProbeManagerProtocol):
             # Mark combo workflow as completed for all servers
             worker_key = f"combo_{scope}"
             last_run = self._build_combo_last_run(enabled_servers, scope, stop_flag.is_set())
+            last_run["run_id"] = run_id
             for srv in enabled_servers:
                 srv_id = srv.get("id")
                 if srv_id and srv_id in self._status:

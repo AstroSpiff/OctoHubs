@@ -5,7 +5,7 @@ from typing import Any, Callable, Dict, Optional, Protocol
 
 
 class ProbeManagerProtocol(Protocol):
-    _lock: threading.Lock
+    _lock: Any
     _workers: Dict[str, Dict[str, threading.Thread]]
     _status: Dict[str, Dict[str, Any]]
     _stop_flags: Dict[str, Dict[str, threading.Event]]
@@ -15,7 +15,24 @@ class ProbeManagerProtocol(Protocol):
     _db_getter: Optional[Callable[[], Any]]
 
     def _update_status(self, server_id: str, worker_type: str, **kwargs: Any) -> None: ...
+    def _can_start_worker_locked(self, server_id: Optional[str] = None) -> bool: ...
+    def _is_server_quiescing_locked(self, server_id: str) -> bool: ...
     def _set_libraries_pause(self, server_id: str, paused: bool) -> None: ...
+    def _start_local_worker_locked(
+        self,
+        server_id: str,
+        worker_key: str,
+        worker: threading.Thread,
+        stop_flag: threading.Event,
+        *,
+        release_libraries_pause: bool = False,
+    ) -> None: ...
+    def _start_global_worker_locked(
+        self,
+        worker_key: str,
+        worker: threading.Thread,
+        stop_flag: threading.Event,
+    ) -> None: ...
     def _get_libraries_pause_flag(self, server_id: str) -> threading.Event: ...
     def _processing_worker(
         self,

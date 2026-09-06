@@ -10,13 +10,17 @@ from fastapi import HTTPException
 
 class _Backend:
     def __init__(self):
-        self.settings = {}
+        self.settings = {"EMBY": {"SERVERS": [{"id": "green"}]}}
 
     def load_app_settings(self):
         return deepcopy(self.settings)
 
     def update_app_settings_section(self, section, updater):
         self.settings[section] = updater(deepcopy(self.settings.get(section)))
+        return deepcopy(self.settings)
+
+    def mutate_app_settings(self, updater):
+        self.settings = updater(deepcopy(self.settings))
         return deepcopy(self.settings)
 
 
@@ -37,13 +41,61 @@ def test_event_bridge_credentials_are_hashed_and_server_specific(monkeypatch):
     assert credentials.event_bridge_credential_server_ids() == {"green"}
 
 
+def test_removed_server_cannot_reuse_or_retain_its_event_bridge_credential(monkeypatch):
+    from emby_runtime import event_bridge_credentials as credentials
+
+    backend = _Backend()
+    monkeypatch.setattr(credentials._config_manager, "_ensure_db_backend", lambda: backend)
+    credentials.save_event_bridge_credential("green", "green-secret")
+
+    backend.settings["EMBY"]["SERVERS"] = []
+    assert credentials.verify_event_bridge_credential("green", "green-secret") is False
+
+    credentials.delete_event_bridge_credential("green")
+    assert credentials.event_bridge_credential_server_ids() == set()
+
+
+def test_credential_commit_refuses_a_server_removed_before_persistence(monkeypatch):
+    from emby_runtime import event_bridge_credentials as credentials
+
+    backend = _Backend()
+    backend.settings["EMBY"]["SERVERS"] = []
+    monkeypatch.setattr(credentials._config_manager, "_ensure_db_backend", lambda: backend)
+
+    saved = credentials.save_event_bridge_credential_if_server_exists("green", "green-secret")
+
+    assert saved is False
+    assert credentials.EVENT_BRIDGE_CREDENTIALS_SECTION not in backend.settings
+
+
+def test_credential_generation_revalidation_observes_cross_process_rotation(monkeypatch):
+    from emby_runtime import event_bridge_credentials as credentials
+
+    backend = _Backend()
+    monkeypatch.setattr(credentials._config_manager, "_ensure_db_backend", lambda: backend)
+    credentials.save_event_bridge_credential("green", "first-secret")
+    accepted_generation = credentials.event_bridge_credential_generation(
+        "green", "first-secret"
+    )
+
+    assert credentials.event_bridge_credential_generation_is_current(
+        "green", accepted_generation
+    )
+    credentials.save_event_bridge_credential("green", "replacement-secret")
+    assert not credentials.event_bridge_credential_generation_is_current(
+        "green", accepted_generation
+    )
+
+
 def test_event_bridge_authentication_has_no_shared_secret_fallback(monkeypatch):
     from emby_runtime import event_bridge_auth
 
     monkeypatch.setattr(
         event_bridge_auth,
-        "verify_event_bridge_credential",
-        lambda server_id, credential: server_id == "green" and credential == "green-secret",
+        "event_bridge_credential_generation",
+        lambda server_id, credential: "generation"
+        if server_id == "green" and credential == "green-secret"
+        else "",
     )
 
     principal = event_bridge_auth.authenticate_event_bridge(
@@ -108,8 +160,8 @@ def test_provisioning_persists_hash_only_after_plugin_confirmation(monkeypatch):
     )
     monkeypatch.setattr(
         provisioning,
-        "save_event_bridge_credential",
-        lambda server_id, credential: saved.append((server_id, credential)),
+        "save_event_bridge_credential_if_server_exists",
+        lambda server_id, credential: saved.append((server_id, credential)) or True,
     )
 
     result = provisioning.provision_event_bridge_credential({}, "green", {})
@@ -129,7 +181,7 @@ def test_provisioning_rejects_plugins_without_per_server_support(monkeypatch):
     )
     monkeypatch.setattr(
         provisioning,
-        "save_event_bridge_credential",
+        "save_event_bridge_credential_if_server_exists",
         lambda *_args: pytest.fail("A legacy plugin must not activate a credential hash"),
     )
 
@@ -137,3 +189,34 @@ def test_provisioning_rejects_plugins_without_per_server_support(monkeypatch):
 
     assert result.ok is False
     assert "aggiornalo" in result.error
+
+
+def test_provisioning_reports_server_removal_after_remote_install(monkeypatch):
+    from emby_runtime import event_bridge_provisioning as provisioning
+
+    monkeypatch.setattr(provisioning, "generate_event_bridge_credential", lambda: "generated-secret")
+    monkeypatch.setattr(
+        provisioning,
+        "push_event_bridge_settings_to_plugin",
+        lambda *_args, **_kwargs: (
+            True,
+            "",
+            {
+                "ServerId": "green",
+                "Settings": {
+                    "perServerCredentialSupported": True,
+                    "credentialConfigured": True,
+                },
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        provisioning,
+        "save_event_bridge_credential_if_server_exists",
+        lambda *_args: False,
+    )
+
+    result = provisioning.provision_event_bridge_credential({}, "green", {})
+
+    assert result.ok is False
+    assert "rimosso" in result.error

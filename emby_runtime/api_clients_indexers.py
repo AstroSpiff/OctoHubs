@@ -3,62 +3,93 @@ import time
 
 from core.log_sanitization import (
     sanitize_download_reference_for_log,
-    sanitize_text_for_log,
+    sanitize_diagnostic_text,
     sanitize_url_for_log,
+)
+from core.safe_output import safe_print as print
+from core.outbound_redirects import response_is_redirect
+from search.query_safety import search_query_for_log
+from search.provider_outcomes import (
+    ProviderSearchError,
+    ProviderSearchResults,
+    bounded_number,
+    bounded_provider_rows,
+    bounded_text,
+    load_bounded_json,
 )
 
 
+INDEXER_REQUEST_TIMEOUT_SECONDS = 25
+
+
 def _download_log_value(value):
-    if not isinstance(value, str):
-        return value
-    if value.lower().startswith(("magnet:", "http://", "https://")):
-        return sanitize_download_reference_for_log(value)
-    return value
+    return sanitize_diagnostic_text(sanitize_download_reference_for_log(value))
 
 
 def _info_log_value(value):
-    return sanitize_url_for_log(value) if value else value
+    return sanitize_diagnostic_text(sanitize_url_for_log(value)) if value else value
 
 
 def search_prowlarr(query, media_type, config):
     """Cerca un titolo su Prowlarr usando la sua API."""
-    print(f"   -> Cercando su Prowlarr: '{query}'")
+    print(f"   -> Cercando su Prowlarr: {search_query_for_log(query)!r}")
     headers = {"X-Api-Key": config["PROWLARR_API_KEY"]}
     categories = ["2000"] if media_type == "movie" else ["5000"]  # Prowlarr si aspetta una lista
     params = {"query": query, "categories": categories, "type": "search"}
 
+    response = None
     try:
         start_time = time.perf_counter()
         response = requests.get(
             f"{config['PROWLARR_URL']}/api/v1/search",
             headers=headers,
             params=params,
-            timeout=30
+            allow_redirects=False,
+            timeout=INDEXER_REQUEST_TIMEOUT_SECONDS,
+            stream=True,
         )
+        if response_is_redirect(response):
+            raise ProviderSearchError("Redirect Prowlarr rifiutato")
         response.raise_for_status()
         elapsed = time.perf_counter() - start_time
         print(f"      -> Risposta Prowlarr in {elapsed:.1f}s (status {response.status_code})")
-        data = response.json()
+        data = load_bounded_json(response, provider="Prowlarr")
         if not isinstance(data, list):
-            print("      -> Risposta inattesa da Prowlarr: verifica la configurazione.")
-            return []
+            raise ProviderSearchError("Risposta inattesa da Prowlarr")
+        rows, truncated = bounded_provider_rows(data, provider="Prowlarr")
 
         # Normalizza i risultati per assicurare mapping corretto dei campi
         normalized = []
-        for idx, item in enumerate(data):
-            if not isinstance(item, dict):
-                continue
+        for idx, item in enumerate(rows):
 
-            title = item.get("title")
-            magnet_link = item.get("magnetUrl") or item.get("magnetUri")
-            download_link = item.get("downloadUrl")
-            info_url = item.get("infoUrl")
-            guid_value = item.get("guid")
+            title = bounded_text(
+                item.get("title"),
+                limit=500,
+                provider="Prowlarr",
+                field="title",
+                required=True,
+            )
+            magnet_url = bounded_text(
+                item.get("magnetUrl"), provider="Prowlarr", field="magnetUrl"
+            )
+            magnet_uri = bounded_text(
+                item.get("magnetUri"), provider="Prowlarr", field="magnetUri"
+            )
+            magnet_link = magnet_url or magnet_uri
+            download_link = bounded_text(
+                item.get("downloadUrl"), provider="Prowlarr", field="downloadUrl"
+            )
+            info_url = bounded_text(
+                item.get("infoUrl"), provider="Prowlarr", field="infoUrl"
+            )
+            guid_value = bounded_text(
+                item.get("guid"), provider="Prowlarr", field="guid"
+            )
 
             # Debug: stampa il primo risultato
             if idx == 0:
                 print("      -> [DEBUG Prowlarr] Primo risultato RAW:")
-                print(f"         title: {title}")
+                print(f"         title: {sanitize_diagnostic_text(title)}")
                 print(f"         magnetUrl: {_download_log_value(item.get('magnetUrl'))}")
                 print(f"         magnetUri: {_download_log_value(item.get('magnetUri'))}")
                 print(f"         downloadUrl: {_download_log_value(download_link)}")
@@ -108,9 +139,19 @@ def search_prowlarr(query, media_type, config):
                 "downloadUrl": download_link if isinstance(download_link, str) else None,
                 "web": info_link if isinstance(info_link, str) else None,
                 "infoUrl": info_link if isinstance(info_link, str) else None,
-                "indexer": item.get("indexer") or "Prowlarr",
-                "seeders": item.get("seeders") or 0,
-                "size": item.get("size") or 0
+                "indexer": bounded_text(
+                    "Prowlarr" if item.get("indexer") in (None, "") else item.get("indexer"),
+                    limit=200,
+                    provider="Prowlarr",
+                    field="indexer",
+                    required=True,
+                ),
+                "seeders": bounded_number(
+                    item.get("seeders"), provider="Prowlarr", field="seeders"
+                ),
+                "size": bounded_number(
+                    item.get("size"), provider="Prowlarr", field="size"
+                ),
             }
 
             # Debug: stampa il primo risultato normalizzato
@@ -121,10 +162,14 @@ def search_prowlarr(query, media_type, config):
                 print(f"         web: {_info_log_value(result_dict['web'])}")
 
             normalized.append(result_dict)
-        return normalized
-    except requests.exceptions.RequestException as e:
-        print(f"   -> Impossibile contattare Prowlarr: {sanitize_text_for_log(e)}")
-        return []
+        return ProviderSearchResults(normalized, provider="prowlarr", truncated=truncated)
+    except requests.exceptions.RequestException as exc:
+        print(f"   -> Impossibile contattare Prowlarr: {sanitize_diagnostic_text(exc)}")
+        raise ProviderSearchError("Prowlarr non disponibile") from exc
+    finally:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
 
 
 def search_jackett(query, media_type, config):
@@ -134,7 +179,7 @@ def search_jackett(query, media_type, config):
     if not (config.get("JACKETT_URL") and config.get("JACKETT_API_KEY")):
         return []
 
-    print(f"   -> Cercando su Jackett: '{query}'")
+    print(f"   -> Cercando su Jackett: {search_query_for_log(query)!r}")
     base_url = config["JACKETT_URL"].rstrip("/")
     endpoint = f"{base_url}/api/v2.0/indexers/all/results"
     categories = ["2000"] if media_type == "movie" else ["5000"]
@@ -146,31 +191,52 @@ def search_jackett(query, media_type, config):
     ]
     for cat in categories:
         params.append(("Category[]", cat))
+    response = None
     try:
         start_time = time.perf_counter()
-        response = requests.get(endpoint, params=params, timeout=60)
+        response = requests.get(
+            endpoint,
+            params=params,
+            allow_redirects=False,
+            timeout=INDEXER_REQUEST_TIMEOUT_SECONDS,
+            stream=True,
+        )
+        if response_is_redirect(response):
+            raise ProviderSearchError("Redirect Jackett rifiutato")
         response.raise_for_status()
         elapsed = time.perf_counter() - start_time
         print(f"      -> Risposta Jackett in {elapsed:.1f}s (status {response.status_code})")
-        payload = response.json()
+        payload = load_bounded_json(response, provider="Jackett")
         results = payload.get("Results") if isinstance(payload, dict) else None
         if not isinstance(results, list):
-            print("      -> Risposta inattesa da Jackett.")
-            return []
+            raise ProviderSearchError("Risposta inattesa da Jackett")
+        rows, truncated = bounded_provider_rows(results, provider="Jackett")
         normalized = []
-        for idx, item in enumerate(results):
-            if not isinstance(item, dict):
-                continue
-            title = item.get("Title")
-            magnet_link = item.get("MagnetUri")
-            download_link = item.get("Link")
-            details_link = item.get("Details")
-            guid_value = item.get("Guid")
+        for idx, item in enumerate(rows):
+            title = bounded_text(
+                item.get("Title"),
+                limit=500,
+                provider="Jackett",
+                field="Title",
+                required=True,
+            )
+            magnet_link = bounded_text(
+                item.get("MagnetUri"), provider="Jackett", field="MagnetUri"
+            )
+            download_link = bounded_text(
+                item.get("Link"), provider="Jackett", field="Link"
+            )
+            details_link = bounded_text(
+                item.get("Details"), provider="Jackett", field="Details"
+            )
+            guid_value = bounded_text(
+                item.get("Guid"), provider="Jackett", field="Guid"
+            )
 
             # Debug: stampa il primo risultato
             if idx == 0:
                 print("      -> [DEBUG Jackett] Primo risultato RAW:")
-                print(f"         Title: {title}")
+                print(f"         Title: {sanitize_diagnostic_text(title)}")
                 print(f"         MagnetUri: {_download_log_value(magnet_link)}")
                 print(f"         Link: {_download_log_value(download_link)}")
                 print(f"         Details: {_info_log_value(details_link)}")
@@ -215,9 +281,19 @@ def search_jackett(query, media_type, config):
                 "downloadUrl": download_link if isinstance(download_link, str) else None,
                 "web": info_link if isinstance(info_link, str) else None,
                 "infoUrl": info_link if isinstance(info_link, str) else None,
-                "indexer": item.get("Indexer") or "Jackett",
-                "seeders": item.get("Seeders") or 0,
-                "size": item.get("Size") or 0
+                "indexer": bounded_text(
+                    "Jackett" if item.get("Indexer") in (None, "") else item.get("Indexer"),
+                    limit=200,
+                    provider="Jackett",
+                    field="Indexer",
+                    required=True,
+                ),
+                "seeders": bounded_number(
+                    item.get("Seeders"), provider="Jackett", field="Seeders"
+                ),
+                "size": bounded_number(
+                    item.get("Size"), provider="Jackett", field="Size"
+                ),
             }
 
             # Debug: stampa il primo risultato normalizzato
@@ -228,7 +304,11 @@ def search_jackett(query, media_type, config):
                 print(f"         web: {_info_log_value(result_dict['web'])}")
 
             normalized.append(result_dict)
-        return normalized
+        return ProviderSearchResults(normalized, provider="jackett", truncated=truncated)
     except requests.exceptions.RequestException as exc:
-        print(f"   -> Impossibile contattare Jackett: {sanitize_text_for_log(exc)}")
-        return []
+        print(f"   -> Impossibile contattare Jackett: {sanitize_diagnostic_text(exc)}")
+        raise ProviderSearchError("Jackett non disponibile") from exc
+    finally:
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()

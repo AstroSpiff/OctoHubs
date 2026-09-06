@@ -23,14 +23,17 @@ declare global {
 type Deferred<T> = {
   promise: Promise<T>;
   resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
 };
 
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((complete) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((complete, fail) => {
     resolve = complete;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 function section(summary: string): SystemSection {
@@ -126,5 +129,94 @@ describe("useSystemStatus", () => {
     expect(latestStatus?.sections[0].items[0].summary).toBe(
       "Snapshot completo aggiornato",
     );
+  });
+
+  it("does not let an older full refresh replace a newer section response", async () => {
+    const oldFull = deferred<SystemStatus>();
+    const newSection = deferred<SystemStatus>();
+    vi.mocked(getSystemStatus)
+      .mockResolvedValueOnce(snapshot(section("Stato iniziale")))
+      .mockReturnValueOnce(oldFull.promise)
+      .mockReturnValueOnce(newSection.promise);
+
+    await act(async () => {
+      root.render(<StatusHarness />);
+      await Promise.resolve();
+    });
+    act(() => {
+      void latestStatus?.refreshAll();
+      void latestStatus?.refreshSection("emby");
+    });
+    await act(async () => {
+      newSection.resolve(snapshot(section("Area aggiornata")));
+      await newSection.promise;
+    });
+    await act(async () => {
+      oldFull.resolve(snapshot(section("Snapshot completo vecchio")));
+      await oldFull.promise;
+    });
+
+    expect(latestStatus?.sections[0].items[0].summary).toBe("Area aggiornata");
+  });
+
+  it("ignores an older section error after a newer full snapshot succeeds", async () => {
+    const staleSection = deferred<SystemStatus>();
+    const fullSnapshot = deferred<SystemStatus>();
+    vi.mocked(getSystemStatus)
+      .mockResolvedValueOnce(snapshot(section("Stato iniziale")))
+      .mockReturnValueOnce(staleSection.promise)
+      .mockReturnValueOnce(fullSnapshot.promise);
+
+    await act(async () => {
+      root.render(<StatusHarness />);
+      await Promise.resolve();
+    });
+    act(() => {
+      void latestStatus?.refreshSection("emby");
+      void latestStatus?.refreshAll();
+    });
+
+    await act(async () => {
+      fullSnapshot.resolve(snapshot(section("Snapshot completo aggiornato")));
+      await fullSnapshot.promise;
+    });
+    await act(async () => {
+      staleSection.reject(new Error("Risposta area superata"));
+      await staleSection.promise.catch(() => undefined);
+    });
+
+    expect(latestStatus?.sections[0].items[0].summary).toBe(
+      "Snapshot completo aggiornato",
+    );
+    expect(latestStatus?.sectionErrors.emby).toBeUndefined();
+  });
+
+  it("ignores an older full error after a newer section response succeeds", async () => {
+    const staleFull = deferred<SystemStatus>();
+    const freshSection = deferred<SystemStatus>();
+    vi.mocked(getSystemStatus)
+      .mockResolvedValueOnce(snapshot(section("Stato iniziale")))
+      .mockReturnValueOnce(staleFull.promise)
+      .mockReturnValueOnce(freshSection.promise);
+
+    await act(async () => {
+      root.render(<StatusHarness />);
+      await Promise.resolve();
+    });
+    act(() => {
+      void latestStatus?.refreshAll();
+      void latestStatus?.refreshSection("emby");
+    });
+    await act(async () => {
+      freshSection.resolve(snapshot(section("Area aggiornata")));
+      await freshSection.promise;
+    });
+    await act(async () => {
+      staleFull.reject(new Error("Snapshot completo superato"));
+      await staleFull.promise.catch(() => undefined);
+    });
+
+    expect(latestStatus?.sections[0].items[0].summary).toBe("Area aggiornata");
+    expect(latestStatus?.error).toBe("");
   });
 });

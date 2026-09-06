@@ -13,6 +13,7 @@ from core.integrations import (
     _trakt_enabled,
     TraktAPIError,
 )
+from core.pagination import MAX_PROVIDER_ITEMS, MAX_PROVIDER_PAGES, PaginationGuard
 from core.utils import _normalize_media_type
 from .sources_common import PROVIDER_LABEL_MAP, _extract_year
 
@@ -224,6 +225,7 @@ def _fetch_trakt_list_items(value: str) -> List[Dict[str, Any]]:
     entries: List[Dict[str, Any]] = []
     page = 1
     limit = 100
+    guard = PaginationGuard(MAX_PROVIDER_PAGES, MAX_PROVIDER_ITEMS)
     while True:
         try:
             params = {"extended": "full", "page": page, "limit": limit}
@@ -241,6 +243,7 @@ def _fetch_trakt_list_items(value: str) -> List[Dict[str, Any]]:
         items = payload.get("items") if isinstance(payload, dict) else payload if isinstance(payload, list) else []
         if not isinstance(items, list) or not items:
             break
+        guard.observe(items)
         for item in items:
             candidate = _extract_trakt_candidate(item)
             if candidate:

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from app_state import get_jellyseerr_refresh_state
+from core.log_sanitization import format_exception_for_log
 from core.storage import StorageError
 from realtime.manager import publish_configuration_update
 from services.configuration_settings import (
@@ -24,6 +27,7 @@ from web.configuration_api_models import (
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _require_auth: Optional[Callable[[Request], Any]] = None
 _validate_csrf: Optional[Callable[[Request, Optional[str]], bool]] = None
@@ -77,9 +81,9 @@ def _snapshot(config: dict[str, Any], is_valid: bool) -> dict[str, Any]:
     responses={200: {"model": ConfigurationSettingsResponse}},
 )
 async def configuration_settings_api_route(request: Request):
-    _require_auth_dep(request)
-    config, is_valid = _load_config_dep()
-    return JSONResponse(_snapshot(config, is_valid))
+    await run_in_threadpool(_require_auth_dep, request)
+    config, is_valid = await run_in_threadpool(_load_config_dep)
+    return JSONResponse(await run_in_threadpool(_snapshot, config, is_valid))
 
 
 @router.put(
@@ -90,18 +94,20 @@ async def update_configuration_automations_api_route(
     request: Request,
     payload: ConfigurationAutomationsPayload,
 ):
-    _require_auth_dep(request)
-    _validate_csrf_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
+    await run_in_threadpool(_validate_csrf_dep, request)
 
-    config, is_valid = _load_config_dep()
+    config, is_valid = await run_in_threadpool(_load_config_dep)
     if not is_valid:
         raise HTTPException(status_code=409, detail="Configurazione non valida")
     try:
-        update_automation_settings(payload.model_dump(exclude_unset=True), config)
+        await run_in_threadpool(update_automation_settings, payload.model_dump(exclude_unset=True), config)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Impossibile salvare le automazioni: {exc}") from exc
+        logger.error("Salvataggio automazioni non riuscito:\n%s", format_exception_for_log(exc))
+        raise HTTPException(status_code=500, detail="Impossibile salvare le automazioni") from exc
     publish_configuration_update("automations")
-    return JSONResponse({**_snapshot(config, True), "message": "Automazioni aggiornate"})
+    snapshot = await run_in_threadpool(_snapshot, config, True)
+    return JSONResponse({**snapshot, "message": "Automazioni aggiornate"})
 
 
 @router.put(
@@ -112,18 +118,21 @@ async def update_configuration_services_api_route(
     request: Request,
     payload: ConfigurationServicesUpdateRequest,
 ):
-    _require_auth_dep(request)
-    _validate_csrf_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
+    await run_in_threadpool(_validate_csrf_dep, request)
 
-    # This endpoint also initializes the first database connection. Keep it
-    # available before a valid database-backed configuration exists.
-    config, _is_valid = _load_config_dep()
+    config, is_valid = await run_in_threadpool(_load_config_dep)
+    if not is_valid:
+        raise HTTPException(status_code=409, detail="Configurazione non valida")
     try:
-        update_service_settings(payload.model_dump(exclude_unset=True), config)
+        await run_in_threadpool(update_service_settings, payload.model_dump(exclude_unset=True), config)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        logger.warning("Configurazione servizi rifiutata:\n%s", format_exception_for_log(exc))
+        raise HTTPException(status_code=400, detail="Configurazione servizi non valida") from exc
     except StorageError as exc:
-        raise HTTPException(status_code=500, detail=f"Impossibile salvare i servizi: {exc}") from exc
-    config, is_valid = _load_config_dep()
+        logger.error("Salvataggio servizi non riuscito:\n%s", format_exception_for_log(exc))
+        raise HTTPException(status_code=500, detail="Impossibile salvare i servizi") from exc
+    config, is_valid = await run_in_threadpool(_load_config_dep)
     publish_configuration_update("services")
-    return JSONResponse({**_snapshot(config, is_valid), "message": "Configurazione servizi aggiornata"})
+    snapshot = await run_in_threadpool(_snapshot, config, is_valid)
+    return JSONResponse({**snapshot, "message": "Configurazione servizi aggiornata"})

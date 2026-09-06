@@ -1,5 +1,5 @@
 import { Eraser, Play, Trash2 } from "@/components/ui/icons";
-import { useMemo, useState, type KeyboardEvent } from "react";
+import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 import { Button } from "@/components/ui/button";
 import { tabAtKey } from "@/components/ui/tab-navigation";
@@ -13,11 +13,9 @@ import {
 import { ScanSummaryItemRow } from "@/features/research/components/scan-summary-item-row";
 import { ScanSummaryControls } from "@/features/research/components/scan-summary-controls";
 import { ScanSummaryToolbar } from "@/features/research/components/scan-summary-toolbar";
-import {
-  appendRequestRuleTerm,
-  defaultRequestRule,
-} from "@/features/research/request-search-rules";
+import { defaultRequestRule } from "@/features/research/request-search-rules";
 import type { RequestRuleTermField } from "@/features/research/request-search-rules";
+import { createRequestRuleTermQueue } from "@/features/research/request-rule-term-queue";
 import {
   scanSummaryItemKey,
   scanTargetForItem,
@@ -33,6 +31,7 @@ import type {
   ScanSummaryItem,
   ScanTarget,
 } from "@/features/research/types";
+import { useWorkspaceCapabilities } from "@/features/session/workspace-capabilities-context";
 
 type SummaryTab = "movie" | "tv";
 const summaryTabs: SummaryTab[] = ["movie", "tv"];
@@ -45,12 +44,19 @@ function ScanSummaryWorkspace({
   onRefresh: () => void;
 }) {
   const confirmation = useConfirmationDialog();
+  const { canMutate } = useWorkspaceCapabilities();
   const [tab, setTab] = useState<SummaryTab>("movie");
   const [selectedItems, setSelectedItems] = useState<
     Map<string, ScanSummaryItem>
   >(new Map());
   const [notice, setNotice] = useState<ResearchNotice | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pendingRuleUpdates, setPendingRuleUpdates] = useState(0);
+  const ruleQueue = useRef(
+    createRequestRuleTermQueue(async (rule) => {
+      await saveRequestSearchRules([rule]);
+    }),
+  );
   const [sort, setSort] = useState(defaultScanSummarySort);
   const scan = overview.scan;
   const items = (overview.results.items || []) as ScanSummaryItem[];
@@ -220,22 +226,26 @@ function ScanSummaryWorkspace({
         "La richiesta associata non è più disponibile. Aggiorna il riepilogo e riprova.",
       );
     const currentRule = defaultRequestRule(request, overview.search_rules);
-    const updatedRule = appendRequestRuleTerm(currentRule, field, term);
-    if (updatedRule === currentRule)
-      return `"${term}" è già presente nelle regole della richiesta.`;
-    setBusy(true);
+    setPendingRuleUpdates((current) => current + 1);
     try {
-      await saveRequestSearchRules([updatedRule]);
+      const message = await ruleQueue.current.enqueue(
+        item.request_id,
+        currentRule,
+        term,
+        field,
+      );
       onRefresh();
-      return `"${term}" aggiunto alle regole della richiesta.`;
+      return message;
     } finally {
-      setBusy(false);
+      setPendingRuleUpdates((current) => Math.max(0, current - 1));
     }
   }
 
+  const interactionBusy = busy || pendingRuleUpdates > 0;
+
   return (
     <div className="research-summary-layout">
-      <ScanSummaryControls scan={scan} hasConfig={overview.has_config} busy={busy} notice={notice} generatedAt={overview.results.generated_at} onStart={() => void startScan()} onStop={() => void requestStop()} onRefresh={onRefresh} />
+      <ScanSummaryControls scan={scan} hasConfig={overview.has_config} busy={interactionBusy} notice={notice} generatedAt={overview.results.generated_at} onStart={() => void startScan()} onStop={() => void requestStop()} onRefresh={onRefresh} />
       <section
         className="research-card research-scan-results"
         aria-labelledby="scan-summary-title"
@@ -255,7 +265,7 @@ function ScanSummaryWorkspace({
               requiresWriteAccess
               variant="ghost"
               size="compact"
-              disabled={busy}
+              disabled={interactionBusy}
               onClick={() => void cleanup("resolved")}
             >
               <Eraser size={15} aria-hidden="true" /> Pulisci evasi
@@ -267,7 +277,7 @@ function ScanSummaryWorkspace({
               size="icon"
               title="Azzera ultimo riepilogo"
               aria-label="Azzera ultimo riepilogo"
-              disabled={busy}
+              disabled={interactionBusy}
               onClick={() => void cleanup("all")}
             >
               <Trash2 size={15} aria-hidden="true" />
@@ -310,7 +320,7 @@ function ScanSummaryWorkspace({
               tabIndex={0}
             >
             <ScanSummaryToolbar sort={sort} onChange={setSort} />
-            <div className="research-scan-selection">
+            {canMutate ? <div className="research-scan-selection">
               <span>
                 {selectedTargets.length
                   ? `${selectedTargets.length} selezionate`
@@ -322,7 +332,7 @@ function ScanSummaryWorkspace({
                   variant="ghost"
                   size="compact"
                   disabled={
-                    busy || Boolean(scan.running) || !visibleItems.length
+                    interactionBusy || Boolean(scan.running) || !visibleItems.length
                   }
                   onClick={selectVisibleItems}
                 >
@@ -332,7 +342,7 @@ function ScanSummaryWorkspace({
                   type="button"
                   variant="ghost"
                   size="compact"
-                  disabled={busy || !selectedItems.size}
+                  disabled={interactionBusy || !selectedItems.size}
                   onClick={clearVisibleItems}
                 >
                   Deseleziona
@@ -342,21 +352,22 @@ function ScanSummaryWorkspace({
                   requiresWriteAccess
                   variant="secondary"
                   size="compact"
-                  disabled={!selectedTargets.length || busy || Boolean(scan.running)}
+                  disabled={!selectedTargets.length || interactionBusy || Boolean(scan.running)}
                   onClick={() => void startScan(selectedTargets)}
                 >
                   <Play size={15} aria-hidden="true" /> Cerca selezionate
                 </Button>
               </div>
-            </div>
+            </div> : null}
             <div className="scan-summary-list">
               {visibleItems.map((item) => (
                 <ScanSummaryItemRow
                   key={scanSummaryItemKey(item)}
                   item={item}
                   checked={selectedItems.has(scanSummaryItemKey(item))}
+                  selectable={canMutate}
                   qbittorrentAvailable={overview.qbittorrent_available}
-                  disabled={busy || Boolean(scan.running)}
+                  disabled={interactionBusy || Boolean(scan.running)}
                   onToggle={() => toggle(item)}
                   onQuickSearch={() => void startScan([scanTargetForItem(item)])}
                   onCleanup={() => void cleanup("single", item)}

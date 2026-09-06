@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-import traceback
-from typing import Any, Callable, Optional
+import logging
+from typing import Any, Callable, Optional, cast
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from core.utils import _coerce_request_bool, _coerce_request_int
+from core.log_sanitization import format_exception_for_log
+from core.storage import StorageError
 from emby_latest.api_models import (
     LatestConfigurationResponse,
     LatestEnrichRequest,
@@ -32,6 +35,9 @@ from emby_latest import api_handlers
 from realtime.manager import publish_application_event
 from web.openapi_requests import no_request_body
 from web.request_validation import validated_json_payload
+
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -84,6 +90,24 @@ def _publish_latest_update_on_success(
         _publish_latest_update(scope)
 
 
+async def _run_latest_configuration_action(
+    action: Callable[..., tuple[dict[str, Any], int]],
+    *args: Any,
+) -> tuple[dict[str, Any], int]:
+    """Return an explicit failure without publishing a successful mutation."""
+    try:
+        return await run_in_threadpool(action, *args)
+    except StorageError as exc:
+        logger.error(
+            "Salvataggio configurazione Latest non riuscito:\n%s",
+            format_exception_for_log(exc),
+        )
+        return {
+            "success": False,
+            "message": "Impossibile salvare la configurazione Latest",
+        }, 500
+
+
 @router.get(
     "/api/emby/latest",
     response_model=LatestSnapshotResponse,
@@ -95,7 +119,7 @@ def _publish_latest_update_on_success(
     ),
 )
 async def emby_latest(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
 
     limit = _coerce_request_int(request.query_params.get("limit"), 200, 1, 1000)
     per_server_limit = _coerce_request_int(request.query_params.get("per_server_limit"), 10, 1, 100)
@@ -103,8 +127,13 @@ async def emby_latest(request: Request):
     cache_only = _coerce_request_bool(request.query_params.get("cache_only"), False)
     view = (request.query_params.get("view") or "").strip().lower()
 
-    payload, status_code = api_handlers.build_latest_snapshot_payload(
-        limit, per_server_limit, force, cache_only, view
+    payload, status_code = await run_in_threadpool(
+        api_handlers.build_latest_snapshot_payload,
+        limit,
+        per_server_limit,
+        force,
+        cache_only,
+        view,
     )
     return JSONResponse(payload, status_code=status_code)
 
@@ -120,7 +149,7 @@ async def emby_latest(request: Request):
     ),
 )
 async def emby_latest_refresh(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     csrf_response = _validate_csrf_response(request)
     if csrf_response:
         return csrf_response
@@ -129,8 +158,11 @@ async def emby_latest_refresh(request: Request):
     per_server_limit = _coerce_request_int(request.query_params.get("per_server_limit"), 10, 1, 100)
     full_refresh = _coerce_request_bool(request.query_params.get("full"), False)
 
-    payload, status_code = api_handlers.build_latest_refresh_payload(
-        limit, per_server_limit, full_refresh
+    payload, status_code = await run_in_threadpool(
+        api_handlers.build_latest_refresh_payload,
+        limit,
+        per_server_limit,
+        full_refresh,
     )
     _publish_latest_update_on_success(payload, status_code, "snapshot")
     return JSONResponse(payload, status_code=status_code)
@@ -138,19 +170,19 @@ async def emby_latest_refresh(request: Request):
 
 @router.get("/api/emby/latest/progress", response_model=LatestProgressResponse)
 async def emby_latest_progress(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
 
-    payload, status_code = api_handlers.build_latest_progress_payload()
+    payload, status_code = await run_in_threadpool(api_handlers.build_latest_progress_payload)
     return JSONResponse(payload, status_code=status_code)
 
 
 @router.get("/api/emby/latest/config", response_model=LatestConfigurationResponse)
 async def emby_latest_configuration(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
 
     from emby_latest.configuration_api import build_latest_configuration_snapshot
 
-    payload, status_code = build_latest_configuration_snapshot()
+    payload, status_code = await run_in_threadpool(build_latest_configuration_snapshot)
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -160,29 +192,35 @@ async def emby_latest_configuration(request: Request):
     openapi_extra=request_body_schema(LatestPresetRequest),
 )
 async def emby_latest_preset_save(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     csrf_response = _validate_csrf_response(request)
     if csrf_response:
         return csrf_response
-    body = await validated_json_payload(request, LatestPresetRequest)
+    body = cast(
+        dict[str, Any],
+        await validated_json_payload(request, LatestPresetRequest),
+    )
 
     from emby_latest.configuration_api import save_latest_preset
 
-    payload, status_code = save_latest_preset(body)
+    payload, status_code = await _run_latest_configuration_action(save_latest_preset, body)
     _publish_latest_update_on_success(payload, status_code, "configuration")
     return JSONResponse(payload, status_code=status_code)
 
 
 @router.delete("/api/emby/latest/presets/{preset_id}", response_model=LatestConfigurationResponse)
 async def emby_latest_preset_delete(request: Request, preset_id: str):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     csrf_response = _validate_csrf_response(request)
     if csrf_response:
         return csrf_response
 
     from emby_latest.configuration_api import remove_latest_preset
 
-    payload, status_code = remove_latest_preset(preset_id)
+    payload, status_code = await _run_latest_configuration_action(
+        remove_latest_preset,
+        preset_id,
+    )
     _publish_latest_update_on_success(payload, status_code, "configuration")
     return JSONResponse(payload, status_code=status_code)
 
@@ -193,15 +231,18 @@ async def emby_latest_preset_delete(request: Request, preset_id: str):
     openapi_extra=request_body_schema(LatestRuleRequest),
 )
 async def emby_latest_rule_save(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     csrf_response = _validate_csrf_response(request)
     if csrf_response:
         return csrf_response
-    body = await validated_json_payload(request, LatestRuleRequest)
+    body = cast(
+        dict[str, Any],
+        await validated_json_payload(request, LatestRuleRequest),
+    )
 
     from emby_latest.configuration_api import save_latest_rule
 
-    payload, status_code = save_latest_rule(body)
+    payload, status_code = await _run_latest_configuration_action(save_latest_rule, body)
     _publish_latest_update_on_success(payload, status_code, "configuration")
     return JSONResponse(payload, status_code=status_code)
 
@@ -212,29 +253,39 @@ async def emby_latest_rule_save(request: Request):
     openapi_extra=request_body_schema(LatestRuleEnabledRequest),
 )
 async def emby_latest_rule_enabled(request: Request, rule_id: str):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     csrf_response = _validate_csrf_response(request)
     if csrf_response:
         return csrf_response
-    body = await validated_json_payload(request, LatestRuleEnabledRequest)
+    body = cast(
+        dict[str, Any],
+        await validated_json_payload(request, LatestRuleEnabledRequest),
+    )
 
     from emby_latest.configuration_api import set_latest_rule_enabled
 
-    payload, status_code = set_latest_rule_enabled(rule_id, body.get("enabled"))
+    payload, status_code = await _run_latest_configuration_action(
+        set_latest_rule_enabled,
+        rule_id,
+        body.get("enabled"),
+    )
     _publish_latest_update_on_success(payload, status_code, "configuration")
     return JSONResponse(payload, status_code=status_code)
 
 
 @router.delete("/api/emby/latest/rules/{rule_id}", response_model=LatestConfigurationResponse)
 async def emby_latest_rule_delete(request: Request, rule_id: str):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     csrf_response = _validate_csrf_response(request)
     if csrf_response:
         return csrf_response
 
     from emby_latest.configuration_api import remove_latest_rule
 
-    payload, status_code = remove_latest_rule(rule_id)
+    payload, status_code = await _run_latest_configuration_action(
+        remove_latest_rule,
+        rule_id,
+    )
     _publish_latest_update_on_success(payload, status_code, "configuration")
     return JSONResponse(payload, status_code=status_code)
 
@@ -245,14 +296,14 @@ async def emby_latest_rule_delete(request: Request, rule_id: str):
     openapi_extra=no_request_body(),
 )
 async def emby_latest_state_clear(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     csrf_response = _validate_csrf_response(request)
     if csrf_response:
         return csrf_response
 
     from emby_latest.configuration_api import clear_latest_state
 
-    payload, status_code = clear_latest_state()
+    payload, status_code = await run_in_threadpool(clear_latest_state)
     _publish_latest_update_on_success(payload, status_code, "snapshot")
     return JSONResponse(payload, status_code=status_code)
 
@@ -263,14 +314,14 @@ async def emby_latest_state_clear(request: Request):
     openapi_extra=no_request_body(),
 )
 async def emby_latest_reset(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     csrf_response = _validate_csrf_response(request)
     if csrf_response:
         return csrf_response
 
     from emby_latest.configuration_api import reset_latest_state_and_cache
 
-    payload, status_code = reset_latest_state_and_cache()
+    payload, status_code = await run_in_threadpool(reset_latest_state_and_cache)
     _publish_latest_update_on_success(payload, status_code, "snapshot")
     return JSONResponse(payload, status_code=status_code)
 
@@ -281,22 +332,25 @@ async def emby_latest_reset(request: Request):
     openapi_extra=request_body_schema(LatestPreviewRequest),
 )
 async def emby_latest_preview(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     csrf_response = _validate_csrf_response(request)
     if csrf_response:
         return csrf_response
 
-    body = await validated_json_payload(request, LatestPreviewRequest)
+    body = cast(
+        dict[str, Any],
+        await validated_json_payload(request, LatestPreviewRequest),
+    )
 
-    payload, status_code = api_handlers.build_preview_snapshot(body)
+    payload, status_code = await run_in_threadpool(api_handlers.build_preview_snapshot, body)
     return JSONResponse(payload, status_code=status_code)
 
 
 @router.get("/api/emby/latest/preview/cache", response_model=LatestPreviewCacheResponse)
 async def emby_latest_preview_cache(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
 
-    payload, status_code = api_handlers.build_preview_cache_snapshot()
+    payload, status_code = await run_in_threadpool(api_handlers.build_preview_cache_snapshot)
     return JSONResponse(payload, status_code=status_code)
 
 
@@ -306,14 +360,17 @@ async def emby_latest_preview_cache(request: Request):
     openapi_extra=request_body_schema(LatestEnrichRequest),
 )
 async def emby_latest_enrich(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     csrf_response = _validate_csrf_response(request)
     if csrf_response:
         return csrf_response
 
-    body = await validated_json_payload(request, LatestEnrichRequest)
+    body = cast(
+        dict[str, Any],
+        await validated_json_payload(request, LatestEnrichRequest),
+    )
 
-    payload, status_code = api_handlers.build_enrich_snapshot(body)
+    payload, status_code = await run_in_threadpool(api_handlers.build_enrich_snapshot, body)
     _publish_latest_update_on_success(payload, status_code, "snapshot")
     return JSONResponse(payload, status_code=status_code)
 
@@ -324,20 +381,32 @@ async def emby_latest_enrich(request: Request):
     openapi_extra=request_body_schema(LatestNotifyRequest),
 )
 async def emby_latest_notify(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     csrf_response = _validate_csrf_response(request)
     if csrf_response:
         return csrf_response
 
-    body = await validated_json_payload(request, LatestNotifyRequest)
+    body = cast(
+        dict[str, Any],
+        await validated_json_payload(request, LatestNotifyRequest),
+    )
 
-    print(f"[LATEST_NOTIFY] payload={body}")
+    logger.info(
+        "[LATEST_NOTIFY] request limit=%s server_filter=%s",
+        body.get("per_server_limit"),
+        "set" if body.get("server_filter") else "all",
+    )
     try:
-        payload, status_code = api_handlers.build_notify_snapshot(body)
+        payload, status_code = await run_in_threadpool(api_handlers.build_notify_snapshot, body)
     except Exception as exc:
-        traceback.print_exc()
-        payload = {"success": False, "message": f"Errore notifiche: {exc}"}
+        logger.error("Invio notifiche Latest non riuscito:\n%s", format_exception_for_log(exc))
+        payload = {"success": False, "message": "Invio notifiche non riuscito"}
         status_code = 500
     _publish_latest_update_on_success(payload, status_code, "snapshot")
-    print(f"[LATEST_NOTIFY] status={status_code} response={payload}")
+    logger.info(
+        "[LATEST_NOTIFY] completed status=%s sent=%s failed=%s",
+        status_code,
+        payload.get("sent") if isinstance(payload, dict) else None,
+        payload.get("failed") if isinstance(payload, dict) else None,
+    )
     return JSONResponse(payload, status_code=status_code)

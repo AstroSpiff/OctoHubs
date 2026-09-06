@@ -6,6 +6,7 @@ from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from core.tasks import workflow_manager
 from services.workflow_api_models import WorkflowErrorResponse, WorkflowStartRequest, WorkflowSuccessResponse
@@ -57,14 +58,20 @@ def _success_response_dep(*args, **kwargs) -> JSONResponse:
     },
 )
 async def workflow_start(request: Request, payload: WorkflowStartRequest):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     workflow_type = payload.type
-    context = payload.context
-    if workflow_manager.is_running():
+    context = payload.context.model_dump(exclude_none=True)
+    if await run_in_threadpool(workflow_manager.is_running):
         return _error_response_dep("Un workflow è già in esecuzione", 409)
-    started = workflow_manager.start(workflow_type=workflow_type, context=context)
+    started = await run_in_threadpool(
+        workflow_manager.start,
+        workflow_type=workflow_type,
+        context=context,
+    )
     if started:
         return _success_response_dep(message="Workflow avviato")
+    if await run_in_threadpool(workflow_manager.is_running):
+        return _error_response_dep("Un workflow è già in esecuzione", 409)
     return _error_response_dep("Impossibile avviare il workflow", 500)
 
 
@@ -74,8 +81,8 @@ async def workflow_start(request: Request, payload: WorkflowStartRequest):
     openapi_extra=no_request_body(),
 )
 async def workflow_stop(request: Request):
-    _require_auth_dep(request)
-    if not workflow_manager.is_running():
+    await run_in_threadpool(_require_auth_dep, request)
+    if not await run_in_threadpool(workflow_manager.is_running):
         return _error_response_dep("Nessun workflow in esecuzione", 400)
-    workflow_manager.stop()
+    await run_in_threadpool(workflow_manager.stop)
     return _success_response_dep(message="Richiesta di interruzione inviata")

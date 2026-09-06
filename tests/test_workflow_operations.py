@@ -124,7 +124,11 @@ class WorkflowOperationTests(unittest.TestCase):
         self.assertFalse(manager._thread.is_alive())
         self.assertEqual("failed", manager.get_status()["status"])
         self.assertEqual("failed", manager.get_status()["steps"][3]["status"])
-        self.assertIn("Cache DB non disponibile", manager.get_status()["error"])
+        self.assertEqual(
+            "Errore durante l'esecuzione del workflow",
+            manager.get_status()["error"],
+        )
+        self.assertNotIn("Cache DB non disponibile", str(tracker.failed))
         self.assertTrue(tracker.failed)
         self.assertFalse(tracker.finished)
 

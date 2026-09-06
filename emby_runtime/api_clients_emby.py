@@ -1,10 +1,15 @@
+import logging
+
 import requests
 from datetime import datetime, timezone
 from typing import Any, Tuple, Dict, cast, Optional
 
+from core.emby_identifiers import quote_emby_identifier
+from core.outbound_redirects import response_is_redirect
 from core.utils import _normalize_media_type
 
 EMBY_REQUEST_TIMEOUT = 30
+logger = logging.getLogger(__name__)
 
 
 # --- FUNZIONI EMBY ---
@@ -33,15 +38,19 @@ def _call_emby_api(server, path, method="GET", params=None, json_payload=None) -
         return False, "Credenziali Emby mancanti"
     target = f"{base_url}/{path.lstrip('/')}"
     merged_params = dict(params or {})
-    if "api_key" not in merged_params:
-        merged_params["api_key"] = token
     headers = {
         "X-Emby-Token": token,
         "Accept": "application/json"
     }
     try:
         if method.upper() == "GET":
-            response = requests.get(target, headers=headers, params=merged_params, timeout=EMBY_REQUEST_TIMEOUT)
+            response = requests.get(
+                target,
+                headers=headers,
+                params=merged_params,
+                allow_redirects=False,
+                timeout=EMBY_REQUEST_TIMEOUT,
+            )
         else:
             response = requests.request(
                 method.upper(),
@@ -49,8 +58,11 @@ def _call_emby_api(server, path, method="GET", params=None, json_payload=None) -
                 headers=headers,
                 params=merged_params,
                 json=json_payload,
+                allow_redirects=False,
                 timeout=EMBY_REQUEST_TIMEOUT
             )
+        if response_is_redirect(response):
+            return False, "Redirect Emby rifiutato"
         response.raise_for_status()
         try:
             payload = response.json()
@@ -60,13 +72,10 @@ def _call_emby_api(server, path, method="GET", params=None, json_payload=None) -
     except requests.HTTPError as exc:
         response = exc.response
         if response is not None:
-            body = (response.text or "").strip()
-            if len(body) > 400:
-                body = body[:400] + "…"
-            return False, f"{response.status_code} {response.reason}: {body}" if body else f"{response.status_code} {response.reason}"
-        return False, str(exc)
-    except requests.RequestException as exc:
-        return False, str(exc)
+            return False, f"Errore Emby HTTP {response.status_code}"
+        return False, "Errore richiesta Emby"
+    except requests.RequestException:
+        return False, "Errore richiesta Emby"
 
 
 def _fetch_emby_scheduled_tasks(server):
@@ -443,8 +452,9 @@ def _trigger_library_scan(server: Dict[str, Any], library_id: str, scan_type: st
     - File scan: Recursive=true only
     - Metadata refresh: Recursive=true + MetadataRefreshMode + other metadata params
     """
-    if not library_id:
-        return False, "ID libreria mancante"
+    quoted_library_id = quote_emby_identifier(library_id)
+    if quoted_library_id is None:
+        return False, "ID libreria non valido"
 
     if scan_type == "metadata":
         # Metadata refresh only - refreshes metadata without scanning filesystem
@@ -463,58 +473,49 @@ def _trigger_library_scan(server: Dict[str, Any], library_id: str, scan_type: st
         # Uses Items endpoint with Recursive parameter only
         params = {"Recursive": "true"}
 
-    # Debug log to file
-    endpoint = f"Items/{library_id}/Refresh"
-    import os
-    log_file = os.path.join(os.path.dirname(__file__), "debug_scan.log")
-
-    # Construct full URL for logging
-    base_url = _emby_base_url(server)
-    test_params = dict(params or {})
-    test_params["api_key"] = "***"
-    from urllib.parse import urlencode
-    full_url = f"{base_url}/{endpoint}?{urlencode(test_params)}"
-
-    timestamp = ""
-    try:
-        with open(log_file, "a") as f:
-            from datetime import datetime
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            f.write(f"[{timestamp}] TRIGGER_SCAN: scan_type={scan_type}, library_id={library_id}\n")
-            f.write(f"[{timestamp}] URL: {full_url}\n")
-            f.write(f"[{timestamp}] PARAMS: {params}\n")
-            f.flush()
-    except Exception:
-        pass
+    endpoint = f"Items/{quoted_library_id}/Refresh"
+    logger.debug(
+        "Trigger Emby library scan: server=%s library=%s type=%s",
+        server.get("id") or "configured-server",
+        library_id,
+        scan_type,
+    )
 
     result = _call_emby_api(server, endpoint, method="POST", params=params)
-
-    try:
-        with open(log_file, "a") as f:
-            f.write(f"[{timestamp}] RESULT: success={result[0]}\n")
-            f.flush()
-    except Exception:
-        pass
+    logger.debug(
+        "Emby library scan trigger completed: server=%s library=%s success=%s",
+        server.get("id") or "configured-server",
+        library_id,
+        result[0],
+    )
 
     return result
 
 
 def _stop_emby_task(server: Dict[str, Any], task_id: str):
-    if not task_id:
-        return False, "ID task mancante"
+    quoted_task_id = quote_emby_identifier(task_id)
+    if quoted_task_id is None:
+        return False, "ID task non valido"
     # Prova diversi endpoint e metodi
     attempts = [
-        (f"ScheduledTasks/Running/{task_id}", "DELETE"),
-        (f"ScheduledTasks/Running/{task_id}/Stop", "POST"),
-        (f"ScheduledTasks/Running/{task_id}/Cancel", "POST"),
-        (f"ScheduledTasks/{task_id}/Cancel", "POST"),
-        (f"ScheduledTasks/Running/{task_id}", "POST")
+        (f"ScheduledTasks/Running/{quoted_task_id}", "DELETE"),
+        (f"ScheduledTasks/Running/{quoted_task_id}/Stop", "POST"),
+        (f"ScheduledTasks/Running/{quoted_task_id}/Cancel", "POST"),
+        (f"ScheduledTasks/{quoted_task_id}/Cancel", "POST"),
+        (f"ScheduledTasks/Running/{quoted_task_id}", "POST")
     ]
     last_payload = "Operazione non supportata"
-    for path, method in attempts:
-        print(f"[STOP_TASK] Provo {method} {path}")
+    server_id = server.get("id") or "configured-server"
+    for attempt_number, (path, method) in enumerate(attempts, start=1):
         success, payload = _call_emby_api(server, path, method=method)
-        print(f"[STOP_TASK] Risultato: success={success}, payload={payload}")
+        logger.debug(
+            "Emby task stop attempt: server=%s task=%s method=%s attempt=%d success=%s",
+            server_id,
+            task_id,
+            method,
+            attempt_number,
+            success,
+        )
         if success:
             return success, payload
         last_payload = payload
@@ -552,19 +553,22 @@ def _pause_emby_playback_session(server: Dict[str, Any], session_id: str):
 
 
 def _run_emby_scheduled_task(server, task_id):
+    quoted_task_id = quote_emby_identifier(task_id)
+    if quoted_task_id is None:
+        return False, "ID task non valido"
     server_uuid = server.get("server_id") or server.get("status", {}).get("server_id")
     params = {}
     if server_uuid:
         params["serverId"] = server_uuid
     paths = [
-        f"ScheduledTasks/{task_id}/Run",
-        f"ScheduledTasks/{server_uuid}/{task_id}/Run" if server_uuid else "",
-        f"ScheduledTasks/Run/{task_id}",
-        f"ScheduledTasks/Run/{server_uuid}/{task_id}" if server_uuid else ""
+        f"ScheduledTasks/{quoted_task_id}/Run",
+        f"ScheduledTasks/{server_uuid}/{quoted_task_id}/Run" if server_uuid else "",
+        f"ScheduledTasks/Run/{quoted_task_id}",
+        f"ScheduledTasks/Run/{server_uuid}/{quoted_task_id}" if server_uuid else ""
     ]
     paths.extend([
-        f"ScheduledTasks/Running/{task_id}",
-        f"ScheduledTasks/Running/{server_uuid}/{task_id}" if server_uuid else ""
+        f"ScheduledTasks/Running/{quoted_task_id}",
+        f"ScheduledTasks/Running/{server_uuid}/{quoted_task_id}" if server_uuid else ""
     ])
     for path in [p for p in paths if p]:
         success, payload = _call_emby_api(server, path, method="POST", params=params)
@@ -634,12 +638,17 @@ def check_emby_availability(
                 "AnyProviderIdEquals": f"{provider_id_key}.{provider_id}",
                 "Recursive": "true",
                 "Fields": "ProviderIds",
-                "api_key": api_key
             }
             if include_types:
                 params["IncludeItemTypes"] = include_types
 
-            response = requests.get(search_url, params=params, timeout=5)
+            response = requests.get(
+                search_url,
+                headers={"X-Emby-Token": api_key},
+                params=params,
+                allow_redirects=False,
+                timeout=5,
+            )
 
             if response.status_code != 200:
                 continue

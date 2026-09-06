@@ -8,10 +8,11 @@ import {
   type NavigationPreferences,
 } from "@/features/navigation/navigation-preferences";
 import type { Session } from "@/lib/session";
+import { browserLocalStorage } from "@/lib/safe-web-storage";
 
 function initialNavigationPreferences(): NavigationPreferences {
   return resolveNavigationPreferences(
-    typeof window === "undefined" ? null : window.localStorage,
+    browserLocalStorage(),
   );
 }
 
@@ -19,17 +20,18 @@ function useNavigationPreferences(serverPreferences?: NavigationPreferences) {
   const client = useQueryClient();
   const [preferences, setPreferences] = useState<NavigationPreferences>(initialNavigationPreferences);
   const preferencesRef = useRef(preferences);
+  const mutationGenerationRef = useRef(0);
   const serverSignature = serverPreferences
     ? `${serverPreferences.primary_navigation}|${serverPreferences.secondary_navigation}`
     : "";
 
   const persistLocally = useCallback((next: NavigationPreferences) => {
-    persistNavigationPreferences(next, window.localStorage);
+    persistNavigationPreferences(next, browserLocalStorage());
   }, []);
 
   useEffect(() => {
     if (!serverPreferences) return;
-    const next = resolveNavigationPreferences(window.localStorage, serverPreferences);
+    const next = resolveNavigationPreferences(browserLocalStorage(), serverPreferences);
     preferencesRef.current = next;
     setPreferences(next);
     persistLocally(next);
@@ -37,15 +39,6 @@ function useNavigationPreferences(serverPreferences?: NavigationPreferences) {
 
   const mutation = useMutation({
     mutationFn: saveNavigationPreferences,
-    onSuccess: (saved) => {
-      const next = resolveNavigationPreferences(window.localStorage, saved);
-      preferencesRef.current = next;
-      setPreferences(next);
-      persistLocally(next);
-      client.setQueryData<Session>(["session"], (current) => (
-        current ? { ...current, preferences: next } : current
-      ));
-    },
   });
 
   const updatePreferences = useCallback((partial: Partial<NavigationPreferences>) => {
@@ -54,14 +47,27 @@ function useNavigationPreferences(serverPreferences?: NavigationPreferences) {
     preferencesRef.current = next;
     setPreferences(next);
     persistLocally(next);
-    mutation.mutate(next, {
+    const generation = mutationGenerationRef.current + 1;
+    mutationGenerationRef.current = generation;
+    mutation.mutate(partial, {
+      onSuccess: (saved) => {
+        if (generation !== mutationGenerationRef.current) return;
+        const resolved = resolveNavigationPreferences(browserLocalStorage(), saved);
+        preferencesRef.current = resolved;
+        setPreferences(resolved);
+        persistLocally(resolved);
+        client.setQueryData<Session>(["session"], (current) => (
+          current ? { ...current, preferences: resolved } : current
+        ));
+      },
       onError: () => {
+        if (generation !== mutationGenerationRef.current) return;
         preferencesRef.current = previous;
         setPreferences(previous);
         persistLocally(previous);
       },
     });
-  }, [mutation, persistLocally]);
+  }, [client, mutation, persistLocally]);
 
   return {
     error: mutation.error,

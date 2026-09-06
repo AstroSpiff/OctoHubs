@@ -1,10 +1,19 @@
 import logging
+import threading
+from contextlib import nullcontext
 from typing import Dict, Any, List, Callable
 
+from core.log_sanitization import (
+    format_exception_for_log,
+    redact_mapping_for_log,
+    sanitize_diagnostic_text,
+)
 from emby_users.sync_state_refresh import refresh_sync_states
+from emby_users.sync_results import require_complete_snapshots, validate_sync_result
 
 logger = logging.getLogger(__name__)
 USERS_UPDATED_MESSAGE = "OctoHubsUsersUpdated"
+SYNC_FAILURE_MESSAGE = "Sincronizzazione non completata. Verifica i log dell'applicazione."
 
 
 def _publish_users_sync_updated() -> None:
@@ -40,6 +49,7 @@ class AutoSyncManager:
         mark_group_sync_result: Callable[[str, str, str, Dict[str, Any]], bool],
         state_tracker,
         operation_tracker=None,
+        group_sync_guard=None,
     ):
         self._get_users_dashboard_data = get_users_dashboard_data
         self._sync_merge_playstate = sync_merge_playstate
@@ -60,6 +70,57 @@ class AutoSyncManager:
         self._mark_group_sync_result = mark_group_sync_result
         self._state_tracker = state_tracker
         self._operation_tracker = operation_tracker
+        self._group_sync_guard = group_sync_guard
+        self._active_groups: set[str] = set()
+        self._active_groups_lock = threading.Lock()
+
+    def _try_claim_group(self, group_id: str) -> bool:
+        with self._active_groups_lock:
+            if group_id in self._active_groups:
+                return False
+            self._active_groups.add(group_id)
+            return True
+
+    def _release_group(self, group_id: str) -> None:
+        with self._active_groups_lock:
+            self._active_groups.discard(group_id)
+
+    def _sync_group_singleflight(
+        self,
+        group: Dict[str, Any],
+        operation_id: str | None = None,
+    ) -> Dict[str, Any]:
+        group_id = str(group["id"])
+        busy_message = "Sincronizzazione del gruppo già in corso"
+        if not self._try_claim_group(group_id):
+            self._mark_group_sync_result(group_id, "skipped", busy_message, {})
+            return {"status": "skipped", "message": busy_message, "reason": "already_running"}
+
+        storage = getattr(self._state_tracker, "storage", None)
+        lock_factory = getattr(storage, "advisory_lock", None)
+        group_sync_guard = getattr(self, "_group_sync_guard", None)
+        if callable(group_sync_guard):
+            lock_context = group_sync_guard(group_id)
+        else:
+            lock_context = lock_factory(f"user-sync:{group_id}") if callable(lock_factory) else nullcontext(True)
+        try:
+            with lock_context as acquired:
+                if not acquired:
+                    self._mark_group_sync_result(group_id, "skipped", busy_message, {})
+                    return {"status": "skipped", "message": busy_message, "reason": "already_running"}
+                dashboard_getter = getattr(self, "_get_users_dashboard_data", None)
+                current_group = group
+                if callable(dashboard_getter):
+                    dashboard = dashboard_getter()
+                    current_group = next(
+                        (item for item in dashboard.get("groups", []) if str(item.get("id")) == group_id),
+                        None,
+                    )
+                    if current_group is None:
+                        return {"status": "skipped", "message": "Gruppo non più disponibile", "reason": "group_removed"}
+                return self._sync_group(current_group, operation_id=operation_id)
+        finally:
+            self._release_group(group_id)
 
     def _update_operation(
         self,
@@ -79,8 +140,19 @@ class AutoSyncManager:
             details=details,
         )
 
-    def _latest_source(self, domain: str, participants: List[tuple], progress_callback=None):
-        state = self._state_tracker.choose_latest(domain, participants, progress_callback=progress_callback)
+    def _latest_source(
+        self,
+        domain: str,
+        participants: List[tuple],
+        preferred_source: tuple | None = None,
+        progress_callback=None,
+    ):
+        state = self._state_tracker.choose_latest(
+            domain,
+            participants,
+            preferred_source=preferred_source,
+            progress_callback=progress_callback,
+        )
         if not state:
             return None, []
         source_pair = (state.get("server_id"), state.get("user_id"))
@@ -93,17 +165,23 @@ class AutoSyncManager:
         participants: List[tuple],
         sync_func: Callable,
         *args,
+        preferred_source: tuple | None = None,
         progress_callback=None,
     ) -> Dict[str, Any]:
-        logger.warning("[USER_SYNC] Latest-wins start domain=%s participants=%s", domain, len(participants))
-        state, targets = self._latest_source(domain, participants, progress_callback=progress_callback)
+        logger.warning("[USER_SYNC] Latest-wins start domain=%s participants=%s", sanitize_diagnostic_text(domain), len(participants))
+        state, targets = self._latest_source(
+            domain,
+            participants,
+            preferred_source=preferred_source,
+            progress_callback=progress_callback,
+        )
         if not state or not targets:
             return {"skipped": True, "reason": "latest source unavailable"}
         logger.warning(
             "[USER_SYNC] Latest-wins apply domain=%s source=%s/%s targets=%s",
-            domain,
-            state["server_id"],
-            state["user_id"],
+            sanitize_diagnostic_text(domain),
+            sanitize_diagnostic_text(state["server_id"]),
+            sanitize_diagnostic_text(state["user_id"]),
             len(targets),
         )
         result = sync_func(state["server_id"], state["user_id"], targets, *args)
@@ -112,7 +190,11 @@ class AutoSyncManager:
             "user_id": state["user_id"],
             "updated_at": state.get("updated_at")
         }
-        logger.warning("[USER_SYNC] Latest-wins done domain=%s result=%s", domain, result)
+        logger.warning(
+            "[USER_SYNC] Latest-wins done domain=%s result=%s",
+            sanitize_diagnostic_text(domain),
+            redact_mapping_for_log(result),
+        )
         return result
 
     def _run_favorites_delta_sync(
@@ -121,15 +203,14 @@ class AutoSyncManager:
         progress_callback=None,
     ) -> Dict[str, Any]:
         logger.warning("[USER_SYNC] Delta sync start domain=favorites participants=%s", len(participants))
-        states = [
-            state
-            for state in self._state_tracker.refresh_many_with_diff(
+        states = require_complete_snapshots(
+            self._state_tracker.refresh_many_with_diff(
                 "favorites",
                 participants,
                 progress_callback=progress_callback,
-            )
-            if not state.get("error")
-        ]
+            ),
+            len(participants),
+        )
         if not states:
             return {"skipped": True, "reason": "favorites snapshots unavailable"}
 
@@ -159,13 +240,9 @@ class AutoSyncManager:
         desired_keys = (baseline_keys | initial_keys | added_keys) - removed_keys
         conflicts = added_keys & removed_keys
         if conflicts and changed_states:
-            latest_state = max(changed_states, key=lambda state: state.get("updated_at") or "")
-            latest_keys = set((latest_state.get("snapshot") or {}).get("favorites") or [])
-            for key in conflicts:
-                if key in latest_keys:
-                    desired_keys.add(key)
-                else:
-                    desired_keys.discard(key)
+            raise RuntimeError(
+                f"Conflitto preferiti su {len(conflicts)} elementi; nessuna modifica applicata"
+            )
 
         logger.warning(
             "[USER_SYNC] Delta sync apply domain=favorites baseline=%s added=%s removed=%s conflicts=%s desired=%s",
@@ -183,29 +260,8 @@ class AutoSyncManager:
             "conflicts": len(conflicts),
             "desired": len(desired_keys),
         }
-        logger.warning("[USER_SYNC] Delta sync done domain=favorites result=%s", result)
+        logger.warning("[USER_SYNC] Delta sync done domain=favorites result=%s", redact_mapping_for_log(result))
         return result
-
-    def _should_replace_playstate_delta_op(
-        self,
-        existing: tuple | None,
-        updated_at: str,
-        op: str,
-        value: Dict[str, Any] | None,
-    ) -> bool:
-        if not existing:
-            return True
-        existing_updated_at, existing_op, existing_value = existing
-        if updated_at > existing_updated_at:
-            return True
-        if updated_at < existing_updated_at:
-            return False
-        if op == "set" and existing_op == "set":
-            candidate_hidden = bool((value or {}).get("hide_from_resume"))
-            existing_hidden = bool((existing_value or {}).get("hide_from_resume"))
-            if candidate_hidden != existing_hidden:
-                return candidate_hidden
-        return True
 
     def _run_playstate_delta_sync(
         self,
@@ -214,64 +270,55 @@ class AutoSyncManager:
         progress_callback=None,
     ) -> Dict[str, Any]:
         logger.warning("[USER_SYNC] Delta sync start domain=playstate participants=%s", len(participants))
-        states = [
-            state
-            for state in self._state_tracker.refresh_many_with_diff(
+        states = require_complete_snapshots(
+            self._state_tracker.refresh_many_with_diff(
                 "playstate",
                 participants,
                 progress_callback=progress_callback,
-            )
-            if not state.get("error")
-        ]
+            ),
+            len(participants),
+        )
         if not states:
             return {"skipped": True, "reason": "playstate snapshots unavailable"}
 
         desired_state = {}
         latest_ops = {}
         initial_count = 0
+
+        def record_op(key: str, op: str, value: Dict[str, Any] | None) -> None:
+            existing = latest_ops.get(key)
+            candidate = (op, value)
+            if existing is not None and existing != candidate:
+                raise RuntimeError(
+                    f"Conflitto stato riproduzione per {key}; nessuna modifica applicata"
+                )
+            latest_ops[key] = candidate
+
         for state in states:
             snapshot = state.get("snapshot") or {}
             previous_snapshot = state.get("previous_snapshot") or {}
             current_items = snapshot.get("items") or {}
             previous_items = previous_snapshot.get("items") or {}
             diff = state.get("diff") or {}
-            updated_at = state.get("updated_at") or ""
-
             desired_state.update(previous_items)
             if diff.get("initial"):
                 initial_count += len(current_items)
                 for key, value in current_items.items():
-                    latest_ops[key] = (updated_at, "set", value)
+                    record_op(key, "set", value)
                 continue
 
             for key in diff.get("added") or []:
-                if key in current_items and self._should_replace_playstate_delta_op(
-                    latest_ops.get(key),
-                    updated_at,
-                    "set",
-                    current_items[key],
-                ):
-                    latest_ops[key] = (updated_at, "set", current_items[key])
+                if key in current_items:
+                    record_op(key, "set", current_items[key])
             for key in diff.get("changed") or []:
-                if key in current_items and self._should_replace_playstate_delta_op(
-                    latest_ops.get(key),
-                    updated_at,
-                    "set",
-                    current_items[key],
-                ):
-                    latest_ops[key] = (updated_at, "set", current_items[key])
+                if key in current_items:
+                    record_op(key, "set", current_items[key])
             for key in diff.get("removed") or []:
-                if self._should_replace_playstate_delta_op(
-                    latest_ops.get(key),
-                    updated_at,
-                    "remove",
-                    None,
-                ):
-                    latest_ops[key] = (updated_at, "remove", None)
+                record_op(key, "remove", None)
 
         set_count = 0
         remove_count = 0
-        for key, (_updated_at, op, value) in latest_ops.items():
+        for key, (op, value) in latest_ops.items():
             if op == "remove":
                 desired_state.pop(key, None)
                 remove_count += 1
@@ -294,7 +341,7 @@ class AutoSyncManager:
             "initial": initial_count,
             "desired": len(desired_state),
         }
-        logger.warning("[USER_SYNC] Delta sync done domain=playstate result=%s", result)
+        logger.warning("[USER_SYNC] Delta sync done domain=playstate result=%s", redact_mapping_for_log(result))
         return result
 
     def _run_playlists_delta_sync(
@@ -303,15 +350,14 @@ class AutoSyncManager:
         progress_callback=None,
     ) -> Dict[str, Any]:
         logger.warning("[USER_SYNC] Delta sync start domain=playlists participants=%s", len(participants))
-        states = [
-            state
-            for state in self._state_tracker.refresh_many_with_diff(
+        states = require_complete_snapshots(
+            self._state_tracker.refresh_many_with_diff(
                 "playlists",
                 participants,
                 progress_callback=progress_callback,
-            )
-            if not state.get("error")
-        ]
+            ),
+            len(participants),
+        )
         if not states:
             return {"skipped": True, "reason": "playlist snapshots unavailable"}
 
@@ -320,57 +366,74 @@ class AutoSyncManager:
         item_ops = {}
         latest_orders = {}
 
+        def record_playlist_op(name: str, op: str, playlist: Dict[str, Any] | None) -> None:
+            candidate = (op, playlist)
+            existing = playlist_ops.get(name)
+            if existing is not None and existing != candidate:
+                raise RuntimeError(
+                    f"Conflitto playlist '{name}'; nessuna modifica applicata"
+                )
+            playlist_ops[name] = candidate
+
+        def record_item_op(name: str, key: str, op: str) -> None:
+            candidate = (op, None)
+            existing = item_ops.get((name, key))
+            if existing is not None and existing != candidate:
+                raise RuntimeError(
+                    f"Conflitto elemento playlist '{name}'; nessuna modifica applicata"
+                )
+            item_ops[(name, key)] = candidate
+
         for state in states:
             snapshot = state.get("snapshot") or {}
             previous_snapshot = state.get("previous_snapshot") or {}
             current_playlists = snapshot.get("playlists") or {}
             previous_playlists = previous_snapshot.get("playlists") or {}
             diff = state.get("diff") or {}
-            updated_at = state.get("updated_at") or ""
-
             desired_playlists.update(previous_playlists)
             if diff.get("initial"):
                 for name, playlist in current_playlists.items():
-                    playlist_ops[name] = (updated_at, "set", playlist)
+                    record_playlist_op(name, "set", playlist)
                 continue
 
             for name in diff.get("added") or []:
                 playlist = current_playlists.get(name)
-                if playlist and updated_at >= playlist_ops.get(name, ("", "", None))[0]:
-                    playlist_ops[name] = (updated_at, "set", playlist)
+                if playlist:
+                    record_playlist_op(name, "set", playlist)
             for name in diff.get("removed") or []:
-                if updated_at >= playlist_ops.get(name, ("", "", None))[0]:
-                    playlist_ops[name] = (updated_at, "remove", None)
+                record_playlist_op(name, "remove", None)
 
             changed = diff.get("changed") or {}
             for name, item_diff in changed.items():
                 playlist = current_playlists.get(name) or {}
                 items = playlist.get("items") or []
                 for key in item_diff.get("added") or []:
-                    if updated_at >= item_ops.get((name, key), ("", "", None))[0]:
-                        item_ops[(name, key)] = (updated_at, "add", None)
+                    record_item_op(name, key, "add")
                 for key in item_diff.get("removed") or []:
-                    if updated_at >= item_ops.get((name, key), ("", "", None))[0]:
-                        item_ops[(name, key)] = (updated_at, "remove", None)
+                    record_item_op(name, key, "remove")
                 if item_diff.get("order_changed"):
-                    if updated_at >= latest_orders.get(name, ("", []))[0]:
-                        latest_orders[name] = (updated_at, items)
-                        if playlist.get("name"):
-                            desired_playlists.setdefault(name, {"name": playlist.get("name"), "items": []})
+                    existing_order = latest_orders.get(name)
+                    if existing_order is not None and existing_order != items:
+                        raise RuntimeError(
+                            f"Conflitto ordine playlist '{name}'; nessuna modifica applicata"
+                        )
+                    latest_orders[name] = items
+                    if playlist.get("name"):
+                        desired_playlists.setdefault(name, {"name": playlist.get("name"), "items": []})
 
-        for name, (_updated_at, op, playlist) in playlist_ops.items():
+        for name, (op, playlist) in playlist_ops.items():
             if op == "remove":
                 desired_playlists.pop(name, None)
             else:
                 desired_playlists[name] = playlist
 
-        for (name, key), (_updated_at, op, _value) in item_ops.items():
+        for (name, key), (op, _value) in item_ops.items():
             playlist = desired_playlists.setdefault(name, {"name": name, "items": []})
             items = list(playlist.get("items") or [])
             if op == "remove":
                 items = [item_key for item_key in items if item_key != key]
             elif key not in items:
-                order = latest_orders.get(name, ("", []))[1]
+                order = latest_orders.get(name, [])
                 if key in order:
                     insert_at = len(items)
                     for index, ordered_key in enumerate(order):
@@ -383,7 +446,7 @@ class AutoSyncManager:
             playlist["items"] = items
             desired_playlists[name] = playlist
 
-        for name, (_updated_at, order) in latest_orders.items():
+        for name, order in latest_orders.items():
             playlist = desired_playlists.get(name)
             if not playlist:
                 continue
@@ -401,7 +464,7 @@ class AutoSyncManager:
         )
         deleted_playlist_names = [
             name
-            for name, (_updated_at, op, _playlist) in playlist_ops.items()
+            for name, (op, _playlist) in playlist_ops.items()
             if op == "remove" and name not in desired_playlists
         ]
         result = self._sync_user_playlists_to_payload(
@@ -416,7 +479,7 @@ class AutoSyncManager:
             "item_ops": len(item_ops),
             "order_changes": len(latest_orders),
         }
-        logger.warning("[USER_SYNC] Delta sync done domain=playlists result=%s", result)
+        logger.warning("[USER_SYNC] Delta sync done domain=playlists result=%s", redact_mapping_for_log(result))
         return result
 
     def _snapshot_progress_callback(self, group_id: str, label: str, results: Dict[str, Any]):
@@ -442,15 +505,16 @@ class AutoSyncManager:
         result_key: str,
         label: str,
         work: Callable[[], Dict[str, Any]],
-    ) -> None:
+    ) -> Dict[str, Any]:
         message = f"Sincronizzazione {label} in corso"
-        logger.warning("[USER_SYNC] Step start group %s (%s): %s", group_name, group_id, label)
+        logger.warning("[USER_SYNC] Step start group %s (%s): %s", sanitize_diagnostic_text(group_name), sanitize_diagnostic_text(group_id), sanitize_diagnostic_text(label))
         self._mark_group_sync_result(group_id, "running", message, results)
-        results[result_key] = work()
-        logger.warning("[USER_SYNC] Step done group %s (%s): %s -> %s", group_name, group_id, label, results[result_key])
+        results[result_key] = validate_sync_result(work())
+        logger.warning("[USER_SYNC] Step done group %s (%s): %s -> %s", sanitize_diagnostic_text(group_name), sanitize_diagnostic_text(group_id), sanitize_diagnostic_text(label), sanitize_diagnostic_text(results[result_key]))
+        return results[result_key]
 
     def run_group_sync(self, group_id: str, operation_id: str | None = None) -> Dict[str, Any]:
-        logger.warning("[USER_SYNC] Requested manual sync for group %s", group_id)
+        logger.warning("[USER_SYNC] Requested manual sync for group %s", sanitize_diagnostic_text(group_id))
         try:
             self._update_operation(operation_id, "Carico gruppo utenti", 0, 1, {"group_id": group_id})
             dashboard_data = self._get_users_dashboard_data()
@@ -458,13 +522,17 @@ class AutoSyncManager:
             group = next((item for item in groups if item.get("id") == group_id), None)
             if not group:
                 message = "Gruppo non trovato o utenti Emby non caricati"
-                logger.warning("[USER_SYNC] Cannot sync group %s: %s", group_id, message)
+                logger.warning(
+                    "[USER_SYNC] Cannot sync group %s: %s",
+                    sanitize_diagnostic_text(group_id),
+                    sanitize_diagnostic_text(message),
+                )
                 self._mark_group_sync_result(group_id, "error", message, {})
                 if operation_id and self._operation_tracker:
                     self._operation_tracker.fail(operation_id, message)
                 return {"ok": False, "error": message}
 
-            result = self._sync_group(group, operation_id=operation_id)
+            result = self._sync_group_singleflight(group, operation_id=operation_id)
             ok = result.get("status") == "success"
             if operation_id and self._operation_tracker:
                 if ok:
@@ -475,15 +543,19 @@ class AutoSyncManager:
                     self._operation_tracker.fail(operation_id, result.get("message") or "Sync non riuscito", result=result)
             return {"ok": ok, "result": result}
         except Exception as e:
-            logger.exception("[USER_SYNC] Manual sync failed for group %s", group_id)
-            self._mark_group_sync_result(group_id, "error", str(e), {})
+            logger.error(
+                "[USER_SYNC] Manual sync failed for group %s:\n%s",
+                sanitize_diagnostic_text(group_id),
+                format_exception_for_log(e),
+            )
+            self._mark_group_sync_result(group_id, "error", SYNC_FAILURE_MESSAGE, {})
             if operation_id and self._operation_tracker:
-                self._operation_tracker.fail(operation_id, str(e))
-            return {"ok": False, "error": str(e)}
+                self._operation_tracker.fail(operation_id, SYNC_FAILURE_MESSAGE)
+            return {"ok": False, "error": SYNC_FAILURE_MESSAGE}
         finally:
             _publish_users_sync_updated()
 
-    def run_auto_sync(self) -> None:
+    def run_auto_sync(self) -> Dict[str, Any]:
         """
         Executes auto-sync for all enabled groups.
         """
@@ -492,22 +564,47 @@ class AutoSyncManager:
         dashboard_data = self._get_users_dashboard_data()
         groups = dashboard_data.get("groups", [])
 
-        count = 0
+        succeeded: list[str] = []
+        failed: list[str] = []
+        retryable: list[str] = []
+        skipped: list[str] = []
         attempted = False
         for group in groups:
             if not group.get("auto_sync"):
                 continue
 
             attempted = True
-            result = self._sync_group(group)
-            if result.get("status") == "ignored":
-                continue
-            if result.get("status") in ("success", "skipped"):
-                count += 1
+            result = self._sync_group_singleflight(group)
+            group_id = str(group.get("id") or "")
+            status = str(result.get("status") or "error").lower()
+            reason = str(result.get("reason") or "")
+            if status == "success":
+                succeeded.append(group_id)
+            elif status == "skipped" and reason == "already_running":
+                retryable.append(group_id)
+            elif status in {"skipped", "ignored"}:
+                skipped.append(group_id)
+            else:
+                failed.append(group_id)
 
-        logger.info(f"[AUTO_SYNC] Completed. Processed {count} groups.")
+        outcome = {
+            "ok": not failed and not retryable,
+            "attempted": attempted,
+            "succeeded": succeeded,
+            "failed": failed,
+            "retryable": retryable,
+            "skipped": skipped,
+        }
+        logger.info(
+            "[AUTO_SYNC] Completed. success=%s failed=%s retryable=%s skipped=%s",
+            len(succeeded),
+            len(failed),
+            len(retryable),
+            len(skipped),
+        )
         if attempted:
             _publish_users_sync_updated()
+        return outcome
 
     def _sync_group(self, group: Dict[str, Any], operation_id: str | None = None) -> Dict[str, Any]:
         gid = group["id"]
@@ -527,17 +624,32 @@ class AutoSyncManager:
 
         if len(users) < 2:
             message = "Meno di 2 utenti nel gruppo"
-            logger.warning("[USER_SYNC] Skipping group %s (%s): %s", group_name, gid, message)
+            logger.warning(
+                "[USER_SYNC] Skipping group %s (%s): %s",
+                sanitize_diagnostic_text(group_name),
+                sanitize_diagnostic_text(gid),
+                sanitize_diagnostic_text(message),
+            )
             self._mark_group_sync_result(gid, "skipped", message, {})
             return {"status": "skipped", "message": message}
 
         if not any([sync_playstate, sync_config, sync_library_access, sync_favorites, sync_playlists]):
             message = "Nessun dominio selezionato"
-            logger.warning("[USER_SYNC] Skipping group %s (%s): %s", group_name, gid, message)
+            logger.warning(
+                "[USER_SYNC] Skipping group %s (%s): %s",
+                sanitize_diagnostic_text(group_name),
+                sanitize_diagnostic_text(gid),
+                sanitize_diagnostic_text(message),
+            )
             self._mark_group_sync_result(gid, "skipped", message, {})
             return {"status": "skipped", "message": message}
 
-        logger.warning("[USER_SYNC] Start group %s (%s) type=%s", group_name, gid, sync_type)
+        logger.warning(
+            "[USER_SYNC] Start group %s (%s) type=%s",
+            sanitize_diagnostic_text(group_name),
+            sanitize_diagnostic_text(gid),
+            sanitize_diagnostic_text(sync_type),
+        )
         enabled_domains = [
             label for label, enabled in [
                 ("visti", sync_playstate),
@@ -561,11 +673,12 @@ class AutoSyncManager:
         leaders = [u for u in users if u.get("is_leader")]
         if len(leaders) != 1:
             message = f"Leader non valido: trovati {len(leaders)} leader"
-            logger.warning("[AUTO_SYNC] Skipping group %s (%s): %s", group.get("name"), gid, message)
+            logger.warning("[AUTO_SYNC] Skipping group %s (%s): %s", sanitize_diagnostic_text(group.get("name")), sanitize_diagnostic_text(gid), sanitize_diagnostic_text(message))
             self._mark_group_sync_result(gid, "skipped", message, {})
             return {"status": "skipped", "message": message}
 
         targets = [(u["server_id"], u["user_id"]) for u in users]
+        leader_pair = (leaders[0]["server_id"], leaders[0]["user_id"])
 
         try:
             results = {}
@@ -583,10 +696,13 @@ class AutoSyncManager:
                                 progress_callback=self._snapshot_progress_callback(gid, "visti", results),
                             )
                         result = self._sync_merge_playstate(targets, sync_resume)
-                        self._mark_group_bootstrap_done(gid, "playstate")
                         result["bootstrap"] = "additive"
                         return result
-                    self._run_sync_step(gid, group_name, results, "playstate", "visti", sync_playstate_work)
+                    playstate_result = self._run_sync_step(
+                        gid, group_name, results, "playstate", "visti", sync_playstate_work
+                    )
+                    if not playstate_bootstrap_done and playstate_result.get("bootstrap") == "additive":
+                        self._mark_group_bootstrap_done(gid, "playstate")
                     self._update_operation(operation_id, "Sincronizzazione visti completata", current_step, total_steps)
                 if sync_config:
                     current_step += 1
@@ -602,6 +718,7 @@ class AutoSyncManager:
                             targets,
                             self._sync_user_config,
                             config_categories,
+                            preferred_source=leader_pair,
                             progress_callback=self._snapshot_progress_callback(gid, "impostazioni", results),
                         ),
                     )
@@ -619,6 +736,7 @@ class AutoSyncManager:
                             "settings",
                             targets,
                             self._sync_library_access,
+                            preferred_source=leader_pair,
                             progress_callback=self._snapshot_progress_callback(gid, "librerie", results),
                         ),
                     )
@@ -633,10 +751,18 @@ class AutoSyncManager:
                                 progress_callback=self._snapshot_progress_callback(gid, "preferiti", results),
                             )
                         result = self._sync_merge_favorites(targets)
-                        self._mark_group_bootstrap_done(gid, "favorites")
                         result["bootstrap"] = "additive"
                         return result
-                    self._run_sync_step(gid, group_name, results, "favorites", "preferiti", sync_favorites_work)
+                    favorites_result = self._run_sync_step(
+                        gid, group_name, results, "favorites", "preferiti", sync_favorites_work
+                    )
+                    if (
+                        not favorites_bootstrap_done
+                        and favorites_result.get("bootstrap") == "additive"
+                        and not favorites_result.get("failed")
+                        and not favorites_result.get("error")
+                    ):
+                        self._mark_group_bootstrap_done(gid, "favorites")
                     self._update_operation(operation_id, "Sincronizzazione preferiti completata", current_step, total_steps)
                 if sync_playlists:
                     current_step += 1
@@ -648,12 +774,20 @@ class AutoSyncManager:
                                 progress_callback=self._snapshot_progress_callback(gid, "playlist", results),
                             )
                         result = self._sync_merge_playlists(targets)
-                        self._mark_group_bootstrap_done(gid, "playlists")
                         result["bootstrap"] = "additive"
                         return result
-                    self._run_sync_step(gid, group_name, results, "playlists", "playlist", sync_playlists_work)
+                    playlists_result = self._run_sync_step(
+                        gid, group_name, results, "playlists", "playlist", sync_playlists_work
+                    )
+                    if (
+                        not playlists_bootstrap_done
+                        and playlists_result.get("bootstrap") == "additive"
+                        and not playlists_result.get("failed")
+                        and not playlists_result.get("error")
+                    ):
+                        self._mark_group_bootstrap_done(gid, "playlists")
                     self._update_operation(operation_id, "Sincronizzazione playlist completata", current_step, total_steps)
-                logger.info("[AUTO_SYNC] Merge result for %s: %s", group["name"], results)
+                logger.info("[AUTO_SYNC] Merge result for %s: %s", sanitize_diagnostic_text(group["name"]), sanitize_diagnostic_text(results))
 
             elif sync_type == "one_way":
                 leader = leaders[0]
@@ -725,9 +859,13 @@ class AutoSyncManager:
                             lambda: self._sync_user_playlists_exact(source_server_id, source_user_id, dest_targets),
                         )
                         self._update_operation(operation_id, "Sincronizzazione playlist completata", current_step, total_steps)
-                    logger.info("[AUTO_SYNC] One-way result for %s: %s", group["name"], results)
+                    logger.info("[AUTO_SYNC] One-way result for %s: %s", sanitize_diagnostic_text(group["name"]), sanitize_diagnostic_text(results))
 
-            logger.warning("[USER_SYNC] Step start group %s (%s): snapshot", group_name, gid)
+            logger.warning(
+                "[USER_SYNC] Step start group %s (%s): snapshot",
+                sanitize_diagnostic_text(group_name),
+                sanitize_diagnostic_text(gid),
+            )
             self._mark_group_sync_result(gid, "running", "Aggiornamento snapshot sync", results)
             self._update_operation(operation_id, "Aggiornamento snapshot sync", total_steps - 1, total_steps)
             refresh_sync_states(
@@ -740,14 +878,28 @@ class AutoSyncManager:
                 sync_favorites=sync_favorites,
                 sync_playlists=sync_playlists,
             )
-            logger.warning("[USER_SYNC] Step done group %s (%s): snapshot", group_name, gid)
+            logger.warning(
+                "[USER_SYNC] Step done group %s (%s): snapshot",
+                sanitize_diagnostic_text(group_name),
+                sanitize_diagnostic_text(gid),
+            )
             self._update_operation(operation_id, "Snapshot sync aggiornato", total_steps, total_steps)
 
             message = "Sincronizzati: " + ", ".join(enabled_domains) if enabled_domains else "Nessun dominio selezionato"
             self._mark_group_sync_result(gid, "success", message, results)
-            logger.warning("[USER_SYNC] Completed group %s (%s): %s", group_name, gid, message)
+            logger.warning(
+                "[USER_SYNC] Completed group %s (%s): %s",
+                sanitize_diagnostic_text(group_name),
+                sanitize_diagnostic_text(gid),
+                sanitize_diagnostic_text(message),
+            )
             return {"status": "success", "message": message, "results": results}
         except Exception as e:
-            logger.exception("[USER_SYNC] Error processing group %s (%s)", group_name, gid)
-            self._mark_group_sync_result(gid, "error", str(e), {})
-            return {"status": "error", "message": str(e)}
+            logger.error(
+                "[USER_SYNC] Error processing group %s (%s):\n%s",
+                sanitize_diagnostic_text(group_name),
+                sanitize_diagnostic_text(gid),
+                format_exception_for_log(e),
+            )
+            self._mark_group_sync_result(gid, "error", SYNC_FAILURE_MESSAGE, {})
+            return {"status": "error", "message": SYNC_FAILURE_MESSAGE}

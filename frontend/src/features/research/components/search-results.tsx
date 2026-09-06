@@ -12,11 +12,13 @@ function SearchResults({
   qbittorrentAvailable,
   searching,
   progress,
+  resultSetId,
 }: {
   results: SearchResult[];
   qbittorrentAvailable: boolean;
   searching: boolean;
   progress: StreamingSearchProgress;
+  resultSetId: string | number;
 }) {
   const liveProgress = searchProgressMessage(progress);
 
@@ -45,8 +47,10 @@ function SearchResults({
       ) : null}
       {results.length ? (
         <SearchResultTable
+          key={resultSetId}
           results={results}
           qbittorrentAvailable={qbittorrentAvailable}
+          resultSetId={resultSetId}
         />
       ) : null}
     </section>

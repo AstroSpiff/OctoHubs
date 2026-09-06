@@ -21,7 +21,17 @@ export OCTOHUBS_DB_HOST="${OCTOHUBS_DB_HOST:-localhost}"
 export OCTOHUBS_DB_PORT="${OCTOHUBS_DB_PORT:-5432}"
 export OCTOHUBS_DB_NAME="${OCTOHUBS_DB_NAME:-octohubs}"
 export OCTOHUBS_DB_USER="${OCTOHUBS_DB_USER:-octohubs}"
-export OCTOHUBS_DB_PASSWORD="${OCTOHUBS_DB_PASSWORD:-supersecret}"
+if [ -z "${OCTOHUBS_DB_URL:-${DATABASE_URL:-}}" ]; then
+  DEV_DB_PASSWORD="${OCTOHUBS_DB_PASSWORD:-}"
+  if [ -z "$DEV_DB_PASSWORD" ] && [ -n "${OCTOHUBS_DB_PASSWORD_FILE:-}" ] \
+      && [ -r "$OCTOHUBS_DB_PASSWORD_FILE" ]; then
+    DEV_DB_PASSWORD="$(tr -d '\r\n' < "$OCTOHUBS_DB_PASSWORD_FILE")"
+  fi
+  if [ -z "$DEV_DB_PASSWORD" ]; then
+    echo "External PostgreSQL credentials are required: set OCTOHUBS_DB_URL or OCTOHUBS_DB_PASSWORD(_FILE)."
+    exit 1
+  fi
+fi
 export OCTOHUBS_HOST="${OCTOHUBS_HOST:-127.0.0.1}"
 export OCTOHUBS_PORT="${OCTOHUBS_PORT:-5050}"
 
@@ -40,5 +50,6 @@ fi
 exec ./venv/bin/python -u -m uvicorn asgi:app "${uvicorn_args[@]}" \
   --host "${OCTOHUBS_HOST}" \
   --port "${OCTOHUBS_PORT}" \
-  --ws-max-size 65536 \
-  --ws-max-queue 16
+  --ws-max-size 1048576 \
+  --ws-max-queue 16 \
+  --no-proxy-headers

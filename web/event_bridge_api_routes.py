@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -10,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from core.config import _default_emby_settings
 from core.config_manager import load_config
+from core.log_sanitization import format_exception_for_log
 from core.storage import StorageError
 from emby_actions import _prepare_emby_servers_for_view
 from emby_runtime.event_bridge_configuration import (
@@ -17,7 +19,6 @@ from emby_runtime.event_bridge_configuration import (
     _event_bridge_push_message,
     _event_bridge_servers_for_view,
     _event_bridge_status_payload,
-    _merged_event_bridge_config,
     _push_event_bridge_settings,
     _raw_emby_servers_by_id,
     _save_event_bridge_settings,
@@ -42,6 +43,7 @@ from web.openapi_requests import no_request_body
 from web.request_validation import validated_json_payload
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _require_auth: Optional[Callable[[Request], Any]] = None
 _validate_csrf: Optional[Callable[[Request, Optional[str]], bool]] = None
@@ -87,12 +89,12 @@ def _csrf_header(request: Request) -> str | None:
 )
 async def event_bridge_status_route(request: Request):
     """Return live Event Bridge diagnostics for the React configuration page."""
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
 
-    config, _is_valid = _load_config_dep()
+    config, _is_valid = await run_in_threadpool(_load_config_dep)
     emby_config = (config or {}).get("EMBY") if config else _default_emby_settings()
     raw_servers = (emby_config.get("SERVERS") if emby_config else []) or []
-    emby_servers = _prepare_emby_servers_for_view(raw_servers, lazy=True)
+    emby_servers = await run_in_threadpool(_prepare_emby_servers_for_view, raw_servers, lazy=True)
     event_bridge_config = normalize_event_bridge_config((config or {}).get("EVENT_BRIDGE", {}))
     event_bridge_status = get_event_bridge_manager().status()
     configured_server_ids = {
@@ -131,8 +133,8 @@ async def event_bridge_status_route(request: Request):
 )
 async def update_event_bridge_webhook_secret_api_route(request: Request):
     """Explain the intentionally removed shared-secret workflow."""
-    _require_auth_dep(request)
-    if not _validate_csrf_dep(request, _csrf_header(request)):
+    await run_in_threadpool(_require_auth_dep, request)
+    if not await run_in_threadpool(_validate_csrf_dep, request, _csrf_header(request)):
         raise HTTPException(status_code=403, detail="CSRF token non valido")
     return JSONResponse(
         {
@@ -151,11 +153,11 @@ async def update_event_bridge_webhook_secret_api_route(request: Request):
 )
 async def provision_event_bridge_credential_api_route(server_id: str, request: Request):
     """Generate and install a new credential through the authenticated Emby API."""
-    _require_auth_dep(request)
-    if not _validate_csrf_dep(request, _csrf_header(request)):
+    await run_in_threadpool(_require_auth_dep, request)
+    if not await run_in_threadpool(_validate_csrf_dep, request, _csrf_header(request)):
         raise HTTPException(status_code=403, detail="CSRF token non valido")
 
-    current_config, _is_valid = _load_config_dep()
+    current_config, _is_valid = await run_in_threadpool(_load_config_dep)
     configured_servers = _raw_emby_servers_by_id(current_config)
     server = configured_servers.get(str(server_id or "").strip())
     if server is None:
@@ -193,8 +195,8 @@ async def provision_event_bridge_credential_api_route(server_id: str, request: R
 )
 async def update_event_bridge_settings_api_route(request: Request):
     """Persist per-server Event Bridge settings from the React frontend."""
-    _require_auth_dep(request)
-    if not _validate_csrf_dep(request, _csrf_header(request)):
+    await run_in_threadpool(_require_auth_dep, request)
+    if not await run_in_threadpool(_validate_csrf_dep, request, _csrf_header(request)):
         raise HTTPException(status_code=403, detail="CSRF token non valido")
 
     payload = await validated_json_payload(request, EventBridgeSettingsUpdateRequest)
@@ -203,7 +205,7 @@ async def update_event_bridge_settings_api_route(request: Request):
     if not isinstance(raw_servers, dict) or not raw_servers:
         raise HTTPException(status_code=422, detail="Indica almeno un server Emby da aggiornare")
 
-    current_config, _is_valid = _load_config_dep()
+    current_config, _is_valid = await run_in_threadpool(_load_config_dep)
     configured_servers = _raw_emby_servers_by_id(current_config)
     submitted_server_settings: dict[str, dict[str, Any]] = {}
     for raw_server_id, raw_settings in raw_servers.items():
@@ -214,12 +216,14 @@ async def update_event_bridge_settings_api_route(request: Request):
             raise HTTPException(status_code=422, detail=f"Impostazioni non valide per {server_id}")
         submitted_server_settings[server_id] = normalize_event_bridge_settings(raw_settings)
 
-    current_bridge = normalize_event_bridge_config((current_config or {}).get("EVENT_BRIDGE", {}))
-    bridge_config = _merged_event_bridge_config(current_bridge, submitted_server_settings)
     try:
-        _save_event_bridge_settings(bridge_config)
+        bridge_config = await run_in_threadpool(
+            _save_event_bridge_settings,
+            submitted_server_settings,
+        )
     except StorageError as exc:
-        raise HTTPException(status_code=500, detail=f"Errore salvataggio Event Bridge: {exc}") from exc
+        logger.error("Salvataggio Event Bridge non riuscito:\n%s", format_exception_for_log(exc))
+        raise HTTPException(status_code=500, detail="Errore salvataggio Event Bridge") from exc
 
     push_error = ""
     try:
@@ -229,8 +233,9 @@ async def update_event_bridge_settings_api_route(request: Request):
             submitted_server_settings,
         )
     except Exception as exc:  # Settings are saved even when a live delivery fails.
+        logger.error("Push impostazioni Event Bridge non riuscito:\n%s", format_exception_for_log(exc))
         push_result = _empty_event_bridge_push_result()
-        push_error = str(exc)
+        push_error = "Invio impostazioni al plugin non riuscito"
 
     return JSONResponse(
         {

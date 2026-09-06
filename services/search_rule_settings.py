@@ -7,14 +7,18 @@ from typing import Any
 
 from core import config_manager
 from core.config import DEFAULT_CONFIG, MOVIE_SORT_KEYS, TV_SORT_KEYS, _clean_sort_mode, _default_search_rules, _normalize_sort_settings
-from core.utils import _sanitize_terms_list
+from search.rule_contracts import SearchRulesPayloadInput, normalize_rule_terms
 from services.app_settings import _update_app_settings_overrides
 
 
+@config_manager.serialized_config_update
 def update_search_rule_settings(payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     """Normalize and persist the global search rules from either UI."""
-    submitted = payload if isinstance(payload, dict) else {}
-    submitted_rules = submitted.get("search_rules") if isinstance(submitted.get("search_rules"), dict) else {}
+    submitted = SearchRulesPayloadInput.model_validate(
+        payload if isinstance(payload, dict) else {},
+    ).model_dump(exclude_none=True)
+    raw_submitted_rules = submitted.get("search_rules")
+    submitted_rules: dict[str, Any] = raw_submitted_rules if isinstance(raw_submitted_rules, dict) else {}
     base_rules = copy.deepcopy(config.get("SEARCH_RULES") or _default_search_rules())
     rules = copy.deepcopy(base_rules)
 
@@ -44,12 +48,10 @@ def update_search_rule_settings(payload: dict[str, Any], config: dict[str, Any])
 
     for key in ("query_terms", "filter_terms", "season_templates", "query_languages"):
         if key in submitted_rules:
-            rules[key] = _sanitize_terms_list(submitted_rules[key])
+            rules[key] = normalize_rule_terms(submitted_rules[key])
     rules["season_templates"] = rules.get("season_templates") or DEFAULT_CONFIG["SEARCH_RULES"]["season_templates"]
     if "min_seeders" in submitted_rules:
         rules["min_seeders"] = max(0, _integer_value(submitted_rules["min_seeders"], base_rules.get("min_seeders", 0)))
-    if "results_sort" in submitted_rules and str(submitted_rules["results_sort"]).strip():
-        rules["results_sort"] = str(submitted_rules["results_sort"]).strip()
 
     if "use_alt_titles_language" in submitted_rules:
         use_alt_language = _bool_value(submitted_rules["use_alt_titles_language"], bool(base_rules.get("use_alt_titles_language")))
@@ -81,15 +83,15 @@ def update_search_rule_settings(payload: dict[str, Any], config: dict[str, Any])
     )
     rules = _normalize_sort_settings(rules)
 
-    target_languages = _sanitize_terms_list(submitted.get("target_languages")) if "target_languages" in submitted else list(config.get("TARGET_LANGUAGES") or [])
-    exclude_tags = _sanitize_terms_list(submitted.get("exclude_tags")) if "exclude_tags" in submitted else list(config.get("EXCLUDE_TAGS") or [])
+    target_languages = normalize_rule_terms(submitted.get("target_languages")) if "target_languages" in submitted else normalize_rule_terms(config.get("TARGET_LANGUAGES"))
+    exclude_tags = normalize_rule_terms(submitted.get("exclude_tags")) if "exclude_tags" in submitted else normalize_rule_terms(config.get("EXCLUDE_TAGS"))
     _update_app_settings_overrides({"TARGET_LANGUAGES": target_languages, "EXCLUDE_TAGS": exclude_tags, "SEARCH_RULES": rules})
 
-    if config_manager._ACTIVE_CONFIG is None:
-        config_manager._ACTIVE_CONFIG = copy.deepcopy(DEFAULT_CONFIG)
-    config_manager._ACTIVE_CONFIG["TARGET_LANGUAGES"] = copy.deepcopy(target_languages)
-    config_manager._ACTIVE_CONFIG["EXCLUDE_TAGS"] = copy.deepcopy(exclude_tags)
-    config_manager._ACTIVE_CONFIG["SEARCH_RULES"] = copy.deepcopy(rules)
+    config_manager.publish_active_config_updates({
+        "TARGET_LANGUAGES": target_languages,
+        "EXCLUDE_TAGS": exclude_tags,
+        "SEARCH_RULES": rules,
+    })
     config["TARGET_LANGUAGES"] = target_languages
     config["EXCLUDE_TAGS"] = exclude_tags
     config["SEARCH_RULES"] = rules

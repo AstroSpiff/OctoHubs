@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import os
 
 from core.config_manager import load_config
+from core.configuration_redaction import public_connection_url
 from core.emby_servers import (
     EMBY_SERVER_DISABLED_MESSAGE,
     _emby_display_name,
@@ -25,11 +27,14 @@ from emby_runtime.streams import get_streams_manager
 from emby_runtime.transcode_guard import get_transcode_guard_service
 
 
+logger = logging.getLogger(__name__)
+
+
 def _streams_refresh_seconds() -> int:
     try:
-        return int(os.environ.get("STREAMS_REFRESH_SECONDS", "5"))
+        return int(os.environ.get("STREAMS_REFRESH_SECONDS", "15"))
     except ValueError:
-        return 5
+        return 15
 
 
 def _fetch_active_streams_shared(server, *, max_age_seconds=None, force=False):
@@ -51,7 +56,7 @@ def _build_emby_stop_task_snapshot(payload):
         return json_error("Formato non valido")
     server_id = payload.get("server_id")
     task_id = payload.get("task_id")
-    print(f"[DEBUG] Stop task richiesto: server_id={server_id}, task_id={task_id}")
+    logger.debug("Emby task stop requested: server=%s task=%s", server_id, task_id)
     if not server_id or not task_id:
         return json_error("server_id o task_id mancante")
     config, is_valid = load_config()
@@ -63,12 +68,21 @@ def _build_emby_stop_task_snapshot(payload):
         return json_error("Server non trovato", 404)
     if not _emby_server_is_enabled(target):
         return json_error(EMBY_SERVER_DISABLED_MESSAGE)
-    print(f"[DEBUG] Chiamata _stop_emby_task con task_id={task_id}")
-    success, response = _stop_emby_task(target, str(task_id))
-    print(f"[DEBUG] _stop_emby_task ritornato: success={success}, response={response}")
+    tasks, tasks_error = _fetch_emby_scheduled_tasks(target)
+    if tasks_error is not None:
+        return json_error("Impossibile verificare i task Emby", 502)
+    current_task_ids = {
+        str(task.get("id"))
+        for task in tasks
+        if task.get("id") and bool(task.get("is_running"))
+    }
+    if str(task_id) not in current_task_ids:
+        return json_error("Task Emby attivo non trovato", 404)
+    success, _response = _stop_emby_task(target, str(task_id))
+    logger.debug("Emby task stop completed: server=%s task=%s success=%s", server_id, task_id, success)
     if success:
         return json_success("Richiesta di arresto inviata a Emby.")
-    return json_error(f"Errore stop task: {response}", 500)
+    return json_error("Errore durante l'arresto del task Emby", 500)
 
 
 def _build_emby_server_status_snapshot(server_id):
@@ -103,6 +117,17 @@ def _build_emby_server_status_snapshot(server_id):
         "streams": streams,
         "streams_error": streams_error,
     }, 200
+
+
+def _validate_emby_server_status_cache_key(server_id):
+    """Reject unknown server IDs before they can allocate persistent cache state."""
+    config, is_valid = load_config()
+    if not is_valid or not config:
+        return json_error("Config non valida")
+    servers = get_emby_servers(config)
+    if _find_emby_server_by_id(servers, server_id) is None:
+        return json_error("Server non trovato", 404)
+    return None
 
 
 def _build_emby_health_status_snapshot():
@@ -292,7 +317,7 @@ def _build_emby_status_stream_payload():
             "icon_style": str(server.get("icon_style") or "solid"),
         }
         if server.get("url"):
-            server_meta["url"] = str(server.get("url"))
+            server_meta["url"] = public_connection_url(server.get("url"))
         last_action = server.get("last_action")
         if isinstance(last_action, dict) and last_action.get("name"):
             server_meta["last_action"] = {

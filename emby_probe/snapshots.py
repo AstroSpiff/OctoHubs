@@ -2,14 +2,71 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Optional, cast
 
 from core.config import _coerce_request_int
 from core.config_manager import _ensure_db_backend, load_config
+from core.log_sanitization import format_exception_for_log
 from core.storage import StorageError
 from core.utils import get_emby_servers, get_nested, json_error
 from emby_probe import get_probe_manager, _format_display_name_from_queue
 
+
+logger = logging.getLogger(__name__)
+
+PROBE_PAGE_DEFAULT = 200
+PROBE_PAGE_MAX = 500
+
+
+def _probe_page_window(
+    limit: Any,
+    offset: Any,
+    *,
+    default_limit: int = PROBE_PAGE_DEFAULT,
+):
+    try:
+        parsed_limit = int(default_limit if limit in (None, "") else limit)
+        parsed_offset = int(0 if offset in (None, "") else offset)
+    except (TypeError, ValueError):
+        return None, json_error("limit e offset devono essere numeri interi", 422)
+    if not 1 <= parsed_limit <= PROBE_PAGE_MAX:
+        return None, json_error(
+            f"limit deve essere compreso tra 1 e {PROBE_PAGE_MAX}", 422
+        )
+    if parsed_offset < 0:
+        return None, json_error("offset non può essere negativo", 422)
+    return (parsed_limit, parsed_offset), None
+
+
+def _probe_page_payload(items: list[Dict[str, Any]], limit: int, offset: int):
+    has_more = len(items) > limit
+    visible = items[:limit]
+    return visible, has_more, offset + len(visible) if has_more else None
+
+
+def _probe_cursor_id(value: Any):
+    if value is None:
+        return None, None
+    try:
+        cursor_id = int(value)
+    except (TypeError, ValueError):
+        return None, json_error("cursor deve essere un numero intero", 422)
+    if cursor_id < 0:
+        return None, json_error("cursor non può essere negativo", 422)
+    return cursor_id, None
+
+
+def _probe_next_cursor(items: list[Dict[str, Any]], has_more: bool):
+    if not has_more or not items:
+        return None
+    value = items[-1].get("id")
+    return int(value) if isinstance(value, int) else None
+
+
+def _probe_internal_error(context: str, exc: BaseException):
+    logger.error("%s:\n%s", context, format_exception_for_log(exc))
+    return json_error("Operazione Probe non disponibile", 500)
 
 def _probe_load_config_servers():
     config, is_valid = load_config()
@@ -91,9 +148,17 @@ def _probe_config_get_snapshot(server_id: Optional[str]):
         backend = _ensure_db_backend()
         config = backend.get_probe_config(server_id)
     except StorageError as exc:
-        return json_error(f"Errore DB: {exc}", 500)
+        return _probe_internal_error("Lettura configurazione Probe non riuscita", exc)
     normalized = _normalize_probe_config(config or {})
     return {"success": True, "config": normalized}, 200
+
+
+def _save_probe_configuration(backend: Any, server_id: str, config: Dict[str, Any]) -> bool:
+    save_if_owned = getattr(backend, "save_probe_config_if_server_exists", None)
+    if callable(save_if_owned):
+        return bool(save_if_owned(server_id, config))
+    backend.save_probe_config(server_id, config)
+    return True
 
 
 def _probe_config_save_snapshot(payload: Dict[str, Any]):
@@ -118,9 +183,10 @@ def _probe_config_save_snapshot(payload: Dict[str, Any]):
     normalized = _normalize_probe_config(raw_config)
     try:
         backend = _ensure_db_backend()
-        backend.save_probe_config(server_id, normalized)
+        if not _save_probe_configuration(backend, server_id, normalized):
+            return json_error("Server non trovato", 404)
     except StorageError as exc:
-        return json_error(f"Errore DB: {exc}", 500)
+        return _probe_internal_error("Salvataggio configurazione Probe non riuscito", exc)
     return {"success": True, "config": normalized}, 200
 
 
@@ -480,10 +546,34 @@ def _probe_processing_stop_snapshot(payload):
     return json_error("Processing non in esecuzione")
 
 
-def _probe_queue_get_snapshot(server_id: Optional[str], scope: str):
+def _probe_queue_get_snapshot(
+    server_id: Optional[str],
+    scope: str,
+    limit: Any = PROBE_PAGE_DEFAULT,
+    offset: Any = 0,
+    cursor: Any = None,
+):
+    page, error = _probe_page_window(limit, offset)
+    if error:
+        return error
+    assert page is not None
+    page_limit, page_offset = page
+    cursor_id, cursor_error = _probe_cursor_id(cursor)
+    if cursor_error:
+        return cursor_error
     try:
         backend = _ensure_db_backend()
-        queue = backend.get_probe_queue(server_id, scope=scope)
+        queue_kwargs = {
+            "scope": scope,
+            "limit": page_limit + 1,
+            "offset": page_offset,
+        }
+        if cursor_id is not None:
+            queue_kwargs["cursor_id"] = cursor_id
+        queue = backend.get_probe_queue(server_id, **queue_kwargs)
+        queue, has_more, next_offset = _probe_page_payload(
+            queue, page_limit, page_offset
+        )
         for item in queue:
             item["display_name"] = _format_display_name_from_queue(item)
         library_totals = {}
@@ -491,8 +581,15 @@ def _probe_queue_get_snapshot(server_id: Optional[str], scope: str):
             probe_status = get_probe_manager().get_status(server_id)
             library_totals = get_nested(probe_status, "discovery", "library_totals", default={})
     except StorageError as exc:
-        return json_error(f"Errore DB: {exc}", 500)
-    return {"success": True, "queue": queue, "library_totals": library_totals}, 200
+        return _probe_internal_error("Lettura coda Probe non riuscita", exc)
+    return {
+        "success": True,
+        "queue": queue,
+        "library_totals": library_totals,
+        "has_more": has_more,
+        "next_offset": next_offset if cursor_id is None else None,
+        "next_cursor": _probe_next_cursor(queue, has_more) if cursor_id is not None else None,
+    }, 200
 
 
 def _probe_queue_delete_snapshot(server_id, item_id, media_source_id, scope):
@@ -501,27 +598,64 @@ def _probe_queue_delete_snapshot(server_id, item_id, media_source_id, scope):
     try:
         backend = _ensure_db_backend()
         if item_id:
-            backend.remove_from_probe_queue(server_id, item_id, media_source_id, scope=scope)
+            removed = backend.remove_from_probe_queue(
+                server_id,
+                item_id,
+                media_source_id,
+                scope=scope,
+            )
+            if removed is False:
+                return json_error("Item in elaborazione: interrompi il worker prima di rimuoverlo", 409)
             return {"success": True, "message": "Item rimosso dalla coda"}, 200
-        backend.clear_probe_queue(server_id, scope=scope)
-        return {"success": True, "message": "Coda svuotata"}, 200
+        removed = backend.clear_probe_queue(server_id, scope=scope)
+        return {
+            "success": True,
+            "message": "Righe disponibili rimosse; gli item in elaborazione sono stati preservati",
+            "removed": int(removed or 0),
+        }, 200
     except StorageError as exc:
-        return json_error(f"Errore DB: {exc}", 500)
+        return _probe_internal_error("Lettura storico Probe non riuscita", exc)
 
 
-def _probe_history_get_snapshot(server_id, limit: str, scope: str):
+def _probe_history_get_snapshot(
+    server_id,
+    limit: Any,
+    scope: str,
+    offset: Any = 0,
+    cursor: Any = None,
+):
     if not server_id:
         return json_error("server_id mancante")
-    try:
-        limit_int = int(limit)
-    except ValueError:
-        limit_int = 100
+    page, error = _probe_page_window(limit, offset, default_limit=100)
+    if error:
+        return error
+    assert page is not None
+    page_limit, page_offset = page
+    cursor_id, cursor_error = _probe_cursor_id(cursor)
+    if cursor_error:
+        return cursor_error
     try:
         backend = _ensure_db_backend()
-        history = backend.get_probe_history(server_id, limit_int, scope=scope)
+        history_kwargs = {"scope": scope, "offset": page_offset}
+        if cursor_id is not None:
+            history_kwargs["cursor_id"] = cursor_id
+        history = backend.get_probe_history(
+            server_id,
+            page_limit + 1,
+            **history_kwargs,
+        )
+        history, has_more, next_offset = _probe_page_payload(
+            history, page_limit, page_offset
+        )
     except StorageError as exc:
-        return json_error(f"Errore DB: {exc}", 500)
-    return {"success": True, "history": history}, 200
+        return _probe_internal_error("Rimozione coda Probe non riuscita", exc)
+    return {
+        "success": True,
+        "history": history,
+        "has_more": has_more,
+        "next_offset": next_offset if cursor_id is None else None,
+        "next_cursor": _probe_next_cursor(history, has_more) if cursor_id is not None else None,
+    }, 200
 
 
 def _probe_history_delete_snapshot(server_id, scope: str):
@@ -532,7 +666,7 @@ def _probe_history_delete_snapshot(server_id, scope: str):
         backend.clear_probe_history(server_id, scope=scope)
         return {"success": True, "message": "Storico svuotato"}, 200
     except StorageError as exc:
-        return json_error(f"Errore DB: {exc}", 500)
+        return _probe_internal_error("Pulizia coda Probe non riuscita", exc)
 
 
 def _probe_retry_snapshot(payload):
@@ -560,24 +694,53 @@ def _probe_retry_snapshot(payload):
     return json_error(message, 500)
 
 
-def _probe_blacklist_get_snapshot(server_id, min_retry: str, error_type: Optional[str], scope: str):
+def _probe_blacklist_get_snapshot(
+    server_id,
+    min_retry: str,
+    error_type: Optional[str],
+    scope: str,
+    limit: Any = PROBE_PAGE_DEFAULT,
+    offset: Any = 0,
+    cursor: Any = None,
+):
     if not server_id:
         return json_error("server_id mancante")
     try:
         min_retry_int = int(min_retry)
     except ValueError:
         min_retry_int = 3
+    page, error = _probe_page_window(limit, offset)
+    if error:
+        return error
+    assert page is not None
+    page_limit, page_offset = page
+    cursor_id, cursor_error = _probe_cursor_id(cursor)
+    if cursor_error:
+        return cursor_error
     try:
         backend = _ensure_db_backend()
-        blacklist = backend.get_probe_blacklist(
-            server_id,
-            min_retry_count=min_retry_int,
-            error_type=error_type,
-            scope=scope
+        blacklist_kwargs = {
+            "min_retry_count": min_retry_int,
+            "error_type": error_type,
+            "scope": scope,
+            "limit": page_limit + 1,
+            "offset": page_offset,
+        }
+        if cursor_id is not None:
+            blacklist_kwargs["cursor_id"] = cursor_id
+        blacklist = backend.get_probe_blacklist(server_id, **blacklist_kwargs)
+        blacklist, has_more, next_offset = _probe_page_payload(
+            blacklist, page_limit, page_offset
         )
     except StorageError as exc:
-        return json_error(f"Errore DB: {exc}", 500)
-    return {"success": True, "blacklist": blacklist}, 200
+        return _probe_internal_error("Lettura blacklist Probe non riuscita", exc)
+    return {
+        "success": True,
+        "blacklist": blacklist,
+        "has_more": has_more,
+        "next_offset": next_offset if cursor_id is None else None,
+        "next_cursor": _probe_next_cursor(blacklist, has_more) if cursor_id is not None else None,
+    }, 200
 
 
 def _probe_blacklist_delete_snapshot(server_id, item_id, media_source_id, error_type, scope):
@@ -591,7 +754,7 @@ def _probe_blacklist_delete_snapshot(server_id, item_id, media_source_id, error_
         backend.clear_probe_blacklist(server_id, error_type=error_type, scope=scope)
         return {"success": True, "message": "Blacklist svuotata"}, 200
     except StorageError as exc:
-        return json_error(f"Errore DB: {exc}", 500)
+        return _probe_internal_error("Aggiornamento blacklist Probe non riuscito", exc)
 
 
 def _probe_debug_recent_items_snapshot(server_id: Optional[str], limit: int):
@@ -649,7 +812,7 @@ def _probe_debug_recent_items_snapshot(server_id: Optional[str], limit: int):
             for source in media_sources:
                 if isinstance(source, dict):
                     media_sources_debug.append({
-                        "Path": source.get("Path"),
+                        "Path": "[REDACTED]" if source.get("Path") else None,
                         "Container": source.get("Container"),
                         "RunTimeTicks": source.get("RunTimeTicks"),
                         "MediaStreams_count": len(source.get("MediaStreams", []))
@@ -661,7 +824,7 @@ def _probe_debug_recent_items_snapshot(server_id: Optional[str], limit: int):
                 "season": item.get("ParentIndexNumber"),
                 "episode": item.get("IndexNumber"),
                 "date_created": item.get("DateCreated"),
-                "path": item_path,
+                "path": "[REDACTED]" if item_path else "",
                 "container": container,
                 "is_strm": is_strm,
                 "has_metadata": has_metadata,
@@ -677,4 +840,4 @@ def _probe_debug_recent_items_snapshot(server_id: Optional[str], limit: int):
             "items": debug_info
         }, 200
     except Exception as exc:
-        return json_error(f"Errore: {exc}", 500)
+        return _probe_internal_error("Debug elementi recenti Probe non riuscito", exc)

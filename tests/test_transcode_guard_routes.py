@@ -39,6 +39,10 @@ def _server_credentials(monkeypatch):
         return EventBridgePrincipal(str(headers.get("X-OctoHubs-Server-Id") or ""))
 
     monkeypatch.setattr("emby_runtime.transcode_guard_routes.authenticate_event_bridge", authenticate)
+    monkeypatch.setattr(
+        "emby_runtime.transcode_guard_routes.event_bridge_principal_is_current",
+        lambda _principal: True,
+    )
     yield
     reset_event_bridge_ingress_limiter()
 
@@ -70,7 +74,7 @@ class _Service:
         self.started = False
         self.stopped = False
         self.saved = None
-        self.settings = {"enabled": False, "mode": "monitor"}
+        self.settings = {"enabled": False, "rules": []}
         self.cleaned_before = None
         self.cleaned_streams_before = None
         self.stats_filters = None
@@ -85,7 +89,7 @@ class _Service:
         self.saved = payload
         self.settings = {
             "enabled": bool(payload.get("enabled")),
-            "mode": payload.get("mode") or "monitor",
+            "rules": list(payload.get("rules") or []),
         }
         return self.settings
 
@@ -151,16 +155,19 @@ async def test_transcode_guard_settings_status_and_manual_check_routes():
     )
 
     settings = await api_transcode_guard_settings(_Request())
-    saved_response = await api_transcode_guard_settings_save(_Request({"enabled": True, "mode": "warn_then_stop"}))
+    rules = [{"id": "video-rule", "name": "Video", "mode": "warn_then_stop"}]
+    saved_response = await api_transcode_guard_settings_save(
+        _Request({"enabled": True, "rules": rules})
+    )
     status = await api_transcode_guard_status(_Request())
     check_response = await api_transcode_guard_check_now(_Request())
 
     saved = json.loads(saved_response.body.decode("utf-8"))
     checked = json.loads(check_response.body.decode("utf-8"))
     assert settings["ok"] is True
-    assert settings["settings"]["mode"] == "monitor"
+    assert settings["settings"]["rules"] == []
     assert settings["servers"] == [{"id": "green", "name": "Green", "enabled": True}]
-    assert saved["settings"]["mode"] == "warn_then_stop"
+    assert saved["settings"]["rules"][0]["mode"] == "warn_then_stop"
     assert status["ok"] is True
     assert checked["result"]["checked"] == 1
 
@@ -197,11 +204,11 @@ async def test_saving_enabled_policy_starts_monitor_and_disabling_stops_it():
         get_service=lambda: service,
     )
 
-    await api_transcode_guard_settings_save(_Request({"enabled": True, "mode": "warn_then_stop"}))
+    await api_transcode_guard_settings_save(_Request({"enabled": True, "rules": []}))
     assert service.started is True
     assert service.stopped is False
 
-    await api_transcode_guard_settings_save(_Request({"enabled": False, "mode": "warn_then_stop"}))
+    await api_transcode_guard_settings_save(_Request({"enabled": False, "rules": []}))
     assert service.stopped is True
     assert service.started is False
 
@@ -370,6 +377,80 @@ async def test_transcode_guard_plugin_event_route_accepts_event_bridge_batches(m
 
 
 @pytest.mark.anyio
+async def test_http_fallback_revalidates_rotated_credential_before_dispatch(
+    monkeypatch,
+):
+    service = _Service()
+    checks = []
+
+    def revoked(_principal):
+        checks.append("revalidated")
+        return False
+
+    monkeypatch.setattr(
+        "emby_runtime.transcode_guard_routes.event_bridge_principal_is_current",
+        revoked,
+    )
+    init_transcode_guard_routes(
+        require_auth=lambda _request: {"username": "admin"},
+        validate_csrf=lambda _request, _token: True,
+        get_service=lambda: service,
+    )
+
+    with pytest.raises(Exception) as raised:
+        await api_transcode_guard_plugin_event(
+            _Request(
+                {"serverId": "green", "eventName": "QualityChange"},
+                headers={
+                    "X-Webhook-Secret": "bridge-secret",
+                    "X-OctoHubs-Server-Id": "green",
+                },
+            )
+        )
+
+    assert getattr(raised.value, "status_code", None) == 403
+    assert checks == ["revalidated"]
+    assert service.plugin_event_payload is None
+
+
+@pytest.mark.anyio
+async def test_http_fallback_stops_batch_when_credential_rotates_between_items(
+    monkeypatch,
+):
+    service = _Service()
+    checks = iter((True, True, False))
+    monkeypatch.setattr(
+        "emby_runtime.transcode_guard_routes.event_bridge_principal_is_current",
+        lambda _principal: next(checks),
+    )
+    init_transcode_guard_routes(
+        require_auth=lambda _request: {"username": "admin"},
+        validate_csrf=lambda _request, _token: True,
+        get_service=lambda: service,
+    )
+
+    with pytest.raises(Exception) as raised:
+        await api_transcode_guard_plugin_event(
+            _Request(
+                {
+                    "schema": "octohubs.emby.event_batch.v1",
+                    "events": [
+                        {"serverId": "green", "eventName": "Pause"},
+                        {"serverId": "green", "eventName": "Unpause"},
+                    ],
+                },
+                headers={
+                    "X-Webhook-Secret": "bridge-secret",
+                    "X-OctoHubs-Server-Id": "green",
+                },
+            )
+        )
+
+    assert getattr(raised.value, "status_code", None) == 403
+    assert [item["eventName"] for item in service.plugin_event_payloads] == ["Pause"]
+
+
+@pytest.mark.anyio
 async def test_transcode_guard_plugin_event_route_rejects_oversized_body_before_processing():
     from emby_runtime.event_bridge_limits import EVENT_BRIDGE_MAX_HTTP_BODY_BYTES
 
@@ -423,6 +504,30 @@ async def test_transcode_guard_plugin_event_route_returns_retryable_rate_limit(m
     monkeypatch.setattr(
         "emby_runtime.transcode_guard_routes.consume_event_bridge_ingress",
         lambda _server_id, _payload: False,
+    )
+    init_transcode_guard_routes(
+        require_auth=lambda _request: {"username": "admin"},
+        validate_csrf=lambda _request, _token: True,
+        get_service=lambda: service,
+    )
+
+    with pytest.raises(Exception) as raised:
+        await api_transcode_guard_plugin_event(_Request(
+            {"serverId": "green", "eventName": "QualityChange"},
+            headers={"X-Webhook-Secret": "bridge-secret", "X-OctoHubs-Server-Id": "green"},
+        ))
+
+    assert getattr(raised.value, "status_code", None) == 429
+    assert raised.value.headers["Retry-After"] == "1"
+    assert service.plugin_event_payload is None
+
+
+@pytest.mark.anyio
+async def test_transcode_guard_plugin_event_route_returns_retryable_byte_limit(monkeypatch):
+    service = _Service()
+    monkeypatch.setattr(
+        "emby_runtime.transcode_guard_routes.consume_event_bridge_bytes",
+        lambda _server_id, _byte_count: False,
     )
     init_transcode_guard_routes(
         require_auth=lambda _request: {"username": "admin"},

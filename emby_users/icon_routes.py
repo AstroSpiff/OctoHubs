@@ -3,9 +3,11 @@
 from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from core.image_uploads import ImageUploadError
+from core.storage import StorageError
 from emby_users.routes import USERS_UPDATED_MESSAGE
 from emby_users.icon_api_models import (
     IconBindingRequest,
@@ -14,6 +16,7 @@ from emby_users.icon_api_models import (
     IconRuleDeleteRequest,
 )
 from emby_users.response_models import (
+    UserApiErrorResponse,
     UserApiSuccessResponse,
     UserIconConfigResponse,
     UserIconProfileMutationResponse,
@@ -67,12 +70,21 @@ def _publish_icons_updated() -> None:
         pass
 
 
+def _missing_icon_profile_response(exc: Exception) -> JSONResponse | None:
+    if not str(exc).startswith("Icon profile not found:"):
+        return None
+    return JSONResponse(
+        status_code=404,
+        content={"ok": False, "error": "Icon profile not found"},
+    )
+
+
 @router.get("/api/emby/icons/config", responses={200: {"model": UserIconConfigResponse}})
 async def api_emby_icons_config(user=Depends(_require_user_dep)):
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
-    return manager.icon_manager.get_icon_dashboard_data()
+    return await run_in_threadpool(manager.icon_manager.get_icon_dashboard_data)
 
 
 @router.get(
@@ -89,7 +101,7 @@ async def api_emby_icons_image(
     if not manager:
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
 
-    data_tuple = manager.icon_manager.get_icon_image(profile_id, column_key)
+    data_tuple = await run_in_threadpool(manager.icon_manager.get_icon_image, profile_id, column_key)
     if not data_tuple:
         return JSONResponse(status_code=404, content={"error": "Icon not found"})
 
@@ -114,7 +126,12 @@ async def api_emby_icons_profile_save(
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
-    new_id = manager.icon_manager.save_icon_profile(payload.label, payload.is_group_profile, payload.profile_id)
+    new_id = await run_in_threadpool(
+        manager.icon_manager.save_icon_profile,
+        payload.label,
+        payload.is_group_profile,
+        payload.profile_id,
+    )
     _publish_icons_updated()
     return {"ok": True, "profile_id": new_id}
 
@@ -128,12 +145,18 @@ async def api_emby_icons_profile_delete(
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
-    manager.icon_manager.delete_icon_profile(payload.profile_id)
+    await run_in_threadpool(manager.icon_manager.delete_icon_profile, payload.profile_id)
     _publish_icons_updated()
     return {"ok": True}
 
 
-@router.post("/api/emby/icons/binding", responses={200: {"model": UserApiSuccessResponse}})
+@router.post(
+    "/api/emby/icons/binding",
+    responses={
+        200: {"model": UserApiSuccessResponse},
+        404: {"model": UserApiErrorResponse},
+    },
+)
 async def api_emby_icons_binding_save(
     payload: IconBindingRequest,
     _csrf=Depends(_validate_csrf_dep),
@@ -142,12 +165,29 @@ async def api_emby_icons_binding_save(
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
-    manager.icon_manager.save_icon_binding(payload.target_type, payload.target_id, payload.profile_id)
+    try:
+        await run_in_threadpool(
+            manager.icon_manager.save_icon_binding,
+            payload.target_type,
+            payload.target_id,
+            payload.profile_id,
+        )
+    except (StorageError, ValueError) as exc:
+        response = _missing_icon_profile_response(exc)
+        if response is None:
+            raise
+        return response
     _publish_icons_updated()
     return {"ok": True}
 
 
-@router.post("/api/emby/icons/rule", responses={200: {"model": UserApiSuccessResponse}})
+@router.post(
+    "/api/emby/icons/rule",
+    responses={
+        200: {"model": UserApiSuccessResponse},
+        404: {"model": UserApiErrorResponse},
+    },
+)
 async def api_emby_icons_rule_save(
     profile_id: str = Form(...),
     column_key: str = Form(...),
@@ -160,9 +200,19 @@ async def api_emby_icons_rule_save(
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
 
     try:
-        path = manager.icon_manager.save_icon_rule(profile_id, column_key, file)
+        path = await run_in_threadpool(
+            manager.icon_manager.save_icon_rule,
+            profile_id,
+            column_key,
+            file,
+        )
     except ImageUploadError as exc:
         return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    except (StorageError, ValueError) as exc:
+        response = _missing_icon_profile_response(exc)
+        if response is None:
+            raise
+        return response
     _publish_icons_updated()
     return {"ok": True, "icon_path": path}
 
@@ -176,6 +226,10 @@ async def api_emby_icons_rule_delete(
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
-    manager.icon_manager.delete_icon_rule(payload.profile_id, payload.column_key)
+    await run_in_threadpool(
+        manager.icon_manager.delete_icon_rule,
+        payload.profile_id,
+        payload.column_key,
+    )
     _publish_icons_updated()
     return {"ok": True}

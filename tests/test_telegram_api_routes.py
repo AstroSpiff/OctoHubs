@@ -113,6 +113,42 @@ async def test_telegram_action_rejects_missing_csrf_before_running_action(monkey
     assert called is False
 
 
+@pytest.mark.anyio
+async def test_telegram_action_does_not_publish_when_storage_write_fails(monkeypatch):
+    from fastapi import HTTPException
+
+    from core.storage import StorageError
+    from telegram import api_routes
+
+    api_routes.init_telegram_api_routes(
+        require_auth=lambda _request: {"username": "admin"},
+        validate_csrf=lambda _request, token: token == "csrf",
+        load_config=lambda: ({"DATABASE": {"ENABLED": True}}, True),
+        ensure_db_backend=lambda: object(),
+    )
+    published = []
+    monkeypatch.setattr(api_routes, "ensure_telegram_ready", lambda *_args: None)
+    monkeypatch.setattr(
+        api_routes,
+        "run_telegram_configuration_action",
+        lambda *_args: (_ for _ in ()).throw(StorageError("write failed")),
+    )
+    monkeypatch.setattr(api_routes, "publish_configuration_update", published.append)
+
+    class _Request:
+        headers = {"X-CSRF-Token": "csrf"}
+        session = {}
+
+        async def json(self):
+            return {"action": "bot.save", "data": {"id": "bot-1"}}
+
+    with pytest.raises(HTTPException) as exc_info:
+        await api_routes.telegram_action_api_route(_Request())
+
+    assert exc_info.value.status_code == 500
+    assert published == []
+
+
 def test_telegram_save_bot_reuses_existing_token_without_legacy_routes(monkeypatch):
     from telegram import actions
 

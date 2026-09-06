@@ -1,25 +1,21 @@
 # services/app_settings.py
 from core import config_manager
 from core.config_manager import _ensure_db_backend
-from core.storage import StorageError
 
 
+@config_manager.serialized_config_update
 def _update_app_settings_overrides(data):
     """Update application settings with overrides from data and save to database."""
-    if config_manager._ACTIVE_CONFIG is None:
-        return
+    backend = _ensure_db_backend()
+    persisted = backend.update_app_settings(data)
 
-    # Aggiorna la configurazione in memoria
-    for key, value in data.items():
-        if key in config_manager._ACTIVE_CONFIG:
-            config_manager._ACTIVE_CONFIG[key] = value
-
-    # Salva nel database
-    try:
-        backend = _ensure_db_backend()
-        backend.update_app_settings(data)
-    except StorageError:
-        raise
+    # Publish the persisted values to the process-local cache only after commit.
+    active = config_manager._ACTIVE_CONFIG or {}
+    config_manager.publish_active_config_updates({
+        key: persisted[key]
+        for key in data
+        if key in active and key in persisted
+    })
 
 
 def _refresh_request_overview_rules(config):

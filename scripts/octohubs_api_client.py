@@ -10,6 +10,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 from urllib import error, request
+from urllib.parse import urljoin, urlsplit
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:5050"
@@ -49,6 +50,33 @@ class OctoHubsApiError(RuntimeError):
         self.payload = payload
 
 
+def _url_origin(value: str) -> tuple[str, str, int]:
+    parsed = urlsplit(value)
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or "").lower()
+    if scheme not in {"http", "https"} or not hostname:
+        raise ValueError("redirect URL has no supported origin")
+    return scheme, hostname, parsed.port or (443 if scheme == "https" else 80)
+
+
+class _SameOriginRedirectHandler(request.HTTPRedirectHandler):
+    """Allow redirects only while the Bearer credential stays on one origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        resolved = urljoin(req.full_url, newurl)
+        if _url_origin(req.full_url) != _url_origin(resolved):
+            raise OctoHubsApiError(
+                "Refused cross-origin redirect while sending an API Bearer token",
+                status=code,
+            )
+        return super().redirect_request(req, fp, code, msg, headers, resolved)
+
+
+def _open_url(http_request: request.Request, timeout: float):
+    opener = request.build_opener(_SameOriginRedirectHandler())
+    return opener.open(http_request, timeout=timeout)
+
+
 class OctoHubsApiClient:
     """Small standard-library client for external OctoHubs API checks."""
 
@@ -75,7 +103,7 @@ class OctoHubsApiClient:
 
         http_request = request.Request(target, data=data, headers=headers, method=method.upper())
         try:
-            with request.urlopen(http_request, timeout=self.timeout) as response:
+            with _open_url(http_request, timeout=self.timeout) as response:
                 return ApiResponse(response.status, _decode_body(response.read()))
         except error.HTTPError as exc:
             payload = _decode_body(exc.read())
@@ -189,7 +217,7 @@ def _print_response(label: str, response: ApiResponse) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="OctoHubs external API smoke client")
     parser.add_argument("--base-url", default=os.environ.get("OCTOHUBS_BASE_URL", DEFAULT_BASE_URL))
-    parser.add_argument("--token", default=os.environ.get("OCTOHUBS_API_TOKEN", ""))
+    parser.add_argument("--token-file", help="Read the API token from a protected file")
     parser.add_argument("--timeout", type=float, default=15.0)
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -221,7 +249,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run(args: argparse.Namespace) -> int:
-    client = OctoHubsApiClient(args.base_url, args.token, args.timeout)
+    token = os.environ.get("OCTOHUBS_API_TOKEN", "")
+    if getattr(args, "token_file", None):
+        with open(args.token_file, encoding="utf-8") as token_handle:
+            token = token_handle.read().strip()
+        if not token:
+            raise ValueError("token file is empty")
+    client = OctoHubsApiClient(args.base_url, token, args.timeout)
 
     if args.command == "status":
         _print_response("status", client.get_status())

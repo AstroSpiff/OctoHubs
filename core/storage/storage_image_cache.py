@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import hashlib
 from typing import Any, Dict, Optional, Protocol
 
 from core.storage.storage_errors import StorageError
@@ -22,13 +23,16 @@ class StorageImageCacheMixin(_SessionProvider):
             row = session.get(EmbyImageCache, cache_key)
             if not row:
                 return None
-            if row.expires_at and row.expires_at < _utcnow():
+            now = _utcnow()
+            if row.expires_at and row.expires_at.tzinfo is None:
+                now = now.replace(tzinfo=None)
+            if row.expires_at and row.expires_at < now:
                 session.delete(row)
                 session.commit()
                 return None
             return {
-                "content_type": row.content_type,
-                "data": row.data
+                "content_type": row.mime_type,
+                "data": row.image_data,
             }
         finally:
             session.close()
@@ -55,16 +59,12 @@ class StorageImageCacheMixin(_SessionProvider):
             row = session.get(EmbyImageCache, cache_key)
             if not row:
                 row = EmbyImageCache(cache_key=cache_key)
-            row.server_id = server_id  # type: ignore[assignment]
-            row.item_id = item_id  # type: ignore[assignment]
-            row.image_type = image_type  # type: ignore[assignment]
-            row.max_width = max_width  # type: ignore[assignment]
-            row.max_height = max_height  # type: ignore[assignment]
-            row.tag = tag  # type: ignore[assignment]
-            row.scope = scope  # type: ignore[assignment]
-            row.content_type = content_type  # type: ignore[assignment]
-            row.data = data  # type: ignore[assignment]
-            row.size = len(data)  # type: ignore[assignment]
+            # The schema intentionally stores opaque image bytes only.  Keep
+            # the public cache API stable while mapping it to its actual model.
+            row.image_url = f"cache://{cache_key}"  # type: ignore[assignment]
+            row.mime_type = content_type  # type: ignore[assignment]
+            row.image_data = data  # type: ignore[assignment]
+            row.image_hash = hashlib.sha256(data).hexdigest()  # type: ignore[assignment]
             row.created_at = _utcnow()  # type: ignore[assignment]
             row.expires_at = expires_at  # type: ignore[assignment]
             session.add(row)

@@ -32,7 +32,17 @@ def test_probe_configuration_and_stored_state_publish_typed_contracts():
     assert _response_schema(queue)["$ref"] == "#/components/schemas/ProbeQueueResponse"
     assert _response_schema(history)["$ref"] == "#/components/schemas/ProbeHistoryResponse"
     assert _response_schema(blacklist)["$ref"] == "#/components/schemas/ProbeBlacklistResponse"
-    assert _parameter_names(history) == {"server_id", "limit", "scope"}
+    assert _parameter_names(queue) == {"server_id", "limit", "offset", "cursor", "scope"}
+    assert _parameter_names(history) == {"server_id", "limit", "offset", "cursor", "scope"}
+    assert _parameter_names(blacklist) == {
+        "server_id",
+        "min_retry",
+        "type",
+        "scope",
+        "limit",
+        "offset",
+        "cursor",
+    }
 
 
 def test_probe_commands_and_queue_mutations_publish_bodies_and_operation_result():

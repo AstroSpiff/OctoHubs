@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from core.emby_identifiers import OpaqueEmbyIdentifier
 from web.request_validation import StrictRequestModel
 
 
@@ -21,7 +22,7 @@ class EmbyTaskStopResponse(BaseModel):
 
 class EmbyTaskStopRequest(StrictRequestModel):
     server_id: str
-    task_id: str
+    task_id: OpaqueEmbyIdentifier
 
 
 class EmbyLiveStream(BaseModel):

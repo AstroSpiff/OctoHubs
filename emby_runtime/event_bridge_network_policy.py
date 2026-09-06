@@ -5,17 +5,15 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
-from typing import Any, Mapping
+from typing import Any
 
 from fastapi import HTTPException
 
-from emby_runtime.event_bridge_payloads import header_value
+from core.client_address import resolve_client_address
+from core.log_sanitization import format_exception_for_log
 
 
 logger = logging.getLogger(__name__)
-
-_TRUTHY_VALUES = {"1", "true", "yes", "on"}
-
 
 def validate_event_bridge_source(connection: Any) -> None:
     """Reject Event Bridge callers outside the optional IP/CIDR allowlist."""
@@ -26,7 +24,7 @@ def validate_event_bridge_source(connection: Any) -> None:
     try:
         networks = _parse_allowlist(raw_allowlist)
     except ValueError as exc:
-        logger.error("Configurazione WEBHOOK_IP_WHITELIST non valida: %s", exc)
+        logger.error("Configurazione WEBHOOK_IP_WHITELIST non valida:\n%s", format_exception_for_log(exc))
         raise HTTPException(
             status_code=503,
             detail="WEBHOOK_IP_WHITELIST non valida",
@@ -66,6 +64,12 @@ def validate_event_bridge_source(connection: Any) -> None:
     )
 
 
+def event_bridge_peer_key(connection: Any) -> str:
+    """Return the same peer identity used by the source policy for pre-auth limits."""
+    value, _source = _peer_value(connection)
+    return value or "unknown"
+
+
 def _parse_allowlist(raw_allowlist: str) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
     entries = [entry.strip() for entry in raw_allowlist.split(",")]
     networks = []
@@ -80,18 +84,8 @@ def _parse_allowlist(raw_allowlist: str) -> tuple[ipaddress.IPv4Network | ipaddr
 
 
 def _peer_value(connection: Any) -> tuple[str, str]:
-    if _trust_proxy_headers():
-        headers: Mapping[str, Any] = getattr(connection, "headers", {}) or {}
-        proxy_ip = header_value(headers, "X-Real-IP")
-        if proxy_ip:
-            return proxy_ip, "proxy"
-
-    client = getattr(connection, "client", None)
-    host = getattr(client, "host", "") if client is not None else ""
-    if not host and isinstance(client, (tuple, list)) and client:
-        host = client[0]
-    return str(host or "").strip(), "diretto"
-
-
-def _trust_proxy_headers() -> bool:
-    return (os.getenv("WEBHOOK_TRUST_PROXY_HEADERS") or "").strip().lower() in _TRUTHY_VALUES
+    """Resolve proxy headers only when their direct peer is an allowed proxy."""
+    return resolve_client_address(
+        connection,
+        trust_proxy_env="WEBHOOK_TRUST_PROXY_HEADERS",
+    ), "risolto"

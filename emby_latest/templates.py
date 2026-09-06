@@ -2,12 +2,11 @@
 Template rendering for Latest Publications messages.
 
 This module handles Jinja2 template rendering for notification messages.
-Migrated from legacy monolith template functions.
 """
 
 import re
 from typing import Any, Dict, Optional
-from jinja2 import Undefined, TemplateSyntaxError
+from jinja2 import Undefined, TemplateSyntaxError, nodes
 from jinja2.sandbox import SandboxedEnvironment
 from markupsafe import Markup
 
@@ -28,11 +27,80 @@ LATEST_IMAGE_TOKENS = (
 )
 
 # Regex patterns for template token matching
-_LATEST_LEGACY_TOKEN_REGEX = re.compile(r"(?<!{){\s*([a-zA-Z0-9_][^}]*)\s*}(?!})")
 _LATEST_JINJA_TOKEN_REGEX = re.compile(r"{{\s*([a-zA-Z0-9_]+)[^}]*}}")
 
 # Global template environment singleton
 _TEMPLATE_ENV = None
+MAX_TEMPLATE_SOURCE_LENGTH = 16_384
+MAX_TEMPLATE_OUTPUT_LENGTH = 65_536
+MAX_TEMPLATE_CONTEXT_SIZE = 262_144
+MAX_TEMPLATE_CONTEXT_ITEMS = 5_000
+_ALLOWED_FILTERS = {
+    "default", "e", "escape", "float", "int", "lower", "round", "safe",
+    "title", "trim", "upper",
+}
+_BANNED_NODES = (
+    nodes.Add,
+    nodes.Assign,
+    nodes.AssignBlock,
+    nodes.Block,
+    nodes.Call,
+    nodes.Extends,
+    nodes.For,
+    nodes.FromImport,
+    nodes.Import,
+    nodes.Include,
+    nodes.Macro,
+    nodes.Mul,
+    nodes.Pow,
+    nodes.Concat,
+)
+
+
+class TemplateResourceLimitError(ValueError):
+    """Raised when a Latest template exceeds its safe execution budget."""
+
+
+def _validate_context_budget(value: Any, *, depth: int = 0) -> tuple[int, int]:
+    if depth > 8:
+        raise TemplateResourceLimitError("Contesto template troppo annidato")
+    if value is None or isinstance(value, (bool, int, float)):
+        return 16, 1
+    if isinstance(value, str):
+        return len(value), 1
+    if isinstance(value, dict):
+        size = 0
+        count = 1
+        for key, item in value.items():
+            child_size, child_count = _validate_context_budget(item, depth=depth + 1)
+            size += len(str(key)) + child_size
+            count += child_count
+        return size, count
+    if isinstance(value, (list, tuple, set)):
+        size = 0
+        count = 1
+        for item in value:
+            child_size, child_count = _validate_context_budget(item, depth=depth + 1)
+            size += child_size
+            count += child_count
+        return size, count
+    return len(str(value)), 1
+
+
+def validate_template(template: str) -> str:
+    """Validate source size and reject expensive Jinja constructs."""
+    normalized = normalize_template(template)
+    if len(normalized) > MAX_TEMPLATE_SOURCE_LENGTH:
+        raise TemplateResourceLimitError("Template troppo lungo")
+    parsed = get_template_env().parse(normalized)
+    for node in parsed.find_all(_BANNED_NODES):
+        raise TemplateResourceLimitError(
+            f"Costrutto template non consentito: {type(node).__name__}"
+        )
+    for node in parsed.find_all(nodes.Filter):
+        if node.name not in _ALLOWED_FILTERS:
+            raise TemplateResourceLimitError(f"Filtro template non consentito: {node.name}")
+    return normalized
 
 
 def get_template_env():
@@ -57,20 +125,7 @@ def get_template_env():
                 return Markup("")
             return Markup(str(value))
 
-        def _filter_format(value, *args, **kwargs):
-            fmt = "" if value is None else str(value)
-            try:
-                if args or kwargs:
-                    try:
-                        return fmt % (args[0] if len(args) == 1 and not kwargs else args or kwargs)
-                    except Exception:
-                        return fmt.format(*args, **kwargs)
-                return fmt
-            except Exception:
-                return fmt
-
         env.filters["safe"] = _filter_safe
-        env.filters["format"] = _filter_format
         env.globals["nl"] = "\n"
         env.globals["br"] = Markup("<br>")
         _TEMPLATE_ENV = env
@@ -79,18 +134,8 @@ def get_template_env():
 
 
 def normalize_template(template: Optional[str]) -> str:
-    """
-    Normalize template by converting legacy {token} syntax to Jinja2 {{token}} format.
-
-    Args:
-        template: Template string with legacy or Jinja2 syntax
-
-    Returns:
-        Normalized template string with Jinja2 syntax
-    """
-    text = template or ""
-    # Convert legacy {token} to {{token}} (but not {{{token}}})
-    return _LATEST_LEGACY_TOKEN_REGEX.sub(lambda match: f"{{{{ {match.group(1).strip()} }}}}", text)
+    """Return the canonical Jinja2 template source."""
+    return template or ""
 
 
 def template_has_image_token(template: Optional[str]) -> bool:
@@ -182,11 +227,21 @@ def render_template(template: str, context: Dict[str, Any], strict: bool = False
     if not template:
         return ""
 
-    normalized = normalize_template(template)
+    normalized = validate_template(template)
     env = get_template_env()
 
     try:
-        return env.from_string(normalized).render(context or {})
+        context_size, context_items = _validate_context_budget(context or {})
+        if context_size > MAX_TEMPLATE_CONTEXT_SIZE or context_items > MAX_TEMPLATE_CONTEXT_ITEMS:
+            raise TemplateResourceLimitError("Contesto template troppo grande")
+        chunks = []
+        output_size = 0
+        for chunk in env.from_string(normalized).generate(context or {}):
+            output_size += len(chunk)
+            if output_size > MAX_TEMPLATE_OUTPUT_LENGTH:
+                raise TemplateResourceLimitError("Output template troppo grande")
+            chunks.append(chunk)
+        return "".join(chunks)
     except (TemplateSyntaxError, ValueError) as exc:
         if strict:
             raise exc
@@ -198,26 +253,39 @@ def render_template(template: str, context: Dict[str, Any], strict: bool = False
 
 
 def apply_template(template: str, context: Dict[str, Any]) -> str:
-    """
-    Apply template with simple string replacement (legacy method).
-
-    Args:
-        template: Template string
-        context: Context dict for replacement
-
-    Returns:
-        Template with tokens replaced
-    """
+    """Apply bounded replacement to canonical Jinja2 value tokens."""
     text = template or ""
+    if len(text) > MAX_TEMPLATE_SOURCE_LENGTH:
+        raise TemplateResourceLimitError("Template troppo lungo")
+    context_size, context_items = _validate_context_budget(context or {})
+    if context_size > MAX_TEMPLATE_CONTEXT_SIZE or context_items > MAX_TEMPLATE_CONTEXT_ITEMS:
+        raise TemplateResourceLimitError("Contesto template troppo grande")
     if not context:
         return text
 
     for key, value in context.items():
-        # Legacy single-brace format
-        legacy_token = f"{{{key}}}"
-        text = text.replace(legacy_token, str(value) if value is not None else "")
-
-        # Jinja2 double-brace format (simple replacement)
-        text = re.sub(r"{{\s*" + re.escape(str(key)) + r"[^}]*}}", str(value) if value is not None else "", text)
+        replacement = str(value) if value is not None else ""
+        pattern = re.compile(r"{{\s*" + re.escape(str(key)) + r"[^}]*}}")
+        matches = tuple(pattern.finditer(text))
+        if matches:
+            _ensure_bounded_replacement(
+                text,
+                len(matches),
+                sum(match.end() - match.start() for match in matches),
+                replacement,
+            )
+            text = pattern.sub(replacement, text)
 
     return text
+
+
+def _ensure_bounded_replacement(
+    text: str,
+    count: int,
+    removed_length: int,
+    replacement: str,
+) -> None:
+    """Reject an expansion before ``replace``/``re.sub`` allocates it."""
+    projected_length = len(text) - removed_length + count * len(replacement)
+    if projected_length > MAX_TEMPLATE_OUTPUT_LENGTH:
+        raise TemplateResourceLimitError("Output template troppo grande")

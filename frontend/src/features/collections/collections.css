@@ -194,8 +194,17 @@
   padding-left: 18px;
 }
 .collection-editor-sources > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 4px;
+}
+.collection-editor-sources > header > div {
   display: grid;
   gap: 4px;
+}
+.collection-editor-sources-close {
+  display: none;
 }
 .collection-editor-sources h3 {
   margin: 0;
@@ -641,6 +650,22 @@
   .collection-editor-sources {
     display: none;
   }
+  .collection-editor-sources.collection-editor-sources--mobile-open {
+    position: fixed;
+    inset: max(18px, env(safe-area-inset-top)) 18px max(18px, env(safe-area-inset-bottom));
+    z-index: 2;
+    display: grid;
+    max-height: none;
+    overflow: auto;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-panel);
+    background: var(--color-surface);
+    box-shadow: var(--shadow-floating);
+    padding: 18px;
+  }
+  .collection-editor-sources-close {
+    display: inline-flex;
+  }
   .collection-editor-fields,
   .collection-editor-media {
     grid-template-columns: 1fr;
@@ -720,8 +745,6 @@
   transform-style: preserve-3d;
 }
 
-.collection-card-flip:hover .collection-card-inner,
-.collection-card-flip:focus-within .collection-card-inner,
 .collection-card.is-flipped .collection-card-inner {
   transform: rotateY(180deg);
 }
@@ -736,16 +759,12 @@
   backface-visibility: hidden;
 }
 
-.collection-card:not(.is-flipped) .collection-card-flip:not(:hover):not(:focus-within) .collection-card-back,
-.collection-card-flip:hover .collection-card-front,
-.collection-card-flip:focus-within .collection-card-front,
+.collection-card:not(.is-flipped) .collection-card-back,
 .collection-card.is-flipped .collection-card-front {
   pointer-events: none;
 }
 
-.collection-card:not(.is-flipped) .collection-card-flip:not(:hover):not(:focus-within) .collection-card-front,
-.collection-card-flip:hover .collection-card-back,
-.collection-card-flip:focus-within .collection-card-back,
+.collection-card:not(.is-flipped) .collection-card-front,
 .collection-card.is-flipped .collection-card-back {
   pointer-events: auto;
 }
@@ -895,14 +914,11 @@
   z-index: 1;
 }
 
-.collection-card-flip:hover .collection-card-back,
-.collection-card-flip:focus-within .collection-card-back,
 .collection-card.is-flipped .collection-card-back {
   z-index: 2;
 }
 
-.collection-card-flip:hover .collection-card-front,
-.collection-card-flip:focus-within .collection-card-front {
+.collection-card:not(.is-flipped) .collection-card-front {
   z-index: 1;
 }
 

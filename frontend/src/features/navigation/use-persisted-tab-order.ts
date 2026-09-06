@@ -20,6 +20,8 @@ type TabOrderInteractionOptions = {
 
 const navigationOrderChangedEvent = "octohubs:navigation-order-changed";
 const navigationOrderCache = new Map<string, string[]>();
+const navigationConfirmedOrderCache = new Map<string, string[]>();
+const navigationSaveQueues = new Map<string, Promise<void>>();
 
 type NavigationOrderChangedDetail = {
   page: string;
@@ -35,8 +37,8 @@ function usePersistedTabOrder<T extends string>({ page, tabs, enabled = true }: 
   const orderRef = useRef(order);
   const draggingIdRef = useRef<T | null>(null);
   const dragStartOrderRef = useRef<T[] | null>(null);
+  const confirmedOrderRef = useRef<T[]>(defaultOrder);
   const hasLocalOrderRef = useRef(false);
-  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
   const tabById = useMemo(() => new Map(tabs.map((tab) => [tab.id, tab])), [tabs]);
@@ -63,9 +65,16 @@ function usePersistedTabOrder<T extends string>({ page, tabs, enabled = true }: 
     if (navigationOrderCache.has(page)) {
       const cachedOrder = navigationOrderCache.get(page) || [];
       applyOrder(normalizeTabOrder(tabsRef.current, cachedOrder.map((tab_key, position) => ({ tab_key, position }))));
+      const confirmedOrder = navigationConfirmedOrderCache.get(page)
+        || normalizeTabOrder(tabsRef.current, []);
+      confirmedOrderRef.current = normalizeTabOrder(
+        tabsRef.current,
+        confirmedOrder.map((tab_key, position) => ({ tab_key, position })),
+      );
       return;
     }
     const fallbackOrder = normalizeTabOrder(tabsRef.current, []);
+    confirmedOrderRef.current = fallbackOrder;
     applyOrder(fallbackOrder);
 
     void getTabOrder(page)
@@ -73,6 +82,8 @@ function usePersistedTabOrder<T extends string>({ page, tabs, enabled = true }: 
         if (!disposed && !hasLocalOrderRef.current) {
           const loadedOrder = normalizeTabOrder(tabsRef.current, entries);
           navigationOrderCache.set(page, [...loadedOrder]);
+          navigationConfirmedOrderCache.set(page, [...loadedOrder]);
+          confirmedOrderRef.current = loadedOrder;
           applyOrder(loadedOrder);
         }
       })
@@ -104,18 +115,31 @@ function usePersistedTabOrder<T extends string>({ page, tabs, enabled = true }: 
     const save = async () => {
       try {
         const response = await saveTabOrder(page, serializeTabOrder(page, orderAtSave).order);
+        const confirmedOrder = Array.isArray(response.order)
+          ? normalizeTabOrder(tabsRef.current, response.order)
+          : orderAtSave;
+        navigationConfirmedOrderCache.set(page, [...confirmedOrder]);
+        confirmedOrderRef.current = confirmedOrder;
         if (Array.isArray(response.order) && orderRef.current.join("|") === orderAtSave.join("|")) {
-          applyAndBroadcastOrder(normalizeTabOrder(tabsRef.current, response.order));
+          applyAndBroadcastOrder(confirmedOrder);
         }
         setAnnouncement("Ordine delle schede salvato.");
       } catch {
+        if (orderRef.current.join("|") === orderAtSave.join("|")) {
+          const sharedConfirmedOrder = navigationConfirmedOrderCache.get(page)
+            || confirmedOrderRef.current;
+          const normalizedSharedConfirmedOrder = normalizeTabOrder(
+            tabsRef.current,
+            sharedConfirmedOrder.map((tab_key, position) => ({ tab_key, position })),
+          );
+          confirmedOrderRef.current = normalizedSharedConfirmedOrder;
+          applyAndBroadcastOrder(normalizedSharedConfirmedOrder);
+        }
         setAnnouncement("Impossibile salvare l'ordine delle schede.");
       }
     };
 
-    const queuedSave = saveQueueRef.current.catch(() => undefined).then(save);
-    saveQueueRef.current = queuedSave;
-    return queuedSave;
+    return enqueueNavigationSave(page, save);
   }, [applyAndBroadcastOrder, page]);
 
   const finishDrag = useCallback(() => {
@@ -189,6 +213,17 @@ function usePersistedTabOrder<T extends string>({ page, tabs, enabled = true }: 
   }), [applyAndBroadcastOrder, finishDrag, move]);
 
   return { announcement, draggingId, interaction, move, order };
+}
+
+function enqueueNavigationSave(page: string, save: () => Promise<void>) {
+  const previous = navigationSaveQueues.get(page) || Promise.resolve();
+  const queued = previous.catch(() => undefined).then(save);
+  navigationSaveQueues.set(page, queued);
+  const clearQueue = () => {
+    if (navigationSaveQueues.get(page) === queued) navigationSaveQueues.delete(page);
+  };
+  void queued.then(clearQueue, clearQueue);
+  return queued;
 }
 
 export { usePersistedTabOrder };

@@ -2,7 +2,11 @@ import { request } from "@/lib/http";
 import type { ClearCompletedResult, OperationsSnapshot } from "@/features/operations/types";
 
 export function getOperations(): Promise<OperationsSnapshot> {
-  return request<OperationsSnapshot>("/api/v1/operations");
+  return getOperationsWithSignal();
+}
+
+export function getOperationsWithSignal(signal?: AbortSignal): Promise<OperationsSnapshot> {
+  return request<OperationsSnapshot>("/api/v1/operations", { signal });
 }
 
 export function clearCompletedOperations(): Promise<ClearCompletedResult> {

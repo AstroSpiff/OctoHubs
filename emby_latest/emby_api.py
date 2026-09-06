@@ -10,10 +10,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from emby_runtime.api_clients import _call_emby_api
 from core.utils import normalize_string, _parse_date_value
+from emby_latest.runtime_cache import BoundedTTLCache
 
-_EMBY_LIBRARY_CACHE: dict[str, list[dict]] = {}
-_EMBY_LIBRARY_ITEM_CACHE: dict[tuple[str, str], tuple[str, str]] = {}
-_EMBY_ITEM_CACHE: dict[tuple[str, str], dict] = {}
+_EMBY_LIBRARY_CACHE = BoundedTTLCache[str, list[dict]](max_entries=256, ttl_seconds=300)
+_EMBY_LIBRARY_ITEM_CACHE = BoundedTTLCache[tuple[str, str], tuple[str, str]](
+    max_entries=4_096,
+    ttl_seconds=900,
+)
+_EMBY_ITEM_CACHE = BoundedTTLCache[tuple[str, str], dict](max_entries=8_192, ttl_seconds=300)
 
 
 def _coerce_int_value(value: Any) -> Optional[int]:
@@ -26,7 +30,26 @@ def _coerce_int_value(value: Any) -> Optional[int]:
 def _server_cache_key(server: Dict[str, Any]) -> str:
     if not isinstance(server, dict):
         return ""
-    return str(server.get("id") or server.get("url") or "")
+    server_id = str(server.get("id") or "").strip()
+    endpoint = str(server.get("url") or "").strip().rstrip("/")
+    return f"{server_id}|{endpoint}"
+
+
+def clear_emby_runtime_caches(server_id: str | None = None) -> None:
+    """Invalidate all transient Emby lookups, or only one server fingerprint."""
+    normalized_id = str(server_id or "").strip()
+    if not normalized_id:
+        for cache in (_EMBY_LIBRARY_CACHE, _EMBY_LIBRARY_ITEM_CACHE, _EMBY_ITEM_CACHE):
+            cache.clear()
+        return
+    prefix = f"{normalized_id}|"
+    for key in tuple(_EMBY_LIBRARY_CACHE):
+        if str(key).startswith(prefix):
+            del _EMBY_LIBRARY_CACHE[key]
+    for cache in (_EMBY_LIBRARY_ITEM_CACHE, _EMBY_ITEM_CACHE):
+        for key in tuple(cache):
+            if isinstance(key, tuple) and str(key[0]).startswith(prefix):
+                del cache[key]
 
 
 def _media_source_has_date(source: Dict[str, Any]) -> bool:
@@ -166,19 +189,19 @@ def _matches_episode_numbers(item: Dict[str, Any], season_number: int, episode_n
 def _load_emby_library_folders(server: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not isinstance(server, dict):
         return []
-    server_id = str(server.get("id") or "")
-    if server_id in _EMBY_LIBRARY_CACHE:
-        return _EMBY_LIBRARY_CACHE[server_id]
+    server_key = _server_cache_key(server)
+    if server_key in _EMBY_LIBRARY_CACHE:
+        return _EMBY_LIBRARY_CACHE[server_key]
     success, payload = _call_emby_api(server, "Library/VirtualFolders", method="GET")
     folders = payload if success and isinstance(payload, list) else []
-    _EMBY_LIBRARY_CACHE[server_id] = folders
+    _EMBY_LIBRARY_CACHE[server_key] = folders
     return folders
 
 
 def _resolve_emby_library_for_item(server: Dict[str, Any], item: Dict[str, Any]) -> Tuple[str, str]:
     if not isinstance(server, dict) or not isinstance(item, dict):
         return "", "Libreria"
-    server_id = str(server.get("id") or "")
+    server_id = _server_cache_key(server)
     item_id = item.get("Id") or item.get("ItemId")
     cache_key = None
     if server_id and item_id:

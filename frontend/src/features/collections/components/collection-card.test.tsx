@@ -4,6 +4,26 @@ import { describe, expect, it } from "vitest";
 import { CollectionCard } from "@/features/collections/components/collection-card";
 
 describe("CollectionCard", () => {
+  it("announces an action error on the collection that produced it", () => {
+    const markup = renderToStaticMarkup(
+      <CollectionCard
+        collection={{ id: "watchlist", name: "Watchlist", enabled: true }}
+        changing={false}
+        syncing={false}
+        syncingAll={false}
+        actionError="Sincronizzazione Watchlist non riuscita"
+        onToggle={() => undefined}
+        onSync={() => undefined}
+        onEdit={() => undefined}
+        onDetails={() => undefined}
+        onDelete={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain('role="alert"');
+    expect(markup).toContain("Sincronizzazione Watchlist non riuscita");
+  });
+
   it("blocks structural actions while the global synchronization is running", () => {
     const markup = renderToStaticMarkup(
       <CollectionCard

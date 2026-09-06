@@ -36,7 +36,6 @@ function ConfigurationPage() {
   const settings = useConfigurationSettings();
   const navigationPreferences = useNavigationPreferencesContext();
   const servers = useEmbyServers();
-  const serverActionError = servers.remove.error;
   const headerRefreshVisible = activeTab === "servers" || activeTab === "telegram" || activeTab === "automations" || activeTab === "services";
   const currentSectionRefreshing = activeTab === "servers"
     ? servers.servers.isFetching
@@ -99,12 +98,11 @@ function ConfigurationPage() {
       />
       <ConfigurationTabs active={activeTab} variant={navigationPreferences.preferences.secondary_navigation}>
         {activeTab === "servers" ? <>
-          {serverActionError ? <div className="inline-alert inline-alert--error" role="alert">{serverActionError.message}</div> : null}
           <QueryStateBoundary error={servers.servers.error} hasData={Boolean(servers.servers.data)} loadingLabel="Caricamento server Emby..." retrying={servers.servers.isFetching} onRetry={() => void servers.servers.refetch()}>
-            <EmbyServersPanel servers={servers.servers.data?.servers || []} loading={servers.servers.isLoading} creating={servers.create.isPending} updatingIds={servers.updatingIds} deletingIds={servers.deletingIds} onCreate={async (input) => { await servers.create.mutateAsync(input); }} onUpdate={async (serverId, input) => { await servers.update.mutateAsync({ serverId, input }); }} onDelete={(serverId) => { void removeServer(serverId); }} onRefresh={() => void servers.refresh()} onDirtyChange={onDraftChange} />
+            <EmbyServersPanel key={`servers-${refreshEpoch}`} servers={servers.servers.data?.servers || []} loading={servers.servers.isLoading} creating={servers.create.isPending} updatingIds={servers.updatingIds} deletingIds={servers.deletingIds} removalErrors={servers.removalErrors} onCreate={async (input) => { await servers.create.mutateAsync(input); }} onUpdate={async (serverId, input) => { await servers.update.mutateAsync({ serverId, input }); }} onDelete={(serverId) => { void removeServer(serverId); }} onRefresh={() => void servers.refresh()} onDirtyChange={onDraftChange} />
           </QueryStateBoundary>
         </> : null}
-        {activeTab === "telegram" ? <TelegramPanel settings={settings.telegram.data} busy={settings.telegramAction.isPending} notice={notice} actionError={settings.telegramAction.error?.message || ""} loadError={settings.telegram.error} retrying={settings.telegram.isFetching} onRetry={() => void settings.telegram.refetch()} onAction={async (action) => { const payload = await settings.telegramAction.mutateAsync(action); setNotice(payload.message || "Configurazione Telegram aggiornata"); return payload; }} onDirtyChange={onDraftChange} /> : null}
+        {activeTab === "telegram" ? <TelegramPanel key={`telegram-${refreshEpoch}`} settings={settings.telegram.data} busy={settings.telegramAction.isPending} notice={notice} actionError={settings.telegramAction.error?.message || ""} loadError={settings.telegram.error} retrying={settings.telegram.isFetching} onRetry={() => void settings.telegram.refetch()} onAction={async (action) => { const payload = await settings.telegramAction.mutateAsync(action); setNotice(payload.message || "Configurazione Telegram aggiornata"); return payload; }} onDirtyChange={onDraftChange} /> : null}
         {activeTab === "automations" ? <QueryStateBoundary error={settings.settings.error} hasData={Boolean(settings.settings.data)} loadingLabel="Caricamento automazioni..." retrying={settings.settings.isFetching} onRetry={() => void settings.settings.refetch()}>
           {!automationUnavailable ? <AutomationsPanel key={`automations-${refreshEpoch}`} automations={settings.settings.data?.automations} requestRefresh={settings.settings.data?.request_refresh} saving={settings.saveAutomations.isPending} savedMessage={notice} onSave={async (value) => { const payload = await settings.saveAutomations.mutateAsync(value); setNotice(payload.message || "Automazioni aggiornate"); return payload.automations; }} onRefresh={refreshCurrent} onDirtyChange={onDraftChange} /> : null}
         </QueryStateBoundary> : null}
@@ -113,7 +111,7 @@ function ConfigurationPage() {
         </QueryStateBoundary> : null}
         {activeTab === "event-bridge" ? <EventBridgeWorkspace embedded onDirtyChange={onDraftChange} /> : null}
         {activeTab === "system-status" ? <SystemStatusWorkspace embedded /> : null}
-        {activeTab === "accounts" ? <AccountsWorkspace /> : null}
+        {activeTab === "accounts" ? <AccountsWorkspace onDirtyChange={onDraftChange} /> : null}
       </ConfigurationTabs>
       {automationUnavailable ? (
         <div className="configuration-unavailable" role="status">

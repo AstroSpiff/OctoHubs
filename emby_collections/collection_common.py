@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 from core.emby_servers import _get_emby_servers_from_config
 from core.image_uploads import MAX_IMAGE_UPLOAD_BYTES, SAFE_IMAGE_MIME_TYPES
 from .sources import SOURCE_TYPE_MAP, build_source_link
+from .source_references import normalize_source_reference
 
 SYNC_STATE_FIELDS = (
     "last_sync_at",
@@ -22,11 +23,6 @@ COLLECTION_BATCH_SIZE = 50
 COLLECTION_POSTER_MAX_BYTES = MAX_IMAGE_UPLOAD_BYTES
 COLLECTION_POSTER_MIME_TYPES = set(SAFE_IMAGE_MIME_TYPES)
 OCTOHUBS_COLLECTION_TAG = "OctoHubs"
-LEGACY_OCTOHUB_COLLECTION_TAG = "OctoHub"
-OCTOHUBS_COLLECTION_TAGS = (
-    OCTOHUBS_COLLECTION_TAG,
-    LEGACY_OCTOHUB_COLLECTION_TAG,
-)
 
 
 def _now_iso() -> str:
@@ -47,10 +43,7 @@ def _octohubs_id_tag(definition_id: str, base_tag: str = OCTOHUBS_COLLECTION_TAG
 
 
 def _is_octohubs_collection_tag(tag: str) -> bool:
-    return any(
-        tag == base_tag or tag.startswith(f"{base_tag}:")
-        for base_tag in OCTOHUBS_COLLECTION_TAGS
-    )
+    return tag == OCTOHUBS_COLLECTION_TAG or tag.startswith(f"{OCTOHUBS_COLLECTION_TAG}:")
 
 
 def _build_collection_tags(definition: Dict[str, Any], existing_tags: Any) -> List[str]:
@@ -84,10 +77,9 @@ def _extract_octohubs_definition_id(tags: Any) -> str:
     for tag in tags:
         if not isinstance(tag, str):
             continue
-        for base_tag in OCTOHUBS_COLLECTION_TAGS:
-            prefix = f"{base_tag}:"
-            if tag.startswith(prefix):
-                return tag[len(prefix):].strip()
+        prefix = f"{OCTOHUBS_COLLECTION_TAG}:"
+        if tag.startswith(prefix):
+            return tag[len(prefix):].strip()
     return ""
 
 
@@ -111,7 +103,6 @@ def _normalize_server_ids(
     payload = payload or {}
     existing = existing or {}
     raw_ids = payload.get("server_ids")
-    has_explicit = "server_ids" in payload
     server_ids: List[str] = []
     if isinstance(raw_ids, list):
         for entry in raw_ids:
@@ -122,10 +113,6 @@ def _normalize_server_ids(
         value = raw_ids.strip()
         if value:
             server_ids.append(value)
-    if not server_ids and not has_explicit:
-        legacy_id = str(payload.get("server_id") or existing.get("server_id") or "").strip()
-        if legacy_id:
-            server_ids.append(legacy_id)
     if servers:
         valid = set(servers.keys())
         server_ids = [server_id for server_id in server_ids if server_id in valid]
@@ -154,7 +141,10 @@ def _enrich_definition(
     raw_source = normalized.get("source")
     source = raw_source if isinstance(raw_source, dict) else {}
     source_type = source.get("type") or ""
-    source_value = str(source.get("value") or "").strip()
+    try:
+        source_value = normalize_source_reference(source_type, str(source.get("value") or ""))
+    except ValueError:
+        source_value = ""
     meta = SOURCE_TYPE_MAP.get(source_type) or {}
     normalized["source_type"] = source_type
     normalized["source_value"] = source_value
@@ -162,7 +152,7 @@ def _enrich_definition(
     normalized["source_label"] = meta.get("label") or source_type
     normalized["source_description"] = meta.get("description") or ""
     normalized["source_link"] = build_source_link(source_type, source_value)
-    normalized["source"] = dict(source) if source else {}
+    normalized["source"] = {"type": source_type, "value": source_value} if source_type else {}
     server_ids = _normalize_server_ids(normalized, normalized, servers)
     normalized["server_ids"] = server_ids
     normalized["server_id"] = server_ids[0] if server_ids else ""

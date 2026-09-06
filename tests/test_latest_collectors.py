@@ -44,6 +44,42 @@ class _RecordingState:
 
 
 class LatestCollectorStateTests(unittest.TestCase):
+    def test_upstream_fetch_error_preserves_previous_snapshot(self):
+        db_state = _RecordingState(
+            {"server-a": {"movies": {"items": {}}, "series": {"items": {}}}}
+        )
+        db_cache = _RecordingCache(
+            {"movies": [{"item_id": "old"}], "series": [], "errors": []}
+        )
+        config = {
+            "DATABASE": {"ENABLED": True},
+            "EMBY": {"SERVERS": [{"id": "server-a", "enabled": True}]},
+        }
+
+        with patch("core.config_manager._db_enabled", return_value=True), patch(
+            "emby_latest.collectors._load_latest_settings",
+            return_value={"SETTINGS": {"parallelism": {"server_workers": 1, "requests_per_server": 1}}},
+        ), patch(
+            "emby_latest.collectors._fetch_emby_latest_items",
+            return_value=([], "Emby unavailable"),
+        ), patch(
+            "emby_latest.collectors._sync_jellyseerr_to_db",
+            side_effect=AssertionError("failed collection must not reach publication"),
+        ):
+            payload, error = collect_entries(
+                limit=10,
+                per_server_limit=10,
+                enrich=False,
+                db_cache=db_cache,
+                db_state=db_state,
+                config_override=config,
+            )
+
+        self.assertIsNone(payload)
+        self.assertIn("snapshot precedente conservato", error)
+        self.assertEqual([], db_cache.saved)
+        self.assertEqual([], db_state.saved)
+
     def test_collect_entries_reuses_enrichment_for_same_movie_across_servers(self):
         db_state = _RecordingState(
             {

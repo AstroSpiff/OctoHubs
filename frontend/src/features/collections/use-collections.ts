@@ -8,6 +8,11 @@ import {
 } from "@/features/collections/collections-realtime";
 import { useCollectionOperationWatch } from "@/features/collections/use-collection-operation-watch";
 import { useApplicationEventRefresh } from "@/lib/use-application-event";
+import { useKeyedOperationState } from "@/lib/use-keyed-operation-state";
+
+function collectionActionKey(collectionId: string) {
+  return `collection:${collectionId}`;
+}
 
 function useCollections() {
   const client = useQueryClient();
@@ -39,12 +44,20 @@ function useCollections() {
   const collectionOperations = useCollectionOperationWatch(() => {
     void refresh();
   });
+  const toggleOperations = useKeyedOperationState();
+  const syncOperations = useKeyedOperationState();
+  const removeOperations = useKeyedOperationState();
   const toggle = useMutation({
     mutationFn: ({ collectionId, enabled }: { collectionId: string; enabled: boolean }) => setCollectionEnabled(collectionId, enabled),
+    onMutate: ({ collectionId }) => toggleOperations.begin([collectionActionKey(collectionId)]),
+    onError: (error, { collectionId }) => toggleOperations.fail([collectionActionKey(collectionId)], error),
     onSuccess: refresh,
+    onSettled: (_data, _error, { collectionId }) => toggleOperations.finish([collectionActionKey(collectionId)]),
   });
   const sync = useMutation({
     mutationFn: syncCollection,
+    onMutate: (collectionId) => syncOperations.begin([collectionActionKey(collectionId)]),
+    onError: (error, collectionId) => syncOperations.fail([collectionActionKey(collectionId)], error),
     onSuccess: (result, collectionId) => {
       collectionOperations.track(result.operation_id, {
         type: "collection",
@@ -52,6 +65,7 @@ function useCollections() {
       });
       void refresh();
     },
+    onSettled: (_data, _error, collectionId) => syncOperations.finish([collectionActionKey(collectionId)]),
   });
   const syncAll = useMutation({
     mutationFn: syncAllCollections,
@@ -61,7 +75,13 @@ function useCollections() {
     },
   });
   const save = useMutation({ mutationFn: saveCollection, onSuccess: refresh });
-  const remove = useMutation({ mutationFn: deleteCollection, onSuccess: refresh });
+  const remove = useMutation({
+    mutationFn: deleteCollection,
+    onMutate: (collectionId) => removeOperations.begin([collectionActionKey(collectionId)]),
+    onError: (error, collectionId) => removeOperations.fail([collectionActionKey(collectionId)], error),
+    onSuccess: refresh,
+    onSettled: (_data, _error, collectionId) => removeOperations.finish([collectionActionKey(collectionId)]),
+  });
   const image = useMutation({ mutationFn: uploadCollectionImage, onSuccess: refresh });
   const removeImage = useMutation({ mutationFn: deleteCollectionImage, onSuccess: refresh });
 
@@ -69,10 +89,13 @@ function useCollections() {
     collections,
     options,
     toggle,
+    toggleOperations,
     sync,
+    syncOperations,
     syncAll,
     save,
     remove,
+    removeOperations,
     image,
     removeImage,
     refresh,
@@ -81,4 +104,4 @@ function useCollections() {
   };
 }
 
-export { useCollections };
+export { collectionActionKey, useCollections };

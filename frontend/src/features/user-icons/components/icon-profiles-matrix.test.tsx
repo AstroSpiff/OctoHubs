@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { IconProfilesMatrix } from "@/features/user-icons/components/icon-profiles-matrix";
+import { iconRuleOperationKey } from "@/features/user-icons/use-keyed-operation-state";
 
 const profile = {
   id: "family",
@@ -15,13 +16,18 @@ describe("IconProfilesMatrix", () => {
       <IconProfilesMatrix
         config={{
           profiles: [profile],
-          matrix: { family: { green: "icons/family-green.png" } },
+        matrix: { family: { green: "icons/family-green.png", purple: "icons/family-purple.png" } },
           bindings: {},
         }}
-        servers={[{ id: "green", name: "Green" }]}
+        servers={[{ id: "green", name: "Green" }, { id: "purple", name: "Purple" }]}
         revision={3}
-        changingRule={{ profileId: "family", serverId: "green" }}
-        ruleError={() => "Caricamento non riuscito"}
+        pendingRuleKeys={new Set([
+          iconRuleOperationKey("family", "green"),
+          iconRuleOperationKey("family", "purple"),
+        ])}
+        ruleErrors={{
+          [iconRuleOperationKey("family", "purple")]: "Caricamento non riuscito",
+        }}
         onCreate={() => undefined}
         onEdit={() => undefined}
         onDeleteProfile={() => undefined}
@@ -36,7 +42,7 @@ describe("IconProfilesMatrix", () => {
     expect(markup).toContain('role="region"');
     expect(markup).toContain('tabindex="0"');
     expect(markup).toContain("Scorri orizzontalmente per vedere tutti i server.");
-    expect(markup).toContain("Operazione immagine in corso");
+    expect(markup.match(/Operazione immagine in corso/g)).toHaveLength(2);
     expect(markup).toContain("Caricamento non riuscito");
   });
 });

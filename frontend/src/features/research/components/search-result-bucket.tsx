@@ -4,7 +4,10 @@ import {
 } from "@/components/ui/icons";
 import { type MouseEvent as ReactMouseEvent, useMemo, useState } from "react";
 
-import type { SearchResultActionNotice } from "@/features/research/components/search-result-actions";
+import type {
+  OpenTermMenuAction,
+  SearchResultActionNotice,
+} from "@/features/research/components/search-result-actions";
 import { SearchResultRow } from "@/features/research/components/search-result-rows";
 import { filterBucketResults } from "@/features/research/search-result-groups";
 import type {
@@ -13,23 +16,27 @@ import type {
 
 type SearchResultBucketProps = {
   bucket: SearchResultBucket;
+  selectable?: boolean;
   canSend: boolean;
   selected: Set<string>;
   onNotice: (notice: SearchResultActionNotice) => void;
   onToggle: (key: string) => void;
   onToggleItems: (keys: string[], selected: boolean) => void;
   onTitleContextMenu?: (event: ReactMouseEvent<HTMLElement>) => void;
+  onOpenTermMenu?: OpenTermMenuAction;
   onLookupEmby?: (target: { title: string; year?: string | number }) => void;
 };
 
 function SearchResultBucket({
   bucket,
+  selectable = true,
   canSend,
   selected,
   onNotice,
   onToggle,
   onToggleItems,
   onTitleContextMenu,
+  onOpenTermMenu,
   onLookupEmby,
 }: SearchResultBucketProps) {
   const [filter, setFilter] = useState("");
@@ -85,7 +92,7 @@ function SearchResultBucket({
         <table className="research-results-table">
           <thead>
             <tr>
-              <th scope="col">
+              {selectable ? <th scope="col">
                 <button
                   type="button"
                   className="research-select-all"
@@ -104,7 +111,7 @@ function SearchResultBucket({
                     <Square size={17} aria-hidden="true" />
                   )}
                 </button>
-              </th>
+              </th> : null}
               {hasEpisodes ? <th scope="col">Ep.</th> : null}
               <th scope="col">Titolo</th>
               <th scope="col">Dimensione</th>
@@ -120,6 +127,7 @@ function SearchResultBucket({
               <SearchResultRow
                 key={`${result.guid || result.title || "result"}-${key}`}
                 result={result}
+                selectable={selectable}
                 selected={selected.has(key)}
                 selectedKeys={selected}
                 canSend={canSend}
@@ -129,6 +137,7 @@ function SearchResultBucket({
                 onToggleDuplicate={onToggle}
                 onNotice={onNotice}
                 onTitleContextMenu={onTitleContextMenu}
+                onOpenTermMenu={onOpenTermMenu}
                 onLookupEmby={onLookupEmby}
               />
             ))}
@@ -136,7 +145,7 @@ function SearchResultBucket({
               <tr>
                 <td
                   className="research-empty-table-row"
-                  colSpan={hasEpisodes ? 7 : 6}
+                  colSpan={hasEpisodes ? (selectable ? 7 : 6) : selectable ? 6 : 5}
                 >
                   Nessun risultato con questi termini.
                 </td>

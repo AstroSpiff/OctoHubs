@@ -1,6 +1,6 @@
 [Italiano](INTEGRATIONS_ita.md) | [English](INTEGRATIONS.md)
 
-Docs: [README](../README.md) | [Docker Deploy](DOCKER_DEPLOY.md) | [Deployment](DEPLOYMENT.md) | [Configuration](CONFIGURATION.md) | [Features](FEATURES.md) | [Integrations](INTEGRATIONS.md) | [Emby Tools](EMBY_TOOLS.md)
+Docs: [README](../README.md) | [Docker Deploy](DOCKER_DEPLOY.md) | [Deployment](DEPLOYMENT.md) | [Configuration](CONFIGURATION.md) | [Features](FEATURES.md) | [Integrations](INTEGRATIONS.md) | [External API](API_EXTERNAL_ACCESS.md) | [Emby Tools](EMBY_TOOLS.md)
 
 # Integrations
 
@@ -9,7 +9,7 @@ This guide covers external services and how to enable them in OctoHubs.
 ## Common manual steps
 - Get API keys or tokens from each service.
 - Use URLs reachable from the OctoHubs container (avoid `localhost` unless the service runs in the same container).
-- After editing `config.json` by hand, restart the app container.
+- Configure integrations from the authenticated UI; PostgreSQL is authoritative.
 
 ## Jellyseerr
 Used to fetch requests and submit new ones.
@@ -72,11 +72,21 @@ Optional metadata and release checks.
 Config fields:
 - `TRAKT.ENABLED`
 - `TRAKT.CLIENT_ID`
+- `TRAKT.CLIENT_SECRET`
 - `TRAKT.ACCESS_TOKEN`
+- `TRAKT.REFRESH_TOKEN`
+- `TRAKT.EXPIRES_AT`
 
 Manual steps:
-- Create a Trakt app to obtain `CLIENT_ID`.
-- Generate and store an access token.
+- Create a Trakt app to obtain `CLIENT_ID` and `CLIENT_SECRET`.
+- Prefer the device authorization flow in the configuration page. OctoHubs
+  stores the access token, refresh token, and expiration as one credential set.
+- If tokens are entered manually, provide all three values together: access
+  token, refresh token, and a future timezone-aware ISO 8601 expiration. A
+  partial set is rejected and never mixed with previously stored credentials.
+- Changing the OAuth client invalidates an existing token set unless a complete
+  replacement set is saved in the same operation. An authorization attempt is
+  also invalidated if the client configuration changes while it is running.
 
 ## TMDB
 Metadata search support.
@@ -97,11 +107,22 @@ Config fields:
 
 Notes:
 - Requires the `JustWatch` Python package.
-- Uses a DB cache; enable `DATABASE.ENABLED=true` in `config.json`.
+- Uses the mandatory application PostgreSQL database for its cache; no separate
+  database switch is required.
 - Cache policy: available episodes are not rechecked; unavailable episodes are rechecked every 24h.
 
 Manual steps:
 - Set `JUSTWATCH.LOCALE` for your region (example: `it_IT`).
+
+## Telegram
+
+Configure bots, groups, channels, and notification presets from the authenticated
+configuration UI. Bot tokens remain server-side and are never returned by the
+settings API. User-entered names are limited to 200 characters, identifiers to
+128 characters, and bot tokens to 512 characters. Each resource type supports
+up to 100 entries, each preset supports up to 100 groups and 100 channels, and
+the complete normalized Telegram configuration is limited to 256 KiB. Requests
+over these limits are rejected before persistence.
 
 ## Emby servers
 Configure in `EMBY.SERVERS`:
@@ -117,12 +138,12 @@ Manual steps:
 ## Emby webhook
 Endpoint:
 - `http://HOST:5050/api/emby/event-bridge/events` (direct HTTP override)
-- `https://YOUR_DOMAIN/api/emby/event-bridge/events` (HTTPS with Nginx)
+- `https://YOUR_DOMAIN/api/emby/event-bridge/events` (through any configured external HTTPS proxy)
 
 Optional security:
 - `WEBHOOK_IP_WHITELIST` (comma-separated IPv4/IPv6 addresses or CIDRs)
 - `WEBHOOK_TRUST_PROXY_HEADERS=true` makes the allowlist use `X-Real-IP`; enable it
-  only behind a proxy that overwrites that header. The bundled Nginx does so.
+  only behind a trusted external proxy that overwrites that header.
 
 An invalid non-empty allowlist rejects Event Bridge requests until its configuration
 is corrected. With Portainer, configure the same variables on the app container.

@@ -1,8 +1,14 @@
 from __future__ import annotations
 
-from fastapi import FastAPI
-from fastapi.routing import APIRoute
+import asyncio
+from contextlib import contextmanager
 
+from fastapi import FastAPI
+from fastapi import HTTPException, Request
+from fastapi.routing import APIRoute
+import pytest
+
+from core.storage import StorageError
 from emby_runtime import server_routes
 from emby_runtime.server_api_models import (
     EmbyServerDeleteResponse,
@@ -32,7 +38,7 @@ def test_server_routes_publish_input_and_output_contracts():
 
     assert list_routes[0].responses[200]["model"] is EmbyServersResponse
     assert mutation_routes[0].responses[201]["model"] is EmbyServerMutationResponse
-    assert mutation_routes[0].body_field.type_ is EmbyServerInput
+    assert mutation_routes[0].body_field.field_info.annotation is EmbyServerInput
     assert delete_routes[0].responses[200]["model"] is EmbyServerDeleteResponse
 
     app = FastAPI()
@@ -61,6 +67,33 @@ def test_public_server_payload_does_not_expose_api_key():
     assert "api_key" not in payload
 
 
+def test_public_server_payload_redacts_embedded_url_credentials():
+    canary = "CANARY_EMBY_URL_PASSWORD"
+    payload = server_routes._public_server_payload({
+        "id": "green",
+        "url": f"https://viewer:{canary}@emby.example/base?safe=1&access_token={canary}",
+        "enabled": True,
+    })
+
+    assert canary not in payload["url"]
+    assert payload["url"] == (
+        "https://[REDACTED]@emby.example/base?safe=1&access_token=[REDACTED]"
+    )
+
+
+def test_server_storage_failure_does_not_expose_internal_credentials(caplog):
+    canary = "CANARY_SERVER_ROUTE_PASSWORD"
+
+    error = server_routes._storage_failure(
+        "il test",
+        StorageError(f"postgresql://operator:{canary}@db/octohubs"),
+    )
+
+    assert error.status_code == 500
+    assert canary not in str(error.detail)
+    assert canary not in caplog.text
+
+
 def test_json_server_values_preserve_existing_key_when_password_is_empty():
     values = server_routes._json_server_values(
         {"alias": "Green", "url": "http://green:8096", "enabled": True},
@@ -79,6 +112,28 @@ def test_json_server_values_can_explicitly_clear_existing_key():
     assert values["server_api_key"] == ""
 
 
+def test_json_server_values_retain_existing_secret_url_from_its_safe_echo():
+    existing_url = "https://viewer:existing-secret@emby.example/base?token=existing-token"
+    public_url = server_routes._public_server_payload({"url": existing_url})["url"]
+
+    values = server_routes._json_server_values(
+        {"alias": "Green", "url": public_url, "enabled": True},
+        {"id": "green", "url": existing_url, "api_key": "existing-key"},
+    )
+
+    assert values["server_url"] == existing_url
+
+
+def test_json_server_values_reject_new_embedded_url_credentials():
+    with pytest.raises(HTTPException) as raised:
+        server_routes._json_server_values(
+            {"url": "https://viewer:new-secret@emby.example/base?token=new-token"},
+            None,
+        )
+
+    assert raised.value.status_code == 422
+
+
 def test_save_server_values_reuses_existing_server_and_refreshes_identity(monkeypatch):
     existing = {
         "id": "green",
@@ -90,6 +145,7 @@ def test_save_server_values_reuses_existing_server_and_refreshes_identity(monkey
     saved = {}
     websocket_updates = []
     published = []
+    invalidated = []
 
     class _WebSocketManager:
         def get_connection(self, _server_id):
@@ -103,10 +159,19 @@ def test_save_server_values_reuses_existing_server_and_refreshes_identity(monkey
 
     monkeypatch.setattr(server_routes, "_load_stored_servers", lambda: [existing])
     monkeypatch.setattr(server_routes, "_fetch_emby_status", lambda _server: {"ok": True, "name": "Green", "server_id": "emby-green"})
-    monkeypatch.setattr(server_routes, "_save_emby_settings_to_db", lambda payload: saved.update(payload))
+    def mutate(updater):
+        result = updater({"SERVERS": [existing]})
+        saved.update(result)
+        return result
+    monkeypatch.setattr(server_routes, "_mutate_emby_settings_in_db", mutate)
     monkeypatch.setattr(server_routes, "_load_config", lambda: ({}, True))
     monkeypatch.setattr(server_routes, "get_websocket_manager", _WebSocketManager)
     monkeypatch.setattr(server_routes, "publish_configuration_update", published.append)
+    monkeypatch.setattr(
+        server_routes,
+        "_invalidate_server_status_cache",
+        lambda: invalidated.append(True),
+    )
 
     server, created = server_routes._save_server_values({
         "server_alias": "Green",
@@ -120,6 +185,7 @@ def test_save_server_values_reuses_existing_server_and_refreshes_identity(monkey
     assert saved["SERVERS"][0]["emby_server_id"] == "emby-green"
     assert websocket_updates == [("green", "http://green:8096", "existing-key")]
     assert published == ["servers"]
+    assert invalidated == [True]
 
 
 def test_save_server_values_stops_websocket_when_server_is_disabled(monkeypatch):
@@ -144,7 +210,11 @@ def test_save_server_values_stops_websocket_when_server_is_disabled(monkeypatch)
 
     monkeypatch.setattr(server_routes, "_load_stored_servers", lambda: [existing])
     monkeypatch.setattr(server_routes, "_fetch_emby_status", lambda _server: {"ok": True})
-    monkeypatch.setattr(server_routes, "_save_emby_settings_to_db", lambda _payload: None)
+    monkeypatch.setattr(
+        server_routes,
+        "_mutate_emby_settings_in_db",
+        lambda updater: updater({"SERVERS": [existing]}),
+    )
     monkeypatch.setattr(server_routes, "_load_config", lambda: ({}, True))
     monkeypatch.setattr(server_routes, "get_websocket_manager", _WebSocketManager)
 
@@ -155,3 +225,198 @@ def test_save_server_values_stops_websocket_when_server_is_disabled(monkeypatch)
 
     assert server["enabled"] is False
     assert removed == ["green"]
+
+
+def test_save_server_values_is_idempotent_by_canonical_url(monkeypatch):
+    existing = {
+        "id": "green",
+        "alias": "Green",
+        "url": "http://green:8096/",
+        "api_key": "existing-key",
+        "enabled": True,
+    }
+    saved = {}
+
+    monkeypatch.setattr(server_routes, "_load_stored_servers", lambda: [existing])
+    monkeypatch.setattr(server_routes, "_fetch_emby_status", lambda _server: {"ok": False})
+
+    def mutate(updater):
+        result = updater({"SERVERS": [existing]})
+        saved.update(result)
+        return result
+
+    monkeypatch.setattr(server_routes, "_mutate_emby_settings_in_db", mutate)
+    monkeypatch.setattr(server_routes, "_load_config", lambda: ({}, True))
+    monkeypatch.setattr(server_routes, "_sync_server_websocket", lambda _server: None)
+    monkeypatch.setattr(server_routes, "publish_configuration_update", lambda _scope: None)
+
+    server, created = server_routes._save_server_values(
+        {
+            "server_alias": "Green retry",
+            "server_url": "http://green:8096",
+            "server_enabled": "1",
+        },
+        None,
+    )
+
+    assert created is False
+    assert len(saved["SERVERS"]) == 1
+    assert server["id"] == "green"
+    assert server["api_key"] == "existing-key"
+
+
+def test_post_commit_refresh_failures_do_not_turn_server_save_into_failure(monkeypatch):
+    monkeypatch.setattr(server_routes, "_load_stored_servers", lambda: [])
+    monkeypatch.setattr(server_routes, "_fetch_emby_status", lambda _server: {"ok": False})
+    monkeypatch.setattr(
+        server_routes,
+        "_mutate_emby_settings_in_db",
+        lambda updater: updater({"SERVERS": []}),
+    )
+    monkeypatch.setattr(
+        server_routes,
+        "_load_config",
+        lambda: (_ for _ in ()).throw(RuntimeError("refresh failed")),
+    )
+    monkeypatch.setattr(server_routes, "_sync_server_websocket", lambda _server: None)
+    monkeypatch.setattr(
+        server_routes,
+        "publish_configuration_update",
+        lambda _scope: (_ for _ in ()).throw(RuntimeError("publish failed")),
+    )
+
+    server, created = server_routes._save_server_values(
+        {"server_alias": "Green", "server_url": "http://green:8096"},
+        None,
+    )
+
+    assert created is True
+    assert server["url"] == "http://green:8096"
+
+
+def _request() -> Request:
+    return Request({"type": "http", "method": "DELETE", "path": "/", "headers": []})
+
+
+@pytest.mark.parametrize("failure", [HTTPException(status_code=409), StorageError("boom")])
+def test_delete_route_restores_runtime_after_quiesce_or_storage_failure(
+    monkeypatch,
+    failure,
+):
+    restored = []
+
+    monkeypatch.setattr(server_routes, "_require_auth", lambda _request: None)
+    monkeypatch.setattr(server_routes, "_validate_json_csrf", lambda _request: None)
+    monkeypatch.setattr(server_routes, "_require_valid_configuration", lambda: None)
+
+    async def quiesce(_server_id):
+        if isinstance(failure, HTTPException):
+            raise failure
+
+    def remove(_server_id):
+        if isinstance(failure, StorageError):
+            raise failure
+        raise AssertionError("La rimozione non deve iniziare dopo un 409")
+
+    async def restore(server_id):
+        restored.append(server_id)
+
+    monkeypatch.setattr(server_routes, "_quiesce_server", quiesce)
+    monkeypatch.setattr(server_routes, "_remove_server_value", remove)
+    monkeypatch.setattr(server_routes, "_restore_server_after_failed_delete", restore)
+
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(server_routes.delete_emby_server_api("green", _request()))
+
+    assert raised.value.status_code in {409, 500}
+    assert restored == ["green"]
+
+
+def test_failed_delete_restoration_releases_probe_fence_and_resyncs_runtime(
+    monkeypatch,
+):
+    released = []
+    synced = []
+    published = []
+
+    class ProbeManager:
+        def release_server(self, server_id):
+            released.append(server_id)
+
+    monkeypatch.setattr("emby_probe.get_probe_manager", lambda: ProbeManager())
+    monkeypatch.setattr(
+        server_routes,
+        "_load_stored_servers",
+        lambda: [{"id": "green", "url": "http://green:8096", "api_key": "secret"}],
+    )
+    monkeypatch.setattr(server_routes, "_sync_server_websocket", lambda server: synced.append(server["id"]))
+    monkeypatch.setattr(server_routes, "_load_config", lambda: ({}, True))
+    monkeypatch.setattr(server_routes, "publish_configuration_update", published.append)
+
+    asyncio.run(server_routes._restore_server_after_failed_delete("green"))
+
+    assert released == ["green"]
+    assert synced == ["green"]
+    assert published == ["servers"]
+
+
+def test_remove_server_is_fenced_by_user_sync(monkeypatch):
+    from emby_runtime import server_routes
+
+    class _Backend:
+        removed = False
+
+        def get_user_links(self, **_filters):
+            return [{"group_id": "group-a"}]
+
+        @contextmanager
+        def advisory_lock(self, _key):
+            yield False
+
+        def remove_emby_server_data(self, *_args, **_kwargs):
+            self.removed = True
+
+    backend = _Backend()
+    monkeypatch.setattr(server_routes, "_ensure_db_backend_dep", lambda: backend)
+
+    with pytest.raises(server_routes.EmbyServerUserSyncBusyError):
+        server_routes._remove_server_value("server-a")
+
+    assert backend.removed is False
+
+
+def test_successful_remove_forgets_all_server_runtime_state(monkeypatch):
+    forgotten = []
+
+    class _Backend:
+        def get_user_links(self, **_filters):
+            return []
+
+        def remove_emby_server_data(self, server_id, *, remove_configuration):
+            assert server_id == "server-a"
+            assert remove_configuration is True
+            return {"id": server_id, "name": "Blue"}
+
+    class _WebSocketManager:
+        def remove_server(self, server_id):
+            forgotten.append(("websocket", server_id))
+
+    @contextmanager
+    def refresh_guard(_backend):
+        yield
+
+    monkeypatch.setattr(server_routes, "_ensure_db_backend_dep", lambda: _Backend())
+    monkeypatch.setattr(server_routes, "latest_refresh_guard", refresh_guard)
+    monkeypatch.setattr(server_routes, "get_websocket_manager", _WebSocketManager)
+    monkeypatch.setattr(server_routes, "_forget_server_runtime", lambda server_id: forgotten.append(("runtime", server_id)))
+    monkeypatch.setattr(server_routes, "_load_config_dep", lambda: ({}, True))
+    monkeypatch.setattr(server_routes, "publish_configuration_update", lambda _scope: None)
+    monkeypatch.setattr(server_routes, "_invalidate_server_status_cache", lambda: None)
+    monkeypatch.setattr("emby_latest.emby_api.clear_emby_runtime_caches", lambda server_id: forgotten.append(("latest", server_id)))
+
+    removed = server_routes._remove_server_value("server-a")
+
+    assert removed["id"] == "server-a"
+    assert ("latest", "server-a") in forgotten
+    assert ("websocket", "server-a") in forgotten
+    assert ("runtime", "server-a") in forgotten

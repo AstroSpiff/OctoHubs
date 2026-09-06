@@ -2,14 +2,6 @@ import type { ConfigurationServices, ServiceSettingsInput } from "@/features/con
 
 function serviceInputFromSnapshot(services: ConfigurationServices): ServiceSettingsInput {
   return {
-    database: {
-      host: services.database.host,
-      port: services.database.port,
-      name: services.database.name,
-      user: services.database.user,
-      driver: services.database.driver,
-      params: services.database.params,
-    },
     connections: {
       jellyseerr: { url: services.connections.jellyseerr.url },
       prowlarr: { url: services.connections.prowlarr.url },

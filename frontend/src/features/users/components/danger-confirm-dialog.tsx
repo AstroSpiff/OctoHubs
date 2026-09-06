@@ -9,6 +9,7 @@ type DangerConfirmDialogProps = {
   description: string;
   expectedName: string;
   confirming: boolean;
+  mutationError?: string;
   onClose: () => void;
   onConfirm: (expectedName: string) => void;
 };
@@ -19,6 +20,7 @@ function DangerConfirmDialog({
   description,
   expectedName,
   confirming,
+  mutationError,
   onClose,
   onConfirm,
 }: DangerConfirmDialogProps) {
@@ -52,6 +54,7 @@ function DangerConfirmDialog({
           <h2 id="danger-dialog-title" className="contextual-heading" title="Azione irreversibile">{title}</h2>
         </header>
         <p className="users-danger-copy">{description}</p>
+        {mutationError ? <p className="users-dialog-error" role="alert">{mutationError}</p> : null}
         <label>
           Digita <strong>{expectedName}</strong> per confermare
           <input

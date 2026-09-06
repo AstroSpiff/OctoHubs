@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import threading
+from datetime import timedelta
 
 from core.storage import DatabaseStorage
+from core.storage.storage_models import EmbyLatestNotificationDelivery, _utcnow
 
 
 def _storage(database_url: str) -> DatabaseStorage:
@@ -61,3 +63,25 @@ def test_failed_claim_can_retry_and_completed_claim_cannot(tmp_path):
         claim_token="second",
     ) is True
     assert _claim(storage, "third") == "sent"
+
+
+def test_abandoned_claim_becomes_unknown_without_automatic_resend(tmp_path):
+    storage = _storage(f"sqlite:///{tmp_path / 'claim-stale.db'}")
+    assert _claim(storage, "first") == "acquired"
+
+    session = storage._get_session()
+    try:
+        row = session.get(EmbyLatestNotificationDelivery, "a" * 64)
+        row.claimed_at = _utcnow() - timedelta(hours=1)
+        session.commit()
+    finally:
+        session.close()
+
+    assert _claim(storage, "second") == "unknown"
+
+
+def test_operator_reset_makes_unknown_delivery_explicitly_retryable(tmp_path):
+    storage = _storage(f"sqlite:///{tmp_path / 'claim-reset.db'}")
+    assert _claim(storage, "first") == "acquired"
+    assert storage.reset_latest_notification_deliveries() == 1
+    assert _claim(storage, "second") == "acquired"

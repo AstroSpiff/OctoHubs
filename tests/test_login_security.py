@@ -92,4 +92,6 @@ def test_login_client_address_only_trusts_proxy_header_when_enabled(monkeypatch)
     assert login_client_address(request) == "172.18.0.2"
 
     monkeypatch.setenv("LOGIN_TRUST_PROXY_HEADERS", "true")
+    assert login_client_address(request) == "172.18.0.2"
+    monkeypatch.setenv("LOGIN_TRUSTED_PROXY_CIDRS", "172.18.0.0/16")
     assert login_client_address(request) == "198.51.100.9"

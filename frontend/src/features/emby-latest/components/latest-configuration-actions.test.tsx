@@ -50,6 +50,7 @@ describe("Latest configuration actions", () => {
         enriching
         onClose={() => undefined}
         onEnrich={async (item) => item}
+        onResetError={() => undefined}
       />,
     );
 

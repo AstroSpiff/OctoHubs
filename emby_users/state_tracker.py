@@ -9,7 +9,11 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from core.log_sanitization import format_exception_for_log
+from emby_users.sync_results import SyncStepError, require_complete_snapshots
+
 logger = logging.getLogger(__name__)
+SNAPSHOT_FAILURE_MESSAGE = "Snapshot non disponibile. Verifica i log dell'applicazione."
 
 
 class UserSyncStateTracker:
@@ -51,23 +55,36 @@ class UserSyncStateTracker:
         origin: str = "octohubs"
     ) -> Dict[str, Any]:
         previous = self.load(domain, server_id, user_id)
+        payload = self._build_state(domain, server_id, user_id, snapshot, previous, origin)
+        payload.pop("expected_hash", None)
+        self.storage.set_key_value(self.key(domain, server_id, user_id), payload)
+        return payload
+
+    def _build_state(
+        self,
+        domain: str,
+        server_id: str,
+        user_id: str,
+        snapshot: Dict[str, Any],
+        previous: Optional[Dict[str, Any]],
+        origin: str,
+    ) -> Dict[str, Any]:
         digest = self.hash_snapshot(snapshot)
         now = datetime.now(timezone.utc).isoformat()
         changed = not previous or previous.get("hash") != digest
-        payload = {
+        return {
             "domain": domain,
             "server_id": server_id,
             "user_id": user_id,
             "hash": digest,
             "snapshot": snapshot,
             "origin": origin,
-            "updated_at": now if changed else previous.get("updated_at"),
+            "updated_at": now if changed else (previous or {}).get("updated_at"),
             "checked_at": now,
             "had_previous": bool(previous),
             "changed": changed,
+            "expected_hash": previous.get("hash") if previous else None,
         }
-        self.storage.set_key_value(self.key(domain, server_id, user_id), payload)
-        return payload
 
     def refresh(self, domain: str, server_id: str, user_id: str, origin: str = "refresh") -> Dict[str, Any]:
         snapshot = self.build_snapshot(domain, server_id, user_id)
@@ -80,13 +97,52 @@ class UserSyncStateTracker:
         user_id: str,
         origin: str = "refresh",
     ) -> Dict[str, Any]:
+        """Observe current state and diff without advancing the persisted baseline."""
         previous = self.load(domain, server_id, user_id)
         current_snapshot = self.build_snapshot(domain, server_id, user_id)
-        state = dict(self.save(domain, server_id, user_id, current_snapshot, origin=origin))
+        state = self._build_state(domain, server_id, user_id, current_snapshot, previous, origin)
         previous_snapshot = previous.get("snapshot") if isinstance(previous, dict) else None
         state["diff"] = self.diff_snapshots(domain, previous_snapshot, current_snapshot)
         state["previous_snapshot"] = previous_snapshot
         return state
+
+    def observe(
+        self,
+        domain: str,
+        server_id: str,
+        user_id: str,
+        origin: str = "refresh",
+    ) -> Dict[str, Any]:
+        previous = self.load(domain, server_id, user_id)
+        snapshot = self.build_snapshot(domain, server_id, user_id)
+        return self._build_state(domain, server_id, user_id, snapshot, previous, origin)
+
+    def commit_many(self, states: List[Dict[str, Any]]) -> None:
+        """Advance a complete checkpoint with a compare-and-set fencing barrier."""
+        updates: Dict[str, tuple[Optional[str], Dict[str, Any]]] = {}
+        for state in states:
+            if state.get("error"):
+                raise SyncStepError("Impossibile salvare uno snapshot incompleto")
+            payload = {
+                key: value
+                for key, value in state.items()
+                if key not in {"diff", "previous_snapshot", "expected_hash"}
+            }
+            key = self.key(str(state["domain"]), str(state["server_id"]), str(state["user_id"]))
+            updates[key] = (state.get("expected_hash"), payload)
+
+        atomic_commit = getattr(self.storage, "compare_and_set_key_values", None)
+        if callable(atomic_commit):
+            if not atomic_commit(updates):
+                raise SyncStepError("Snapshot modificati durante la sincronizzazione; riprovare")
+            return
+
+        for key, (expected_hash, payload) in updates.items():
+            current = self.storage.get_key_value(key)
+            current_hash = current.get("hash") if isinstance(current, dict) else None
+            if current_hash != expected_hash:
+                raise SyncStepError("Snapshot modificati durante la sincronizzazione; riprovare")
+            self.storage.set_key_value(key, payload)
 
     def refresh_many(
         self,
@@ -127,7 +183,7 @@ class UserSyncStateTracker:
                     "domain": domain,
                     "server_id": server_id,
                     "user_id": user_id,
-                    "error": str(exc),
+                    "error": SNAPSHOT_FAILURE_MESSAGE,
                     "updated_at": "",
                 }
                 states.append(error_state)
@@ -139,7 +195,62 @@ class UserSyncStateTracker:
                     server_id,
                     user_id,
                     time.monotonic() - started,
-                    exc,
+                    format_exception_for_log(exc),
+                )
+                if progress_callback:
+                    progress_callback("error", index, total, server_id, user_id, error_state)
+        return states
+
+    def observe_many(
+        self,
+        domain: str,
+        targets: List[tuple],
+        origin: str = "refresh",
+        progress_callback: Optional[Callable[[str, int, int, str, str, Optional[Dict[str, Any]]], None]] = None,
+    ) -> List[Dict[str, Any]]:
+        return self._collect_many(
+            domain,
+            targets,
+            origin,
+            self.observe,
+            progress_callback,
+        )
+
+    def _collect_many(
+        self,
+        domain: str,
+        targets: List[tuple],
+        origin: str,
+        collector: Callable[[str, str, str, str], Dict[str, Any]],
+        progress_callback: Optional[Callable[[str, int, int, str, str, Optional[Dict[str, Any]]], None]],
+    ) -> List[Dict[str, Any]]:
+        states = []
+        total = len(targets)
+        for index, (server_id, user_id) in enumerate(targets, start=1):
+            try:
+                if progress_callback:
+                    progress_callback("start", index, total, server_id, user_id, None)
+                state = collector(domain, server_id, user_id, origin)
+                states.append(state)
+                if progress_callback:
+                    progress_callback("done", index, total, server_id, user_id, state)
+            except Exception as exc:
+                error_state = {
+                    "domain": domain,
+                    "server_id": server_id,
+                    "user_id": user_id,
+                    "error": SNAPSHOT_FAILURE_MESSAGE,
+                    "updated_at": "",
+                }
+                states.append(error_state)
+                logger.warning(
+                    "[USER_SYNC][SNAPSHOT] %s %s/%s error server=%s user=%s: %s",
+                    domain,
+                    index,
+                    total,
+                    server_id,
+                    user_id,
+                    format_exception_for_log(exc),
                 )
                 if progress_callback:
                     progress_callback("error", index, total, server_id, user_id, error_state)
@@ -187,7 +298,7 @@ class UserSyncStateTracker:
                     "domain": domain,
                     "server_id": server_id,
                     "user_id": user_id,
-                    "error": str(exc),
+                    "error": SNAPSHOT_FAILURE_MESSAGE,
                     "updated_at": "",
                 }
                 states.append(error_state)
@@ -199,7 +310,7 @@ class UserSyncStateTracker:
                     server_id,
                     user_id,
                     time.monotonic() - started,
-                    exc,
+                    format_exception_for_log(exc),
                 )
                 if progress_callback:
                     progress_callback("error", index, total, server_id, user_id, error_state)
@@ -209,19 +320,32 @@ class UserSyncStateTracker:
         self,
         domain: str,
         targets: List[tuple],
+        preferred_source: Optional[tuple] = None,
         progress_callback: Optional[Callable[[str, int, int, str, str, Optional[Dict[str, Any]]], None]] = None,
     ) -> Optional[Dict[str, Any]]:
-        states = [
-            state
-            for state in self.refresh_many(domain, targets, progress_callback=progress_callback)
-            if not state.get("error")
-        ]
+        states = require_complete_snapshots(
+            self.observe_many(domain, targets, progress_callback=progress_callback),
+            len(targets),
+        )
         if not states:
             return None
-        if not any(state.get("had_previous") for state in states):
-            latest = states[0]
+        preferred = next(
+            (
+                state
+                for state in states
+                if (state.get("server_id"), state.get("user_id")) == preferred_source
+            ),
+            None,
+        )
+        changed = [state for state in states if state.get("had_previous") and state.get("changed")]
+        if len(changed) > 1:
+            raise SyncStepError(
+                f"Conflitto {domain}: più partecipanti sono cambiati; nessuna modifica applicata"
+            )
+        if changed:
+            latest = changed[0]
         else:
-            latest = max(states, key=lambda state: state.get("updated_at") or "")
+            latest = preferred or states[0]
         logger.warning(
             "[USER_SYNC][SNAPSHOT] %s latest source server=%s user=%s updated_at=%s",
             domain,
@@ -289,7 +413,7 @@ class UserSyncStateTracker:
                 continue
             items, err = self._fetch_playlist_items(server, user_id, playlist_id)
             if err:
-                continue
+                raise ValueError(f"Failed to fetch playlist '{name}' items: {err}")
             output[name.lower()] = {
                 "name": name,
                 "items": self._all_keys(items),

@@ -403,6 +403,18 @@
   color: var(--color-danger);
 }
 
+.session-account-menu-action:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.session-account-menu-error {
+  margin: 3px 10px;
+  color: var(--color-danger);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .session-account-menu-separator {
   height: 1px;
   margin: 3px 2px;

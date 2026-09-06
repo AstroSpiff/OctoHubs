@@ -49,8 +49,10 @@ function EmbyLivePage() {
           </Button>
           <Button
             type="button"
+            requiresWriteAccess
             variant="danger"
             size="compact"
+            className="emby-live-page-restart-action"
             onClick={() => void serverActions.requestRestart()}
             disabled={!servers.some((server) => server.server.enabled) || serverActions.restart.isPending}
           >

@@ -6,13 +6,13 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, BigInteger, String, Text, LargeBinary, ForeignKey, Index, create_engine, func, or_, text
+    from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, BigInteger, String, Text, LargeBinary, ForeignKey, Index, UniqueConstraint, create_engine, func, or_, text
     from sqlalchemy.dialects.postgresql import ARRAY
     from sqlalchemy.exc import SQLAlchemyError
     from sqlalchemy.orm import DeclarativeBase, declarative_base, sessionmaker
 
 try:
-    from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, BigInteger, String, Text, LargeBinary, ForeignKey, Index, create_engine, func, or_, text
+    from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, BigInteger, String, Text, LargeBinary, ForeignKey, Index, UniqueConstraint, create_engine, func, or_, text
     from sqlalchemy.dialects.postgresql import ARRAY
     from sqlalchemy.exc import SQLAlchemyError
     from sqlalchemy.orm import declarative_base, sessionmaker
@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - optional dependency
     or_ = _missing
     text = _missing
     sessionmaker = _missing
-    JSON = Boolean = Column = DateTime = Integer = BigInteger = String = Text = LargeBinary = ForeignKey = Index = _missing
+    JSON = Boolean = Column = DateTime = Integer = BigInteger = String = Text = LargeBinary = ForeignKey = Index = UniqueConstraint = _missing
     ARRAY = _missing
 else:
     DeclarativeBase = object
@@ -192,85 +192,13 @@ if SQLALCHEMY_AVAILABLE:
         created_at = Column(DateTime, default=_utcnow)  # type: ignore[assignment]
         expires_at = Column(DateTime)  # type: ignore[assignment]
 
-    class EmbyLatestStateMovie(Base):  # type: ignore[valid-type,misc]
-        __tablename__ = "emby_latest_state_movies"
-        server_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
-        state_key = Column(String(255), primary_key=True)  # type: ignore[assignment]
-        item_id = Column(String(36), index=True)  # type: ignore[assignment]
-        signature = Column(String(255))  # type: ignore[assignment]
-        title = Column(String(500))  # type: ignore[assignment]
-        year = Column(Integer)  # type: ignore[assignment]
-        last_seen_at = Column(DateTime, index=True)  # type: ignore[assignment]
-        media_source_keys = Column(ARRAY(String))  # type: ignore[assignment]
-        notified = Column(Boolean, default=False)  # type: ignore[assignment]
-        notified_at = Column(DateTime)  # type: ignore[assignment]
+    class EmbyLatestStateDocument(Base):  # type: ignore[valid-type,misc]
+        """Canonical, lossless Latest state used across collector restarts."""
 
-    class EmbyLatestStateSeries(Base):  # type: ignore[valid-type,misc]
-        __tablename__ = "emby_latest_state_series"
-        server_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
-        series_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
-        title = Column(String(500))  # type: ignore[assignment]
-        year = Column(Integer)  # type: ignore[assignment]
-        last_seen_at = Column(DateTime, index=True)  # type: ignore[assignment]
-        seasons = Column(ARRAY(Integer))  # type: ignore[assignment]
-        notified = Column(Boolean, default=False)  # type: ignore[assignment]
-        notified_at = Column(DateTime)  # type: ignore[assignment]
-
-    class EmbyLatestStateEpisode(Base):  # type: ignore[valid-type,misc]
-        __tablename__ = "emby_latest_state_episodes"
-        server_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
-        series_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
-        episode_key = Column(String(255), primary_key=True)  # type: ignore[assignment]
-        episode_id = Column(String(36), index=True)  # type: ignore[assignment]
-        season_number = Column(Integer)  # type: ignore[assignment]
-        episode_number = Column(Integer)  # type: ignore[assignment]
-        title = Column(String(500))  # type: ignore[assignment]
-        last_seen_at = Column(DateTime, index=True)  # type: ignore[assignment]
-        media_source_keys = Column(ARRAY(String))  # type: ignore[assignment]
-
-    class EmbyLatestStateSeriesGroup(Base):  # type: ignore[valid-type,misc]
-        __tablename__ = "emby_latest_state_series_groups"
-        id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
-        server_id = Column(String(36), index=True)  # type: ignore[assignment]
-        series_id = Column(String(36), index=True)  # type: ignore[assignment]
-        sort_index = Column(Integer, default=0)  # type: ignore[assignment]
-        update_type = Column(String(20))  # type: ignore[assignment]
-        update_label = Column(String(200))  # type: ignore[assignment]
-        batch_id = Column(String(255))  # type: ignore[assignment]
-        added_at = Column(DateTime)  # type: ignore[assignment]
-
-    class EmbyLatestStateSeriesChange(Base):  # type: ignore[valid-type,misc]
-        __tablename__ = "emby_latest_state_series_changes"
-        id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
-        group_id = Column(Integer, index=True)  # type: ignore[assignment]
-        sort_index = Column(Integer, default=0)  # type: ignore[assignment]
-        kind = Column(String(50))  # type: ignore[assignment]
-        label = Column(String(200))  # type: ignore[assignment]
-        season_number = Column(Integer)  # type: ignore[assignment]
-        episode_number = Column(Integer)  # type: ignore[assignment]
-        episode_title = Column(String(500))  # type: ignore[assignment]
-        quality = Column(String(100))  # type: ignore[assignment]
-        resolution = Column(String(100))  # type: ignore[assignment]
-        video_codec = Column(String(100))  # type: ignore[assignment]
-        audio_codec = Column(String(100))  # type: ignore[assignment]
-        audio_channels = Column(String(50))  # type: ignore[assignment]
-        container = Column(String(50))  # type: ignore[assignment]
-        bitrate = Column(String(50))  # type: ignore[assignment]
-        source_name = Column(String(200))  # type: ignore[assignment]
-        path = Column(Text)  # type: ignore[assignment]
-        size = Column(BigInteger)  # type: ignore[assignment]
-        media_source_id = Column(String(100))  # type: ignore[assignment]
-        added_at = Column(DateTime)  # type: ignore[assignment]
-        video_details = Column(Text)  # type: ignore[assignment]
-        audio_details = Column(Text)  # type: ignore[assignment]
-        audio_ita = Column(Text)  # type: ignore[assignment]
-        audio_eng = Column(Text)  # type: ignore[assignment]
-        audio_fra = Column(Text)  # type: ignore[assignment]
-        audio_spa = Column(Text)  # type: ignore[assignment]
-        audio_ger = Column(Text)  # type: ignore[assignment]
-        audio_jpn = Column(Text)  # type: ignore[assignment]
-        audio_langs = Column(Text)  # type: ignore[assignment]
-        subtitle_langs = Column(Text)  # type: ignore[assignment]
+        __tablename__ = "emby_latest_state_document"
+        id = Column(Integer, primary_key=True, default=1)  # type: ignore[assignment]
+        payload = Column(JSON, nullable=False)  # type: ignore[assignment]
+        updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)  # type: ignore[assignment]
 
     class EmbyLatestNotificationDelivery(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "emby_latest_notification_deliveries"
@@ -295,14 +223,22 @@ if SQLALCHEMY_AVAILABLE:
 
     class EmbyCollectionPoster(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "emby_collection_posters"
-        collection_id = Column(String(50), primary_key=True)  # type: ignore[assignment]
+        collection_id = Column(
+            String(50),
+            ForeignKey("emby_collection_definitions.id", ondelete="CASCADE"),
+            primary_key=True,
+        )  # type: ignore[assignment]
         mime_type = Column(String(50))  # type: ignore[assignment]
         data = Column(LargeBinary)  # type: ignore[assignment]
         updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
 
     class EmbyCollectionBackdrop(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "emby_collection_backdrops"
-        collection_id = Column(String(50), primary_key=True)  # type: ignore[assignment]
+        collection_id = Column(
+            String(50),
+            ForeignKey("emby_collection_definitions.id", ondelete="CASCADE"),
+            primary_key=True,
+        )  # type: ignore[assignment]
         mime_type = Column(String(50))  # type: ignore[assignment]
         data = Column(LargeBinary)  # type: ignore[assignment]
         updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
@@ -389,6 +325,18 @@ if SQLALCHEMY_AVAILABLE:
 
     class EmbyProbeQueue(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "emby_probe_queue"
+        __table_args__ = (
+            Index(
+                "uq_emby_probe_queue_identity",
+                "server_id",
+                "item_id",
+                "scope",
+                "media_source_id",
+                unique=True,
+                postgresql_nulls_not_distinct=True,
+            ),
+            Index("ix_emby_probe_queue_claim", "claim_token", "claimed_at"),
+        )
         id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
         item_id = Column(String(36), index=True)  # type: ignore[assignment]
         server_id = Column(String(36), index=True)  # type: ignore[assignment]
@@ -404,6 +352,8 @@ if SQLALCHEMY_AVAILABLE:
         media_type = Column(String(50))  # type: ignore[assignment]
         path = Column(Text)  # type: ignore[assignment]
         added_at = Column(DateTime, default=_utcnow, nullable=False)  # type: ignore[assignment]
+        claim_token = Column(String(32), nullable=True)  # type: ignore[assignment]
+        claimed_at = Column(DateTime, nullable=True)  # type: ignore[assignment]
 
     class EmbyProbeHistory(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "emby_probe_history"
@@ -430,6 +380,13 @@ if SQLALCHEMY_AVAILABLE:
 
     class EmbyProbeRecentScan(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "emby_probe_recent_scans"
+        __table_args__ = (
+            UniqueConstraint(
+                "server_id",
+                "library_id",
+                name="uq_emby_probe_recent_scans_server_library",
+            ),
+        )
         id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
         server_id = Column(String(36), index=True)  # type: ignore[assignment]
         library_id = Column(String(36), index=True)  # type: ignore[assignment]
@@ -448,6 +405,15 @@ if SQLALCHEMY_AVAILABLE:
 
     class EmbyUserLink(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "emby_user_links"
+        __table_args__ = (
+            Index(
+                "uq_emby_user_links_group_leader",
+                "group_id",
+                unique=True,
+                postgresql_where=text("is_leader"),
+                sqlite_where=text("is_leader = 1"),
+            ),
+        )
         server_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
         user_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
         group_id = Column(String(255))  # type: ignore[assignment]
@@ -458,6 +424,15 @@ if SQLALCHEMY_AVAILABLE:
 
     class EmbyUserBackup(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "emby_user_backups"
+        __table_args__ = (
+            Index(
+                "ix_emby_user_backups_subject_created",
+                "server_id",
+                "user_id",
+                "backup_type",
+                "created_at",
+            ),
+        )
         id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
         server_id = Column(String(36), nullable=False, index=True)  # type: ignore[assignment]
         user_id = Column(String(36), nullable=False, index=True)  # type: ignore[assignment]
@@ -465,6 +440,15 @@ if SQLALCHEMY_AVAILABLE:
         backup_type = Column(String(50), nullable=True)  # type: ignore[assignment]
         data = Column(JSON, nullable=False)  # type: ignore[assignment]
         created_at = Column(DateTime, default=_utcnow, nullable=False)  # type: ignore[assignment]
+
+    class EmbyUserCreationJournal(Base):  # type: ignore[valid-type,misc]
+        __tablename__ = "emby_user_creation_journal"
+        server_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
+        normalized_username = Column(String(255), primary_key=True)  # type: ignore[assignment]
+        username = Column(String(255), nullable=False)  # type: ignore[assignment]
+        status = Column(String(32), nullable=False, default="creating")  # type: ignore[assignment]
+        created_at = Column(DateTime, default=_utcnow, nullable=False)  # type: ignore[assignment]
+        updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)  # type: ignore[assignment]
 
     class EmbyIconProfile(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "emby_icon_profiles"
@@ -475,7 +459,11 @@ if SQLALCHEMY_AVAILABLE:
 
     class EmbyIconRule(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "emby_icon_rules"
-        profile_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
+        profile_id = Column(
+            String(36),
+            ForeignKey("emby_icon_profiles.id", ondelete="CASCADE"),
+            primary_key=True,
+        )  # type: ignore[assignment]
         column_key = Column(String(100), primary_key=True)  # type: ignore[assignment]
         icon_path = Column(Text)  # type: ignore[assignment]
         image_data = Column(LargeBinary)  # type: ignore[assignment]
@@ -486,7 +474,12 @@ if SQLALCHEMY_AVAILABLE:
         __tablename__ = "emby_icon_bindings"
         target_type = Column(String(20), primary_key=True)  # type: ignore[assignment]
         target_id = Column(String(255), primary_key=True)  # type: ignore[assignment]
-        profile_id = Column(String(36), nullable=False, index=True)  # type: ignore[assignment]
+        profile_id = Column(
+            String(36),
+            ForeignKey("emby_icon_profiles.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        )  # type: ignore[assignment]
         updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
 
     class EmbyGroupPassword(Base):  # type: ignore[valid-type,misc]
@@ -504,6 +497,13 @@ if SQLALCHEMY_AVAILABLE:
         error = Column(Text, nullable=True)  # type: ignore[assignment]
         started_at = Column(DateTime, default=_utcnow, nullable=False, index=True)  # type: ignore[assignment]
         completed_at = Column(DateTime, nullable=True)  # type: ignore[assignment]
+        owner_id = Column(String(36), nullable=True, index=True)  # type: ignore[assignment]
+        stop_requested = Column(Boolean, nullable=False, default=False)  # type: ignore[assignment]
+        active_slot = Column(Integer, nullable=True)  # type: ignore[assignment]
+        heartbeat_at = Column(DateTime, nullable=True)  # type: ignore[assignment]
+        __table_args__ = (
+            UniqueConstraint("active_slot", name="uq_workflow_executions_active_slot"),
+        )
 
     class ManualSearchHistory(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "manual_search_history"
@@ -526,7 +526,7 @@ if SQLALCHEMY_AVAILABLE:
 
 else:
     _PLACEHOLDER = object
-    AppSettings = EmbyLatestCacheMeta = EmbyLatestCacheItem = JellyseerrRequest = EmbyLatestCacheChange = EmbyLatestCacheError = EmbyImageCache = EmbyLatestStateMovie = EmbyLatestStateSeries = EmbyLatestStateEpisode = EmbyLatestStateSeriesGroup = EmbyLatestStateSeriesChange = EmbyLatestNotificationDelivery = EmbyCollectionDefinition = EmbyCollectionPoster = EmbyCollectionBackdrop = RequestRuleEntry = ScanResultEntry = RequestCacheEntry = EmbyLatestProgress = LibraryAssociation = LibraryGroupOrder = TabOrder = EmbyProbeBlacklist = EmbyProbeQueue = EmbyProbeHistory = JustWatchCache = EmbyProbeRecentScan = KeyValueEntry = EmbyUserLink = EmbyUserBackup = EmbyIconProfile = EmbyIconRule = EmbyIconBinding = EmbyGroupPassword = WorkflowExecution = ManualSearchHistory = WorkflowStep = _PLACEHOLDER  # type: ignore[assignment]
+    AppSettings = EmbyLatestCacheMeta = EmbyLatestCacheItem = JellyseerrRequest = EmbyLatestCacheChange = EmbyLatestCacheError = EmbyImageCache = EmbyLatestStateDocument = EmbyLatestNotificationDelivery = EmbyCollectionDefinition = EmbyCollectionPoster = EmbyCollectionBackdrop = RequestRuleEntry = ScanResultEntry = RequestCacheEntry = EmbyLatestProgress = LibraryAssociation = LibraryGroupOrder = TabOrder = EmbyProbeBlacklist = EmbyProbeQueue = EmbyProbeHistory = JustWatchCache = EmbyProbeRecentScan = KeyValueEntry = EmbyUserLink = EmbyUserBackup = EmbyUserCreationJournal = EmbyIconProfile = EmbyIconRule = EmbyIconBinding = EmbyGroupPassword = WorkflowExecution = ManualSearchHistory = WorkflowStep = _PLACEHOLDER  # type: ignore[assignment]
 
 
 __all__ = [
@@ -546,11 +546,7 @@ __all__ = [
     "EmbyLatestCacheChange",
     "EmbyLatestCacheError",
     "EmbyImageCache",
-    "EmbyLatestStateMovie",
-    "EmbyLatestStateSeries",
-    "EmbyLatestStateEpisode",
-    "EmbyLatestStateSeriesGroup",
-    "EmbyLatestStateSeriesChange",
+    "EmbyLatestStateDocument",
     "EmbyLatestNotificationDelivery",
     "EmbyCollectionDefinition",
     "EmbyCollectionPoster",
@@ -570,6 +566,7 @@ __all__ = [
     "KeyValueEntry",
     "EmbyUserLink",
     "EmbyUserBackup",
+    "EmbyUserCreationJournal",
     "EmbyIconProfile",
     "EmbyIconRule",
     "EmbyIconBinding",

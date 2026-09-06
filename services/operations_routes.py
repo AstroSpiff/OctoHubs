@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -9,6 +10,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from core.storage import StorageError
+from core.log_sanitization import format_exception_for_log
 from services.operations_api_models import (
     ClearCompletedOperationsResponse,
     OperationsSnapshotResponse,
@@ -17,6 +19,7 @@ from services.operations_api_models import (
 from web.openapi_requests import no_request_body
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _require_auth: Optional[Callable[[Request], Any]] = None
 _validate_csrf: Optional[Callable[[Request, Optional[str]], bool]] = None
@@ -53,6 +56,14 @@ def _get_tracker():
     return _get_operation_tracker()
 
 
+def _operations_error(exc: BaseException, status_code: int) -> JSONResponse:
+    logger.error("Operation tracker unavailable:\n%s", format_exception_for_log(exc))
+    return JSONResponse(
+        status_code=status_code,
+        content={"ok": False, "error": "Centro operazioni temporaneamente non disponibile"},
+    )
+
+
 @router.get(
     "/api/operations",
     responses={
@@ -62,21 +73,21 @@ def _get_tracker():
     },
 )
 async def api_operations(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     try:
         tracker = _get_tracker()
     except StorageError as exc:
-        return JSONResponse(status_code=503, content={"ok": False, "error": str(exc)})
+        return _operations_error(exc, 503)
     except Exception as exc:
-        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+        return _operations_error(exc, 500)
     if not tracker:
         return JSONResponse(status_code=503, content={"ok": False, "error": "Operation tracker not initialized"})
     try:
         operations = await run_in_threadpool(tracker.list_operations)
     except StorageError as exc:
-        return JSONResponse(status_code=503, content={"ok": False, "error": str(exc)})
+        return _operations_error(exc, 503)
     except Exception as exc:
-        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+        return _operations_error(exc, 500)
     active_count = sum(1 for item in operations if item.get("status") in ("queued", "running"))
     return {"ok": True, "operations": operations, "active_count": active_count}
 
@@ -87,7 +98,7 @@ async def api_operations(request: Request):
     openapi_extra=no_request_body(),
 )
 async def api_operations_clear_completed(request: Request):
-    _require_auth_dep(request)
+    await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_request(request)
     tracker = _get_tracker()
     if not tracker:

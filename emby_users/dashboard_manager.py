@@ -3,6 +3,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, Tuple, Callable
 
+from core.log_sanitization import format_exception_for_log, sanitize_text_for_log
 from .api_client import _fetch_emby_users_list
 
 logger = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ class UsersDashboardManager:
         for server in active_servers:
             users, error = _fetch_emby_users_list(server)
             if error:
-                logger.error(f"Error fetching users from {server['name']}: {error}")
+                logger.error("Error fetching users from %s: %s", server["name"], sanitize_text_for_log(error))
                 continue
 
             users = copy.deepcopy(users)
@@ -76,8 +77,8 @@ class UsersDashboardManager:
                 current = server_oldest_admin_map.get(sid)
                 if not current or created_str < current["date"]:
                     server_oldest_admin_map[sid] = {"date": created_str, "uid": u["Id"]}
-            except Exception as e:
-                logger.warning(f"Error checking user date {u.get('Name')}: {e}")
+            except Exception as exc:
+                logger.warning("Error checking user date %s:\n%s", u.get("Name"), format_exception_for_log(exc))
 
         # 2. Get existing links from DB
         links = self.storage.get_user_links()
@@ -148,8 +149,8 @@ class UsersDashboardManager:
                     if entry:
                         settings_user_map[(sid, uid)] = entry
 
-        except Exception as e:
-            logger.error(f"Error loading group names/settings: {e}")
+        except Exception as exc:
+            logger.error("Error loading group names/settings:\n%s", format_exception_for_log(exc))
 
         for u in all_users_raw:
             sid = u["_server_id"]

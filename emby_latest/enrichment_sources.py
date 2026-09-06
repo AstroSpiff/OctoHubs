@@ -7,6 +7,10 @@ import unicodedata
 
 import requests
 
+from core.log_sanitization import redact_mapping_for_log, sanitize_diagnostic_text
+from core.safe_output import safe_print as print
+from emby_latest.runtime_cache import BoundedTTLCache
+
 
 TMDB_API_BASE = "https://api.themoviedb.org/3"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w342"
@@ -16,13 +20,26 @@ TMDB_SEARCH_LIMIT = 15
 # Max cast members to extract from TMDB credits
 _TMDB_CAST_LIMIT = 20
 
-_TMDB_IMAGE_CACHE: dict[str, dict[str, object]] = {}
-_TMDB_FIND_CACHE: dict[str, str] = {}
-_TMDB_PERSON_CACHE: dict[str, str] = {}  # "{person_id}:{language}" -> name
-_OMDB_RATINGS_CACHE: dict[str, dict[str, str]] = {}
-_MDBLIST_RATINGS_CACHE: dict[str, dict[str, str]] = {}
-_TRAKT_RATING_CACHE: dict[str, dict[str, str]] = {}
-_TRAKT_ID_CACHE: dict[str, str] = {}
+_TMDB_IMAGE_CACHE = BoundedTTLCache[str, dict[str, object]](max_entries=1_024, ttl_seconds=21_600)
+_TMDB_FIND_CACHE = BoundedTTLCache[str, str](max_entries=2_048, ttl_seconds=21_600)
+_TMDB_PERSON_CACHE = BoundedTTLCache[str, str](max_entries=2_048, ttl_seconds=86_400)
+_OMDB_RATINGS_CACHE = BoundedTTLCache[str, dict[str, str]](max_entries=2_048, ttl_seconds=21_600)
+_MDBLIST_RATINGS_CACHE = BoundedTTLCache[str, dict[str, str]](max_entries=2_048, ttl_seconds=21_600)
+_TRAKT_RATING_CACHE = BoundedTTLCache[str, dict[str, str]](max_entries=2_048, ttl_seconds=21_600)
+_TRAKT_ID_CACHE = BoundedTTLCache[str, str](max_entries=2_048, ttl_seconds=86_400)
+
+
+def clear_enrichment_runtime_caches() -> None:
+    for cache in (
+        _TMDB_IMAGE_CACHE,
+        _TMDB_FIND_CACHE,
+        _TMDB_PERSON_CACHE,
+        _OMDB_RATINGS_CACHE,
+        _MDBLIST_RATINGS_CACHE,
+        _TRAKT_RATING_CACHE,
+        _TRAKT_ID_CACHE,
+    ):
+        cache.clear()
 
 
 def _is_latin_text(text: str) -> bool:
@@ -351,7 +368,7 @@ def _parse_mdblist_payload(payload, media_type="movie"):
     }
 
 
-def _fetch_mdblist_ratings_by_imdb(imdb_id, api_keys, expected_type=None):
+def _fetch_mdblist_ratings_by_imdb(imdb_id, api_keys, expected_type=None, force_refresh=False):
     """Fetch ratings from MDBList API by IMDb ID with key rotation."""
     if not imdb_id or not api_keys:
         print(
@@ -361,7 +378,7 @@ def _fetch_mdblist_ratings_by_imdb(imdb_id, api_keys, expected_type=None):
         return {}
 
     cache_key = f"{imdb_id}:{expected_type or ''}"
-    if cache_key in _MDBLIST_RATINGS_CACHE:
+    if not force_refresh and cache_key in _MDBLIST_RATINGS_CACHE:
         print(f"[MDBLIST DEBUG] Cache hit for {cache_key}")
         return _MDBLIST_RATINGS_CACHE[cache_key]
 
@@ -387,18 +404,34 @@ def _fetch_mdblist_ratings_by_imdb(imdb_id, api_keys, expected_type=None):
 
             response = requests.get(url, params=params, timeout=10)
             print(f"[MDBLIST DEBUG] Response status: {response.status_code}")
-            print(f"[MDBLIST DEBUG] Response headers: {dict(response.headers)}")
+            print(
+                "[MDBLIST DEBUG] Response headers: "
+                f"{redact_mapping_for_log(dict(response.headers))}"
+            )
 
             response.raise_for_status()
 
             raw_text = response.text
-            print(f"[MDBLIST DEBUG] Raw response (first 500 chars): {raw_text[:500]}")
+            print(
+                "[MDBLIST DEBUG] Raw response (first 500 chars): "
+                f"{sanitize_diagnostic_text(raw_text[:500], max_length=500)}"
+            )
 
             payload = response.json()
-            print(f"[MDBLIST DEBUG] Parsed JSON payload: {payload}")
+            print(
+                "[MDBLIST DEBUG] Parsed JSON payload: "
+                f"{redact_mapping_for_log(payload)}"
+            )
+
+            if not isinstance(payload, dict):
+                print(
+                    "[MDBLIST DEBUG] Invalid payload type "
+                    f"({type(payload).__name__}) - falling back"
+                )
+                return {}
 
             # Check if the response is valid
-            if isinstance(payload, dict) and not payload.get("error"):
+            if not payload.get("error"):
                 print("[MDBLIST DEBUG] Valid payload received, no error field")
 
                 # Verify media type if expected
@@ -417,7 +450,10 @@ def _fetch_mdblist_ratings_by_imdb(imdb_id, api_keys, expected_type=None):
 
             # Check for rate limit errors
             if payload.get("error"):
-                print(f"[MDBLIST DEBUG] Error in payload: {payload.get('error')}")
+                print(
+                    "[MDBLIST DEBUG] Error in payload: "
+                    f"{sanitize_diagnostic_text(payload.get('error'))}"
+                )
                 if "limit" in str(payload.get("error")).lower():
                     print("[MDBLIST DEBUG] Rate limit detected, marking key as failed")
                     _mark_api_key_failed("mdblist", api_key)
@@ -425,17 +461,17 @@ def _fetch_mdblist_ratings_by_imdb(imdb_id, api_keys, expected_type=None):
 
             print("[MDBLIST DEBUG] Payload has error or is invalid, returning empty")
             return {}
-        except requests.RequestException as e:
+        except (requests.RequestException, ValueError) as e:
             print(
                 f"[MDBLIST DEBUG] Request exception at attempt {attempt + 1}: "
-                f"{type(e).__name__}: {str(e)}"
+                f"{type(e).__name__}: {sanitize_diagnostic_text(e)}"
             )
             continue
 
     return {}
 
 
-def _fetch_mdblist_tv_series_with_seasons(imdb_id, api_keys):
+def _fetch_mdblist_tv_series_with_seasons(imdb_id, api_keys, force_refresh=False):
     """
     Fetch TV series ratings from MDBList including season-level Metacritic scores.
     Returns ratings with averaged Metacritic score across all seasons.
@@ -447,7 +483,12 @@ def _fetch_mdblist_tv_series_with_seasons(imdb_id, api_keys):
     print(f"[MDBLIST TV DEBUG] Fetching TV series {imdb_id}")
 
     # First get the main series data
-    series_ratings = _fetch_mdblist_ratings_by_imdb(imdb_id, api_keys, expected_type="tv")
+    series_ratings = _fetch_mdblist_ratings_by_imdb(
+        imdb_id,
+        api_keys,
+        expected_type="tv",
+        force_refresh=force_refresh,
+    )
     print(f"[MDBLIST TV DEBUG] Initial series ratings: {series_ratings}")
 
     # Try to fetch season data to calculate average Metacritic
@@ -519,14 +560,17 @@ def _fetch_mdblist_tv_series_with_seasons(imdb_id, api_keys):
             else:
                 print("[MDBLIST TV DEBUG] No valid Metacritic scores found in seasons")
     except requests.RequestException as e:
-        print(f"[MDBLIST TV DEBUG] Request exception: {type(e).__name__}: {str(e)}")
+        print(
+            f"[MDBLIST TV DEBUG] Request exception: {type(e).__name__}: "
+            f"{sanitize_diagnostic_text(e)}"
+        )
         pass
 
     print(f"[MDBLIST TV DEBUG] Final TV series ratings: {series_ratings}")
     return series_ratings
 
 
-def _fetch_omdb_series_by_title(title, year, api_keys):
+def _fetch_omdb_series_by_title(title, year, api_keys, force_refresh=False):
     """Fetch OMDb series by title with API key rotation support."""
     if not title:
         return {}
@@ -538,7 +582,7 @@ def _fetch_omdb_series_by_title(title, year, api_keys):
         return {}
 
     key = f"series:{title}:{year or ''}"
-    if key in _OMDB_RATINGS_CACHE:
+    if not force_refresh and key in _OMDB_RATINGS_CACHE:
         return _OMDB_RATINGS_CACHE[key]
 
     max_attempts = min(len(api_keys), 3)
@@ -581,7 +625,7 @@ def _fetch_omdb_series_by_title(title, year, api_keys):
     return {}
 
 
-def _fetch_omdb_ratings(imdb_id, api_keys, expected_type=None):
+def _fetch_omdb_ratings(imdb_id, api_keys, expected_type=None, force_refresh=False):
     """
     Recupera rating da OMDb API with key rotation support.
 
@@ -599,7 +643,7 @@ def _fetch_omdb_ratings(imdb_id, api_keys, expected_type=None):
         return {}
 
     cache_key = f"{imdb_id}:{expected_type or ''}"
-    if cache_key in _OMDB_RATINGS_CACHE:
+    if not force_refresh and cache_key in _OMDB_RATINGS_CACHE:
         return _OMDB_RATINGS_CACHE[cache_key]
 
     max_attempts = min(len(api_keys), 3)
@@ -687,7 +731,13 @@ def _resolve_trakt_identifier(trakt_id, media_type, client_id, access_token=None
     if not url:
         return ""
     try:
-        response = requests.get(url, headers=headers, params=params, timeout=10)
+        response = requests.get(
+            url,
+            headers=headers,
+            params=params,
+            timeout=10,
+            allow_redirects=False,
+        )
         response.raise_for_status()
         payload = response.json()
     except (requests.RequestException, ValueError):
@@ -735,7 +785,13 @@ def _fetch_trakt_rating(trakt_id, media_type, client_id, access_token=None, tmdb
     if access_token:
         headers["Authorization"] = f"Bearer {access_token}"
     try:
-        response = requests.get(url, headers=headers, params={"extended": "full"}, timeout=10)
+        response = requests.get(
+            url,
+            headers=headers,
+            params={"extended": "full"},
+            timeout=10,
+            allow_redirects=False,
+        )
         response.raise_for_status()
         payload = response.json()
     except (requests.RequestException, ValueError):

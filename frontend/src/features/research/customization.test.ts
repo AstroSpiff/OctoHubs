@@ -16,18 +16,21 @@ const fallback: CustomSearchRules = {
 describe("stored independent-search rules", () => {
   it("keeps the default rules when browser storage is empty", () => {
     expect(customRulesFromStoredValue(fallback, null)).toEqual({
-      found: false,
+      enabled: false,
       value: fallback,
     });
   });
 
-  it("merges a stored local override and marks it as active", () => {
+  it("restores an explicitly enabled local override", () => {
     expect(customRulesFromStoredValue(fallback, {
-      search_rules: { min_seeders: 9 },
-      target_languages: ["ita", "italian"],
-      exclude_tags: ["ts"],
+      enabled: true,
+      rules: {
+        search_rules: { min_seeders: 9 },
+        target_languages: ["ita", "italian"],
+        exclude_tags: ["ts"],
+      },
     })).toEqual({
-      found: true,
+      enabled: true,
       value: {
         search_rules: {
           query_terms: ["2160p"],
@@ -36,6 +39,24 @@ describe("stored independent-search rules", () => {
         },
         target_languages: ["ita", "italian"],
         exclude_tags: ["ts"],
+      },
+    });
+  });
+
+  it("keeps legacy rules as a disabled draft", () => {
+    expect(customRulesFromStoredValue(fallback, {
+      search_rules: { min_seeders: 7 },
+      target_languages: ["eng"],
+    })).toEqual({
+      enabled: false,
+      value: {
+        search_rules: {
+          query_terms: ["2160p"],
+          min_seeders: 7,
+          use_original_title: false,
+        },
+        target_languages: ["eng"],
+        exclude_tags: [],
       },
     });
   });

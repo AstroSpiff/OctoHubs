@@ -26,6 +26,7 @@ type ProbeWorkerCardProps = {
   headerActions?: ReactNode;
   progress?: { completed: number; total: number };
   actions: WorkerAction[];
+  canMutate?: boolean;
 };
 
 function ProbeWorkerCard({
@@ -39,6 +40,7 @@ function ProbeWorkerCard({
   headerActions,
   progress,
   actions,
+  canMutate = true,
 }: ProbeWorkerCardProps) {
   const running = Boolean(status?.running);
   const progressPercent = progress?.total
@@ -99,7 +101,7 @@ function ProbeWorkerCard({
         <Gauge size={15} aria-hidden="true" />
         {currentLog}
       </p>
-      <footer>
+      {canMutate ? <footer>
         {actions.map((action) => (
           <Button
             key={action.label}
@@ -120,7 +122,7 @@ function ProbeWorkerCard({
             {action.label}
           </Button>
         ))}
-      </footer>
+      </footer> : null}
     </article>
   );
 }

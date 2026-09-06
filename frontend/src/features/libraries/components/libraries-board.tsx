@@ -17,10 +17,10 @@ const columns = ["movies", "tvshows", "other"] as const;
 type LibrariesBoardProps = {
   groups: LibraryGroup[];
   workflowMode: boolean;
-  scanningId?: string;
+  scanningIds?: ReadonlySet<string>;
   scanJobs: ScanJob[];
   scanHistory: LibraryScanHistoryJob[];
-  scanningLibraryKey?: string;
+  scanningLibraryKeys?: ReadonlySet<string>;
   libraryScanBusy: boolean;
   onScan: (group: LibraryGroup, scanType: "content" | "metadata") => void;
   onScanLibrary: (
@@ -32,10 +32,10 @@ type LibrariesBoardProps = {
 function LibrariesBoard({
   groups,
   workflowMode,
-  scanningId,
+  scanningIds = new Set(),
   scanJobs,
   scanHistory,
-  scanningLibraryKey,
+  scanningLibraryKeys = new Set(),
   libraryScanBusy,
   onScan,
   onScanLibrary,
@@ -66,10 +66,10 @@ function LibrariesBoard({
                   key={`${group.collection_type}:${group.group_name}`}
                   group={group}
                   workflowMode={workflowMode}
-                  scanning={scanningId === group.group_name}
+                  scanning={scanningIds.has(group.group_name)}
                   scanJobs={scanJobs}
                   scanHistory={scanHistory}
-                  scanningLibraryKey={scanningLibraryKey}
+                  scanningLibraryKeys={scanningLibraryKeys}
                   libraryScanBusy={libraryScanBusy}
                   onScan={(scanType) => onScan(group, scanType)}
                   onScanLibrary={onScanLibrary}

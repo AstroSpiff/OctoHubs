@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 from core import config_manager
 from core.config import DEFAULT_CONFIG
+from core.log_sanitization import format_exception_for_log
 from .manager import list_collection_definitions, run_collection_sync
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ class CollectionAutoRefresher(threading.Thread):
                 try:
                     self._run_cycle(settings)
                 except Exception as exc:
-                    logger.exception("Errore nella sincronizzazione automatica collezioni: %s", exc)
+                    logger.error("Errore nella sincronizzazione automatica collezioni:\n%s", format_exception_for_log(exc))
                 self._next_run = self._calculate_next_run(settings, datetime.now())
                 if self._next_run is None:
                     self._next_run = datetime.now() + timedelta(minutes=5)
@@ -99,8 +100,8 @@ class CollectionAutoRefresher(threading.Thread):
             try:
                 logger.info("Sincronizzazione automatica collezione %s (%s)", definition.get("name"), definition_id)
                 run_collection_sync(definition_id)
-            except Exception:
-                logger.exception("Sincronizzazione automatica fallita per %s", definition_id)
+            except Exception as exc:
+                logger.error("Sincronizzazione automatica fallita per %s:\n%s", definition_id, format_exception_for_log(exc))
 
 
 _REFRESHER: CollectionAutoRefresher | None = None

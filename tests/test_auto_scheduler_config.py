@@ -110,3 +110,61 @@ def test_unrelated_config_update_preserves_existing_deadlines(scheduler):
     scheduler.update_config(_config(scan_settings, revision=2))
 
     assert scheduler._next_run["scan"] == existing_run
+
+
+def test_busy_task_retries_without_consuming_fixed_schedule(scheduler, monkeypatch):
+    scheduler.update_config(_config({
+        "enabled": True,
+        "mode": "fixed",
+        "interval_minutes": 60,
+        "times": ["06:15"],
+    }))
+    scheduler._next_run["scan"] = datetime.now() - timedelta(seconds=1)
+    monkeypatch.setattr(scheduler, "_trigger_scan", lambda _config: False)
+
+    before = datetime.now()
+    wait_seconds = scheduler._evaluate_tasks()
+
+    retry_at = scheduler._next_run["scan"]
+    assert retry_at is not None
+    assert before + timedelta(seconds=59) <= retry_at <= datetime.now() + timedelta(seconds=61)
+    assert wait_seconds == 60
+
+
+def test_trigger_failure_retries_without_killing_scheduler(scheduler, monkeypatch):
+    scheduler.update_config(_config({
+        "enabled": True,
+        "mode": "interval",
+        "interval_minutes": 30,
+        "times": [],
+    }))
+    scheduler._next_run["scan"] = datetime.now() - timedelta(seconds=1)
+    monkeypatch.setattr(
+        scheduler,
+        "_trigger_scan",
+        lambda _config: (_ for _ in ()).throw(RuntimeError("worker unavailable")),
+    )
+
+    before = datetime.now()
+    wait_seconds = scheduler._evaluate_tasks()
+
+    assert wait_seconds == 60
+    assert before + timedelta(seconds=59) <= scheduler._next_run["scan"]
+
+
+def test_successful_task_advances_fixed_schedule(scheduler, monkeypatch):
+    scheduler.update_config(_config({
+        "enabled": True,
+        "mode": "fixed",
+        "interval_minutes": 60,
+        "times": ["06:15"],
+    }))
+    scheduler._next_run["scan"] = datetime.now() - timedelta(seconds=1)
+    monkeypatch.setattr(scheduler, "_trigger_scan", lambda _config: True)
+
+    scheduler._evaluate_tasks()
+
+    next_run = scheduler._next_run["scan"]
+    assert next_run is not None
+    assert (next_run.hour, next_run.minute) == (6, 15)
+    assert next_run > datetime.now()

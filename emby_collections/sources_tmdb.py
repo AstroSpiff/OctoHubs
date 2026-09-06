@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from core.config_manager import load_config
+from core.http_error_messages import safe_http_error_message
+from core.pagination import MAX_PROVIDER_ITEMS, MAX_PROVIDER_PAGES, PaginationGuard, PaginationLimitError
 from core.utils import _normalize_media_type
 from .sources_common import _extract_year
 
@@ -62,7 +64,8 @@ def _fetch_tmdb_payload(endpoint_template: str, identifier: str, page: Optional[
             timeout=15
         )
     except requests.RequestException as exc:
-        raise RuntimeError(f"Errore comunicazione TMDB: {exc}") from exc
+        logger.warning("TMDB request failed: %s", safe_http_error_message(exc))
+        raise RuntimeError("Servizio TMDB temporaneamente non disponibile") from None
     if response.status_code != 200:
         raise RuntimeError(f"TMDB ha risposto con {response.status_code}")
     try:
@@ -104,7 +107,10 @@ def _coerce_tmdb_page_count(value: Any) -> int:
         total_pages = int(value)
     except (TypeError, ValueError):
         return 1
-    return max(total_pages, 1)
+    total_pages = max(total_pages, 1)
+    if total_pages > MAX_PROVIDER_PAGES:
+        raise PaginationLimitError("TMDB ha dichiarato troppe pagine")
+    return total_pages
 
 
 def _extract_tmdb_list_entries(payload: Dict[str, Any]) -> List[Any]:
@@ -115,10 +121,14 @@ def _extract_tmdb_list_entries(payload: Dict[str, Any]) -> List[Any]:
 def _fetch_tmdb_list_items(list_id: str) -> List[Dict[str, Any]]:
     payload = _fetch_tmdb_payload(TMDB_LIST_ENDPOINT, list_id, page=1)
     entries = _extract_tmdb_list_entries(payload)
+    guard = PaginationGuard(MAX_PROVIDER_PAGES, MAX_PROVIDER_ITEMS)
+    guard.observe(entries)
     total_pages = _coerce_tmdb_page_count(payload.get("total_pages") or payload.get("totalPages"))
     for page in range(2, total_pages + 1):
         page_payload = _fetch_tmdb_payload(TMDB_LIST_ENDPOINT, list_id, page=page)
-        entries.extend(_extract_tmdb_list_entries(page_payload))
+        page_entries = _extract_tmdb_list_entries(page_payload)
+        guard.observe(page_entries)
+        entries.extend(page_entries)
     normalized = _normalize_tmdb_entries(entries)
     logger.info("TMDB lista %s restituisce %d elementi", list_id, len(normalized))
     return normalized

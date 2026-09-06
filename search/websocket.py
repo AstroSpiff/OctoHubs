@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+import logging
 from typing import Any, Awaitable, Callable
 
 from starlette.websockets import WebSocketDisconnect
 
+from core.log_sanitization import format_exception_for_log
+from core.safe_output import safe_print as print
+from core.websocket_io import accept_bounded, close_bounded, send_json_bounded
 from search.state import SearchSessionError, claim_search_session, finish_search_session
 from search.stream_limits import (
     SEARCH_STREAM_TIMEOUT_SECONDS,
@@ -17,10 +21,13 @@ from search.stream_limits import (
 from search.stream_protocol import SearchStreamProtocolError, receive_search_start
 
 
+logger = logging.getLogger(__name__)
+
+
 async def _send_error(websocket: Any, message: str) -> None:
     try:
-        await websocket.send_json({"type": "error", "message": message})
-    except Exception:
+        await send_json_bounded(websocket, {"type": "error", "message": message})
+    except WebSocketDisconnect:
         pass
 
 
@@ -37,14 +44,15 @@ async def handle_search_websocket(
         owner_id = int(auth_subject)
         claim_search_session(session_id, owner_id)
     except (TypeError, ValueError, SearchSessionError):
-        await websocket.close(code=1008)
+        await close_bounded(websocket, code=1008)
         return
 
     accepted = False
     try:
-        await websocket.accept()
+        await accept_bounded(websocket)
         accepted = True
-        await websocket.send_json(
+        await send_json_bounded(
+            websocket,
             {
                 "type": "connected",
                 "session_id": session_id,
@@ -57,28 +65,56 @@ async def handle_search_websocket(
         from core.config_manager import load_config
         from search.streaming import search_streaming_parallel
 
-        config, is_valid = load_config()
+        config, is_valid = await asyncio.to_thread(load_config)
         if not is_valid or not config:
             await _send_error(websocket, "Configurazione non valida")
             return
 
         try:
-            stats = await asyncio.wait_for(
-                search_streaming_parallel(
-                    query_variants=payload.query_variants,
-                    search_types=payload.search_types,
-                    selected_indexers=set(payload.indexers),
-                    config=config,
-                    websocket=websocket,
-                    session_id=session_id,
-                    use_jellyseerr_logic=payload.use_jellyseerr_logic,
-                    use_custom_rules=payload.use_custom_rules,
-                    tmdb_id=payload.tmdb_id,
-                    custom_rules=payload.custom_rules,
-                    seasons=payload.seasons,
-                ),
-                timeout=SEARCH_STREAM_TIMEOUT_SECONDS,
+            search_task = asyncio.create_task(
+                asyncio.wait_for(
+                    search_streaming_parallel(
+                        query_variants=payload.query_variants,
+                        search_types=payload.search_types,
+                        selected_indexers=set(payload.indexers),
+                        config=config,
+                        websocket=websocket,
+                        session_id=session_id,
+                        owner_id=owner_id,
+                        use_jellyseerr_logic=payload.use_jellyseerr_logic,
+                        use_custom_rules=payload.use_custom_rules,
+                        tmdb_id=payload.tmdb_id,
+                        custom_rules=(
+                            payload.custom_rules.model_dump(exclude_none=True)
+                            if payload.custom_rules is not None
+                            else None
+                        ),
+                        seasons=payload.seasons,
+                    ),
+                    timeout=SEARCH_STREAM_TIMEOUT_SECONDS,
+                )
             )
+            async def watch_authorization() -> bool:
+                while not search_task.done():
+                    await asyncio.sleep(10)
+                    if await authorize(websocket) is None:
+                        return False
+                return True
+
+            auth_task = asyncio.create_task(watch_authorization())
+            done, _pending = await asyncio.wait(
+                {search_task, auth_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if auth_task in done and not auth_task.result():
+                search_task.cancel()
+                await asyncio.gather(search_task, return_exceptions=True)
+                await close_bounded(websocket, code=1008)
+                accepted = False
+                return
+            auth_task.cancel()
+            await asyncio.gather(auth_task, return_exceptions=True)
+            stats = await search_task
             print(f"[WebSocket /ws/search/{session_id}] Ricerca completata: {stats}")
         except SearchWorkloadLimitError as exc:
             await _send_error(websocket, str(exc))
@@ -91,11 +127,12 @@ async def handle_search_websocket(
     except WebSocketDisconnect:
         print(f"[WebSocket /ws/search/{session_id}] Client disconnected")
     except Exception as exc:
-        print(f"[WebSocket /ws/search/{session_id}] Error: {exc}")
+        logger.error(
+            "[WebSocket /ws/search/%s] Error:\n%s",
+            session_id,
+            format_exception_for_log(exc),
+        )
     finally:
         finish_search_session(session_id, owner_id)
         if accepted:
-            try:
-                await websocket.close(code=1000)
-            except Exception:
-                pass
+            await close_bounded(websocket, code=1000)

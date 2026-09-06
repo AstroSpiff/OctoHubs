@@ -10,6 +10,7 @@ import {
   requestRuleDetailsOpenForWidth,
 } from "@/features/research/request-rule-details";
 import type { RequestSearchRule, ResearchRequest } from "@/features/research/types";
+import { safeExternalHttpUrl } from "@/lib/external-url";
 
 function RequestRuleCard({ request, rule, disabled, onChange }: { request: ResearchRequest; rule: RequestSearchRule; disabled: boolean; onChange: (patch: Partial<RequestSearchRule>) => void }) {
   const { canMutate } = useWorkspaceCapabilities();
@@ -18,7 +19,7 @@ function RequestRuleCard({ request, rule, disabled, onChange }: { request: Resea
   ));
   const poster = tmdbPosterUrl(stringFrom(request.poster_url ?? request.poster_path));
   const mediaType = String(request.media_type || "").toLowerCase();
-  const externalLinks = [["Jellyseerr", request.jellyseerr_url], ["Trakt", request.trakt_url], ["TMDB", request.tmdb_url]].filter((entry): entry is [string, string] => typeof entry[1] === "string" && Boolean(entry[1]));
+  const externalLinks = [["Jellyseerr", request.jellyseerr_url], ["Trakt", request.trakt_url], ["TMDB", request.tmdb_url]].map(([label, value]) => [label, safeExternalHttpUrl(value)]).filter((entry): entry is [string, string] => Boolean(entry[1]));
   const justWatchProviders = stringList(request.justwatch_providers);
   const justWatchTitle = justWatchProviders.length ? `Disponibile su JustWatch: ${justWatchProviders.join(", ")}` : "Disponibile su JustWatch";
 
@@ -30,7 +31,7 @@ function RequestRuleCard({ request, rule, disabled, onChange }: { request: Resea
     return () => compactViewport.removeEventListener("change", syncVisibility);
   }, []);
 
-  return <article className="research-request-row">
+  return <article className={`research-request-row ${canMutate ? "" : "is-read-only"}`.trim()}>
     <div className="research-request-main">
       {canMutate ? <label className="research-request-enabled"><input type="checkbox" checked={rule.enabled} disabled={disabled} onChange={(event) => onChange({ enabled: event.target.checked })} aria-label={`Abilita ${request.title || "richiesta"}`} /></label> : null}
       <div className="research-request-poster">{poster ? <img src={poster} alt="" /> : <span>{mediaType === "tv" ? "TV" : "Film"}</span>}</div>

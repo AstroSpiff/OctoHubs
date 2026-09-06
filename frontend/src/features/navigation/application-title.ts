@@ -14,7 +14,9 @@ const routeTitles: Array<{ path: string; title: string }> = [
 ];
 
 function applicationTitle(pathname: string): string {
-  const match = routeTitles.find(({ path }) => pathname === path);
+  const match = routeTitles.find(
+    ({ path }) => pathname === path || pathname.startsWith(`${path}/`),
+  );
   return match ? `${match.title} | OctoHubs` : "OctoHubs";
 }
 

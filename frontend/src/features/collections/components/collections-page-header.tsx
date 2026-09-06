@@ -21,7 +21,7 @@ function CollectionsPageHeader({ optionsLoading, refreshing, syncing, onOpenSour
       title="Collezioni"
       description="Stato delle collezioni Emby, fonti collegate, server di destinazione e sincronizzazioni in corso."
       actions={<>
-        <Button type="button" variant="secondary" size="compact" onClick={onOpenSources}>
+        <Button type="button" requiresWriteAccess variant="secondary" size="compact" onClick={onOpenSources}>
           <ListPlus size={16} aria-hidden="true" />
           Fonti
         </Button>

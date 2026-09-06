@@ -37,12 +37,14 @@ class TraktDeviceStartResponse(ServiceApiModel):
     verification_url: str
     expires_in: int
     interval: int
+    config_revision: str
 
 
 class TraktDevicePollRequest(StrictRequestModel):
     client_id: str | None = None
     client_secret: str | None = None
     device_code: str
+    config_revision: str
 
 
 class TraktDevicePollResponse(ServiceApiModel):

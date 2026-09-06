@@ -24,6 +24,7 @@ import type {
   LatestRuleInput,
 } from "@/features/emby-latest/types";
 import { useEmbyLatest } from "@/features/emby-latest/use-emby-latest";
+import { useLatestActionFeedback } from "@/features/emby-latest/use-latest-action-feedback";
 import { useConfirmationDialog } from "@/components/ui/use-confirmation-dialog";
 import { WorkspaceHeading } from "@/components/ui/workspace-heading";
 import { WorkspacePage } from "@/components/ui/workspace-layout";
@@ -35,6 +36,7 @@ const emptyItems: LatestItem[] = [];
 function LatestPage() {
   const latest = useEmbyLatest();
   const confirmation = useConfirmationDialog();
+  const actionFeedback = useLatestActionFeedback();
   const { mutate: previewLatest } = latest.preview;
   const [serverId, setServerId] = useState("all");
   const [displayLimit, setDisplayLimit] = useState(readLatestDisplayLimit);
@@ -97,39 +99,36 @@ function LatestPage() {
   const errors = [
     latest.snapshot.error,
     latest.configuration.error,
-    latest.refresh.error,
-    latest.notify.error,
-    latest.workflow.error,
-    latest.preview.error,
-    latest.enrich.error,
-    latest.clearState.error,
-    latest.reset.error,
-    latest.resetScanTracking.error,
   ].filter(Boolean);
-  const notice =
-    latest.refresh.data?.message ||
-    latest.notify.data?.message ||
-    latest.workflow.data?.message ||
-    latest.preset.data?.message ||
-    latest.removePreset.data?.message ||
-    latest.rule.data?.message ||
-    latest.setRuleEnabled.data?.message ||
-    latest.removeRule.data?.message ||
-    latest.clearState.data?.message ||
-    latest.reset.data?.message ||
-    latest.resetScanTracking.data?.message;
 
   async function removePreset(preset: LatestPreset) {
     if (!await confirmation.confirm({ title: "Rimuovi preset", description: `Rimuovere il preset “${preset.name}”?`, confirmLabel: "Rimuovi preset", tone: "danger" })) return;
-    latest.removePreset.mutate(preset.id);
+    void actionFeedback
+      .run(
+        () => latest.removePreset.mutateAsync(preset.id),
+        "Preset rimosso.",
+        "preset",
+      )
+      .catch(() => undefined);
   }
   async function removeRule(rule: LatestRule) {
     if (!await confirmation.confirm({ title: "Elimina regola", description: `Eliminare la regola “${rule.name}”?`, confirmLabel: "Elimina regola", tone: "danger" })) return;
-    latest.removeRule.mutate(rule.id);
+    void actionFeedback
+      .run(
+        () => latest.removeRule.mutateAsync(rule.id),
+        "Regola eliminata.",
+        "rule",
+      )
+      .catch(() => undefined);
   }
-  async function confirmAction(title: string, message: string, action: () => void) {
+  async function confirmAction(
+    title: string,
+    message: string,
+    successMessage: string,
+    action: () => Promise<unknown>,
+  ) {
     if (!await confirmation.confirm({ title, description: message, confirmLabel: "Conferma", tone: "danger" })) return;
-    action();
+    void actionFeedback.run(action, successMessage).catch(() => undefined);
   }
   function enrich(item: LatestItem) {
     return latest.enrich.mutateAsync(item).then((result) => result.item);
@@ -149,14 +148,31 @@ function LatestPage() {
         workflowing={latest.workflow.isPending || latest.workflowActive}
         onServerChange={setServerId}
         onLimitChange={updateDisplayLimit}
-        onRefresh={() => latest.refresh.mutate(latest.fetchLimits)}
+        onRefresh={() => {
+          void actionFeedback
+            .run(
+              () => latest.refresh.mutateAsync(latest.fetchLimits),
+              "Aggiornamento pubblicazioni avviato.",
+            )
+            .catch(() => undefined);
+        }}
         onNotify={() =>
-          latest.notify.mutate(
-            latest.fetchLimits.perServerLimit,
-          )
+          void actionFeedback
+            .run(
+              () => latest.notify.mutateAsync(latest.fetchLimits.perServerLimit),
+              "Invio notifiche completato.",
+            )
+            .catch(() => undefined)
         }
-        onWorkflow={() => latest.workflow.mutate()}
-        onVerify={() => setVerifyOpen(true)}
+        onWorkflow={() => {
+          void actionFeedback
+            .run(() => latest.workflow.mutateAsync(), "Workflow avviato.")
+            .catch(() => undefined);
+        }}
+        onVerify={() => {
+          latest.enrich.reset();
+          setVerifyOpen(true);
+        }}
       />
       {snapshot?.cached_at || latest.isRefreshing ? (
         <p className="latest-cache-status">
@@ -176,9 +192,12 @@ function LatestPage() {
           {error?.message}
         </div>
       ))}
-      {notice ? (
-        <div className="inline-alert inline-alert--success" role="status">
-          {notice}
+      {actionFeedback.notice ? (
+        <div
+          className={`inline-alert inline-alert--${actionFeedback.notice.tone}`}
+          role={actionFeedback.notice.tone === "error" ? "alert" : "status"}
+        >
+          {actionFeedback.notice.message}
         </div>
       ) : null}
       {latest.snapshot.isLoading && !snapshot ? (
@@ -230,19 +249,25 @@ function LatestPage() {
                 ? latest.removePreset.variables
                 : undefined
             }
-            onSave={(preset) => latest.preset.mutateAsync(preset)}
+            onSave={(preset) =>
+              actionFeedback.run(
+                () => latest.preset.mutateAsync(preset),
+                "Preset salvato.",
+                "preset",
+              )
+            }
             onRemove={(preset) => void removePreset(preset)}
             onTemplateChange={updatePreviewTemplate}
             onDirtyChange={(dirty) => updateDirty("preset", dirty)}
-            error={
-              latest.preset.error?.message || latest.removePreset.error?.message
-            }
+            error={actionFeedback.errorFor("preset")}
           />
           <LatestNotificationPreview
             template={previewTemplate || activeTemplate}
             movies={previewMovies}
             series={previewSeries}
             result={latest.preview.data}
+            request={latest.preview.variables}
+            error={latest.preview.error?.message}
             loading={latest.preview.isPending}
             onPreview={previewNotification}
           />
@@ -263,17 +288,25 @@ function LatestPage() {
                   ? latest.removeRule.variables
                   : undefined
               }
-              error={
-                latest.rule.error?.message ||
-                latest.setRuleEnabled.error?.message ||
-                latest.removeRule.error?.message
+              error={actionFeedback.errorFor("rule")}
+              onSave={(rule: LatestRuleInput) =>
+                actionFeedback.run(
+                  () => latest.rule.mutateAsync(rule),
+                  "Regola salvata.",
+                  "rule",
+                )
               }
-              onSave={(rule: LatestRuleInput) => latest.rule.mutateAsync(rule)}
               onToggle={(rule) =>
-                latest.setRuleEnabled.mutate({
-                  ruleId: rule.id,
-                  enabled: !rule.enabled,
-                })
+                void actionFeedback
+                  .run(
+                    () => latest.setRuleEnabled.mutateAsync({
+                      ruleId: rule.id,
+                      enabled: !rule.enabled,
+                    }),
+                    "Regola aggiornata.",
+                    "rule",
+                  )
+                  .catch(() => undefined)
               }
               onRemove={(rule) => void removeRule(rule)}
               onDirtyChange={(dirty) => updateDirty("rule", dirty)}
@@ -286,21 +319,24 @@ function LatestPage() {
                 void confirmAction(
                   "Reimposta pubblicazioni",
                   "Questa operazione azzera STATE + CACHE delle pubblicazioni. I contenuti verranno ricalcolati al prossimo aggiornamento. Continuare?",
-                  () => latest.reset.mutate(),
+                  "Pubblicazioni reimpostate.",
+                  () => latest.reset.mutateAsync(),
                 )
               }
               onClearState={() =>
                 void confirmAction(
                   "Azzera tracking notifiche",
                   "Azzera lo stato di tracking delle notifiche mantenendo tutte le altre configurazioni?",
-                  () => latest.clearState.mutate(),
+                  "Tracking notifiche azzerato.",
+                  () => latest.clearState.mutateAsync(),
                 )
               }
               onClearScans={() =>
                 void confirmAction(
                   "Elimina dati scansione",
                   "Elimina i dati salvati su scansioni e refresh metadata?",
-                  () => latest.resetScanTracking.mutate(),
+                  "Dati scansione eliminati.",
+                  () => latest.resetScanTracking.mutateAsync(),
                 )
               }
             />
@@ -314,8 +350,12 @@ function LatestPage() {
         series={series}
         enriching={latest.enrich.isPending}
         error={latest.enrich.error?.message}
-        onClose={() => setVerifyOpen(false)}
+        onClose={() => {
+          latest.enrich.reset();
+          setVerifyOpen(false);
+        }}
         onEnrich={enrich}
+        onResetError={latest.enrich.reset}
       />
       {confirmation.dialog}
     </WorkspacePage>

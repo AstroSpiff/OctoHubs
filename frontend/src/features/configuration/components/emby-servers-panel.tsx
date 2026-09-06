@@ -8,7 +8,7 @@ import { EmbyServerSummary } from "@/features/configuration/components/emby-serv
 import { useWorkspaceCapabilities } from "@/features/session/workspace-capabilities-context";
 import type { EmbyServerInput, EmbyServerSettings } from "@/features/configuration/types";
 
-function EmbyServersPanel({ servers, loading, creating, updatingIds, deletingIds, onCreate, onUpdate, onDelete, onRefresh, onDirtyChange }: { servers: EmbyServerSettings[]; loading: boolean; creating: boolean; updatingIds: ReadonlySet<string>; deletingIds: ReadonlySet<string>; onCreate: (input: EmbyServerInput) => Promise<void>; onUpdate: (serverId: string, input: EmbyServerInput) => Promise<void>; onDelete: (serverId: string) => void; onRefresh: () => void; onDirtyChange?: (dirty: boolean) => void }) {
+function EmbyServersPanel({ servers, loading, creating, updatingIds, deletingIds, removalErrors, onCreate, onUpdate, onDelete, onRefresh, onDirtyChange }: { servers: EmbyServerSettings[]; loading: boolean; creating: boolean; updatingIds: ReadonlySet<string>; deletingIds: ReadonlySet<string>; removalErrors: Readonly<Record<string, string>>; onCreate: (input: EmbyServerInput) => Promise<void>; onUpdate: (serverId: string, input: EmbyServerInput) => Promise<void>; onDelete: (serverId: string) => void; onRefresh: () => void; onDirtyChange?: (dirty: boolean) => void }) {
   const { canMutate } = useWorkspaceCapabilities();
   const [adding, setAdding] = useState(false);
   const [editorDirty, setEditorDirty] = useState<Record<string, boolean>>({});
@@ -48,6 +48,7 @@ function EmbyServersPanel({ servers, loading, creating, updatingIds, deletingIds
           server={server}
           saving={updatingIds.has(server.id)}
           deleting={deletingIds.has(server.id)}
+          operationError={removalErrors[server.id]}
           onSave={(input) => onUpdate(server.id, input)}
           onDelete={() => onDelete(server.id)}
           editorId={server.id}

@@ -86,6 +86,7 @@ export type ConfigurationServices = {
     client_id: string;
     client_secret_configured: boolean;
     access_token_configured: boolean;
+    refresh_token_configured: boolean;
     expires_at: string;
   };
   justwatch: { enabled: boolean; locale: string };
@@ -94,18 +95,6 @@ export type ConfigurationServices = {
 export type ServiceConnection = { url: string; api_key_configured: boolean };
 
 export type ServiceSettingsInput = {
-  database: {
-    host: string;
-    port: string;
-    name: string;
-    user: string;
-    driver: string;
-    params: string;
-    password?: string;
-    url?: string;
-    clear_password?: boolean;
-    clear_url?: boolean;
-  };
   connections: {
     jellyseerr: { url: string; api_key?: string; clear_api_key?: boolean };
     prowlarr: { url: string; api_key?: string; clear_api_key?: boolean };
@@ -115,7 +104,7 @@ export type ServiceSettingsInput = {
     mdblist: { api_keys?: string[]; clear_api_keys?: boolean };
     omdb: { api_keys?: string[]; clear_api_keys?: boolean };
   };
-  trakt: { enabled: boolean; client_id: string; client_secret?: string; clear_client_secret?: boolean; access_token?: string };
+  trakt: { enabled: boolean; client_id: string; client_secret?: string; clear_client_secret?: boolean; access_token?: string; refresh_token?: string; expires_at?: string };
   justwatch: { enabled: boolean; locale: string };
 };
 
@@ -131,6 +120,7 @@ export type TraktDeviceStart = {
   verification_url: string;
   expires_in: number;
   interval: number;
+  config_revision: string;
 };
 
 export type TraktDevicePoll = {

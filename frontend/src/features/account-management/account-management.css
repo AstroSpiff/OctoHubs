@@ -93,6 +93,7 @@
 .account-row-actions .button { color: var(--color-muted); }
 .account-row-actions .button:hover { color: var(--color-accent-strong); }
 .account-row-actions .account-delete-action:hover { color: var(--color-danger); }
+.account-row-error { grid-column: 1 / -1; margin: 0; }
 .account-empty { margin: 0; padding: 18px; color: var(--color-muted); font-size: 12px; }
 .account-dialog-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 20px; background: var(--color-backdrop); }
 .account-editor-dialog { display: grid; width: min(510px, 100%); max-height: calc(100dvh - 40px); gap: 14px; overflow-y: auto; border: 1px solid var(--color-border); border-radius: var(--radius-panel); background: var(--color-surface); box-shadow: var(--shadow-floating); padding: 20px; }

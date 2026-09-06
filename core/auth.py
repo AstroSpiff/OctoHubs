@@ -3,18 +3,35 @@ Authentication module with SQLAlchemy.
 Manages user accounts, password hashing, and session management.
 """
 import json
+import logging
 import os
 import hashlib
 import secrets
 import bcrypt
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Any, Mapping
 
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Text
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Text, or_, text
 from sqlalchemy.orm import declarative_base, sessionmaker
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
+from core.auth_admin_invariant import active_admin_mutation_guard
 from core.auth_session_scope import RequestAwareSessionRegistry
+from core.client_address import resolve_client_address
+from core.database_timeouts import postgres_engine_options
+from core.log_sanitization import format_exception_for_log
+from core.password_policy import (
+    PasswordTooLongError,
+    bcrypt_password_bytes,
+    is_public_admin_bootstrap_password,
+    password_fits_bcrypt,
+)
+from core.safe_output import safe_print as print
+
+
+logger = logging.getLogger(__name__)
 
 # SQLAlchemy setup
 Base = declarative_base()
@@ -93,8 +110,58 @@ API_TOKEN_PERMISSION_PROFILES = {
     ),
     "administrator": ("admin:all",),
 }
-BCRYPT_MAX_PASSWORD_BYTES = 72
 _UNSET = object()
+_API_TOKEN_LAST_USED_INTERVAL = timedelta(minutes=5)
+API_TOKEN_MAX_ACTIVE_PER_ACCOUNT = 20
+API_TOKEN_MAX_HISTORY_PER_ACCOUNT = 100
+API_TOKEN_MAX_LISTED_PER_ACCOUNT = API_TOKEN_MAX_ACTIVE_PER_ACCOUNT + API_TOKEN_MAX_HISTORY_PER_ACCOUNT
+
+
+def _log_auth_exception(message: str, error: BaseException) -> None:
+    """Keep diagnostic context without writing credentials embedded in errors."""
+    print(f"[AUTH] {message}:", format_exception_for_log(error), sep="\n")
+
+
+_API_TOKEN_READ_AUDIT_INTERVAL_SECONDS = 300.0
+_AUDIT_RETENTION_DAYS = 90
+_audit_state_lock = threading.Lock()
+_interface_preferences_write_lock = threading.RLock()
+_recent_read_audits: dict[tuple[int, str, str, str], float] = {}
+_last_audit_prune_at = 0.0
+
+
+class AuthStorageError(RuntimeError):
+    """Raised when account storage cannot produce an authoritative outcome."""
+
+
+class AccountUpdateStorageError(AuthStorageError):
+    """Raised when an account update fails for an infrastructure reason."""
+
+
+def _rollback_safely(session: Any) -> None:
+    """Best-effort rollback that never masks the primary storage failure."""
+    try:
+        session.rollback()
+        return
+    except Exception as rollback_error:
+        logger.error(
+            "[AUTH] Rollback della sessione non riuscito:\n%s",
+            format_exception_for_log(rollback_error),
+        )
+
+    for cleanup_name in ("invalidate", "close", "remove"):
+        cleanup = getattr(session, cleanup_name, None)
+        if not callable(cleanup):
+            continue
+        try:
+            cleanup()
+            return
+        except Exception as cleanup_error:
+            logger.error(
+                "[AUTH] Cleanup sessione %s non riuscito:\n%s",
+                cleanup_name,
+                format_exception_for_log(cleanup_error),
+            )
 
 
 def _utcnow() -> datetime:
@@ -113,22 +180,21 @@ class User(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     is_admin = Column(Boolean, default=False, nullable=False)
     role = Column(String(20), default="user", nullable=False)
+    auth_epoch = Column(Integer, default=0, nullable=False)
     created_at = Column(DateTime, default=_utcnow, nullable=False)
     last_login = Column(DateTime, nullable=True)
 
     def set_password(self, password: str):
         """Hash and set the user password."""
-        password_bytes = password.encode("utf-8")
-        if len(password_bytes) > BCRYPT_MAX_PASSWORD_BYTES:
-            raise ValueError("La password non può superare 72 byte UTF-8.")
+        password_bytes = bcrypt_password_bytes(password)
         hashed = bcrypt.hashpw(password_bytes, bcrypt.gensalt())
         self.password_hash = hashed.decode('utf-8')
 
     def check_password(self, password: str) -> bool:
         """Verify password against hash."""
-        password_bytes = password.encode("utf-8")
-        if len(password_bytes) > BCRYPT_MAX_PASSWORD_BYTES:
+        if not password_fits_bcrypt(password):
             return False
+        password_bytes = password.encode("utf-8")
         try:
             return bcrypt.checkpw(password_bytes, self.password_hash.encode("utf-8"))
         except (TypeError, ValueError):
@@ -141,7 +207,7 @@ class User(Base):
             try:
                 db_session.commit()
             except SQLAlchemyError:
-                db_session.rollback()
+                _rollback_safely(db_session)
 
     def get_role(self) -> str:
         """Return normalized role for the user."""
@@ -208,16 +274,6 @@ class ApiToken(Base):
     last_used_at = Column(DateTime, nullable=True)
     revoked_at = Column(DateTime, nullable=True)
     expires_at = Column(DateTime, nullable=True)
-
-
-class LegacyAuthImport(Base):
-    """Idempotency record for a retired SQLite auth.db import."""
-
-    __tablename__ = "legacy_auth_imports"
-
-    source_fingerprint = Column(String(64), primary_key=True)
-    source_path = Column(Text, nullable=False)
-    imported_at = Column(DateTime, default=_utcnow, nullable=False)
 
 
 def _normalize_role(role: Optional[str], is_admin: bool = False) -> str:
@@ -310,10 +366,8 @@ def init_auth(
     from core.database_connection import (
         is_postgresql_url,
         resolve_application_database_url,
-        resolve_legacy_auth_sqlite_url,
     )
     from core.database_migrations import upgrade_database
-    from core.legacy_auth_import import import_legacy_auth_sqlite
 
     # Authentication and application data share one PostgreSQL database.
     db_url = database_url or resolve_application_database_url()
@@ -322,28 +376,36 @@ def init_auth(
         print("[AUTH] Database PostgreSQL non configurato: autenticazione in attesa del setup.")
         return False
     if not allow_sqlite_for_tests and not is_postgresql_url(db_url):
-        raise RuntimeError("AUTH_DATABASE_URL non e piu un database runtime: configura OCTOHUBS_DB_URL PostgreSQL.")
+        raise RuntimeError("Configura OCTOHUBS_DB_URL con un database PostgreSQL.")
 
     upgrade_database(db_url)
 
     # Create engine and session
-    engine = create_engine(db_url, echo=False)
+    engine = create_engine(db_url, echo=False, **postgres_engine_options(db_url))
     session_factory = sessionmaker(bind=engine)
     db_session = RequestAwareSessionRegistry(session_factory)
-
-    if not allow_sqlite_for_tests:
-        import_result = import_legacy_auth_sqlite(db_url, resolve_legacy_auth_sqlite_url())
-        if import_result["status"] == "imported":
-            print(f"[AUTH] Importati dati auth legacy: {import_result['imported']}")
-        elif import_result["status"] == "error":
-            print(f"[AUTH] Errore import auth legacy: {import_result['error']}")
 
     # Create default admin user if none exists
     if create_default_admin:
         _create_default_admin()
 
-    print(f"[AUTH] Sistema di autenticazione inizializzato (database PostgreSQL condiviso)")
+    print("[AUTH] Sistema di autenticazione inizializzato (database PostgreSQL condiviso)")
     return True
+
+
+def shutdown_auth() -> None:
+    """Close authentication sessions and dispose their SQLAlchemy engine."""
+    global db_session
+
+    registry = db_session
+    db_session = None
+    if registry is None:
+        return
+
+    engine = registry.session_factory.kw.get("bind")
+    registry.close_all()
+    if engine is not None:
+        engine.dispose()
 
 
 def _create_default_admin():
@@ -374,6 +436,12 @@ def _create_default_admin():
 
             if not admin_username or not admin_password:
                 return
+            if is_public_admin_bootstrap_password(admin_password):
+                print(
+                    "[AUTH] Amministratore iniziale non creato: "
+                    "la password coincide con un esempio pubblico; configurane una univoca."
+                )
+                return
 
             admin = User(
                 username=admin_username,
@@ -382,7 +450,11 @@ def _create_default_admin():
                 is_admin=True,
                 role="admin"
             )
-            admin.set_password(admin_password)
+            try:
+                admin.set_password(admin_password)
+            except PasswordTooLongError as exc:
+                logger.error("[AUTH] Amministratore iniziale non creato:\n%s", format_exception_for_log(exc))
+                return
 
             db_session.add(admin)
             db_session.commit()
@@ -390,9 +462,10 @@ def _create_default_admin():
             print(f"[AUTH] Utente amministratore creato: {admin_username}")
             print("[AUTH] ATTENZIONE: Cambia la password di default!")
     except SQLAlchemyError as e:
-        print(f"[AUTH] Errore durante la creazione dell'admin: {e}")
+        _log_auth_exception("Errore durante la creazione dell'admin", e)
         assert db_session is not None
-        db_session.rollback()
+        _rollback_safely(db_session)
+        raise AuthStorageError("Bootstrap amministratore non disponibile") from e
 
 
 def get_user_by_username(username: str) -> Optional[User]:
@@ -400,8 +473,8 @@ def get_user_by_username(username: str) -> Optional[User]:
     try:
         assert db_session is not None
         return db_session.query(User).filter_by(username=username).first()
-    except SQLAlchemyError:
-        return None
+    except SQLAlchemyError as exc:
+        raise AuthStorageError("Lettura account non disponibile") from exc
 
 
 def get_user_by_id(user_id: int) -> Optional[User]:
@@ -409,8 +482,10 @@ def get_user_by_id(user_id: int) -> Optional[User]:
     try:
         assert db_session is not None
         return db_session.get(User, user_id)
-    except (ValueError, SQLAlchemyError):
+    except ValueError:
         return None
+    except SQLAlchemyError as exc:
+        raise AuthStorageError("Lettura account non disponibile") from exc
 
 
 def create_user(username: str, password: str, email: Optional[str] = None,
@@ -419,6 +494,12 @@ def create_user(username: str, password: str, email: Optional[str] = None,
     Create a new user.
     Returns User object if successful, None otherwise.
     """
+    try:
+        bcrypt_password_bytes(password)
+    except (TypeError, PasswordTooLongError) as exc:
+        logger.error("[AUTH] Utente non creato:\n%s", format_exception_for_log(exc))
+        return None
+
     try:
         # Check if username already exists
         existing = get_user_by_username(username)
@@ -442,26 +523,48 @@ def create_user(username: str, password: str, email: Optional[str] = None,
 
         print(f"[AUTH] Utente creato: {username} (ruolo: {normalized_role})")
         return user
-    except SQLAlchemyError as e:
-        print(f"[AUTH] Errore durante la creazione dell'utente: {e}")
+    except IntegrityError as e:
+        _log_auth_exception("Errore durante la creazione dell'utente", e)
         assert db_session is not None
-        db_session.rollback()
+        _rollback_safely(db_session)
         return None
+    except SQLAlchemyError as e:
+        assert db_session is not None
+        _rollback_safely(db_session)
+        raise AuthStorageError("Creazione account non disponibile") from e
 
 
 def update_user_password(user: User, new_password: str) -> bool:
     """Update user password."""
     try:
+        password_bytes = bcrypt_password_bytes(new_password)
+    except (TypeError, PasswordTooLongError) as exc:
+        logger.error("[AUTH] Password non aggiornata:\n%s", format_exception_for_log(exc))
+        return False
+
+    try:
         assert db_session is not None
-        user.set_password(new_password)
-        db_session.commit()
+        # Hash before opening the row-locking transaction: bcrypt is deliberately
+        # expensive and must not hold an account row lock while it runs.
+        password_hash = bcrypt.hashpw(password_bytes, bcrypt.gensalt()).decode("utf-8")
+        session = db_session()
+        # The route hashes in a worker thread, whose scoped session differs
+        # from the request's ORM instance. Merge and lock the managed row so
+        # concurrent changes serialize without relying on a stale instance.
+        managed_user = session.merge(user)
+        session.refresh(managed_user, with_for_update=True)
+        managed_user.password_hash = password_hash
+        managed_user.auth_epoch = int(getattr(managed_user, "auth_epoch", 0) or 0) + 1
+        session.commit()
+        user.password_hash = managed_user.password_hash
+        user.auth_epoch = managed_user.auth_epoch
         print(f"[AUTH] Password aggiornata per: {user.username}")
         return True
     except SQLAlchemyError as e:
-        print(f"[AUTH] Errore durante l'aggiornamento della password: {e}")
+        _log_auth_exception("Errore durante l'aggiornamento della password", e)
         assert db_session is not None
-        db_session.rollback()
-        return False
+        _rollback_safely(db_session)
+        raise AuthStorageError("Aggiornamento password non disponibile") from e
 
 
 def update_user_details(user: User, *, email: str | None | object = _UNSET,
@@ -469,63 +572,159 @@ def update_user_details(user: User, *, email: str | None | object = _UNSET,
     """Update the safe, non-secret properties of a login account."""
     try:
         assert db_session is not None
-        next_role = _normalize_role(role) if role is not None else user.get_role()
-        next_active = bool(user.is_active) if is_active is None else bool(is_active)
+        session = db_session()
+        with active_admin_mutation_guard(session):
+            session.refresh(user)
+            previous_role = user.get_role()
+            previous_active = bool(user.is_active)
+            next_role = _normalize_role(role) if role is not None else user.get_role()
+            next_active = bool(user.is_active) if is_active is None else bool(is_active)
 
-        if user.get_role() == "admin" and (next_role != "admin" or not next_active):
-            remaining_admins = db_session.query(User).filter(
-                User.id != user.id,
-                User.is_active.is_(True),
-                User.is_admin.is_(True),
-            ).count()
-            if remaining_admins == 0:
-                print("[AUTH] Impossibile rimuovere o disattivare l'ultimo amministratore attivo")
-                return False
-
-        if email is not _UNSET:
-            normalized_email = str(email).strip() or None
-            if normalized_email:
-                duplicate = db_session.query(User).filter(User.email == normalized_email, User.id != user.id).first()
-                if duplicate is not None:
-                    print(f"[AUTH] Email gia in uso: {normalized_email}")
+            if user.get_role() == "admin" and (next_role != "admin" or not next_active):
+                remaining_admins = session.query(User).filter(
+                    User.id != user.id,
+                    User.is_active.is_(True),
+                    User.is_admin.is_(True),
+                ).count()
+                if remaining_admins == 0:
+                    print("[AUTH] Impossibile rimuovere o disattivare l'ultimo amministratore attivo")
+                    _rollback_safely(session)
                     return False
-            user.email = normalized_email
-        user.set_role(next_role)
-        user.is_active = next_active
-        db_session.commit()
-        return True
+
+            if email is not _UNSET:
+                normalized_email = str(email).strip() or None
+                if normalized_email:
+                    duplicate = session.query(User).filter(
+                        User.email == normalized_email,
+                        User.id != user.id,
+                    ).first()
+                    if duplicate is not None:
+                        print(f"[AUTH] Email gia in uso: {normalized_email}")
+                        _rollback_safely(session)
+                        return False
+                user.email = normalized_email
+            user.set_role(next_role)
+            user.is_active = next_active
+            if previous_role != next_role or previous_active != next_active:
+                user.auth_epoch = int(getattr(user, "auth_epoch", 0) or 0) + 1
+            session.commit()
+            return True
     except SQLAlchemyError as e:
-        print(f"[AUTH] Errore durante l'aggiornamento dell'utente: {e}")
+        _log_auth_exception("Errore durante l'aggiornamento dell'utente", e)
         assert db_session is not None
-        db_session.rollback()
-        return False
+        _rollback_safely(db_session)
+        raise AuthStorageError("Aggiornamento account non disponibile") from e
+
+
+def update_user_account(
+    user: User,
+    *,
+    email: str | None | object = _UNSET,
+    role: Optional[str] = None,
+    is_active: Optional[bool] = None,
+    password: str | object = _UNSET,
+) -> bool:
+    """Apply one administrative account patch in a single transaction."""
+    password_hash: str | None = None
+    if password is not _UNSET:
+        try:
+            if not isinstance(password, str):
+                raise TypeError("La password deve essere una stringa")
+            password_bytes = bcrypt_password_bytes(password)
+            password_hash = bcrypt.hashpw(password_bytes, bcrypt.gensalt()).decode("utf-8")
+        except (TypeError, PasswordTooLongError) as exc:
+            _log_auth_exception("Password account non valida", exc)
+            return False
+
+    try:
+        assert db_session is not None
+        session = db_session()
+        with active_admin_mutation_guard(session):
+            managed_user = session.merge(user)
+            session.refresh(managed_user, with_for_update=True)
+            previous_role = managed_user.get_role()
+            previous_active = bool(managed_user.is_active)
+            next_role = _normalize_role(role) if role is not None else previous_role
+            next_active = previous_active if is_active is None else bool(is_active)
+
+            if previous_role == "admin" and (next_role != "admin" or not next_active):
+                remaining_admins = session.query(User).filter(
+                    User.id != managed_user.id,
+                    User.is_active.is_(True),
+                    User.is_admin.is_(True),
+                ).count()
+                if remaining_admins == 0:
+                    _rollback_safely(session)
+                    return False
+
+            if email is not _UNSET:
+                normalized_email = str(email).strip() or None
+                if normalized_email:
+                    duplicate = session.query(User).filter(
+                        User.email == normalized_email,
+                        User.id != managed_user.id,
+                    ).first()
+                    if duplicate is not None:
+                        _rollback_safely(session)
+                        return False
+                managed_user.email = normalized_email
+
+            managed_user.set_role(next_role)
+            managed_user.is_active = next_active
+            authorization_changed = (
+                previous_role != next_role
+                or previous_active != next_active
+                or password_hash is not None
+            )
+            if password_hash is not None:
+                managed_user.password_hash = password_hash
+            if authorization_changed:
+                managed_user.auth_epoch = int(getattr(managed_user, "auth_epoch", 0) or 0) + 1
+
+            session.commit()
+            user.email = managed_user.email
+            user.set_role(managed_user.get_role())
+            user.is_active = managed_user.is_active
+            user.password_hash = managed_user.password_hash
+            user.auth_epoch = managed_user.auth_epoch
+            return True
+    except SQLAlchemyError as exc:
+        _log_auth_exception("Errore durante l'aggiornamento atomico dell'account", exc)
+        assert db_session is not None
+        _rollback_safely(db_session)
+        raise AccountUpdateStorageError("Aggiornamento account non disponibile") from exc
 
 
 def delete_user(user: User) -> bool:
     """Delete a user (cannot delete the last active administrator)."""
     try:
         assert db_session is not None
-        if user.get_role() == "admin" and bool(user.is_active):
-            remaining_admins = db_session.query(User).filter(
-                User.id != user.id,
-                User.is_active.is_(True),
-                User.is_admin.is_(True),
-            ).count()
-            if remaining_admins == 0:
-                print("[AUTH] Impossibile eliminare l'ultimo amministratore attivo")
-                return False
+        session = db_session()
+        with active_admin_mutation_guard(session):
+            session.refresh(user)
+            if user.get_role() == "admin" and bool(user.is_active):
+                remaining_admins = session.query(User).filter(
+                    User.id != user.id,
+                    User.is_active.is_(True),
+                    User.is_admin.is_(True),
+                ).count()
+                if remaining_admins == 0:
+                    print("[AUTH] Impossibile eliminare l'ultimo amministratore attivo")
+                    _rollback_safely(session)
+                    return False
 
-        db_session.query(ApiToken).filter_by(user_id=user.id).delete()
-        db_session.query(UserInterfacePreference).filter_by(user_id=user.id).delete()
-        db_session.delete(user)
-        db_session.commit()
-        print(f"[AUTH] Utente eliminato: {user.username}")
-        return True
+            username = str(user.username)
+            session.query(ApiToken).filter_by(user_id=user.id).delete()
+            session.query(UserInterfacePreference).filter_by(user_id=user.id).delete()
+            session.delete(user)
+            session.commit()
+            print(f"[AUTH] Utente eliminato: {username}")
+            return True
     except SQLAlchemyError as e:
-        print(f"[AUTH] Errore durante l'eliminazione dell'utente: {e}")
+        _log_auth_exception("Errore durante l'eliminazione dell'utente", e)
         assert db_session is not None
-        db_session.rollback()
-        return False
+        _rollback_safely(db_session)
+        raise AuthStorageError("Eliminazione account non disponibile") from e
 
 
 def get_all_users():
@@ -533,8 +732,17 @@ def get_all_users():
     try:
         assert db_session is not None
         return db_session.query(User).order_by(User.username).all()
-    except SQLAlchemyError:
-        return []
+    except SQLAlchemyError as exc:
+        raise AuthStorageError("Elenco account non disponibile") from exc
+
+
+def has_users() -> bool:
+    """Return whether any account exists without materializing the user table."""
+    try:
+        assert db_session is not None
+        return db_session.query(User.id).first() is not None
+    except SQLAlchemyError as exc:
+        raise AuthStorageError("Verifica account non disponibile") from exc
 
 
 def _api_token_expiry(value: Any) -> datetime | None | object:
@@ -573,6 +781,51 @@ def _new_api_token(user_id: int, name: str, scopes: list[str], expires_at: datet
     )
 
 
+def _lock_api_token_owner(user_id: int) -> User | None:
+    assert db_session is not None
+    return (
+        db_session.query(User)
+        .filter(User.id == int(user_id))
+        .with_for_update()
+        .one_or_none()
+    )
+
+
+def _active_api_token_count(user_id: int, now: datetime) -> int:
+    assert db_session is not None
+    return int(
+        db_session.query(ApiToken)
+        .filter(
+            ApiToken.user_id == int(user_id),
+            ApiToken.is_active.is_(True),
+            or_(ApiToken.expires_at.is_(None), ApiToken.expires_at > now),
+        )
+        .count()
+    )
+
+
+def _prune_api_token_history(user_id: int, now: datetime) -> None:
+    """Bound revoked/expired token rows while retaining all active credentials."""
+    assert db_session is not None
+    stale_ids = [
+        int(row.id)
+        for row in (
+            db_session.query(ApiToken.id)
+            .filter(
+                ApiToken.user_id == int(user_id),
+                or_(ApiToken.is_active.is_(False), ApiToken.expires_at <= now),
+            )
+            .order_by(ApiToken.created_at.desc(), ApiToken.id.desc())
+            .offset(API_TOKEN_MAX_HISTORY_PER_ACCOUNT)
+            .all()
+        )
+    ]
+    if stale_ids:
+        db_session.query(ApiToken).filter(ApiToken.id.in_(stale_ids)).delete(
+            synchronize_session=False
+        )
+
+
 def create_api_token(
     user: User,
     name: str,
@@ -587,15 +840,23 @@ def create_api_token(
     if not normalized_name or not normalized_scopes or expires_at is _UNSET or not db_session:
         return None
     try:
+        if _lock_api_token_owner(int(user.id)) is None:
+            _rollback_safely(db_session)
+            return None
+        now = _utcnow()
+        if _active_api_token_count(int(user.id), now) >= API_TOKEN_MAX_ACTIVE_PER_ACCOUNT:
+            _rollback_safely(db_session)
+            return None
         token, plaintext = _new_api_token(int(user.id), normalized_name, normalized_scopes, expires_at)
         db_session.add(token)
+        _prune_api_token_history(int(user.id), now)
         db_session.commit()
         return token, plaintext
     except SQLAlchemyError as e:
-        print(f"[AUTH] Errore durante creazione API token: {e}")
+        _log_auth_exception("Errore durante creazione API token", e)
         assert db_session is not None
-        db_session.rollback()
-        return None
+        _rollback_safely(db_session)
+        raise AuthStorageError("Creazione API token non disponibile") from e
 
 
 def list_api_tokens(user_id: int) -> list[ApiToken]:
@@ -607,11 +868,14 @@ def list_api_tokens(user_id: int) -> list[ApiToken]:
         return (
             db_session.query(ApiToken)
             .filter_by(user_id=int(user_id))
-            .order_by(ApiToken.created_at.desc())
+            .order_by(ApiToken.created_at.desc(), ApiToken.id.desc())
+            .limit(API_TOKEN_MAX_LISTED_PER_ACCOUNT)
             .all()
         )
-    except (ValueError, SQLAlchemyError):
+    except ValueError:
         return []
+    except SQLAlchemyError as exc:
+        raise AuthStorageError("Elenco API token non disponibile") from exc
 
 
 def revoke_api_token(user_id: int, token_id: int) -> bool:
@@ -620,18 +884,26 @@ def revoke_api_token(user_id: int, token_id: int) -> bool:
         return False
     try:
         assert db_session is not None
+        if _lock_api_token_owner(int(user_id)) is None:
+            _rollback_safely(db_session)
+            return False
         token = db_session.query(ApiToken).filter_by(id=int(token_id), user_id=int(user_id)).first()
         if token is None or not bool(token.is_active) or _api_token_is_expired(token):
             return False
         token.is_active = False
         token.revoked_at = _utcnow()
+        _prune_api_token_history(int(user_id), _utcnow())
         db_session.commit()
         return True
-    except (ValueError, SQLAlchemyError) as error:
-        print(f"[AUTH] Errore durante revoca API token: {error}")
+    except ValueError as error:
+        _log_auth_exception("Errore durante revoca API token", error)
         assert db_session is not None
-        db_session.rollback()
+        _rollback_safely(db_session)
         return False
+    except SQLAlchemyError as error:
+        assert db_session is not None
+        _rollback_safely(db_session)
+        raise AuthStorageError("Revoca API token non disponibile") from error
 
 
 def rotate_api_token(user_id: int, token_id: int) -> Optional[tuple[ApiToken, str]]:
@@ -640,6 +912,9 @@ def rotate_api_token(user_id: int, token_id: int) -> Optional[tuple[ApiToken, st
         return None
     try:
         assert db_session is not None
+        if _lock_api_token_owner(int(user_id)) is None:
+            _rollback_safely(db_session)
+            return None
         token = db_session.query(ApiToken).filter_by(id=int(token_id), user_id=int(user_id)).first()
         if token is None or not bool(token.is_active) or _api_token_is_expired(token):
             return None
@@ -652,13 +927,18 @@ def rotate_api_token(user_id: int, token_id: int) -> Optional[tuple[ApiToken, st
         token.is_active = False
         token.revoked_at = _utcnow()
         db_session.add(replacement)
+        _prune_api_token_history(int(user_id), _utcnow())
         db_session.commit()
         return replacement, plaintext
-    except (ValueError, SQLAlchemyError) as error:
-        print(f"[AUTH] Errore durante rotazione API token: {error}")
+    except ValueError as error:
+        _log_auth_exception("Errore durante rotazione API token", error)
         assert db_session is not None
-        db_session.rollback()
+        _rollback_safely(db_session)
         return None
+    except SQLAlchemyError as error:
+        assert db_session is not None
+        _rollback_safely(db_session)
+        raise AuthStorageError("Rotazione API token non disponibile") from error
 
 
 def verify_api_token(plaintext: str) -> Optional[dict[str, Any]]:
@@ -674,13 +954,19 @@ def verify_api_token(plaintext: str) -> Optional[dict[str, Any]]:
         user = get_user_by_id(int(token.user_id))
         if user is None or not bool(user.is_active):
             return None
-        token.last_used_at = _utcnow()
-        db_session.commit()
+        now = _utcnow()
+        if token.last_used_at is None or now - token.last_used_at >= _API_TOKEN_LAST_USED_INTERVAL:
+            token.last_used_at = now
+            db_session.commit()
         return {"user": user, "token": token, "scopes": _api_token_scopes(token)}
-    except (ValueError, SQLAlchemyError):
+    except ValueError:
         if db_session:
-            db_session.rollback()
+            _rollback_safely(db_session)
         return None
+    except SQLAlchemyError as exc:
+        if db_session:
+            _rollback_safely(db_session)
+        raise AuthStorageError("Verifica API token non disponibile") from exc
 
 
 def normalize_interface_preferences(preferences: Optional[Mapping[str, Any]]) -> dict[str, str]:
@@ -731,7 +1017,7 @@ def _navigation_orders_from_preference(preference: UserInterfacePreference) -> d
 
 
 def get_user_interface_preferences(user_id: int) -> dict[str, str]:
-    """Load a user's workspace layout without letting an unavailable preference block login."""
+    """Load a user's workspace layout, distinguishing invalid input from DB outage."""
     if not db_session:
         return dict(DEFAULT_INTERFACE_PREFERENCES)
     try:
@@ -744,8 +1030,10 @@ def get_user_interface_preferences(user_id: int) -> dict[str, str]:
                 "secondary_navigation": preference.secondary_navigation,
             }
         )
-    except (ValueError, SQLAlchemyError):
+    except ValueError:
         return dict(DEFAULT_INTERFACE_PREFERENCES)
+    except SQLAlchemyError as exc:
+        raise AuthStorageError("Lettura preferenze non disponibile") from exc
 
 
 def get_user_interface_order(user_id: int, page: str) -> Optional[list[str]]:
@@ -760,91 +1048,78 @@ def get_user_interface_order(user_id: int, page: str) -> Optional[list[str]]:
         orders = _navigation_orders_from_preference(preference)
         current_order = orders.get(normalized_page)
         return list(current_order) if current_order is not None else None
-    except (ValueError, SQLAlchemyError):
+    except ValueError:
         return None
+    except SQLAlchemyError as exc:
+        raise AuthStorageError("Lettura ordine interfaccia non disponibile") from exc
 
 
-def migrate_user_interface_navigation_orders(
-    shared_orders: Mapping[str, Any],
-    page_aliases: Mapping[str, str],
-) -> int:
-    """Move shared and retired order keys into every existing user profile once."""
-    if not db_session:
-        return 0
+def _lock_user_interface_preference(user_id: int) -> None:
+    """Serialize creation and updates of one user's shared preference row."""
+    if db_session and db_session.get_bind().dialect.name == "postgresql":
+        db_session.execute(
+            text("SELECT pg_advisory_xact_lock(1868787064, :user_id)"),
+            {"user_id": int(user_id)},
+        )
 
-    normalized_shared = _normalize_navigation_orders(shared_orders)
-    normalized_aliases = {
-        str(legacy_page or "").strip(): str(current_page or "").strip()
-        for legacy_page, current_page in page_aliases.items()
-        if str(legacy_page or "").strip() and str(current_page or "").strip()
+
+def _normalized_interface_preference_updates(
+    preferences: Mapping[str, Any],
+) -> Optional[dict[str, str]]:
+    updates: dict[str, str] = {}
+    modes = {
+        "primary_navigation": PRIMARY_NAVIGATION_MODES,
+        "secondary_navigation": SECONDARY_NAVIGATION_MODES,
     }
-    migrated_shared: dict[str, list[str]] = {}
-    for page, order in normalized_shared.items():
-        current_page = normalized_aliases.get(page, page)
-        migrated_shared.setdefault(current_page, list(order))
-
-    try:
-        users = db_session.query(User).all()
-        preferences = {
-            int(preference.user_id): preference
-            for preference in db_session.query(UserInterfacePreference).all()
-        }
-        updated_profiles = 0
-        for user in users:
-            user_id = int(user.id)
-            preference = preferences.get(user_id)
-            if preference is None:
-                if not migrated_shared:
-                    continue
-                preference = UserInterfacePreference(user_id=user_id, **DEFAULT_INTERFACE_PREFERENCES)
-                db_session.add(preference)
-
-            orders = _navigation_orders_from_preference(preference)
-            changed = False
-            for legacy_page, current_page in normalized_aliases.items():
-                legacy_order = orders.get(legacy_page)
-                if legacy_order is None:
-                    continue
-                if current_page not in orders:
-                    orders[current_page] = list(legacy_order)
-                del orders[legacy_page]
-                changed = True
-            for page, order in migrated_shared.items():
-                if page in orders:
-                    continue
-                orders[page] = list(order)
-                changed = True
-            if changed:
-                preference.navigation_order = json.dumps(orders, separators=(",", ":"), sort_keys=True)
-                updated_profiles += 1
-        if updated_profiles:
-            db_session.commit()
-        return updated_profiles
-    except (TypeError, ValueError, SQLAlchemyError):
-        if db_session:
-            db_session.rollback()
-        return 0
+    for field, allowed in modes.items():
+        if field not in preferences:
+            continue
+        value = str(preferences.get(field) or "").strip().lower()
+        if value not in allowed:
+            return None
+        updates[field] = value
+    return updates
 
 
 def save_user_interface_preferences(user_id: int, preferences: Mapping[str, Any]) -> Optional[dict[str, str]]:
-    """Persist a user's interface layout, returning the normalized saved value."""
-    normalized = normalize_interface_preferences(preferences)
-    if not db_session:
+    """Atomically merge supplied layout fields into one user's current value."""
+    updates = _normalized_interface_preference_updates(preferences)
+    if updates is None or not db_session:
         return None
-    try:
-        preference = db_session.query(UserInterfacePreference).filter_by(user_id=user_id).first()
-        if preference is None:
-            preference = UserInterfacePreference(user_id=user_id, **normalized)
-            db_session.add(preference)
-        else:
-            preference.primary_navigation = normalized["primary_navigation"]
-            preference.secondary_navigation = normalized["secondary_navigation"]
-        db_session.commit()
-        return normalized
-    except (ValueError, SQLAlchemyError):
-        if db_session:
-            db_session.rollback()
-        return None
+    with _interface_preferences_write_lock:
+        try:
+            _lock_user_interface_preference(user_id)
+            preference = (
+                db_session.query(UserInterfacePreference)
+                .filter_by(user_id=user_id)
+                .with_for_update()
+                .first()
+            )
+            current = normalize_interface_preferences(
+                {
+                    "primary_navigation": getattr(preference, "primary_navigation", None),
+                    "secondary_navigation": getattr(preference, "secondary_navigation", None),
+                }
+                if preference is not None
+                else None
+            )
+            normalized = {**current, **updates}
+            if preference is None:
+                preference = UserInterfacePreference(user_id=user_id, **normalized)
+                db_session.add(preference)
+            else:
+                preference.primary_navigation = normalized["primary_navigation"]
+                preference.secondary_navigation = normalized["secondary_navigation"]
+            db_session.commit()
+            return normalized
+        except ValueError:
+            if db_session:
+                _rollback_safely(db_session)
+            return None
+        except SQLAlchemyError as exc:
+            if db_session:
+                _rollback_safely(db_session)
+            raise AuthStorageError("Salvataggio preferenze non disponibile") from exc
 
 
 def save_user_interface_order(user_id: int, page: str, order: Any) -> Optional[list[str]]:
@@ -853,20 +1128,31 @@ def save_user_interface_order(user_id: int, page: str, order: Any) -> Optional[l
     normalized_orders = _normalize_navigation_orders({normalized_page: order}) if normalized_page else {}
     if normalized_page is None or normalized_page not in normalized_orders or not db_session:
         return None
-    try:
-        preference = db_session.query(UserInterfacePreference).filter_by(user_id=user_id).first()
-        if preference is None:
-            preference = UserInterfacePreference(user_id=user_id, **DEFAULT_INTERFACE_PREFERENCES)
-            db_session.add(preference)
-        orders = _navigation_orders_from_preference(preference)
-        orders[normalized_page] = normalized_orders[normalized_page]
-        preference.navigation_order = json.dumps(orders, separators=(",", ":"), sort_keys=True)
-        db_session.commit()
-        return list(orders[normalized_page])
-    except (TypeError, ValueError, SQLAlchemyError):
-        if db_session:
-            db_session.rollback()
-        return None
+    with _interface_preferences_write_lock:
+        try:
+            _lock_user_interface_preference(user_id)
+            preference = (
+                db_session.query(UserInterfacePreference)
+                .filter_by(user_id=user_id)
+                .with_for_update()
+                .first()
+            )
+            if preference is None:
+                preference = UserInterfacePreference(user_id=user_id, **DEFAULT_INTERFACE_PREFERENCES)
+                db_session.add(preference)
+            orders = _navigation_orders_from_preference(preference)
+            orders[normalized_page] = normalized_orders[normalized_page]
+            preference.navigation_order = json.dumps(orders, separators=(",", ":"), sort_keys=True)
+            db_session.commit()
+            return list(orders[normalized_page])
+        except (TypeError, ValueError):
+            if db_session:
+                _rollback_safely(db_session)
+            return None
+        except SQLAlchemyError as exc:
+            if db_session:
+                _rollback_safely(db_session)
+            raise AuthStorageError("Salvataggio ordine interfaccia non disponibile") from exc
 
 
 def toggle_user_active(user: User) -> bool:
@@ -901,15 +1187,9 @@ def log_audit_event(user: Optional[Any], action: str, detail: Optional[str] = No
     if request_obj is not None:
         try:
             headers = getattr(request_obj, "headers", {}) or {}
-            client = getattr(request_obj, "client", None)
             url = getattr(request_obj, "url", None)
             scope = getattr(request_obj, "scope", {}) or {}
-            ip_address = (
-                headers.get("X-Real-IP")
-                or headers.get("X-Forwarded-For", "").split(",")[0].strip()
-                or getattr(client, "host", None)
-                or getattr(request_obj, "remote_addr", None)
-            )
+            ip_address = resolve_client_address(request_obj)
             externally_versioned_path = (
                 scope.get("octohubs_external_path") if isinstance(scope, dict) else None
             )
@@ -921,8 +1201,25 @@ def log_audit_event(user: Optional[Any], action: str, detail: Optional[str] = No
             user_agent = headers.get("User-Agent")
         except Exception:
             pass
+    username = str(username or "")[:80] or None
+    action = str(action or "")[:120]
+    ip_address = str(ip_address or "")[:64] or None
+    path = str(path or "")[:255] or None
+    method = str(method or "")[:10] or None
+    user_agent = str(user_agent or "")[:255] or None
     try:
         assert db_session is not None
+        global _last_audit_prune_at
+        now_monotonic = time.monotonic()
+        prune = False
+        with _audit_state_lock:
+            if now_monotonic - _last_audit_prune_at >= 3600:
+                _last_audit_prune_at = now_monotonic
+                prune = True
+        if prune:
+            db_session.query(AuditLog).filter(
+                AuditLog.created_at < _utcnow() - timedelta(days=_AUDIT_RETENTION_DAYS)
+            ).delete(synchronize_session=False)
         entry = AuditLog(
             user_id=user_id,
             username=username,
@@ -936,9 +1233,9 @@ def log_audit_event(user: Optional[Any], action: str, detail: Optional[str] = No
         db_session.add(entry)
         db_session.commit()
     except SQLAlchemyError as e:
-        print(f"[AUTH] Errore durante audit log: {e}")
+        _log_auth_exception("Errore durante audit log", e)
         assert db_session is not None
-        db_session.rollback()
+        _rollback_safely(db_session)
 
 
 def log_api_token_usage(
@@ -961,9 +1258,39 @@ def log_api_token_usage(
     else:
         action = "api_token_write"
 
+    token_id = int(getattr(token, "id", 0) or 0)
+    if action == "api_token_read":
+        url = getattr(request_obj, "url", None)
+        path = str(
+            getattr(url, "path", None)
+            or getattr(request_obj, "path", "")
+            or (getattr(request_obj, "scope", {}) or {}).get("path", "")
+        )
+        token_prefix = str(getattr(token, "token_prefix", "") or "")
+        key = (token_id, token_prefix, method, path[:255])
+        now = time.monotonic()
+        with _audit_state_lock:
+            last_seen = _recent_read_audits.get(key)
+            if last_seen is not None and now - last_seen < _API_TOKEN_READ_AUDIT_INTERVAL_SECONDS:
+                return
+            _recent_read_audits[key] = now
+            if len(_recent_read_audits) > 10_000:
+                cutoff = now - _API_TOKEN_READ_AUDIT_INTERVAL_SECONDS
+                stale = [entry for entry, seen_at in _recent_read_audits.items() if seen_at < cutoff]
+                for entry in stale:
+                    _recent_read_audits.pop(entry, None)
+                overflow = len(_recent_read_audits) - 10_000
+                if overflow > 0:
+                    oldest = sorted(
+                        _recent_read_audits,
+                        key=_recent_read_audits.__getitem__,
+                    )[:overflow]
+                    for entry in oldest:
+                        _recent_read_audits.pop(entry, None)
+
     detail = json.dumps(
         {
-            "token_id": int(getattr(token, "id", 0) or 0),
+            "token_id": token_id,
             "token_name": str(getattr(token, "name", "") or ""),
             "token_prefix": str(getattr(token, "token_prefix", "") or ""),
             "required_scope": required_scope,
@@ -987,8 +1314,8 @@ def get_audit_logs(limit: int = 100):
                 .order_by(AuditLog.created_at.desc())
                 .limit(limit)
                 .all())
-    except SQLAlchemyError:
-        return []
+    except SQLAlchemyError as exc:
+        raise AuthStorageError("Elenco audit non disponibile") from exc
 
 
 def get_api_token_audit_summaries(user_id: int, *, limit: int = 500) -> dict[int, dict[str, Any]]:
@@ -1005,8 +1332,10 @@ def get_api_token_audit_summaries(user_id: int, *, limit: int = 500) -> dict[int
             .limit(max(1, min(int(limit), 2000)))
             .all()
         )
-    except (ValueError, SQLAlchemyError):
+    except ValueError:
         return {}
+    except SQLAlchemyError as exc:
+        raise AuthStorageError("Riepilogo audit token non disponibile") from exc
 
     summaries: dict[int, dict[str, Any]] = {}
     for entry in entries:

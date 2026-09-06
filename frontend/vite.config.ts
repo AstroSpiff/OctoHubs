@@ -3,7 +3,7 @@ import { fileURLToPath, URL } from "node:url";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
-const apiTarget = process.env.OCTOHUBS_API_PROXY_TARGET || "http://127.0.0.1:5052";
+const apiTarget = process.env.OCTOHUBS_API_PROXY_TARGET || "http://127.0.0.1:5050";
 
 export default defineConfig({
   base: "/app/",
