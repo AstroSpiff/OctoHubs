@@ -6,6 +6,7 @@ import logging
 from typing import Any, Dict, Optional, Tuple
 
 from core.log_sanitization import format_exception_for_log
+from core.thread_lifecycle import log_lifecycle_exception_safely
 
 
 logger = logging.getLogger(__name__)
@@ -95,11 +96,24 @@ def finish_latest_refresh_operation(
 def fail_latest_refresh_operation(operation_tracker, operation_id: Optional[str], error: Any) -> None:
     if not operation_tracker or not operation_id:
         return
+    diagnostic_error = (
+        error
+        if isinstance(error, BaseException)
+        else RuntimeError("Errore refresh Pubblicazioni")
+    )
+    log_lifecycle_exception_safely(
+        logger,
+        "Aggiornamento Pubblicazioni fallito: %s",
+        diagnostic_error,
+    )
     try:
-        logger.error("Aggiornamento Pubblicazioni fallito: %s", format_exception_for_log(RuntimeError(str(error))))
         operation_tracker.fail(operation_id, _LATEST_OPERATION_FAILURE)
-    except Exception as exc:  # pragma: no cover - defensive integration boundary
-        logger.error("Fallimento operazione Pubblicazioni non registrato:\n%s", format_exception_for_log(exc))
+    except BaseException as exc:  # pragma: no cover - defensive integration boundary
+        log_lifecycle_exception_safely(
+            logger,
+            "Fallimento operazione Pubblicazioni non registrato:\n%s",
+            exc,
+        )
 
 
 class LatestOperationProgressBridge:

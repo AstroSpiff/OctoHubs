@@ -12,6 +12,7 @@ import requests
 
 from core.http_response_limits import close_response_safely, require_success_and_close
 from core.log_sanitization import format_exception_for_log
+from core.thread_lifecycle import start_owned_thread_confirmed
 from emby_runtime.api_clients import _call_emby_api
 
 from .constants import PROBE_SCOPE_LIBRARIES
@@ -103,11 +104,16 @@ class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
     def start_operation_monitor(
         self,
         callback: Callable[[threading.Event], None],
+        *,
+        owner_token: str | None = None,
     ) -> None:
         with self._lock:
             if not self._accept_workers:
                 raise RuntimeError("Monitor Probe rifiutato durante lo shutdown")
-            self._operation_monitors.start(callback)
+            self._operation_monitors.start(callback, owner_token=owner_token)
+
+    def owns_operation_monitor(self, owner_token: str) -> bool:
+        return self._operation_monitors.owns(owner_token)
 
     def _start_local_worker_locked(
         self,
@@ -120,9 +126,8 @@ class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
     ) -> None:
         """Register before start and leave a terminal status if start fails."""
         self._workers[server_id][worker_key] = worker
-        try:
-            worker.start()
-        except BaseException:
+
+        def rollback_unstarted() -> None:
             if self._workers.get(server_id, {}).get(worker_key) is worker:
                 self._workers[server_id].pop(worker_key, None)
             if self._stop_flags.get(server_id, {}).get(worker_key) is stop_flag:
@@ -133,7 +138,12 @@ class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
                 status["last_log"] = "Avvio worker non riuscito"
             if release_libraries_pause:
                 self._set_libraries_pause(server_id, False)
-            raise
+
+        start_owned_thread_confirmed(
+            worker,
+            rollback_unstarted=rollback_unstarted,
+            context=f"Probe {server_id}/{worker_key}",
+        )
 
     def _start_global_worker_locked(
         self,
@@ -143,14 +153,18 @@ class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
     ) -> None:
         """Publish a global worker before start and roll registration back on failure."""
         self._global_workers[worker_key] = worker
-        try:
-            worker.start()
-        except BaseException:
+
+        def rollback_unstarted() -> None:
             if self._global_workers.get(worker_key) is worker:
                 self._global_workers.pop(worker_key, None)
             if self._global_stop_flags.get(worker_key) is stop_flag:
                 self._global_stop_flags.pop(worker_key, None)
-            raise
+
+        start_owned_thread_confirmed(
+            worker,
+            rollback_unstarted=rollback_unstarted,
+            context=f"Probe global/{worker_key}",
+        )
 
     def quiesce_server(self, server_id: str, timeout_seconds: float = 5.0) -> bool:
         """Stop and join workers that may still write data for one server."""

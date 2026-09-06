@@ -324,21 +324,22 @@ class TranscodeGuardScanMixin:
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
-            settings = self.load_settings()
-            self._wake_event.clear()
-            if settings.get("enabled"):
-                try:
+            settings = {}
+            try:
+                settings = self.load_settings()
+                self._wake_event.clear()
+                if settings.get("enabled"):
                     self.check_once()
-                except Exception as exc:  # pragma: no cover - defensive worker boundary
-                    with self._lock:
-                        self._last_result = {
-                            "checked": 0,
-                            "violations": 0,
-                            "warned": 0,
-                            "paused": 0,
-                            "stopped": 0,
-                            "errors": [str(exc)],
-                        }
+            except BaseException:  # pragma: no cover - defensive worker boundary
+                with self._lock:
+                    self._last_result = {
+                        "checked": 0,
+                        "violations": 0,
+                        "warned": 0,
+                        "paused": 0,
+                        "stopped": 0,
+                        "errors": ["Errore nel ciclo Transcode Guard"],
+                    }
             delay = int(settings.get("poll_interval_seconds") or 5)
             self._wait_for_next_cycle(max(2, delay))
 

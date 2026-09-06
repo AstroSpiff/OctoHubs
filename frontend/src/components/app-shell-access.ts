@@ -30,8 +30,18 @@ function isAuthenticatedAccessState(accessState: WorkspaceAccessState) {
   return accessState === "viewer" || accessState === "editor";
 }
 
+function workspaceContentOwnerKey(
+  accessState: WorkspaceAccessState,
+  user?: Pick<Session["user"], "id" | "username">,
+) {
+  if (!isAuthenticatedAccessState(accessState) || !user) return accessState;
+  const owner = user.id == null ? `username:${user.username}` : `id:${user.id}`;
+  return `${accessState}:${owner}`;
+}
+
 export {
   isAuthenticatedAccessState,
+  workspaceContentOwnerKey,
   workspaceAccessState,
   type WorkspaceAccessState,
 };

@@ -2,11 +2,17 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getTmdbTvDetails, requestFromJellyseerr } from "@/features/research/api";
 import { IndependentSearchForm } from "@/features/research/components/independent-search-form";
+import {
+  customRulesStorageKey,
+  storeCustomRules,
+} from "@/features/research/customization";
+import { WorkspaceCapabilitiesProvider } from "@/features/session/workspace-capabilities";
 import type {
   ResearchOverview,
   TmdbSearchResult,
@@ -287,7 +293,7 @@ describe("IndependentSearchForm", () => {
     await renderForm(root, queryClient);
 
     expect(customRulesToggle(container).checked).toBe(false);
-    expect(window.localStorage.getItem("indie-search-rules")).toBeNull();
+    expect(window.localStorage.getItem(customRulesStorageKey(1) || "")).toBeNull();
 
     await act(async () => {
       root.render(<></>);
@@ -295,7 +301,7 @@ describe("IndependentSearchForm", () => {
     await renderForm(root, queryClient);
 
     expect(customRulesToggle(container).checked).toBe(false);
-    expect(window.localStorage.getItem("indie-search-rules")).toBeNull();
+    expect(window.localStorage.getItem(customRulesStorageKey(1) || "")).toBeNull();
   });
 
   it("restores custom rules only after the user explicitly enables them", async () => {
@@ -303,7 +309,7 @@ describe("IndependentSearchForm", () => {
 
     act(() => customRulesToggle(container).click());
 
-    expect(JSON.parse(window.localStorage.getItem("indie-search-rules") || "null"))
+    expect(JSON.parse(window.localStorage.getItem(customRulesStorageKey(1) || "") || "null"))
       .toMatchObject({ enabled: true, rules: { search_rules: {} } });
 
     await act(async () => {
@@ -313,24 +319,72 @@ describe("IndependentSearchForm", () => {
 
     expect(customRulesToggle(container).checked).toBe(true);
   });
+
+  it("switches custom-rule ownership on account change and clears it on logout", async () => {
+    const enabledRules = {
+      search_rules: { min_seeders: 7 },
+      target_languages: ["ita"],
+      exclude_tags: ["account-one"],
+    };
+    storeCustomRules(1, true, enabledRules);
+    storeCustomRules(2, false, { ...enabledRules, exclude_tags: ["account-two"] });
+
+    await renderForm(root, queryClient, 1);
+    expect(customRulesToggle(container).checked).toBe(true);
+
+    await renderForm(root, queryClient, 2);
+    expect(customRulesToggle(container).checked).toBe(false);
+
+    await renderForm(root, queryClient, null);
+    expect(customRulesToggle(container).checked).toBe(false);
+  });
+
+  it("is noninteractive immediately on a same-role owner transition before passive effects", async () => {
+    const accountOneRules = {
+      search_rules: { query_terms: ["account-one-private"] },
+      target_languages: ["ita"],
+      exclude_tags: ["account-one"],
+    };
+    storeCustomRules(1, true, accountOneRules);
+    await renderForm(root, queryClient, 1);
+    expect(customRulesToggle(container).checked).toBe(true);
+
+    globalThis.IS_REACT_ACT_ENVIRONMENT = false;
+    flushSync(() => root.render(formTree(queryClient, 2)));
+    const transitionToggle = customRulesToggle(container);
+    expect(transitionToggle.checked).toBe(false);
+    expect(transitionToggle.disabled).toBe(true);
+    transitionToggle.click();
+    expect(window.localStorage.getItem(customRulesStorageKey(2) || "")).toBeNull();
+
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    await act(async () => undefined);
+  });
 });
 
 async function renderForm(
   root: ReturnType<typeof createRoot>,
   queryClient: QueryClient,
+  accountId: number | null = 1,
 ) {
   await act(async () => {
-    root.render(
-      <QueryClientProvider client={queryClient}>
+    root.render(formTree(queryClient, accountId));
+  });
+}
+
+function formTree(queryClient: QueryClient, accountId: number | null) {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <WorkspaceCapabilitiesProvider accountId={accountId} canMutate>
         <IndependentSearchForm
           overview={overview}
           searching={false}
           onSearch={vi.fn()}
           onSearchStart={vi.fn()}
         />
-      </QueryClientProvider>,
-    );
-  });
+      </WorkspaceCapabilitiesProvider>
+    </QueryClientProvider>
+  );
 }
 
 function customRulesToggle(container: HTMLElement) {

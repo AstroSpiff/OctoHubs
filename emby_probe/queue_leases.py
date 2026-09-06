@@ -6,7 +6,11 @@ import logging
 import threading
 from typing import Any, Callable, Dict, TypeVar
 
-from core.log_sanitization import format_exception_for_log
+from core.thread_lifecycle import (
+    log_lifecycle_exception_safely,
+    start_owned_thread,
+    stop_and_join_after_start_failure,
+)
 
 
 T = TypeVar("T")
@@ -44,10 +48,11 @@ def _mark_claim_lost(
         return
     try:
         on_claim_lost()
-    except Exception as exc:  # pragma: no cover - defensive callback boundary
-        logger.error(
+    except BaseException as exc:  # pragma: no cover - defensive callback boundary
+        log_lifecycle_exception_safely(
+            logger,
             "Callback perdita lease Probe non riuscito:\n%s",
-            format_exception_for_log(exc),
+            exc,
         )
 
 
@@ -72,10 +77,11 @@ def _renew_until_stopped(
                     if claim_finished is not None and claim_finished.is_set():
                         return
                     renewed = bool(renew(*identity))
-        except Exception as exc:
-            logger.error(
+        except BaseException as exc:
+            log_lifecycle_exception_safely(
+                logger,
                 "Rinnovo lease Probe non riuscito:\n%s",
-                format_exception_for_log(exc),
+                exc,
             )
             _mark_claim_lost(claim_lost, on_claim_lost)
             return
@@ -132,7 +138,16 @@ def run_with_claim_renewal(
         name="probe-lease-renewal",
         daemon=True,
     )
-    worker.start()
+    try:
+        start_owned_thread(worker, context="Probe lease renewal")
+    except BaseException as primary_error:
+        stop_and_join_after_start_failure(
+            worker,
+            stopped.set,
+            primary_error,
+            context="Probe lease renewal",
+        )
+        raise
     try:
         result = callback()
     finally:

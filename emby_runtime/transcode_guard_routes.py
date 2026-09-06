@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Callable, Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -63,6 +64,7 @@ _validate_csrf: Optional[Callable[[Request, Optional[str]], bool]] = None
 _get_service: Optional[Callable[[], Any]] = None
 _get_event_bridge_settings: Optional[Callable[..., dict[str, Any]]] = None
 _get_emby_servers: Optional[Callable[[], list[dict[str, Any]]]] = None
+_lifecycle_settings_lock = threading.Lock()
 
 
 def init_transcode_guard_routes(
@@ -111,6 +113,33 @@ def _service():
     if _get_service is None:
         return get_transcode_guard_service()
     return _get_service()
+
+
+def _save_settings_and_apply_lifecycle(
+    service: Any,
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    """Keep the persisted enabled flag aligned with the owned monitor."""
+    with _lifecycle_settings_lock:
+        settings = service.save_settings(payload)
+        enabled = bool(settings.get("enabled"))
+        try:
+            changed = bool(service.start() if enabled else service.stop())
+        except BaseException as primary_error:
+            try:
+                running = bool(service.is_running())
+                service.save_settings({"enabled": running})
+            except BaseException as cleanup_error:
+                try:
+                    logger.error(
+                        "Ripristino stato Transcode Guard non riuscito:\n%s",
+                        format_exception_for_log(cleanup_error),
+                    )
+                except BaseException:
+                    pass
+            _ = primary_error
+            raise
+        return settings, changed
 
 
 def _configured_emby_servers() -> list[dict[str, Any]]:
@@ -276,13 +305,13 @@ async def api_transcode_guard_settings_save(request: Request):
     payload = await validated_json_payload(request, TranscodeGuardSettingsRequest)
     service = _service()
     try:
-        settings = await run_in_threadpool(service.save_settings, payload if isinstance(payload, dict) else {})
+        settings, _changed = await run_in_threadpool(
+            _save_settings_and_apply_lifecycle,
+            service,
+            payload if isinstance(payload, dict) else {},
+        )
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
-    if settings.get("enabled"):
-        await run_in_threadpool(service.start)
-    else:
-        await run_in_threadpool(service.stop)
     return JSONResponse({"ok": True, "settings": settings})
 
 
@@ -382,9 +411,11 @@ async def api_transcode_guard_start(request: Request):
     await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_request(request)
     service = _service()
-    settings = await run_in_threadpool(service.load_settings) or {}
-    persisted = await run_in_threadpool(service.save_settings, {**settings, "enabled": True})
-    started = await run_in_threadpool(service.start)
+    persisted, started = await run_in_threadpool(
+        _save_settings_and_apply_lifecycle,
+        service,
+        {"enabled": True},
+    )
     return JSONResponse({"ok": True, "started": bool(started), "settings": persisted})
 
 
@@ -397,7 +428,9 @@ async def api_transcode_guard_stop(request: Request):
     await run_in_threadpool(_require_auth_dep, request)
     _validate_csrf_request(request)
     service = _service()
-    settings = await run_in_threadpool(service.load_settings)
-    persisted = await run_in_threadpool(service.save_settings, {**settings, "enabled": False})
-    stopped = await run_in_threadpool(service.stop)
+    persisted, stopped = await run_in_threadpool(
+        _save_settings_and_apply_lifecycle,
+        service,
+        {"enabled": False},
+    )
     return JSONResponse({"ok": True, "stopped": bool(stopped), "settings": persisted})

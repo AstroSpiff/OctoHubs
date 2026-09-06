@@ -5,6 +5,7 @@ import { Link, Outlet, useLocation } from "react-router-dom";
 import { AccountMenu } from "@/components/account-menu";
 import {
   isAuthenticatedAccessState,
+  workspaceContentOwnerKey,
   workspaceAccessState,
   type WorkspaceAccessState,
 } from "@/components/app-shell-access";
@@ -94,10 +95,11 @@ function AppShell() {
           <div className="app-workspace-layout">
             <EmbyWorkspaceHeader variant={navigationPreferences.preferences.secondary_navigation} />
             <WorkspaceCapabilityBoundary
+              accountId={hasAuthenticatedAccess ? session.data?.user.id ?? null : null}
               accessState={accessState}
               onRetry={() => void session.refetch()}
             >
-              <Outlet key={accessState === "editor" ? "write" : "read"} />
+              <Outlet key={workspaceContentOwnerKey(accessState, session.data?.user)} />
             </WorkspaceCapabilityBoundary>
           </div>
         </main>
@@ -117,17 +119,19 @@ function AppShell() {
 }
 
 function WorkspaceCapabilityBoundary({
+  accountId = null,
   accessState,
   children,
   onRetry,
 }: {
+  accountId?: number | null;
   accessState: WorkspaceAccessState;
   children: ReactNode;
   onRetry?: () => void;
 }) {
   const canMutate = accessState === "editor";
   return (
-    <WorkspaceCapabilitiesProvider canMutate={canMutate}>
+    <WorkspaceCapabilitiesProvider accountId={accountId} canMutate={canMutate}>
       <div className={cn("app-route-content", !canMutate && "app-route-content--read-only")}>
         {accessState === "loading" ? (
           <div className="app-read-only-notice" role="status">

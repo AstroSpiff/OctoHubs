@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { useConfirmationDialog } from "@/components/ui/use-confirmation-dialog";
 import { WorkspaceHeading } from "@/components/ui/workspace-heading";
@@ -8,6 +8,7 @@ import { GuardCleanupControls } from "@/features/transcode-guard/components/guar
 import { GuardControls } from "@/features/transcode-guard/components/guard-controls";
 import { GuardOverview } from "@/features/transcode-guard/components/guard-overview";
 import { GuardStreamHistory } from "@/features/transcode-guard/components/guard-stream-history";
+import { guardActionForTarget, hasAuthoritativeGuardState } from "@/features/transcode-guard/guard-state";
 import { useTranscodeGuard } from "@/features/transcode-guard/use-transcode-guard";
 import { GuardSettingsWorkspace } from "@/features/transcode-guard-settings/components/guard-settings-workspace";
 import { WriteAction } from "@/features/session/workspace-capabilities";
@@ -18,10 +19,16 @@ function TranscodeGuardPage() {
   const { status, checkNow, setState, cleanupEvents, cleanupStreams } = useTranscodeGuard();
   const snapshot = status.data;
   const controlsError = checkNow.error || setState.error;
+  const stateAuthorityRef = useRef({ snapshot, error: status.error });
+  stateAuthorityRef.current = { snapshot, error: status.error };
 
-  async function changeGuardState() {
+  const stateReady = hasAuthoritativeGuardState(snapshot, status.error);
+
+  async function changeGuardState(nextRunning: boolean) {
+    const initialState = stateAuthorityRef.current;
+    if (!hasAuthoritativeGuardState(initialState.snapshot, initialState.error)) return;
     if (
-      snapshot?.running &&
+      !nextRunning &&
       !(await confirmation.confirm({
         title: "Ferma Transcode Guard",
         description:
@@ -31,7 +38,9 @@ function TranscodeGuardPage() {
       }))
     )
       return;
-    setState.mutate(snapshot?.running ? "stop" : "start");
+    const currentState = stateAuthorityRef.current;
+    if (!hasAuthoritativeGuardState(currentState.snapshot, currentState.error)) return;
+    setState.mutate(guardActionForTarget(nextRunning));
   }
 
   return (
@@ -45,12 +54,13 @@ function TranscodeGuardPage() {
           description="Monitora gli stream e interviene sulle vere transcodifiche video."
           actions={<GuardControls
             running={Boolean(snapshot?.running)}
+            stateReady={stateReady}
             checking={checkNow.isPending}
             changingState={setState.isPending}
             refreshing={status.isFetching}
             error={controlsError}
             onCheck={() => checkNow.mutate()}
-            onStateChange={() => void changeGuardState()}
+            onStateChange={(running) => void changeGuardState(running)}
             onRefresh={() => void status.refetch()}
           />}
         />

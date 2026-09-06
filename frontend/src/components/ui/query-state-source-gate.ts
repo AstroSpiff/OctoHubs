@@ -1,5 +1,10 @@
 import ts from "typescript";
 
+import {
+  isMutationCall,
+  mutationDecisionSnapshotRoots,
+} from "@/components/ui/query-state-mutation-gate";
+
 type Binding = {
   declaration: ts.Identifier;
   initializer?: ts.Expression;
@@ -13,7 +18,7 @@ type Analysis = {
   file: ts.SourceFile;
 };
 
-type FallbackKind = "zero" | "collection";
+type FallbackKind = "zero" | "collection" | "boolean";
 
 const EMPTY_CLAIM = /\b(?:nessun\w*|vuot\w*)\b/i;
 
@@ -43,6 +48,18 @@ export function queryStateFallbackViolations(source: string, relativePath: strin
     }
     if (ts.isJsxExpression(node) && node.expression) {
       record(node, fallbackSnapshotRoots(node.expression, node, analysis));
+    }
+    if (ts.isCallExpression(node) && isMutationCall(node)) {
+      record(node, mutationDecisionSnapshotRoots(node, {
+        booleanFallbackRoots: (identifier, use) => {
+          const binding = resolveBinding(identifier, use, analysis);
+          return binding && analysis.fallbacks.get(binding)?.has("boolean")
+            ? analysis.dependencies.get(binding) || new Set()
+            : new Set();
+        },
+        file,
+        snapshotRoots: (candidate, use) => snapshotRoots(candidate, use, analysis),
+      }));
     }
     ts.forEachChild(node, visit);
   }
@@ -245,6 +262,9 @@ function isFallbackOperator(kind: ts.SyntaxKind) {
 
 function fallbackLiteralKind(node: ts.Expression): FallbackKind | undefined {
   const expression = unwrapExpression(node);
+  if (expression.kind === ts.SyntaxKind.TrueKeyword || expression.kind === ts.SyntaxKind.FalseKeyword) {
+    return "boolean";
+  }
   if (ts.isNumericLiteral(expression) && Number(expression.text) === 0) return "zero";
   if (
     (ts.isArrayLiteralExpression(expression) && expression.elements.length === 0)
@@ -268,6 +288,14 @@ function directFallbackKinds(node: ts.Node) {
     if (trueKind) kinds.add(trueKind);
     if (falseKind) kinds.add(falseKind);
   }
+  if (
+    ts.isCallExpression(node)
+    && node.expression.getText(node.getSourceFile()) === "Boolean"
+  ) kinds.add("boolean");
+  if (
+    ts.isPrefixUnaryExpression(node)
+    && node.operator === ts.SyntaxKind.ExclamationToken
+  ) kinds.add("boolean");
   return kinds;
 }
 
@@ -324,9 +352,28 @@ function claimHasSnapshotGuard(node: ts.Node, root: string, analysis: Analysis) 
     if (ts.isReturnStatement(current)) {
       return precedingEarlyReturnGuardsRoot(current, root, analysis);
     }
+    if (
+      ts.isBlock(current)
+      && precedingStatementsGuardNode(current, node, root, analysis)
+    ) return true;
     if (ts.isFunctionLike(current)) break;
   }
   return false;
+}
+
+function precedingStatementsGuardNode(
+  block: ts.Block,
+  node: ts.Node,
+  root: string,
+  analysis: Analysis,
+) {
+  const index = block.statements.findIndex((statement) => containsNode(statement, node));
+  if (index < 0) return false;
+  return block.statements.slice(0, index).some((statement) =>
+    ts.isIfStatement(statement)
+    && statementReturns(statement.thenStatement)
+    && expressionGuaranteesRoot(statement.expression, root, false, analysis),
+  );
 }
 
 function jsxBoundaryGuardsRoot(element: ts.JsxElement, root: string, analysis: Analysis) {

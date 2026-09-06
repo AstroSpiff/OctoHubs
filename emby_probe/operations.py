@@ -4,8 +4,26 @@ from __future__ import annotations
 
 import threading
 import time
+import logging
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
+
+from core.thread_lifecycle import log_lifecycle_exception_safely
+
+
+logger = logging.getLogger(__name__)
+
+
+def _fail_operation_safely(tracker: Any, operation_id: str, message: str) -> Any:
+    try:
+        return tracker.fail(operation_id, message)
+    except BaseException as exc:
+        log_lifecycle_exception_safely(
+            logger,
+            "Finalizzazione operazione Probe non riuscita: %s",
+            exc,
+        )
+        return None
 
 
 @dataclass(frozen=True)
@@ -56,13 +74,17 @@ def start_probe_worker_operation(
                 worker,
                 normalized_server_ids,
                 stop_event,
-            )
+            ),
+            owner_token=operation_id,
         )
-    except Exception:
-        failed = tracker.fail(
-            operation_id,
-            "Monitor dell'operazione Media Probe non avviato",
+    except BaseException as exc:
+        if manager.owns_operation_monitor(operation_id):
+            raise
+        failed = _fail_operation_safely(
+            tracker, operation_id, "Monitor dell'operazione Media Probe non avviato"
         )
+        if not isinstance(exc, Exception):
+            raise
         return failed or operation
     return operation
 
@@ -111,35 +133,37 @@ def _monitor_probe_worker(
     seen_running = False
     startup_deadline = time.monotonic() + 5
     while not stop_event.is_set():
-        states = _worker_states(manager, worker.key, server_ids)
-        running = manager.is_worker_running(
-            worker.key,
-            server_ids,
-            global_key=worker.global_key,
-        )
-        message = _latest_message(states) or "Worker Media Probe in esecuzione"
-        if running:
-            seen_running = True
-            tracker.update(
-                operation_id,
-                message=message,
-                details={
-                    "current_step_label": message,
-                    "servers": states,
-                },
+        try:
+            running = manager.is_worker_running(
+                worker.key,
+                server_ids,
+                global_key=worker.global_key,
             )
-        elif seen_running or any(states.values()):
-            _complete_probe_operation(tracker, operation_id, message, states)
-            return
-        elif time.monotonic() >= startup_deadline:
-            tracker.fail(
-                operation_id,
-                "Il worker Media Probe non si e' avviato",
-                result={"servers": states},
+            states = _worker_states(manager, worker.key, server_ids)
+            message = _latest_message(states) or "Worker Media Probe in esecuzione"
+            if running:
+                seen_running = True
+                tracker.update(
+                    operation_id,
+                    message=message,
+                    details={"current_step_label": message, "servers": states},
+                )
+            elif seen_running or any(states.values()):
+                _complete_probe_operation(tracker, operation_id, message, states)
+                return
+            elif time.monotonic() >= startup_deadline:
+                tracker.fail(
+                    operation_id,
+                    "Il worker Media Probe non si e' avviato",
+                    result={"servers": states},
+                )
+                return
+            else:
+                tracker.update(operation_id, message="Avvio worker Media Probe")
+        except BaseException as exc:
+            log_lifecycle_exception_safely(
+                logger, "Aggiornamento monitor operazione Probe non riuscito: %s", exc
             )
-            return
-        else:
-            tracker.update(operation_id, message="Avvio worker Media Probe")
         if stop_event.wait(1):
             return
 

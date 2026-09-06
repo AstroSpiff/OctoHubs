@@ -5,6 +5,7 @@ import { WorkspaceCapabilityBoundary } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { CollectionsToolbar } from "@/features/collections/components/collections-toolbar";
 import { StreamStatsFilters } from "@/features/stream-stats/components/stream-stats-filters";
+import { useWorkspaceCapabilities } from "@/features/session/workspace-capabilities-context";
 
 
 describe("WorkspaceCapabilityBoundary", () => {
@@ -33,6 +34,26 @@ describe("WorkspaceCapabilityBoundary", () => {
 
     expect(markup).toContain("Salva");
     expect(markup).not.toContain("Account in sola lettura");
+  });
+
+  it("provides the authenticated account owner to account-scoped drafts", () => {
+    function AccountOwner() {
+      const { accountId } = useWorkspaceCapabilities();
+      return <span>{accountId ?? "anonymous"}</span>;
+    }
+    const owned = renderToStaticMarkup(
+      <WorkspaceCapabilityBoundary accountId={42} accessState="editor">
+        <AccountOwner />
+      </WorkspaceCapabilityBoundary>,
+    );
+    const anonymous = renderToStaticMarkup(
+      <WorkspaceCapabilityBoundary accessState="loading">
+        <AccountOwner />
+      </WorkspaceCapabilityBoundary>,
+    );
+
+    expect(owned).toContain(">42<");
+    expect(anonymous).toContain(">anonymous<");
   });
 
   it("keeps the real collection and stream filters available to viewers", () => {

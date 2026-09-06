@@ -9,6 +9,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from core.log_sanitization import format_exception_for_log, sanitize_text_for_log
+from core.thread_lifecycle import (
+    join_owned_thread,
+    log_lifecycle_exception_safely,
+    start_owned_thread,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -93,7 +98,11 @@ class OperationTracker:
                 raise RuntimeError("Avvio operazione rifiutato durante lo shutdown")
             created = self._mutate_registry(add_operation)
             self._heartbeat_operation_ids.add(operation["id"])
-            self._ensure_heartbeat_sweeper_locked()
+            try:
+                self._ensure_heartbeat_sweeper_locked()
+            except BaseException:
+                self._terminalize_operation_start_failure_safely_locked(operation["id"])
+                raise
         return created
 
     def update(
@@ -350,8 +359,9 @@ class OperationTracker:
                 )
 
         if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=timeout_seconds)
-        stopped = thread is None or not thread.is_alive()
+            stopped = join_owned_thread(thread, timeout_seconds)
+        else:
+            stopped = True
         if stopped:
             with self._heartbeat_state_lock:
                 if self._heartbeat_thread is thread:
@@ -359,7 +369,39 @@ class OperationTracker:
                 self._heartbeat_operation_ids.clear()
         return stopped
 
-    def _ensure_heartbeat_sweeper_locked(self) -> None:
+    def _terminalize_operation_start_failure_safely_locked(self, operation_id: str) -> None:
+        self._heartbeat_operation_ids.discard(operation_id)
+        try:
+            self._terminalize_operation_start_failure_locked(operation_id)
+        except BaseException as cleanup_error:
+            try:
+                logger.error(
+                    "Terminalizzazione operazione non avviata fallita:\n%s",
+                    format_exception_for_log(cleanup_error),
+                )
+            except BaseException:
+                pass
+
+    def _terminalize_operation_start_failure_locked(self, operation_id: str) -> None:
+        def fail_start(registry: Dict[str, Dict[str, Any]]) -> None:
+            operation = registry.get(operation_id)
+            if not operation or not self._owns(operation):
+                return
+            now = self._timestamp()
+            operation.update(
+                status="error",
+                message=PUBLIC_OPERATION_FAILURE_MESSAGE,
+                result={},
+                error=PUBLIC_OPERATION_FAILURE_MESSAGE,
+                updated_at=now,
+                finished_at=now,
+            )
+
+        self._mutate_registry(fail_start)
+
+    def _ensure_heartbeat_sweeper_locked(
+        self,
+    ) -> None:
         if self._heartbeat_interval <= 0 or not self._accepting_operations:
             return
         current = self._heartbeat_thread
@@ -371,19 +413,21 @@ class OperationTracker:
             while not stop.wait(self._heartbeat_interval):
                 try:
                     self._heartbeat_owned_operations()
-                except Exception as exc:  # pragma: no cover - defensive lease boundary
-                    logger.error(
+                except BaseException as exc:  # pragma: no cover - defensive lease boundary
+                    log_lifecycle_exception_safely(
+                        logger,
                         "Heartbeat operazioni non riuscito:\n%s",
-                        format_exception_for_log(exc),
+                        exc,
                     )
                     continue
                 try:
                     if self._has_stale_active_operations():
                         self.interrupt_stale()
-                except Exception as exc:  # pragma: no cover - defensive recovery boundary
-                    logger.error(
+                except BaseException as exc:  # pragma: no cover - defensive recovery boundary
+                    log_lifecycle_exception_safely(
+                        logger,
                         "Recovery periodica operazioni non riuscita:\n%s",
-                        format_exception_for_log(exc),
+                        exc,
                     )
 
         thread = threading.Thread(
@@ -391,8 +435,23 @@ class OperationTracker:
             name="operation-heartbeat-sweeper",
             daemon=True,
         )
+        self._start_heartbeat_sweeper_locked(thread)
+
+    def _start_heartbeat_sweeper_locked(
+        self,
+        thread: threading.Thread,
+    ) -> None:
         self._heartbeat_thread = thread
-        thread.start()
+
+        def rollback() -> None:
+            if self._heartbeat_thread is thread:
+                self._heartbeat_thread = None
+
+        start_owned_thread(
+            thread,
+            rollback_unstarted=rollback,
+            context="operation heartbeat sweeper",
+        )
 
     def _has_stale_active_operations(
         self,

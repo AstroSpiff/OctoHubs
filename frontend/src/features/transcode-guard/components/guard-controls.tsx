@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 
 function GuardControls({
   running,
+  stateReady,
   checking,
   changingState,
   refreshing,
@@ -15,12 +16,13 @@ function GuardControls({
   onRefresh,
 }: {
   running: boolean;
+  stateReady: boolean;
   checking: boolean;
   changingState: boolean;
   refreshing: boolean;
   error?: Error | null;
   onCheck: () => void;
-  onStateChange: () => void;
+  onStateChange: (running: boolean) => void;
   onRefresh: () => void;
 }) {
   const busy = checking || changingState;
@@ -37,7 +39,12 @@ function GuardControls({
         <WriteAction>
           <label className="guard-controls-toggle" title="Avvia o ferma il monitor automatico di Transcode Guard.">
             <span>Attiva</span>
-            <input type="checkbox" checked={running} disabled={busy} onChange={onStateChange} />
+            <input
+              type="checkbox"
+              checked={running}
+              disabled={busy || !stateReady}
+              onChange={(event) => onStateChange(event.target.checked)}
+            />
           </label>
         </WriteAction>
       </div>

@@ -47,16 +47,20 @@ class LibraryProcessingWorker(LibraryProbeExecutionMixin):
 
     def run(self) -> None:
         """Run processing and always release pause/status state."""
+        primary_error = None
         try:
             self._run()
-        except Exception as exc:
+        except BaseException as exc:
+            primary_error = exc
             self.manager._update_status(
                 self.server_id,
                 self.status_key,
-                last_log=f"Errore critico: {exc}",
+                last_log="Errore critico: worker processing non riuscito",
             )
         finally:
             self._finalize_worker_state()
+        if primary_error is not None and not isinstance(primary_error, Exception):
+            raise primary_error
 
     def _run(self) -> None:
         if not self.manager._db_getter:

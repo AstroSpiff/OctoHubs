@@ -9,6 +9,11 @@ from collections import deque
 from typing import Any, Callable
 
 from core.log_sanitization import format_exception_for_log
+from core.thread_lifecycle import (
+    join_owned_thread,
+    log_lifecycle_exception_safely,
+    start_owned_thread,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +35,30 @@ class SessionRefreshDispatcher:
             )
             for index in range(max(1, int(max_workers)))
         ]
+        try:
+            for worker in self._workers:
+                start_owned_thread(worker, context="session refresh dispatcher")
+        except BaseException as primary_error:
+            self._close_after_failed_start(primary_error)
+            raise
+
+    def _close_after_failed_start(self, primary_error: BaseException) -> None:
+        """Reclaim every worker when a multi-worker constructor cannot publish."""
+        with self._condition:
+            self._closed = True
+            self._condition.notify_all()
         for worker in self._workers:
-            worker.start()
+            try:
+                join_owned_thread(worker, 5.0)
+            except BaseException as cleanup_error:
+                try:
+                    logger.error(
+                        "Cleanup dispatcher sessioni non riuscito:\n%s",
+                        format_exception_for_log(cleanup_error),
+                    )
+                except BaseException:
+                    pass
+        _ = primary_error
 
     def submit(self, server_id: str, data: Any) -> bool:
         with self._condition:
@@ -65,8 +92,12 @@ class SessionRefreshDispatcher:
                 data = self._pending.pop(server_id)
             try:
                 self._callback(server_id, data)
-            except Exception as exc:
-                logger.error("Emby Sessions refresh failed for server %s:\n%s", server_id, format_exception_for_log(exc))
+            except BaseException as exc:
+                log_lifecycle_exception_safely(
+                    logger,
+                    f"Emby Sessions refresh failed for server {server_id}:\n%s",
+                    exc,
+                )
 
     def shutdown(self, timeout_seconds: float = 5.0) -> bool:
         deadline = time.monotonic() + max(0.0, timeout_seconds)
@@ -76,5 +107,5 @@ class SessionRefreshDispatcher:
             self._ready.clear()
             self._condition.notify_all()
         for worker in self._workers:
-            worker.join(timeout=max(0.0, deadline - time.monotonic()))
+            join_owned_thread(worker, max(0.0, deadline - time.monotonic()))
         return all(not worker.is_alive() for worker in self._workers)

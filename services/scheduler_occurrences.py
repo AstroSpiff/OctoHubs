@@ -4,9 +4,20 @@ from __future__ import annotations
 
 import uuid
 import threading
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
+
+from core.thread_lifecycle import (
+    join_owned_thread,
+    log_lifecycle_exception_safely,
+    start_owned_thread,
+    thread_has_started,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 _CLAIM_TTL_SECONDS = 120
@@ -209,6 +220,7 @@ class SchedulerOccurrenceLease:
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._finished = False
+        self._lost = False
         self._started = False
         self._thread = threading.Thread(
             target=self._renew_until_stopped,
@@ -218,11 +230,11 @@ class SchedulerOccurrenceLease:
 
     def start(self) -> None:
         try:
-            self._thread.start()
+            start_owned_thread(self._thread, context="scheduler occurrence renewal")
         except BaseException:
             # Preserve join/stop ownership if an asynchronous signal arrived
             # after the native renewal thread had already been created.
-            self._started = self._thread.is_alive()
+            self._started = thread_has_started(self._thread)
             raise
         else:
             self._started = True
@@ -233,9 +245,12 @@ class SchedulerOccurrenceLease:
             if self._finished:
                 return False
             self._finished = True
+            lost = self._lost
         self._stop.set()
         if self._thread is not threading.current_thread() and not self.wait(1.0):
             raise RuntimeError("Rinnovo occurrence ancora attivo")
+        if lost:
+            return False
         if succeeded:
             return self._coordinator.complete(self._claim)
         return self._coordinator.release(self._claim)
@@ -248,23 +263,26 @@ class SchedulerOccurrenceLease:
     def wait(self, timeout_seconds: float | None = None) -> bool:
         if not self._started:
             return True
-        if self._thread is threading.current_thread():
-            return False
-        self._thread.join(timeout=timeout_seconds)
-        return not self._thread.is_alive()
+        return join_owned_thread(self._thread, timeout_seconds)
 
     def _renew_until_stopped(self) -> None:
         while not self._stop.wait(self._interval_seconds):
             try:
                 renewed = self._coordinator.renew(self._claim)
-            except Exception:
+            except BaseException:
                 renewed = False
             if renewed:
                 continue
             with self._lock:
                 if self._finished:
                     return
-            self._on_lost()
+                self._lost = True
+            try:
+                self._on_lost()
+            except BaseException as exc:
+                log_lifecycle_exception_safely(
+                    logger, "Fencing occurrence scheduler non riuscito: %s", exc
+                )
             return
 
 

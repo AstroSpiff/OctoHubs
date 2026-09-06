@@ -1,6 +1,7 @@
 import type { CustomSearchRules, ResearchSearchRules } from "@/features/research/types";
 
-const customRulesStorageKey = "indie-search-rules";
+const legacyCustomRulesStorageKey = "indie-search-rules";
+const customRulesStoragePrefix = "octohubs.research.custom-rules.account";
 
 function customRulesFromSearchRules(rules: ResearchSearchRules): CustomSearchRules {
   return {
@@ -73,20 +74,47 @@ function customRulesFromStoredValue(
   };
 }
 
-function loadStoredCustomRules(fallback: CustomSearchRules): StoredCustomRules {
+function customRulesStorageKey(accountId: number | null) {
+  return Number.isSafeInteger(accountId) && Number(accountId) > 0
+    ? `${customRulesStoragePrefix}:${accountId}`
+    : null;
+}
+
+function loadStoredCustomRules(
+  accountId: number | null,
+  fallback: CustomSearchRules,
+): StoredCustomRules {
   if (typeof window === "undefined") return { enabled: false, value: fallback };
+  const storageKey = customRulesStorageKey(accountId);
   try {
-    const stored = JSON.parse(window.localStorage.getItem(customRulesStorageKey) || "null") as unknown;
+    // The old key had no owner. Discarding it is the only migration that cannot
+    // expose one account's draft to whichever account happens to sign in next.
+    window.localStorage.removeItem(legacyCustomRulesStorageKey);
+    if (!storageKey) return { enabled: false, value: fallback };
+    const stored = JSON.parse(window.localStorage.getItem(storageKey) || "null") as unknown;
     return customRulesFromStoredValue(fallback, stored);
   } catch {
+    if (storageKey) {
+      try {
+        window.localStorage.removeItem(storageKey);
+      } catch {
+        // Storage may be unavailable altogether; the in-memory draft still works.
+      }
+    }
     return { enabled: false, value: fallback };
   }
 }
 
-function storeCustomRules(enabled: boolean, value: CustomSearchRules) {
+function storeCustomRules(
+  accountId: number | null,
+  enabled: boolean,
+  value: CustomSearchRules,
+) {
+  const storageKey = customRulesStorageKey(accountId);
+  if (!storageKey || typeof window === "undefined") return;
   try {
     window.localStorage.setItem(
-      customRulesStorageKey,
+      storageKey,
       JSON.stringify({ enabled, rules: value } satisfies PersistedCustomRules),
     );
   } catch {
@@ -115,6 +143,7 @@ export {
   csvValues,
   customRulesFromSearchRules,
   customRulesFromStoredValue,
+  customRulesStorageKey,
   loadStoredCustomRules,
   storeCustomRules,
 };

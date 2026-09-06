@@ -6,6 +6,8 @@ import threading
 import time
 from collections.abc import Callable
 
+from core.thread_lifecycle import join_owned_thread, start_owned_thread_confirmed
+
 
 class AutoSchedulerWorkerPool:
     """Run at most one worker per task kind without blocking scheduling."""
@@ -54,16 +56,16 @@ class AutoSchedulerWorkerPool:
             )
             self._threads[normalized_kind] = thread
             self._stop_events[normalized_kind] = stop_event
-            try:
-                thread.start()
-            except BaseException:
-                # Thread.start() can be interrupted after the native thread was
-                # created. Retain ownership in that ambiguous case so shutdown
-                # and wait can still reach the live worker.
-                if not thread.is_alive():
+            def rollback_unstarted() -> None:
+                if self._threads.get(normalized_kind) is thread:
                     self._threads.pop(normalized_kind, None)
                     self._stop_events.pop(normalized_kind, None)
-                raise
+
+            start_owned_thread_confirmed(
+                thread,
+                rollback_unstarted=rollback_unstarted,
+                context=f"automatic task {normalized_kind}",
+            )
             return True
 
     def cancel(self, kind: str) -> None:
@@ -87,7 +89,7 @@ class AutoSchedulerWorkerPool:
             threads = list(self._threads.values())
         for thread in threads:
             remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
-            thread.join(remaining)
+            join_owned_thread(thread, remaining)
         return not any(thread.is_alive() for thread in threads)
 
     def is_running(self, kind: str) -> bool:

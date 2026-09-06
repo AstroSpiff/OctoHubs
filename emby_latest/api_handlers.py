@@ -9,6 +9,11 @@ import threading
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from core.log_sanitization import format_exception_for_log
+from core.thread_lifecycle import (
+    join_owned_thread,
+    log_lifecycle_exception_safely,
+    start_owned_thread_confirmed,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -37,6 +42,19 @@ def _release_latest_refresh_request() -> None:
         _latest_refresh_request_reserved = False
 
 
+def _fail_latest_refresh_safely(operation_tracker, operation_id: str, error: BaseException) -> None:
+    try:
+        from emby_latest.operations import fail_latest_refresh_operation
+
+        fail_latest_refresh_operation(operation_tracker, operation_id, error)
+    except BaseException as cleanup_error:
+        log_lifecycle_exception_safely(
+            logger,
+            "Terminalizzazione Pubblicazioni fallita:\n%s",
+            cleanup_error,
+        )
+
+
 def _start_latest_refresh_worker(target: Callable[[threading.Event], None]) -> bool:
     """Start and retain the process-owned Latest refresh worker."""
     global _latest_refresh_thread, _latest_refresh_stop_event
@@ -60,14 +78,20 @@ def _start_latest_refresh_worker(target: Callable[[threading.Event], None]) -> b
             return False
         _latest_refresh_thread = worker
         _latest_refresh_stop_event = stop_event
-    try:
-        worker.start()
-    except Exception:
+    def rollback_unstarted() -> None:
+        global _latest_refresh_thread, _latest_refresh_stop_event
         with _latest_refresh_worker_lock:
             if _latest_refresh_thread is worker:
                 _latest_refresh_thread = None
                 _latest_refresh_stop_event = None
-        raise
+        stop_event.set()
+        _release_latest_refresh_request()
+
+    start_owned_thread_confirmed(
+        worker,
+        rollback_unstarted=rollback_unstarted,
+        context="latest refresh",
+    )
     return True
 
 
@@ -82,8 +106,7 @@ def shutdown_latest_refresh(timeout_seconds: float = 5.0) -> bool:
         stop_event.set()
     if worker is threading.current_thread():
         return False
-    worker.join(timeout=max(0.0, float(timeout_seconds)))
-    return not worker.is_alive()
+    return join_owned_thread(worker, max(0.0, float(timeout_seconds)))
 
 
 def _latest_manager_unavailable_payload() -> Tuple[Dict[str, Any], int]:
@@ -253,17 +276,16 @@ def build_latest_refresh_payload(
                     progress_tracker=progress_tracker,
                 )
             finish_latest_refresh_operation(operation_tracker, operation_id, payload, error)
-        except Exception as exc:
-            fail_latest_refresh_operation(operation_tracker, operation_id, exc)
-            logger.error(
+        except BaseException as exc:
+            _fail_latest_refresh_safely(operation_tracker, operation_id, exc)
+            log_lifecycle_exception_safely(
+                logger,
                 "Aggiornamento Pubblicazioni fallito:\n%s",
-                format_exception_for_log(exc),
+                exc,
             )
-    try:
-        worker_started = _start_latest_refresh_worker(_do_refresh)
-    except Exception:
-        _release_latest_refresh_request()
-        raise
+            if not isinstance(exc, Exception):
+                raise
+    worker_started = _start_latest_refresh_worker(_do_refresh)
     if not worker_started:
         _release_latest_refresh_request()
         return {

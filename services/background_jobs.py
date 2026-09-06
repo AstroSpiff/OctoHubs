@@ -6,11 +6,18 @@ import logging
 from typing import Any, Callable, Dict, Optional
 
 from services.background_job_registry import background_job_registry
-from core.log_sanitization import format_exception_for_log
+from core.thread_lifecycle import log_lifecycle_exception_safely
 
 
 logger = logging.getLogger(__name__)
 _GENERIC_FAILURE_MESSAGE = "Operazione non completata. Verifica i log dell'applicazione."
+
+
+def _fail_operation_safely(tracker: Any, operation_id: str, *, context: str) -> None:
+    try:
+        tracker.fail(operation_id, _GENERIC_FAILURE_MESSAGE)
+    except BaseException as cleanup_error:
+        log_lifecycle_exception_safely(logger, f"{context}:\n%s", cleanup_error)
 
 
 def _require_complete_result(result: Dict[str, Any]) -> None:
@@ -66,9 +73,19 @@ def start_tracked_background_job(
             context.raise_if_cancelled()
             _require_complete_result(result)
             tracker.finish(operation_id, success_message, result=result)
-        except Exception as exc:  # pragma: no cover - defensive worker boundary
-            logger.error("Job background non completato:\n%s", format_exception_for_log(exc))
-            tracker.fail(operation_id, _GENERIC_FAILURE_MESSAGE)
+        except BaseException as exc:  # pragma: no cover - defensive worker boundary
+            log_lifecycle_exception_safely(
+                logger,
+                "Job background non completato:\n%s",
+                exc,
+            )
+            _fail_operation_safely(
+                tracker,
+                operation_id,
+                context="Terminalizzazione job fallita",
+            )
+            if not isinstance(exc, Exception):
+                raise
 
     def _create_operation() -> Dict[str, Any]:
         created = tracker.start(kind, title, summary=summary, details=details or {}, total=total)
@@ -83,16 +100,14 @@ def start_tracked_background_job(
             _create_operation,
             _run,
         )
-    except Exception:
+    except BaseException:
         operation_id = str(operation.get("id") or "")
-        if operation_id:
-            try:
-                tracker.fail(operation_id, _GENERIC_FAILURE_MESSAGE)
-            except Exception as exc:  # pragma: no cover - preserve start failure
-                logger.error(
-                    "Terminalizzazione job non avviato fallita:\n%s",
-                    format_exception_for_log(exc),
-                )
+        if operation_id and not background_job_registry.owns_operation(operation):
+            _fail_operation_safely(
+                tracker,
+                operation_id,
+                context="Terminalizzazione job non avviato fallita",
+            )
         raise
     return registered
 

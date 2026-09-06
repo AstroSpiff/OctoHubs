@@ -71,8 +71,13 @@ def test_probe_operation_monitor_start_failure_is_terminal(monkeypatch):
             return {"id": operation_id, "status": "error"}
 
     class Manager:
-        def start_operation_monitor(self, _callback):
+        def start_operation_monitor(self, _callback, *, owner_token=None):
+            assert owner_token == "operation-r19"
             raise RuntimeError("thread unavailable")
+
+        def owns_operation_monitor(self, owner_token):
+            assert owner_token == "operation-r19"
+            return False
 
     monkeypatch.setattr("app_state.get_operation_tracker", lambda: Tracker())
     monkeypatch.setattr("emby_probe.get_probe_manager", lambda: Manager())

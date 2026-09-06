@@ -199,6 +199,56 @@ describe("QueryStateBoundary", () => {
     expect(queryStateFallbackViolations(earlyReturn, "safe.tsx")).toEqual([]);
     expect(queryStateFallbackViolations(boundary, "safe.tsx")).toEqual([]);
   });
+
+  it("rejects snapshot boolean decisions that directly drive mutations", () => {
+    const direct = `
+      function Controls() {
+        const snapshot = status.data;
+        return <button onClick={() => state.mutate(snapshot?.running ? "stop" : "start")}>Toggle</button>;
+      }
+    `;
+    const alias = `
+      function Controls() {
+        const running = Boolean(status.data?.running);
+        return <button onClick={() => state.mutate(running ? "stop" : "start")}>Toggle</button>;
+      }
+    `;
+    const booleanArgument = `
+      function Controls() {
+        return <button onClick={() => state.mutate(Boolean(status.data?.running))}>Save</button>;
+      }
+    `;
+
+    expect(queryStateFallbackViolations(direct, "unsafe.tsx")).toHaveLength(1);
+    expect(queryStateFallbackViolations(alias, "unsafe.tsx")).toHaveLength(1);
+    expect(queryStateFallbackViolations(booleanArgument, "unsafe.tsx")).toHaveLength(1);
+  });
+
+  it("requires the mutation decision's own snapshot guard", () => {
+    const guarded = `
+      function Controls() {
+        const snapshot = status.data;
+        function toggle() {
+          if (!snapshot) return;
+          state.mutate(snapshot.running ? "stop" : "start");
+        }
+        return <button onClick={toggle}>Toggle</button>;
+      }
+    `;
+    const unrelated = `
+      function Controls() {
+        const snapshot = status.data;
+        function toggle() {
+          if (!other.data) return;
+          state.mutate(snapshot?.running ? "stop" : "start");
+        }
+        return <button onClick={toggle}>Toggle</button>;
+      }
+    `;
+
+    expect(queryStateFallbackViolations(guarded, "safe.tsx")).toEqual([]);
+    expect(queryStateFallbackViolations(unrelated, "unsafe.tsx")).toHaveLength(1);
+  });
 });
 
 function collectSourceFiles(directory: string): string[] {

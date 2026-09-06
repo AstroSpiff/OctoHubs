@@ -342,8 +342,6 @@ def test_sqlalchemy_cleanup_receivers_are_canonical_or_semantically_allowlisted(
         ("core/storage/storage_workflows.py", "_rollback_workflow_lease_connection", "connection", "rollback", "direct"): (1, "raw SQLAlchemy Connection"),
         ("core/storage/storage_workflows.py", "_invalidate_workflow_lease_connection", "connection", "invalidate", "direct"): (1, "raw SQLAlchemy Connection"),
         ("core/storage/storage_workflows.py", "_close_workflow_lease_connection", "connection", "close", "direct"): (1, "raw SQLAlchemy Connection"),
-        # Alembic owns a migration Connection, outside application Session scope.
-        ("alembic/env.py", "run_migrations_online", "connection", "rollback", "direct"): (1, "Alembic Connection"),
         # Explicit resource-boundary wrappers.
         ("core/config_manager.py", "close_database_backend", "backend", "close", "direct"): (1, "DatabaseStorage wrapper"),
         ("web/auth_db_session_middleware.py", "_remove_auth_session", "registry", "remove", "direct"): (1, "request-aware registry wrapper"),

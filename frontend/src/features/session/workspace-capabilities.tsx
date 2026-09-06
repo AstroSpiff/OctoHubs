@@ -7,11 +7,15 @@ import {
 } from "@/features/session/workspace-capabilities-context";
 
 function WorkspaceCapabilitiesProvider({
+  accountId = null,
   canMutate,
   children,
-}: WorkspaceCapabilities & { children: ReactNode }) {
+}: Omit<WorkspaceCapabilities, "accountId"> & {
+  accountId?: number | null;
+  children: ReactNode;
+}) {
   return (
-    <WorkspaceCapabilitiesContext.Provider value={{ canMutate }}>
+    <WorkspaceCapabilitiesContext.Provider value={{ accountId, canMutate }}>
       {children}
     </WorkspaceCapabilitiesContext.Provider>
   );

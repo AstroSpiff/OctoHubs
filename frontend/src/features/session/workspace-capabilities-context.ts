@@ -1,10 +1,14 @@
 import { createContext, useContext } from "react";
 
 type WorkspaceCapabilities = {
+  accountId: number | null;
   canMutate: boolean;
 };
 
-const WorkspaceCapabilitiesContext = createContext<WorkspaceCapabilities>({ canMutate: true });
+const WorkspaceCapabilitiesContext = createContext<WorkspaceCapabilities>({
+  accountId: null,
+  canMutate: true,
+});
 
 function useWorkspaceCapabilities() {
   return useContext(WorkspaceCapabilitiesContext);

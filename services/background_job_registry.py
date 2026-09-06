@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from typing import Any, Callable
 from uuid import uuid4
 
+from core.thread_lifecycle import join_owned_thread, start_owned_thread_confirmed
+
 
 @dataclass
 class _Job:
@@ -64,12 +66,15 @@ class BackgroundJobRegistry:
                 thread=thread,
                 stop_event=stop_event,
             )
-            try:
-                thread.start()
-            except Exception:
+            def rollback_unstarted() -> None:
                 self._jobs.pop(job_key, None)
                 stop_event.set()
-                raise
+
+            start_owned_thread_confirmed(
+                thread,
+                rollback_unstarted=rollback_unstarted,
+                context=f"background job {job_key}",
+            )
             return operation, True
 
     def shutdown(self, timeout_seconds: float = 5.0) -> bool:
@@ -82,13 +87,21 @@ class BackgroundJobRegistry:
         threads = [job.thread for job in jobs]
         for thread in threads:
             remaining = max(0.0, deadline - time.monotonic())
-            thread.join(remaining)
+            join_owned_thread(thread, remaining)
         return not any(thread.is_alive() for thread in threads)
 
     def has_active_jobs(self) -> bool:
         """Return whether any lifecycle-owned job can still mutate persisted state."""
         with self._lock:
             return any(job.thread.is_alive() for job in self._jobs.values())
+
+    def owns_operation(self, operation: dict[str, Any]) -> bool:
+        """Return whether a native-started job still owns this operation."""
+        with self._lock:
+            return any(
+                job.operation is operation and job.thread.is_alive()
+                for job in self._jobs.values()
+            )
 
 
 background_job_registry = BackgroundJobRegistry()

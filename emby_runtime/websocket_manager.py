@@ -10,6 +10,11 @@ from typing import Dict, Callable, Optional, Any, List
 import logging
 
 from core.log_sanitization import format_exception_for_log, sanitize_diagnostic_text, sanitize_url_for_log
+from core.thread_lifecycle import (
+    join_owned_thread,
+    log_lifecycle_exception_safely,
+    start_owned_thread_confirmed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +38,16 @@ def _is_stream_session_event(event_data: Dict[str, Any]) -> bool:
         return True
     lowered = message_type.lower()
     return "playback" in lowered or "session" in lowered or _has_session_identity(event_data)
+
+
+def _connection_worker_is_active(connection: Any) -> bool:
+    thread = getattr(connection, "ws_thread", None)
+    if thread is not None:
+        return bool(thread.is_alive())
+    return bool(
+        getattr(connection, "started", False)
+        and not getattr(connection, "stopped", False)
+    )
 
 
 def _has_session_identity(value: Any) -> bool:
@@ -114,8 +129,20 @@ class EmbyWebSocketConnection:
 
         self.should_reconnect = True
         self._reconnect_wake.clear()
-        self.ws_thread = threading.Thread(target=self._run, daemon=True)
-        self.ws_thread.start()
+        thread = threading.Thread(target=self._run, daemon=True)
+        self.ws_thread = thread
+
+        def rollback_unstarted() -> None:
+            if self.ws_thread is thread:
+                self.ws_thread = None
+            self.should_reconnect = False
+            self._reconnect_wake.set()
+
+        start_owned_thread_confirmed(
+            thread,
+            rollback_unstarted=rollback_unstarted,
+            context=f"Emby WebSocket {self.server_id}",
+        )
         logger.info("[WS:%s] WebSocket thread started", sanitize_diagnostic_text(self.server_id))
 
     def stop(self):
@@ -136,22 +163,30 @@ class EmbyWebSocketConnection:
     def wait_stopped(self, timeout_seconds: float | None = None) -> bool:
         """Wait for the connection thread without blocking indefinitely."""
         thread = self.ws_thread
-        if thread is None or thread is threading.current_thread():
-            return True
-        thread.join(timeout=timeout_seconds)
-        return not thread.is_alive()
+        return join_owned_thread(thread, timeout_seconds)
 
     def _run(self):
         """Main WebSocket connection loop with auto-reconnect."""
         while self.should_reconnect:
             try:
                 self._connect()
-            except Exception as e:
-                logger.error("[WS:%s] Connection error: %s", sanitize_diagnostic_text(self.server_id), sanitize_diagnostic_text(e))
+            except BaseException as exc:
+                log_lifecycle_exception_safely(
+                    logger,
+                    f"[WS:{sanitize_diagnostic_text(self.server_id)}] Connection error: %s",
+                    exc,
+                )
                 self.state = self.STATE_RECONNECTING
             finally:
                 if self.should_reconnect and self.state != self.STATE_CONNECTED:
-                    self._handle_reconnect()
+                    try:
+                        self._handle_reconnect()
+                    except BaseException as exc:
+                        log_lifecycle_exception_safely(
+                            logger,
+                            f"[WS:{sanitize_diagnostic_text(self.server_id)}] Reconnect error: %s",
+                            exc,
+                        )
 
     def _connect(self):
         """Establish WebSocket connection and listen for events."""
@@ -321,13 +356,25 @@ class EmbyWebSocketManager:
                 if not self._accepting_connections:
                     logger.info("[WSManager] Ignoring server %s while stopping", sanitize_diagnostic_text(server_id))
                     return
-                if server_id in self.connections:
+                existing = self.connections.get(server_id)
+                if existing is not None and _connection_worker_is_active(existing):
                     logger.warning("[WSManager] Server %s already connected", sanitize_diagnostic_text(server_id))
                     return
+                if existing is not None:
+                    existing.stop()
+                    self.connections.pop(server_id, None)
 
                 conn = self._build_connection(server_id, server_url, api_key)
                 self.connections[server_id] = conn
-                conn.start()
+                try:
+                    conn.start()
+                except BaseException:
+                    if (
+                        getattr(conn, "ws_thread", None) is None
+                        and self.connections.get(server_id) is conn
+                    ):
+                        self.connections.pop(server_id, None)
+                    raise
 
             logger.info("[WSManager] Added server %s", sanitize_diagnostic_text(server_id))
 
@@ -348,6 +395,7 @@ class EmbyWebSocketManager:
                     existing is not None
                     and existing.server_url == normalized_url
                     and existing.api_key == normalized_key
+                    and _connection_worker_is_active(existing)
                 ):
                     return False
 
@@ -356,7 +404,15 @@ class EmbyWebSocketManager:
 
                 connection = self._build_connection(server_id, normalized_url, normalized_key)
                 self.connections[server_id] = connection
-                connection.start()
+                try:
+                    connection.start()
+                except BaseException:
+                    if (
+                        getattr(connection, "ws_thread", None) is None
+                        and self.connections.get(server_id) is connection
+                    ):
+                        self.connections.pop(server_id, None)
+                    raise
         logger.info("[WSManager] Synchronized server %s", sanitize_diagnostic_text(server_id))
         return True
 

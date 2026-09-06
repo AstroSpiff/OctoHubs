@@ -15,6 +15,7 @@ import {
 } from "@/features/research/customization";
 import { SearchAdvancedOptions } from "@/features/research/components/search-advanced-options";
 import { TmdbSearchPicker } from "@/features/research/components/tmdb-search-picker";
+import { useWorkspaceCapabilities } from "@/features/session/workspace-capabilities-context";
 import type { ManualSearchQuery } from "@/features/research/manual-search-query";
 import type {
   CustomSearchRules,
@@ -53,7 +54,8 @@ function IndependentSearchForm({
   onSearchStart,
   onCancel,
 }: IndependentSearchFormProps) {
-  const initialized = useRef(false);
+  const { accountId } = useWorkspaceCapabilities();
+  const initializedAccountId = useRef<number | null | undefined>(undefined);
   const initializedSeasonSelectionRef = useRef<string | null>(null);
   const jellyseerrRequestGenerationRef = useRef(0);
   const [query, setQuery] = useState("");
@@ -86,16 +88,18 @@ function IndependentSearchForm({
       overview.search_rules,
     ],
   );
+  const customRulesOwnedBySession = initializedAccountId.current === accountId;
 
   useEffect(() => {
-    if (initialized.current) return;
-    initialized.current = true;
+    if (initializedAccountId.current === accountId) return;
+    initializedAccountId.current = accountId;
     setUseProwlarr(overview.search_rules.use_prowlarr !== false);
     setUseJackett(Boolean(overview.search_rules.use_jackett));
-    const restored = loadStoredCustomRules(defaultCustomRules);
+    const restored = loadStoredCustomRules(accountId, defaultCustomRules);
     setCustomize(restored.enabled);
     setCustomRules(restored.value);
   }, [
+    accountId,
     overview.search_rules.use_jackett,
     overview.search_rules.use_prowlarr,
     defaultCustomRules,
@@ -203,7 +207,7 @@ function IndependentSearchForm({
         indexers,
         ...(selected ? { tmdbId: selected.tmdb_id } : {}),
         seasons,
-        ...(customize ? { customRules } : {}),
+        ...(customRulesOwnedBySession && customize ? { customRules } : {}),
       });
       setNotice({
         message: "Ricerca completata. Lo storico è disponibile qui sotto.",
@@ -377,24 +381,27 @@ function IndependentSearchForm({
           <label className="research-toggle research-toggle--custom">
             <input
               type="checkbox"
-              checked={customize}
+              checked={customRulesOwnedBySession && customize}
+              disabled={!customRulesOwnedBySession}
               onChange={(event) => {
+                if (!customRulesOwnedBySession) return;
                 const enabled = event.target.checked;
                 setCustomize(enabled);
-                storeCustomRules(enabled, customRules);
+                storeCustomRules(accountId, enabled, customRules);
               }}
             />
             <span>Personalizza regole</span>
           </label>
         </div>
-        {customize ? (
+        {customRulesOwnedBySession && customize ? (
           <SearchAdvancedOptions
             defaultOpen
             mediaType={mediaType}
             value={customRules}
             onChange={(value) => {
+              if (!customRulesOwnedBySession) return;
               setCustomRules(value);
-              storeCustomRules(true, value);
+              storeCustomRules(accountId, true, value);
             }}
             movieOptions={overview.movie_sort_options}
             tvOptions={overview.tv_sort_options}

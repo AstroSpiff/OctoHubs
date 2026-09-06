@@ -10,6 +10,23 @@ from core.safe_output import safe_print as print
 from .constants import PROBE_SCOPE_LIBRARIES, PROBE_SCOPE_RECENT
 from .protocols import ProbeManagerProtocol
 
+
+def _mark_combo_run_error(last_run: dict[str, Any], error: BaseException | None) -> None:
+    if error is not None:
+        last_run["status"] = "error"
+
+
+def _combo_terminal_message(
+    error: BaseException | None,
+    interrupted: bool,
+) -> str:
+    if error is not None:
+        return "Errore critico nel workflow combo"
+    if interrupted:
+        return "Combo workflow interrotto dall'utente"
+    return "Combo workflow completato"
+
+
 class ComboProbeMixin(ProbeManagerProtocol):
     """Mixin for probe workflows."""
 
@@ -397,9 +414,10 @@ class ComboProbeMixin(ProbeManagerProtocol):
         target_libraries: Optional[list[str]],
         stop_flag: threading.Event,
         run_id: str,
-        ) -> None:
+    ) -> None:
         """Orchestrate Discovery → Processing for a single server."""
         worker_key = f"combo_{scope}"
+        primary_error = None
         try:
 
             # Phase 1: Discovery
@@ -450,10 +468,11 @@ class ComboProbeMixin(ProbeManagerProtocol):
                         self._status[server_id][worker_key]["last_log"] = "Combo workflow completato"
                     self._status[server_id][worker_key]["running"] = False
 
-        except Exception as exc:
+        except BaseException as exc:
+            primary_error = exc
             with self._lock:
                 if server_id in self._status and worker_key in self._status[server_id]:
-                    self._status[server_id][worker_key]["last_log"] = f"Errore critico: {exc}"
+                    self._status[server_id][worker_key]["last_log"] = "Errore critico nel workflow combo"
                     self._status[server_id][worker_key]["running"] = False
         finally:
             worker_key = f"combo_{scope}"
@@ -466,6 +485,10 @@ class ComboProbeMixin(ProbeManagerProtocol):
                         scope,
                         interrupted,
                         library_ids=library_ids
+                    )
+                    _mark_combo_run_error(
+                        self._status[server_id][worker_key]["last_run"],
+                        primary_error,
                     )
                     self._status[server_id][worker_key]["last_run"]["run_id"] = run_id
                     self._status[server_id][worker_key]["board_reset"] = True
@@ -480,6 +503,7 @@ class ComboProbeMixin(ProbeManagerProtocol):
     ) -> None:
         """Orchestrate Discovery (all servers sequential) → Processing (all servers sequential)."""
         enabled_servers: list = []
+        primary_error = None
         try:
             enabled_servers = [s for s in servers if s and s.get("enabled") and s.get("id")]
             total_servers = len(enabled_servers)
@@ -600,23 +624,25 @@ class ComboProbeMixin(ProbeManagerProtocol):
             # Wait for global processing worker to complete (recent scope only)
             self._wait_for_worker(worker, stop_flag)
 
-        except Exception:
-            # Errors are logged by individual workers
-            pass
+        except BaseException as exc:
+            primary_error = exc
         finally:
             # Mark combo workflow as completed for all servers
             worker_key = f"combo_{scope}"
             last_run = self._build_combo_last_run(enabled_servers, scope, stop_flag.is_set())
+            _mark_combo_run_error(last_run, primary_error)
             last_run["run_id"] = run_id
             for srv in enabled_servers:
                 srv_id = srv.get("id")
                 if srv_id and srv_id in self._status:
                     with self._lock:
                         if worker_key in self._status[srv_id]:
-                            if stop_flag.is_set():
-                                self._status[srv_id][worker_key]["last_log"] = "Combo workflow interrotto dall'utente"
-                            else:
-                                self._status[srv_id][worker_key]["last_log"] = "Combo workflow completato"
+                            self._status[srv_id][worker_key]["last_log"] = (
+                                _combo_terminal_message(
+                                    primary_error,
+                                    stop_flag.is_set(),
+                                )
+                            )
                             self._status[srv_id][worker_key]["running"] = False
                             self._status[srv_id][worker_key]["last_run"] = last_run
                             self._status[srv_id][worker_key]["board_reset"] = True

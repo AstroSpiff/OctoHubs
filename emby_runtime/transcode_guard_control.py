@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from typing import Any, Dict, List, Optional
 
+from core.thread_lifecycle import join_owned_thread, start_owned_thread_confirmed
 from emby_runtime.playback_events import normalize_emby_playback_events
 from emby_runtime.transcode_guard_constants import TRANSCODE_GUARD_SETTINGS_KEY
 from emby_runtime.transcode_guard_events import _flatten_event_bridge_payload
@@ -105,8 +106,20 @@ class TranscodeGuardControlMixin:
                 return False
             self._stop_event.clear()
             self._wake_event.set()
-            self._thread = threading.Thread(target=self._run_loop, name="octohubs-transcode-guard", daemon=True)
-            self._thread.start()
+            thread = threading.Thread(target=self._run_loop, name="octohubs-transcode-guard", daemon=True)
+            self._thread = thread
+
+            def rollback_unstarted() -> None:
+                if self._thread is thread:
+                    self._thread = None
+                self._stop_event.set()
+                self._wake_event.set()
+
+            start_owned_thread_confirmed(
+                thread,
+                rollback_unstarted=rollback_unstarted,
+                context="transcode guard",
+            )
             return True
 
     def stop(self) -> bool:
@@ -122,10 +135,12 @@ class TranscodeGuardControlMixin:
         self.stop()
         with self._lock:
             thread = self._thread
-        if thread is None or thread is threading.current_thread():
-            return True
-        thread.join(timeout=max(0.0, timeout_seconds))
-        return not thread.is_alive()
+        return join_owned_thread(thread, max(0.0, timeout_seconds))
+
+    def is_running(self) -> bool:
+        """Return whether the lifecycle-owned monitor is currently active."""
+        with self._lock:
+            return bool(self._thread and self._thread.is_alive())
 
     def wake(self) -> None:
         """Wake the worker so WebSocket session events are checked promptly."""

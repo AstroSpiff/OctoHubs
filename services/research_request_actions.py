@@ -24,6 +24,45 @@ def _research_internal_error(context: str, exc: BaseException):
     return json_error(REQUEST_REFRESH_FAILURE_MESSAGE, 500)
 
 
+def _fail_request_refresh_operation_safely(
+    tracker: Any,
+    operation_id: str,
+    message: str,
+    context: str,
+) -> None:
+    if not operation_id:
+        return
+    try:
+        tracker.fail(operation_id, message)
+    except BaseException as cleanup_error:
+        try:
+            logger.error(
+                "%s:\n%s",
+                context,
+                format_exception_for_log(cleanup_error),
+            )
+        except BaseException:
+            pass
+
+
+def _cleanup_failed_request_refresh_start(
+    registry: Any,
+    operation: dict[str, Any],
+    tracker: Any,
+    state: dict[str, Any],
+) -> None:
+    if registry.owns_operation(operation):
+        return
+    _fail_request_refresh_operation_safely(
+        tracker,
+        str(operation.get("id") or ""),
+        "Avvio refresh non riuscito",
+        "Terminalizzazione avvio refresh fallita",
+    )
+    state["running"] = False
+    state.pop("operation_id", None)
+
+
 def _unknown_request_rule_ids(
     overview: Any,
     rules_payload: list[dict[str, Any]],
@@ -316,12 +355,15 @@ def _start_background_refresh_locked():
 
     def run(stop_event) -> None:
         operation_id = str(operation.get("id") or "")
-        if stop_event.is_set():
-            tracker.fail(operation_id, "Operazione interrotta durante lo shutdown")
-            state["running"] = False
-            state.pop("operation_id", None)
-            return
         try:
+            if stop_event.is_set():
+                _fail_request_refresh_operation_safely(
+                    tracker,
+                    operation_id,
+                    "Operazione interrotta durante lo shutdown",
+                    "Terminalizzazione refresh cancellato fallita",
+                )
+                return
             data, status_code = refresh_requests(
                 reserved=True,
                 operation_tracker=tracker,
@@ -337,6 +379,14 @@ def _start_background_refresh_locked():
                 tracker.skip(operation_id, message, result=data)
             else:
                 tracker.finish(operation_id, message, result=data)
+        except BaseException:
+            _fail_request_refresh_operation_safely(
+                tracker,
+                operation_id,
+                "Aggiornamento richieste interrotto",
+                "Terminalizzazione refresh interrotto fallita",
+            )
+            raise
         finally:
             state["running"] = False
             state.pop("operation_id", None)
@@ -347,12 +397,13 @@ def _start_background_refresh_locked():
             create_operation,
             run,
         )
-    except Exception:
-        operation_id = str(operation.get("id") or "")
-        if operation_id:
-            tracker.fail(operation_id, "Avvio refresh non riuscito")
-        state["running"] = False
-        state.pop("operation_id", None)
+    except BaseException:
+        _cleanup_failed_request_refresh_start(
+            background_job_registry,
+            operation,
+            tracker,
+            state,
+        )
         raise
     operation_id = str(registered.get("id") or "")
     return {

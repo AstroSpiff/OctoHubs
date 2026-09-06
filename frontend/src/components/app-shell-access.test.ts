@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   isAuthenticatedAccessState,
+  workspaceContentOwnerKey,
   workspaceAccessState,
 } from "@/components/app-shell-access";
 import { ApiError } from "@/lib/http";
@@ -48,5 +49,15 @@ describe("AppShell authenticated access", () => {
   it("fails closed when no authenticated session has ever been loaded", () => {
     expect(workspaceAccessState({ isPending: true, isError: false })).toBe("loading");
     expect(workspaceAccessState({ isPending: false, isError: true })).toBe("error");
+  });
+
+  it("changes the routed subtree key when same-role session ownership changes", () => {
+    const first = session("admin").user;
+    const second = { ...first, id: 2, username: "second-admin" };
+
+    expect(workspaceContentOwnerKey("editor", first))
+      .not.toBe(workspaceContentOwnerKey("editor", second));
+    expect(workspaceContentOwnerKey("loading", first)).toBe("loading");
+    expect(workspaceContentOwnerKey("error", first)).toBe("error");
   });
 });
