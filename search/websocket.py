@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable
 
 from starlette.websockets import WebSocketDisconnect
 
+from core.async_lifecycle import cancel_and_drain_tasks
 from core.log_sanitization import format_exception_for_log
 from core.safe_output import safe_print as print
 from core.websocket_io import accept_bounded, close_bounded, send_json_bounded
@@ -22,6 +23,7 @@ from search.stream_protocol import SearchStreamProtocolError, receive_search_sta
 
 
 logger = logging.getLogger(__name__)
+SEARCH_AUTHORIZATION_RECHECK_SECONDS = 10.0
 
 
 async def _send_error(websocket: Any, message: str) -> None:
@@ -48,6 +50,8 @@ async def handle_search_websocket(
         return
 
     accepted = False
+    search_task: asyncio.Task[Any] | None = None
+    auth_task: asyncio.Task[Any] | None = None
     try:
         await accept_bounded(websocket)
         accepted = True
@@ -92,29 +96,32 @@ async def handle_search_websocket(
                         seasons=payload.seasons,
                     ),
                     timeout=SEARCH_STREAM_TIMEOUT_SECONDS,
-                )
+                ),
+                name=f"search:{session_id}:work",
             )
             async def watch_authorization() -> bool:
                 while not search_task.done():
-                    await asyncio.sleep(10)
+                    await asyncio.sleep(SEARCH_AUTHORIZATION_RECHECK_SECONDS)
                     if await authorize(websocket) is None:
                         return False
                 return True
 
-            auth_task = asyncio.create_task(watch_authorization())
+            auth_task = asyncio.create_task(
+                watch_authorization(),
+                name=f"search:{session_id}:authorization",
+            )
             done, _pending = await asyncio.wait(
                 {search_task, auth_task},
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if auth_task in done and not auth_task.result():
-                search_task.cancel()
-                await asyncio.gather(search_task, return_exceptions=True)
                 await close_bounded(websocket, code=1008)
                 accepted = False
                 return
-            auth_task.cancel()
-            await asyncio.gather(auth_task, return_exceptions=True)
-            stats = await search_task
+            # Parent cancellation must not be forwarded directly to the owned
+            # child: the lifecycle helper below issues exactly one cancellation
+            # and retains ownership while the child runs its cleanup.
+            stats = await asyncio.shield(search_task)
             print(f"[WebSocket /ws/search/{session_id}] Ricerca completata: {stats}")
         except SearchWorkloadLimitError as exc:
             await _send_error(websocket, str(exc))
@@ -133,6 +140,11 @@ async def handle_search_websocket(
             format_exception_for_log(exc),
         )
     finally:
-        finish_search_session(session_id, owner_id)
-        if accepted:
-            await close_bounded(websocket, code=1000)
+        try:
+            await cancel_and_drain_tasks(search_task, auth_task)
+        finally:
+            try:
+                finish_search_session(session_id, owner_id)
+            finally:
+                if accepted:
+                    await close_bounded(websocket, code=1000)

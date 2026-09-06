@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from core.library_group_names import LibraryGroupName
 from core.workflow_context import MAX_WORKFLOW_TARGETS, MAX_WORKFLOW_TEXT_LENGTH
 
 
@@ -22,7 +23,7 @@ class WorkflowLibraryTarget(BaseModel):
 class WorkflowContextRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    group_name: str | None = Field(default=None, max_length=MAX_WORKFLOW_TEXT_LENGTH, pattern=WORKFLOW_TEXT_PATTERN)
+    group_name: LibraryGroupName | None = None
     scan_type: Literal["content", "metadata"] | None = None
     server_id: str | None = Field(default=None, max_length=MAX_WORKFLOW_TEXT_LENGTH, pattern=WORKFLOW_TEXT_PATTERN)
     library_id: str | None = Field(default=None, max_length=MAX_WORKFLOW_TEXT_LENGTH, pattern=WORKFLOW_TEXT_PATTERN)

@@ -16,7 +16,7 @@ from core.database_migrations import (
 from core.database_timeouts import postgres_engine_options
 from core.log_sanitization import format_exception_for_log
 from core.storage.storage_models import create_engine, sessionmaker, text
-from core.sqlalchemy_session_cleanup import invalidate_session_safely
+from core.sqlalchemy_session_cleanup import dispose_engine_safely, invalidate_session_safely
 from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 
 
@@ -132,7 +132,9 @@ class StorageCoreMixin:
         """Dispose the shared engine; it will be recreated lazily if needed."""
         with self._lock:
             engine = self._engine
+            if engine is None:
+                return
+            if not dispose_engine_safely(engine, context="storage pool"):
+                return
             self._engine = None
             self._Session = None
-        if engine is not None:
-            engine.dispose()

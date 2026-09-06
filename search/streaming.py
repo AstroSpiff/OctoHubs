@@ -114,6 +114,7 @@ async def search_streaming_parallel(
     from datetime import datetime, timezone
     from starlette.websockets import WebSocketState
 
+    from core.async_lifecycle import cancel_and_drain_tasks
     from core.scanner import build_search_queries, extract_title_and_year, gather_title_candidates, sanitize_title
     from core.utils import _normalize_media_type, get_nested, validate_jellyseerr_config
     from emby_runtime.api_clients import (
@@ -498,13 +499,23 @@ async def search_streaming_parallel(
 
     # Esegui tutte le ricerche in parallelo con asyncio.gather
     running_tasks = [asyncio.create_task(execute_and_stream(task)) for task in search_tasks]
+    fanout = asyncio.gather(*running_tasks)
     try:
-        await asyncio.gather(*running_tasks)
+        # Do not let cancellation of this coordinator propagate through gather.
+        # The canonical drain below cancels every child exactly once and shields
+        # their cleanup from repeated cancellation of the coordinator.
+        await asyncio.shield(fanout)
     except BaseException:
-        for running_task in running_tasks:
-            if not running_task.done():
-                running_task.cancel()
-        await asyncio.gather(*running_tasks, return_exceptions=True)
+        try:
+            await cancel_and_drain_tasks(running_tasks)
+        finally:
+            # Retrieve the parallel gather outcome after its children have been
+            # drained, avoiding an unobserved cancellation exception.
+            if fanout.done():
+                try:
+                    fanout.result()
+                except BaseException:
+                    pass
         raise
 
     if successful_queries == 0:

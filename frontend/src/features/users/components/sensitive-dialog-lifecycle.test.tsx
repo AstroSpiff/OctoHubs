@@ -203,6 +203,12 @@ describe("secret-bearing dialog lifecycle", () => {
     expect(container.textContent).toContain("Caricamento impostazioni...");
     expect(container.innerHTML).not.toContain("target-a-value");
     expect(container.querySelector(".user-settings-panel")).toBeNull();
+    act(() => {
+      container.querySelector("form")?.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      );
+    });
+    expect(apiMocks.saveSettings).not.toHaveBeenCalled();
 
     await act(async () => targetB.resolve(settingsInfo("target-b-value")));
     await vi.waitFor(() => {

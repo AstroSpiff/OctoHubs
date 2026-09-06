@@ -6,6 +6,7 @@ import copy
 import threading
 from typing import Any, Callable, Dict, Optional, Protocol, Tuple
 
+from core.library_group_names import normalize_library_group_name, project_library_group_name
 from core.storage.storage_app_settings import _lock_app_settings_row
 from core.storage.storage_errors import CollectionDefinitionNotFoundError, StorageError
 from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
@@ -37,14 +38,20 @@ class StorageCollectionsMixin(_SessionProvider):
         session = self._get_session()
         try:
             entries = session.query(LibraryAssociation).all()
-            return {
-                (entry.server_id, entry.library_id): entry.group_name
-                for entry in entries
-            }
+            associations = {}
+            for entry in entries:
+                group_name = project_library_group_name(entry.group_name)
+                if group_name:
+                    associations[(entry.server_id, entry.library_id)] = group_name
+            return associations
         finally:
             close_session_safely(session)
 
     def save_library_associations(self, associations: Dict[Tuple[str, str], str]) -> None:
+        normalized_associations = {
+            (str(server_id), str(library_id)): normalize_library_group_name(group_name)
+            for (server_id, library_id), group_name in associations.items()
+        }
         with _snapshot_write_lock:
             session = self._get_session()
             try:
@@ -65,7 +72,7 @@ class StorageCollectionsMixin(_SessionProvider):
                         for server in servers if isinstance(server, dict)
                     }
                     stale_server_ids = sorted(
-                        {str(server_id) for server_id, _library_id in associations}
+                        {str(server_id) for server_id, _library_id in normalized_associations}
                         - configured_server_ids
                     )
                     if stale_server_ids:
@@ -74,7 +81,7 @@ class StorageCollectionsMixin(_SessionProvider):
                             + ", ".join(stale_server_ids)
                         )
                 session.query(LibraryAssociation).delete()
-                for (server_id, library_id), group_name in associations.items():
+                for (server_id, library_id), group_name in normalized_associations.items():
                     session.add(
                         LibraryAssociation(
                             server_id=str(server_id),
@@ -95,20 +102,26 @@ class StorageCollectionsMixin(_SessionProvider):
         session = self._get_session()
         try:
             entries = session.query(LibraryGroupOrder).all()
-            return {
-                (entry.collection_type, entry.group_name): entry.position
-                for entry in entries
-            }
+            positions = {}
+            for entry in entries:
+                group_name = project_library_group_name(entry.group_name)
+                if group_name:
+                    positions[(entry.collection_type, group_name)] = entry.position
+            return positions
         finally:
             close_session_safely(session)
 
     def save_library_group_order(self, positions: Dict[Tuple[str, str], int]) -> None:
+        normalized_positions = {
+            (str(collection_type), normalize_library_group_name(group_name)): int(position)
+            for (collection_type, group_name), position in positions.items()
+        }
         with _snapshot_write_lock:
             session = self._get_session()
             try:
                 lock_snapshot_writer(session, "library-group-order")
                 session.query(LibraryGroupOrder).delete()
-                for (collection_type, group_name), position in positions.items():
+                for (collection_type, group_name), position in normalized_positions.items():
                     session.add(
                         LibraryGroupOrder(
                             collection_type=str(collection_type),

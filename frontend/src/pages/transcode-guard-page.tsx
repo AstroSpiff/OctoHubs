@@ -53,7 +53,7 @@ function TranscodeGuardPage() {
           titleId="transcode-guard-title"
           description="Monitora gli stream e interviene sulle vere transcodifiche video."
           actions={<GuardControls
-            running={Boolean(snapshot?.running)}
+            running={snapshot?.running}
             stateReady={stateReady}
             checking={checkNow.isPending}
             changingState={setState.isPending}

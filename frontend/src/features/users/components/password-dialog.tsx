@@ -1,5 +1,5 @@
 import { Eye, EyeOff } from "@/components/ui/icons";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { DialogBackdrop } from "@/components/ui/dialog-backdrop";
@@ -7,6 +7,7 @@ import { useConfirmationDialog } from "@/components/ui/use-confirmation-dialog";
 import { getPasswordInfo } from "@/features/users/api";
 import { formatUserTime } from "@/features/users/presentation";
 import { useDirtyChange } from "@/lib/use-dirty-change";
+import { errorMessage, type AuthoritativeSnapshot } from "@/lib/authoritative-snapshot";
 import type { PasswordTarget } from "@/features/users/types";
 
 type PasswordDialogProps = {
@@ -22,12 +23,13 @@ function PasswordDialog({ target, saving, mutationError, onClose, onSave, onDirt
   const confirmation = useConfirmationDialog();
   const [password, setPassword] = useState("");
   const [savedPassword, setSavedPassword] = useState("");
-  const [hasSavedPassword, setHasSavedPassword] = useState(false);
-  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
-  const [loadedTargetKey, setLoadedTargetKey] = useState<string | null>(null);
+  const [snapshot, setSnapshot] = useState<
+    AuthoritativeSnapshot<Awaited<ReturnType<typeof getPasswordInfo>>> & {
+      targetKey: string;
+    }
+  >({ status: "pending", targetKey: "" });
+  const [loadVersion, setLoadVersion] = useState(0);
   const [revealed, setRevealed] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
   const targetKey = target
     ? target.scope === "group"
       ? `group:${target.groupId}`
@@ -38,23 +40,15 @@ function PasswordDialog({ target, saving, mutationError, onClose, onSave, onDirt
     if (!target) {
       setPassword("");
       setSavedPassword("");
-      setHasSavedPassword(false);
-      setUpdatedAt(null);
-      setLoadedTargetKey(null);
+      setSnapshot({ status: "pending", targetKey: "" });
       setRevealed(false);
-      setLoading(false);
-      setError("");
       return undefined;
     }
     let active = true;
-    setLoading(true);
-    setError("");
+    setSnapshot({ status: "pending", targetKey: targetKey || "" });
     setRevealed(false);
     setPassword("");
     setSavedPassword("");
-    setHasSavedPassword(false);
-    setUpdatedAt(null);
-    setLoadedTargetKey(null);
 
     getPasswordInfo(target)
       .then((result) => {
@@ -62,23 +56,37 @@ function PasswordDialog({ target, saving, mutationError, onClose, onSave, onDirt
         const nextPassword = result.password || "";
         setPassword(nextPassword);
         setSavedPassword(nextPassword);
-        setHasSavedPassword(result.saved);
-        setUpdatedAt(result.updated_at || null);
-        setLoadedTargetKey(targetKey);
+        setSnapshot({
+          status: "success",
+          targetKey: targetKey || "",
+          data: result,
+        });
       })
-      .catch((reason: Error) => {
-        if (active) setError(reason.message);
-      })
-      .finally(() => {
-        if (active) setLoading(false);
+      .catch((reason: unknown) => {
+        if (active) {
+          setSnapshot({
+            status: "error",
+            targetKey: targetKey || "",
+            error: errorMessage(reason, "Impossibile verificare la password salvata."),
+          });
+        }
       });
 
     return () => {
       active = false;
     };
-  }, [target, targetKey]);
+  }, [loadVersion, target, targetKey]);
 
-  const dirty = targetKey === loadedTargetKey && !loading && password !== savedPassword;
+  const currentSnapshot = snapshot.targetKey === targetKey ? snapshot : undefined;
+  const authoritative = currentSnapshot?.status === "success"
+    ? currentSnapshot.data
+    : undefined;
+  const authorityRef = useRef({ authoritative, targetKey });
+  authorityRef.current = { authoritative, targetKey };
+  const loading = !currentSnapshot || currentSnapshot.status === "pending";
+  const hasSavedPassword = authoritative?.saved;
+  const updatedAt = authoritative?.updated_at || null;
+  const dirty = Boolean(authoritative && password !== savedPassword);
   useDirtyChange(Boolean(target), dirty, onDirtyChange);
 
   if (!target) return null;
@@ -94,12 +102,14 @@ function PasswordDialog({ target, saving, mutationError, onClose, onSave, onDirt
 
   function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!authoritative || saving || !dirty) return;
     onSave(password);
   }
 
   async function requestReset() {
-    if (loading || saving) return;
+    if (!authoritative || saving) return;
     const currentTarget = target;
+    const currentTargetKey = targetKey;
     if (!currentTarget) return;
     const confirmed = await confirmation.confirm({
       title: "Reimposta password",
@@ -109,18 +119,29 @@ function PasswordDialog({ target, saving, mutationError, onClose, onSave, onDirt
       confirmLabel: "Reimposta password",
       tone: "danger",
     });
-    if (confirmed) onSave("");
+    const currentAuthority = authorityRef.current;
+    if (
+      confirmed
+      && currentAuthority.targetKey === currentTargetKey
+      && currentAuthority.authoritative
+    ) onSave("");
   }
 
   async function requestApplyToGroup() {
     const currentTarget = target;
-    if (currentTarget?.scope !== "group" || loading || saving || !savedPassword) return;
+    if (currentTarget?.scope !== "group" || !authoritative || saving || !savedPassword) return;
+    const currentTargetKey = targetKey;
     const confirmed = await confirmation.confirm({
       title: "Applica password al gruppo",
       description: "La password salvata verrà applicata a tutti gli utenti del gruppo per riallinearli.",
       confirmLabel: "Applica a tutti",
     });
-    if (confirmed) onSave(savedPassword);
+    const currentAuthority = authorityRef.current;
+    if (
+      confirmed
+      && currentAuthority.targetKey === currentTargetKey
+      && currentAuthority.authoritative
+    ) onSave(savedPassword);
   }
 
   async function requestClose() {
@@ -155,9 +176,23 @@ function PasswordDialog({ target, saving, mutationError, onClose, onSave, onDirt
         <header>
           <h2 id="password-dialog-title" className="contextual-heading" title={`Password ${target.scope === "group" ? "gruppo" : "utente"}`}>{target.name}</h2>
         </header>
-        {error || mutationError ? <p className="users-dialog-error" role="alert">{error || mutationError}</p> : null}
+        {currentSnapshot?.status === "error" ? (
+          <div className="users-dialog-error" role="alert">
+            <span>{currentSnapshot.error}</span>{" "}
+            <Button type="button" variant="secondary" size="compact" onClick={() => setLoadVersion((version) => version + 1)}>
+              Riprova verifica
+            </Button>
+          </div>
+        ) : null}
+        {mutationError ? <p className="users-dialog-error" role="alert">{mutationError}</p> : null}
         <p className="users-password-status" role="status">
-          {loading ? "Verifica password salvata..." : hasSavedPassword ? "Password salvata" : "Password non salvata"}
+          {loading
+            ? "Verifica password salvata..."
+            : currentSnapshot?.status === "error"
+              ? "Stato password non disponibile."
+              : hasSavedPassword
+                ? "Password salvata"
+                : "Password non salvata"}
           {statusDetail ? ` · ${statusDetail}` : ""}
           {updatedAt ? <small>Ultimo aggiornamento: {formatUserTime(updatedAt)}</small> : null}
         </p>
@@ -167,8 +202,8 @@ function PasswordDialog({ target, saving, mutationError, onClose, onSave, onDirt
             <input
               autoFocus
               type={revealed ? "text" : "password"}
-              value={password}
-              disabled={loading || saving}
+              value={authoritative ? password : ""}
+              disabled={!authoritative || saving}
               onChange={(event) => setPassword(event.target.value)}
             />
             <Button
@@ -178,7 +213,7 @@ function PasswordDialog({ target, saving, mutationError, onClose, onSave, onDirt
               title={revealed ? "Nascondi password" : "Mostra password"}
               aria-label={revealed ? "Nascondi password" : "Mostra password"}
               onClick={() => setRevealed((current) => !current)}
-              disabled={loading || saving}
+              disabled={!authoritative || saving}
             >
               {revealed ? <EyeOff size={16} aria-hidden="true" /> : <Eye size={16} aria-hidden="true" />}
             </Button>
@@ -186,17 +221,17 @@ function PasswordDialog({ target, saving, mutationError, onClose, onSave, onDirt
           <small>Lascia vuoto per rimuovere la password.</small>
         </label>
         <footer className="users-password-dialog-actions">
-          <Button type="button" variant="ghost" className="users-password-reset" onClick={() => void requestReset()} disabled={loading || saving}>
+          <Button type="button" variant="ghost" className="users-password-reset" onClick={() => void requestReset()} disabled={!authoritative || saving}>
             Reimposta
           </Button>
           <div>
             <Button type="button" variant="ghost" onClick={() => void requestClose()} disabled={saving}>
               Annulla
             </Button>
-            {target.scope === "group" && target.mismatchCount && hasSavedPassword && savedPassword ? <Button type="button" variant="secondary" onClick={() => void requestApplyToGroup()} disabled={loading || saving}>
+            {target.scope === "group" && target.mismatchCount && hasSavedPassword && savedPassword ? <Button type="button" variant="secondary" onClick={() => void requestApplyToGroup()} disabled={!authoritative || saving}>
               Applica a tutti
             </Button> : null}
-            <Button type="submit" variant="primary" disabled={loading || saving || !dirty}>
+            <Button type="submit" variant="primary" disabled={!authoritative || saving || !dirty}>
               {saving ? "Salvataggio..." : "Aggiorna password"}
             </Button>
           </div>

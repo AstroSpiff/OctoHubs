@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { flushSync } from "react-dom";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -62,15 +63,32 @@ describe("CollectionSyncDetailsDialog collection changes", () => {
     });
     expect(container.textContent).toContain("Old movie");
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter><CollectionSyncDetailsDialog collection={{ id: "new", name: "New", enabled: true }} onClose={() => undefined} /></MemoryRouter>,
-      );
+    act(() => {
+      flushSync(() => {
+        root.render(
+          <MemoryRouter><CollectionSyncDetailsDialog collection={{ id: "new", name: "New", enabled: true }} onClose={() => undefined} /></MemoryRouter>,
+        );
+      });
     });
 
     expect(container.textContent).toContain("Caricamento dettagli");
     expect(container.textContent).not.toContain("Old movie");
     expect(container.textContent).not.toContain("Jellyseerr");
+  });
+
+  it("shows retry without inventing success-empty when details fail", async () => {
+    vi.mocked(getCollectionSyncDetails).mockRejectedValue(new Error("details unavailable"));
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter><CollectionSyncDetailsDialog collection={{ id: "broken", name: "Broken", enabled: true }} onClose={() => undefined} /></MemoryRouter>,
+      );
+    });
+    await vi.waitFor(() => expect(container.textContent).toContain("details unavailable"));
+
+    expect(container.textContent).toContain("Riprova");
+    expect(container.textContent).not.toContain("Nessun dettaglio registrato");
+    expect(container.textContent).not.toContain("Caricamento dettagli");
   });
 
   it("ignores a Jellyseerr result after switching to another collection", async () => {

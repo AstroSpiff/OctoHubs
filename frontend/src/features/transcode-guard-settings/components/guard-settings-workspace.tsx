@@ -8,6 +8,7 @@ import { createGuardRule, duplicateGuardRule, validationMessage } from "@/featur
 import type { GuardRule, TranscodeGuardSettings } from "@/features/transcode-guard-settings/types";
 import { useTranscodeGuardSettings } from "@/features/transcode-guard-settings/use-transcode-guard-settings";
 import { useConfirmationDialog } from "@/components/ui/use-confirmation-dialog";
+import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
 import { WorkspaceHeading } from "@/components/ui/workspace-heading";
 import { WorkspaceSection } from "@/components/ui/workspace-layout";
 import { WriteAction } from "@/features/session/workspace-capabilities";
@@ -94,36 +95,42 @@ function GuardSettingsWorkspace({ embedded = true }: { embedded?: boolean }) {
         actions={<GuardSettingsSave dirty={dirty} saving={save.isPending} onSave={saveSettings} />}
       />
 
-      {settings.error ? <div className="inline-alert inline-alert--error" role="alert">{settings.error.message}</div> : null}
       {save.error ? <div className="inline-alert inline-alert--error" role="alert">{save.error.message}</div> : null}
       {validationError ? <div className="inline-alert inline-alert--error" role="alert">{validationError}</div> : null}
       {notice ? <div className="inline-alert inline-alert--success" role="status">{notice}</div> : null}
-      {settings.isLoading || !draft ? <div className="loading-state">Caricamento regole Transcode Guard...</div> : null}
-      {settings.data && draft ? (
-        <WriteAction>
-          <fieldset className="guard-settings-editable" disabled={save.isPending}>
-            <GuardSettingsGlobal settings={draft} onChange={updateSettings} />
-            <div className="guard-settings-workspace">
-              <GuardRuleList
-                rules={draft.rules}
-                selectedId={selectedId}
-                onSelect={setSelectedId}
-                onAdd={addRule}
-                onMove={moveRule}
-                onToggle={(id) => updateRule(id, { enabled: !draft.rules.find((rule) => rule.id === id)?.enabled })}
-                onDuplicate={duplicateRule}
-                onDelete={deleteRule}
-              />
-              <GuardRuleEditor
-                rule={selectedRule}
-                index={selectedIndex}
-                servers={settings.data.servers}
-                onChange={(changes) => selectedRule && updateRule(selectedRule.id, changes)}
-              />
-            </div>
-          </fieldset>
-        </WriteAction>
-      ) : null}
+      <QueryStateBoundary
+        error={settings.error}
+        hasData={Boolean(settings.data && draft)}
+        loadingLabel="Caricamento regole Transcode Guard..."
+        retrying={settings.isFetching}
+        onRetry={() => void settings.refetch()}
+      >
+        {settings.data && draft ? (
+          <WriteAction>
+            <fieldset className="guard-settings-editable" disabled={save.isPending}>
+              <GuardSettingsGlobal settings={draft} onChange={updateSettings} />
+              <div className="guard-settings-workspace">
+                <GuardRuleList
+                  rules={draft.rules}
+                  selectedId={selectedId}
+                  onSelect={setSelectedId}
+                  onAdd={addRule}
+                  onMove={moveRule}
+                  onToggle={(id) => updateRule(id, { enabled: !draft.rules.find((rule) => rule.id === id)?.enabled })}
+                  onDuplicate={duplicateRule}
+                  onDelete={deleteRule}
+                />
+                <GuardRuleEditor
+                  rule={selectedRule}
+                  index={selectedIndex}
+                  servers={settings.data.servers}
+                  onChange={(changes) => selectedRule && updateRule(selectedRule.id, changes)}
+                />
+              </div>
+            </fieldset>
+          </WriteAction>
+        ) : null}
+      </QueryStateBoundary>
       {confirmation.dialog}
     </WorkspaceSection>
   );

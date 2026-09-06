@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Callable
 
+from core.library_group_names import normalize_library_group_name
 from core.log_sanitization import format_exception_for_log
 from core.safe_output import safe_print as print
 from core.utils import get_nested
@@ -40,6 +41,7 @@ class LibraryScanTracker:
         scan_type: "content" for file scan, "metadata" for metadata refresh
         Returns job_id.
         """
+        group_name = normalize_library_group_name(group_name, optional=True)
         self._log_flush("[TRACKER] >>> create_job CALLED <<<")
         self._log_flush(f"[TRACKER]   server_id: {server_id}")
         self._log_flush(f"[TRACKER]   library_ids: {library_ids}")
@@ -83,6 +85,7 @@ class LibraryScanTracker:
         scan_type: str = "content",
     ) -> tuple[Optional[str], list[str]]:
         """Atomically reserve libraries or return the jobs already tracking them."""
+        group_name = normalize_library_group_name(group_name, optional=True)
         normalized_ids = {str(library_id) for library_id in library_ids}
         with self._lock:
             conflicting_jobs = sorted(

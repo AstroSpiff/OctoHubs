@@ -15,6 +15,7 @@ from sqlalchemy.engine import URL
 from sqlalchemy.exc import SQLAlchemyError
 
 from core.database_timeouts import postgres_engine_options
+from core.sqlalchemy_session_cleanup import dispose_engine_safely
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ALEMBIC_INI = PROJECT_ROOT / "alembic.ini"
@@ -287,6 +288,14 @@ def _revision_ids(script: ScriptDirectory) -> list[str]:
     return [revision.revision for revision in reversed(list(script.walk_revisions(base="base", head="heads")))]
 
 
+def _dispose_migration_engine(engine: Any, *, context: str) -> None:
+    """Type operational failures while preserving process-control exceptions."""
+    try:
+        dispose_engine_safely(engine, context=context)
+    except Exception as exc:
+        raise DatabaseMigrationError(f"Errore chiusura pool durante {context}") from exc
+
+
 def get_migration_status(database_url: DatabaseUrl) -> AlembicMigrationStatus:
     """Read Alembic state without changing the database."""
     config = alembic_config(database_url)
@@ -305,7 +314,7 @@ def get_migration_status(database_url: DatabaseUrl) -> AlembicMigrationStatus:
     except SQLAlchemyError as exc:
         raise DatabaseMigrationError(f"Errore lettura stato Alembic: {exc}") from exc
     finally:
-        engine.dispose()
+        _dispose_migration_engine(engine, context="lettura stato Alembic")
 
     known = set(available)
     unknown_applied = [revision for revision in current_heads if revision not in known]
@@ -350,7 +359,7 @@ def validate_migrations(database_url: DatabaseUrl) -> dict[str, Any]:
     except SQLAlchemyError as exc:
         raise DatabaseMigrationError(f"Errore validazione schema: {exc}") from exc
     finally:
-        engine.dispose()
+        _dispose_migration_engine(engine, context="validazione schema")
     return {
         "ok": not errors,
         "errors": errors,

@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator, model_validator
 
 from core.emby_identifiers import OpaqueEmbyIdentifier, OpaqueEmbyServerIdentifier
+from core.library_group_names import BoundedLibraryGroupName, LibraryGroupName
 from emby_libraries.scan_limits import (
     MAX_SCAN_LIBRARIES_PER_REQUEST,
     MAX_SCAN_LIBRARIES_PER_SERVER,
@@ -37,7 +38,7 @@ class ScanLibraryState(LibraryScanApiModel):
 
 class ScanGroupSession(LibraryScanApiModel):
     job_id: str | None = None
-    group_name: str
+    group_name: LibraryGroupName
     scan_type: Literal["content", "metadata"] | None = None
     status: str
     server_id: str | None = None
@@ -58,7 +59,7 @@ class ScanJob(LibraryScanApiModel):
     server_id: str | None = None
     library_ids: list[str] = Field(default_factory=list)
     status: str
-    group_name: str | None = None
+    group_name: LibraryGroupName | None = None
     scan_type: Literal["content", "metadata"] | None = None
     progress: float | None = None
     started_at: str | None = None
@@ -80,7 +81,7 @@ class ActiveScanJob(LibraryScanApiModel):
     job_id: str
     server_id: str
     library_ids: list[str] = Field(default_factory=list)
-    group_name: str | None = None
+    group_name: LibraryGroupName | None = None
     scan_type: Literal["content", "metadata"] = "content"
     status: str
     progress: float = 0.0
@@ -118,7 +119,7 @@ class TrackedScanLibraryRequest(StrictRequestModel):
         min_length=1,
         max_length=MAX_SCAN_LIBRARIES_PER_SERVER,
     )
-    group_name: str | None = None
+    group_name: LibraryGroupName | None = None
     scan_type: Literal["content", "metadata"] = "content"
 
     @field_validator("library_ids")
@@ -133,7 +134,7 @@ class GroupScanLibrary(StrictRequestModel):
 
 
 class TrackedGroupScanRequest(StrictRequestModel):
-    group_name: str
+    group_name: LibraryGroupName
     libraries: list[GroupScanLibrary] = Field(
         min_length=1,
         max_length=MAX_SCAN_LIBRARIES_PER_REQUEST,
@@ -156,7 +157,7 @@ class LibraryScanActionResponse(LibraryScanApiModel):
     queue_position: int | None = None
     job_id: str | None = None
     job_ids: list[str] | None = None
-    group_name: str | None = None
+    group_name: LibraryGroupName | None = None
     scan_type: Literal["content", "metadata"] | None = None
     failed_servers: list[str] | None = None
 
@@ -180,7 +181,7 @@ class LibraryEntry(LibraryScanApiModel):
 
 
 class LibraryGroup(LibraryScanApiModel):
-    group_name: str
+    group_name: BoundedLibraryGroupName
     collection_type: str
     servers: list[str] = Field(default_factory=list)
     libraries: list[LibraryEntry] = Field(default_factory=list)
@@ -194,7 +195,13 @@ class GroupedLibrariesResponse(LibraryScanApiModel):
 class LibraryAssociation(StrictRequestModel):
     server_id: str
     library_id: str
-    group_name: str
+    group_name: LibraryGroupName
+
+
+class LibraryAssociationResponseEntry(LibraryScanApiModel):
+    server_id: str
+    library_id: str
+    group_name: LibraryGroupName
 
 
 class LibraryAssociationsRequest(RootModel[list[LibraryAssociation]]):
@@ -203,12 +210,18 @@ class LibraryAssociationsRequest(RootModel[list[LibraryAssociation]]):
 
 class LibraryAssociationsResponse(LibraryScanApiModel):
     success: bool
-    associations: list[LibraryAssociation] = Field(default_factory=list)
+    associations: list[LibraryAssociationResponseEntry] = Field(default_factory=list)
 
 
 class LibraryGroupOrderEntry(StrictRequestModel):
     collection_type: str
-    group_name: str
+    group_name: LibraryGroupName
+    position: int
+
+
+class LibraryGroupOrderResponseEntry(LibraryScanApiModel):
+    collection_type: str
+    group_name: LibraryGroupName
     position: int
 
 
@@ -218,7 +231,7 @@ class LibraryGroupOrderRequest(RootModel[list[LibraryGroupOrderEntry]]):
 
 class LibraryGroupOrderResponse(LibraryScanApiModel):
     success: bool
-    order: list[LibraryGroupOrderEntry] = Field(default_factory=list)
+    order: list[LibraryGroupOrderResponseEntry] = Field(default_factory=list)
 
 
 class ServerOrderRequest(RootModel[list[str]]):

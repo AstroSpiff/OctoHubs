@@ -199,10 +199,9 @@ function fallbackSnapshotRoots(
   if (!allowedKinds.size) return roots;
   const visit = (candidate: ts.Node) => {
     if (
-      candidate !== expression
-      && (ts.isJsxElement(candidate)
+      ts.isJsxElement(candidate)
         || ts.isJsxSelfClosingElement(candidate)
-        || ts.isJsxFragment(candidate))
+        || ts.isJsxFragment(candidate)
     ) return;
     if (ts.isIdentifier(candidate) && isValueIdentifier(candidate)) {
       const binding = resolveBinding(candidate, use, analysis);
@@ -250,10 +249,14 @@ function fallbackKinds(
 function jsxFallbackKinds(use: ts.Node) {
   if (!ts.isJsxAttribute(use.parent)) return new Set<FallbackKind>(["zero"]);
   const name = use.parent.name.getText(use.getSourceFile());
-  if (/^(?:disabled|checked|selected|className|key|aria-|on[A-Z])/.test(name)) {
+  if (/^(?:hasData|ready|\w+Ready|\w+Loaded|disabled|checked|selected|className|key|aria-|on[A-Z])/.test(name)) {
     return new Set<FallbackKind>();
   }
-  return new Set<FallbackKind>(["zero", "collection"]);
+  const kinds = new Set<FallbackKind>(["zero", "collection"]);
+  if (/^(?:running|stopped|active|enabled|available|configured|has[A-Z]|is[A-Z])/.test(name)) {
+    kinds.add("boolean");
+  }
+  return kinds;
 }
 
 function isFallbackOperator(kind: ts.SyntaxKind) {
@@ -311,6 +314,17 @@ function directFallbackRoots(node: ts.Node, use: ts.Node, analysis: Analysis) {
     if (!fallbackLiteralKind(node.whenFalse)) {
       addAll(roots, snapshotRoots(node.whenFalse, use, analysis));
     }
+  } else if (
+    ts.isCallExpression(node)
+    && node.expression.getText(analysis.file) === "Boolean"
+    && node.arguments[0]
+  ) {
+    addAll(roots, snapshotRoots(node.arguments[0], use, analysis));
+  } else if (
+    ts.isPrefixUnaryExpression(node)
+    && node.operator === ts.SyntaxKind.ExclamationToken
+  ) {
+    addAll(roots, snapshotRoots(node.operand, use, analysis));
   }
   return roots;
 }

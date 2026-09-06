@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import BigInteger, create_engine, inspect, text
+from sqlalchemy.exc import DataError
 from sqlalchemy.engine import make_url
 
 
@@ -131,6 +132,50 @@ def test_postgresql_concurrent_migrations_are_serialized(postgresql_schema_url):
             if worker.is_alive():
                 worker.terminate()
                 worker.join(timeout=3)
+
+
+def test_postgresql_library_group_name_columns_enforce_canonical_budget(
+    postgresql_schema_url,
+):
+    from core.database_migrations import upgrade_database
+    from core.library_group_names import MAX_LIBRARY_GROUP_NAME_LENGTH
+
+    upgrade_database(postgresql_schema_url)
+    engine = create_engine(postgresql_schema_url, future=True)
+    maximum = "x" * MAX_LIBRARY_GROUP_NAME_LENGTH
+    oversized = maximum + "x"
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO library_associations "
+                    "(server_id, library_id, group_name) "
+                    "VALUES ('server', 'library', :group_name)"
+                ),
+                {"group_name": maximum},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO library_group_order "
+                    "(collection_type, group_name, position) "
+                    "VALUES ('movies', :group_name, 0)"
+                ),
+                {"group_name": maximum},
+            )
+
+        for statement in (
+            "INSERT INTO library_associations "
+            "(server_id, library_id, group_name) "
+            "VALUES ('other-server', 'other-library', :group_name)",
+            "INSERT INTO library_group_order "
+            "(collection_type, group_name, position) "
+            "VALUES ('tvshows', :group_name, 0)",
+        ):
+            with pytest.raises(DataError):
+                with engine.begin() as connection:
+                    connection.execute(text(statement), {"group_name": oversized})
+    finally:
+        engine.dispose()
 
 
 def test_postgresql_baseline_contract_excludes_later_revision_objects(

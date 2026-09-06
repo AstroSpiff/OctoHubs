@@ -8,6 +8,7 @@ import { EmbyServerIcon } from "@/features/emby-live/components/emby-server-icon
 import { getUserDetails } from "@/features/users/api";
 import { formatUserTime, passwordPresentation } from "@/features/users/presentation";
 import type { EmbyUser, EmbyUserDetails } from "@/features/users/types";
+import { errorMessage, type AuthoritativeSnapshot } from "@/lib/authoritative-snapshot";
 
 type UserDetailsDialogProps = {
   user: EmbyUser | null;
@@ -32,36 +33,55 @@ function UserDetailsDialog({
   onClone,
   onDelete,
 }: UserDetailsDialogProps) {
-  const [details, setDetails] = useState<EmbyUserDetails | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [snapshot, setSnapshot] = useState<AuthoritativeSnapshot<EmbyUserDetails> & {
+    targetKey: string;
+  }>({ status: "pending", targetKey: "" });
+  const [loadVersion, setLoadVersion] = useState(0);
+  const targetKey = user ? `${user.server_id}:${user.user_id}` : "";
 
   useEffect(() => {
     if (!user) return undefined;
     let active = true;
-    setDetails(null);
-    setLoading(true);
-    setError("");
+    setSnapshot({ status: "pending", targetKey });
 
     getUserDetails(user)
       .then((result) => {
-        if (active) setDetails(result);
+        if (active) {
+          setSnapshot({
+            status: "success",
+            targetKey,
+            data: result,
+          });
+        }
       })
-      .catch((reason: Error) => {
-        if (active) setError(reason.message);
-      })
-      .finally(() => {
-        if (active) setLoading(false);
+      .catch((reason: unknown) => {
+        if (active) {
+          setSnapshot({
+            status: "error",
+            targetKey,
+            error: errorMessage(reason, "Impossibile caricare i dettagli utente."),
+          });
+        }
       });
 
     return () => {
       active = false;
     };
-  }, [user]);
+  }, [loadVersion, targetKey, user]);
 
   if (!user) return null;
+  const currentSnapshot = snapshot.targetKey === targetKey ? snapshot : undefined;
+  const details = currentSnapshot?.status === "success"
+    ? currentSnapshot.data
+    : undefined;
+  const loading = !currentSnapshot || currentSnapshot.status === "pending";
   const hasPassword = details?.has_password ?? user.has_password;
   const password = passwordPresentation(user);
+  const embyPasswordLabel = hasPassword === undefined
+    ? "non disponibile"
+    : hasPassword
+      ? "presente"
+      : "assente";
 
   return (
     <DialogBackdrop className="users-dialog-backdrop" onDismiss={onClose}>
@@ -93,26 +113,37 @@ function UserDetailsDialog({
           </div>
         </header>
         {loading ? <p className="user-settings-loading">Caricamento dettagli...</p> : null}
-        {error ? <p className="users-dialog-error" role="alert">{error}</p> : null}
+        {currentSnapshot?.status === "error" ? (
+          <div className="users-dialog-error" role="alert">
+            <span>{currentSnapshot.error}</span>{" "}
+            <Button type="button" variant="secondary" size="compact" onClick={() => setLoadVersion((version) => version + 1)}>
+              Riprova
+            </Button>
+          </div>
+        ) : null}
         <dl className="users-details-grid">
           <Detail label="Ultimo accesso" value={formatUserTime(user.last_login)} />
-          <Detail label="Ultima attività" value={formatUserTime(details?.last_activity_date)} />
-          <Detail label="Creato" value={formatUserTime(details?.date_created)} />
           <Detail
             label="Password"
-            value={`${password.label}. Emby: ${hasPassword ? "presente" : "assente"}`}
+            value={`${password.label}. Emby: ${embyPasswordLabel}`}
             severity={password.severity}
           />
-          <Detail label="Ultimo contenuto" value={details?.last_played_title || "Mai"} />
-          <Detail
-            label="Ultima riproduzione"
-            value={details?.last_played_date ? formatUserTime(details.last_played_date) : "Mai"}
-          />
-          {details?.connect_user_name ? (
-            <Detail label="Utente Emby Connect" value={details.connect_user_name} />
-          ) : null}
-          {details?.connect_link_type ? (
-            <Detail label="Tipo collegamento Connect" value={details.connect_link_type} />
+          {details ? (
+            <>
+              <Detail label="Ultima attività" value={formatUserTime(details.last_activity_date)} />
+              <Detail label="Creato" value={formatUserTime(details.date_created)} />
+              <Detail label="Ultimo contenuto" value={details.last_played_title || "Mai"} />
+              <Detail
+                label="Ultima riproduzione"
+                value={details.last_played_date ? formatUserTime(details.last_played_date) : "Mai"}
+              />
+              {details.connect_user_name ? (
+                <Detail label="Utente Emby Connect" value={details.connect_user_name} />
+              ) : null}
+              {details.connect_link_type ? (
+                <Detail label="Tipo collegamento Connect" value={details.connect_link_type} />
+              ) : null}
+            </>
           ) : null}
         </dl>
         <footer className="users-details-footer">

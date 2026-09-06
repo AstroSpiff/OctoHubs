@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple, Callable, Protocol
 
 from core.emby_identifiers import normalize_emby_identifier
+from core.library_group_names import normalize_library_group_name
 from core.safe_output import safe_print as print
 from core.utils import get_emby_servers, find_server_by_id, normalize_string
 from emby_libraries.scan_limits import (
@@ -254,7 +255,7 @@ class EmbyLibraryScanManager:
         return (
             server_id,
             normalize_library_ids(library_ids),
-            payload.get("group_name"),
+            normalize_library_group_name(payload.get("group_name"), optional=True),
             scan_type,
         )
 
@@ -354,9 +355,8 @@ class EmbyLibraryScanManager:
         payload = payload or {}
         if not isinstance(payload, dict):
             raise ValueError("Formato non valido")
-        group_name = str(payload.get("group_name") or "").strip()
-        if not group_name:
-            raise ValueError("group_name mancante")
+        group_name = normalize_library_group_name(payload.get("group_name"))
+        assert group_name is not None
         libraries = payload.get("libraries") or []
         if not isinstance(libraries, list) or not libraries:
             raise ValueError("libraries mancante")

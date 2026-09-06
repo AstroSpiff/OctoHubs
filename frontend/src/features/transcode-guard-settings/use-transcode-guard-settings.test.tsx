@@ -15,11 +15,16 @@ import type {
   GuardSettingsSaveResult,
   TranscodeGuardSettings,
 } from "@/features/transcode-guard-settings/types";
+import { GuardSettingsWorkspace } from "@/features/transcode-guard-settings/components/guard-settings-workspace";
 import { useTranscodeGuardSettings } from "@/features/transcode-guard-settings/use-transcode-guard-settings";
+import { WorkspaceCapabilitiesProvider } from "@/features/session/workspace-capabilities";
 
 vi.mock("@/features/transcode-guard-settings/api", () => ({
   getTranscodeGuardSettings: vi.fn(),
   saveTranscodeGuardSettings: vi.fn(),
+}));
+vi.mock("@/lib/use-unsaved-changes-navigation-guard", () => ({
+  useUnsavedChangesNavigationGuard: vi.fn(),
 }));
 
 declare global {
@@ -28,15 +33,18 @@ declare global {
 
 type Deferred<T> = {
   promise: Promise<T>;
+  reject: (reason: Error) => void;
   resolve: (value: T) => void;
 };
 
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((complete) => {
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((complete, fail) => {
     resolve = complete;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 function settings(pollIntervalSeconds: number): TranscodeGuardSettings {
@@ -170,5 +178,29 @@ describe("useTranscodeGuardSettings", () => {
       await savePromise;
     });
     expect(latestSettings?.dirty).toBe(false);
+  });
+
+  it("shows a retryable error without a permanent loading claim", async () => {
+    const failure = deferred<GuardSettingsResponse>();
+    vi.mocked(getTranscodeGuardSettings).mockReturnValue(failure.promise);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <WorkspaceCapabilitiesProvider accountId={1} canMutate>
+            <GuardSettingsWorkspace />
+          </WorkspaceCapabilitiesProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => {
+      failure.reject(new Error("guard settings unavailable"));
+      await failure.promise.catch(() => undefined);
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toContain("guard settings unavailable");
+    expect(container.textContent).toContain("Riprova");
+    expect(container.textContent).not.toContain("Caricamento regole Transcode Guard");
   });
 });

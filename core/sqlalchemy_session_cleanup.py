@@ -121,8 +121,42 @@ def remove_session_registry_safely(
     )
 
 
+def dispose_engine_safely(
+    engine: Any,
+    *,
+    context: str,
+    primary_error: BaseException | None = None,
+) -> bool:
+    """Dispose an engine while preserving an active primary failure.
+
+    Unlike best-effort session cleanup, a standalone disposal failure remains
+    observable so the owner can retain the engine and permit a later retry.
+    """
+    dispose = getattr(engine, "dispose", None)
+    if not callable(dispose):
+        return False
+    active_primary = primary_error if primary_error is not None else sys.exception()
+    try:
+        dispose()
+        return True
+    except BaseException as exc:
+        if active_primary is None:
+            raise
+        try:
+            logger.error(
+                "Cleanup engine SQLAlchemy dispose (%s) non riuscito:\n%s",
+                context,
+                format_exception_for_log(exc),
+            )
+        except BaseException:
+            # Diagnostics are cleanup too and must never replace the primary.
+            pass
+        return False
+
+
 __all__ = [
     "close_session_safely",
+    "dispose_engine_safely",
     "invalidate_session_safely",
     "remove_session_registry_safely",
     "rollback_session_safely",

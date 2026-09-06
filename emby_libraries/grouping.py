@@ -3,6 +3,8 @@ import re
 from collections import Counter
 from typing import Dict, Any, List, Tuple, Optional
 
+from core.library_group_names import project_library_group_name
+
 
 _PUNCTUATION_RE = re.compile(r"[.,\-:_()\[\]{}]+")
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -51,10 +53,12 @@ def group_libraries(
             if library_id:
                 manual_group_name = manual_associations.get((str(server_id), str(library_id)))
             if manual_group_name:
-                normalized_manual_name = _normalize_name_for_grouping(str(manual_group_name))
+                manual_group_name = project_library_group_name(manual_group_name)
+                normalized_manual_name = _normalize_name_for_grouping(manual_group_name)
                 key = (normalized_manual_name or f"manual_{manual_group_name}", collection_type)
             else:
-                normalized_name = _normalize_name_for_grouping(str(library_name or ""))
+                bounded_library_name = project_library_group_name(library_name)
+                normalized_name = _normalize_name_for_grouping(bounded_library_name)
                 if not normalized_name:
                     continue
                 key = (normalized_name, collection_type)
@@ -70,8 +74,8 @@ def group_libraries(
                 groups[key] = group
             elif manual_group_name and not group.get("manual_name"):
                 group["manual_name"] = manual_group_name
-            if isinstance(library_name, str) and library_name.strip():
-                group["name_counts"][library_name.strip()] += 1
+            if bounded_library_name := project_library_group_name(library_name):
+                group["name_counts"][bounded_library_name] += 1
             group["servers"].add(str(server_id))
             group["libraries"].append({
                 "server_id": str(server_id),
@@ -92,11 +96,11 @@ def group_libraries(
     result = []
     for group in groups.values():
         if group.get("manual_name"):
-            group_name = group["manual_name"]
+            group_name = project_library_group_name(group["manual_name"])
         else:
             name_counts = group["name_counts"]
             if name_counts:
-                group_name = name_counts.most_common(1)[0][0]
+                group_name = project_library_group_name(name_counts.most_common(1)[0][0])
             else:
                 group_name = ""
         result.append({

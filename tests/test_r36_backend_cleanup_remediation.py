@@ -214,6 +214,7 @@ def test_shutdown_auth_always_attempts_engine_disposal(
             return close_mode == "true"
 
     monkeypatch.setattr(auth, "db_session", Registry())
+    monkeypatch.setattr(auth, "_auth_cleanup_pending", None)
 
     assert auth.shutdown_auth() is expected
     assert events == ["close_all", "dispose"]
@@ -286,7 +287,7 @@ CleanupCall = tuple[str, str, str, str, str]
 
 def _cleanup_inventory(source: str, relative_path: str) -> Counter[CleanupCall]:
     """Inventory cleanup calls without relying on the receiver variable name."""
-    operations = {"rollback", "close", "remove", "invalidate"}
+    operations = {"rollback", "close", "remove", "invalidate", "dispose"}
     tree = ast.parse(source)
     parents = {
         child: parent
@@ -331,6 +332,9 @@ def _cleanup_inventory(source: str, relative_path: str) -> Counter[CleanupCall]:
 def test_sqlalchemy_cleanup_receivers_are_canonical_or_semantically_allowlisted():
     root = Path(__file__).resolve().parents[1]
     allowed: dict[CleanupCall, tuple[int, str]] = {
+        # Canonical engine wrapper preserves primaries and propagates standalone
+        # disposal failures so owners can retain the engine for retry.
+        ("core/sqlalchemy_session_cleanup.py", "dispose_engine_safely", "engine", "dispose", "getattr"): (1, "canonical engine cleanup"),
         # This rollback establishes the SQLite test-only admin mutation boundary;
         # there is no primary error to preserve and failure must abort the guard.
         ("core/auth_admin_invariant.py", "active_admin_mutation_guard", "session", "rollback", "direct"): (1, "fail-fast guard"),

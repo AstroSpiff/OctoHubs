@@ -29,7 +29,7 @@ from core.password_policy import (
     password_fits_bcrypt,
 )
 from core.safe_output import safe_print as print
-from core.sqlalchemy_session_cleanup import rollback_session_safely
+from core.sqlalchemy_session_cleanup import dispose_engine_safely, rollback_session_safely
 
 
 logger = logging.getLogger(__name__)
@@ -39,6 +39,8 @@ Base = declarative_base()
 
 # Database session
 db_session = None
+_auth_cleanup_pending = None
+_auth_cleanup_lock = threading.Lock()
 
 ROLE_VALUES = ("admin", "user", "viewer")
 PRIMARY_NAVIGATION_MODES = ("top", "sidebar")
@@ -349,25 +351,32 @@ def init_auth(
     )
     from core.database_migrations import upgrade_database
 
-    # Authentication and application data share one PostgreSQL database.
-    db_url = database_url or resolve_application_database_url()
-    if not db_url:
-        db_session = None
-        print("[AUTH] Database PostgreSQL non configurato: autenticazione in attesa del setup.")
-        return False
-    if not allow_sqlite_for_tests and not is_postgresql_url(db_url):
-        raise RuntimeError("Configura OCTOHUBS_DB_URL con un database PostgreSQL.")
+    with _auth_cleanup_lock:
+        if _auth_cleanup_pending is not None:
+            raise RuntimeError(
+                "Cleanup autenticazione incompleto: ripetere lo shutdown prima dell'inizializzazione."
+            )
 
-    upgrade_database(db_url)
+        # Authentication and application data share one PostgreSQL database.
+        db_url = database_url or resolve_application_database_url()
+        if not db_url:
+            db_session = None
+            print("[AUTH] Database PostgreSQL non configurato: autenticazione in attesa del setup.")
+            return False
+        if not allow_sqlite_for_tests and not is_postgresql_url(db_url):
+            raise RuntimeError("Configura OCTOHUBS_DB_URL con un database PostgreSQL.")
 
-    # Create engine and session
-    engine = create_engine(db_url, echo=False, **postgres_engine_options(db_url))
-    session_factory = sessionmaker(bind=engine)
-    db_session = RequestAwareSessionRegistry(session_factory)
+        upgrade_database(db_url)
 
-    # Create default admin user if none exists
-    if create_default_admin:
-        _create_default_admin()
+        # Publish only after migration and registry construction complete while
+        # shutdown is excluded by the same lifecycle lock.
+        engine = create_engine(db_url, echo=False, **postgres_engine_options(db_url))
+        session_factory = sessionmaker(bind=engine)
+        db_session = RequestAwareSessionRegistry(session_factory)
+
+        # Create default admin user if none exists
+        if create_default_admin:
+            _create_default_admin()
 
     print("[AUTH] Sistema di autenticazione inizializzato (database PostgreSQL condiviso)")
     return True
@@ -375,35 +384,43 @@ def init_auth(
 
 def shutdown_auth() -> bool:
     """Close every auth resource, preserving deterministic best-effort shutdown."""
-    global db_session
+    global db_session, _auth_cleanup_pending
 
-    registry = db_session
-    db_session = None
-    if registry is None:
-        return True
+    with _auth_cleanup_lock:
+        registry = db_session
+        db_session = None
+        if registry is not None:
+            _auth_cleanup_pending = registry
+        else:
+            registry = _auth_cleanup_pending
+        if registry is None:
+            return True
 
-    engine = registry.session_factory.kw.get("bind")
-    cleaned = True
-    try:
-        if registry.close_all() is False:
-            cleaned = False
-    except Exception as exc:
-        cleaned = False
-        logger.error(
-            "[AUTH] Chiusura delle sessioni non riuscita:\n%s",
-            format_exception_for_log(exc),
-        )
-    finally:
-        if engine is not None:
-            try:
-                engine.dispose()
-            except Exception as exc:
+        engine = registry.session_factory.kw.get("bind")
+        cleaned = True
+        try:
+            if registry.close_all() is False:
                 cleaned = False
-                logger.error(
-                    "[AUTH] Chiusura del pool non riuscita:\n%s",
-                    format_exception_for_log(exc),
-                )
-    return cleaned
+        except Exception as exc:
+            cleaned = False
+            logger.error(
+                "[AUTH] Chiusura delle sessioni non riuscita:\n%s",
+                format_exception_for_log(exc),
+            )
+        finally:
+            if engine is not None:
+                try:
+                    if not dispose_engine_safely(engine, context="auth pool"):
+                        cleaned = False
+                except Exception as exc:
+                    cleaned = False
+                    logger.error(
+                        "[AUTH] Chiusura del pool non riuscita:\n%s",
+                        format_exception_for_log(exc),
+                    )
+        if cleaned:
+            _auth_cleanup_pending = None
+        return cleaned
 
 
 def _create_default_admin():

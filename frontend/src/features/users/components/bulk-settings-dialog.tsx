@@ -48,15 +48,19 @@ function BulkSettingsDialog({ users, saving, mutationError, onClose, onApply, on
   const [activeTab, setActiveTab] = useState<SettingsScope>("policy");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [loadedUsersIdentity, setLoadedUsersIdentity] = useState("");
+  const usersIdentity = users.map((user) => `${user.server_id}:${user.user_id}`).join("|");
 
   useEffect(() => {
     if (!users.length) return;
     let active = true;
     setLoading(true);
     setSchema(null);
+    setLoadedUsersIdentity("");
     setSettings(normalizeUserSettings(undefined));
     setSelectedFields(new Set());
     setApplyLibraries(false);
+    setLibraryItems([]);
     setFeatureItems([]);
     setActiveTab("policy");
     setError("");
@@ -66,11 +70,14 @@ function BulkSettingsDialog({ users, saving, mutationError, onClose, onApply, on
         setSchema(nextSchema);
         setLibraryItems(info.library_items || []);
         setFeatureItems(info.feature_items || []);
+        setLoadedUsersIdentity(usersIdentity);
       })
       .catch((reason: Error) => { if (active) setError(reason.message); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [users]);
+  }, [users, usersIdentity]);
+
+  const authoritative = Boolean(schema && loadedUsersIdentity === usersIdentity);
 
   const appliedCount = selectedFields.size + (applyLibraries ? 1 : 0);
   const activeSections = useMemo(() => prepareSettingsCategories(schema?.categories || [], featureItems).map((category) => ({
@@ -78,7 +85,7 @@ function BulkSettingsDialog({ users, saving, mutationError, onClose, onApply, on
     fields: (category[activeTab] || []).filter((field) => !field.hidden && field.type !== "library_landing" && !blockedFields[activeTab].has(field.key)),
   })).filter(({ category, fields }) => fields.length || (activeTab === "policy" && category.libraries)), [activeTab, featureItems, schema]);
 
-  const dirty = selectedFields.size > 0 || applyLibraries;
+  const dirty = authoritative && (selectedFields.size > 0 || applyLibraries);
   useDirtyChange(users.length > 0, dirty, onDirtyChange);
 
   if (!users.length) return null;
@@ -99,6 +106,7 @@ function BulkSettingsDialog({ users, saving, mutationError, onClose, onApply, on
 
   function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!authoritative) return;
     if (!appliedCount) return setError("Seleziona almeno un campo o l'accesso alle librerie.");
     const patch = buildSettingsPatch(settings, selectedFields, applyLibraries);
     setError("");
@@ -139,8 +147,8 @@ function BulkSettingsDialog({ users, saving, mutationError, onClose, onApply, on
           applyLibraries={applyLibraries}
         />
         {error || mutationError ? <p className="users-dialog-error" role="alert">{error || mutationError}</p> : null}
-        {loading ? <p className="user-settings-loading">Caricamento schema impostazioni...</p> : null}
-        {schema ? <>
+        {loading || (!authoritative && !error) ? <p className="user-settings-loading">Caricamento schema impostazioni...</p> : null}
+        {schema && authoritative ? <>
           <SettingsPresetControls
             settings={buildSettingsPatch(settings, selectedFields, applyLibraries)}
             applyLibraries={applyLibraries}
@@ -206,7 +214,7 @@ function BulkSettingsDialog({ users, saving, mutationError, onClose, onApply, on
         </> : null}
         <footer>
           <Button type="button" variant="ghost" onClick={() => void requestClose()} disabled={saving}>Annulla</Button>
-          <Button type="submit" variant="primary" disabled={loading || !schema || !appliedCount || saving}>{saving ? "Applicazione..." : "Applica impostazioni"}</Button>
+          <Button type="submit" variant="primary" disabled={!authoritative || !appliedCount || saving}>{saving ? "Applicazione..." : "Applica impostazioni"}</Button>
         </footer>
         </form>
       </DialogBackdrop>

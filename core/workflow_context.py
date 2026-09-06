@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.library_group_names import project_library_group_name
+
 
 MAX_WORKFLOW_TARGETS = 256
 MAX_WORKFLOW_JOB_IDS = 256
@@ -52,7 +54,11 @@ def normalize_workflow_context(value: Any) -> dict[str, Any]:
         return {}
 
     normalized: dict[str, Any] = {}
-    for key in ("group_name", "server_id", "library_id"):
+    group_name = project_library_group_name(value.get("group_name"))
+    if group_name:
+        normalized["group_name"] = group_name
+
+    for key in ("server_id", "library_id"):
         text = _bounded_text(value.get(key))
         if text:
             normalized[key] = text

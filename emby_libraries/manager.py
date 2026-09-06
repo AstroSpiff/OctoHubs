@@ -3,6 +3,10 @@ from typing import Any, Dict, Tuple, Optional, Callable
 
 from emby_runtime.api_clients import _fetch_emby_libraries
 from emby_libraries.grouping import group_libraries
+from core.library_group_names import (
+    normalize_library_group_name,
+    project_library_group_name,
+)
 from core.log_sanitization import format_exception_for_log
 from core.utils import get_emby_servers
 
@@ -74,14 +78,18 @@ class EmbyLibrariesManager:
             associations = backend.load_library_associations()
         except self._storage_error_cls as exc:
             return self._storage_error("Caricamento associazioni non riuscito", exc)
-        payload = [
-            {
-                "server_id": server_id,
-                "library_id": library_id,
-                "group_name": group_name
-            }
-            for (server_id, library_id), group_name in associations.items()
-        ]
+        payload = []
+        for (server_id, library_id), group_name in associations.items():
+            projected_group_name = project_library_group_name(group_name)
+            if not projected_group_name:
+                continue
+            payload.append(
+                {
+                    "server_id": server_id,
+                    "library_id": library_id,
+                    "group_name": projected_group_name,
+                }
+            )
         return {"success": True, "associations": payload}, 200
 
     def build_associations_post_snapshot(self, payload):
@@ -96,7 +104,12 @@ class EmbyLibrariesManager:
             group_name = entry.get("group_name")
             if not (server_id and library_id and group_name):
                 continue
-            associations[(str(server_id), str(library_id))] = str(group_name)
+            try:
+                normalized_group_name = normalize_library_group_name(group_name)
+            except ValueError as exc:
+                return self._json_error(str(exc), 400)
+            assert normalized_group_name is not None
+            associations[(str(server_id), str(library_id))] = normalized_group_name
         try:
             backend = self._ensure_db_backend()
             backend.save_library_associations(associations)

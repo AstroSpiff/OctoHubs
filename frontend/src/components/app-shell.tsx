@@ -1,5 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState, type ReactNode } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 
 import { AccountMenu } from "@/components/account-menu";
@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { RefreshCw } from "@/components/ui/icons";
 import { EmbyWorkspaceHeader } from "@/features/emby-navigation/components/emby-workspace-header";
+import { synchronizeAccountQueryCacheOwner } from "@/features/account-management/account-query-cache";
 import { MobilePrimaryNavigation } from "@/features/navigation/components/mobile-primary-navigation";
 import { NavigationPreferencesDialog } from "@/features/navigation/components/navigation-preferences-dialog";
 import { PrimaryNavigationLinks } from "@/features/navigation/components/primary-navigation-links";
@@ -27,6 +28,7 @@ import { cn } from "@/lib/utils";
 import { useDeepLinkFocus } from "@/lib/use-deep-link-focus";
 
 function AppShell() {
+  const queryClient = useQueryClient();
   const session = useQuery({
     queryKey: ["session"],
     queryFn: getSession,
@@ -41,7 +43,12 @@ function AppShell() {
   const accessState = workspaceAccessState(session);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const hasAuthenticatedAccess = isAuthenticatedAccessState(accessState);
+  const accountId = hasAuthenticatedAccess ? session.data?.user.id ?? null : null;
   useDeepLinkFocus(search);
+
+  useLayoutEffect(() => {
+    synchronizeAccountQueryCacheOwner(queryClient, accountId);
+  }, [accountId, queryClient]);
 
   useEffect(() => {
     document.title = applicationTitle(pathname);
@@ -95,7 +102,7 @@ function AppShell() {
           <div className="app-workspace-layout">
             <EmbyWorkspaceHeader variant={navigationPreferences.preferences.secondary_navigation} />
             <WorkspaceCapabilityBoundary
-              accountId={hasAuthenticatedAccess ? session.data?.user.id ?? null : null}
+              accountId={accountId}
               accessState={accessState}
               onRetry={() => void session.refetch()}
             >

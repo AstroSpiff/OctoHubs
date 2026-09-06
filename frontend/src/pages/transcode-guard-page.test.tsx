@@ -92,7 +92,21 @@ describe("TranscodeGuardPage state ownership", () => {
     expect(setStateMutate).toHaveBeenCalledWith("start");
   });
 
-  function guardHookState(data: typeof snapshot) {
+  it("presents the initial Guard state as indeterminate instead of stopped", async () => {
+    vi.mocked(useConfirmationDialog).mockReturnValue({
+      confirm: vi.fn().mockResolvedValue(true),
+      dialog: <></>,
+    });
+    vi.mocked(useTranscodeGuard).mockImplementation(() => guardHookState(undefined) as never);
+
+    await renderPage(root);
+
+    expect(stateToggle(container).indeterminate).toBe(true);
+    expect(stateToggle(container).disabled).toBe(true);
+    expect(stateToggle(container).getAttribute("aria-label")).toBe("Stato Transcode Guard non disponibile");
+  });
+
+  function guardHookState(data: typeof snapshot | undefined) {
     const mutation = { error: null, isPending: false, mutate: vi.fn(), data: undefined };
     return {
       status: {

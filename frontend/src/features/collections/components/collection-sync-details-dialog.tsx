@@ -13,6 +13,7 @@ import type {
   CollectionSyncItem,
   CollectionSyncDetail,
 } from "@/features/collections/types";
+import { errorMessage, type AuthoritativeSnapshot } from "@/lib/authoritative-snapshot";
 
 function CollectionSyncDetailsDialog({
   collection,
@@ -38,40 +39,47 @@ function CollectionSyncDetailsContent({
   collection: EmbyCollection;
   onClose: () => void;
 }) {
-  const [details, setDetails] = useState<CollectionSyncDetail[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [snapshot, setSnapshot] = useState<
+    AuthoritativeSnapshot<CollectionSyncDetail[]> & { targetKey: string }
+  >({ status: "pending", targetKey: collection.id });
+  const [loadVersion, setLoadVersion] = useState(0);
   const [feedback, setFeedback] = useState<{
     kind: "success" | "error";
     message: string;
   } | null>(null);
   const [requestingKey, setRequestingKey] = useState<string | null>(null);
+  const currentSnapshot = snapshot.targetKey === collection.id
+    ? snapshot
+    : { status: "pending" as const, targetKey: collection.id };
 
   useEffect(() => {
     let active = true;
-    setDetails([]);
+    setSnapshot({ status: "pending", targetKey: collection.id });
     setRequestingKey(null);
-    setLoading(true);
-    setError("");
     setFeedback(null);
     getCollectionSyncDetails(collection.id)
       .then((result) => {
         if (active) {
-          setDetails(result.details || []);
+          setSnapshot({
+            status: "success",
+            data: result.details || [],
+            targetKey: collection.id,
+          });
         }
       })
-      .catch((reason: Error) => {
-        if (active) setError(reason.message);
-      })
-      .finally(() => {
-        if (active) setLoading(false);
+      .catch((reason: unknown) => {
+        if (active) {
+          setSnapshot({
+            status: "error",
+            error: errorMessage(reason, "Impossibile caricare i dettagli della sincronizzazione."),
+            targetKey: collection.id,
+          });
+        }
       });
     return () => {
       active = false;
     };
-  }, [collection.id]);
-
-  const visibleDetails = details;
+  }, [collection.id, loadVersion]);
 
   async function requestJellyseerr(item: CollectionSyncItem, key: string) {
     setRequestingKey(key);
@@ -123,13 +131,16 @@ function CollectionSyncDetailsContent({
             <X size={17} aria-hidden="true" />
           </Button>
         </header>
-        {loading ? (
+        {currentSnapshot.status === "pending" ? (
           <p className="user-settings-loading">Caricamento dettagli...</p>
         ) : null}
-        {error ? (
-          <p className="users-dialog-error" role="alert">
-            {error}
-          </p>
+        {currentSnapshot.status === "error" ? (
+          <div className="users-dialog-error" role="alert">
+            <span>{currentSnapshot.error}</span>{" "}
+            <Button type="button" variant="secondary" size="compact" onClick={() => setLoadVersion((version) => version + 1)}>
+              Riprova
+            </Button>
+          </div>
         ) : null}
         {feedback ? (
           <p
@@ -139,21 +150,12 @@ function CollectionSyncDetailsContent({
             {feedback.message}
           </p>
         ) : null}
-        <div className="collection-sync-detail-list">
-          {visibleDetails.map((detail, index) => (
-            <CollectionSyncServerDetail
-              key={`${detail.server_id || detail.server_label}:${index}`}
-              detail={detail}
-              requestKeyPrefix={`${detail.server_id || detail.server_label || index}`}
-              requestingKey={requestingKey}
-              onRequest={requestJellyseerr}
-            />
-          ))}
-        </div>
-        {!loading && !visibleDetails.length ? (
-          <p className="collection-source-empty">
-            Nessun dettaglio registrato per questa collezione.
-          </p>
+        {currentSnapshot.status === "success" ? (
+          <CollectionSyncDetailsList
+            details={currentSnapshot.data}
+            requestingKey={requestingKey}
+            onRequest={requestJellyseerr}
+          />
         ) : null}
         <footer>
           <Button type="button" variant="primary" onClick={onClose} disabled={Boolean(requestingKey)}>
@@ -162,6 +164,37 @@ function CollectionSyncDetailsContent({
         </footer>
       </section>
     </DialogBackdrop>
+  );
+}
+
+function CollectionSyncDetailsList({
+  details,
+  requestingKey,
+  onRequest,
+}: {
+  details: CollectionSyncDetail[];
+  requestingKey: string | null;
+  onRequest: (item: CollectionSyncItem, key: string) => void;
+}) {
+  return (
+    <>
+      <div className="collection-sync-detail-list">
+        {details.map((detail, index) => (
+          <CollectionSyncServerDetail
+            key={`${detail.server_id || detail.server_label}:${index}`}
+            detail={detail}
+            requestKeyPrefix={`${detail.server_id || detail.server_label || index}`}
+            requestingKey={requestingKey}
+            onRequest={onRequest}
+          />
+        ))}
+      </div>
+      {!details.length ? (
+        <p className="collection-source-empty">
+          Nessun dettaglio registrato per questa collezione.
+        </p>
+      ) : null}
+    </>
   );
 }
 

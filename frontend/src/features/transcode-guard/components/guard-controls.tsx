@@ -15,7 +15,7 @@ function GuardControls({
   onStateChange,
   onRefresh,
 }: {
-  running: boolean;
+  running: boolean | undefined;
   stateReady: boolean;
   checking: boolean;
   changingState: boolean;
@@ -41,7 +41,11 @@ function GuardControls({
             <span>Attiva</span>
             <input
               type="checkbox"
-              checked={running}
+              ref={(node) => {
+                if (node) node.indeterminate = running === undefined;
+              }}
+              checked={running === true}
+              aria-label={running === undefined ? "Stato Transcode Guard non disponibile" : undefined}
               disabled={busy || !stateReady}
               onChange={(event) => onStateChange(event.target.checked)}
             />

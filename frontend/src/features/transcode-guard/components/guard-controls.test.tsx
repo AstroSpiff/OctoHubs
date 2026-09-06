@@ -28,7 +28,7 @@ describe("GuardControls", () => {
   });
 
   it.each([
-    ["initial loading", false],
+    ["initial loading", undefined],
     ["initial error or stale snapshot", true],
   ])("keeps the state toggle disabled without authoritative state: %s", (_label, running) => {
     const markup = renderToStaticMarkup(

@@ -126,7 +126,9 @@ def initialize_runtime_services(*, config=None, is_valid=None, db_storage=None) 
         _wf_refresh_cache,
         _wf_notify,
     )
+    from realtime.status_snapshot import initialize_status_snapshot_cache
 
+    initialize_status_snapshot_cache()
     connection_check_coordinator.reset()
     set_connection_check_state({}, None)
     from emby_runtime.scan_websocket_manager import initialize_scan_connection_manager
@@ -237,11 +239,14 @@ async def _run_threaded_shutdown_step(
 
 async def _run_async_shutdown_step(
     name: str,
-    callback: Callable[[], Awaitable[None]],
+    callback: Callable[[], Awaitable[bool | None]],
     timeout_seconds: float,
 ) -> bool:
     try:
-        await asyncio.wait_for(callback(), timeout=timeout_seconds)
+        stopped = await asyncio.wait_for(callback(), timeout=timeout_seconds)
+        if stopped is False:
+            logger.warning("[SHUTDOWN] %s non terminato entro %.1fs", name, timeout_seconds)
+            return False
         return True
     except TimeoutError:
         logger.warning("[SHUTDOWN] %s non terminato entro %.1fs", name, timeout_seconds)
@@ -263,6 +268,10 @@ async def shutdown_runtime_services(timeout_seconds: float = 5.0) -> bool:
     from services.connection_check_guard import connection_check_coordinator
     from services.scheduler_manager import begin_scheduler_shutdown
     from emby_probe import get_probe_manager
+    from realtime.status_snapshot import (
+        begin_status_snapshot_shutdown,
+        shutdown_status_snapshot_cache,
+    )
 
     timeout_seconds = max(0.1, float(timeout_seconds))
     # Close every downstream admission gate before producers and consumers are
@@ -270,6 +279,7 @@ async def shutdown_runtime_services(timeout_seconds: float = 5.0) -> bool:
     begin_scheduler_shutdown()
     workflow_manager.begin_shutdown()
     get_probe_manager().begin_shutdown()
+    begin_status_snapshot_shutdown()
     worker_steps = [
         _run_threaded_shutdown_step(name, callback, timeout_seconds)
         for name, callback in _threaded_shutdown_steps()
@@ -277,6 +287,13 @@ async def shutdown_runtime_services(timeout_seconds: float = 5.0) -> bool:
     worker_steps.extend(
         _run_async_shutdown_step(name, callback, timeout_seconds)
         for name, callback in _async_shutdown_steps()
+    )
+    worker_steps.append(
+        _run_async_shutdown_step(
+            "status snapshot producers",
+            lambda: shutdown_status_snapshot_cache(timeout_seconds),
+            timeout_seconds,
+        )
     )
 
     workers_stopped = False

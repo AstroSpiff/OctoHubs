@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
+import { authoritativeEffectStateViolations } from "@/components/ui/authoritative-effect-source-gate";
 import { queryStateFallbackViolations } from "@/components/ui/query-state-source-gate";
 
 describe("QueryStateBoundary", () => {
@@ -93,6 +94,79 @@ describe("QueryStateBoundary", () => {
     expect(violations).toEqual([]);
   });
 
+  it("guards manual useEffect machines that publish factual empty states", () => {
+    const sourceRoot = fileURLToPath(new URL("../../", import.meta.url));
+    const sourceFiles = collectSourceFiles(sourceRoot);
+    const violations = sourceFiles.flatMap((sourcePath) =>
+      authoritativeEffectStateViolations(
+        readFileSync(sourcePath, "utf8"),
+        sourcePath.slice(sourceRoot.length),
+      ),
+    );
+
+    expect(violations).toEqual([]);
+  });
+
+  it("rejects a manual effect that maps unresolved and rejected to success-empty", () => {
+    const unsafe = `
+      function Details() {
+        const [items, setItems] = useState([]);
+        const [error, setError] = useState("");
+        useEffect(() => {
+          load().then((result) => setItems(result)).catch((reason) => setError(reason.message));
+        }, []);
+        return <>{error && <p>{error}</p>}{!items.length && <p>Nessun dettaglio.</p>}</>;
+      }
+    `;
+    const safe = `
+      function Details() {
+        const [snapshot, setSnapshot] = useState<AuthoritativeSnapshot<string[]>>({ status: "pending" });
+        useEffect(() => {
+          load().then((data) => setSnapshot({ status: "success", data })).catch((reason) => setSnapshot({ status: "error", error: reason.message }));
+        }, []);
+        return snapshot.status === "success" && !snapshot.data.length ? <p>Nessun dettaglio.</p> : null;
+      }
+    `;
+
+    expect(authoritativeEffectStateViolations(unsafe, "unsafe.tsx")).toHaveLength(1);
+    expect(authoritativeEffectStateViolations(safe, "safe.tsx")).toEqual([]);
+  });
+
+  it("requires target ownership when a manual snapshot follows changing props", () => {
+    const unsafe = `
+      function Details({ collection }) {
+        const [snapshot, setSnapshot] = useState<AuthoritativeSnapshot<string[]>>({ status: "pending" });
+        useEffect(() => {
+          load(collection.id).then((data) => setSnapshot({ status: "success", data })).catch((reason) => setSnapshot({ status: "error", error: reason.message }));
+        }, [collection.id]);
+        return snapshot.status === "success" && !snapshot.data.length ? <p>Nessun dettaglio.</p> : null;
+      }
+    `;
+    const safe = `
+      function Details({ collection }) {
+        const [snapshot, setSnapshot] = useState<AuthoritativeSnapshot<string[]> & { targetKey: string }>({ status: "pending", targetKey: collection.id });
+        useEffect(() => {
+          load(collection.id).then((data) => setSnapshot({ status: "success", data, targetKey: collection.id })).catch((reason) => setSnapshot({ status: "error", error: reason.message, targetKey: collection.id }));
+        }, [collection.id]);
+        const current = snapshot.targetKey === collection.id ? snapshot : { status: "pending" };
+        return current.status === "success" && !current.data.length ? <p>Nessun dettaglio.</p> : null;
+      }
+    `;
+    const labeledButUnfenced = `
+      function Details({ collection }) {
+        const [snapshot, setSnapshot] = useState<AuthoritativeSnapshot<string[]> & { targetKey: string }>({ status: "pending", targetKey: collection.id });
+        useEffect(() => {
+          load(collection.id).then((data) => setSnapshot({ status: "success", data, targetKey: collection.id })).catch((reason) => setSnapshot({ status: "error", error: reason.message, targetKey: collection.id }));
+        }, [collection.id]);
+        return snapshot.status === "success" && !snapshot.data.length ? <p>Nessun dettaglio.</p> : null;
+      }
+    `;
+
+    expect(authoritativeEffectStateViolations(unsafe, "unsafe.tsx")).toHaveLength(1);
+    expect(authoritativeEffectStateViolations(labeledButUnfenced, "unsafe.tsx")).toHaveLength(1);
+    expect(authoritativeEffectStateViolations(safe, "safe.tsx")).toEqual([]);
+  });
+
   it("does not let an unrelated boundary for the same receiver make an empty claim pass", () => {
     const source = `
       const items = unresolved.data?.items || [];
@@ -177,6 +251,29 @@ describe("QueryStateBoundary", () => {
 
     expect(queryStateFallbackViolations(safe, "safe.tsx")).toEqual([]);
     expect(queryStateFallbackViolations(unrelated, "unsafe.tsx")).toHaveLength(1);
+  });
+
+  it("rejects indeterminate snapshot booleans collapsed into domain props", () => {
+    const booleanCall = `
+      function Surface() {
+        const snapshot = status.data;
+        return <Controls running={Boolean(snapshot?.running)} />;
+      }
+    `;
+    const negation = `
+      function Surface() {
+        return <Controls stopped={!status.data?.running} />;
+      }
+    `;
+    const preserved = `
+      function Surface() {
+        return <Controls running={status.data?.running} />;
+      }
+    `;
+
+    expect(queryStateFallbackViolations(booleanCall, "unsafe.tsx")).toHaveLength(1);
+    expect(queryStateFallbackViolations(negation, "unsafe.tsx")).toHaveLength(1);
+    expect(queryStateFallbackViolations(preserved, "safe.tsx")).toEqual([]);
   });
 
   it("accepts an early snapshot guard and an enclosing boundary", () => {

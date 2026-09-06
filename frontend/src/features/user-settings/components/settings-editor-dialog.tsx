@@ -135,7 +135,8 @@ function SettingsEditorDialog({
     };
   }, [target, targetIdentity]);
 
-  const dirty = !loading && !userSettingsMatch(settings, savedSettings);
+  const authoritative = Boolean(schema && loadedTargetIdentity === targetIdentity);
+  const dirty = authoritative && !loading && !userSettingsMatch(settings, savedSettings);
   useDirtyChange(Boolean(target), dirty, onDirtyChange);
 
   if (!target) return null;
@@ -148,6 +149,7 @@ function SettingsEditorDialog({
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!authoritative) return;
     const submittedTargetIdentity = settingsTargetIdentity(activeTarget);
     const submittedTargetGeneration = targetGeneration.current;
     const ownsSubmission = () =>
@@ -294,7 +296,7 @@ function SettingsEditorDialog({
             <Button
               type="submit"
               variant="primary"
-              disabled={loading || !schema || saving}
+              disabled={!authoritative || saving}
             >
               {saving ? "Salvataggio..." : "Salva impostazioni"}
             </Button>

@@ -14,38 +14,45 @@ import {
   updateAccount,
   updateCurrentPassword,
 } from "@/features/account-management/api";
+import { accountQueryKeys } from "@/features/account-management/account-query-cache";
 import type { ApiTokenAuditFilters, CreateApiTokenInput, CreateOctoHubsAccountInput, UpdateOctoHubsAccountInput } from "@/features/account-management/types";
 import { useKeyedOperationState } from "@/lib/use-keyed-operation-state";
 import { useSensitiveMutation } from "@/lib/use-sensitive-mutation";
 import { useWorkspaceCapabilities } from "@/features/session/workspace-capabilities-context";
 
 function useApiTokenAudit(filters: ApiTokenAuditFilters, enabled: boolean) {
+  const { accountId } = useWorkspaceCapabilities();
   return useQuery({
-    queryKey: ["account", "token-audit", filters.tokenId || null, filters.result || null, filters.apiVersion || null],
+    queryKey: accountQueryKeys.tokenAudit(accountId ?? 0, filters),
     queryFn: () => getApiTokenAudit(filters),
-    enabled,
+    enabled: enabled && accountId != null,
   });
 }
 
 function useAccountManagement() {
-  const { canMutate } = useWorkspaceCapabilities();
+  const { accountId, canMutate } = useWorkspaceCapabilities();
   const client = useQueryClient();
   const accountOperations = useKeyedOperationState();
-  const profile = useQuery({ queryKey: ["account", "me"], queryFn: getCurrentAccount });
+  const owner = accountId ?? 0;
+  const profile = useQuery({
+    queryKey: accountQueryKeys.profile(owner),
+    queryFn: getCurrentAccount,
+    enabled: accountId != null,
+  });
   const accounts = useQuery({
-    queryKey: ["account", "list"],
+    queryKey: accountQueryKeys.accounts(owner),
     queryFn: getAccounts,
-    enabled: canMutate && profile.data?.role === "admin",
+    enabled: accountId != null && canMutate && profile.data?.role === "admin",
   });
   const apiTokens = useQuery({
-    queryKey: ["account", "tokens"],
+    queryKey: accountQueryKeys.tokens(owner),
     queryFn: getApiTokens,
-    enabled: Boolean(profile.data),
+    enabled: accountId != null && Boolean(profile.data),
   });
-  const invalidateAccounts = () => client.invalidateQueries({ queryKey: ["account"] });
+  const invalidateAccounts = () => client.invalidateQueries({ queryKey: accountQueryKeys.all(owner) });
   const invalidateApiTokens = () => {
-    void client.invalidateQueries({ queryKey: ["account", "tokens"] });
-    void client.invalidateQueries({ queryKey: ["account", "token-audit"] });
+    void client.invalidateQueries({ queryKey: accountQueryKeys.tokens(owner) });
+    void client.invalidateQueries({ queryKey: accountQueryKeys.tokenAudits(owner) });
   };
   const updatePassword = useSensitiveMutation({ mutationFn: updateCurrentPassword });
   const createToken = useSensitiveMutation({

@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from core.library_group_names import MAX_LIBRARY_GROUP_NAME_LENGTH
+
 if TYPE_CHECKING:
     from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, BigInteger, String, Text, LargeBinary, ForeignKey, Index, UniqueConstraint, create_engine, func, or_, text
     from sqlalchemy.dialects.postgresql import ARRAY
@@ -277,14 +279,14 @@ if SQLALCHEMY_AVAILABLE:
         server_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
         library_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
         library_name = Column(String(500))  # type: ignore[assignment]
-        group_name = Column(String(500), index=True)  # type: ignore[assignment]
+        group_name = Column(String(MAX_LIBRARY_GROUP_NAME_LENGTH), index=True)  # type: ignore[assignment]
         collection_type = Column(String(50))  # type: ignore[assignment]
         updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
 
     class LibraryGroupOrder(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "library_group_order"
         collection_type = Column(String(50), primary_key=True)  # type: ignore[assignment]
-        group_name = Column(String(500), primary_key=True)  # type: ignore[assignment]
+        group_name = Column(String(MAX_LIBRARY_GROUP_NAME_LENGTH), primary_key=True)  # type: ignore[assignment]
         position = Column(Integer, nullable=False, default=0)  # type: ignore[assignment]
         updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
 
