@@ -112,8 +112,8 @@ describe("usePersistedTabOrder", () => {
   });
 
   it("serializes saves for the same page across mounted navigation variants", async () => {
-    let resolveFirstSave: ((value: { success: boolean; order: Array<{ tab_key: string; position: number }> }) => void) | undefined;
-    const firstSave = new Promise<{ success: boolean; order: Array<{ tab_key: string; position: number }> }>((resolve) => {
+    let resolveFirstSave: ((value: { success: true; order: Array<{ tab_key: string; position: number }> }) => void) | undefined;
+    const firstSave = new Promise<{ success: true; order: Array<{ tab_key: string; position: number }> }>((resolve) => {
       resolveFirstSave = resolve;
     });
     vi.mocked(saveTabOrder)

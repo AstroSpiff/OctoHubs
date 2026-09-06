@@ -638,8 +638,6 @@ class StorageUsersMixin(_SessionProvider):
             session.commit()
         except SQLAlchemyError as exc:
             rollback_session_safely(session)
-            if session.get(EmbyIconProfile, profile_id) is None:
-                raise StorageError(f"Icon profile not found: {profile_id}") from exc
             raise StorageError(f"Error saving icon rule: {exc}") from exc
         finally:
             close_session_safely(session)
@@ -699,8 +697,6 @@ class StorageUsersMixin(_SessionProvider):
             session.commit()
         except SQLAlchemyError as exc:
             rollback_session_safely(session)
-            if session.get(EmbyIconProfile, profile_id) is None:
-                raise StorageError(f"Icon profile not found: {profile_id}") from exc
             raise StorageError(f"Error saving icon binding: {exc}") from exc
         finally:
             close_session_safely(session)

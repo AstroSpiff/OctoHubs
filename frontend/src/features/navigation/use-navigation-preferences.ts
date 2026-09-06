@@ -8,6 +8,7 @@ import {
   type NavigationPreferences,
 } from "@/features/navigation/navigation-preferences";
 import type { Session } from "@/lib/session";
+import type { UiPreferencesRequest } from "@/lib/ui-api-contracts";
 import { browserLocalStorage } from "@/lib/safe-web-storage";
 
 function initialNavigationPreferences(): NavigationPreferences {
@@ -41,7 +42,7 @@ function useNavigationPreferences(serverPreferences?: NavigationPreferences) {
     mutationFn: saveNavigationPreferences,
   });
 
-  const updatePreferences = useCallback((partial: Partial<NavigationPreferences>) => {
+  const updatePreferences = useCallback((partial: UiPreferencesRequest) => {
     const previous = preferencesRef.current;
     const next = { ...previous, ...partial };
     preferencesRef.current = next;

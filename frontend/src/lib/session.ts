@@ -1,14 +1,10 @@
 import { request, setCsrfToken } from "@/lib/http";
-import type { NavigationPreferences } from "@/features/navigation/navigation-preferences";
+import type { UiSessionResponse } from "@/lib/ui-api-contracts";
 
-export type Session = {
-  user: { id: number | null; username: string; email: string; role: string };
-  preferences: NavigationPreferences;
-  csrf_token: string;
-};
+export type Session = Omit<UiSessionResponse, "ok">;
 
 export async function getSession(): Promise<Session> {
-  const payload = await request<Session & { ok: boolean }>("/api/ui/session");
+  const payload = await request<UiSessionResponse>("/api/ui/session");
   setCsrfToken(payload.csrf_token);
   return payload;
 }

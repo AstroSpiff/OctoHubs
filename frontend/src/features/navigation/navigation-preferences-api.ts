@@ -1,18 +1,14 @@
 import { request } from "@/lib/http";
 
-import type { NavigationPreferences } from "@/features/navigation/navigation-preferences";
+import type { UiPreferencesRequest, UiPreferencesResponse } from "@/lib/ui-api-contracts";
 
-type NavigationPreferencesResponse = {
-  success?: boolean;
-  preferences?: NavigationPreferences;
-};
-
-async function saveNavigationPreferences(preferences: Partial<NavigationPreferences>): Promise<NavigationPreferences> {
-  const response = await request<NavigationPreferencesResponse>("/api/ui/preferences", {
+async function saveNavigationPreferences(preferences: UiPreferencesRequest): Promise<UiPreferencesResponse["preferences"]> {
+  const payload = preferences;
+  const response = await request<UiPreferencesResponse>("/api/ui/preferences", {
     method: "PUT",
-    body: JSON.stringify(preferences),
+    body: JSON.stringify(payload),
   });
-  if (response.success === false || !response.preferences) {
+  if (!response.preferences) {
     throw new Error("Risposta preferenze interfaccia non valida");
   }
   return response.preferences;

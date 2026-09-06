@@ -29,6 +29,7 @@ from core.password_policy import (
     password_fits_bcrypt,
 )
 from core.safe_output import safe_print as print
+from core.sqlalchemy_session_cleanup import rollback_session_safely
 
 
 logger = logging.getLogger(__name__)
@@ -140,28 +141,7 @@ class AccountUpdateStorageError(AuthStorageError):
 
 def _rollback_safely(session: Any) -> None:
     """Best-effort rollback that never masks the primary storage failure."""
-    try:
-        session.rollback()
-        return
-    except Exception as rollback_error:
-        logger.error(
-            "[AUTH] Rollback della sessione non riuscito:\n%s",
-            format_exception_for_log(rollback_error),
-        )
-
-    for cleanup_name in ("invalidate", "close", "remove"):
-        cleanup = getattr(session, cleanup_name, None)
-        if not callable(cleanup):
-            continue
-        try:
-            cleanup()
-            return
-        except Exception as cleanup_error:
-            logger.error(
-                "[AUTH] Cleanup sessione %s non riuscito:\n%s",
-                cleanup_name,
-                format_exception_for_log(cleanup_error),
-            )
+    rollback_session_safely(session, context="auth operation")
 
 
 def _utcnow() -> datetime:
@@ -393,19 +373,37 @@ def init_auth(
     return True
 
 
-def shutdown_auth() -> None:
-    """Close authentication sessions and dispose their SQLAlchemy engine."""
+def shutdown_auth() -> bool:
+    """Close every auth resource, preserving deterministic best-effort shutdown."""
     global db_session
 
     registry = db_session
     db_session = None
     if registry is None:
-        return
+        return True
 
     engine = registry.session_factory.kw.get("bind")
-    registry.close_all()
-    if engine is not None:
-        engine.dispose()
+    cleaned = True
+    try:
+        if registry.close_all() is False:
+            cleaned = False
+    except Exception as exc:
+        cleaned = False
+        logger.error(
+            "[AUTH] Chiusura delle sessioni non riuscita:\n%s",
+            format_exception_for_log(exc),
+        )
+    finally:
+        if engine is not None:
+            try:
+                engine.dispose()
+            except Exception as exc:
+                cleaned = False
+                logger.error(
+                    "[AUTH] Chiusura del pool non riuscita:\n%s",
+                    format_exception_for_log(exc),
+                )
+    return cleaned
 
 
 def _create_default_admin():

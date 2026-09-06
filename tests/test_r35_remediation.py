@@ -71,7 +71,12 @@ def test_event_bridge_provisioning_is_single_flight_per_server(monkeypatch):
     monkeypatch.setattr(event_bridge_provisioning, "push_event_bridge_settings_to_plugin", push)
     monkeypatch.setattr(
         event_bridge_provisioning,
-        "save_event_bridge_credential_if_server_exists",
+        "begin_event_bridge_credential_rotation_if_server_exists",
+        lambda _server_id, _credential: True,
+    )
+    monkeypatch.setattr(
+        event_bridge_provisioning,
+        "promote_event_bridge_credential_if_pending",
         lambda _server_id, credential: persisted.append(credential) is None,
     )
 

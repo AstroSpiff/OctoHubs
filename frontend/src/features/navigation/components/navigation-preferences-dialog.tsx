@@ -8,13 +8,14 @@ import type {
   PrimaryNavigationMode,
   SecondaryNavigationMode,
 } from "@/features/navigation/navigation-preferences";
+import type { UiPreferencesRequest } from "@/lib/ui-api-contracts";
 import { cn } from "@/lib/utils";
 
 type NavigationPreferencesDialogProps = {
   error: Error | null;
   isSaving: boolean;
   onClose: () => void;
-  onUpdate: (preferences: Partial<NavigationPreferences>) => void;
+  onUpdate: (preferences: UiPreferencesRequest) => void;
   open: boolean;
   preferences: NavigationPreferences;
 };

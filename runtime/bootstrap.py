@@ -304,8 +304,25 @@ async def shutdown_runtime_services(timeout_seconds: float = 5.0) -> bool:
         workers_stopped = workers_stopped and tracker_stopped
 
     if workers_stopped:
-        shutdown_auth()
-        close_database_backend()
+        pools_closed = True
+        try:
+            if shutdown_auth() is False:
+                pools_closed = False
+        except Exception as exc:
+            pools_closed = False
+            logger.error(
+                "[SHUTDOWN] Chiusura autenticazione non riuscita:\n%s",
+                format_exception_for_log(exc),
+            )
+        try:
+            close_database_backend()
+        except Exception as exc:
+            pools_closed = False
+            logger.error(
+                "[SHUTDOWN] Chiusura database applicativo non riuscita:\n%s",
+                format_exception_for_log(exc),
+            )
+        workers_stopped = workers_stopped and pools_closed
     else:
         logger.warning("[SHUTDOWN] Pool database lasciati al processo: worker ancora attivi")
     return workers_stopped

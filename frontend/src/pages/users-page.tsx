@@ -2,6 +2,7 @@ import { Star, UsersRound } from "@/components/ui/icons";
 import { useCallback, useMemo, useState } from "react";
 
 import { useConfirmationDialog } from "@/components/ui/use-confirmation-dialog";
+import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
 import { WorkspaceHeading } from "@/components/ui/workspace-heading";
 import { WorkspacePage } from "@/components/ui/workspace-layout";
 import { useBeforeUnloadWarning } from "@/lib/use-before-unload-warning";
@@ -349,7 +350,6 @@ function UsersPage() {
         title="Utenti"
         description="Gestisci gruppi, accessi, permessi, sincronizzazione e identità visive degli account Emby."
       />
-      {users.dashboard.error ? <div className="inline-alert inline-alert--error" role="alert">{users.dashboard.error.message}</div> : null}
       {mutationError ? <div className="inline-alert inline-alert--error" role="alert">{mutationError.message}</div> : null}
       {Object.entries(accessErrors).map(([key, message]) => (
         <div key={key} className="inline-alert inline-alert--error" role="alert">{message}</div>
@@ -368,8 +368,15 @@ function UsersPage() {
       {Object.entries(icons.bindingOperations.errors).map(([key, message]) => (
         <div key={key} className="inline-alert inline-alert--error" role="alert">Associazione profilo icona non riuscita: {message}</div>
       ))}
-      <UsersSelectionActions selectedCount={selectedUsers.length} hiddenCount={selectedHiddenCount} onLink={openLinkSelected} onBulkSettings={() => setBulkSettingsUsers(selectedUsers)} onBulkClone={() => setCloneSources(selectedUsers)} onDeselect={() => setSelected(new Set())} />
-      <section className="users-workspace" aria-labelledby="users-groups-title">
+      <QueryStateBoundary
+        error={users.dashboard.error}
+        hasData={Boolean(users.dashboard.data)}
+        loadingLabel="Caricamento utenti..."
+        retrying={users.dashboard.isFetching}
+        onRetry={() => void users.dashboard.refetch()}
+      >
+        <UsersSelectionActions selectedCount={selectedUsers.length} hiddenCount={selectedHiddenCount} onLink={openLinkSelected} onBulkSettings={() => setBulkSettingsUsers(selectedUsers)} onBulkClone={() => setCloneSources(selectedUsers)} onDeselect={() => setSelected(new Set())} />
+        <section className="users-workspace" aria-labelledby="users-groups-title">
         <UsersToolbar data={dashboard} iconProfiles={iconConfig.profiles} filters={filters} selection={{ visibleCount: visibleUsers.length, selectedVisibleCount: selectedVisibleUsers.length, leaderCount: leaders.length, selectedLeaderCount }} refreshing={users.dashboard.isFetching} onChange={updateFilters} onSelectAll={() => selectVisibleUsers(visibleUsers)} onSelectLeaders={() => selectVisibleUsers(leaders)} onDeselect={deselectVisibleUsers} onCreate={() => setCreating(true)} onRefresh={() => void users.dashboard.refetch()} />
         <div className="users-groups-section">
           <WorkspaceHeading
@@ -415,8 +422,9 @@ function UsersPage() {
             showHeading={false}
           />
         </div>
-      </section>
-      <UserIconManagementSection icons={icons} servers={dashboard.servers} onDirtyChange={updateIconProfileDirty} />
+        </section>
+        <UserIconManagementSection icons={icons} servers={dashboard.servers} onDirtyChange={updateIconProfileDirty} />
+      </QueryStateBoundary>
       <CreateUserDialog open={creating} servers={dashboard.servers} creating={users.create.isPending} mutationError={users.create.error?.message} retryServerIds={createRetryServerIds} onClose={() => { users.create.reset(); setCreateRetryServerIds([]); setCreating(false); }} onCreate={create} onDirtyChange={updateCreateDirty} />
       <LinkUsersDialog selections={linkSelections} linking={users.link.isPending} error={users.link.error?.message} onClose={() => setLinkSelections([])} onLink={linkSelected} onDirtyChange={updateLinkDirty} />
       {activeConfiguredGroup ? (

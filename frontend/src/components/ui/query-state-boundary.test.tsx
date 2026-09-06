@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
@@ -34,6 +35,7 @@ describe("QueryStateBoundary", () => {
     );
 
     expect(markup).toContain("Caricamento dati...");
+    expect(markup).toContain('role="status"');
     expect(markup).not.toContain("Riprova");
   });
 
@@ -51,5 +53,16 @@ describe("QueryStateBoundary", () => {
 
     expect(markup).toContain("Refresh non riuscito");
     expect(markup).toContain("Contenuto disponibile");
+  });
+
+  it.each([
+    ["Users", "../../pages/users-page.tsx", "users.dashboard.data"],
+    ["Libraries", "../../pages/libraries-page.tsx", "libraries.groups.data"],
+    ["Collections", "../../pages/collections-page.tsx", "collections.collections.data"],
+  ])("gates the %s empty state on resolved query data", (_name, sourcePath, dataExpression) => {
+    const source = readFileSync(new URL(sourcePath, import.meta.url), "utf8");
+
+    expect(source).toContain("<QueryStateBoundary");
+    expect(source).toContain(`hasData={Boolean(${dataExpression})}`);
   });
 });

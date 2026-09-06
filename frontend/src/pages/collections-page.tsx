@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from "react";
 
 import { CollectionEditorDialog } from "@/features/collections/components/collection-editor-dialog";
 import { useConfirmationDialog } from "@/components/ui/use-confirmation-dialog";
+import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
 import { WorkspacePage } from "@/components/ui/workspace-layout";
 import { CollectionsList } from "@/features/collections/components/collections-list";
 import { CollectionsOverview } from "@/features/collections/components/collections-overview";
@@ -37,7 +38,7 @@ function CollectionsPage() {
   const data = useMemo(() => collections.collections.data?.collections || [], [collections.collections.data]);
   const visible = useMemo(() => visibleCollections(data, filters), [data, filters]);
   const syncingAll = collections.syncAll.isPending || collections.isSyncingAll;
-  const error = collections.collections.error || collections.options.error || collections.syncAll.error || collections.save.error || collections.image.error || collections.removeImage.error;
+  const error = collections.options.error || collections.syncAll.error || collections.save.error || collections.image.error || collections.removeImage.error;
 
   function isChangingCollection(collectionId: string) {
     const key = collectionActionKey(collectionId);
@@ -127,23 +128,29 @@ function CollectionsPage() {
 
       {error ? <div className="inline-alert inline-alert--error" role="alert">{error.message}</div> : null}
       {collections.syncAll.isSuccess ? <div className="inline-alert inline-alert--success" role="status">Sincronizzazione globale avviata. Lo stato si aggiorna automaticamente.</div> : null}
-      {collections.collections.isLoading ? <div className="loading-state">Caricamento collezioni...</div> : null}
-
-      <CollectionsOverview collections={data} />
-      <CollectionsToolbar filters={filters} onChange={updateFilters} />
-      <CollectionsList
-        collections={visible}
-        syncingAll={syncingAll}
-        isChangingCollection={isChangingCollection}
-        isSyncingCollection={isSyncingCollection}
-        collectionActionError={collectionActionError}
-        onToggle={toggle}
-        onSync={sync}
-        onEdit={setEditorCollection}
-        onDetails={setDetailsCollection}
-        onDelete={remove}
-        onCreate={() => setEditorCollection(null)}
-      />
+      <QueryStateBoundary
+        error={collections.collections.error}
+        hasData={Boolean(collections.collections.data)}
+        loadingLabel="Caricamento collezioni..."
+        retrying={collections.collections.isFetching}
+        onRetry={() => void collections.collections.refetch()}
+      >
+        <CollectionsOverview collections={data} />
+        <CollectionsToolbar filters={filters} onChange={updateFilters} />
+        <CollectionsList
+          collections={visible}
+          syncingAll={syncingAll}
+          isChangingCollection={isChangingCollection}
+          isSyncingCollection={isSyncingCollection}
+          collectionActionError={collectionActionError}
+          onToggle={toggle}
+          onSync={sync}
+          onEdit={setEditorCollection}
+          onDetails={setDetailsCollection}
+          onDelete={remove}
+          onCreate={() => setEditorCollection(null)}
+        />
+      </QueryStateBoundary>
 
       <CollectionEditorDialog
         collection={editorCollection}

@@ -9,6 +9,18 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from pydantic import ValidationError
+
+from web.frontend_api_models import (
+    FrontendPreferencesRequest,
+    FrontendPreferencesResponse,
+    FrontendSessionResponse,
+    FrontendTabOrderQuery,
+    FrontendTabOrderRequest,
+    FrontendTabOrderResponse,
+    request_body_contract,
+    query_contract,
+)
 
 
 router = APIRouter()
@@ -70,14 +82,17 @@ async def _ui_storage_call(function: Callable[..., Any], *args: Any) -> Any:
 
 
 def _tab_order_response(order: list[str]) -> JSONResponse:
-    return JSONResponse(
+    payload = FrontendTabOrderResponse.model_validate(
         {
             "success": True,
             "order": [
                 {"tab_key": tab_key, "position": position}
                 for position, tab_key in enumerate(order)
             ],
-        },
+        }
+    )
+    return JSONResponse(
+        payload.model_dump(mode="json"),
         headers={"Cache-Control": "no-store"},
     )
 
@@ -99,7 +114,19 @@ def _parse_tab_order(payload: Any) -> tuple[str, list[str]]:
             continue
         seen.add(tab_key)
         order.append(tab_key)
-    return page, order
+    try:
+        validated = FrontendTabOrderRequest.model_validate(
+            {
+                "page": page,
+                "order": [
+                    {"tab_key": tab_key, "position": position}
+                    for position, tab_key in enumerate(order)
+                ],
+            }
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail="Ordine interfaccia non valido") from exc
+    return validated.page, [str(entry.tab_key) for entry in validated.order]
 
 
 def _frontend_file(path: str) -> Path | None:
@@ -123,7 +150,7 @@ def _frontend_index_response() -> FileResponse | HTMLResponse:
     )
 
 
-@router.get("/api/ui/session")
+@router.get("/api/ui/session", response_model=FrontendSessionResponse)
 async def frontend_session_route(request: Request):
     """Return the authenticated session data required by the SPA."""
     user = await run_in_threadpool(_current_user, request)
@@ -133,7 +160,7 @@ async def frontend_session_route(request: Request):
     from core.auth import get_user_interface_preferences
 
     role = user.get_role() if callable(getattr(user, "get_role", None)) else getattr(user, "role", "user")
-    return JSONResponse(
+    payload = FrontendSessionResponse.model_validate(
         {
             "ok": True,
             "user": {
@@ -147,12 +174,19 @@ async def frontend_session_route(request: Request):
                 int(getattr(user, "id", 0) or 0),
             ),
             "csrf_token": _csrf_token(request),
-        },
+        }
+    )
+    return JSONResponse(
+        payload.model_dump(mode="json"),
         headers={"Cache-Control": "no-store"},
     )
 
 
-@router.put("/api/ui/preferences")
+@router.put(
+    "/api/ui/preferences",
+    response_model=FrontendPreferencesResponse,
+    openapi_extra=request_body_contract(FrontendPreferencesRequest),
+)
 async def frontend_preferences_route(request: Request):
     """Save personal workspace presentation choices without requiring write access to data."""
     user = await run_in_threadpool(_current_user, request)
@@ -167,26 +201,17 @@ async def frontend_preferences_route(request: Request):
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Preferenze interfaccia non valide")
 
+    try:
+        validated_payload = FrontendPreferencesRequest.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail="Modalita di navigazione non supportata") from exc
+
     from core.auth import (
-        PRIMARY_NAVIGATION_MODES,
-        SECONDARY_NAVIGATION_MODES,
         normalize_interface_preferences,
         save_user_interface_preferences,
     )
 
-    supplied = {
-        key: payload[key]
-        for key in ("primary_navigation", "secondary_navigation")
-        if key in payload
-    }
-    if not supplied or (
-        "primary_navigation" in supplied
-        and supplied["primary_navigation"] not in PRIMARY_NAVIGATION_MODES
-    ) or (
-        "secondary_navigation" in supplied
-        and supplied["secondary_navigation"] not in SECONDARY_NAVIGATION_MODES
-    ):
-        raise HTTPException(status_code=422, detail="Modalita di navigazione non supportata")
+    supplied = validated_payload.model_dump(exclude_unset=True)
     preferences = await _ui_storage_call(
         save_user_interface_preferences,
         int(getattr(user, "id", 0) or 0),
@@ -194,27 +219,43 @@ async def frontend_preferences_route(request: Request):
     )
     if preferences is None:
         raise HTTPException(status_code=500, detail="Impossibile salvare le preferenze interfaccia")
+    response = FrontendPreferencesResponse.model_validate(
+        {
+            "success": True,
+            "preferences": normalize_interface_preferences(preferences),
+        }
+    )
     return JSONResponse(
-        {"success": True, "preferences": normalize_interface_preferences(preferences)},
+        response.model_dump(mode="json"),
         headers={"Cache-Control": "no-store"},
     )
 
 
-@router.get("/api/ui/tab-order")
+@router.get(
+    "/api/ui/tab-order",
+    response_model=FrontendTabOrderResponse,
+    openapi_extra=query_contract(FrontendTabOrderQuery),
+)
 async def frontend_tab_order_get_route(request: Request):
     """Return the account-specific UI order used by the React workspace."""
     user = await run_in_threadpool(_current_user, request)
     if user is None:
         raise HTTPException(status_code=401, detail="Autenticazione richiesta")
     page = str(request.query_params.get("page") or "").strip()
-    if not page or len(page) > 80:
+    try:
+        page = FrontendTabOrderQuery.model_validate({"page": page}).page
+    except ValidationError:
         raise HTTPException(status_code=400, detail="Pagina interfaccia mancante")
     user_id = int(getattr(user, "id", 0) or 0)
     order = await _ui_storage_call(_personal_tab_order, user_id, page)
     return _tab_order_response(order or [])
 
 
-@router.post("/api/ui/tab-order")
+@router.post(
+    "/api/ui/tab-order",
+    response_model=FrontendTabOrderResponse,
+    openapi_extra=request_body_contract(FrontendTabOrderRequest),
+)
 async def frontend_tab_order_post_route(request: Request):
     """Save a UI-only order for the signed-in account, including read-only accounts."""
     user = await run_in_threadpool(_current_user, request)

@@ -6,6 +6,7 @@ from contextlib import contextmanager
 import threading
 from typing import Any, Iterator
 
+from core.sqlalchemy_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_locks import lock_latest_state
 
 
@@ -28,11 +29,11 @@ def latest_state_update_guard(storage: Any | None) -> Iterator[None]:
                 lock_latest_state(guard_session)
             yield
             guard_session.commit()
-        except Exception:
-            guard_session.rollback()
+        except BaseException:
+            rollback_session_safely(guard_session, context="Latest state guard")
             raise
         finally:
-            guard_session.close()
+            close_session_safely(guard_session, context="Latest state guard")
 
 
 __all__ = ["latest_state_update_guard"]

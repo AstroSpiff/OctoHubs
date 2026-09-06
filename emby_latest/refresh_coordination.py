@@ -6,6 +6,7 @@ from contextlib import contextmanager
 import threading
 from typing import Any, Callable, Iterator, cast
 
+from core.sqlalchemy_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_locks import (
     LATEST_REFRESH_ADVISORY_LOCK_ID,
     enter_latest_refresh_guard,
@@ -40,11 +41,11 @@ def latest_refresh_guard(storage: Any | None) -> Iterator[None]:
             finally:
                 exit_latest_refresh_guard()
             guard_session.commit()
-        except Exception:
-            guard_session.rollback()
+        except BaseException:
+            rollback_session_safely(guard_session, context="Latest refresh guard")
             raise
         finally:
-            guard_session.close()
+            close_session_safely(guard_session, context="Latest refresh guard")
 
 
 __all__ = ["latest_refresh_guard"]

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { DialogBackdrop } from "@/components/ui/dialog-backdrop";
@@ -57,6 +57,13 @@ type SettingsEditorDialogProps = {
   onDirtyChange?: (dirty: boolean) => void;
 };
 
+function settingsTargetIdentity(target: SettingsTarget | null) {
+  if (!target) return "";
+  return target.scope === "group"
+    ? `group:${target.groupId}`
+    : `user:${target.serverId}:${target.userId}`;
+}
+
 function SettingsEditorDialog({
   target,
   onClose,
@@ -79,19 +86,35 @@ function SettingsEditorDialog({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
+  const [loadedTargetIdentity, setLoadedTargetIdentity] = useState("");
+  const targetIdentity = settingsTargetIdentity(target);
+  const currentTargetIdentity = useRef(targetIdentity);
+  const targetGeneration = useRef(0);
+  currentTargetIdentity.current = targetIdentity;
 
   useEffect(() => {
-    if (!target) return;
-    let active = true;
-    setLoading(true);
+    const loadGeneration = targetGeneration.current + 1;
+    targetGeneration.current = loadGeneration;
+    setSchema(null);
+    setSettings(normalizeUserSettings(undefined));
+    setSavedSettings(normalizeUserSettings(undefined));
+    setLibraryItems([]);
+    setFeatureItems([]);
+    setSettingsInfo(null);
+    setLoadedTargetIdentity("");
     setError("");
     setSaved(false);
     setActiveTab("policy");
-    setFeatureItems([]);
-    setSettingsInfo(null);
+    setSaving(false);
+    if (!target) {
+      setLoading(false);
+      return;
+    }
+    let active = true;
+    setLoading(true);
     Promise.all([getSettingsSchema(), getSettingsInfo(target)])
       .then(([nextSchema, info]) => {
-        if (!active) return;
+        if (!active || targetGeneration.current !== loadGeneration) return;
         const nextSettings = normalizeUserSettings(info.settings);
         setSchema(nextSchema);
         setSettings(nextSettings);
@@ -99,17 +122,18 @@ function SettingsEditorDialog({
         setLibraryItems(info.library_items || []);
         setFeatureItems(info.feature_items || []);
         setSettingsInfo(info);
+        setLoadedTargetIdentity(targetIdentity);
       })
       .catch((reason: Error) => {
-        if (active) setError(reason.message);
+        if (active && targetGeneration.current === loadGeneration) setError(reason.message);
       })
       .finally(() => {
-        if (active) setLoading(false);
+        if (active && targetGeneration.current === loadGeneration) setLoading(false);
       });
     return () => {
       active = false;
     };
-  }, [target]);
+  }, [target, targetIdentity]);
 
   const dirty = !loading && !userSettingsMatch(settings, savedSettings);
   useDirtyChange(Boolean(target), dirty, onDirtyChange);
@@ -124,31 +148,50 @@ function SettingsEditorDialog({
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const submittedTargetIdentity = settingsTargetIdentity(activeTarget);
+    const submittedTargetGeneration = targetGeneration.current;
+    const ownsSubmission = () =>
+      currentTargetIdentity.current === submittedTargetIdentity
+      && targetGeneration.current === submittedTargetGeneration;
     setSaving(true);
     setError("");
     try {
       await saveSettings({ target: activeTarget, settings });
+      if (!ownsSubmission()) {
+        onSaved();
+        return;
+      }
       setSavedSettings(settings);
       setSaved(true);
       try {
         const refreshedInfo = await getSettingsInfo(activeTarget);
+        if (!ownsSubmission()) {
+          onSaved();
+          return;
+        }
         setSettings(normalizeUserSettings(refreshedInfo.settings));
         setSavedSettings(normalizeUserSettings(refreshedInfo.settings));
         setLibraryItems(refreshedInfo.library_items || []);
         setFeatureItems(refreshedInfo.feature_items || []);
         setSettingsInfo(refreshedInfo);
       } catch {
-        setSettingsInfo((current) => current ? { ...current, saved: true } : current);
+        if (ownsSubmission()) {
+          setSettingsInfo((current) => current ? { ...current, saved: true } : current);
+        }
       }
       onSaved();
     } catch (reason) {
-      setError(
-        reason instanceof Error
-          ? reason.message
-          : "Errore salvataggio impostazioni",
-      );
+      if (ownsSubmission()) {
+        setError(
+          reason instanceof Error
+            ? reason.message
+            : "Errore salvataggio impostazioni",
+        );
+      }
     } finally {
-      setSaving(false);
+      if (ownsSubmission()) {
+        setSaving(false);
+      }
     }
   }
 
@@ -194,7 +237,9 @@ function SettingsEditorDialog({
               </p>
             </div>
           </header>
-          <SettingsEditorStatus target={statusTarget} info={settingsInfo} />
+          {loadedTargetIdentity === targetIdentity ? (
+            <SettingsEditorStatus target={statusTarget} info={settingsInfo} />
+          ) : null}
 
           {error ? (
             <p className="users-dialog-error" role="alert">
@@ -211,7 +256,7 @@ function SettingsEditorDialog({
               Caricamento impostazioni...
             </p>
           ) : null}
-          {schema ? (
+          {schema && loadedTargetIdentity === targetIdentity ? (
             <SettingsEditorForm
               schema={schema}
               settings={settings}

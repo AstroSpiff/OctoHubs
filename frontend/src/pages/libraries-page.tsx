@@ -2,6 +2,7 @@ import { ArrowDownUp, FolderCog, RefreshCw } from "@/components/ui/icons";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
 import { useConfirmationDialog } from "@/components/ui/use-confirmation-dialog";
 import { WorkspaceHeading } from "@/components/ui/workspace-heading";
 import { WorkspacePage, WorkspaceSection } from "@/components/ui/workspace-layout";
@@ -71,7 +72,6 @@ function LibrariesPage() {
     [groups, filters],
   );
   const error =
-    libraries.groups.error ||
     libraries.activeJobs.error ||
     libraries.activeScans.error ||
     libraries.history.error ||
@@ -286,25 +286,33 @@ function LibrariesPage() {
             {libraries.resetHistory.data.message}
           </div>
         ) : null}
-        <LibrariesToolbar
-          filters={filters}
-          onChange={(updates) =>
-            setFilters((current) => ({ ...current, ...updates }))
-          }
-        />
-        <LibrariesBoard
-          groups={visible}
-          workflowMode={workflowMode}
-          scanningIds={libraries.groupScanOperations.pendingKeys}
-          scanJobs={libraries.activeJobs.data?.jobs || []}
-          scanHistory={libraries.history.data?.jobs || []}
-          scanningLibraryKeys={libraries.libraryScanOperations.pendingKeys}
-          libraryScanBusy={
-            libraries.libraryScanOperations.pendingKeys.size > 0
-          }
-          onScan={startGroupScan}
-          onScanLibrary={startSingleLibraryScan}
-        />
+        <QueryStateBoundary
+          error={libraries.groups.error}
+          hasData={Boolean(libraries.groups.data)}
+          loadingLabel="Caricamento gruppi librerie..."
+          retrying={libraries.groups.isFetching}
+          onRetry={() => void libraries.groups.refetch()}
+        >
+          <LibrariesToolbar
+            filters={filters}
+            onChange={(updates) =>
+              setFilters((current) => ({ ...current, ...updates }))
+            }
+          />
+          <LibrariesBoard
+            groups={visible}
+            workflowMode={workflowMode}
+            scanningIds={libraries.groupScanOperations.pendingKeys}
+            scanJobs={libraries.activeJobs.data?.jobs || []}
+            scanHistory={libraries.history.data?.jobs || []}
+            scanningLibraryKeys={libraries.libraryScanOperations.pendingKeys}
+            libraryScanBusy={
+              libraries.libraryScanOperations.pendingKeys.size > 0
+            }
+            onScan={startGroupScan}
+            onScanLibrary={startSingleLibraryScan}
+          />
+        </QueryStateBoundary>
 
         <LibraryMaintenance
           servers={libraries.actionTargets.data?.servers || []}

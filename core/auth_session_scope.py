@@ -9,6 +9,11 @@ from typing import Any
 
 from sqlalchemy.orm import scoped_session
 
+from core.sqlalchemy_session_cleanup import (
+    close_session_safely,
+    remove_session_registry_safely,
+)
+
 
 @dataclass(eq=False)
 class AuthRequestScope:
@@ -65,23 +70,31 @@ class RequestAwareSessionRegistry:
     def remove(self) -> None:
         scope = current_auth_request_scope()
         if scope is None:
-            self._thread_sessions.remove()
+            remove_session_registry_safely(
+                self._thread_sessions,
+                context="auth thread request completion",
+            )
             return
 
         with self._request_sessions_lock:
             session = self._request_sessions.pop(scope, None)
         if session is None:
             return
-        session.close()
+        close_session_safely(session, context="auth request completion")
 
-    def close_all(self) -> None:
-        """Close thread-local and request-bound sessions at process shutdown."""
-        self._thread_sessions.remove()
+    def close_all(self) -> bool:
+        """Attempt every session cleanup and report whether all of them succeeded."""
+        cleaned = remove_session_registry_safely(
+            self._thread_sessions,
+            context="auth thread registry shutdown",
+        )
         with self._request_sessions_lock:
             sessions = tuple(self._request_sessions.values())
             self._request_sessions.clear()
         for session in sessions:
-            session.close()
+            if not close_session_safely(session, context="auth request shutdown"):
+                cleaned = False
+        return cleaned
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self(), name)

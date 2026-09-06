@@ -5,14 +5,15 @@ import {
   workspaceAccessState,
 } from "@/components/app-shell-access";
 import { ApiError } from "@/lib/http";
+import type { Session } from "@/lib/session";
+import type { UiRole } from "@/lib/ui-api-contracts";
 
-const session = (role: string) => ({
+const session = (role: UiRole): Session => ({
   user: { id: 1, username: role, email: `${role}@example.test`, role },
   csrf_token: "csrf",
   preferences: {
-    primary_navigation: "sidebar" as const,
-    secondary_navigation: "sidebar" as const,
-    tab_order: [],
+    primary_navigation: "sidebar",
+    secondary_navigation: "sidebar",
   },
 });
 

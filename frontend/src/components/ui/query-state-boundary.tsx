@@ -23,7 +23,7 @@ function QueryStateBoundary({
   if (error && !hasData) {
     return <QueryErrorNotice error={error} onRetry={onRetry} retrying={retrying} />;
   }
-  if (!hasData) return <div className="loading-state">{loadingLabel}</div>;
+  if (!hasData) return <div className="loading-state" role="status">{loadingLabel}</div>;
 
   return (
     <>
