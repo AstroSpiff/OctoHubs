@@ -39,11 +39,11 @@ function AppShell() {
   });
   const { pathname, search } = useLocation();
   const { theme, toggleTheme } = useApplicationTheme();
-  const navigationPreferences = useNavigationPreferences(session.data?.preferences);
   const accessState = workspaceAccessState(session);
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const hasAuthenticatedAccess = isAuthenticatedAccessState(accessState);
   const accountId = hasAuthenticatedAccess ? session.data?.user.id ?? null : null;
+  const navigationPreferences = useNavigationPreferences(session.data?.preferences, accountId);
   useDeepLinkFocus(search);
 
   useLayoutEffect(() => {
@@ -70,6 +70,7 @@ function AppShell() {
         <aside className="app-sidebar">
           <BrandLockup />
           <PrimaryNavigationLinks
+            accountId={accountId}
             pathname={pathname}
             variant="sidebar"
             showSecondaryMenu={navigationPreferences.preferences.secondary_navigation === "sidebar"}
@@ -85,6 +86,7 @@ function AppShell() {
         <header className="app-topbar">
           <BrandLockup compact />
           <PrimaryNavigationLinks
+            accountId={accountId}
             pathname={pathname}
             variant="top"
             showSecondaryMenu={navigationPreferences.preferences.secondary_navigation === "sidebar"}
@@ -110,7 +112,7 @@ function AppShell() {
             </WorkspaceCapabilityBoundary>
           </div>
         </main>
-        <MobilePrimaryNavigation pathname={pathname} />
+        <MobilePrimaryNavigation accountId={accountId} pathname={pathname} />
         {accessState === "editor" && !isUsersPath(pathname) ? <OperationsCenter /> : null}
       </div>
       <NavigationPreferencesDialog

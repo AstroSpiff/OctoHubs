@@ -521,6 +521,7 @@ def test_background_worker_terminalizes_when_diagnostics_raise(monkeypatch):
 def test_latest_pre_native_signal_releases_worker_and_request(monkeypatch):
     import emby_latest.api_handlers as latest
 
+    latest.start_accepting_latest_refresh()
     monkeypatch.setattr(
         threading.Thread,
         "start",
@@ -541,6 +542,8 @@ def test_latest_worker_terminalizes_when_diagnostics_raise(monkeypatch):
     import core.thread_lifecycle as lifecycle
     import emby_latest
     import emby_latest.api_handlers as latest
+
+    latest.start_accepting_latest_refresh()
 
     class Manager:
         progress_tracker = None

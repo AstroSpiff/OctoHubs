@@ -84,6 +84,7 @@ def test_scheduler_singleton_is_not_published_when_callback_wiring_fails(monkeyp
             return True
 
     monkeypatch.setattr(scheduler_manager, "_AUTO_SCHEDULER", None)
+    monkeypatch.setattr(scheduler_manager, "_AUTO_SCHEDULER_ACCEPTING", True)
     monkeypatch.setattr(scheduler_manager, "AutoScheduler", lambda **_kwargs: Candidate())
 
     with pytest.raises(KeyboardInterrupt) as caught:
@@ -115,6 +116,7 @@ def test_scheduler_singleton_cleanup_preserves_primary_and_attempts_all_actions(
             raise SystemExit("secondary wait")
 
     monkeypatch.setattr(scheduler_manager, "_AUTO_SCHEDULER", None)
+    monkeypatch.setattr(scheduler_manager, "_AUTO_SCHEDULER_ACCEPTING", True)
     monkeypatch.setattr(scheduler_manager, "AutoScheduler", lambda **_kwargs: Candidate())
 
     with pytest.raises(KeyboardInterrupt) as caught:
@@ -213,6 +215,7 @@ async def test_library_poller_cancels_and_awaits_auxiliary_tasks():
 def test_latest_refresh_worker_is_joined_during_shutdown(monkeypatch):
     from emby_latest import api_handlers
 
+    api_handlers.start_accepting_latest_refresh()
     entered = threading.Event()
     release = threading.Event()
 

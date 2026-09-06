@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import os
 import multiprocessing
+from pathlib import Path
+import subprocess
+import sys
 import threading
 import time
 from unittest.mock import patch
@@ -13,6 +16,9 @@ import pytest
 from sqlalchemy import BigInteger, create_engine, inspect, text
 from sqlalchemy.exc import DataError
 from sqlalchemy.engine import make_url
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _latest_state_for_postgresql_test():
@@ -104,6 +110,24 @@ def postgresql_schema_url():
         with admin_engine.begin() as connection:
             connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
         admin_engine.dispose()
+
+
+def test_documented_manage_users_list_works_with_external_postgresql(
+    postgresql_schema_url,
+):
+    environment = os.environ.copy()
+    environment["OCTOHUBS_DB_URL"] = postgresql_schema_url
+    result = subprocess.run(
+        [sys.executable, "scripts/manage_users.py", "list"],
+        cwd=PROJECT_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_postgresql_concurrent_migrations_are_serialized(postgresql_schema_url):

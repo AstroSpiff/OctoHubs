@@ -17,10 +17,22 @@ function initialNavigationPreferences(): NavigationPreferences {
   );
 }
 
-function useNavigationPreferences(serverPreferences?: NavigationPreferences) {
+function useNavigationPreferences(
+  serverPreferences: NavigationPreferences | undefined,
+  accountId: number | null,
+) {
   const client = useQueryClient();
-  const [preferences, setPreferences] = useState<NavigationPreferences>(initialNavigationPreferences);
+  const [ownedPreferences, setOwnedPreferences] = useState(() => ({
+    accountId,
+    preferences: initialNavigationPreferences(),
+  }));
+  const preferences = ownedPreferences.accountId === accountId
+    ? ownedPreferences.preferences
+    : resolveNavigationPreferences(browserLocalStorage(), serverPreferences);
   const preferencesRef = useRef(preferences);
+  preferencesRef.current = preferences;
+  const accountIdRef = useRef(accountId);
+  accountIdRef.current = accountId;
   const mutationGenerationRef = useRef(0);
   const serverSignature = serverPreferences
     ? `${serverPreferences.primary_navigation}|${serverPreferences.secondary_navigation}`
@@ -34,37 +46,47 @@ function useNavigationPreferences(serverPreferences?: NavigationPreferences) {
     if (!serverPreferences) return;
     const next = resolveNavigationPreferences(browserLocalStorage(), serverPreferences);
     preferencesRef.current = next;
-    setPreferences(next);
+    setOwnedPreferences({ accountId, preferences: next });
     persistLocally(next);
-  }, [persistLocally, serverPreferences, serverSignature]);
+  }, [accountId, persistLocally, serverPreferences, serverSignature]);
+
+  useEffect(() => {
+    mutationGenerationRef.current += 1;
+    if (!serverPreferences) {
+      const next = resolveNavigationPreferences(browserLocalStorage());
+      preferencesRef.current = next;
+      setOwnedPreferences({ accountId, preferences: next });
+    }
+  }, [accountId, serverPreferences]);
 
   const mutation = useMutation({
     mutationFn: saveNavigationPreferences,
   });
 
   const updatePreferences = useCallback((partial: UiPreferencesRequest) => {
+    const ownerId = accountIdRef.current;
     const previous = preferencesRef.current;
     const next = { ...previous, ...partial };
     preferencesRef.current = next;
-    setPreferences(next);
+    setOwnedPreferences({ accountId: ownerId, preferences: next });
     persistLocally(next);
     const generation = mutationGenerationRef.current + 1;
     mutationGenerationRef.current = generation;
     mutation.mutate(partial, {
       onSuccess: (saved) => {
-        if (generation !== mutationGenerationRef.current) return;
+        if (generation !== mutationGenerationRef.current || ownerId !== accountIdRef.current) return;
         const resolved = resolveNavigationPreferences(browserLocalStorage(), saved);
         preferencesRef.current = resolved;
-        setPreferences(resolved);
+        setOwnedPreferences({ accountId: ownerId, preferences: resolved });
         persistLocally(resolved);
         client.setQueryData<Session>(["session"], (current) => (
-          current ? { ...current, preferences: resolved } : current
+          current?.user.id === ownerId ? { ...current, preferences: resolved } : current
         ));
       },
       onError: () => {
-        if (generation !== mutationGenerationRef.current) return;
+        if (generation !== mutationGenerationRef.current || ownerId !== accountIdRef.current) return;
         preferencesRef.current = previous;
-        setPreferences(previous);
+        setOwnedPreferences({ accountId: ownerId, preferences: previous });
         persistLocally(previous);
       },
     });

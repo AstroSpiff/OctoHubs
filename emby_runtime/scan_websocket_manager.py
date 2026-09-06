@@ -13,6 +13,7 @@ import threading
 from typing import Dict, Set, Optional
 from fastapi import WebSocket
 
+from core.async_lifecycle import cancel_and_drain_tasks
 from core.log_sanitization import format_exception_for_log
 from core.websocket_io import accept_bounded
 logger = logging.getLogger(__name__)
@@ -48,6 +49,10 @@ class ScanConnectionManager:
         self._scheduled_jobs: set[str] = set()
         self._schedule_lock = threading.Lock()
         self._accept_scheduled_broadcasts = True
+        self._accepting_connections = True
+        self._connect_tasks: set[asyncio.Task] = set()
+        self._shutdown_started = False
+        self._shutdown_complete = False
 
         # Lock per thread-safety async
         self._lock = asyncio.Lock()
@@ -62,7 +67,10 @@ class ScanConnectionManager:
             client_id: ID univoco client (generato dal frontend)
             websocket: Istanza WebSocket FastAPI
         """
+        connect_task = asyncio.current_task()
         async with self._lock:
+            if not self._accepting_connections:
+                return False
             if client_id in self.active_connections:
                 return False
             if len(self.active_connections) >= MAX_SCAN_CONNECTIONS:
@@ -71,17 +79,32 @@ class ScanConnectionManager:
             self._outbound_queues[client_id] = asyncio.Queue(
                 maxsize=MAX_SCAN_OUTBOUND_MESSAGES_PER_CLIENT
             )
+            if connect_task is not None:
+                self._connect_tasks.add(connect_task)
 
         try:
             await accept_bounded(websocket)
+            async with self._lock:
+                connected = bool(
+                    self._accepting_connections
+                    and self.active_connections.get(client_id) is websocket
+                )
+                if not connected:
+                    if self.active_connections.get(client_id) is websocket:
+                        self.active_connections.pop(client_id, None)
+                        self._outbound_queues.pop(client_id, None)
+                return connected
         except BaseException:
             async with self._lock:
-                self.active_connections.pop(client_id, None)
-                self._outbound_queues.pop(client_id, None)
+                if self.active_connections.get(client_id) is websocket:
+                    self.active_connections.pop(client_id, None)
+                    self._outbound_queues.pop(client_id, None)
             raise
+        finally:
+            if connect_task is not None:
+                async with self._lock:
+                    self._connect_tasks.discard(connect_task)
 
-        logger.info(f"[ScanConnectionManager] Client {client_id} connected (total: {len(self.active_connections)})")
-        return True
 
     async def disconnect(self, client_id: str):
         """
@@ -92,8 +115,7 @@ class ScanConnectionManager:
         """
         task = await self._detach_client(client_id)
         if task is not None and task is not asyncio.current_task():
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            await cancel_and_drain_tasks(task)
 
         logger.info(f"[ScanConnectionManager] Client {client_id} disconnected (total: {len(self.active_connections)})")
 
@@ -165,8 +187,7 @@ class ScanConnectionManager:
     async def _close_slow_client(self, client_id: str, websocket: WebSocket) -> None:
         writer = await self._detach_client(client_id, websocket=websocket)
         if writer is not None and writer is not asyncio.current_task():
-            writer.cancel()
-            await asyncio.gather(writer, return_exceptions=True)
+            await cancel_and_drain_tasks(writer)
         try:
             await asyncio.wait_for(
                 websocket.close(code=1013),
@@ -353,22 +374,28 @@ class ScanConnectionManager:
 
     async def shutdown(self) -> None:
         """Drain process-local clients and writers before the event loop closes."""
+        self._shutdown_started = True
         with self._schedule_lock:
             self._accept_scheduled_broadcasts = False
             self._scheduled_broadcasts.clear()
             self._scheduled_jobs.clear()
         async with self._lock:
+            self._accepting_connections = False
             sockets = list(self.active_connections.values())
-            tasks = list(self._writer_tasks.values()) + list(self._broadcast_tasks)
+            current_task = asyncio.current_task()
+            tasks = (
+                list(self._writer_tasks.values())
+                + list(self._broadcast_tasks)
+                + [task for task in self._connect_tasks if task is not current_task]
+            )
             self.active_connections.clear()
             self.job_subscriptions.clear()
             self._outbound_queues.clear()
             self._writer_tasks.clear()
             self._broadcast_tasks.clear()
-        for task in tasks:
-            task.cancel()
+            self._connect_tasks.clear()
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await cancel_and_drain_tasks(tasks)
         if sockets:
             await asyncio.gather(
                 *(
@@ -380,6 +407,29 @@ class ScanConnectionManager:
                 ),
                 return_exceptions=True,
             )
+        self._shutdown_complete = True
+
+    def retire_if_idle(self) -> bool:
+        """Synchronously fence an unused manager before singleton replacement."""
+        if self._shutdown_started and not self._shutdown_complete:
+            return False
+        if (
+            self._lock.locked()
+            or self.active_connections
+            or self.job_subscriptions
+            or self._outbound_queues
+            or any(not task.done() for task in self._writer_tasks.values())
+            or any(not task.done() for task in self._broadcast_tasks)
+            or any(not task.done() for task in self._connect_tasks)
+        ):
+            return False
+        with self._schedule_lock:
+            if self._scheduled_broadcasts or self._scheduled_jobs:
+                return False
+            self._accept_scheduled_broadcasts = False
+        self._accepting_connections = False
+        self._shutdown_complete = True
+        return True
 
 
 # Singleton globale
@@ -390,9 +440,8 @@ def initialize_scan_connection_manager() -> ScanConnectionManager:
     """Create the manager owned by the current application lifespan."""
     global _scan_connection_manager
     previous = _scan_connection_manager
-    if previous is not None and (
-        previous.active_connections
-        or any(not task.done() for task in previous._writer_tasks.values())
+    if previous is not None and not (
+        previous._shutdown_complete or previous.retire_if_idle()
     ):
         raise RuntimeError("Scan WebSocket manager ancora attivo durante la riapertura")
     _scan_connection_manager = ScanConnectionManager()

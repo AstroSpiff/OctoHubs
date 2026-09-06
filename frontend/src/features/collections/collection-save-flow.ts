@@ -2,6 +2,10 @@ import type {
   CollectionEditorInput,
   EmbyCollection,
 } from "@/features/collections/types";
+import {
+  assertAuthenticatedActionOwner,
+  captureAuthenticatedActionOwner,
+} from "@/lib/http";
 
 type CollectionImageKind = "poster" | "backdrop";
 type CollectionImageFiles = Partial<Record<CollectionImageKind, File>>;
@@ -33,7 +37,10 @@ async function saveCollectionWithImages({
   upload,
   onCollectionSaved,
 }: SaveCollectionWithImagesOptions): Promise<void> {
+  const owner = captureAuthenticatedActionOwner();
+  assertAuthenticatedActionOwner(owner);
   const result = await save(input);
+  assertAuthenticatedActionOwner(owner);
   const collectionId = result.collection.id;
   onCollectionSaved(result.collection);
 
@@ -47,7 +54,9 @@ async function saveCollectionWithImages({
     const file = files[kind];
     if (!file || completedUploads[kind] === file) continue;
 
+    assertAuthenticatedActionOwner(owner);
     await upload({ collectionId, kind, file });
+    assertAuthenticatedActionOwner(owner);
     completedUploads[kind] = file;
   }
 

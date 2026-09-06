@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, request, setCsrfToken } from "@/lib/http";
+import { ApiError, SessionOwnerChangedError, request, setCsrfToken } from "@/lib/http";
 
 describe("HTTP client CSRF handling", () => {
   afterEach(() => {
@@ -48,6 +48,24 @@ describe("HTTP client CSRF handling", () => {
     const [, retryOptions] = fetchMock.mock.calls[2];
     expect(new Headers(firstOptions.headers).get("X-CSRF-Token")).toBe("stale-token");
     expect(new Headers(retryOptions.headers).get("X-CSRF-Token")).toBe("renewed-token");
+  });
+
+  it("never retries a mutation under a different authenticated owner", async () => {
+    setCsrfToken("csrf-a", 1);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ detail: "CSRF token non valido" }), { status: 403 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ csrf_token: "csrf-b", user: { id: 2 } }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      request("/api/ui/preferences", { method: "PUT", body: "{}" }),
+    ).rejects.toBeInstanceOf(SessionOwnerChangedError);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      "/api/ui/preferences",
+      "/api/ui/session",
+    ]);
   });
 });
 

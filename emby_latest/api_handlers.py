@@ -18,18 +18,22 @@ from core.thread_lifecycle import (
 
 logger = logging.getLogger(__name__)
 
-_latest_refresh_request_lock = threading.Lock()
+_latest_refresh_lifecycle_lock = threading.RLock()
 _latest_refresh_request_reserved = False
-_latest_refresh_worker_lock = threading.Lock()
 _latest_refresh_thread: Optional[threading.Thread] = None
 _latest_refresh_stop_event: Optional[threading.Event] = None
+_latest_refresh_accepting = True
 
 
 def _reserve_latest_refresh_request(manager) -> bool:
     """Atomically reserve a background Latest refresh request."""
     global _latest_refresh_request_reserved
-    with _latest_refresh_request_lock:
-        if _latest_refresh_request_reserved or manager.is_refreshing():
+    with _latest_refresh_lifecycle_lock:
+        if (
+            not _latest_refresh_accepting
+            or _latest_refresh_request_reserved
+            or manager.is_refreshing()
+        ):
             return False
         _latest_refresh_request_reserved = True
         return True
@@ -38,7 +42,7 @@ def _reserve_latest_refresh_request(manager) -> bool:
 def _release_latest_refresh_request() -> None:
     """Release the background Latest refresh request reservation."""
     global _latest_refresh_request_reserved
-    with _latest_refresh_request_lock:
+    with _latest_refresh_lifecycle_lock:
         _latest_refresh_request_reserved = False
 
 
@@ -66,38 +70,61 @@ def _start_latest_refresh_worker(target: Callable[[threading.Event], None]) -> b
         try:
             target(stop_event)
         finally:
-            with _latest_refresh_worker_lock:
+            with _latest_refresh_lifecycle_lock:
                 if _latest_refresh_thread is worker:
                     _latest_refresh_thread = None
                     _latest_refresh_stop_event = None
             _release_latest_refresh_request()
 
     worker = threading.Thread(target=_run, daemon=False)
-    with _latest_refresh_worker_lock:
-        if _latest_refresh_thread is not None:
+    with _latest_refresh_lifecycle_lock:
+        if not _latest_refresh_accepting or _latest_refresh_thread is not None:
             return False
         _latest_refresh_thread = worker
         _latest_refresh_stop_event = stop_event
-    def rollback_unstarted() -> None:
-        global _latest_refresh_thread, _latest_refresh_stop_event
-        with _latest_refresh_worker_lock:
-            if _latest_refresh_thread is worker:
-                _latest_refresh_thread = None
-                _latest_refresh_stop_event = None
-        stop_event.set()
-        _release_latest_refresh_request()
+        def rollback_unstarted() -> None:
+            global _latest_refresh_thread, _latest_refresh_stop_event
+            with _latest_refresh_lifecycle_lock:
+                if _latest_refresh_thread is worker:
+                    _latest_refresh_thread = None
+                    _latest_refresh_stop_event = None
+            stop_event.set()
+            _release_latest_refresh_request()
 
-    start_owned_thread_confirmed(
-        worker,
-        rollback_unstarted=rollback_unstarted,
-        context="latest refresh",
-    )
+        # Publication and Thread.start share the lifecycle lock so shutdown
+        # can never snapshot an unstarted worker or miss a newly started one.
+        start_owned_thread_confirmed(
+            worker,
+            rollback_unstarted=rollback_unstarted,
+            context="latest refresh",
+        )
     return True
+
+
+def start_accepting_latest_refresh() -> None:
+    """Open admission for a new application lifespan."""
+    global _latest_refresh_accepting, _latest_refresh_request_reserved
+    with _latest_refresh_lifecycle_lock:
+        if _latest_refresh_thread is not None:
+            raise RuntimeError("Latest refresh precedente non certamente drenato")
+        _latest_refresh_request_reserved = False
+        _latest_refresh_accepting = True
+
+
+def begin_latest_refresh_shutdown() -> None:
+    """Close admission before the runtime takes its parallel drain snapshot."""
+    global _latest_refresh_accepting
+    with _latest_refresh_lifecycle_lock:
+        _latest_refresh_accepting = False
+        stop_event = _latest_refresh_stop_event
+    if stop_event is not None:
+        stop_event.set()
 
 
 def shutdown_latest_refresh(timeout_seconds: float = 5.0) -> bool:
     """Signal and join the active Latest refresh before shared DB pools close."""
-    with _latest_refresh_worker_lock:
+    begin_latest_refresh_shutdown()
+    with _latest_refresh_lifecycle_lock:
         worker = _latest_refresh_thread
         stop_event = _latest_refresh_stop_event
     if worker is None:
@@ -288,6 +315,11 @@ def build_latest_refresh_payload(
     worker_started = _start_latest_refresh_worker(_do_refresh)
     if not worker_started:
         _release_latest_refresh_request()
+        _fail_latest_refresh_safely(
+            operation_tracker,
+            operation_id,
+            RuntimeError("Latest refresh non avviato: runtime in arresto"),
+        )
         return {
             "success": False,
             "message": "Refresh già in corso",

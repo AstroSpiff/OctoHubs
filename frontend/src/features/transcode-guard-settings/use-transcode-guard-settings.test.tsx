@@ -196,10 +196,9 @@ describe("useTranscodeGuardSettings", () => {
     await act(async () => {
       failure.reject(new Error("guard settings unavailable"));
       await failure.promise.catch(() => undefined);
-      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      await vi.waitFor(() => expect(container.textContent).toContain("guard settings unavailable"));
     });
 
-    expect(container.textContent).toContain("guard settings unavailable");
     expect(container.textContent).toContain("Riprova");
     expect(container.textContent).not.toContain("Caricamento regole Transcode Guard");
   });

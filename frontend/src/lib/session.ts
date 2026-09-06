@@ -5,6 +5,6 @@ export type Session = Omit<UiSessionResponse, "ok">;
 
 export async function getSession(): Promise<Session> {
   const payload = await request<UiSessionResponse>("/api/ui/session");
-  setCsrfToken(payload.csrf_token);
+  setCsrfToken(payload.csrf_token, payload.user.id);
   return payload;
 }

@@ -21,12 +21,12 @@ import { cn } from "@/lib/utils";
 
 const longPressDelay = 480;
 
-function MobilePrimaryNavigation({ pathname }: { pathname: string }) {
+function MobilePrimaryNavigation({ accountId, pathname }: { accountId?: number | null; pathname: string }) {
   const { hash } = useLocation();
   const pressTimer = useRef<number | null>(null);
   const suppressClickFor = useRef<string | null>(null);
   const [secondaryMenu, setSecondaryMenu] = useState<PrimaryNavigationItem | null>(null);
-  const primaryOrder = usePersistedTabOrder({ page: "primary", tabs: primaryNavigation });
+  const primaryOrder = usePersistedTabOrder({ accountId, page: "primary", tabs: primaryNavigation });
   const orderedPrimaryNavigation = primaryOrder.order
     .map((id) => primaryNavigation.find((item) => item.id === id))
     .filter((item): item is (typeof primaryNavigation)[number] => Boolean(item));
@@ -104,6 +104,7 @@ function MobilePrimaryNavigation({ pathname }: { pathname: string }) {
       </nav>
       {secondaryMenu?.secondary ? (
         <SecondaryNavigationSheet
+          accountId={accountId}
           hash={hash}
           item={secondaryMenu}
           pathname={pathname}
@@ -115,17 +116,20 @@ function MobilePrimaryNavigation({ pathname }: { pathname: string }) {
 }
 
 function SecondaryNavigationSheet({
+  accountId,
   hash,
   item,
   onClose,
   pathname,
 }: {
+  accountId?: number | null;
   hash: string;
   item: PrimaryNavigationItem;
   onClose: () => void;
   pathname: string;
 }) {
   const submenuOrder = usePersistedTabOrder({
+    accountId,
     page: item.secondaryOrderPage || item.id,
     tabs: item.secondary || [],
   });

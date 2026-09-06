@@ -4,6 +4,10 @@ import { Button } from "@/components/ui/button";
 import { DialogBackdrop } from "@/components/ui/dialog-backdrop";
 import { useConfirmationDialog } from "@/components/ui/use-confirmation-dialog";
 import { useDirtyChange } from "@/lib/use-dirty-change";
+import {
+  assertAuthenticatedActionOwner,
+  captureAuthenticatedActionOwner,
+} from "@/lib/http";
 import { checkUserName } from "@/features/users/api";
 import { ServerIdentity } from "@/features/users/components/server-identity";
 import { duplicateCloneGroupNames } from "@/features/users/clone-group-warning";
@@ -46,6 +50,7 @@ function CloneUserDialog({
   const [validating, setValidating] = useState(false);
   const [error, setError] = useState("");
   const previousSourcesKey = useRef<string | null>(null);
+  const validationGeneration = useRef(0);
   const sourcesKey = users.map((user) => `${user.server_id}:${user.user_id}`).join("|");
 
   const operationCount = draft.sources.reduce(
@@ -67,11 +72,16 @@ function CloneUserDialog({
     if (previousSourcesKey.current === sourcesKey) return;
 
     previousSourcesKey.current = sourcesKey;
+    validationGeneration.current += 1;
     const nextDraft = cloneUserDraft(users, servers);
     setDraft(nextDraft);
     setBaseline(nextDraft);
     setError("");
   }, [sourcesKey, users, servers]);
+
+  useEffect(() => () => {
+    validationGeneration.current += 1;
+  }, []);
 
   if (!users.length) return null;
 
@@ -152,12 +162,19 @@ function CloneUserDialog({
 
     setError("");
     setValidating(true);
+    const generation = validationGeneration.current + 1;
+    validationGeneration.current = generation;
+    const owner = captureAuthenticatedActionOwner();
     try {
       const conflicts: string[] = [];
       for (const source of trimmedSources) {
         for (const targetServerId of targets) {
           if (targetServerId === source.user.server_id) continue;
+          if (validationGeneration.current !== generation) return;
+          assertAuthenticatedActionOwner(owner);
           const result = await checkUserName(targetServerId, source.newUsername);
+          assertAuthenticatedActionOwner(owner);
+          if (validationGeneration.current !== generation) return;
           if (result.exists) {
             const server = servers.find((item) => item.id === targetServerId);
             conflicts.push(`${source.newUsername} su ${server?.name || targetServerId}`);
@@ -168,15 +185,19 @@ function CloneUserDialog({
         setError(`Esistono già utenti con questi nomi: ${conflicts.join(", ")}.`);
         return;
       }
+      assertAuthenticatedActionOwner(owner);
+      if (validationGeneration.current !== generation) return;
       onClone({
         ...draft,
         sources: trimmedSources,
         targetServerIds: targets,
       });
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Impossibile verificare i nomi utente.");
+      if (validationGeneration.current === generation) {
+        setError(reason instanceof Error ? reason.message : "Impossibile verificare i nomi utente.");
+      }
     } finally {
-      setValidating(false);
+      if (validationGeneration.current === generation) setValidating(false);
     }
   }
 

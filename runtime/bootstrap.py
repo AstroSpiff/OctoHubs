@@ -127,8 +127,10 @@ def initialize_runtime_services(*, config=None, is_valid=None, db_storage=None) 
         _wf_notify,
     )
     from realtime.status_snapshot import initialize_status_snapshot_cache
+    from emby_latest.api_handlers import start_accepting_latest_refresh
 
     initialize_status_snapshot_cache()
+    start_accepting_latest_refresh()
     connection_check_coordinator.reset()
     set_connection_check_state({}, None)
     from emby_runtime.scan_websocket_manager import initialize_scan_connection_manager
@@ -267,6 +269,7 @@ async def shutdown_runtime_services(timeout_seconds: float = 5.0) -> bool:
     from realtime.subscribers import sse_subscribers, websocket_subscribers
     from services.connection_check_guard import connection_check_coordinator
     from services.scheduler_manager import begin_scheduler_shutdown
+    from emby_latest.api_handlers import begin_latest_refresh_shutdown
     from emby_probe import get_probe_manager
     from realtime.status_snapshot import (
         begin_status_snapshot_shutdown,
@@ -277,6 +280,7 @@ async def shutdown_runtime_services(timeout_seconds: float = 5.0) -> bool:
     # Close every downstream admission gate before producers and consumers are
     # drained concurrently. This makes the shutdown snapshot monotonic.
     begin_scheduler_shutdown()
+    begin_latest_refresh_shutdown()
     workflow_manager.begin_shutdown()
     get_probe_manager().begin_shutdown()
     begin_status_snapshot_shutdown()

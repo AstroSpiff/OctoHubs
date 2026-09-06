@@ -5,9 +5,16 @@ import getpass
 import sys
 from pathlib import Path
 
-from core.password_policy import PasswordTooLongError, bcrypt_password_bytes
+# Direct execution (the documented container command) places ``scripts/`` on
+# sys.path. Add the repository root explicitly so it has the same imports as
+# ``python -m scripts.manage_users`` without relying on PYTHONPATH.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-from core.auth import (
+from core.password_policy import PasswordTooLongError, bcrypt_password_bytes  # noqa: E402
+
+from core.auth import (  # noqa: E402
     init_auth,
     get_user_by_username,
     create_user,

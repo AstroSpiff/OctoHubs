@@ -16,11 +16,13 @@ import { cn } from "@/lib/utils";
 type NavigationVariant = "sidebar" | "top";
 
 function PrimaryNavigationLinks({
+  accountId,
   pathname,
   variant,
   onNavigate,
   showSecondaryMenu = false,
 }: {
+  accountId?: number | null;
   pathname: string;
   variant: NavigationVariant;
   onNavigate?: () => void;
@@ -28,7 +30,7 @@ function PrimaryNavigationLinks({
 }) {
   const { hash } = useLocation();
   const [openTopSubmenuId, setOpenTopSubmenuId] = useState<string | null>(null);
-  const primaryOrder = usePersistedTabOrder({ page: "primary", tabs: primaryNavigation });
+  const primaryOrder = usePersistedTabOrder({ accountId, page: "primary", tabs: primaryNavigation });
   const orderedPrimaryNavigation = primaryOrder.order
     .map((id) => primaryNavigation.find((item) => item.id === id))
     .filter((item): item is (typeof primaryNavigation)[number] => Boolean(item));
@@ -83,6 +85,7 @@ function PrimaryNavigationLinks({
             </NavLink>
             {showItemSubmenu && item.secondary?.length ? (
               <SecondaryNavigationMenu
+                accountId={accountId}
                 hash={hash}
                 items={item.secondary}
                 onNavigate={() => {
@@ -104,6 +107,7 @@ function PrimaryNavigationLinks({
 }
 
 function SecondaryNavigationMenu({
+  accountId,
   hash,
   items,
   onNavigate,
@@ -112,6 +116,7 @@ function SecondaryNavigationMenu({
   primaryLabel,
   variant,
 }: {
+  accountId?: number | null;
   hash: string;
   items: readonly SecondaryNavigationItem[];
   onNavigate?: () => void;
@@ -120,7 +125,7 @@ function SecondaryNavigationMenu({
   primaryLabel: string;
   variant: NavigationVariant;
 }) {
-  const submenuOrder = usePersistedTabOrder({ page: orderPage, tabs: items });
+  const submenuOrder = usePersistedTabOrder({ accountId, page: orderPage, tabs: items });
   const orderedItems = submenuOrder.order
     .map((id) => items.find((item) => item.id === id))
     .filter((item): item is SecondaryNavigationItem => Boolean(item));

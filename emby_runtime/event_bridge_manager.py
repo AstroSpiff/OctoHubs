@@ -87,6 +87,8 @@ class EventBridgeConnectionManager:
         self._websocket_servers: dict[int, tuple[str, int]] = {}
         self._dispatch_locks: dict[str, asyncio.Lock] = {}
         self._accepting = True
+        self._shutdown_started = False
+        self._shutdown_complete = False
 
     def _dispatch_lock(self, server_id: str) -> asyncio.Lock:
         return self._dispatch_locks.setdefault(server_id, asyncio.Lock())
@@ -97,6 +99,8 @@ class EventBridgeConnectionManager:
         hello = hello or {}
         server_id, server_name = _server_identity(hello)
         async with self._dispatch_lock(server_id):
+            if not self._accepting:
+                raise RuntimeError("Event Bridge manager is shutting down")
             return await self._register_unlocked(websocket, hello, server_id, server_name)
 
     async def _register_unlocked(
@@ -135,6 +139,9 @@ class EventBridgeConnectionManager:
                     )
                 except Exception:
                     pass
+        if not self._accepting:
+            self._detach_websocket(websocket)
+            raise RuntimeError("Event Bridge manager is shutting down")
         self._publish_update([server_id], "connected")
         return state
 
@@ -165,7 +172,14 @@ class EventBridgeConnectionManager:
 
     async def shutdown(self) -> None:
         """Close transports and discard every event-loop-bound primitive."""
+        self._shutdown_started = True
         self._accepting = False
+        # Every registration/dispatch owns its per-server lock. Crossing each
+        # existing lock after fencing admission guarantees that no waiter can
+        # publish a socket after the shutdown snapshot.
+        for dispatch_lock in list(self._dispatch_locks.values()):
+            async with dispatch_lock:
+                pass
         websockets = {
             id(state.websocket): state.websocket
             for state in self._servers.values()
@@ -188,6 +202,7 @@ class EventBridgeConnectionManager:
                 logger.debug("Event Bridge transport close failed during shutdown")
 
         await asyncio.gather(*(close(websocket) for websocket in websockets.values()))
+        self._shutdown_complete = True
 
     async def close_server_connection(self, server_id: str, code: int = 1008) -> bool:
         """Close the current transport after a credential rotation."""
@@ -195,6 +210,8 @@ class EventBridgeConnectionManager:
             return False
         server_key = str(server_id or "").strip()
         async with self._dispatch_lock(server_key):
+            if not self._accepting:
+                return False
             state = self._servers.get(server_key)
             websocket = state.websocket if state else None
             if websocket is None:
@@ -432,17 +449,40 @@ class EventBridgeConnectionManager:
                 format_exception_for_log(exc),
             )
 
+    def retire_if_idle(self) -> bool:
+        """Fence an unused manager before installing the next lifespan owner."""
+        if self._shutdown_started and not self._shutdown_complete:
+            return False
+        if (
+            self._websocket_servers
+            or any(state.websocket is not None for state in self._servers.values())
+            or any(lock.locked() for lock in self._dispatch_locks.values())
+        ):
+            return False
+        self._accepting = False
+        self._servers.clear()
+        self._dispatch_locks.clear()
+        self._shutdown_complete = True
+        return True
 
-_manager = EventBridgeConnectionManager()
+
+_manager: EventBridgeConnectionManager | None = None
 
 
 def get_event_bridge_manager() -> EventBridgeConnectionManager:
+    global _manager
+    if _manager is None:
+        _manager = EventBridgeConnectionManager()
     return _manager
 
 
 def initialize_event_bridge_manager() -> EventBridgeConnectionManager:
     """Install a fresh manager for the current application lifespan."""
     global _manager
+    if _manager is not None and not (
+        _manager._shutdown_complete or _manager.retire_if_idle()
+    ):
+        raise RuntimeError("Event Bridge manager ancora attivo durante la riapertura")
     _manager = EventBridgeConnectionManager()
     return _manager
 

@@ -5,6 +5,7 @@ import type {
   CollectionEditorInput,
   EmbyCollection,
 } from "@/features/collections/types";
+import { SessionOwnerChangedError, setCsrfToken } from "@/lib/http";
 
 const newCollectionInput: CollectionEditorInput = {
   name: "Cinema",
@@ -69,5 +70,31 @@ describe("saveCollectionWithImages", () => {
       "backdrop",
       "backdrop",
     ]);
+  });
+
+  it("stops before publishing or uploading when the session owner changes", async () => {
+    setCsrfToken("csrf-a", 1);
+    let resolveSave: ((value: { collection: EmbyCollection }) => void) | undefined;
+    const saveResult = new Promise<{ collection: EmbyCollection }>((resolve) => {
+      resolveSave = resolve;
+    });
+    const onCollectionSaved = vi.fn();
+    const upload = vi.fn();
+    const operation = saveCollectionWithImages({
+      input: newCollectionInput,
+      files: { poster: new File(["poster"], "poster.png") },
+      completedUploads: {},
+      save: vi.fn(() => saveResult),
+      upload,
+      onCollectionSaved,
+    });
+
+    setCsrfToken("csrf-b", 2);
+    resolveSave?.({ collection: savedCollection });
+
+    await expect(operation).rejects.toBeInstanceOf(SessionOwnerChangedError);
+    expect(onCollectionSaved).not.toHaveBeenCalled();
+    expect(upload).not.toHaveBeenCalled();
+    setCsrfToken("");
   });
 });

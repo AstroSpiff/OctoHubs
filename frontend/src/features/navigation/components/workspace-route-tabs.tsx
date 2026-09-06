@@ -5,6 +5,7 @@ import { NavLink } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { usePersistedTabOrder } from "@/features/navigation/use-persisted-tab-order";
 import type { PersistedTab } from "@/features/navigation/tab-order";
+import { useWorkspaceCapabilities } from "@/features/session/workspace-capabilities-context";
 
 type WorkspaceRouteTab<Id extends string> = PersistedTab<Id> & {
   to: string;
@@ -25,7 +26,8 @@ function WorkspaceRouteTabs<Id extends string>({
   orderPage: string;
   tabs: readonly WorkspaceRouteTab<Id>[];
 }) {
-  const tabOrder = usePersistedTabOrder({ page: orderPage, tabs, enabled });
+  const { accountId } = useWorkspaceCapabilities();
+  const tabOrder = usePersistedTabOrder({ accountId, page: orderPage, tabs, enabled });
   const activeTabRef = useRef<HTMLAnchorElement>(null);
   const tabOrderKey = tabOrder.order.join("|");
   const orderedTabs = tabOrder.order

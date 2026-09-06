@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { ConfirmationOptions } from "@/components/ui/confirmation-dialog";
 import { retryProbeItem } from "@/features/probe/api";
@@ -10,6 +10,11 @@ import type {
   ProbeScope,
 } from "@/features/probe/types";
 import type { useProbeScopeData } from "@/features/probe/use-probe";
+import {
+  SessionOwnerChangedError,
+  assertAuthenticatedActionOwner,
+  captureAuthenticatedActionOwner,
+} from "@/lib/http";
 
 type ProbeScopeData = Pick<
   ReturnType<typeof useProbeScopeData>,
@@ -48,6 +53,11 @@ function useProbeDataActions({
   const [bulkProgress, setBulkProgress] = useState<ProbeBulkProgress | null>(null);
   const [bulkSummary, setBulkSummary] = useState<ProbeNotice | null>(null);
   const bulkActionRunning = useRef(false);
+  const operationGeneration = useRef(0);
+
+  useEffect(() => () => {
+    operationGeneration.current += 1;
+  }, []);
 
   async function runForEveryServer(
     label: string,
@@ -61,23 +71,45 @@ function useProbeDataActions({
     }
 
     bulkActionRunning.current = true;
+    const generation = operationGeneration.current + 1;
+    operationGeneration.current = generation;
+    const owner = captureAuthenticatedActionOwner();
     setBulkSummary(null);
     setBulkProgress({ label, completed: 0, total: serverIds.length });
     let succeeded = 0;
-
-    for (const [index, serverId] of serverIds.entries()) {
-      try {
-        await action(serverId);
-        succeeded += 1;
-      } catch {
-        // L'errore specifico resta disponibile anche nell'alert della pagina.
+    let ownerChanged = false;
+    try {
+      for (const [index, serverId] of serverIds.entries()) {
+        if (operationGeneration.current !== generation) return;
+        assertAuthenticatedActionOwner(owner);
+        try {
+          await action(serverId);
+          assertAuthenticatedActionOwner(owner);
+          succeeded += 1;
+        } catch (reason) {
+          if (reason instanceof SessionOwnerChangedError) throw reason;
+          // L'errore specifico resta disponibile anche nell'alert della pagina.
+        }
+        if (operationGeneration.current !== generation) return;
+        setBulkProgress({ label, completed: index + 1, total: serverIds.length });
       }
-      setBulkProgress({ label, completed: index + 1, total: serverIds.length });
+    } catch (reason) {
+      if (!(reason instanceof SessionOwnerChangedError)) throw reason;
+      ownerChanged = true;
+    } finally {
+      bulkActionRunning.current = false;
+      if (operationGeneration.current === generation) setBulkProgress(null);
     }
 
-    bulkActionRunning.current = false;
-    setBulkProgress(null);
+    if (ownerChanged || operationGeneration.current !== generation) return;
     await data.refresh();
+    try {
+      assertAuthenticatedActionOwner(owner);
+    } catch (reason) {
+      if (reason instanceof SessionOwnerChangedError) return;
+      throw reason;
+    }
+    if (operationGeneration.current !== generation) return;
     setBulkSummary(probeBulkActionNotice(label, succeeded, serverIds.length));
   }
 
@@ -237,19 +269,40 @@ function useProbeDataActions({
 
     let queued = 0;
     let failed = 0;
+    const generation = operationGeneration.current + 1;
+    operationGeneration.current = generation;
+    const owner = captureAuthenticatedActionOwner();
     setRetrySummary(null);
     setRetryProgress({ completed: 0, total: retryItems.length });
-    for (const [index, item] of retryItems.entries()) {
-      try {
-        await retryProbeItem(item);
-        queued += 1;
-      } catch {
-        failed += 1;
+    try {
+      for (const [index, item] of retryItems.entries()) {
+        if (operationGeneration.current !== generation) return;
+        assertAuthenticatedActionOwner(owner);
+        try {
+          await retryProbeItem(item);
+          assertAuthenticatedActionOwner(owner);
+          queued += 1;
+        } catch (reason) {
+          if (reason instanceof SessionOwnerChangedError) throw reason;
+          failed += 1;
+        }
+        if (operationGeneration.current !== generation) return;
+        setRetryProgress({ completed: index + 1, total: retryItems.length });
       }
-      setRetryProgress({ completed: index + 1, total: retryItems.length });
+    } catch (reason) {
+      if (!(reason instanceof SessionOwnerChangedError)) throw reason;
+      return;
+    } finally {
+      if (operationGeneration.current === generation) setRetryProgress(null);
     }
-    setRetryProgress(null);
     await data.refresh();
+    try {
+      assertAuthenticatedActionOwner(owner);
+    } catch (reason) {
+      if (reason instanceof SessionOwnerChangedError) return;
+      throw reason;
+    }
+    if (operationGeneration.current !== generation) return;
     setRetrySummary({
       message: failed
         ? `Nuovo tentativo completato: ${queued} in coda, ${failed} non elaborati.`

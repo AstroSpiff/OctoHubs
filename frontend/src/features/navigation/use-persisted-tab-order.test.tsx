@@ -22,8 +22,8 @@ const tabs = [
   { id: "third", label: "Terza" },
 ] as const;
 
-function ReorderHarness({ page = "primary", instance = "only" }: { page?: string; instance?: string }) {
-  const tabOrder = usePersistedTabOrder({ page, tabs });
+function ReorderHarness({ accountId, page = "primary", instance = "only" }: { accountId?: number | null; page?: string; instance?: string }) {
+  const tabOrder = usePersistedTabOrder({ accountId, page, tabs });
 
   return (
     <div data-instance={instance} data-order={tabOrder.order.join("|")}>
@@ -177,5 +177,25 @@ describe("usePersistedTabOrder", () => {
         { tab_key: "first", position: 2 },
       ]],
     ]);
+  });
+
+  it("does not reuse a previous account's cached tab order", async () => {
+    vi.mocked(getTabOrder)
+      .mockResolvedValueOnce([
+        { tab_key: "second", position: 0 },
+        { tab_key: "first", position: 1 },
+        { tab_key: "third", position: 2 },
+      ])
+      .mockResolvedValueOnce([]);
+
+    await act(async () => {
+      root.render(<ReorderHarness accountId={1} page="owner-bound-order" />);
+    });
+    await vi.waitFor(() => expect(container.firstElementChild?.getAttribute("data-order")).toBe("second|first|third"));
+
+    await act(async () => {
+      root.render(<ReorderHarness accountId={2} page="owner-bound-order" />);
+    });
+    expect(container.firstElementChild?.getAttribute("data-order")).toBe("first|second|third");
   });
 });

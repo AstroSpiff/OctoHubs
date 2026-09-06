@@ -4,6 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getTabOrder, saveTabOrder } from "@/features/navigation/tab-order-api";
 import { moveTab, moveTabAfter, moveTabBefore, normalizeTabOrder, serializeTabOrder } from "@/features/navigation/tab-order";
 import type { PersistedTab } from "@/features/navigation/tab-order";
+import {
+  SessionOwnerChangedError,
+  assertAuthenticatedActionOwner,
+  captureAuthenticatedActionOwner,
+} from "@/lib/http";
 
 type TabOrderInteraction = {
   draggable: true;
@@ -24,17 +29,25 @@ const navigationConfirmedOrderCache = new Map<string, string[]>();
 const navigationSaveQueues = new Map<string, Promise<void>>();
 
 type NavigationOrderChangedDetail = {
+  ownerKey: string;
   page: string;
   order: string[];
 };
 
-function usePersistedTabOrder<T extends string>({ page, tabs, enabled = true }: { page: string; tabs: readonly PersistedTab<T>[]; enabled?: boolean }) {
+function usePersistedTabOrder<T extends string>({ accountId = null, page, tabs, enabled = true }: { accountId?: number | null; page: string; tabs: readonly PersistedTab<T>[]; enabled?: boolean }) {
   const defaultOrder = normalizeTabOrder(tabs, []);
+  const ownerKey = `${accountId ?? "anonymous"}:${page}`;
   const tabSignature = tabs.map((tab) => `${tab.id}:${(tab.legacyIds || []).join(",")}`).join("|");
-  const [order, setOrder] = useState<T[]>(defaultOrder);
+  const [ownedOrder, setOwnedOrder] = useState<{ ownerKey: string; order: T[] }>(() => ({ ownerKey, order: defaultOrder }));
+  const order = ownedOrder.ownerKey === ownerKey
+    ? ownedOrder.order
+    : normalizeTabOrder(tabs, (navigationOrderCache.get(ownerKey) || []).map((tab_key, position) => ({ tab_key, position })));
   const [draggingId, setDraggingId] = useState<T | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const orderRef = useRef(order);
+  orderRef.current = order;
+  const ownerKeyRef = useRef(ownerKey);
+  ownerKeyRef.current = ownerKey;
   const draggingIdRef = useRef<T | null>(null);
   const dragStartOrderRef = useRef<T[] | null>(null);
   const confirmedOrderRef = useRef<T[]>(defaultOrder);
@@ -45,27 +58,27 @@ function usePersistedTabOrder<T extends string>({ page, tabs, enabled = true }: 
 
   const applyOrder = useCallback((nextOrder: T[]) => {
     orderRef.current = nextOrder;
-    setOrder(nextOrder);
+    setOwnedOrder({ ownerKey: ownerKeyRef.current, order: nextOrder });
   }, []);
 
   const applyAndBroadcastOrder = useCallback((nextOrder: T[]) => {
     hasLocalOrderRef.current = true;
-    navigationOrderCache.set(page, [...nextOrder]);
+    navigationOrderCache.set(ownerKey, [...nextOrder]);
     applyOrder(nextOrder);
     if (typeof window === "undefined") return;
     window.dispatchEvent(new CustomEvent<NavigationOrderChangedDetail>(navigationOrderChangedEvent, {
-      detail: { page, order: [...nextOrder] },
+      detail: { ownerKey, page, order: [...nextOrder] },
     }));
-  }, [applyOrder, page]);
+  }, [applyOrder, ownerKey, page]);
 
   useEffect(() => {
     if (!enabled) return;
     let disposed = false;
     hasLocalOrderRef.current = false;
-    if (navigationOrderCache.has(page)) {
-      const cachedOrder = navigationOrderCache.get(page) || [];
+    if (navigationOrderCache.has(ownerKey)) {
+      const cachedOrder = navigationOrderCache.get(ownerKey) || [];
       applyOrder(normalizeTabOrder(tabsRef.current, cachedOrder.map((tab_key, position) => ({ tab_key, position }))));
-      const confirmedOrder = navigationConfirmedOrderCache.get(page)
+      const confirmedOrder = navigationConfirmedOrderCache.get(ownerKey)
         || normalizeTabOrder(tabsRef.current, []);
       confirmedOrderRef.current = normalizeTabOrder(
         tabsRef.current,
@@ -81,8 +94,8 @@ function usePersistedTabOrder<T extends string>({ page, tabs, enabled = true }: 
       .then((entries) => {
         if (!disposed && !hasLocalOrderRef.current) {
           const loadedOrder = normalizeTabOrder(tabsRef.current, entries);
-          navigationOrderCache.set(page, [...loadedOrder]);
-          navigationConfirmedOrderCache.set(page, [...loadedOrder]);
+          navigationOrderCache.set(ownerKey, [...loadedOrder]);
+          navigationConfirmedOrderCache.set(ownerKey, [...loadedOrder]);
           confirmedOrderRef.current = loadedOrder;
           applyOrder(loadedOrder);
         }
@@ -94,39 +107,46 @@ function usePersistedTabOrder<T extends string>({ page, tabs, enabled = true }: 
     return () => {
       disposed = true;
     };
-  }, [applyOrder, enabled, page, tabSignature]);
+  }, [applyOrder, enabled, ownerKey, page, tabSignature]);
 
   useEffect(() => {
     if (!enabled || typeof window === "undefined") return;
     const onOrderChanged = (event: Event) => {
       const detail = (event as CustomEvent<NavigationOrderChangedDetail>).detail;
-      if (!detail || detail.page !== page || !Array.isArray(detail.order)) return;
+      if (!detail || detail.ownerKey !== ownerKey || detail.page !== page || !Array.isArray(detail.order)) return;
       hasLocalOrderRef.current = true;
-      navigationOrderCache.set(page, [...detail.order]);
+      navigationOrderCache.set(ownerKey, [...detail.order]);
       const entries = detail.order.map((tab_key, position) => ({ tab_key, position }));
       applyOrder(normalizeTabOrder(tabsRef.current, entries));
     };
     window.addEventListener(navigationOrderChangedEvent, onOrderChanged);
     return () => window.removeEventListener(navigationOrderChangedEvent, onOrderChanged);
-  }, [applyOrder, enabled, page, tabSignature]);
+  }, [applyOrder, enabled, ownerKey, page, tabSignature]);
 
   const persist = useCallback((requestedOrder = orderRef.current) => {
     const orderAtSave = [...requestedOrder];
+    const owner = captureAuthenticatedActionOwner();
+    const ownerKeyAtSave = ownerKey;
     const save = async () => {
       try {
+        assertAuthenticatedActionOwner(owner);
+        if (ownerKeyRef.current !== ownerKeyAtSave) return;
         const response = await saveTabOrder(page, serializeTabOrder(page, orderAtSave).order);
+        assertAuthenticatedActionOwner(owner);
+        if (ownerKeyRef.current !== ownerKeyAtSave) return;
         const confirmedOrder = Array.isArray(response.order)
           ? normalizeTabOrder(tabsRef.current, response.order)
           : orderAtSave;
-        navigationConfirmedOrderCache.set(page, [...confirmedOrder]);
+        navigationConfirmedOrderCache.set(ownerKeyAtSave, [...confirmedOrder]);
         confirmedOrderRef.current = confirmedOrder;
         if (Array.isArray(response.order) && orderRef.current.join("|") === orderAtSave.join("|")) {
           applyAndBroadcastOrder(confirmedOrder);
         }
         setAnnouncement("Ordine delle schede salvato.");
-      } catch {
+      } catch (reason) {
+        if (reason instanceof SessionOwnerChangedError || ownerKeyRef.current !== ownerKeyAtSave) return;
         if (orderRef.current.join("|") === orderAtSave.join("|")) {
-          const sharedConfirmedOrder = navigationConfirmedOrderCache.get(page)
+          const sharedConfirmedOrder = navigationConfirmedOrderCache.get(ownerKeyAtSave)
             || confirmedOrderRef.current;
           const normalizedSharedConfirmedOrder = normalizeTabOrder(
             tabsRef.current,
@@ -139,8 +159,8 @@ function usePersistedTabOrder<T extends string>({ page, tabs, enabled = true }: 
       }
     };
 
-    return enqueueNavigationSave(page, save);
-  }, [applyAndBroadcastOrder, page]);
+    return enqueueNavigationSave(ownerKeyAtSave, save);
+  }, [applyAndBroadcastOrder, ownerKey, page]);
 
   const finishDrag = useCallback(() => {
     const startedWith = dragStartOrderRef.current;

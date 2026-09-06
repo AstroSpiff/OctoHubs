@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 from core import config_manager
@@ -16,6 +17,8 @@ from services.workflows import _wf_trigger_sync
 
 scan_manager = ScanManager()
 _AUTO_SCHEDULER: AutoScheduler | None = None
+_AUTO_SCHEDULER_LOCK = threading.RLock()
+_AUTO_SCHEDULER_ACCEPTING = True
 logger = logging.getLogger(__name__)
 
 
@@ -45,7 +48,11 @@ def _cleanup_unpublished_scheduler(
 
 def _ensure_auto_scheduler() -> AutoScheduler:
     global _AUTO_SCHEDULER
-    if _AUTO_SCHEDULER is None:
+    with _AUTO_SCHEDULER_LOCK:
+        if not _AUTO_SCHEDULER_ACCEPTING:
+            raise RuntimeError("AutoScheduler non accetta nuovo lavoro durante lo shutdown")
+        if _AUTO_SCHEDULER is not None:
+            return _AUTO_SCHEDULER
         candidate = AutoScheduler(
             scan_manager_instance=scan_manager,
             occurrence_coordinator=SchedulerOccurrenceCoordinator(
@@ -62,11 +69,14 @@ def _ensure_auto_scheduler() -> AutoScheduler:
             _cleanup_unpublished_scheduler(candidate, primary_error)
             raise
         _AUTO_SCHEDULER = candidate
-    return _AUTO_SCHEDULER
+        return candidate
 
 
 def sync_auto_scheduler(config_ready: bool) -> None:
-    scheduler = _ensure_auto_scheduler()
+    with _AUTO_SCHEDULER_LOCK:
+        if not _AUTO_SCHEDULER_ACCEPTING:
+            return
+        scheduler = _ensure_auto_scheduler()
     if config_ready and config_manager._ACTIVE_CONFIG:
         scheduler.update_config(config_manager._ACTIVE_CONFIG)
     else:
@@ -74,12 +84,20 @@ def sync_auto_scheduler(config_ready: bool) -> None:
 
 
 def init_scheduler() -> None:
+    global _AUTO_SCHEDULER_ACCEPTING
+    with _AUTO_SCHEDULER_LOCK:
+        if _AUTO_SCHEDULER is not None and not _AUTO_SCHEDULER_ACCEPTING:
+            raise RuntimeError("AutoScheduler precedente non certamente drenato")
+        _AUTO_SCHEDULER_ACCEPTING = True
     scan_manager.start_accepting()
     set_sync_auto_scheduler(sync_auto_scheduler)
 
 
 def begin_scheduler_shutdown() -> None:
     """Fence scans synchronously before parallel runtime drains begin."""
+    global _AUTO_SCHEDULER_ACCEPTING
+    with _AUTO_SCHEDULER_LOCK:
+        _AUTO_SCHEDULER_ACCEPTING = False
     scan_manager.begin_shutdown()
 
 
@@ -88,8 +106,9 @@ def shutdown_scheduler(timeout_seconds: float = 5.0) -> bool:
     global _AUTO_SCHEDULER
 
     deadline = time.monotonic() + max(0.0, timeout_seconds)
-    scheduler = _AUTO_SCHEDULER
     begin_scheduler_shutdown()
+    with _AUTO_SCHEDULER_LOCK:
+        scheduler = _AUTO_SCHEDULER
     if scheduler is not None:
         scheduler.stop()
 
@@ -99,5 +118,7 @@ def shutdown_scheduler(timeout_seconds: float = 5.0) -> bool:
     scan_stopped = scan_manager.wait(max(0.0, deadline - time.monotonic()))
 
     if scheduler_stopped:
-        _AUTO_SCHEDULER = None
+        with _AUTO_SCHEDULER_LOCK:
+            if _AUTO_SCHEDULER is scheduler:
+                _AUTO_SCHEDULER = None
     return scheduler_stopped and scan_stopped

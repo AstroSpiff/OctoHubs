@@ -144,9 +144,19 @@ async def _connect_scan_client(
         raise
     if connected:
         return True
-    await close_bounded(websocket, code=1013)
-    lease.release()
+    try:
+        await close_bounded(websocket, code=1013)
+    finally:
+        lease.release()
     return False
+
+
+async def _disconnect_scan_client(manager: Any, client_id: str, lease: Any) -> None:
+    """Drain the client and release its quota even under repeated cancellation."""
+    try:
+        await manager.disconnect(client_id)
+    finally:
+        lease.release()
 
 
 @router.websocket("/ws/events")
@@ -290,8 +300,7 @@ async def websocket_scan_endpoint(websocket: WebSocket, client_id: str):
         pass
     finally:
         # Cleanup: rimuovi client e subscriptions
-        await manager.disconnect(client_id)
-        lease.release()
+        await _disconnect_scan_client(manager, client_id, lease)
 
 
 @router.websocket("/ws/search/{session_id}")

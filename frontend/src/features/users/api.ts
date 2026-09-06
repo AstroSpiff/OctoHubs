@@ -1,4 +1,9 @@
-import { request } from "@/lib/http";
+import {
+  SessionOwnerChangedError,
+  assertAuthenticatedActionOwner,
+  captureAuthenticatedActionOwner,
+  request,
+} from "@/lib/http";
 import type { UserSettings } from "@/features/user-settings/types";
 import { linkRequestPayload } from "@/features/users/link-user-association";
 import type { BulkCloneInput, BulkCloneResult, CloneUserInput, EmbyUser, EmbyUserDetails, EmbyUserGroup, LinkUsersInput, PasswordTarget, SaveGroupSyncSettingsInput, UserActionResult, UsersDashboard } from "@/features/users/types";
@@ -177,6 +182,7 @@ export function cloneUser(input: CloneUserInput): Promise<UserActionResult> {
 }
 
 export async function cloneUsers(input: BulkCloneInput): Promise<BulkCloneResult> {
+  const owner = captureAuthenticatedActionOwner();
   const failed: BulkCloneResult["failed"] = [];
   let completed = 0;
 
@@ -184,6 +190,7 @@ export async function cloneUsers(input: BulkCloneInput): Promise<BulkCloneResult
     input.targetServerIds.map((targetServerId) => ({ source, targetServerId })),
   );
   for (const { source, targetServerId } of jobs) {
+      assertAuthenticatedActionOwner(owner);
       if (targetServerId === source.user.server_id) continue;
       try {
         await cloneUser({
@@ -199,8 +206,10 @@ export async function cloneUsers(input: BulkCloneInput): Promise<BulkCloneResult
           linkGroup: source.linkGroup,
           configCategories: input.configCategories,
         });
+        assertAuthenticatedActionOwner(owner);
         completed += 1;
       } catch (reason) {
+        if (reason instanceof SessionOwnerChangedError) throw reason;
         failed.push({
           source: source.user,
           targetServerId,
