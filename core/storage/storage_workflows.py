@@ -7,6 +7,7 @@ import threading
 from typing import Any, Dict, Optional, Protocol
 
 from core.storage.storage_errors import StorageError
+from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_models import SQLAlchemyError, WorkflowExecution, WorkflowStep, _utcnow, text
 
 
@@ -174,7 +175,7 @@ class StorageWorkflowMixin(_SessionProvider):
             # the worker. A fresh durable heartbeat is therefore authoritative
             # and prevents a second process from starting overlapping work.
             if active is not None and self._heartbeat_is_fresh(active, now):
-                session.rollback()
+                rollback_session_safely(session)
                 return False
             if active is not None:
                 self._recover_workflow_execution(active, now)
@@ -206,10 +207,10 @@ class StorageWorkflowMixin(_SessionProvider):
             session.commit()
             return True
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore acquisizione workflow: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def recover_and_prune_workflows(self) -> int:
         """Recover abandoned active rows only when the global lease is free."""
@@ -230,11 +231,11 @@ class StorageWorkflowMixin(_SessionProvider):
             session.commit()
             return int(recovered or 0)
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore recovery workflow: {exc}") from exc
         finally:
             try:
-                session.close()
+                close_session_safely(session)
             finally:
                 self.release_workflow_lease(lease)
 
@@ -253,10 +254,10 @@ class StorageWorkflowMixin(_SessionProvider):
             session.commit()
             return bool(updated)
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore heartbeat workflow: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def get_active_workflow_status(self) -> Optional[Dict[str, Any]]:
         session = self._get_session()
@@ -287,7 +288,7 @@ class StorageWorkflowMixin(_SessionProvider):
                 ],
             }
         finally:
-            session.close()
+            close_session_safely(session)
 
     def request_active_workflow_stop(self) -> bool:
         session = self._get_session()
@@ -304,10 +305,10 @@ class StorageWorkflowMixin(_SessionProvider):
             session.commit()
             return bool(updated)
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore richiesta stop workflow: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def workflow_stop_requested(self, workflow_id: str, owner_id: str) -> bool:
         session = self._get_session()
@@ -319,7 +320,7 @@ class StorageWorkflowMixin(_SessionProvider):
             ).one_or_none()
             return row is None or bool(row.stop_requested)
         finally:
-            session.close()
+            close_session_safely(session)
 
     def finalize_workflow_execution(
         self,
@@ -347,10 +348,10 @@ class StorageWorkflowMixin(_SessionProvider):
             session.commit()
             return bool(updated)
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore finalizzazione workflow: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def create_workflow_execution(self, workflow_id: str, workflow_type: str, context: Optional[Dict[str, Any]] = None) -> None:
         """Crea un nuovo record di esecuzione workflow."""
@@ -368,10 +369,10 @@ class StorageWorkflowMixin(_SessionProvider):
             session.add(execution)
             session.commit()
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore creazione workflow execution: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def update_workflow_execution(self, workflow_id: str, status: str, error: Optional[str] = None) -> None:
         """Aggiorna lo stato di un workflow execution."""
@@ -398,10 +399,10 @@ class StorageWorkflowMixin(_SessionProvider):
                     execution.stop_requested = False
                 session.commit()
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore aggiornamento workflow execution: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def create_workflow_step(self, workflow_id: str, step_id: str, step_index: int) -> None:
         """Crea un nuovo record per uno step del workflow."""
@@ -418,10 +419,10 @@ class StorageWorkflowMixin(_SessionProvider):
             session.add(step)
             session.commit()
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore creazione workflow step: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def update_workflow_step(
         self,
@@ -458,10 +459,10 @@ class StorageWorkflowMixin(_SessionProvider):
                     step.details = details
                 session.commit()
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore aggiornamento workflow step: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def get_workflow_execution(self, workflow_id: str) -> Optional[Dict[str, Any]]:
         """Recupera i dati di un workflow execution."""
@@ -484,7 +485,7 @@ class StorageWorkflowMixin(_SessionProvider):
         except SQLAlchemyError as exc:
             raise StorageError(f"Errore recupero workflow execution: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def get_workflow_steps(self, workflow_id: str) -> list[Dict[str, Any]]:
         """Recupera tutti gli step di un workflow."""
@@ -509,4 +510,4 @@ class StorageWorkflowMixin(_SessionProvider):
         except SQLAlchemyError as exc:
             raise StorageError(f"Errore recupero workflow steps: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)

@@ -3,6 +3,7 @@ import time
 
 import requests
 
+from core.http_response_limits import close_response_safely, read_bounded_json_response
 from core.log_sanitization import format_exception_for_log
 from core.safe_output import safe_print as print
 from core.utils import _normalize_media_type
@@ -48,11 +49,12 @@ def get_jellyseerr_requests(config, silent=False, return_status=False):
                     params=params,
                     allow_redirects=False,
                     timeout=10,
+                    stream=True,
                 )
                 if response_is_redirect(response):
+                    close_response_safely(response)
                     raise requests.TooManyRedirects("Redirect Jellyseerr rifiutato")
-                response.raise_for_status()
-                data = response.json()
+                data = read_bounded_json_response(response)
                 page_results = data.get("results", []) if isinstance(data, dict) else []
                 if not isinstance(page_results, list):
                     raise ValueError("Risposta Jellyseerr non valida")
@@ -115,12 +117,13 @@ def fetch_request_details(request_id, config, cache, max_retries=2):
                 url,
                 headers=headers,
                 allow_redirects=False,
-                timeout=15  # Aumentato timeout da 10 a 15 secondi
+                timeout=15,  # Aumentato timeout da 10 a 15 secondi
+                stream=True,
             )
             if response_is_redirect(response):
+                close_response_safely(response)
                 return None
-            response.raise_for_status()
-            data = response.json()
+            data = read_bounded_json_response(response)
             cache[request_id] = data
 
             # Log successo solo al primo tentativo
@@ -212,11 +215,12 @@ def search_jellyseerr(query, config):
             params={"query": query},
             allow_redirects=False,
             timeout=10,
+            stream=True,
         )
         if response_is_redirect(response):
+            close_response_safely(response)
             return []
-        response.raise_for_status()
-        data = response.json()
+        data = read_bounded_json_response(response)
         if isinstance(data, dict):
             results = data.get("results") or []
             return results if isinstance(results, list) else []
@@ -240,12 +244,13 @@ def submit_jellyseerr_request(payload, config):
             headers=headers,
             json=payload,
             allow_redirects=False,
-            timeout=15
+            timeout=15,
+            stream=True,
         )
         if response_is_redirect(response):
+            close_response_safely(response)
             return False, "Redirect Jellyseerr rifiutato", None
-        response.raise_for_status()
-        data = response.json() if response.content else {}
+        data = read_bounded_json_response(response, allow_empty=True)
         return True, "Richiesta inviata", data
     except requests.exceptions.RequestException as exc:
         _log_jellyseerr_error("Invio richiesta Jellyseerr non riuscito", exc)

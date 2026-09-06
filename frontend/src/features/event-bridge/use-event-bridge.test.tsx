@@ -289,4 +289,42 @@ describe("useEventBridge", () => {
       green: "Green non raggiungibile",
     });
   });
+
+  it("admits only one credential provisioning for the same server", async () => {
+    const pending = deferred<EventBridgeCredentialResult>();
+    vi.mocked(provisionEventBridgeCredential).mockReturnValue(pending.promise);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <EventBridgeHarness />
+        </QueryClientProvider>,
+      );
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    let owner!: Promise<EventBridgeCredentialResult>;
+    let duplicate!: Promise<EventBridgeCredentialResult>;
+    act(() => {
+      owner = latestBridge!.provision.mutateAsync("green");
+      duplicate = latestBridge!.provision.mutateAsync("green");
+    });
+    await act(async () => {
+      await expect(duplicate).rejects.toThrow("già in corso");
+    });
+    expect(provisionEventBridgeCredential).toHaveBeenCalledOnce();
+    expect(latestBridge?.provisionOperations.pendingKeys).toEqual(new Set(["green"]));
+
+    await act(async () => {
+      pending.resolve({
+        ok: true,
+        server_id: "green",
+        configured: true,
+        message: "Green collegato",
+      });
+      await owner;
+    });
+    expect(latestBridge?.provisionOperations.pendingKeys.size).toBe(0);
+    expect(latestBridge?.provisionOperations.errors).toEqual({});
+  });
 });

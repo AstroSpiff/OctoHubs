@@ -8,6 +8,7 @@ import threading
 from typing import Any, Callable, Dict, Iterable, Optional, Protocol, Tuple
 
 from core.storage.storage_errors import StorageError
+from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_locks import lock_snapshot_writer
 from core.storage.storage_models import SQLAlchemyError, RequestRuleEntry, ScanResultEntry, RequestCacheEntry
 from search.download_references import protect_download_references
@@ -40,7 +41,7 @@ class StorageRequestsMixin(_SessionProvider):
             entries = session.query(RequestRuleEntry).all()
             return {entry.request_id: entry.data for entry in entries}
         finally:
-            session.close()
+            close_session_safely(session)
 
     def save_request_rules(self, rules: Dict[str, Dict[str, Any]]) -> None:
         with _request_rules_write_lock:
@@ -70,10 +71,10 @@ class StorageRequestsMixin(_SessionProvider):
                     session.query(RequestRuleEntry).filter(~RequestRuleEntry.request_id.in_(keys)).delete(synchronize_session=False)  # type: ignore[attr-defined]
                 session.commit()
             except SQLAlchemyError as exc:  # pragma: no cover
-                session.rollback()
+                rollback_session_safely(session)
                 raise StorageError(f"Errore salvataggio regole: {exc}") from exc
             finally:
-                session.close()
+                close_session_safely(session)
 
     def patch_request_rules(
         self,
@@ -120,10 +121,10 @@ class StorageRequestsMixin(_SessionProvider):
                 session.commit()
                 return persisted
             except SQLAlchemyError as exc:  # pragma: no cover - runtime guard
-                session.rollback()
+                rollback_session_safely(session)
                 raise StorageError(f"Errore aggiornamento regole: {exc}") from exc
             finally:
-                session.close()
+                close_session_safely(session)
 
     # --- Scan results ---
 
@@ -146,10 +147,10 @@ class StorageRequestsMixin(_SessionProvider):
                 session.add(entry)
                 session.commit()
             except SQLAlchemyError as exc:  # pragma: no cover
-                session.rollback()
+                rollback_session_safely(session)
                 raise StorageError(f"Errore salvataggio risultati: {exc}") from exc
             finally:
-                session.close()
+                close_session_safely(session)
 
     def load_last_result(self) -> Optional[Dict[str, Any]]:
         session = self._get_session()
@@ -164,7 +165,7 @@ class StorageRequestsMixin(_SessionProvider):
             )
             return entry.payload if entry else None
         finally:
-            session.close()
+            close_session_safely(session)
 
     def load_request_overview(self) -> Tuple[Optional[Any], Optional[datetime]]:
         session = self._get_session()
@@ -174,7 +175,7 @@ class StorageRequestsMixin(_SessionProvider):
                 return entry.payload, entry.updated_at
             return None, None
         finally:
-            session.close()
+            close_session_safely(session)
 
     def save_request_overview(self, payload: Any) -> None:
         with _request_cache_write_lock:
@@ -184,10 +185,10 @@ class StorageRequestsMixin(_SessionProvider):
                 replace_request_overview_in_session(session, payload)
                 session.commit()
             except SQLAlchemyError as exc:  # pragma: no cover
-                session.rollback()
+                rollback_session_safely(session)
                 raise StorageError(f"Errore cache richieste: {exc}") from exc
             finally:
-                session.close()
+                close_session_safely(session)
 
     def save_request_refresh_snapshot(
         self,
@@ -211,13 +212,13 @@ class StorageRequestsMixin(_SessionProvider):
                 session.commit()
                 return count
             except SQLAlchemyError as exc:  # pragma: no cover - runtime guard
-                session.rollback()
+                rollback_session_safely(session)
                 raise StorageError(f"Errore snapshot richieste Jellyseerr: {exc}") from exc
             except Exception:
-                session.rollback()
+                rollback_session_safely(session)
                 raise
             finally:
-                session.close()
+                close_session_safely(session)
 
     # --- Scan results cleanup ---
 
@@ -253,13 +254,13 @@ class StorageRequestsMixin(_SessionProvider):
                 session.commit()
                 return outcome
             except SQLAlchemyError as exc:
-                session.rollback()
+                rollback_session_safely(session)
                 raise StorageError(f"Errore aggiornamento risultati: {exc}") from exc
             except Exception:
-                session.rollback()
+                rollback_session_safely(session)
                 raise
             finally:
-                session.close()
+                close_session_safely(session)
 
     def delete_scan_results(self, keep_last: int = 0) -> int:
         """Elimina i risultati ricerche salvati, opzionalmente mantenendo gli ultimi N."""
@@ -290,7 +291,7 @@ class StorageRequestsMixin(_SessionProvider):
                 session.commit()
                 return int(deleted or 0)
             except SQLAlchemyError as exc:
-                session.rollback()
+                rollback_session_safely(session)
                 raise StorageError(f"Errore pulizia risultati: {exc}") from exc
             finally:
-                session.close()
+                close_session_safely(session)

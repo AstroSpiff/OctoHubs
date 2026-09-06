@@ -9,6 +9,7 @@ from core.config import DEFAULT_CONFIG, _merge_database_settings, _merge_trakt_s
 from core.safe_output import safe_print as print
 from core.config_manager import _db_enabled, _get_db_backend
 from core.http_error_messages import safe_http_error_message
+from core.http_response_limits import read_bounded_json_response
 from core.integrations import (
     TraktAPIError,
     _get_trakt_client,
@@ -132,9 +133,9 @@ def _ping_mdblist(config):
                 "https://mdblist.com/api/",
                 params={"apikey": api_key, "i": test_imdb_id},
                 timeout=10,
+                stream=True,
             )
-            response.raise_for_status()
-            payload = response.json()
+            payload = read_bounded_json_response(response)
             if not isinstance(payload, dict):
                 failed_keys += 1
                 last_error = "Risposta API non valida"
@@ -187,9 +188,9 @@ def _ping_omdb(config):
                 "https://www.omdbapi.com/",
                 params={"i": test_imdb_id, "apikey": api_key},
                 timeout=10,
+                stream=True,
             )
-            response.raise_for_status()
-            payload = response.json()
+            payload = read_bounded_json_response(response)
             if not isinstance(payload, dict):
                 failed_keys += 1
                 last_error = "Risposta API non valida"

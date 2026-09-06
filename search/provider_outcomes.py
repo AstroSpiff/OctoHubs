@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any, Iterable
+
+import requests
+
+from core.http_response_limits import read_bounded_json_response
 
 
 MAX_INDEXER_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -46,70 +49,19 @@ class AggregatedSearchResults(list[dict[str, Any]]):
         self.truncated = bool(truncated)
 
 
-def _bounded_bytes(response: Any, *, provider: str) -> bytes:
-    _reject_oversized_content_length(response, provider)
-    iter_content = getattr(response, "iter_content", None)
-    if callable(iter_content):
-        return _read_bounded_chunks(iter_content, provider)
-    return _read_bounded_fallback(response, provider)
-
-
-def _reject_oversized_content_length(response: Any, provider: str) -> None:
-    content_length = str(getattr(response, "headers", {}).get("Content-Length") or "").strip()
-    try:
-        oversized = bool(content_length) and int(content_length) > MAX_INDEXER_RESPONSE_BYTES
-    except ValueError:
-        oversized = False
-    if oversized:
-        raise ProviderSearchError(f"Risposta {provider} oltre il limite consentito")
-
-
-def _read_bounded_chunks(iter_content: Any, provider: str) -> bytes:
-    chunks: list[bytes] = []
-    total = 0
-    for chunk in iter_content(chunk_size=64 * 1024):
-        if not chunk:
-            continue
-        encoded = chunk.encode("utf-8") if isinstance(chunk, str) else bytes(chunk)
-        total += len(encoded)
-        if total > MAX_INDEXER_RESPONSE_BYTES:
-            raise ProviderSearchError(f"Risposta {provider} oltre il limite consentito")
-        chunks.append(encoded)
-    return b"".join(chunks)
-
-
-def _read_bounded_fallback(response: Any, provider: str) -> bytes:
-    content = getattr(response, "content", None)
-    if isinstance(content, str):
-        content = content.encode("utf-8")
-    if isinstance(content, (bytes, bytearray)):
-        encoded = bytes(content)
-        if len(encoded) > MAX_INDEXER_RESPONSE_BYTES:
-            raise ProviderSearchError(f"Risposta {provider} oltre il limite consentito")
-        return encoded
-
-    return _encode_bounded_json_fallback(response, provider)
-
-
-def _encode_bounded_json_fallback(response: Any, provider: str) -> bytes:
-    """Bound lightweight test doubles that expose only ``json()``."""
-    try:
-        payload = response.json()
-        encoded = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
-    except (TypeError, ValueError) as exc:
-        raise ProviderSearchError(f"Risposta JSON {provider} non valida") from exc
-    if len(encoded) > MAX_INDEXER_RESPONSE_BYTES:
-        raise ProviderSearchError(f"Risposta {provider} oltre il limite consentito")
-    return encoded
-
-
 def load_bounded_json(response: Any, *, provider: str) -> Any:
     """Decode a response only after enforcing a hard byte budget."""
     try:
-        return json.loads(_bounded_bytes(response, provider=provider))
-    except ProviderSearchError:
-        raise
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return read_bounded_json_response(
+            response,
+            max_bytes=MAX_INDEXER_RESPONSE_BYTES,
+            require_success=False,
+        )
+    except requests.RequestException as exc:
+        if "troppo grande" in str(exc):
+            raise ProviderSearchError(
+                f"Risposta {provider} oltre il limite consentito"
+            ) from exc
         raise ProviderSearchError(f"Risposta JSON {provider} non valida") from exc
 
 

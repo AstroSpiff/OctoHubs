@@ -3,10 +3,16 @@ Low-level enrichment fetchers for Latest Publications system.
 Handles TMDB, OMDb, MDBList, and Trakt API calls with caching.
 """
 
+import json
 import unicodedata
 
 import requests
 
+from core.http_response_limits import (
+    close_response_safely,
+    read_bounded_json_response,
+    read_bounded_text_response,
+)
 from core.log_sanitization import redact_mapping_for_log, sanitize_diagnostic_text
 from core.safe_output import safe_print as print
 from emby_latest.runtime_cache import BoundedTTLCache
@@ -62,11 +68,17 @@ def _fetch_tmdb_person_name(person_id, api_key: str, language: str = "en-US") ->
         return _TMDB_PERSON_CACHE[cache_key]
     try:
         url = f"{TMDB_API_BASE}/person/{person_id}"
-        response = requests.get(url, params={"api_key": api_key, "language": language}, timeout=8)
+        response = requests.get(
+            url,
+            params={"api_key": api_key, "language": language},
+            timeout=8,
+            stream=True,
+        )
         if response.status_code == 200:
-            name = str(response.json().get("name") or "")
+            name = str(read_bounded_json_response(response).get("name") or "")
             _TMDB_PERSON_CACHE[cache_key] = name
             return name
+        close_response_safely(response)
     except requests.RequestException:
         pass
     _TMDB_PERSON_CACHE[cache_key] = ""
@@ -104,10 +116,11 @@ def _fetch_tmdb_images(tmdb_id, media_type, api_key, language):
             "append_to_response": f"images,external_ids,{credits_key}",
         }
         url = f"{TMDB_API_BASE}/{media_type}/{tmdb_id}"
-        response = requests.get(url, params=params, timeout=10)
+        response = requests.get(url, params=params, timeout=10, stream=True)
         if response.status_code != 200:
+            close_response_safely(response)
             return {}
-        payload = response.json()
+        payload = read_bounded_json_response(response)
     except requests.RequestException:
         return {}
 
@@ -235,11 +248,12 @@ def _fetch_tmdb_id_from_external(external_id, media_type, api_key, language, ext
             "language": language or "it-IT",
         }
         url = f"{TMDB_API_BASE}/find/{external_id}"
-        response = requests.get(url, params=params, timeout=10)
+        response = requests.get(url, params=params, timeout=10, stream=True)
         if response.status_code != 200:
+            close_response_safely(response)
             _TMDB_FIND_CACHE[key] = ""
             return ""
-        payload = response.json()
+        payload = read_bounded_json_response(response)
     except requests.RequestException:
         _TMDB_FIND_CACHE[key] = ""
         return ""
@@ -402,22 +416,20 @@ def _fetch_mdblist_ratings_by_imdb(imdb_id, api_keys, expected_type=None, force_
                 f"with params {{'apikey': '***', 'i': '{imdb_id}'}}"
             )
 
-            response = requests.get(url, params=params, timeout=10)
+            response = requests.get(url, params=params, timeout=10, stream=True)
             print(f"[MDBLIST DEBUG] Response status: {response.status_code}")
             print(
                 "[MDBLIST DEBUG] Response headers: "
                 f"{redact_mapping_for_log(dict(response.headers))}"
             )
 
-            response.raise_for_status()
-
-            raw_text = response.text
+            raw_text = read_bounded_text_response(response)
             print(
                 "[MDBLIST DEBUG] Raw response (first 500 chars): "
                 f"{sanitize_diagnostic_text(raw_text[:500], max_length=500)}"
             )
 
-            payload = response.json()
+            payload = json.loads(raw_text)
             print(
                 "[MDBLIST DEBUG] Parsed JSON payload: "
                 f"{redact_mapping_for_log(payload)}"
@@ -504,9 +516,9 @@ def _fetch_mdblist_tv_series_with_seasons(imdb_id, api_keys, force_refresh=False
             "https://mdblist.com/api/",
             params={"apikey": api_key, "i": imdb_id},
             timeout=10,
+            stream=True,
         )
-        response.raise_for_status()
-        payload = response.json()
+        payload = read_bounded_json_response(response)
 
         print(
             "[MDBLIST TV DEBUG] Season payload type: "
@@ -595,9 +607,13 @@ def _fetch_omdb_series_by_title(title, year, api_keys, force_refresh=False):
             params = {"t": title, "type": "series", "apikey": api_key}
             if year:
                 params["y"] = year
-            response = requests.get("https://www.omdbapi.com/", params=params, timeout=10)
-            response.raise_for_status()
-            payload = response.json()
+            response = requests.get(
+                "https://www.omdbapi.com/",
+                params=params,
+                timeout=10,
+                stream=True,
+            )
+            payload = read_bounded_json_response(response)
 
             if not isinstance(payload, dict):
                 continue
@@ -658,9 +674,9 @@ def _fetch_omdb_ratings(imdb_id, api_keys, expected_type=None, force_refresh=Fal
                     "https://www.omdbapi.com/",
                     params={"i": identifier, "apikey": api_key},
                     timeout=10,
+                    stream=True,
                 )
-                response.raise_for_status()
-                payload = response.json()
+                payload = read_bounded_json_response(response)
             except (requests.RequestException, ValueError):
                 return None
             if not isinstance(payload, dict):
@@ -737,9 +753,9 @@ def _resolve_trakt_identifier(trakt_id, media_type, client_id, access_token=None
             params=params,
             timeout=10,
             allow_redirects=False,
+            stream=True,
         )
-        response.raise_for_status()
-        payload = response.json()
+        payload = read_bounded_json_response(response)
     except (requests.RequestException, ValueError):
         return ""
     identifier = ""
@@ -791,9 +807,9 @@ def _fetch_trakt_rating(trakt_id, media_type, client_id, access_token=None, tmdb
             params={"extended": "full"},
             timeout=10,
             allow_redirects=False,
+            stream=True,
         )
-        response.raise_for_status()
-        payload = response.json()
+        payload = read_bounded_json_response(response)
     except (requests.RequestException, ValueError):
         return {}
     rating = payload.get("rating")

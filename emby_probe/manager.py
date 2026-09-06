@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import copy
+import logging
 import threading
 import time
 from typing import Any, Callable, Dict, Optional
 
 import requests
 
+from core.http_response_limits import close_response_safely, require_success_and_close
+from core.log_sanitization import format_exception_for_log
 from emby_runtime.api_clients import _call_emby_api
 
 from .constants import PROBE_SCOPE_LIBRARIES
@@ -18,6 +21,9 @@ from .recent import RecentProbeMixin
 from .libraries import LibrariesProbeMixin
 from .combo import ComboProbeMixin
 from .operation_monitor_registry import ProbeOperationMonitorRegistry
+
+
+logger = logging.getLogger(__name__)
 
 
 class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
@@ -550,7 +556,11 @@ class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
             display_name = queue_items[0].get("name") or item_name
             return True, f"Item '{display_name}' aggiunto alla coda ({queued} sorgenti)"
         except Exception as exc:
-            return False, f"Errore database: {exc}"
+            logger.error(
+                "[PROBE] Retry database non riuscito:\n%s",
+                format_exception_for_log(exc),
+            )
+            return False, "Retry Probe non riuscito per un errore database"
 
     def _verify_probe_metadata(
         self,
@@ -748,10 +758,12 @@ class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
                 params=params,
                 allow_redirects=False,
                 timeout=15,
+                stream=True,
             )
             if response.status_code in {301, 302, 303, 307, 308}:
+                close_response_safely(response)
                 return False
-            response.raise_for_status()
+            require_success_and_close(response)
             return True
         except (requests.RequestException, requests.HTTPError):
             return False

@@ -7,6 +7,7 @@ import hashlib
 from typing import Any, Dict, Optional, Protocol
 
 from core.storage.storage_errors import StorageError
+from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_models import SQLAlchemyError, EmbyImageCache, _utcnow, func
 
 
@@ -35,7 +36,7 @@ class StorageImageCacheMixin(_SessionProvider):
                 "data": row.image_data,
             }
         finally:
-            session.close()
+            close_session_safely(session)
     def save_emby_image_cache(
         self,
         cache_key: str,
@@ -88,7 +89,7 @@ class StorageImageCacheMixin(_SessionProvider):
 
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore salvataggio image cache: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)

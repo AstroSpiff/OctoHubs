@@ -24,6 +24,7 @@ export function useEventBridge() {
   const [dirtyIds, setDirtyIds] = useState<Set<string>>(new Set());
   const [notice, setNotice] = useState<EventBridgeSaveNotice | null>(null);
   const provisionOperations = useKeyedOperationState();
+  const provisioningRef = useRef(new Set<string>());
   const save = useMutation({
     mutationFn: ({ serverId, settings }: { serverId: string; settings: EventBridgeSettings }) => saveEventBridgeSettings(serverId, settings),
     onSuccess: async (result, variables) => {
@@ -56,10 +57,20 @@ export function useEventBridge() {
     },
   });
   const provision = useMutation({
-    mutationFn: provisionEventBridgeCredential,
+    mutationFn: async (serverId: string) => {
+      if (provisioningRef.current.has(serverId))
+        throw new Error("Collegamento Event Bridge già in corso per questo server");
+      provisioningRef.current.add(serverId);
+      try {
+        return await provisionEventBridgeCredential(serverId);
+      } finally {
+        provisioningRef.current.delete(serverId);
+      }
+    },
     onMutate: (serverId) => provisionOperations.begin([serverId]),
     onError: (error, serverId) => provisionOperations.fail([serverId], error),
     onSuccess: async (result) => {
+      provisionOperations.clear([result.server_id]);
       setNotice({ message: result.message, tone: "success" });
       await queryClient.invalidateQueries({ queryKey: ["event-bridge-status"] });
     },

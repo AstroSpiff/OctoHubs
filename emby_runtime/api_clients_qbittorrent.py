@@ -1,6 +1,11 @@
 import requests
 import time
 
+from core.http_response_limits import (
+    close_response_safely,
+    read_bounded_json_response,
+    read_bounded_text_response,
+)
 from core.log_sanitization import (
     sanitize_download_reference_for_log,
     sanitize_diagnostic_text,
@@ -71,10 +76,12 @@ def send_to_qbittorrent(link, config, max_retries=2):
                 f"{base_url}/api/v2/auth/login",
                 data={"username": qb_user, "password": qb_pass},
                 allow_redirects=False,
-                timeout=15  # Aumentato da 10 a 15 secondi
+                timeout=15,  # Aumentato da 10 a 15 secondi
+                stream=True,
             )
 
             if login_resp.status_code != 200:
+                close_response_safely(login_resp)
                 error_msg = f"Login fallito: HTTP {login_resp.status_code}"
                 if attempt < max_retries:
                     print(f"   -> [QB] {error_msg}, ritento...")
@@ -82,7 +89,7 @@ def send_to_qbittorrent(link, config, max_retries=2):
                     continue
                 return False, error_msg
 
-            login_text = login_resp.text.strip()
+            login_text = read_bounded_text_response(login_resp, require_success=False).strip()
             if login_text != "Ok.":
                 error_msg = "Login fallito: risposta inattesa"
                 if attempt < max_retries:
@@ -98,10 +105,11 @@ def send_to_qbittorrent(link, config, max_retries=2):
                 f"{base_url}/api/v2/torrents/add",
                 data={"urls": link},
                 allow_redirects=False,
-                timeout=20  # Aumentato da 10 a 20 secondi per torrent grandi
+                timeout=20,  # Aumentato da 10 a 20 secondi per torrent grandi
+                stream=True,
             )
 
-            add_text = add_resp.text.strip()
+            add_text = read_bounded_text_response(add_resp, require_success=False).strip()
 
             # FIX CRITICO: Parentesi corrette per la condizione logica
             if add_resp.status_code == 200 and (add_text == "Ok." or add_text == ""):
@@ -113,12 +121,13 @@ def send_to_qbittorrent(link, config, max_retries=2):
                     f"{base_url}/api/v2/torrents/info",
                     params={"limit": 10, "sort": "added_on", "reverse": "true"},
                     allow_redirects=False,
-                    timeout=10
+                    timeout=10,
+                    stream=True,
                 )
 
                 if torrents_resp.status_code == 200:
                     try:
-                        torrents = torrents_resp.json()
+                        torrents = read_bounded_json_response(torrents_resp)
                         if torrents and len(torrents) > 0:
                             latest_torrent = torrents[0]
                             torrent_name = sanitize_diagnostic_text(latest_torrent.get("name", ""))
@@ -127,6 +136,8 @@ def send_to_qbittorrent(link, config, max_retries=2):
                             return True, f"Torrent aggiunto: {torrent_name}"
                     except Exception:
                         pass
+                else:
+                    close_response_safely(torrents_resp)
 
                 print("   -> [QB] ⚠️ qBittorrent ha accettato il link, ma nessun torrent trovato nella lista")
                 print(f"   -> [QB] Link inviato: {sanitize_download_reference_for_log(link)}")
@@ -238,9 +249,11 @@ def send_to_qbittorrent_batch(links, config, max_retries=2):
                 f"{base_url}/api/v2/auth/login",
                 data={"username": qb_user, "password": qb_pass},
                 allow_redirects=False,
-                timeout=15
+                timeout=15,
+                stream=True,
             )
             if login_resp.status_code != 200:
+                close_response_safely(login_resp)
                 error_msg = f"Login fallito: HTTP {login_resp.status_code}"
                 if attempt < max_retries:
                     print(f"   -> [QB] {error_msg}, ritento...")
@@ -248,7 +261,7 @@ def send_to_qbittorrent_batch(links, config, max_retries=2):
                     continue
                 return False, error_msg, {"sent": 0, "failed": failed, "total": len(valid_links) + len(failed)}
 
-            login_text = login_resp.text.strip()
+            login_text = read_bounded_text_response(login_resp, require_success=False).strip()
             if login_text != "Ok.":
                 error_msg = "Login fallito: risposta inattesa"
                 if attempt < max_retries:
@@ -262,9 +275,10 @@ def send_to_qbittorrent_batch(links, config, max_retries=2):
                 f"{base_url}/api/v2/torrents/add",
                 data={"urls": "\n".join(valid_links)},
                 allow_redirects=False,
-                timeout=30
+                timeout=30,
+                stream=True,
             )
-            add_text = add_resp.text.strip()
+            add_text = read_bounded_text_response(add_resp, require_success=False).strip()
             if add_resp.status_code == 200 and (add_text == "Ok." or add_text == ""):
                 sent = len(valid_links)
                 message = f"Inviati {sent} elementi a qBittorrent"
@@ -279,9 +293,10 @@ def send_to_qbittorrent_batch(links, config, max_retries=2):
                         f"{base_url}/api/v2/torrents/add",
                         data={"urls": link},
                         allow_redirects=False,
-                        timeout=20
+                        timeout=20,
+                        stream=True,
                     )
-                    text = resp.text.strip()
+                    text = read_bounded_text_response(resp, require_success=False).strip()
                     if resp.status_code == 200 and (text == "Ok." or text == ""):
                         sent += 1
                     else:

@@ -7,6 +7,7 @@ from typing import Any, Protocol, Sequence
 
 from core.storage.storage_app_settings import _lock_app_settings_row
 from core.storage.storage_errors import StorageError
+from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_locks import (
     lock_collection_definition,
     lock_latest_state,
@@ -311,10 +312,10 @@ class StorageMaintenanceMixin(_SessionProvider):
             session.commit()
             return removed_server
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore rimozione dati server Emby: {exc}") from exc
         except Exception:
-            session.rollback()
+            rollback_session_safely(session)
             raise
         finally:
-            session.close()
+            close_session_safely(session)

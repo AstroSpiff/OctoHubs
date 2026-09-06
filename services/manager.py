@@ -11,6 +11,7 @@ import requests
 from core import config_manager
 from core.config import _merge_database_settings, _merge_trakt_settings
 from core.env import env_first, octohubs_env, octohubs_secret
+from core.http_response_limits import close_response_safely, read_bounded_json_response
 from core.log_sanitization import format_exception_for_log
 from core.outbound_redirects import response_is_redirect
 from core.utils import json_error
@@ -218,16 +219,19 @@ def _build_trakt_device_start_snapshot(payload):
             headers={"Content-Type": "application/json"},
             json={"client_id": client_id},
             allow_redirects=False,
-            timeout=10
+            timeout=10,
+            stream=True,
         )
 
         if response_is_redirect(response):
+            close_response_safely(response)
             return json_error("Redirect Trakt rifiutato", 502)
 
         if response.status_code != 200:
+            close_response_safely(response)
             return json_error(f"Errore Trakt: {response.status_code}", 400)
 
-        result = response.json()
+        result = read_bounded_json_response(response)
         return {
             "success": True,
             "device_code": result.get("device_code"),
@@ -268,14 +272,16 @@ def _build_trakt_device_poll_snapshot(payload):
             headers={"Content-Type": "application/json"},
             json={"code": device_code, "client_id": client_id, "client_secret": client_secret},
             allow_redirects=False,
-            timeout=10
+            timeout=10,
+            stream=True,
         )
 
         response_error = _trakt_poll_response_error(response)
         if response_error is not None:
+            close_response_safely(response)
             return response_error
 
-        result = response.json()
+        result = read_bounded_json_response(response)
         access_token = result.get("access_token")
         refresh_token = result.get("refresh_token")
         expires_in = result.get("expires_in", 7776000)

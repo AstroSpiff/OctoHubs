@@ -1508,3 +1508,115 @@ def test_postgresql_latest_atomic_publication_preserves_notification_checkpoint(
     assert entry["title"] == "Fresh"
     assert entry["notified"] is True
     assert entry["notified_at"] == "2026-09-03T10:00:00+00:00"
+
+
+def test_postgresql_app_settings_stale_edit_cannot_resurrect_deleted_key(
+    postgresql_schema_url,
+):
+    from core.storage import DatabaseStorage, StorageError
+
+    seed = DatabaseStorage({"URL": postgresql_schema_url})
+    deleter = DatabaseStorage({"URL": postgresql_schema_url})
+    stale_writer = DatabaseStorage({"URL": postgresql_schema_url})
+    try:
+        seed.ensure_ready()
+        seed.save_app_settings(
+            {"KEEP": 1, "TRAKT": {"ACCESS_TOKEN": "old-token"}}
+        )
+        deletion = deleter.load_app_settings()
+        stale_edit = stale_writer.load_app_settings()
+        assert deletion is not None and stale_edit is not None
+
+        del deletion["TRAKT"]
+        deleter.save_app_settings(deletion)
+        stale_edit["TRAKT"]["ACCESS_TOKEN"] = "new-token"
+
+        with pytest.raises(StorageError, match="Conflitto"):
+            stale_writer.save_app_settings(stale_edit)
+        assert seed.load_app_settings() == {"KEEP": 1}
+    finally:
+        for storage in (seed, deleter, stale_writer):
+            storage.close()
+
+
+def test_postgresql_probe_retry_preserves_diagnostics_for_claimed_duplicate(
+    postgresql_schema_url,
+):
+    from datetime import datetime, timezone
+
+    from core.storage import (
+        DatabaseStorage,
+        EmbyProbeBlacklist,
+        EmbyProbeHistory,
+        EmbyProbeQueue,
+        StorageError,
+    )
+
+    storage = DatabaseStorage({"URL": postgresql_schema_url})
+    try:
+        storage.ensure_ready()
+        session = storage._get_session()
+        try:
+            session.add(
+                EmbyProbeQueue(
+                    server_id="r35-server",
+                    item_id="r35-movie",
+                    scope="libraries",
+                    media_source_id="r35-source",
+                    name="Movie",
+                    media_type="Movie",
+                    claim_token="active-claim",
+                    claimed_at=datetime.now(timezone.utc),
+                )
+            )
+            session.add(
+                EmbyProbeBlacklist(
+                    server_id="r35-server",
+                    item_id="r35-movie",
+                    scope="libraries",
+                    media_source_id="r35-source",
+                    item_name="Movie",
+                    retry_count=3,
+                )
+            )
+            session.add(
+                EmbyProbeHistory(
+                    server_id="r35-server",
+                    item_id="r35-movie",
+                    scope="libraries",
+                    media_source_id="r35-source",
+                    name="Movie",
+                    status="error",
+                )
+            )
+            session.commit()
+        finally:
+            session.close()
+
+        item = {
+            "server_id": "r35-server",
+            "item_id": "r35-movie",
+            "scope": "libraries",
+            "media_source_id": "r35-source",
+            "name": "Movie",
+            "media_type": "Movie",
+        }
+        with pytest.raises(StorageError, match="Nessuna sorgente"):
+            storage.retry_probe_items(
+                [item],
+                server_id="r35-server",
+                item_id="r35-movie",
+                media_source_id="r35-source",
+                scope="libraries",
+            )
+
+        session = storage._get_session()
+        try:
+            assert session.query(EmbyProbeQueue).count() == 1
+            assert session.query(EmbyProbeBlacklist).count() == 1
+            assert session.query(EmbyProbeHistory).count() == 1
+            assert session.query(EmbyProbeQueue).one().claim_token == "active-claim"
+        finally:
+            session.close()
+    finally:
+        storage.close()

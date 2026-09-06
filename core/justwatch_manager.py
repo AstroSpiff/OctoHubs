@@ -11,6 +11,7 @@ import urllib.parse
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
+from core.http_response_limits import read_bounded_json_response
 from core.log_sanitization import format_exception_for_log, sanitize_diagnostic_text
 
 if TYPE_CHECKING:
@@ -198,10 +199,10 @@ class JustWatchManager:
                 JW_GRAPHQL_URL,
                 json={"query": mutation},
                 headers=headers,
-                timeout=15
+                timeout=15,
+                stream=True,
             )
-            response.raise_for_status()
-            payload = response.json()
+            payload = read_bounded_json_response(response)
         except requests.exceptions.RequestException as exc:
             raise JustWatchError(f"Errore registrazione JustWatch: {exc}") from exc
         if payload.get("errors"):
@@ -224,10 +225,10 @@ class JustWatchManager:
                 JW_GRAPHQL_URL,
                 json=payload,
                 headers=self._graphql_headers(),
-                timeout=20
+                timeout=20,
+                stream=True,
             )
-            response.raise_for_status()
-            data = response.json()
+            data = read_bounded_json_response(response)
         except requests.exceptions.RequestException as exc:
             raise JustWatchError(f"Errore richiesta JustWatch: {exc}") from exc
         if data.get("errors"):
@@ -444,9 +445,9 @@ class JustWatchManager:
                     api_url,
                     headers=JW_HEADERS,
                     timeout=JW_HTTP_TIMEOUT,
+                    stream=True,
                 )
-                response.raise_for_status()
-                return response.json()
+                return read_bounded_json_response(response)
             except Exception as fallback_exc:
                 logger.error("Errore dettagli show_id=%s:\n%s", show_id, format_exception_for_log(fallback_exc))
                 return None
@@ -472,9 +473,9 @@ class JustWatchManager:
                     api_url,
                     headers=JW_HEADERS,
                     timeout=JW_HTTP_TIMEOUT,
+                    stream=True,
                 )
-                response.raise_for_status()
-                return response.json()
+                return read_bounded_json_response(response)
             except Exception as fallback_exc:
                 logger.error("Errore dati stagione season_id=%s:\n%s", season_id, format_exception_for_log(fallback_exc))
                 return None
@@ -499,9 +500,9 @@ class JustWatchManager:
                         api_url,
                         headers=JW_HEADERS,
                         timeout=JW_HTTP_TIMEOUT,
+                        stream=True,
                     )
-                    response.raise_for_status()
-                    providers = response.json()
+                    providers = read_bounded_json_response(response)
                 except Exception as fallback_exc:
                     logger.error("Errore recupero provider JustWatch:\n%s", format_exception_for_log(fallback_exc))
                     self._provider_map = {}

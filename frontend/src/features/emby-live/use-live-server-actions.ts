@@ -1,5 +1,5 @@
 import { useMutation } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import type { ConfirmationOptions } from "@/components/ui/confirmation-dialog";
 import {
@@ -22,6 +22,7 @@ function useLiveServerActions({
   const [refreshingServerIds, setRefreshingServerIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const refreshingServerIdsRef = useRef(new Set<string>());
   const [refreshErrors, setRefreshErrors] = useState<Record<string, string>>({});
   const [stoppingTaskKeys, setStoppingTaskKeys] = useState<Set<string>>(
     () => new Set(),
@@ -55,6 +56,8 @@ function useLiveServerActions({
   }
 
   async function requestRefresh(serverId: string) {
+    if (refreshingServerIdsRef.current.has(serverId)) return;
+    refreshingServerIdsRef.current.add(serverId);
     setRefreshingServerIds((current) => new Set(current).add(serverId));
     setRefreshErrors((current) => {
       if (!(serverId in current)) return current;
@@ -73,6 +76,7 @@ function useLiveServerActions({
           : "Errore aggiornamento informazioni server.",
       }));
     } finally {
+      refreshingServerIdsRef.current.delete(serverId);
       setRefreshingServerIds((current) => {
         const next = new Set(current);
         next.delete(serverId);

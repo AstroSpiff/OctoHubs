@@ -129,6 +129,22 @@ def test_proxy_rejects_non_image_and_oversized_responses():
         assert response.closed is True
 
 
+def test_proxy_closes_failed_upstream_response():
+    response = _Response(status=503)
+    with patch("emby_libraries.image_snapshots.load_config", return_value=(_config(), True)), patch(
+        "emby_libraries.image_snapshots.requests.get",
+        return_value=response,
+    ):
+        stream, content_type, error, status = _build_emby_image_stream(
+            "server-a",
+            "movie-1",
+        )
+
+    assert (stream, content_type, status) == (None, None, 502)
+    assert error == {"success": False, "message": "Errore caricamento immagine"}
+    assert response.closed is True
+
+
 def test_authenticated_image_cache_is_private_and_revalidated():
     _, etag, cache_control, status = _build_emby_image_cache_meta(
         "server-a",

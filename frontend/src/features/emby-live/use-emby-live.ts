@@ -18,6 +18,7 @@ function useEmbyLive() {
   const [updatedAt, setUpdatedAt] = useState(0);
   const [generation, setGeneration] = useState(0);
   const snapshotRevisionRef = useRef(0);
+  const serverRefreshGenerationRef = useRef(new Map<string, number>());
 
   const refresh = useCallback(() => {
     // Any per-server response started before the full refresh is stale.
@@ -28,8 +29,13 @@ function useEmbyLive() {
   }, []);
   const refreshServer = useCallback(async (serverId: string) => {
     const revision = snapshotRevisionRef.current;
+    const serverGeneration = (serverRefreshGenerationRef.current.get(serverId) || 0) + 1;
+    serverRefreshGenerationRef.current.set(serverId, serverGeneration);
     const status = await getEmbyServerStatus(serverId);
-    if (revision !== snapshotRevisionRef.current) return;
+    if (
+      revision !== snapshotRevisionRef.current ||
+      serverRefreshGenerationRef.current.get(serverId) !== serverGeneration
+    ) return;
     setSnapshot((current) => {
       const server = current?.servers[serverId];
       if (!current || !server) return current;

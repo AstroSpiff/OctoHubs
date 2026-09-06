@@ -108,7 +108,7 @@ export type ResearchOverview = {
   scan: Record<string, unknown>;
   results: {
     generated_at?: string;
-    items?: SearchResult[];
+    items?: ScanSummaryItem[];
     [key: string]: unknown;
   };
   requests: ResearchRequest[];

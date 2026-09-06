@@ -9,6 +9,7 @@ import re
 import requests
 
 from core.config_manager import load_config
+from core.http_response_limits import close_response_safely
 
 
 _ALLOWED_IMAGE_TYPES = frozenset({"Primary", "Backdrop", "Banner", "Thumb", "Logo"})
@@ -137,6 +138,7 @@ def _build_emby_image_stream(server_id, item_id, image_type="Primary", max_width
     else:
         url = f"{base_url}/Items/{item_id}/Images/{image_type}"
 
+    response = None
     try:
         response = requests.get(
             url,
@@ -151,6 +153,7 @@ def _build_emby_image_stream(server_id, item_id, image_type="Primary", max_width
             response.close()
             return None, None, {"success": False, "message": "Risposta immagine non valida"}, 502
     except requests.RequestException:
+        close_response_safely(response)
         return None, None, {"success": False, "message": "Errore caricamento immagine"}, 502
 
     content_type = str(response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()

@@ -10,6 +10,7 @@ import requests
 
 from core.config_manager import load_config
 from core.http_error_messages import safe_http_error_message
+from core.http_response_limits import close_response_safely, read_bounded_json_response
 from core.pagination import MAX_PROVIDER_ITEMS, MAX_PROVIDER_PAGES, PaginationGuard, PaginationLimitError
 from core.utils import _normalize_media_type
 from .sources_common import _extract_year
@@ -61,16 +62,18 @@ def _fetch_tmdb_payload(endpoint_template: str, identifier: str, page: Optional[
         response = requests.get(
             url,
             params=params,
-            timeout=15
+            timeout=15,
+            stream=True,
         )
     except requests.RequestException as exc:
         logger.warning("TMDB request failed: %s", safe_http_error_message(exc))
         raise RuntimeError("Servizio TMDB temporaneamente non disponibile") from None
     if response.status_code != 200:
+        close_response_safely(response)
         raise RuntimeError(f"TMDB ha risposto con {response.status_code}")
     try:
-        return response.json()
-    except ValueError as exc:
+        return read_bounded_json_response(response)
+    except requests.RequestException as exc:
         raise RuntimeError("Risposta TMDB non valida") from exc
 
 

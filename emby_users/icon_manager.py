@@ -5,6 +5,11 @@ from typing import Dict, Any, Optional, Tuple, Callable
 
 import requests
 
+from core.http_response_limits import (
+    close_response_safely,
+    read_bounded_json_response,
+    require_success_and_close,
+)
 from emby_runtime.api_clients import _emby_base_url
 from core.image_uploads import ImageUploadError, sanitize_image_bytes, sanitize_image_file
 from core.log_sanitization import (
@@ -252,11 +257,20 @@ class IconManager:
 
         old_tag = "N/A"
         try:
-            r = requests.get(user_url, headers=headers, allow_redirects=False, timeout=10)
+            r = requests.get(
+                user_url,
+                headers=headers,
+                allow_redirects=False,
+                timeout=10,
+                stream=True,
+            )
             if response_is_redirect(r):
+                close_response_safely(r)
                 raise requests.TooManyRedirects("Redirect Emby rifiutato")
             if r.ok:
-                old_tag = r.json().get("PrimaryImageTag", "None")
+                old_tag = read_bounded_json_response(r).get("PrimaryImageTag", "None")
+            else:
+                close_response_safely(r)
             logger.info(
                 "[ICON_UPLOAD] Pre-check %s@%s: OldTag=%s",
                 sanitize_diagnostic_text(user_id),
@@ -279,12 +293,14 @@ class IconManager:
                 data=b64_data,
                 allow_redirects=False,
                 timeout=30,
+                stream=True,
             )
             if response_is_redirect(response):
+                close_response_safely(response)
                 raise requests.TooManyRedirects("Redirect Emby rifiutato")
             if not response.ok:
                 logger.error("[ICON_UPLOAD] Status: %s", response.status_code)
-            response.raise_for_status()
+            require_success_and_close(response)
         except Exception as exc:
             logger.error("[ICON_UPLOAD] Upload Failed:\n%s", format_exception_for_log(exc))
             return
@@ -295,12 +311,16 @@ class IconManager:
                 headers={"X-Emby-Token": token},
                 allow_redirects=False,
                 timeout=10,
+                stream=True,
             )
             if response_is_redirect(r):
+                close_response_safely(r)
                 raise requests.TooManyRedirects("Redirect Emby rifiutato")
             new_tag = "N/A"
             if r.ok:
-                new_tag = r.json().get("PrimaryImageTag", "None")
+                new_tag = read_bounded_json_response(r).get("PrimaryImageTag", "None")
+            else:
+                close_response_safely(r)
 
             logger.info("[ICON_UPLOAD] Post-check: NewTag=%s", sanitize_diagnostic_text(new_tag))
 

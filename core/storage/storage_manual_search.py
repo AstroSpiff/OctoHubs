@@ -8,6 +8,7 @@ from typing import Any, Dict, Protocol
 from sqlalchemy import select
 
 from core.storage.storage_errors import StorageError
+from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_models import SQLAlchemyError, ManualSearchHistory
 from search.download_references import protect_download_references
 
@@ -35,10 +36,10 @@ class StorageManualSearchMixin(_SessionProvider):
             session.add(entry)
             session.commit()
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore salvataggio ricerca manuale: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def load_manual_searches(self, limit: int = 20) -> list[Dict[str, Any]]:
         """Recupera lo storico delle ricerche manuali recenti."""
@@ -61,7 +62,7 @@ class StorageManualSearchMixin(_SessionProvider):
         except SQLAlchemyError as exc:
             raise StorageError(f"Errore recupero ricerche manuali: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def delete_manual_search(self, search_id: int) -> None:
         """Elimina una ricerca manuale dallo storico."""
@@ -72,10 +73,10 @@ class StorageManualSearchMixin(_SessionProvider):
             ).delete()
             session.commit()
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore eliminazione ricerca manuale: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def delete_manual_searches(self, keep_last: int = 0) -> int:
         """Elimina lo storico ricerche manuali, opzionalmente mantenendo gli ultimi N."""
@@ -101,7 +102,7 @@ class StorageManualSearchMixin(_SessionProvider):
             session.commit()
             return int(deleted or 0)
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore pulizia storico manuale: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)

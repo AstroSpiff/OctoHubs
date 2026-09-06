@@ -148,6 +148,45 @@ describe("useEmbyLive", () => {
     expect(latest?.snapshot?.servers["server-a"].status.version).toBe("sse-new");
   });
 
+  it("keeps the newest manual refresh when same-server responses invert", async () => {
+    const first = deferred<Awaited<ReturnType<typeof getEmbyServerStatus>>>();
+    const second = deferred<Awaited<ReturnType<typeof getEmbyServerStatus>>>();
+    vi.mocked(getEmbyServerStatus)
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    const source = FakeEventSource.instances[0];
+    act(() => source.onmessage?.({ data: JSON.stringify(snapshot("server-a")) }));
+
+    let firstRequest!: Promise<void>;
+    let secondRequest!: Promise<void>;
+    act(() => {
+      firstRequest = latest!.refreshServer("server-a");
+      secondRequest = latest!.refreshServer("server-a");
+    });
+    await act(async () => {
+      second.resolve({
+        status: { ok: true, version: "newest" },
+        running_tasks: [],
+        tasks_error: null,
+        streams: [],
+        streams_error: null,
+      });
+      await secondRequest;
+    });
+    await act(async () => {
+      first.resolve({
+        status: { ok: true, version: "stale" },
+        running_tasks: [],
+        tasks_error: null,
+        streams: [],
+        streams_error: null,
+      });
+      await firstRequest;
+    });
+
+    expect(latest?.snapshot?.servers["server-a"].status.version).toBe("newest");
+  });
+
   it("invalidates an in-flight fallback when refresh creates a new generation", async () => {
     const fallback = deferred<EmbyLiveSnapshot>();
     let fallbackSignal: AbortSignal | undefined;

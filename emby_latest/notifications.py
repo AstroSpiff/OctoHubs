@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import requests
 
+from core.http_response_limits import read_bounded_json_response
 from emby_latest.messages import build_message
 from emby_latest.notification_delivery import (
     begin_notification_dispatch,
@@ -40,12 +41,12 @@ def _telegram_api_request(
     url = f"https://api.telegram.org/bot{bot_token}/{method}"
     try:
         if files:
-            response = requests.post(url, data=params, files=files, timeout=20)
+            response = requests.post(url, data=params, files=files, timeout=20, stream=True)
         else:
-            response = requests.get(url, params=params, timeout=10)
+            response = requests.get(url, params=params, timeout=10, stream=True)
         try:
-            payload = response.json()
-        except ValueError:
+            payload = read_bounded_json_response(response, require_success=False)
+        except requests.RequestException:
             payload = {}
     except requests.RequestException:
         return False, "Errore richiesta Telegram.", {}

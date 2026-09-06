@@ -92,12 +92,43 @@ class ResearchActionResponse(ResearchPayload):
     remaining: int | None = None
 
 
+class ResearchScanQuery(ResearchPayload):
+    query: str | None = None
+    results_found: int | None = None
+
+
+class ResearchScanExcluded(ResearchPayload):
+    title: str | None = None
+    reason: str | None = None
+    indexer: str | None = None
+
+
+class ResearchScanSummaryItem(ResearchPayload):
+    request_id: int | str
+    title: str | None = None
+    year: int | str | None = None
+    media_type: str | None = None
+    season: int | None = None
+    results_found: int | None = None
+    results: list[dict[str, Any]] = Field(default_factory=list)
+    top_results: list[dict[str, Any]] = Field(default_factory=list)
+    queries: list[ResearchScanQuery] = Field(default_factory=list)
+    excluded: list[ResearchScanExcluded] = Field(default_factory=list)
+    updated_at: str | None = None
+    is_stale: bool | None = None
+
+
+class ResearchResults(ResearchPayload):
+    generated_at: str | None = None
+    items: list[ResearchScanSummaryItem] = Field(default_factory=list)
+
+
 class ResearchOverviewResponse(ResearchPayload):
     success: Literal[True]
     has_config: bool
     qbittorrent_available: bool
     scan: dict[str, Any] = Field(default_factory=dict)
-    results: dict[str, Any] = Field(default_factory=dict)
+    results: ResearchResults = Field(default_factory=ResearchResults)
     requests: list[dict[str, Any]] = Field(default_factory=list)
     movie_requests: list[dict[str, Any]] = Field(default_factory=list)
     tv_requests: list[dict[str, Any]] = Field(default_factory=list)

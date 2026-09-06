@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, Optional, Protocol, Tuple
 
 from core.storage.storage_app_settings import _lock_app_settings_row
 from core.storage.storage_errors import CollectionDefinitionNotFoundError, StorageError
+from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_locks import lock_collection_definition, lock_snapshot_writer
 from core.storage.storage_models import (
     SQLAlchemyError,
@@ -41,7 +42,7 @@ class StorageCollectionsMixin(_SessionProvider):
                 for entry in entries
             }
         finally:
-            session.close()
+            close_session_safely(session)
 
     def save_library_associations(self, associations: Dict[Tuple[str, str], str]) -> None:
         with _snapshot_write_lock:
@@ -83,10 +84,10 @@ class StorageCollectionsMixin(_SessionProvider):
                     )
                 session.commit()
             except SQLAlchemyError as exc:  # pragma: no cover
-                session.rollback()
+                rollback_session_safely(session)
                 raise StorageError(f"Errore salvataggio associazioni librerie: {exc}") from exc
             finally:
-                session.close()
+                close_session_safely(session)
 
     # --- Library group order ---
 
@@ -99,7 +100,7 @@ class StorageCollectionsMixin(_SessionProvider):
                 for entry in entries
             }
         finally:
-            session.close()
+            close_session_safely(session)
 
     def save_library_group_order(self, positions: Dict[Tuple[str, str], int]) -> None:
         with _snapshot_write_lock:
@@ -117,10 +118,10 @@ class StorageCollectionsMixin(_SessionProvider):
                     )
                 session.commit()
             except SQLAlchemyError as exc:  # pragma: no cover
-                session.rollback()
+                rollback_session_safely(session)
                 raise StorageError(f"Errore salvataggio ordine gruppi: {exc}") from exc
             finally:
-                session.close()
+                close_session_safely(session)
 
     # --- Tab order ---
 
@@ -134,7 +135,7 @@ class StorageCollectionsMixin(_SessionProvider):
             )
             return {entry.tab_key: entry.position for entry in entries}
         finally:
-            session.close()
+            close_session_safely(session)
 
     def save_tab_order(self, page: str, positions: Dict[str, int]) -> None:
         with _snapshot_write_lock:
@@ -152,10 +153,10 @@ class StorageCollectionsMixin(_SessionProvider):
                     )
                 session.commit()
             except SQLAlchemyError as exc:  # pragma: no cover
-                session.rollback()
+                rollback_session_safely(session)
                 raise StorageError(f"Errore salvataggio ordine tab: {exc}") from exc
             finally:
-                session.close()
+                close_session_safely(session)
 
     # --- Key-Value Store (Generic) ---
 
@@ -173,10 +174,10 @@ class StorageCollectionsMixin(_SessionProvider):
                     session.add(entry)
                 session.commit()
             except SQLAlchemyError as exc:  # pragma: no cover
-                session.rollback()
+                rollback_session_safely(session)
                 raise StorageError(f"Errore salvataggio key-value: {exc}") from exc
             finally:
-                session.close()
+                close_session_safely(session)
 
     def compare_and_set_key_values(
         self,
@@ -210,7 +211,7 @@ class StorageCollectionsMixin(_SessionProvider):
                 entry = existing.get(key)
                 current = entry.value if entry is not None and isinstance(entry.value, dict) else {}
                 if current.get("hash") != expected_hash:
-                    session.rollback()
+                    rollback_session_safely(session)
                     return False
 
             for key, (_expected_hash, value) in updates.items():
@@ -222,10 +223,10 @@ class StorageCollectionsMixin(_SessionProvider):
             session.commit()
             return True
         except SQLAlchemyError as exc:  # pragma: no cover - runtime guard
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore salvataggio batch key-value: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def get_key_value(self, key: str) -> Optional[Any]:
         """Get a generic key-value pair."""
@@ -234,7 +235,7 @@ class StorageCollectionsMixin(_SessionProvider):
             entry = session.get(KeyValueEntry, key)
             return entry.value if entry else None
         finally:
-            session.close()
+            close_session_safely(session)
 
     def update_key_value(self, key: str, updater: Callable[[Any], Any]) -> Any:
         """Atomically transform one key-value entry and return the stored value."""
@@ -267,13 +268,13 @@ class StorageCollectionsMixin(_SessionProvider):
             session.commit()
             return copy.deepcopy(updated)
         except SQLAlchemyError as exc:  # pragma: no cover - runtime guard
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore aggiornamento key-value: {exc}") from exc
         except Exception:
-            session.rollback()
+            rollback_session_safely(session)
             raise
         finally:
-            session.close()
+            close_session_safely(session)
 
     def get_keys_by_prefix(self, prefix: str) -> list[str]:
         """Get all keys starting with prefix."""
@@ -284,7 +285,7 @@ class StorageCollectionsMixin(_SessionProvider):
             ).all()
             return [entry.key for entry in entries]
         finally:
-            session.close()
+            close_session_safely(session)
 
     def delete_key(self, key: str) -> None:
         """Delete a key-value pair."""
@@ -295,10 +296,10 @@ class StorageCollectionsMixin(_SessionProvider):
                 session.delete(entry)
                 session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore eliminazione key: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def list_emby_collection_definitions(self) -> list[Dict[str, Any]]:
         """Return all stored Emby collection definitions."""
@@ -312,7 +313,7 @@ class StorageCollectionsMixin(_SessionProvider):
                     result.append(data)
             return result
         finally:
-            session.close()
+            close_session_safely(session)
 
     def get_emby_collection_definition(self, definition_id: str) -> Optional[Dict[str, Any]]:
         """Return a single Emby collection definition."""
@@ -322,7 +323,7 @@ class StorageCollectionsMixin(_SessionProvider):
             data = entry.data if entry and isinstance(entry.data, dict) else None
             return data
         finally:
-            session.close()
+            close_session_safely(session)
 
     def save_emby_collection_definition(self, definition: Dict[str, Any]) -> None:
         """Create or update an Emby collection definition."""
@@ -349,10 +350,10 @@ class StorageCollectionsMixin(_SessionProvider):
                     session.add(entry)
                 session.commit()
             except SQLAlchemyError as exc:  # pragma: no cover
-                session.rollback()
+                rollback_session_safely(session)
                 raise StorageError(f"Errore salvataggio collezione Emby: {exc}") from exc
             finally:
-                session.close()
+                close_session_safely(session)
 
     def mutate_emby_collection_definition(
         self,
@@ -373,7 +374,7 @@ class StorageCollectionsMixin(_SessionProvider):
                     .one_or_none()
                 )
                 if entry is None:
-                    session.rollback()
+                    rollback_session_safely(session)
                     return None
                 current = copy.deepcopy(entry.data) if isinstance(entry.data, dict) else {}
                 updated = updater(copy.deepcopy(current))
@@ -384,13 +385,13 @@ class StorageCollectionsMixin(_SessionProvider):
                 session.commit()
                 return copy.deepcopy(updated)
             except SQLAlchemyError as exc:  # pragma: no cover
-                session.rollback()
+                rollback_session_safely(session)
                 raise StorageError(f"Errore aggiornamento collezione Emby: {exc}") from exc
             except Exception:
-                session.rollback()
+                rollback_session_safely(session)
                 raise
             finally:
-                session.close()
+                close_session_safely(session)
 
     def delete_emby_collection_definition(self, definition_id: str) -> None:
         """Remove an Emby collection definition."""
@@ -401,10 +402,10 @@ class StorageCollectionsMixin(_SessionProvider):
                 session.delete(entry)
                 session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore eliminazione collezione Emby: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def delete_emby_collection_bundle(self, definition_id: str) -> None:
         """Atomically remove a collection definition and its stored images."""
@@ -423,10 +424,10 @@ class StorageCollectionsMixin(_SessionProvider):
                     session.delete(definition)
                 session.commit()
             except SQLAlchemyError as exc:  # pragma: no cover
-                session.rollback()
+                rollback_session_safely(session)
                 raise StorageError(f"Errore eliminazione bundle collezione Emby: {exc}") from exc
             finally:
-                session.close()
+                close_session_safely(session)
 
     def list_emby_collection_poster_ids(self) -> set[str]:
         """Return collection ids that have a stored poster."""
@@ -435,7 +436,7 @@ class StorageCollectionsMixin(_SessionProvider):
             entries = session.query(EmbyCollectionPoster.collection_id).all()
             return {entry[0] for entry in entries if entry and entry[0]}
         finally:
-            session.close()
+            close_session_safely(session)
 
     def get_emby_collection_poster(self, collection_id: str) -> Optional[Dict[str, Any]]:
         """Return poster data for a collection."""
@@ -451,7 +452,7 @@ class StorageCollectionsMixin(_SessionProvider):
                 "updated_at": entry.updated_at.isoformat() if entry.updated_at else None
             }
         finally:
-            session.close()
+            close_session_safely(session)
 
     def save_emby_collection_poster(self, collection_id: str, mime_type: str, data: bytes) -> None:
         """Create or update a collection poster blob."""
@@ -480,13 +481,13 @@ class StorageCollectionsMixin(_SessionProvider):
                     session.add(entry)
                 session.commit()
             except CollectionDefinitionNotFoundError:
-                session.rollback()
+                rollback_session_safely(session)
                 raise
             except SQLAlchemyError as exc:  # pragma: no cover
-                session.rollback()
+                rollback_session_safely(session)
                 raise StorageError(f"Errore salvataggio poster collezione Emby: {exc}") from exc
             finally:
-                session.close()
+                close_session_safely(session)
 
     def delete_emby_collection_poster(self, collection_id: str) -> None:
         """Remove a collection poster blob."""
@@ -497,10 +498,10 @@ class StorageCollectionsMixin(_SessionProvider):
                 session.delete(entry)
                 session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore eliminazione poster collezione Emby: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def list_emby_collection_backdrop_ids(self) -> set[str]:
         """Return collection ids that have a stored backdrop."""
@@ -509,7 +510,7 @@ class StorageCollectionsMixin(_SessionProvider):
             entries = session.query(EmbyCollectionBackdrop.collection_id).all()
             return {entry[0] for entry in entries if entry and entry[0]}
         finally:
-            session.close()
+            close_session_safely(session)
 
     def get_emby_collection_backdrop(self, collection_id: str) -> Optional[Dict[str, Any]]:
         """Return backdrop data for a collection."""
@@ -525,7 +526,7 @@ class StorageCollectionsMixin(_SessionProvider):
                 "updated_at": entry.updated_at.isoformat() if entry.updated_at else None
             }
         finally:
-            session.close()
+            close_session_safely(session)
 
     def save_emby_collection_backdrop(self, collection_id: str, mime_type: str, data: bytes) -> None:
         """Create or update a collection backdrop blob."""
@@ -554,13 +555,13 @@ class StorageCollectionsMixin(_SessionProvider):
                     session.add(entry)
                 session.commit()
             except CollectionDefinitionNotFoundError:
-                session.rollback()
+                rollback_session_safely(session)
                 raise
             except SQLAlchemyError as exc:  # pragma: no cover
-                session.rollback()
+                rollback_session_safely(session)
                 raise StorageError(f"Errore salvataggio backdrop collezione Emby: {exc}") from exc
             finally:
-                session.close()
+                close_session_safely(session)
 
     def delete_emby_collection_backdrop(self, collection_id: str) -> None:
         """Remove a collection backdrop blob."""
@@ -571,10 +572,10 @@ class StorageCollectionsMixin(_SessionProvider):
                 session.delete(entry)
                 session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore eliminazione backdrop collezione Emby: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def set_library_scan_state(self, state_key: str, data: Dict[str, Any]) -> None:
         """Persist a library scan state record."""

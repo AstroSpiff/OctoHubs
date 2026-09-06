@@ -8,6 +8,7 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from core.storage.storage_errors import StorageError
+from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_models import SQLAlchemyError, JustWatchCache, _utcnow
 
 
@@ -45,7 +46,7 @@ class StorageJustWatchMixin(_SessionProvider):
                 }
             return None
         finally:
-            session.close()
+            close_session_safely(session)
 
     def save_justwatch_cache(
         self,
@@ -111,10 +112,10 @@ class StorageJustWatchMixin(_SessionProvider):
 
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore salvataggio cache JustWatch: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def clear_justwatch_cache(self, show_name: Optional[str] = None) -> int:
         """
@@ -138,10 +139,10 @@ class StorageJustWatchMixin(_SessionProvider):
             session.commit()
             return count
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore svuotamento cache JustWatch: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def get_justwatch_cache_stats(self) -> Dict[str, int]:
         """Get statistics about JustWatch cache."""
@@ -165,4 +166,4 @@ class StorageJustWatchMixin(_SessionProvider):
                 "unavailable": unavailable
             }
         finally:
-            session.close()
+            close_session_safely(session)

@@ -15,6 +15,7 @@ import requests
 from core import config_manager
 from core.config import _merge_trakt_settings
 from core.config_manager import _db_enabled, _ensure_db_backend
+from core.http_response_limits import close_response_safely, read_bounded_json_response
 from core.justwatch_manager import JustWatchManager, JustWatchError, is_justwatch_available
 from core.safe_output import safe_print as print
 from core.log_sanitization import format_exception_for_log
@@ -105,18 +106,21 @@ class TraktClient:
                 json=self._token_refresh_payload(),
                 allow_redirects=False,
                 timeout=15,
+                stream=True,
             )
         except requests.RequestException as exc:
             raise TraktAPIError("Errore di rete durante il refresh Trakt.") from exc
         if response_is_redirect(response):
+            close_response_safely(response)
             raise TraktAPIError("Redirect Trakt rifiutato.")
         if response.status_code != 200:
+            close_response_safely(response)
             raise TraktAPIError(
                 f"Refresh token Trakt non riuscito ({response.status_code})."
             )
         try:
-            payload = response.json()
-        except ValueError as exc:
+            payload = read_bounded_json_response(response)
+        except requests.RequestException as exc:
             raise TraktAPIError("Risposta refresh Trakt non valida.") from exc
         if not isinstance(payload, dict):
             raise TraktAPIError("Risposta refresh Trakt non valida.")
@@ -202,13 +206,16 @@ class TraktClient:
                 headers=headers,
                 allow_redirects=False,
                 timeout=timeout,
+                stream=True,
                 **kwargs,
             )
         except requests.RequestException as exc:
             raise TraktAPIError("Errore di rete Trakt.") from exc
         if response_is_redirect(response):
+            close_response_safely(response)
             raise TraktAPIError("Redirect Trakt rifiutato.")
         if response.status_code == 401:
+            close_response_safely(response)
             if self._refresh_access_token(
                 force=True,
                 expected_access_token=request_access_token,
@@ -222,29 +229,36 @@ class TraktClient:
                         headers=headers,
                         allow_redirects=False,
                         timeout=timeout,
+                        stream=True,
                         **kwargs,
                     )
                 except requests.RequestException as exc:
                     raise TraktAPIError("Errore di rete Trakt.") from exc
                 if response_is_redirect(response):
+                    close_response_safely(response)
                     raise TraktAPIError("Redirect Trakt rifiutato.")
                 if response.status_code != 401:
                     return self._decode_response(response)
+                close_response_safely(response)
             raise TraktAPIError("Credenziali Trakt non valide (401).")
         if response.status_code == 403:
+            close_response_safely(response)
             raise TraktAPIError("Accesso Trakt negato (403).")
         if response.status_code >= 500:
+            close_response_safely(response)
             raise TraktAPIError("Trakt non disponibile (errore 5xx).")
         if response.status_code >= 400:
+            close_response_safely(response)
             raise TraktAPIError(f"Errore Trakt {response.status_code}.")
         return self._decode_response(response)
 
     def _decode_response(self, response):
         if response.status_code == 204:
+            close_response_safely(response)
             return None
         try:
-            return response.json()
-        except ValueError as exc:
+            return read_bounded_json_response(response)
+        except requests.RequestException as exc:
             raise TraktAPIError("Risposta Trakt non valida.") from exc
 
     def ping(self) -> bool:

@@ -1,5 +1,6 @@
 import requests
 
+from core.http_response_limits import close_response_safely, read_bounded_json_response
 from core.log_sanitization import sanitize_diagnostic_text
 from core.safe_output import safe_print as print
 from core.outbound_redirects import response_is_redirect
@@ -53,14 +54,16 @@ def _fetch_tmdb_payload(tmdb_id, media_type_candidates, config, cache):
                 build_jellyseerr_api_url(config, endpoint),
                 headers=headers,
                 allow_redirects=False,
-                timeout=15
+                timeout=15,
+                stream=True,
             )
             if response_is_redirect(response):
+                close_response_safely(response)
                 continue
             if response.status_code == 404:
+                close_response_safely(response)
                 continue
-            response.raise_for_status()
-            data = response.json()
+            data = read_bounded_json_response(response)
             cache[cache_key] = data
             return data, normalized
         except requests.exceptions.RequestException:
@@ -96,16 +99,24 @@ def search_tmdb(api_key: str, query: str, language: str = "it-IT", page: int = 1
             "page": page
         }
 
-        response = requests.get(url, params=params, allow_redirects=False, timeout=10)
+        response = requests.get(
+            url,
+            params=params,
+            allow_redirects=False,
+            timeout=10,
+            stream=True,
+        )
 
         if response_is_redirect(response):
+            close_response_safely(response)
             return [], 0
 
         if response.status_code != 200:
             print(f"   -> TMDB API error: {response.status_code}")
+            close_response_safely(response)
             return [], 0
 
-        data = response.json()
+        data = read_bounded_json_response(response)
         results = data.get("results", [])
         total_pages = data.get("total_pages", 0)
 
@@ -168,16 +179,24 @@ def get_tmdb_tv_details(api_key: str, tv_id: int, language: str = "it-IT") -> di
             "language": language
         }
 
-        response = requests.get(url, params=params, allow_redirects=False, timeout=10)
+        response = requests.get(
+            url,
+            params=params,
+            allow_redirects=False,
+            timeout=10,
+            stream=True,
+        )
 
         if response_is_redirect(response):
+            close_response_safely(response)
             return {}
 
         if response.status_code != 200:
             print(f"   -> TMDB API error: {response.status_code}")
+            close_response_safely(response)
             return {}
 
-        data = response.json()
+        data = read_bounded_json_response(response)
 
         # Extract season information
         seasons = []

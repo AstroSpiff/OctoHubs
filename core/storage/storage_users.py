@@ -6,6 +6,7 @@ from datetime import timedelta
 from typing import Any, Dict, Iterable, Optional, Protocol, Tuple
 
 from core.storage.storage_errors import StorageError
+from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_locks import lock_user_backup_subject
 from core.storage.storage_models import (
     SQLAlchemyError,
@@ -50,7 +51,7 @@ class StorageUsersMixin(_SessionProvider):
                 "updated_at": entry.updated_at,
             }
         finally:
-            session.close()
+            close_session_safely(session)
 
     def reserve_emby_user_creation(self, server_id: str, username: str) -> bool:
         session = self._get_session()
@@ -70,10 +71,10 @@ class StorageUsersMixin(_SessionProvider):
             session.commit()
             return True
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore prenotazione creazione utente Emby: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def mark_emby_user_creation_remote(self, server_id: str, username: str) -> None:
         session = self._get_session()
@@ -85,10 +86,10 @@ class StorageUsersMixin(_SessionProvider):
             entry.status = "remote_created"  # type: ignore[assignment]
             session.commit()
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore aggiornamento creazione utente Emby: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def clear_emby_user_creation(self, server_id: str, username: str) -> None:
         session = self._get_session()
@@ -99,10 +100,10 @@ class StorageUsersMixin(_SessionProvider):
             ).delete(synchronize_session=False)
             session.commit()
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore completamento creazione utente Emby: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def _delete_creation_journal_in_session(
         self,
@@ -189,13 +190,13 @@ class StorageUsersMixin(_SessionProvider):
             session.commit()
             return {"group_id": group_id, "dissolved": dissolved}
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore cleanup utente Emby eliminato: {exc}") from exc
         except Exception:
-            session.rollback()
+            rollback_session_safely(session)
             raise
         finally:
-            session.close()
+            close_session_safely(session)
 
     def mutate_user_links(
         self,
@@ -353,13 +354,13 @@ class StorageUsersMixin(_SessionProvider):
             session.commit()
             return {"dissolved_groups": dissolved_groups, "leaders": leaders}
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore mutazione gruppo utenti: {exc}") from exc
         except Exception:
-            session.rollback()
+            rollback_session_safely(session)
             raise
         finally:
-            session.close()
+            close_session_safely(session)
 
     def get_user_links(
         self,
@@ -390,7 +391,7 @@ class StorageUsersMixin(_SessionProvider):
                 for entry in entries
             ]
         finally:
-            session.close()
+            close_session_safely(session)
 
     def set_user_link(
         self,
@@ -424,10 +425,10 @@ class StorageUsersMixin(_SessionProvider):
                 session.add(new_entry)
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore salvataggio link utente: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def remove_user_link(self, server_id: str, user_id: str) -> None:
         session = self._get_session()
@@ -438,10 +439,10 @@ class StorageUsersMixin(_SessionProvider):
             ).delete()
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore rimozione link utente: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def create_user_backup(
         self,
@@ -497,10 +498,10 @@ class StorageUsersMixin(_SessionProvider):
             session.commit()
             return int(entry.id)  # type: ignore[arg-type]
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore creazione backup utente: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def get_user_backups(
         self,
@@ -533,7 +534,7 @@ class StorageUsersMixin(_SessionProvider):
                 for entry in entries
             ]
         finally:
-            session.close()
+            close_session_safely(session)
 
     def get_icon_profiles(self) -> list[Dict[str, Any]]:
         session = self._get_session()
@@ -548,14 +549,14 @@ class StorageUsersMixin(_SessionProvider):
                 for entry in entries
             ]
         finally:
-            session.close()
+            close_session_safely(session)
 
     def icon_profile_exists(self, profile_id: str) -> bool:
         session = self._get_session()
         try:
             return session.get(EmbyIconProfile, profile_id) is not None
         finally:
-            session.close()
+            close_session_safely(session)
 
     @staticmethod
     def _require_icon_profile(session: Any, profile_id: str) -> None:
@@ -578,10 +579,10 @@ class StorageUsersMixin(_SessionProvider):
                 session.add(new_entry)
             session.commit()
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Error saving icon profile: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def delete_icon_profile(self, profile_id: str) -> None:
         session = self._get_session()
@@ -592,10 +593,10 @@ class StorageUsersMixin(_SessionProvider):
             session.query(EmbyIconProfile).filter(EmbyIconProfile.id == profile_id).delete()  # type: ignore
             session.commit()
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Error deleting icon profile: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def get_icon_rules(self) -> list[Dict[str, Any]]:
         session = self._get_session()
@@ -612,7 +613,7 @@ class StorageUsersMixin(_SessionProvider):
                 for entry in entries
             ]
         finally:
-            session.close()
+            close_session_safely(session)
 
     def save_icon_rule(self, profile_id: str, column_key: str, icon_path: str, image_data: Optional[bytes] = None, mime_type: Optional[str] = None) -> None:
         session = self._get_session()
@@ -636,12 +637,12 @@ class StorageUsersMixin(_SessionProvider):
                 session.add(new_entry)
             session.commit()
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             if session.get(EmbyIconProfile, profile_id) is None:
                 raise StorageError(f"Icon profile not found: {profile_id}") from exc
             raise StorageError(f"Error saving icon rule: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def delete_icon_rule(self, profile_id: str, column_key: str) -> None:
         session = self._get_session()
@@ -651,10 +652,10 @@ class StorageUsersMixin(_SessionProvider):
                 session.delete(entry)
                 session.commit()
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Error deleting icon rule: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def get_icon_rule_data(self, profile_id: str, column_key: str) -> Optional[Tuple[bytes, str]]:
         session = self._get_session()
@@ -664,7 +665,7 @@ class StorageUsersMixin(_SessionProvider):
                 return entry.image_data, (entry.mime_type or "image/png")
             return None
         finally:
-            session.close()
+            close_session_safely(session)
 
     def get_icon_bindings(self) -> list[Dict[str, Any]]:
         session = self._get_session()
@@ -679,7 +680,7 @@ class StorageUsersMixin(_SessionProvider):
                 for entry in entries
             ]
         finally:
-            session.close()
+            close_session_safely(session)
 
     def save_icon_binding(self, target_type: str, target_id: str, profile_id: str) -> None:
         session = self._get_session()
@@ -697,12 +698,12 @@ class StorageUsersMixin(_SessionProvider):
                 session.add(new_entry)
             session.commit()
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             if session.get(EmbyIconProfile, profile_id) is None:
                 raise StorageError(f"Icon profile not found: {profile_id}") from exc
             raise StorageError(f"Error saving icon binding: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def delete_icon_binding(self, target_type: str, target_id: str) -> None:
         session = self._get_session()
@@ -712,10 +713,10 @@ class StorageUsersMixin(_SessionProvider):
                 session.delete(entry)
                 session.commit()
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Error deleting icon binding: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     # --- Emby Group Passwords ---
 
@@ -731,7 +732,7 @@ class StorageUsersMixin(_SessionProvider):
                 "updated_at": entry.updated_at.isoformat() if entry.updated_at else None
             }
         finally:
-            session.close()
+            close_session_safely(session)
 
     def get_group_passwords(self) -> list[Dict[str, Any]]:
         session = self._get_session()
@@ -746,7 +747,7 @@ class StorageUsersMixin(_SessionProvider):
                 for entry in entries
             ]
         finally:
-            session.close()
+            close_session_safely(session)
 
     def save_group_password(self, group_id: str, password_enc: str) -> None:
         session = self._get_session()
@@ -759,10 +760,10 @@ class StorageUsersMixin(_SessionProvider):
                 session.add(entry)
             session.commit()
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Error saving group password: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def replace_group_password_ciphertexts(
         self,
@@ -787,15 +788,15 @@ class StorageUsersMixin(_SessionProvider):
                 entry.password_enc = password_enc  # type: ignore[assignment]
             session.commit()
         except StorageError:
-            session.rollback()
+            rollback_session_safely(session)
             raise
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(
                 f"Error rotating group passwords atomically: {exc}"
             ) from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def delete_group_password(self, group_id: str) -> None:
         session = self._get_session()
@@ -805,7 +806,7 @@ class StorageUsersMixin(_SessionProvider):
                 session.delete(entry)
                 session.commit()
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Error deleting group password: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)

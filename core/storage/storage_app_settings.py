@@ -7,6 +7,7 @@ import threading
 from typing import Any, Callable, Dict, Optional, Protocol
 
 from core.storage.storage_errors import StorageError
+from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_models import SQLAlchemyError, AppSettings, text
 
 
@@ -62,6 +63,10 @@ def _merge_snapshot_changes(
         previous = original[key]
         if value == previous:
             continue
+        if key not in latest:
+            raise StorageError(
+                f"Conflitto aggiornamento configurazione per la chiave {key!r}"
+            )
         current = merged.get(key)
         if isinstance(previous, dict) and isinstance(value, dict) and isinstance(current, dict):
             merged[key] = _merge_snapshot_changes(current, previous, value)
@@ -86,7 +91,7 @@ class StorageAppSettingsMixin(_SessionProvider):
         except SQLAlchemyError as exc:  # pragma: no cover - runtime guard
             raise StorageError(f"Errore lettura configurazione: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def save_app_settings(self, data: Dict[str, Any]) -> None:
         if not isinstance(data, dict):
@@ -115,10 +120,13 @@ class StorageAppSettingsMixin(_SessionProvider):
                 session.add(entry)
                 session.commit()
             except SQLAlchemyError as exc:  # pragma: no cover - runtime guard
-                session.rollback()
+                rollback_session_safely(session)
                 raise StorageError(f"Errore salvataggio configurazione: {exc}") from exc
+            except Exception:
+                rollback_session_safely(session)
+                raise
             finally:
-                session.close()
+                close_session_safely(session)
 
     def update_app_settings(self, updates: Dict[str, Any]) -> Dict[str, Any]:
         """Atomically merge top-level settings and return the stored snapshot."""
@@ -143,10 +151,10 @@ class StorageAppSettingsMixin(_SessionProvider):
                 session.commit()
                 return copy.deepcopy(current)
             except SQLAlchemyError as exc:  # pragma: no cover - runtime guard
-                session.rollback()
+                rollback_session_safely(session)
                 raise StorageError(f"Errore aggiornamento configurazione: {exc}") from exc
             finally:
-                session.close()
+                close_session_safely(session)
 
     def save_app_settings_changes(
         self,
@@ -205,10 +213,10 @@ class StorageAppSettingsMixin(_SessionProvider):
                 session.commit()
                 return copy.deepcopy(current)
             except SQLAlchemyError as exc:  # pragma: no cover - runtime guard
-                session.rollback()
+                rollback_session_safely(session)
                 raise StorageError(f"Errore aggiornamento configurazione: {exc}") from exc
             finally:
-                session.close()
+                close_session_safely(session)
 
     def mutate_app_settings(
         self,
@@ -239,10 +247,10 @@ class StorageAppSettingsMixin(_SessionProvider):
                 session.commit()
                 return copy.deepcopy(persisted)
             except SQLAlchemyError as exc:  # pragma: no cover - runtime guard
-                session.rollback()
+                rollback_session_safely(session)
                 raise StorageError(f"Errore aggiornamento configurazione: {exc}") from exc
             except Exception:
-                session.rollback()
+                rollback_session_safely(session)
                 raise
             finally:
-                session.close()
+                close_session_safely(session)

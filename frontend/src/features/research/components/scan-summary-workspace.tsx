@@ -59,7 +59,7 @@ function ScanSummaryWorkspace({
   );
   const [sort, setSort] = useState(defaultScanSummarySort);
   const scan = overview.scan;
-  const items = (overview.results.items || []) as ScanSummaryItem[];
+  const items = overview.results.items || [];
   const movieItems = items.filter((item) => item.media_type !== "tv");
   const tvItems = items.filter((item) => item.media_type === "tv");
   const visibleItems = useMemo(

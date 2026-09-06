@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Tuple
 
 import requests
 
+from core.http_response_limits import close_response_safely
 from core.log_sanitization import (
     format_exception_for_log,
     sanitize_diagnostic_text,
@@ -314,15 +315,18 @@ def _set_collection_poster_blob(
             headers=headers,
             data=encoded,
             allow_redirects=False,
-            timeout=EMBY_REQUEST_TIMEOUT
+            timeout=EMBY_REQUEST_TIMEOUT,
+            stream=True,
         )
         if response.is_redirect or response.is_permanent_redirect:
             logger.warning("Redirect rifiutato durante upload poster %s", collection_id)
+            close_response_safely(response)
             return
         if response.status_code in (200, 204):
             logger.info("Poster della collezione %s caricato da blob", collection_id)
         else:
             logger.warning("Impossibile caricare poster %s: HTTP %s", collection_id, response.status_code)
+        close_response_safely(response)
     except requests.RequestException as exc:
         logger.warning("Errore upload poster %s:\n%s", collection_id, format_exception_for_log(exc))
 
@@ -352,15 +356,18 @@ def _set_collection_background_blob(
             headers=headers,
             data=encoded,
             allow_redirects=False,
-            timeout=EMBY_REQUEST_TIMEOUT
+            timeout=EMBY_REQUEST_TIMEOUT,
+            stream=True,
         )
         if response.is_redirect or response.is_permanent_redirect:
             logger.warning("Redirect rifiutato durante upload backdrop %s", collection_id)
+            close_response_safely(response)
             return
         if response.status_code in (200, 204):
             logger.info("Backdrop della collezione %s caricato da blob", collection_id)
         else:
             logger.warning("Impossibile caricare backdrop %s: HTTP %s", collection_id, response.status_code)
+        close_response_safely(response)
     except requests.RequestException as exc:
         logger.warning("Errore upload backdrop %s:\n%s", collection_id, format_exception_for_log(exc))
 

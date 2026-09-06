@@ -12,6 +12,7 @@ import requests
 
 from core.config_manager import load_config
 from core.http_error_messages import safe_http_error_message
+from core.http_response_limits import read_bounded_json_response
 from core.log_sanitization import format_exception_for_log, sanitize_url_for_log
 from core.pagination import MAX_PROVIDER_ITEMS, MAX_PROVIDER_PAGES, PaginationGuard
 from core.utils import _normalize_media_type
@@ -38,7 +39,12 @@ class MdblistClient:
         if parsed.scheme != "https" or parsed.hostname != "api.mdblist.com":
             raise ValueError("MDBList endpoint non valido")
         try:
-            return requests.get(url, timeout=20, allow_redirects=False)
+            return requests.get(
+                url,
+                timeout=20,
+                allow_redirects=False,
+                stream=True,
+            )
         except requests.RequestException as exc:
             logger.warning("MDBList request failed: %s", safe_http_error_message(exc))
             raise RuntimeError("Servizio MDBList temporaneamente non disponibile") from None
@@ -62,13 +68,14 @@ class MdblistClient:
             ]
             url = f"{endpoint}?{'&'.join(query_params)}&apikey={urllib.parse.quote_plus(self.api_key)}"
             response = self._request(url)
-            if not response.text:
-                logger.warning("MDBList endpoint non ha risposto: %s", sanitize_url_for_log(url))
-                return None
             try:
-                result = response.json()
-            except ValueError as exc:
-                logger.warning("MDBList endpoint risposta non JSON:\n%s", format_exception_for_log(exc))
+                result = read_bounded_json_response(response, require_success=False)
+            except requests.RequestException as exc:
+                logger.warning(
+                    "MDBList endpoint risposta non JSON: %s\n%s",
+                    sanitize_url_for_log(url),
+                    format_exception_for_log(exc),
+                )
                 return None
             items = []
             for key in ("movies", "shows"):
@@ -105,12 +112,9 @@ class MdblistClient:
 
     def get_my_lists(self) -> Optional[List[Dict[str, Any]]]:
         response = self._request(self.my_lists_url)
-        if not response.text:
-            logger.warning("MDBList user lists non ha risposto")
-            return None
         try:
-            data = response.json()
-        except ValueError as exc:
+            data = read_bounded_json_response(response, require_success=False)
+        except requests.RequestException as exc:
             logger.warning("MDBList user lists risposta non JSON:\n%s", format_exception_for_log(exc))
             return None
         if isinstance(data, list):
@@ -119,12 +123,9 @@ class MdblistClient:
 
     def get_user_external_lists(self) -> Optional[List[Dict[str, Any]]]:
         response = self._request(self.external_lists_url)
-        if not response.text:
-            logger.warning("MDBList external user lists non ha risposto")
-            return None
         try:
-            data = response.json()
-        except ValueError as exc:
+            data = read_bounded_json_response(response, require_success=False)
+        except requests.RequestException as exc:
             logger.warning("MDBList external user lists risposta non JSON:\n%s", format_exception_for_log(exc))
             return None
         if isinstance(data, list):

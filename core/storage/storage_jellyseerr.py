@@ -7,6 +7,7 @@ import threading
 from typing import Any, Dict, List, Optional, Protocol, cast
 
 from core.storage.storage_errors import StorageError
+from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_locks import lock_snapshot_writer
 from core.storage.storage_models import SQLAlchemyError, JellyseerrRequest, func
 from core.storage.storage_utils import _parse_datetime_value, _normalize_text_value
@@ -105,10 +106,10 @@ class StorageJellyseerrMixin(_SessionProvider):
             session.commit()
             return count
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore salvataggio Jellyseerr: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def load_jellyseerr_request_state(self) -> Dict[str, Dict[str, Any]]:
         session = self._get_session()
@@ -130,7 +131,7 @@ class StorageJellyseerrMixin(_SessionProvider):
                 }
             return state
         finally:
-            session.close()
+            close_session_safely(session)
 
     def load_jellyseerr_requests(self) -> List[Dict[str, Any]]:
         session = self._get_session()
@@ -143,14 +144,14 @@ class StorageJellyseerrMixin(_SessionProvider):
                     payloads.append(payload)
             return payloads
         finally:
-            session.close()
+            close_session_safely(session)
 
     def get_jellyseerr_requests_last_updated(self) -> Optional[datetime]:
         session = self._get_session()
         try:
             return session.query(func.max(JellyseerrRequest.updated_at)).scalar()
         finally:
-            session.close()
+            close_session_safely(session)
 
     def load_jellyseerr_request_index(
         self,
@@ -183,4 +184,4 @@ class StorageJellyseerrMixin(_SessionProvider):
                 index[key].append(entry)
             return index
         finally:
-            session.close()
+            close_session_safely(session)

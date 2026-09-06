@@ -1,6 +1,11 @@
 import requests
 
 from core.http_error_messages import safe_http_error_message
+from core.http_response_limits import (
+    close_response_safely,
+    read_bounded_text_response,
+    require_success_and_close,
+)
 from core.outbound_redirects import response_is_redirect
 from emby_runtime.api_client_urls import build_jellyseerr_api_url
 
@@ -25,10 +30,12 @@ def _ping_api_service(url, headers=None, params=None, timeout=10):
             params=params,
             allow_redirects=False,
             timeout=timeout,
+            stream=True,
         )
         if response_is_redirect(response):
+            close_response_safely(response)
             return False, "Redirect del servizio rifiutato"
-        response.raise_for_status()
+        require_success_and_close(response)
         return True, "Connessione OK"
     except requests.exceptions.RequestException as exc:
         return False, safe_http_error_message(exc)
@@ -61,14 +68,18 @@ def _ping_qbittorrent(config):
             f"{qb_url.rstrip('/')}/api/v2/auth/login",
             data={"username": qb_user, "password": qb_pass},
             allow_redirects=False,
-            timeout=10
+            timeout=10,
+            stream=True,
         )
         if response_is_redirect(login_resp):
+            close_response_safely(login_resp)
             return False, "Redirect qBittorrent rifiutato"
-        if login_resp.status_code == 200 and login_resp.text.strip() == "Ok.":
+        status_code = login_resp.status_code
+        login_text = read_bounded_text_response(login_resp, require_success=False).strip()
+        if status_code == 200 and login_text == "Ok.":
             return True, "Connessione OK"
-        if login_resp.status_code != 200:
-            return False, f"Autenticazione non riuscita (HTTP {login_resp.status_code})"
+        if status_code != 200:
+            return False, f"Autenticazione non riuscita (HTTP {status_code})"
         return False, "Autenticazione non riuscita"
     except requests.exceptions.RequestException as exc:
         return False, safe_http_error_message(exc)

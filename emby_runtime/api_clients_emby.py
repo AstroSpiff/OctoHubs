@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Tuple, Dict, cast, Optional
 
 from core.emby_identifiers import quote_emby_identifier
+from core.http_response_limits import close_response_safely, read_bounded_json_response
 from core.outbound_redirects import response_is_redirect
 from core.utils import _normalize_media_type
 
@@ -50,6 +51,7 @@ def _call_emby_api(server, path, method="GET", params=None, json_payload=None) -
                 params=merged_params,
                 allow_redirects=False,
                 timeout=EMBY_REQUEST_TIMEOUT,
+                stream=True,
             )
         else:
             response = requests.request(
@@ -59,15 +61,21 @@ def _call_emby_api(server, path, method="GET", params=None, json_payload=None) -
                 params=merged_params,
                 json=json_payload,
                 allow_redirects=False,
-                timeout=EMBY_REQUEST_TIMEOUT
+                timeout=EMBY_REQUEST_TIMEOUT,
+                stream=True,
             )
         if response_is_redirect(response):
+            close_response_safely(response)
             return False, "Redirect Emby rifiutato"
-        response.raise_for_status()
         try:
-            payload = response.json()
-        except ValueError:
-            payload = response.text
+            payload = read_bounded_json_response(response)
+        except requests.HTTPError as exc:
+            failed_response = exc.response
+            if failed_response is not None:
+                return False, f"Errore Emby HTTP {failed_response.status_code}"
+            return False, "Errore richiesta Emby"
+        except requests.RequestException:
+            return False, "Risposta Emby non valida"
         return True, payload
     except requests.HTTPError as exc:
         response = exc.response
@@ -648,12 +656,14 @@ def check_emby_availability(
                 params=params,
                 allow_redirects=False,
                 timeout=5,
+                stream=True,
             )
 
             if response.status_code != 200:
+                close_response_safely(response)
                 continue
 
-            data = response.json()
+            data = read_bounded_json_response(response)
             items = data.get("Items", [])
 
             if items:

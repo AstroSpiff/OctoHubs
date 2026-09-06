@@ -54,13 +54,14 @@ class TraktClientRefreshTests(unittest.TestCase):
         request_headers: list[dict] = []
         expired_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
 
-        def fake_post(url, *, headers, json, allow_redirects, timeout):
+        def fake_post(url, *, headers, json, allow_redirects, timeout, stream):
             self.assertEqual("https://api.trakt.tv/oauth/token", url)
             self.assertEqual("refresh_token", json["grant_type"])
             self.assertEqual("client-abc", json["client_id"])
             self.assertEqual("secret-def", json["client_secret"])
             self.assertEqual("refresh-old", json["refresh_token"])
             self.assertIs(allow_redirects, False)
+            self.assertIs(stream, True)
             return _FakeResponse(
                 200,
                 {

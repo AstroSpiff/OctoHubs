@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Protocol
 
 from core.emby_image_urls import build_latest_emby_image_urls
 from core.storage.storage_errors import StorageError
+from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_latest_state_merge import merge_notification_updates
 from core.storage.storage_locks import lock_latest_refresh, lock_latest_state
 from core.storage.storage_models import (
@@ -406,7 +407,7 @@ class StorageLatestMixin(_SessionProvider):
                 }
             }
         finally:
-            session.close()
+            close_session_safely(session)
 
     def save_latest_cache(
         self,
@@ -446,10 +447,10 @@ class StorageLatestMixin(_SessionProvider):
             )
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore salvataggio latest cache: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def _replace_latest_cache_in_session(
         self,
@@ -523,13 +524,13 @@ class StorageLatestMixin(_SessionProvider):
                     self._replace_latest_state_in_session(session, merged_state)
                 session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore pubblicazione Latest: {exc}") from exc
         except Exception:
-            session.rollback()
+            rollback_session_safely(session)
             raise
         finally:
-            session.close()
+            close_session_safely(session)
 
     def clear_latest_cache(self, cache_kind: Optional[str] = None) -> None:
         session = self._get_session()
@@ -547,10 +548,10 @@ class StorageLatestMixin(_SessionProvider):
                 session.query(EmbyLatestCacheMeta).delete(synchronize_session=False)
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore pulizia latest cache: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def delete_latest_cache_for_server(self, server_id: str, cache_kind: Optional[str] = None) -> None:
         if not server_id:
@@ -573,10 +574,10 @@ class StorageLatestMixin(_SessionProvider):
             error_query.delete(synchronize_session=False)
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore rimozione latest cache per server: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     # --- Jellyseerr requests ---
 
@@ -585,7 +586,7 @@ class StorageLatestMixin(_SessionProvider):
         try:
             return self._load_latest_state_in_session(session)
         finally:
-            session.close()
+            close_session_safely(session)
 
     def _load_latest_state_in_session(self, session: Any) -> Dict[str, Any]:
         document = session.get(EmbyLatestStateDocument, 1)
@@ -600,10 +601,10 @@ class StorageLatestMixin(_SessionProvider):
             self._replace_latest_state_in_session(session, state)
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore salvataggio latest state: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def _replace_latest_state_in_session(
         self,
@@ -625,10 +626,10 @@ class StorageLatestMixin(_SessionProvider):
             session.query(EmbyLatestNotificationDelivery).delete(synchronize_session=False)
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore pulizia latest state: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def delete_latest_state_for_server(self, server_id: str) -> None:
         if not server_id:
@@ -645,10 +646,10 @@ class StorageLatestMixin(_SessionProvider):
             session.query(EmbyLatestNotificationDelivery).filter(EmbyLatestNotificationDelivery.server_id == server_id).delete(synchronize_session=False)  # type: ignore[attr-defined]
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore rimozione latest state per server: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     # --- Latest progress tracking ---
 
@@ -682,10 +683,10 @@ class StorageLatestMixin(_SessionProvider):
                 session.add(row)
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore salvataggio latest progress: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def load_latest_progress(self) -> Dict[str, Any]:
         """
@@ -715,4 +716,4 @@ class StorageLatestMixin(_SessionProvider):
                 "updated_at": row.updated_at.isoformat() if row.updated_at else None
             }
         finally:
-            session.close()
+            close_session_safely(session)

@@ -8,6 +8,7 @@ from typing import Any, Protocol
 from sqlalchemy.exc import IntegrityError
 
 from core.storage.storage_errors import StorageError
+from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_locks import lock_latest_refresh
 from core.storage.storage_models import (
     AppSettings,
@@ -69,10 +70,10 @@ class StorageLatestNotificationMixin(_SessionProvider):
             session.commit()
             return deleted
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore pulizia consegne notifiche Latest: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def claim_latest_notification_delivery(
         self,
@@ -89,7 +90,7 @@ class StorageLatestNotificationMixin(_SessionProvider):
         try:
             lock_latest_refresh(session)
             if not self._notification_server_exists(session, server_id):
-                session.rollback()
+                rollback_session_safely(session)
                 return "server_deleted"
             self._prune_latest_notification_deliveries(session, now)
             session.add(
@@ -109,7 +110,7 @@ class StorageLatestNotificationMixin(_SessionProvider):
                 session.commit()
                 return "acquired"
             except IntegrityError:
-                session.rollback()
+                rollback_session_safely(session)
 
             # A process may have died after the provider accepted a message but
             # before the ledger was completed. Never resend that message
@@ -157,10 +158,10 @@ class StorageLatestNotificationMixin(_SessionProvider):
                 return str(row.status)
             return "in_progress"
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore claim notifica Latest: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def complete_latest_notification_delivery(
         self,
@@ -192,10 +193,10 @@ class StorageLatestNotificationMixin(_SessionProvider):
             session.commit()
             return bool(updated)
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore completamento notifica Latest: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def fail_latest_notification_delivery(
         self,
@@ -229,10 +230,10 @@ class StorageLatestNotificationMixin(_SessionProvider):
             session.commit()
             return bool(updated)
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore rilascio notifica Latest: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def reset_latest_notification_deliveries(self) -> int:
         """Explicitly clear the ledger as part of the operator reset workflow."""
@@ -244,10 +245,10 @@ class StorageLatestNotificationMixin(_SessionProvider):
             session.commit()
             return int(deleted or 0)
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore reset consegne notifiche Latest: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
 
 __all__ = ["StorageLatestNotificationMixin"]

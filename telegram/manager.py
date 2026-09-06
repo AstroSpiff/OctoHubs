@@ -4,6 +4,7 @@ from typing import Any, Dict
 
 import requests
 
+from core.http_response_limits import read_bounded_json_response
 from core.log_sanitization import sanitize_text_for_log
 from telegram.limits import validate_telegram_settings_limits
 
@@ -164,9 +165,8 @@ def _telegram_api_request(bot_token: str, method: str, params: Dict[str, Any]) -
         return False, "Bot token mancante.", {}
     url = f"https://api.telegram.org/bot{bot_token}/{method}"
     try:
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        payload = response.json()
+        response = requests.get(url, params=params, timeout=10, stream=True)
+        payload = read_bounded_json_response(response)
     except (requests.RequestException, ValueError):
         return False, "Errore richiesta Telegram.", {}
     if not payload.get("ok"):

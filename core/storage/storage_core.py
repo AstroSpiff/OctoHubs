@@ -16,6 +16,7 @@ from core.database_migrations import (
 from core.database_timeouts import postgres_engine_options
 from core.log_sanitization import format_exception_for_log
 from core.storage.storage_models import create_engine, sessionmaker, text
+from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 
 
 logger = logging.getLogger(__name__)
@@ -105,7 +106,7 @@ class StorageCoreMixin:
             except Exception as unlock_error:
                 try:
                     try:
-                        session.rollback()
+                        rollback_session_safely(session)
                     except Exception:
                         pass
                     invalidate = getattr(session, "invalidate", None)
@@ -124,7 +125,7 @@ class StorageCoreMixin:
                     else:
                         raise
             finally:
-                session.close()
+                close_session_safely(session)
 
     def close(self) -> None:
         """Dispose the shared engine; it will be recreated lazily if needed."""

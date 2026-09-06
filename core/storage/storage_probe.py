@@ -12,6 +12,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from core.storage.storage_app_settings import _lock_app_settings_row
 from core.storage.storage_errors import StorageError
+from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_locks import lock_snapshot_writer
 from core.storage.storage_models import (
     SQLAlchemyError,
@@ -115,7 +116,7 @@ class StorageProbeMixin(_SessionProvider):
                 for entry in entries
             }
         finally:
-            session.close()
+            close_session_safely(session)
 
     def update_probe_blacklist(
         self,
@@ -148,10 +149,10 @@ class StorageProbeMixin(_SessionProvider):
             session.commit()
             return retry_count
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore aggiornamento blacklist probe: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def _update_probe_blacklist_in_session(
         self,
@@ -274,10 +275,10 @@ class StorageProbeMixin(_SessionProvider):
             query.delete()
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore rimozione dalla blacklist probe: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def get_probe_blacklist(
         self,
@@ -370,7 +371,7 @@ class StorageProbeMixin(_SessionProvider):
                 for entry in entries
             ]
         finally:
-            session.close()
+            close_session_safely(session)
 
     def clear_probe_blacklist(
         self,
@@ -409,10 +410,10 @@ class StorageProbeMixin(_SessionProvider):
                     session.delete(entry)
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore svuotamento blacklist probe: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     # --- Emby Probe Queue ---
 
@@ -457,10 +458,10 @@ class StorageProbeMixin(_SessionProvider):
             self._add_probe_queue_items_in_session(session, items)
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore aggiunta elementi alla coda probe: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def _add_probe_queue_items_in_session(
         self,
@@ -505,12 +506,16 @@ class StorageProbeMixin(_SessionProvider):
                 statement = postgresql_insert(EmbyProbeQueue).values(**values)
                 statement = statement.on_conflict_do_nothing(
                     index_elements=("server_id", "item_id", "scope", "media_source_id")
-                )
-                session.execute(statement)
+                ).returning(EmbyProbeQueue.id)
+                inserted = session.execute(statement).scalar_one_or_none() is not None
             elif dialect_name == "sqlite":
-                session.execute(
-                    sqlite_insert(EmbyProbeQueue).values(**values).on_conflict_do_nothing()
+                statement = (
+                    sqlite_insert(EmbyProbeQueue)
+                    .values(**values)
+                    .on_conflict_do_nothing()
+                    .returning(EmbyProbeQueue.id)
                 )
+                inserted = session.execute(statement).scalar_one_or_none() is not None
             else:  # pragma: no cover - PostgreSQL is the production backend
                 existing_query = session.query(EmbyProbeQueue).filter(
                     EmbyProbeQueue.server_id == server_id,  # type: ignore[attr-defined]
@@ -524,7 +529,11 @@ class StorageProbeMixin(_SessionProvider):
                 )
                 if existing_query.first() is None:
                     session.add(EmbyProbeQueue(**values))
-            queued += 1
+                    inserted = True
+                else:
+                    inserted = False
+            if inserted:
+                queued += 1
         return queued
 
     def retry_probe_items(
@@ -554,13 +563,13 @@ class StorageProbeMixin(_SessionProvider):
             session.commit()
             return queued
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore retry atomico Probe: {exc}") from exc
         except Exception:
-            session.rollback()
+            rollback_session_safely(session)
             raise
         finally:
-            session.close()
+            close_session_safely(session)
 
     def remove_probe_item_state(
         self,
@@ -584,10 +593,10 @@ class StorageProbeMixin(_SessionProvider):
                 query.delete(synchronize_session=False)
             session.commit()
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore rimozione stato Probe: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def claim_probe_queue_items(
         self,
@@ -625,10 +634,10 @@ class StorageProbeMixin(_SessionProvider):
                 for entry in entries
             }
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore acquisizione coda probe: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
         return [claimed[entry_id] for entry_id in entry_ids if entry_id in claimed]
 
@@ -654,10 +663,10 @@ class StorageProbeMixin(_SessionProvider):
             session.commit()
             return updated == 1
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore rinnovo lease coda probe: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def commit_probe_queue_result(
         self,
@@ -690,7 +699,7 @@ class StorageProbeMixin(_SessionProvider):
                 .one_or_none()
             )
             if queue_entry is None:
-                session.rollback()
+                rollback_session_safely(session)
                 return None
 
             if failure is None:
@@ -758,10 +767,10 @@ class StorageProbeMixin(_SessionProvider):
             session.commit()
             return {"retry_count": retry_count, "requeued": requeued}
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore commit risultato coda probe: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def complete_probe_queue_claim(self, entry_id: int, claim_token: str) -> bool:
         """Delete a queue row only if the caller still owns the lease."""
@@ -778,10 +787,10 @@ class StorageProbeMixin(_SessionProvider):
             session.commit()
             return deleted == 1
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore completion lease coda probe: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def release_probe_queue_claim(self, entry_id: int, claim_token: str) -> bool:
         """Make a claimed row immediately available for a retry by its owner."""
@@ -801,10 +810,10 @@ class StorageProbeMixin(_SessionProvider):
             session.commit()
             return updated == 1
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore rilascio lease coda probe: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def get_probe_queue(
         self,
@@ -854,7 +863,7 @@ class StorageProbeMixin(_SessionProvider):
 
             return [self._probe_queue_payload(entry) for entry in entries]
         finally:
-            session.close()
+            close_session_safely(session)
 
     def get_probe_matching_titles(self, normalized_titles: set[str]) -> set[str]:
         """Find only requested normalized titles without materializing Probe tables."""
@@ -884,7 +893,7 @@ class StorageProbeMixin(_SessionProvider):
         except SQLAlchemyError as exc:
             raise StorageError(f"Errore indice titoli Probe: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def count_probe_queue(
         self,
@@ -903,7 +912,7 @@ class StorageProbeMixin(_SessionProvider):
                 query = query.filter(EmbyProbeQueue.library_id.in_(library_ids))  # type: ignore[attr-defined]
             return int(query.scalar() or 0)
         finally:
-            session.close()
+            close_session_safely(session)
 
     def count_probe_queue_by_library(
         self,
@@ -928,7 +937,7 @@ class StorageProbeMixin(_SessionProvider):
                 if library_id
             }
         finally:
-            session.close()
+            close_session_safely(session)
 
     def remove_from_probe_queue(
         self,
@@ -951,10 +960,10 @@ class StorageProbeMixin(_SessionProvider):
             session.commit()
             return deleted == 1
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore rimozione dalla coda probe: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def clear_probe_queue(self, server_id: str, scope: Optional[str] = None) -> int:
         session = self._get_session()
@@ -969,10 +978,10 @@ class StorageProbeMixin(_SessionProvider):
             session.commit()
             return int(deleted or 0)
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore svuotamento coda probe: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     # --- Emby Probe History ---
 
@@ -996,10 +1005,10 @@ class StorageProbeMixin(_SessionProvider):
             ).delete(synchronize_session=False)
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore aggiunta allo storico probe: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def get_probe_history(
         self,
@@ -1050,7 +1059,7 @@ class StorageProbeMixin(_SessionProvider):
                 for entry in entries
             ]
         finally:
-            session.close()
+            close_session_safely(session)
 
     def remove_from_probe_history(
         self,
@@ -1070,10 +1079,10 @@ class StorageProbeMixin(_SessionProvider):
             query.delete()
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore rimozione dallo storico probe: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     def clear_probe_history(self, server_id: str, scope: Optional[str] = None) -> None:
         session = self._get_session()
@@ -1085,10 +1094,10 @@ class StorageProbeMixin(_SessionProvider):
             query.delete()
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore svuotamento storico probe: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     # --- Emby Probe Recent Scan Tracking ---
 
@@ -1109,7 +1118,7 @@ class StorageProbeMixin(_SessionProvider):
                 return ts
             return None
         finally:
-            session.close()
+            close_session_safely(session)
 
     def save_recent_scan_timestamp(self, server_id: str, oldest_timestamp: Optional[datetime], library_id: Optional[str] = None) -> None:
         """Save the oldest scanned timestamp for a server/library."""
@@ -1156,10 +1165,10 @@ class StorageProbeMixin(_SessionProvider):
                     entry.last_scan_at = values["last_scan_at"]  # type: ignore[assignment]
             session.commit()
         except SQLAlchemyError as exc:  # pragma: no cover
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore salvataggio timestamp scan recent: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)
 
     # --- Emby Probe Configuration ---
 
@@ -1218,7 +1227,7 @@ class StorageProbeMixin(_SessionProvider):
                 isinstance(server, dict) and str(server.get("id") or "") == server_key
                 for server in (servers if isinstance(servers, list) else [])
             ):
-                session.rollback()
+                rollback_session_safely(session)
                 return False
             entry = session.get(KeyValueEntry, key)
             if entry is None:
@@ -1228,7 +1237,7 @@ class StorageProbeMixin(_SessionProvider):
             session.commit()
             return True
         except SQLAlchemyError as exc:
-            session.rollback()
+            rollback_session_safely(session)
             raise StorageError(f"Errore salvataggio configurazione Probe: {exc}") from exc
         finally:
-            session.close()
+            close_session_safely(session)

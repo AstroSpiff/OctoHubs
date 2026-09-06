@@ -116,6 +116,28 @@ def test_snapshot_merge_rejects_two_different_first_values_for_same_section(tmp_
     engine.dispose()
 
 
+def test_stale_snapshot_cannot_resurrect_a_deleted_section(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'settings-delete-edit.db'}"
+    engine = create_engine(database_url, future=True)
+    AppSettings.__table__.create(engine)
+    storage = DatabaseStorage({"URL": database_url})
+    storage._engine = engine
+    storage._Session = sessionmaker(bind=engine, expire_on_commit=False)
+    storage.save_app_settings({"KEEP": 1, "TRAKT": {"ACCESS_TOKEN": "old"}})
+    stale = storage.load_app_settings()
+    assert stale is not None
+
+    storage.mutate_app_settings(
+        lambda current: {key: value for key, value in current.items() if key != "TRAKT"}
+    )
+    stale["TRAKT"]["ACCESS_TOKEN"] = "new"
+    with pytest.raises(StorageError, match="Conflitto"):
+        storage.save_app_settings(stale)
+
+    assert storage.load_app_settings() == {"KEEP": 1}
+    engine.dispose()
+
+
 def test_concurrent_request_rule_patches_preserve_distinct_request_ids(tmp_path):
     database_url = f"sqlite:///{tmp_path / 'request-rules.db'}"
     engine = create_engine(database_url, future=True)
