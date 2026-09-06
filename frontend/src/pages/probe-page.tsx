@@ -3,6 +3,7 @@ import { useCallback, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
+import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
 import { useConfirmationDialog } from "@/components/ui/use-confirmation-dialog";
 import { WorkspaceHeading } from "@/components/ui/workspace-heading";
 import { WorkspacePage } from "@/components/ui/workspace-layout";
@@ -134,10 +135,8 @@ function ProbePage() {
     dataActions.isRunningBulkAction ||
     dataActions.isRetryingMany;
   const error =
-    live.error ||
     libraries.error ||
     probeConfig.error ||
-    activeDataQuery.error ||
     data.action.error ||
     data.removeQueue.error ||
     data.clearHistory.error ||
@@ -311,6 +310,13 @@ function ProbePage() {
         </div>
       ) : null}
 
+      <QueryStateBoundary
+        error={live.error ? new Error(live.error) : null}
+        hasData={Boolean(live.snapshot)}
+        loadingLabel="Caricamento server Emby..."
+        retrying={live.connection === "loading"}
+        onRetry={live.refresh}
+      >
       <ProbeWorkspace
         scope={scope}
         servers={servers}
@@ -365,17 +371,19 @@ function ProbePage() {
       <ProbeDataPanel
         scope={scope}
         queue={data.queue.data || []}
-        queueLoaded={data.queue.isFetched}
+        queueLoaded={!targetIds.length || data.queue.hasData}
         history={data.history.data || []}
-        historyLoaded={data.history.isFetched}
+        historyLoaded={!targetIds.length || data.history.hasData}
         errors={data.errors.data || []}
-        errorsLoaded={data.errors.isFetched}
+        errorsLoaded={!targetIds.length || data.errors.hasData}
         incomplete={data.incomplete.data || []}
-        incompleteLoaded={data.incomplete.isFetched}
+        incompleteLoaded={!targetIds.length || data.incomplete.hasData}
         serverNames={serverNames}
         loading={
           activeDataQuery.isFetching && !activeDataQuery.isFetchingNextPage
         }
+        dataReady={!targetIds.length || activeDataQuery.hasData}
+        dataError={activeDataQuery.error}
         hasMore={Boolean(activeDataQuery.hasNextPage)}
         loadingMore={activeDataQuery.isFetchingNextPage}
         busy={busy}
@@ -440,6 +448,7 @@ function ProbePage() {
         onRetryMany={(items) => void dataActions.retryMany(items)}
         onBeforeTabChange={confirmDiscardProbeConfigDraft}
       />
+      </QueryStateBoundary>
       </ProbeScopeTabs>
       {confirmation.dialog}
     </WorkspacePage>

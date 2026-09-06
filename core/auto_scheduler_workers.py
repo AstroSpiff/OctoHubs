@@ -56,9 +56,13 @@ class AutoSchedulerWorkerPool:
             self._stop_events[normalized_kind] = stop_event
             try:
                 thread.start()
-            except Exception:
-                self._threads.pop(normalized_kind, None)
-                self._stop_events.pop(normalized_kind, None)
+            except BaseException:
+                # Thread.start() can be interrupted after the native thread was
+                # created. Retain ownership in that ambiguous case so shutdown
+                # and wait can still reach the live worker.
+                if not thread.is_alive():
+                    self._threads.pop(normalized_kind, None)
+                    self._stop_events.pop(normalized_kind, None)
                 raise
             return True
 

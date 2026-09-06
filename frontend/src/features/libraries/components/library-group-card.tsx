@@ -33,7 +33,9 @@ type LibraryGroupCardProps = {
   workflowMode: boolean;
   scanning: boolean;
   scanJobs: ScanJob[];
+  scanJobsReady: boolean;
   scanHistory: LibraryScanHistoryJob[];
+  scanHistoryReady: boolean;
   scanningLibraryKeys?: ReadonlySet<string>;
   libraryScanBusy: boolean;
   onScan: (scanType: ScanType) => void;
@@ -45,7 +47,9 @@ function LibraryGroupCard({
   workflowMode,
   scanning,
   scanJobs,
+  scanJobsReady,
   scanHistory,
+  scanHistoryReady,
   scanningLibraryKeys = new Set(),
   libraryScanBusy,
   onScan,
@@ -63,9 +67,13 @@ function LibraryGroupCard({
       ),
     ),
   ];
-  const groupActivity = libraryGroupScanActivity(group, scanJobs);
-  const latestHistory = latestLibraryGroupHistory(group, scanHistory);
-  const groupBusy = scanning || Boolean(groupActivity);
+  const groupActivity = scanJobsReady
+    ? libraryGroupScanActivity(group, scanJobs)
+    : undefined;
+  const latestHistory = scanHistoryReady
+    ? latestLibraryGroupHistory(group, scanHistory)
+    : undefined;
+  const groupBusy = !scanJobsReady || scanning || Boolean(groupActivity);
   const groupStatus = scanning
     ? "Avvio in corso"
     : groupActivity
@@ -166,7 +174,9 @@ function LibraryGroupCard({
         <ul>
           {group.libraries.map((library) => {
             const libraryKey = `${library.server_id}:${library.library_id || library.id || ""}`;
-            const libraryActivity = libraryEntryScanActivity(library, scanJobs);
+            const libraryActivity = scanJobsReady
+              ? libraryEntryScanActivity(library, scanJobs)
+              : undefined;
             return (
               <li key={libraryKey}>
                 <div className="library-group-library-copy">

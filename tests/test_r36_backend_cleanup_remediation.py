@@ -339,10 +339,9 @@ def test_sqlalchemy_cleanup_receivers_are_canonical_or_semantically_allowlisted(
         ("core/storage/storage_workflows.py", "_discard_workflow_connection", "connection", "invalidate", "direct"): (1, "raw SQLAlchemy Connection"),
         ("core/storage/storage_workflows.py", "_discard_workflow_connection", "connection", "close", "direct"): (1, "raw SQLAlchemy Connection"),
         ("core/storage/storage_workflows.py", "acquire_workflow_lease", "connection", "close", "direct"): (1, "raw SQLAlchemy Connection"),
-        ("core/storage/storage_workflows.py", "release_workflow_lease", "connection", "rollback", "direct"): (1, "raw SQLAlchemy Connection"),
-        ("core/storage/storage_workflows.py", "release_workflow_lease", "connection", "invalidate", "direct"): (2, "raw SQLAlchemy Connection"),
-        ("core/storage/storage_workflows.py", "release_workflow_lease", "connection", "close", "direct"): (1, "raw SQLAlchemy Connection"),
-        ("core/storage/storage_core.py", "advisory_lock", "session", "invalidate", "getattr"): (1, "advisory-lock discard fallback"),
+        ("core/storage/storage_workflows.py", "_rollback_workflow_lease_connection", "connection", "rollback", "direct"): (1, "raw SQLAlchemy Connection"),
+        ("core/storage/storage_workflows.py", "_invalidate_workflow_lease_connection", "connection", "invalidate", "direct"): (1, "raw SQLAlchemy Connection"),
+        ("core/storage/storage_workflows.py", "_close_workflow_lease_connection", "connection", "close", "direct"): (1, "raw SQLAlchemy Connection"),
         # Alembic owns a migration Connection, outside application Session scope.
         ("alembic/env.py", "run_migrations_online", "connection", "rollback", "direct"): (1, "Alembic Connection"),
         # Explicit resource-boundary wrappers.
@@ -363,6 +362,8 @@ def test_sqlalchemy_cleanup_receivers_are_canonical_or_semantically_allowlisted(
         ("search/torrent_download.py", "_open_validated_socket", "sock", "close", "direct"): (1, "socket"),
         ("search/torrent_download.py", "download_torrent", "response", "close", "direct"): (1, "stdlib HTTPResponse"),
         ("search/torrent_download.py", "download_torrent", "connection", "close", "direct"): (1, "stdlib HTTPConnection"),
+        ("emby_runtime/event_bridge_rejection_journal.py", "_write_temporary_payload", "handle", "close", "direct"): (1, "owned journal file"),
+        ("emby_runtime/event_bridge_rejection_journal.py", "_close_os_descriptor", "os", "close", "direct"): (1, "OS file descriptor"),
         ("scripts/container_secret_lock.py", "main", "os", "close", "direct"): (2, "OS file descriptor"),
         # Transport and subscriber lifecycle owners; their surrounding methods
         # provide timeout, exception isolation, or collection ownership.

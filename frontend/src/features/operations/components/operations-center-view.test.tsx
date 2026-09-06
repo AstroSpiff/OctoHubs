@@ -36,6 +36,7 @@ describe("OperationsCenterView", () => {
       root.render(
         <OperationsCenterView
           operations={[]}
+          hasData={false}
           activeCount={0}
           fetching={false}
           error={new Error("Database non disponibile")}
@@ -63,6 +64,7 @@ describe("OperationsCenterView", () => {
       root.render(
         <OperationsCenterView
           operations={[]}
+          hasData={false}
           activeCount={0}
           fetching={false}
           error={new Error("Database non disponibile")}
@@ -117,6 +119,7 @@ describe("OperationsCenterView", () => {
         <WorkspaceCapabilitiesProvider canMutate={false}>
           <OperationsCenterView
             operations={[running, base]}
+            hasData
             activeCount={1}
             fetching={false}
             onRefresh={vi.fn()}
@@ -159,6 +162,7 @@ describe("OperationsCenterView", () => {
         <WorkspaceCapabilitiesProvider canMutate>
           <OperationsCenterView
             operations={[operation, completed]}
+            hasData
             activeCount={1}
             fetching={false}
             onRefresh={vi.fn()}

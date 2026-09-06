@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 import unittest
 
 
@@ -125,17 +126,36 @@ class JustWatchManagerTests(unittest.TestCase):
             ],
         )
 
-    def test_justwatch_transport_applies_default_connect_and_read_timeout(self):
+    def test_justwatch_graphql_transport_is_streamed_and_bounded(self):
         from unittest.mock import patch
 
-        from core.justwatch_manager import JW_HTTP_TIMEOUT, _TimeoutSession
+        from core.justwatch_manager import JustWatchManager
 
+        manager = object.__new__(JustWatchManager)
+        manager._rate_limit = lambda: None
+        manager._graphql_headers = lambda: {"Content-Type": "application/json"}
         sentinel = object()
-        with patch("requests.Session.request", return_value=sentinel) as request:
-            response = _TimeoutSession().get("https://apis.justwatch.com/test")
+        payload = {"data": {"node": None}}
+        with patch("core.justwatch_manager.requests.post", return_value=sentinel) as request, patch(
+            "core.justwatch_manager.read_bounded_json_response",
+            return_value=payload,
+        ) as bounded_reader:
+            response = manager._graphql_post({"query": "query Test { __typename }"})
 
-        self.assertIs(response, sentinel)
-        self.assertEqual(request.call_args.kwargs["timeout"], JW_HTTP_TIMEOUT)
+        self.assertEqual(response, payload)
+        self.assertIs(request.call_args.kwargs["stream"], True)
+        self.assertEqual(request.call_args.kwargs["timeout"], 20)
+        bounded_reader.assert_called_once_with(sentinel)
+
+    def test_legacy_justwatch_dependency_and_rest_branch_are_absent(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "core/justwatch_manager.py").read_text(encoding="utf-8")
+        runtime_requirements = (root / "requirements.in").read_text(encoding="utf-8").lower()
+
+        self.assertNotIn("from justwatch import", source)
+        self.assertNotIn("self.jw", source)
+        self.assertNotIn("_TimeoutSession", source)
+        self.assertNotIn("justwatch==", runtime_requirements)
 
 
 if __name__ == "__main__":

@@ -1,31 +1,13 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WorkspaceCapabilityBoundary } from "@/components/app-shell";
 import { EmbyLivePage } from "@/pages/emby-live-page";
 
+const liveState = vi.hoisted(() => ({ current: {} as Record<string, unknown> }));
 
 vi.mock("@/features/emby-live/use-emby-live", () => ({
-  useEmbyLive: () => ({
-    connection: "connected",
-    error: null,
-    refresh: () => undefined,
-    refreshServer: () => Promise.resolve(),
-    snapshot: {
-      success: true,
-      servers: {
-        green: {
-          server: { id: "green", name: "Green", enabled: true },
-          status: { ok: true, version: "4.8.0" },
-          running_tasks: [],
-          tasks_error: null,
-          streams: [],
-          streams_error: null,
-        },
-      },
-    },
-    updatedAt: 0,
-  }),
+  useEmbyLive: () => liveState.current,
 }));
 
 vi.mock("@/features/emby-live/use-live-server-actions", () => ({
@@ -56,6 +38,29 @@ function renderPage(accessState: "viewer" | "editor") {
 }
 
 describe("EmbyLivePage capabilities", () => {
+  beforeEach(() => {
+    liveState.current = {
+      connection: "connected",
+      error: null,
+      refresh: vi.fn(),
+      refreshServer: vi.fn().mockResolvedValue(undefined),
+      snapshot: {
+        success: true,
+        servers: {
+          green: {
+            server: { id: "green", name: "Green", enabled: true },
+            status: { ok: true, version: "4.8.0" },
+            running_tasks: [],
+            tasks_error: null,
+            streams: [],
+            streams_error: null,
+          },
+        },
+      },
+      updatedAt: 0,
+    };
+  });
+
   it("keeps refresh visible but hides every restart action from viewers", () => {
     const markup = renderPage("viewer");
 
@@ -72,5 +77,22 @@ describe("EmbyLivePage capabilities", () => {
     expect(markup).toContain("Riavvia tutti");
     expect(markup).toContain("Riavvia server");
     expect(markup).toContain("emby-live-page-restart-action");
+  });
+
+  it("does not report zero configured servers before the first snapshot", () => {
+    liveState.current = {
+      connection: "loading",
+      error: null,
+      refresh: vi.fn(),
+      refreshServer: vi.fn().mockResolvedValue(undefined),
+      snapshot: null,
+      updatedAt: 0,
+    };
+
+    const markup = renderPage("editor");
+
+    expect(markup).toContain("Caricamento stato Emby Live");
+    expect(markup).not.toContain("Nessun server Emby configurato");
+    expect(markup).not.toContain("Server Emby</h2>");
   });
 });

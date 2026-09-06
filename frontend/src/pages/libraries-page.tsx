@@ -66,17 +66,20 @@ function LibrariesPage() {
     [libraries.groups.data],
   );
   const orderReady =
-    libraries.groups.isSuccess && libraries.actionTargets.isSuccess;
+    Boolean(libraries.groups.data) && Boolean(libraries.actionTargets.data);
+  const associationsReady = Boolean(
+    libraries.groups.data && libraries.associations.data,
+  );
+  const activeJobsReady = Boolean(libraries.activeJobs.data);
+  const activeScansReady = Boolean(libraries.activeScans.data);
+  const historyReady = Boolean(libraries.history.data);
+  const actionTargetsReady = Boolean(libraries.actionTargets.data);
   const visible = useMemo(
     () => visibleLibraryGroups(groups, filters),
     [groups, filters],
   );
   const error =
-    libraries.activeJobs.error ||
-    libraries.activeScans.error ||
-    libraries.history.error ||
     libraries.associations.error ||
-    libraries.actionTargets.error ||
     libraries.saveAssociations.error ||
     libraries.saveGroupOrder.error ||
     libraries.saveServerOrder.error ||
@@ -94,6 +97,7 @@ function LibrariesPage() {
     action: "refresh_libraries" | "refresh_metadata",
     serverId?: string,
   ) {
+    if (!actionTargetsReady || !activeScansReady) return;
     if (workflowMode && action === "refresh_libraries") {
       libraries.workflow.mutate(serverId ? { server_id: serverId } : {});
       return;
@@ -113,6 +117,7 @@ function LibrariesPage() {
     group: LibraryGroup,
     scanType: "content" | "metadata",
   ) {
+    if (!activeJobsReady) return;
     if (!workflowMode || scanType === "metadata") {
       libraries.scan.mutate({ group, scanType });
       return;
@@ -133,6 +138,7 @@ function LibrariesPage() {
     library: LibraryEntry,
     scanType: "content" | "metadata",
   ) {
+    if (!activeJobsReady) return;
     if (!workflowMode || scanType === "metadata") {
       libraries.libraryScan.mutate({ library, scanType });
       return;
@@ -149,6 +155,7 @@ function LibrariesPage() {
   }
 
   async function resetHistory() {
+    if (!historyReady) return;
     if (!await confirmation.confirm({
       title: "Reimposta storico librerie",
       description: "Azzerare lo stato tracciato di scansioni e metadata? Le nuove operazioni ripartiranno senza storico.",
@@ -159,6 +166,7 @@ function LibrariesPage() {
   }
 
   async function deleteHistoryJob(job: LibraryScanHistoryJob) {
+    if (!historyReady) return;
     const label = job.group_name || job.server_id || "questa operazione";
     if (
       !(await confirmation.confirm({
@@ -214,6 +222,7 @@ function LibrariesPage() {
               variant="secondary"
               size="compact"
               onClick={() => setAssociationsOpen(true)}
+              disabled={!associationsReady}
             >
               <FolderCog size={16} aria-hidden="true" />
               Associazioni
@@ -299,34 +308,54 @@ function LibrariesPage() {
               setFilters((current) => ({ ...current, ...updates }))
             }
           />
-          <LibrariesBoard
-            groups={visible}
-            workflowMode={workflowMode}
-            scanningIds={libraries.groupScanOperations.pendingKeys}
-            scanJobs={libraries.activeJobs.data?.jobs || []}
-            scanHistory={libraries.history.data?.jobs || []}
-            scanningLibraryKeys={libraries.libraryScanOperations.pendingKeys}
-            libraryScanBusy={
-              libraries.libraryScanOperations.pendingKeys.size > 0
-            }
-            onScan={startGroupScan}
-            onScanLibrary={startSingleLibraryScan}
-          />
+          <QueryStateBoundary
+            error={libraries.activeJobs.error}
+            hasData={activeJobsReady}
+            loadingLabel="Caricamento attività di scansione..."
+            retrying={libraries.activeJobs.isFetching}
+            onRetry={() => void libraries.activeJobs.refetch()}
+          >
+            <LibrariesBoard
+              groups={visible}
+              workflowMode={workflowMode}
+              scanningIds={libraries.groupScanOperations.pendingKeys}
+              scanJobs={libraries.activeJobs.data?.jobs || []}
+              scanJobsReady={activeJobsReady}
+              scanHistory={libraries.history.data?.jobs || []}
+              scanHistoryReady={historyReady}
+              scanningLibraryKeys={libraries.libraryScanOperations.pendingKeys}
+              libraryScanBusy={
+                libraries.libraryScanOperations.pendingKeys.size > 0
+              }
+              onScan={startGroupScan}
+              onScanLibrary={startSingleLibraryScan}
+            />
+          </QueryStateBoundary>
         </QueryStateBoundary>
 
         <LibraryMaintenance
           servers={libraries.actionTargets.data?.servers || []}
+          serversReady={actionTargetsReady}
+          serversError={libraries.actionTargets.error}
+          serversRetrying={libraries.actionTargets.isFetching}
           activeScans={libraries.activeScans.data?.active_scans || []}
+          activeScansReady={activeScansReady}
+          activeScansError={libraries.activeScans.error}
+          activeScansRetrying={libraries.activeScans.isFetching}
           busy={
             libraries.action.isPending ? libraries.action.variables : undefined
           }
           workflowBusy={libraries.workflow.isPending}
           workflowMode={workflowMode}
           onWorkflowModeChange={setWorkflowMode}
+          onRetryServers={() => void libraries.actionTargets.refetch()}
+          onRetryActiveScans={() => void libraries.activeScans.refetch()}
           onRun={runMaintenance}
         />
         <LibraryScanHistory
           jobs={libraries.history.data?.jobs || []}
+          hasData={historyReady}
+          error={libraries.history.error}
           loading={libraries.history.isFetching}
           resetting={libraries.resetHistory.isPending}
           deletingIds={libraries.historyDeleteOperations.pendingKeys}
@@ -338,10 +367,16 @@ function LibrariesPage() {
       </WorkspaceSection>
       <LibraryAssociationDialog
         open={associationsOpen}
-        ready={libraries.groups.isSuccess && libraries.associations.isSuccess}
+        ready={associationsReady}
         groups={groups}
         associations={libraries.associations.data?.associations || []}
         saving={libraries.saveAssociations.isPending}
+        loadError={libraries.groups.error || libraries.associations.error}
+        retrying={libraries.groups.isFetching || libraries.associations.isFetching}
+        onRetry={() => {
+          void libraries.groups.refetch();
+          void libraries.associations.refetch();
+        }}
         onDirtyChange={updateAssociationDirty}
         onClose={() => setAssociationsOpen(false)}
         onSave={saveAssociations}

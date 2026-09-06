@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
+import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
 import {
   getTmdbTvDetails,
   requestFromJellyseerr,
@@ -315,46 +316,42 @@ function IndependentSearchForm({
         {selected?.media_type === "tv" ? (
           <fieldset className="research-seasons">
             <legend>Stagioni</legend>
-            {tvDetails.isLoading ? (
-              <span>
-                <LoaderCircle size={14} className="animate-spin" /> Caricamento
-                stagioni...
-              </span>
-            ) : tvDetails.isError ? (
-              <span className="inline-alert inline-alert--error" role="alert">
-                {tvDetails.error.message}
-                <Button type="button" variant="ghost" size="compact" onClick={() => void tvDetails.refetch()}>
-                  Riprova
-                </Button>
-              </span>
-            ) : availableSeasons.length ? (
-              availableSeasons.map((season) => (
-                <label key={season.season_number}>
-                  <input
-                    type="checkbox"
-                    checked={seasons.includes(season.season_number)}
-                    onChange={(event) => {
-                      initializedSeasonSelectionRef.current =
-                        seasonSelectionKey(selected);
-                      setSeasons((current) =>
-                        event.target.checked
-                          ? [...current, season.season_number]
-                          : current.filter(
-                              (number) => number !== season.season_number,
-                            ),
-                      );
-                    }}
-                  />
-                  {season.season_number === 0
-                    ? "Speciali"
-                    : `S${String(season.season_number).padStart(2, "0")}`}
-                </label>
-              ))
-            ) : (
-              <span className="inline-alert inline-alert--error" role="alert">
-                Nessuna stagione disponibile per questa serie.
-              </span>
-            )}
+            <QueryStateBoundary
+              error={tvDetails.error}
+              hasData={Boolean(tvDetails.data)}
+              loadingLabel="Caricamento stagioni..."
+              retrying={tvDetails.isFetching}
+              onRetry={() => void tvDetails.refetch()}
+            >
+              {availableSeasons.length ? (
+                availableSeasons.map((season) => (
+                  <label key={season.season_number}>
+                    <input
+                      type="checkbox"
+                      checked={seasons.includes(season.season_number)}
+                      onChange={(event) => {
+                        initializedSeasonSelectionRef.current =
+                          seasonSelectionKey(selected);
+                        setSeasons((current) =>
+                          event.target.checked
+                            ? [...current, season.season_number]
+                            : current.filter(
+                                (number) => number !== season.season_number,
+                              ),
+                        );
+                      }}
+                    />
+                    {season.season_number === 0
+                      ? "Speciali"
+                      : `S${String(season.season_number).padStart(2, "0")}`}
+                  </label>
+                ))
+              ) : (
+                <span className="inline-alert inline-alert--error" role="alert">
+                  Nessuna stagione disponibile per questa serie.
+                </span>
+              )}
+            </QueryStateBoundary>
           </fieldset>
         ) : null}
         <div className="research-options-row">

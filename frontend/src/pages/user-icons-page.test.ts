@@ -34,5 +34,7 @@ describe("user icons route", () => {
     expect(markup).toContain('tabindex="-1"');
     expect(markup).toContain('workspace-heading--subsection');
     expect(markup).toContain('id="icon-management-title"');
+    expect(markup).toContain("Caricamento profili icona");
+    expect(markup).not.toContain("Non ci sono ancora profili icona");
   });
 });

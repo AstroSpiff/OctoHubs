@@ -217,8 +217,15 @@ class SchedulerOccurrenceLease:
         )
 
     def start(self) -> None:
-        self._thread.start()
-        self._started = True
+        try:
+            self._thread.start()
+        except BaseException:
+            # Preserve join/stop ownership if an asynchronous signal arrived
+            # after the native renewal thread had already been created.
+            self._started = self._thread.is_alive()
+            raise
+        else:
+            self._started = True
 
     def finish(self, succeeded: bool) -> bool:
         """Stop renewal and persist the terminal outcome exactly once."""

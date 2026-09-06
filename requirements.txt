@@ -574,9 +574,6 @@ jinja2==3.1.6 \
     --hash=sha256:0137fb05990d35f1275a587e9aee6d56da821fc83491a0fb838183be43f66d6d \
     --hash=sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67
     # via -r requirements.in
-justwatch==0.5.1 \
-    --hash=sha256:5072aeb320c4066292e94667d758c5c39bb8dbc059d68e536391d7c62804ab18
-    # via -r requirements.in
 mako==1.4.1 \
     --hash=sha256:a359d9a94a541213958742b2698d0a7757bb83551767bc468a74b9905aba9617 \
     --hash=sha256:d7904710b662996425a21627710c4777c45053146942cf8a7aebf757c92b8c27
@@ -1051,9 +1048,7 @@ pyyaml==6.0.3 \
 requests==2.34.2 \
     --hash=sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0 \
     --hash=sha256:f288924cae4e29463698d6d60bc6a4da69c89185ad1e0bcc4104f584e960b9ed
-    # via
-    #   -r requirements.in
-    #   justwatch
+    # via -r requirements.in
 sqlalchemy==2.0.45 \
     --hash=sha256:0209d9753671b0da74da2cfbb9ecf9c02f72a759e4b018b3ab35f244c91842c7 \
     --hash=sha256:040f6f0545b3b7da6b9317fc3e922c9a98fc7243b2a1b39f78390fc0942f7826 \

@@ -386,7 +386,25 @@ def _unbounded_request_calls(root: Path) -> list[str]:
             receiver = node.func.value
             direct = isinstance(receiver, ast.Name) and receiver.id == "requests"
             session = isinstance(receiver, ast.Name) and receiver.id in sessions
-            if (direct or session) and node.func.attr in verbs and not _has_literal_stream_true(node):
+            # Third-party clients commonly expose their Requests transport as
+            # ``client.requests``. Cover that indirection without confusing
+            # Starlette/SQLAlchemy ``request.session`` objects with HTTP clients.
+            wrapper_session = isinstance(receiver, ast.Attribute) and receiver.attr == "requests"
+            if (direct or session or wrapper_session) and node.func.attr in verbs and not _has_literal_stream_true(node):
+                findings.append(f"{path.relative_to(root)}:{node.lineno}")
+    return findings
+
+
+def _legacy_network_wrappers(root: Path) -> list[str]:
+    findings: list[str] = []
+    for path in _application_python_files(root):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "justwatch":
+                findings.append(f"{path.relative_to(root)}:{node.lineno}")
+            if isinstance(node, ast.Import) and any(
+                alias.name.split(".")[0] == "justwatch" for alias in node.names
+            ):
                 findings.append(f"{path.relative_to(root)}:{node.lineno}")
     return findings
 
@@ -411,6 +429,11 @@ def test_repository_has_no_direct_response_materialization():
 def test_repository_external_requests_are_streamed():
     root = Path(__file__).resolve().parents[1]
     assert _unbounded_request_calls(root) == []
+
+
+def test_repository_has_no_legacy_unbounded_network_wrappers():
+    root = Path(__file__).resolve().parents[1]
+    assert _legacy_network_wrappers(root) == []
 
 
 def test_repository_storage_uses_safe_session_cleanup():

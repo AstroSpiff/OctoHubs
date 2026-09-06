@@ -14,8 +14,11 @@ gestite da OctoHubs.
 - PostgreSQL contiene tutte le impostazioni, gli utenti, le sessioni, le
   preferenze, i token API e l'audit log.
 - La UI autenticata gestisce integrazioni, server Emby, regole e job.
-- `/config` contiene soltanto secret generati dall'applicazione; se necessario
-  usa `OCTOHUBS_CONFIG_DIR` per scegliere un'altra directory persistente.
+- `/config` contiene secret generati dall'applicazione e file privati di
+  coordinamento. Il journal interno dei rifiuti Event Bridge conserva digest
+  delle credenziali, mai le credenziali in chiaro. Se necessario usa
+  `OCTOHUBS_CONFIG_DIR` per scegliere un'altra directory persistente; non serve
+  una configurazione separata per il journal.
 
 ## Workflow modifica
 

@@ -106,7 +106,7 @@ Config fields:
 - `JUSTWATCH.LOCALE` (example: `it_IT`)
 
 Notes:
-- Requires the `JustWatch` Python package.
+- Uses OctoHubs' maintained GraphQL client; no additional Python package is required.
 - Uses the mandatory application PostgreSQL database for its cache; no separate
   database switch is required.
 - Cache policy: available episodes are not rechecked; unavailable episodes are rechecked every 24h.
@@ -156,6 +156,15 @@ Manual steps:
 - Repeat **Connect** to rotate a credential. The plaintext is never shown or stored
   by OctoHubs; only its hash is retained.
 
+Rejected rotations are coordinated across restarts by an internal, atomically
+written journal in `OCTOHUBS_CONFIG_DIR` (`.event-bridge-rejections.json`). The
+journal contains only per-server credential digests, is created with private
+permissions, and requires no additional configuration. Keep the existing config
+directory persistent and writable. If the journal becomes unreadable, pending
+credentials fail closed. Restore directory access and retry **Connect**: a durable
+PostgreSQL rejection marker permits the retry, and OctoHubs removes an unreadable
+journal only after PostgreSQL proves that no pending generation remains.
+
 The plugin sends `X-OctoHubs-Server-Id` and `X-Webhook-Secret` automatically. Generic
 curl calls and the former shared `WEBHOOK_SECRET` are intentionally unsupported.
 
@@ -169,4 +178,4 @@ message frequency is abnormal.
 - 413 from webhooks: reduce raw payload data or batches sent by an unofficial client.
 - 429 from webhooks: the server is temporarily exceeding its Event Bridge quota.
 - Search not working: verify provider URL/API key and `SEARCH_RULES` flags.
-- JustWatch not working: verify package install and DB enabled.
+- JustWatch not working: verify the configured locale, DB availability, and outbound HTTPS connectivity.

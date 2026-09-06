@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
+import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
 import {
   ProbeBlacklistPanel,
   ProbeHistoryPanel,
@@ -34,6 +35,8 @@ type DataPanelProps = {
   incompleteLoaded: boolean;
   serverNames: Record<string, string>;
   loading: boolean;
+  dataReady: boolean;
+  dataError?: Error | null;
   hasMore: boolean;
   loadingMore: boolean;
   busy: boolean;
@@ -72,6 +75,8 @@ function ProbeDataPanel({
   incompleteLoaded,
   serverNames,
   loading,
+  dataReady,
+  dataError,
   hasMore,
   loadingMore,
   busy,
@@ -174,6 +179,14 @@ function ProbeDataPanel({
         aria-labelledby={`probe-data-tab-${tab}`}
         tabIndex={0}
       >
+      {tab === "settings" ? settings : (
+      <QueryStateBoundary
+        error={dataError}
+        hasData={dataReady}
+        loadingLabel={`Caricamento dati ${label}...`}
+        retrying={loading}
+        onRetry={onRefresh}
+      >
       {tab === "queue" ? (
         <ProbeQueuePanel
           items={queue}
@@ -224,8 +237,7 @@ function ProbeDataPanel({
           onRetry={onRetryBlacklist}
         />
       ) : null}
-      {tab === "settings" ? settings : null}
-      {tab !== "settings" && hasMore ? (
+      {hasMore ? (
         <div className="probe-data-pagination">
           <Button
             type="button"
@@ -238,6 +250,8 @@ function ProbeDataPanel({
           </Button>
         </div>
       ) : null}
+      </QueryStateBoundary>
+      )}
       </div>
     </section>
   );

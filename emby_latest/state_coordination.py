@@ -23,17 +23,27 @@ def latest_state_update_guard(storage: Any | None) -> Iterator[None]:
             return
 
         guard_session: Any = get_session()
+        primary_error: BaseException | None = None
         try:
             bind = guard_session.get_bind()
             if getattr(getattr(bind, "dialect", None), "name", "") == "postgresql":
                 lock_latest_state(guard_session)
             yield
             guard_session.commit()
-        except BaseException:
-            rollback_session_safely(guard_session, context="Latest state guard")
+        except BaseException as exc:
+            primary_error = exc
+            rollback_session_safely(
+                guard_session,
+                context="Latest state guard",
+                primary_error=primary_error,
+            )
             raise
         finally:
-            close_session_safely(guard_session, context="Latest state guard")
+            close_session_safely(
+                guard_session,
+                context="Latest state guard",
+                primary_error=primary_error,
+            )
 
 
 __all__ = ["latest_state_update_guard"]

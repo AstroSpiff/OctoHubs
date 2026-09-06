@@ -3,6 +3,7 @@ import { Copy, Download, Save, Trash2, Upload } from "@/components/ui/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
+import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
 import { deleteSettingsPreset, duplicateSettingsPreset, getSettingsPreset, getSettingsPresets, saveSettingsPreset } from "@/features/user-settings/api";
 import { isSettingsPresetRealtimeEvent } from "@/features/user-settings/user-settings-realtime";
 import type { SettingsPreset, UserSettings } from "@/features/user-settings/types";
@@ -156,11 +157,13 @@ function SettingsPresetControls({
           <small>Salva e riusa combinazioni di campi e accessi librerie.</small>
         </div>
       </header>
-      {presets.error ? (
-        <p className="users-dialog-error" role="alert">
-          {presets.error.message}
-        </p>
-      ) : null}
+      <QueryStateBoundary
+        error={presets.error}
+        hasData={Boolean(presets.data)}
+        loadingLabel="Caricamento preset impostazioni..."
+        retrying={presets.isFetching}
+        onRetry={() => void presets.refetch()}
+      >
       {mutationError ? (
         <p className="users-dialog-error" role="alert">
           {mutationError}
@@ -271,6 +274,7 @@ function SettingsPresetControls({
           </Button>
         </div>
       ) : null}
+      </QueryStateBoundary>
     </section>
   );
 }

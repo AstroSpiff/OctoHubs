@@ -1,6 +1,7 @@
 import { RefreshCw, RotateCw } from "@/components/ui/icons";
 
 import { Button } from "@/components/ui/button";
+import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
 import { WorkspaceHeading } from "@/components/ui/workspace-heading";
 import { WorkspacePage } from "@/components/ui/workspace-layout";
 import { useConfirmationDialog } from "@/components/ui/use-confirmation-dialog";
@@ -61,34 +62,37 @@ function EmbyLivePage() {
           </Button>
         </>}
       />
-      {live.error ? (
-        <div className="inline-alert inline-alert--error" role="alert">
-          {live.error}
-        </div>
-      ) : null}
       {serverActions.restart.data ? <LiveActionResult result={serverActions.restart.data} /> : null}
       {serverActions.restart.error ? <div className="inline-alert inline-alert--error" role="alert">{serverActions.restart.error.message}</div> : null}
       {serverActions.taskNotice ? <div className="inline-alert inline-alert--success" role="status">{serverActions.taskNotice}</div> : null}
-      <LiveOverview
-        servers={servers}
-        connection={live.connection}
-        updatedAt={live.updatedAt}
-      />
-      <LiveServerList
-        servers={servers}
-        controls={{
-          refreshingServerIds: serverActions.refreshingServerIds,
-          refreshErrors: serverActions.refreshErrors,
-          restartingServerId,
-          restartDisabled: serverActions.restart.isPending,
-          stoppingTaskKeys: serverActions.stoppingTaskKeys,
-          taskStopErrors: serverActions.taskStopErrors,
-          onRefresh: (serverId) => void serverActions.requestRefresh(serverId),
-          onRestart: (serverId) => void serverActions.requestRestart(serverId),
-          onStopTask: (serverId, taskId, taskName) => void serverActions.requestStopTask(serverId, taskId, taskName),
-        }}
-      />
-      <LiveStreamList servers={servers} />
+      <QueryStateBoundary
+        error={live.error ? new Error(live.error) : null}
+        hasData={Boolean(live.snapshot)}
+        loadingLabel="Caricamento stato Emby Live..."
+        retrying={live.connection === "loading"}
+        onRetry={live.refresh}
+      >
+        <LiveOverview
+          servers={servers}
+          connection={live.connection}
+          updatedAt={live.updatedAt}
+        />
+        <LiveServerList
+          servers={servers}
+          controls={{
+            refreshingServerIds: serverActions.refreshingServerIds,
+            refreshErrors: serverActions.refreshErrors,
+            restartingServerId,
+            restartDisabled: serverActions.restart.isPending,
+            stoppingTaskKeys: serverActions.stoppingTaskKeys,
+            taskStopErrors: serverActions.taskStopErrors,
+            onRefresh: (serverId) => void serverActions.requestRefresh(serverId),
+            onRestart: (serverId) => void serverActions.requestRestart(serverId),
+            onStopTask: (serverId, taskId, taskName) => void serverActions.requestStopTask(serverId, taskId, taskName),
+          }}
+        />
+        <LiveStreamList servers={servers} />
+      </QueryStateBoundary>
       {confirmation.dialog}
     </WorkspacePage>
   );

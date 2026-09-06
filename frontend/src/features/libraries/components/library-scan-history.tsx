@@ -2,6 +2,7 @@ import { Clock3, RefreshCw, RotateCcw, Trash2 } from "@/components/ui/icons";
 
 import { StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
 import { WorkspaceHeading } from "@/components/ui/workspace-heading";
 import {
   formatLibraryDate,
@@ -15,6 +16,8 @@ import type { LibraryScanHistoryJob } from "@/features/libraries/types";
 
 type LibraryScanHistoryProps = {
   jobs: LibraryScanHistoryJob[];
+  hasData: boolean;
+  error?: Error | null;
   loading: boolean;
   resetting: boolean;
   deletingIds?: ReadonlySet<string>;
@@ -26,6 +29,8 @@ type LibraryScanHistoryProps = {
 
 function LibraryScanHistory({
   jobs,
+  hasData,
+  error,
   loading,
   resetting,
   deletingIds = new Set(),
@@ -62,28 +67,36 @@ function LibraryScanHistory({
               title="Azzera stato scansioni e metadata"
               aria-label="Azzera stato scansioni e metadata"
               onClick={onReset}
-              disabled={resetting}
+              disabled={resetting || !hasData}
             >
               <RotateCcw size={16} aria-hidden="true" />
             </Button>
           </div>
         }
       />
-      {!jobs.length && !loading ? (
-        <p className="libraries-empty-line">Nessuna scansione registrata.</p>
-      ) : (
-        <ul>
-          {jobs.slice(0, 20).map((job) => (
-            <LibraryScanHistoryItem
-              key={job.id}
-              job={job}
-              deleting={deletingIds.has(job.id)}
-              deleteError={deleteErrors[job.id]}
-              onDelete={onDelete}
-            />
-          ))}
-        </ul>
-      )}
+      <QueryStateBoundary
+        error={error}
+        hasData={hasData}
+        loadingLabel="Caricamento cronologia scansioni..."
+        retrying={loading}
+        onRetry={onRefresh}
+      >
+        {!jobs.length ? (
+          <p className="libraries-empty-line">Nessuna scansione registrata.</p>
+        ) : (
+          <ul>
+            {jobs.slice(0, 20).map((job) => (
+              <LibraryScanHistoryItem
+                key={job.id}
+                job={job}
+                deleting={deletingIds.has(job.id)}
+                deleteError={deleteErrors[job.id]}
+                onDelete={onDelete}
+              />
+            ))}
+          </ul>
+        )}
+      </QueryStateBoundary>
     </section>
   );
 }

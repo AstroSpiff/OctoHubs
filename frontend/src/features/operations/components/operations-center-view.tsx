@@ -33,6 +33,7 @@ import { cn } from "@/lib/utils";
 
 type OperationsCenterViewProps = {
   operations: Operation[];
+  hasData: boolean;
   activeCount: number;
   fetching: boolean;
   clearing?: boolean;
@@ -48,6 +49,7 @@ type OperationsCenterViewProps = {
 
 function OperationsCenterView({
   operations,
+  hasData,
   activeCount,
   fetching,
   clearing = false,
@@ -79,6 +81,7 @@ function OperationsCenterView({
     previousErrorRef.current = error;
   }, [error, operations.length]);
 
+  if (!hasData && !error) return null;
   if (!operations.length && !error) return null;
   const panelOpen = open;
 

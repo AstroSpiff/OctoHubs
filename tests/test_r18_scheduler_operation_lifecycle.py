@@ -63,6 +63,58 @@ def test_scheduler_worker_remains_lifecycle_owned_until_completion_callback_retu
     assert pool.is_running("sync") is False
 
 
+def test_scheduler_worker_start_signal_resets_published_registry(monkeypatch):
+    pool = AutoSchedulerWorkerPool()
+    primary = KeyboardInterrupt("scheduler worker start interrupted")
+    monkeypatch.setattr(
+        threading.Thread,
+        "start",
+        lambda _thread: (_ for _ in ()).throw(primary),
+    )
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        pool.start("sync", lambda _stop_event: True)
+
+    assert caught.value is primary
+    assert pool.is_running("sync") is False
+    assert pool.wait(0) is True
+
+
+def test_occurrence_lease_start_signal_releases_published_claim(monkeypatch):
+    storage = _AtomicStorage()
+    scheduled_for = datetime.now(timezone.utc)
+    entry = {"enabled": True, "mode": "fixed", "times": ["12:00"]}
+    scheduler = AutoScheduler(
+        occurrence_coordinator=SchedulerOccurrenceCoordinator(
+            lambda: storage,
+            owner_id="signal-owner",
+        )
+    )
+    primary = KeyboardInterrupt("occurrence renewal start interrupted")
+    monkeypatch.setattr(
+        SchedulerOccurrenceLease,
+        "start",
+        lambda _lease: (_ for _ in ()).throw(primary),
+    )
+
+    try:
+        with pytest.raises(KeyboardInterrupt) as caught:
+            scheduler._execute_scheduled_occurrence(
+                "sync",
+                {},
+                entry,
+                scheduled_for,
+            )
+
+        assert caught.value is primary
+        assert storage.values["auto_scheduler_occurrence:v1:sync"]["status"] == "released"
+        with scheduler._lock:
+            assert "sync" not in scheduler._occurrence_runs
+    finally:
+        scheduler.stop()
+        assert scheduler.wait(1.0)
+
+
 def test_failed_scheduler_worker_releases_and_retries_same_occurrence():
     storage = _AtomicStorage()
     scheduled_for = datetime.now(timezone.utc)

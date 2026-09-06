@@ -16,6 +16,7 @@ from core.database_migrations import (
 from core.database_timeouts import postgres_engine_options
 from core.log_sanitization import format_exception_for_log
 from core.storage.storage_models import create_engine, sessionmaker, text
+from core.sqlalchemy_session_cleanup import invalidate_session_safely
 from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 
 
@@ -103,29 +104,29 @@ class StorageCoreMixin:
                         text("SELECT pg_advisory_unlock(1868787060, hashtext(:key))"),
                         {"key": key},
                     )
-            except Exception as unlock_error:
-                try:
-                    try:
-                        rollback_session_safely(session)
-                    except Exception:
-                        pass
-                    invalidate = getattr(session, "invalidate", None)
-                    if callable(invalidate):
-                        try:
-                            invalidate()
-                        except Exception:
-                            pass
-                finally:
-                    if body_error is not None:
-                        logger.warning(
-                            "Advisory lock %s cleanup failed while propagating the primary error: %s",
-                            key,
-                            format_exception_for_log(unlock_error),
-                        )
-                    else:
-                        raise
-            finally:
-                close_session_safely(session)
+            except BaseException as unlock_error:
+                cleanup_error = body_error if body_error is not None else unlock_error
+                rollback_session_safely(
+                    session,
+                    context="advisory-lock release",
+                    primary_error=cleanup_error,
+                )
+                invalidate_session_safely(
+                    session,
+                    context="advisory-lock release",
+                    primary_error=cleanup_error,
+                )
+                close_session_safely(session, primary_error=cleanup_error)
+                if body_error is not None:
+                    logger.warning(
+                        "Advisory lock %s cleanup failed while propagating the primary error: %s",
+                        key,
+                        format_exception_for_log(unlock_error),
+                    )
+                else:
+                    raise
+            else:
+                close_session_safely(session, primary_error=body_error)
 
     def close(self) -> None:
         """Dispose the shared engine; it will be recreated lazily if needed."""

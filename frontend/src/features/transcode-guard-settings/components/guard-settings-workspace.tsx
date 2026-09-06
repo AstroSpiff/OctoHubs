@@ -99,7 +99,7 @@ function GuardSettingsWorkspace({ embedded = true }: { embedded?: boolean }) {
       {validationError ? <div className="inline-alert inline-alert--error" role="alert">{validationError}</div> : null}
       {notice ? <div className="inline-alert inline-alert--success" role="status">{notice}</div> : null}
       {settings.isLoading || !draft ? <div className="loading-state">Caricamento regole Transcode Guard...</div> : null}
-      {draft ? (
+      {settings.data && draft ? (
         <WriteAction>
           <fieldset className="guard-settings-editable" disabled={save.isPending}>
             <GuardSettingsGlobal settings={draft} onChange={updateSettings} />
@@ -117,7 +117,7 @@ function GuardSettingsWorkspace({ embedded = true }: { embedded?: boolean }) {
               <GuardRuleEditor
                 rule={selectedRule}
                 index={selectedIndex}
-                servers={settings.data?.servers || []}
+                servers={settings.data.servers}
                 onChange={(changes) => selectedRule && updateRule(selectedRule.id, changes)}
               />
             </div>

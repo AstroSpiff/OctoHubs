@@ -17,7 +17,6 @@ from core.integrations import (
     _get_justwatch_manager,
     _justwatch_enabled,
 )
-from core.justwatch_manager import is_justwatch_available
 from core.storage import StorageError
 from emby_runtime.api_clients import _ping_api_service, _ping_jellyseerr, _ping_prowlarr, _ping_qbittorrent
 from search.indexers import _jackett_configured, _prowlarr_configured, _search_rules
@@ -107,8 +106,6 @@ def _ping_justwatch(config):
     settings = _merge_justwatch_settings((config or {}).get("JUSTWATCH"))
     if not _justwatch_enabled(settings):
         return False, "Non configurato", False
-    if not is_justwatch_available():
-        return False, "Libreria JustWatch non installata", True
     manager = _get_justwatch_manager(settings)
     if not manager:
         return False, "JustWatch non disponibile", True

@@ -104,7 +104,7 @@ function useProbePagedDataset<Item extends ProbePagedItem>({
     return [...unique.values()];
   }, [query.data]);
 
-  return { ...query, data, queryKey };
+  return { ...query, data, hasData: query.data !== undefined, queryKey };
 }
 
 function useProbeScopeData(

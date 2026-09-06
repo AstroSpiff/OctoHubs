@@ -72,3 +72,8 @@ def _remove_emby_server_configuration(
         return settings
 
     config_manager._ensure_db_backend().mutate_app_settings(update)
+    from emby_runtime.event_bridge_credentials import (
+        clear_event_bridge_credential_rejection_state,
+    )
+
+    clear_event_bridge_credential_rejection_state(server_key)

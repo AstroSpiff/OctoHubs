@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional, Protocol
 from core.storage.storage_errors import StorageError
 from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_models import SQLAlchemyError, WorkflowExecution, WorkflowStep, _utcnow, text
+from core.workflow_lease_cleanup import release_workflow_lease_safely
 
 
 _WORKFLOW_ADVISORY_LOCK_ID = 6_294_733_727_194_931_211
@@ -39,15 +40,23 @@ class StorageWorkflowMixin(_SessionProvider):
             pass
 
     @staticmethod
-    def _discard_workflow_connection(connection: Any) -> None:
+    def _discard_workflow_connection(
+        connection: Any,
+        *,
+        primary_error: BaseException,
+    ) -> None:
+        """Attempt every connection cleanup without replacing ``primary_error``."""
         try:
             connection.invalidate()
-        except Exception:
+        except BaseException:
             pass
         try:
             connection.close()
-        except Exception:
+        except BaseException:
             pass
+        # Keep the primary explicit at this ownership boundary: cleanup errors
+        # above are deliberately secondary, including process-control signals.
+        _ = primary_error
 
     def acquire_workflow_lease(self) -> _WorkflowLease | None:
         """Acquire the singleton workflow lease for this process and PostgreSQL."""
@@ -66,23 +75,30 @@ class StorageWorkflowMixin(_SessionProvider):
                 )
                 connection.commit()
                 if not acquired:
-                    try:
-                        connection.close()
-                    finally:
-                        self._release_workflow_process_mutex()
+                    # A close failure is caught by the outer BaseException
+                    # boundary, which still discards the connection and frees
+                    # the process mutex before preserving that signal.
+                    connection.close()
+                    self._release_workflow_process_mutex()
                     return None
             return _WorkflowLease(connection)
-        except Exception:
-            if connection is not None:
-                self._discard_workflow_connection(connection)
-            self._release_workflow_process_mutex()
+        except BaseException as exc:
+            try:
+                if connection is not None:
+                    self._discard_workflow_connection(
+                        connection,
+                        primary_error=exc,
+                    )
+            finally:
+                self._release_workflow_process_mutex()
             raise
 
     def release_workflow_lease(self, lease: _WorkflowLease | None) -> None:
         if lease is None or lease.released:
             return
         connection = lease.connection
-        failure: Exception | None = None
+        failure: BaseException | None = None
+        invalidation_attempted = False
         try:
             if connection.dialect.name == "postgresql":
                 connection.execute(
@@ -90,30 +106,57 @@ class StorageWorkflowMixin(_SessionProvider):
                     {"lock_id": _WORKFLOW_ADVISORY_LOCK_ID},
                 )
                 connection.commit()
-        except Exception as exc:
+        except BaseException as exc:
             failure = exc
-            try:
-                connection.rollback()
-            except Exception:
-                pass
-            try:
-                connection.invalidate()
-            except Exception:
-                pass
+            self._rollback_workflow_lease_connection(connection)
+            self._invalidate_workflow_lease_connection(connection)
+            invalidation_attempted = True
         finally:
+            failure = self._close_workflow_lease_connection(
+                connection,
+                failure=failure,
+                invalidation_attempted=invalidation_attempted,
+            )
             try:
-                connection.close()
-            except Exception as exc:
-                if failure is None:
-                    failure = exc
-                try:
-                    connection.invalidate()
-                except Exception:
-                    pass
-            lease.released = True
-            self._release_workflow_process_mutex()
+                lease.released = True
+            finally:
+                self._release_workflow_process_mutex()
         if failure is not None:
             raise failure
+
+    @staticmethod
+    def _rollback_workflow_lease_connection(connection: Any) -> None:
+        """Attempt secondary rollback without replacing the unlock failure."""
+        try:
+            connection.rollback()
+        except BaseException:
+            pass
+
+    @staticmethod
+    def _invalidate_workflow_lease_connection(connection: Any) -> None:
+        """Attempt secondary invalidation without replacing the primary failure."""
+        try:
+            connection.invalidate()
+        except BaseException:
+            pass
+
+    @classmethod
+    def _close_workflow_lease_connection(
+        cls,
+        connection: Any,
+        *,
+        failure: BaseException | None,
+        invalidation_attempted: bool,
+    ) -> BaseException | None:
+        """Close the lease connection and retain the earliest failure."""
+        try:
+            connection.close()
+        except BaseException as exc:
+            if failure is None:
+                failure = exc
+            if not invalidation_attempted:
+                cls._invalidate_workflow_lease_connection(connection)
+        return failure
 
     @staticmethod
     def _heartbeat_is_fresh(execution: Any, now: Any) -> bool:
@@ -217,8 +260,9 @@ class StorageWorkflowMixin(_SessionProvider):
         lease = self.acquire_workflow_lease()
         if lease is None:
             return 0
-        session = self._get_session()
+        session = None
         try:
+            session = self._get_session()
             now = _utcnow()
             active = session.query(WorkflowExecution).filter(  # type: ignore[attr-defined]
                 WorkflowExecution.active_slot == 1
@@ -235,9 +279,14 @@ class StorageWorkflowMixin(_SessionProvider):
             raise StorageError(f"Errore recovery workflow: {exc}") from exc
         finally:
             try:
-                close_session_safely(session)
+                if session is not None:
+                    close_session_safely(session)
             finally:
-                self.release_workflow_lease(lease)
+                release_workflow_lease_safely(
+                    self,
+                    lease,
+                    context="recovery e retention",
+                )
 
     def heartbeat_workflow_execution(self, workflow_id: str, owner_id: str) -> bool:
         """Renew durable ownership independently of the advisory connection."""

@@ -1,6 +1,7 @@
 import { Database, FileSearch, RefreshCw, Rocket } from "@/components/ui/icons";
 
 import { Button } from "@/components/ui/button";
+import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
 import { WorkspaceHeading } from "@/components/ui/workspace-heading";
 import { EmbyServerIcon } from "@/features/emby-live/components/emby-server-icon";
 import { LibraryWorkflowMode } from "@/features/libraries/components/library-workflow-mode";
@@ -12,26 +13,43 @@ import type {
 
 type LibraryMaintenanceProps = {
   servers: LibraryActionTarget[];
+  serversReady: boolean;
+  serversError?: Error | null;
+  serversRetrying?: boolean;
   activeScans: ActiveLibraryScan[];
+  activeScansReady: boolean;
+  activeScansError?: Error | null;
+  activeScansRetrying?: boolean;
   busy?: { action: LibraryMaintenanceAction; serverId?: string };
   workflowBusy?: boolean;
   workflowMode: boolean;
   onWorkflowModeChange: (enabled: boolean) => void;
+  onRetryServers: () => void;
+  onRetryActiveScans: () => void;
   onRun: (action: LibraryMaintenanceAction, serverId?: string) => void;
 };
 
 function LibraryMaintenance({
   servers,
+  serversReady,
+  serversError,
+  serversRetrying = false,
   activeScans,
+  activeScansReady,
+  activeScansError,
+  activeScansRetrying = false,
   busy,
   workflowBusy = false,
   workflowMode,
   onWorkflowModeChange,
+  onRetryServers,
+  onRetryActiveScans,
   onRun,
 }: LibraryMaintenanceProps) {
   const isBusy = (action: LibraryMaintenanceAction, serverId?: string) =>
     busy?.action === action && busy.serverId === serverId;
-  const actionsDisabled = Boolean(busy) || workflowBusy;
+  const actionsDisabled =
+    !serversReady || !activeScansReady || Boolean(busy) || workflowBusy;
   const workflowLabel = workflowBusy ? "Workflow in corso..." : "Workflow";
 
   return (
@@ -89,74 +107,90 @@ function LibraryMaintenance({
         </p>
       ) : null}
       <div className="libraries-maintenance-content">
-        <div className="libraries-server-actions">
-          {servers.map((server) => (
-            <article key={server.id} className="libraries-server-action">
-              <div className="libraries-server-identity">
-                <EmbyServerIcon
-                  icon={server.icon}
-                  color={server.icon_color}
-                  iconStyle={server.icon_style}
-                  size={16}
-                />
-                <div>
-                  <strong>{server.name}</strong>
-                  {server.url ? <small>{server.url}</small> : null}
+        <QueryStateBoundary
+          error={serversError}
+          hasData={serversReady}
+          loadingLabel="Caricamento server disponibili..."
+          retrying={serversRetrying}
+          onRetry={onRetryServers}
+        >
+          <div className="libraries-server-actions">
+            {servers.map((server) => (
+              <article key={server.id} className="libraries-server-action">
+                <div className="libraries-server-identity">
+                  <EmbyServerIcon
+                    icon={server.icon}
+                    color={server.icon_color}
+                    iconStyle={server.icon_style}
+                    size={16}
+                  />
+                  <div>
+                    <strong>{server.name}</strong>
+                    {server.url ? <small>{server.url}</small> : null}
+                  </div>
                 </div>
-              </div>
-              <div>
-                <Button
-                  type="button"
-                  requiresWriteAccess
-                  variant="secondary"
-                  size="compact"
-                  onClick={() => onRun("refresh_libraries", server.id)}
-                  disabled={actionsDisabled}
-                >
-                  {workflowMode ? (
-                    <Rocket size={14} aria-hidden="true" />
-                  ) : (
-                    <RefreshCw
+                <div>
+                  <Button
+                    type="button"
+                    requiresWriteAccess
+                    variant="secondary"
+                    size="compact"
+                    onClick={() => onRun("refresh_libraries", server.id)}
+                    disabled={actionsDisabled}
+                  >
+                    {workflowMode ? (
+                      <Rocket size={14} aria-hidden="true" />
+                    ) : (
+                      <RefreshCw
+                        size={14}
+                        className={
+                          isBusy("refresh_libraries", server.id)
+                            ? "animate-spin"
+                            : ""
+                        }
+                        aria-hidden="true"
+                      />
+                    )}
+                    {workflowMode ? workflowLabel : "Scansione file"}
+                  </Button>
+                  <Button
+                    type="button"
+                    requiresWriteAccess
+                    variant="secondary"
+                    size="compact"
+                    onClick={() => onRun("refresh_metadata", server.id)}
+                    disabled={actionsDisabled}
+                  >
+                    <FileSearch
                       size={14}
                       className={
-                        isBusy("refresh_libraries", server.id)
+                        isBusy("refresh_metadata", server.id)
                           ? "animate-spin"
                           : ""
                       }
                       aria-hidden="true"
                     />
-                  )}
-                  {workflowMode ? workflowLabel : "Scansione file"}
-                </Button>
-                <Button
-                  type="button"
-                  requiresWriteAccess
-                  variant="secondary"
-                  size="compact"
-                  onClick={() => onRun("refresh_metadata", server.id)}
-                  disabled={actionsDisabled}
-                >
-                  <FileSearch
-                    size={14}
-                    className={
-                      isBusy("refresh_metadata", server.id)
-                        ? "animate-spin"
-                        : ""
-                    }
-                    aria-hidden="true"
-                  />
-                  Metadata
-                </Button>
-              </div>
-            </article>
-          ))}
-          {!servers.length ? (
-            <p className="libraries-empty-line">
-              Nessun server Emby abilitato.
-            </p>
-          ) : null}
-        </div>
-        <ActiveLibraryScans scans={activeScans} />
+                    Metadata
+                  </Button>
+                </div>
+              </article>
+            ))}
+            {!servers.length ? (
+              <p className="libraries-empty-line">
+                Nessun server Emby abilitato.
+              </p>
+            ) : null}
+          </div>
+        </QueryStateBoundary>
+        <QueryStateBoundary
+          error={activeScansError}
+          hasData={activeScansReady}
+          loadingLabel="Caricamento attività Emby..."
+          retrying={activeScansRetrying}
+          onRetry={onRetryActiveScans}
+        >
+          <ActiveLibraryScans scans={activeScans} />
+        </QueryStateBoundary>
       </div>
     </section>
   );

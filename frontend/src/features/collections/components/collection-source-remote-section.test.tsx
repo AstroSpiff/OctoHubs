@@ -7,6 +7,59 @@ import {
 import { safeCollectionProviderLink } from "@/features/collections/collection-provider-links";
 
 describe("CollectionSourceRemoteSection", () => {
+  it("does not claim an empty provider list before its first snapshot", () => {
+    const unresolved = renderToStaticMarkup(
+      <CollectionSourceRemoteSection
+        title="Liste Trakt"
+        defaultSourceType="trakt_list"
+        unavailable={false}
+        loading
+        hasData={false}
+        busy={false}
+        items={[]}
+        onRefresh={() => undefined}
+        onChoose={() => undefined}
+      />,
+    );
+    const resolvedEmpty = renderToStaticMarkup(
+      <CollectionSourceRemoteSection
+        title="Liste Trakt"
+        defaultSourceType="trakt_list"
+        unavailable={false}
+        loading={false}
+        hasData
+        busy={false}
+        items={[]}
+        onRefresh={() => undefined}
+        onChoose={() => undefined}
+      />,
+    );
+
+    expect(unresolved).toContain("Caricamento liste trakt");
+    expect(unresolved).not.toContain("Nessuna lista disponibile");
+    expect(resolvedEmpty).toContain("Nessuna lista disponibile");
+  });
+
+  it("keeps a stale empty snapshot visible beside a refresh error", () => {
+    const markup = renderToStaticMarkup(
+      <CollectionSourceRemoteSection
+        title="Liste MDBList"
+        defaultSourceType="mdblist"
+        unavailable={false}
+        loading={false}
+        hasData
+        busy={false}
+        error="Refresh non riuscito"
+        items={[]}
+        onRefresh={() => undefined}
+        onChoose={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("Refresh non riuscito");
+    expect(markup).toContain("Nessuna lista disponibile");
+  });
+
   it("locks refresh and selection while another source mutation is running", () => {
     const markup = renderToStaticMarkup(
       <CollectionSourceRemoteSection
@@ -14,6 +67,7 @@ describe("CollectionSourceRemoteSection", () => {
         defaultSourceType="trakt_list"
         unavailable={false}
         loading={false}
+        hasData
         busy
         items={[{ name: "Preferiti", source_value: "roy/preferiti" }]}
         onRefresh={() => undefined}

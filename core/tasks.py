@@ -16,6 +16,7 @@ from core.log_sanitization import format_exception_for_log
 from core.safe_output import safe_print as print
 from core.utils import _normalize_scan_targets, _serialize_target_map
 from core.workflow_context import normalize_workflow_context
+from core.workflow_lease_cleanup import release_workflow_lease_safely
 from services.scheduler_occurrences import SchedulerOccurrenceLease
 
 
@@ -122,7 +123,11 @@ class ScanManager:
             self._thread = worker
             try:
                 worker.start()
-            except Exception:
+            except BaseException:
+                if worker.is_alive():
+                    # An asynchronous signal may arrive after the native thread
+                    # actually started; keep its lifecycle published in that case.
+                    raise
                 self._status["running"] = False
                 self._status["message"] = "Ricerca non avviata"
                 self._status["target_map"] = None
@@ -219,7 +224,52 @@ class AutoScheduler:
         self._process_requests_func = None
         self._sync_users_func = None
         self._thread = threading.Thread(target=self._worker, daemon=True)
-        self._thread.start()
+        try:
+            self._thread.start()
+        except BaseException as primary_error:
+            self._cleanup_failed_constructor_start(primary_error)
+            raise
+
+    def _cleanup_failed_constructor_start(self, primary_error: BaseException) -> None:
+        """Stop a possibly native-started worker without replacing its start signal."""
+        cleanup_actions = (
+            ("stop", self._stop.set),
+            ("wake", self._wake.set),
+            ("worker pool", self._worker_pool.stop),
+        )
+        for label, cleanup in cleanup_actions:
+            try:
+                cleanup()
+            except BaseException as cleanup_error:
+                try:
+                    _log_task_exception(
+                        f"AutoScheduler: cleanup costruttore {label} non riuscito",
+                        cleanup_error,
+                    )
+                except BaseException:
+                    pass
+        try:
+            if self._thread.is_alive() and self._thread is not threading.current_thread():
+                for _attempt in range(3):
+                    self._thread.join(timeout=0.5)
+                    if not self._thread.is_alive():
+                        break
+                    self._wake.set()
+                if self._thread.is_alive():
+                    logger.critical(
+                        "AutoScheduler: worker ancora attivo dopo cleanup costruttore"
+                    )
+        except BaseException as cleanup_error:
+            try:
+                _log_task_exception(
+                    "AutoScheduler: join dopo avvio interrotto non riuscito",
+                    cleanup_error,
+                )
+            except BaseException:
+                pass
+        # The caller's signal is authoritative even when a cleanup action was
+        # itself interrupted. Keeping it explicit documents that invariant.
+        _ = primary_error
 
     def set_callbacks(
         self,
@@ -405,26 +455,84 @@ class AutoScheduler:
         coordinator = self._occurrence_coordinator
         if coordinator is None:
             return "consumed" if self._safe_trigger_kind(kind, config) else "retry"
-        try:
-            claim_with_status = getattr(coordinator, "claim_with_status", None)
-            if callable(claim_with_status):
-                claim_result: Any = claim_with_status(kind, entry, next_target)
-                claim, claim_status = claim_result
-            else:
-                claim = coordinator.claim(kind, entry, next_target)
-                claim_status = "claimed" if claim is not None else "completed"
-        except Exception as exc:
-            _log_task_exception(
-                f"AutoScheduler: claim occurrence {kind} non riuscito",
-                exc,
-            )
-            return "retry"
+        claim, claim_status = self._claim_scheduled_occurrence(
+            coordinator,
+            kind,
+            entry,
+            next_target,
+        )
         if claim is None:
             return "consumed" if claim_status == "completed" else "retry"
 
         def finished(succeeded: bool) -> None:
             self._finish_scheduled_occurrence(kind, claim, entry, next_target, succeeded)
 
+        lease = self._register_scheduled_occurrence(
+            coordinator,
+            kind,
+            claim,
+            entry,
+            next_target,
+        )
+        try:
+            lease.start()
+        except BaseException as exc:
+            _log_task_exception(
+                f"AutoScheduler: rinnovo occurrence {kind} non avviato",
+                exc,
+            )
+            self._cleanup_scheduled_occurrence_start_failure(
+                kind,
+                claim,
+                entry,
+                next_target,
+                "cleanup occurrence",
+            )
+            if not isinstance(exc, Exception):
+                raise
+            return "retry"
+
+        try:
+            executed = self._safe_trigger_kind(kind, config, finished)
+        except BaseException:
+            self._cleanup_scheduled_occurrence_start_failure(
+                kind,
+                claim,
+                entry,
+                next_target,
+                "cleanup avvio",
+            )
+            raise
+        if not executed:
+            self._finish_scheduled_occurrence(kind, claim, entry, next_target, False)
+            return "retry"
+        return "started"
+
+    @staticmethod
+    def _claim_scheduled_occurrence(coordinator, kind, entry, next_target):
+        """Claim one occurrence and normalize old/new coordinator contracts."""
+        try:
+            claim_with_status = getattr(coordinator, "claim_with_status", None)
+            if callable(claim_with_status):
+                claim_result: Any = claim_with_status(kind, entry, next_target)
+                return claim_result
+            claim = coordinator.claim(kind, entry, next_target)
+            return claim, "claimed" if claim is not None else "completed"
+        except Exception as exc:
+            _log_task_exception(
+                f"AutoScheduler: claim occurrence {kind} non riuscito",
+                exc,
+            )
+            return None, "retry"
+
+    def _register_scheduled_occurrence(
+        self,
+        coordinator,
+        kind,
+        claim,
+        entry,
+        next_target,
+    ):
         lease = SchedulerOccurrenceLease(
             coordinator,
             claim,
@@ -438,21 +546,24 @@ class AutoScheduler:
                 "entry": copy.deepcopy(entry),
                 "scheduled_for": next_target,
             }
-        try:
-            lease.start()
-        except Exception as exc:
-            _log_task_exception(
-                f"AutoScheduler: rinnovo occurrence {kind} non avviato",
-                exc,
-            )
-            self._finish_scheduled_occurrence(kind, claim, entry, next_target, False)
-            return "retry"
+        return lease
 
-        executed = self._safe_trigger_kind(kind, config, finished)
-        if not executed:
+    def _cleanup_scheduled_occurrence_start_failure(
+        self,
+        kind,
+        claim,
+        entry,
+        next_target,
+        context,
+    ) -> None:
+        """Attempt occurrence cleanup without replacing an active start failure."""
+        try:
             self._finish_scheduled_occurrence(kind, claim, entry, next_target, False)
-            return "retry"
-        return "started"
+        except BaseException as cleanup_error:
+            _log_task_exception(
+                f"AutoScheduler: {context} {kind} non riuscito",
+                cleanup_error,
+            )
 
     def _finish_scheduled_occurrence(
         self,
@@ -946,12 +1057,36 @@ class WorkflowManager:
         with self._lock:
             lease = self._workflow_lease
             self._workflow_lease = None
-        release = getattr(db_storage, "release_workflow_lease", None) if db_storage else None
-        if callable(release):
-            try:
-                release(lease)
-            except Exception as exc:
-                _log_task_exception("Rilascio lease workflow non riuscito", exc)
+        release_workflow_lease_safely(
+            db_storage,
+            lease,
+            context="finalizzazione manager",
+            preserve_outcome=True,
+        )
+
+    def _reset_unstarted_workflow_locked(self) -> None:
+        """Restore a reusable local lifecycle after a durable claim did not start."""
+        heartbeat_stop = self._workflow_heartbeat_stop
+        if heartbeat_stop is not None:
+            heartbeat_stop.set()
+        self._workflow_heartbeat_stop = None
+        self._workflow_heartbeat_thread = None
+        self._workflow_lease = None
+        self._finalized_workflow_id = None
+        self._finalizing_workflow_id = None
+        self._thread = None
+        self._status = {
+            "status": "idle",
+            "workflow_type": None,
+            "workflow_id": None,
+            "start_time": None,
+            "current_step_index": -1,
+            "steps": [],
+            "error": None,
+            "workflow_job_ids": [],
+            "operation_id": None,
+            "context": {},
+        }
 
     def _start_workflow_heartbeat_locked(self, workflow_id):
         heartbeat = getattr(self._db_storage, "heartbeat_workflow_execution", None)
@@ -1023,84 +1158,26 @@ class WorkflowManager:
         with self._lock:
             if not self._can_start_workflow_locked():
                 return False
+            workflow_id, steps, stop_event = self._publish_workflow_start_locked(
+                workflow_type,
+                context,
+            )
+            if not self._persist_workflow_start_locked(
+                workflow_id,
+                workflow_type,
+                context,
+                steps,
+            ):
+                return False
 
-            # Genera UUID per questo workflow
-            workflow_id = str(uuid.uuid4())
-
-            # Inizializza gli step in base al workflow type
-            steps = self._initialize_steps(workflow_type)
-
-            from datetime import timezone
-
-            job_ids = context.get("workflow_job_ids") if isinstance(context, dict) else []
-            if isinstance(job_ids, (str, int)):
-                job_ids = [job_ids]
-
-            self._status = {
-                "status": "running",
-                "workflow_type": workflow_type,
-                "workflow_id": workflow_id,
-                "start_time": datetime.now(timezone.utc).isoformat(),
-                "current_step_index": -1,
-                "steps": steps,
-                "error": None,
-                "workflow_job_ids": job_ids,
-                "operation_id": None,
-                "context": copy.deepcopy(context or {})
-            }
-            self._finalized_workflow_id = None
-            self._finalizing_workflow_id = None
-            stop_event = threading.Event()
-            self._stop_event = stop_event
-
-            # Claim cross-process and persist execution + steps atomically when
-            # the backend supports the workflow lease contract.
-            if self._db_storage:
-                acquire = getattr(self._db_storage, "acquire_workflow_lease", None)
-                claim = getattr(self._db_storage, "try_start_workflow_execution", None)
-                if callable(acquire) and callable(claim):
-                    try:
-                        lease = acquire()
-                        if lease is None:
-                            self._status["status"] = "idle"
-                            return False
-                        claimed = claim(
-                            workflow_id=workflow_id,
-                            workflow_type=workflow_type,
-                            context=context or {},
-                            owner_id=self._workflow_owner_id,
-                            steps=[(step["id"], idx) for idx, step in enumerate(steps)],
-                        )
-                        if not claimed:
-                            self._db_storage.release_workflow_lease(lease)
-                            self._status["status"] = "idle"
-                            return False
-                        self._workflow_lease = lease
-                        self._start_workflow_heartbeat_locked(workflow_id)
-                    except Exception as exc:
-                        if 'lease' in locals() and lease is not None:
-                            self._db_storage.release_workflow_lease(lease)
-                        self._status["status"] = "idle"
-                        _log_task_exception("Lease workflow non acquisita", exc)
-                        return False
-                else:
-                    try:
-                        self._db_storage.create_workflow_execution(
-                            workflow_id=workflow_id,
-                            workflow_type=workflow_type,
-                            context=context or {}
-                        )
-                        for idx, step in enumerate(steps):
-                            self._db_storage.create_workflow_step(
-                                workflow_id=workflow_id,
-                                step_id=step["id"],
-                                step_index=idx
-                            )
-                    except Exception as exc:
-                        _log_task_exception("Errore salvataggio workflow su DB", exc)
-                print(f"[WORKFLOW] Workflow {workflow_id} salvato su database")
-
-            self._start_operation_tracking_locked(context or {})
+            try:
+                self._start_operation_tracking_locked(context or {})
+            except BaseException:
+                self._cleanup_unstarted_workflow_after_signal(
+                    workflow_id,
+                    _WORKFLOW_FAILURE_MESSAGE,
+                )
+                raise
 
             start_error = self._start_workflow_thread_locked(
                 context or {},
@@ -1109,18 +1186,160 @@ class WorkflowManager:
                 completion_callback,
             )
 
-        if start_error is not None:
-            _log_task_exception("Impossibile avviare il thread workflow", start_error)
-            error_message = _WORKFLOW_FAILURE_MESSAGE
-            self._finalize_workflow(
+        return self._resolve_workflow_thread_start(workflow_id, start_error)
+
+    def _publish_workflow_start_locked(self, workflow_type, context):
+        """Publish the local running state before acquiring durable ownership."""
+        from datetime import timezone
+
+        workflow_id = str(uuid.uuid4())
+        steps = self._initialize_steps(workflow_type)
+        job_ids = context.get("workflow_job_ids") if isinstance(context, dict) else []
+        if isinstance(job_ids, (str, int)):
+            job_ids = [job_ids]
+        self._status = {
+            "status": "running",
+            "workflow_type": workflow_type,
+            "workflow_id": workflow_id,
+            "start_time": datetime.now(timezone.utc).isoformat(),
+            "current_step_index": -1,
+            "steps": steps,
+            "error": None,
+            "workflow_job_ids": job_ids,
+            "operation_id": None,
+            "context": copy.deepcopy(context or {}),
+        }
+        self._finalized_workflow_id = None
+        self._finalizing_workflow_id = None
+        stop_event = threading.Event()
+        self._stop_event = stop_event
+        return workflow_id, steps, stop_event
+
+    def _persist_workflow_start_locked(self, workflow_id, workflow_type, context, steps):
+        """Claim durable ownership, retaining the storage fallback contract."""
+        if not self._db_storage:
+            return True
+        acquire = getattr(self._db_storage, "acquire_workflow_lease", None)
+        claim = getattr(self._db_storage, "try_start_workflow_execution", None)
+        if callable(acquire) and callable(claim):
+            return self._claim_workflow_start_locked(
+                acquire,
+                claim,
                 workflow_id,
-                "failed",
-                error_message,
-                "error",
-                error_message,
+                workflow_type,
+                context,
+                steps,
             )
-            return False
+        self._persist_workflow_start_without_lease_locked(
+            self._db_storage,
+            workflow_id,
+            workflow_type,
+            context,
+            steps,
+        )
+        print(f"[WORKFLOW] Workflow {workflow_id} salvato su database")
         return True
+
+    def _claim_workflow_start_locked(
+        self,
+        acquire,
+        claim,
+        workflow_id,
+        workflow_type,
+        context,
+        steps,
+    ):
+        lease = None
+        try:
+            lease = acquire()
+            if lease is None:
+                self._reset_unstarted_workflow_locked()
+                return False
+            claimed = claim(
+                workflow_id=workflow_id,
+                workflow_type=workflow_type,
+                context=context or {},
+                owner_id=self._workflow_owner_id,
+                steps=[(step["id"], idx) for idx, step in enumerate(steps)],
+            )
+            if not claimed:
+                release_workflow_lease_safely(
+                    self._db_storage,
+                    lease,
+                    context="claim rifiutato",
+                    preserve_outcome=True,
+                )
+                self._reset_unstarted_workflow_locked()
+                return False
+            self._workflow_lease = lease
+            self._start_workflow_heartbeat_locked(workflow_id)
+            return True
+        except BaseException as exc:
+            if lease is not None:
+                release_workflow_lease_safely(
+                    self._db_storage,
+                    lease,
+                    context="claim fallito",
+                    primary_error=exc,
+                )
+            self._reset_unstarted_workflow_locked()
+            if not isinstance(exc, Exception):
+                raise
+            _log_task_exception("Lease workflow non acquisita", exc)
+            return False
+
+    def _persist_workflow_start_without_lease_locked(
+        self,
+        db_storage,
+        workflow_id,
+        workflow_type,
+        context,
+        steps,
+    ) -> None:
+        try:
+            db_storage.create_workflow_execution(
+                workflow_id=workflow_id,
+                workflow_type=workflow_type,
+                context=context or {},
+            )
+            for idx, step in enumerate(steps):
+                db_storage.create_workflow_step(
+                    workflow_id=workflow_id,
+                    step_id=step["id"],
+                    step_index=idx,
+                )
+        except BaseException as exc:
+            if not isinstance(exc, Exception):
+                self._cleanup_unstarted_workflow_after_signal(
+                    workflow_id,
+                    _WORKFLOW_FAILURE_MESSAGE,
+                )
+                raise
+            _log_task_exception("Errore salvataggio workflow su DB", exc)
+
+    def _resolve_workflow_thread_start(self, workflow_id, start_error):
+        """Translate thread-start outcome without losing post-native-start ownership."""
+        if start_error is None:
+            return True
+        _log_task_exception("Impossibile avviare il thread workflow", start_error)
+        error_message = _WORKFLOW_FAILURE_MESSAGE
+        if not isinstance(start_error, Exception):
+            with self._lock:
+                worker_started = bool(self._thread and self._thread.is_alive())
+            if not worker_started:
+                self._cleanup_unstarted_workflow_after_signal(
+                    workflow_id,
+                    error_message,
+                )
+            raise start_error
+        self._finalize_workflow(
+            workflow_id,
+            "failed",
+            error_message,
+            "error",
+            error_message,
+        )
+        return False
 
     def _start_workflow_thread_locked(
         self,
@@ -1137,10 +1356,47 @@ class WorkflowManager:
         self._thread = thread
         try:
             thread.start()
-        except Exception as exc:
-            self._thread = None
+        except BaseException as exc:
+            if not thread.is_alive():
+                self._thread = None
             return exc
         return None
+
+    def _cleanup_unstarted_workflow_after_signal(
+        self,
+        workflow_id,
+        error_message,
+    ):
+        """Finish every published resource before a thread-start signal escapes."""
+        try:
+            self._finalize_workflow(
+                workflow_id,
+                "failed",
+                error_message,
+                "error",
+                error_message,
+            )
+        except BaseException as cleanup_error:
+            _log_task_exception(
+                "Finalizzazione workflow dopo segnale di avvio non riuscita",
+                cleanup_error,
+            )
+        try:
+            self._stop_workflow_heartbeat(workflow_id)
+        except BaseException as cleanup_error:
+            _log_task_exception(
+                "Arresto heartbeat dopo segnale di avvio non riuscito",
+                cleanup_error,
+            )
+        try:
+            self._release_workflow_lease(self._db_storage)
+        except BaseException as cleanup_error:
+            _log_task_exception(
+                "Rilascio lease dopo segnale di avvio non riuscito",
+                cleanup_error,
+            )
+        with self._lock:
+            self._reset_unstarted_workflow_locked()
 
     def _run_workflow_and_notify(
         self,

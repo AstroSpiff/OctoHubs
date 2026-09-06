@@ -26,6 +26,7 @@ import type {
 import { useEmbyLatest } from "@/features/emby-latest/use-emby-latest";
 import { useLatestActionFeedback } from "@/features/emby-latest/use-latest-action-feedback";
 import { useConfirmationDialog } from "@/components/ui/use-confirmation-dialog";
+import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
 import { WorkspaceHeading } from "@/components/ui/workspace-heading";
 import { WorkspacePage } from "@/components/ui/workspace-layout";
 import { useBeforeUnloadWarning } from "@/lib/use-before-unload-warning";
@@ -96,11 +97,6 @@ function LatestPage() {
       }),
     [activeTemplate, previewLatest, previewTemplate],
   );
-  const errors = [
-    latest.snapshot.error,
-    latest.configuration.error,
-  ].filter(Boolean);
-
   async function removePreset(preset: LatestPreset) {
     if (!await confirmation.confirm({ title: "Rimuovi preset", description: `Rimuovere il preset “${preset.name}”?`, confirmLabel: "Rimuovi preset", tone: "danger" })) return;
     void actionFeedback
@@ -136,6 +132,13 @@ function LatestPage() {
 
   return (
     <WorkspacePage className="latest-workspace">
+      <QueryStateBoundary
+        error={latest.configuration.error}
+        hasData={Boolean(configuration)}
+        loadingLabel="Caricamento configurazione pubblicazioni..."
+        retrying={latest.configuration.isFetching}
+        onRetry={() => void latest.configuration.refetch()}
+      >
       <LatestReleaseControls
         servers={configuration?.servers || []}
         selectedServer={serverId}
@@ -183,15 +186,6 @@ function LatestPage() {
       {latest.isRefreshing ? (
         <LatestRefreshProgress progress={latest.progress.data} />
       ) : null}
-      {errors.map((error, index) => (
-        <div
-          className="inline-alert inline-alert--error"
-          role="alert"
-          key={`${error?.message}-${index}`}
-        >
-          {error?.message}
-        </div>
-      ))}
       {actionFeedback.notice ? (
         <div
           className={`inline-alert inline-alert--${actionFeedback.notice.tone}`}
@@ -200,9 +194,13 @@ function LatestPage() {
           {actionFeedback.notice.message}
         </div>
       ) : null}
-      {latest.snapshot.isLoading && !snapshot ? (
-        <div className="loading-state">Caricamento pubblicazioni...</div>
-      ) : null}
+      <QueryStateBoundary
+        error={latest.snapshot.error}
+        hasData={Boolean(snapshot)}
+        loadingLabel="Caricamento pubblicazioni..."
+        retrying={latest.snapshot.isFetching}
+        onRetry={() => void latest.snapshot.refetch()}
+      >
       <div className="latest-release-grid">
         <LatestReleaseColumn
           title="Film"
@@ -233,6 +231,7 @@ function LatestPage() {
           }
         />
       </div>
+      </QueryStateBoundary>
       <section className="latest-configuration">
         <WorkspaceHeading
           level="subsection"
@@ -357,6 +356,7 @@ function LatestPage() {
         onEnrich={enrich}
         onResetError={latest.enrich.reset}
       />
+      </QueryStateBoundary>
       {confirmation.dialog}
     </WorkspacePage>
   );

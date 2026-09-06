@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { DialogBackdrop } from "@/components/ui/dialog-backdrop";
+import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
 import { useConfirmationDialog } from "@/components/ui/use-confirmation-dialog";
 import { libraryAssociationDraftMatches } from "@/features/libraries/library-dialog-draft";
 import {
@@ -28,6 +29,9 @@ type LibraryAssociationDialogProps = {
   groups: LibraryGroup[];
   associations: LibraryAssociation[];
   saving: boolean;
+  loadError?: Error | null;
+  retrying?: boolean;
+  onRetry?: () => void;
   onDirtyChange?: (dirty: boolean) => void;
   onClose: () => void;
   onSave: (associations: LibraryAssociation[]) => Promise<void>;
@@ -64,6 +68,9 @@ function LibraryAssociationDialog({
   groups,
   associations,
   saving,
+  loadError,
+  retrying = false,
+  onRetry,
   onDirtyChange,
   onClose,
   onSave,
@@ -85,6 +92,7 @@ function LibraryAssociationDialog({
   const [baseline, setBaseline] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
   const initializedForOpen = useRef(false);
+  const [hydrated, setHydrated] = useState(false);
   const draftRef = useRef(draft);
   const baselineRef = useRef(baseline);
   const incomingDraft = useMemo(
@@ -106,15 +114,17 @@ function LibraryAssociationDialog({
   }, []);
 
   useEffect(() => {
-    if (!open) {
+    if (!open || !ready) {
       initializedForOpen.current = false;
+      setHydrated(false);
       return;
     }
-    if (!ready || initializedForOpen.current) return;
+    if (initializedForOpen.current) return;
     setSearch("");
     setError("");
     acceptIncomingDraft(incomingDraft);
     initializedForOpen.current = true;
+    setHydrated(true);
   }, [acceptIncomingDraft, incomingDraft, open, ready]);
 
   useEffect(() => {
@@ -191,6 +201,7 @@ function LibraryAssociationDialog({
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!ready || !hydrated || !initializedForOpen.current) return;
     setError("");
     const payload = libraries.flatMap((library) => {
       const groupName = draft[library.key]?.trim();
@@ -251,6 +262,13 @@ function LibraryAssociationDialog({
             <X size={18} aria-hidden="true" />
           </Button>
         </header>
+        <QueryStateBoundary
+          error={loadError}
+          hasData={ready && hydrated}
+          loadingLabel="Caricamento associazioni librerie..."
+          retrying={retrying}
+          onRetry={onRetry || (() => undefined)}
+        >
         {error ? (
           <p className="users-dialog-error" role="alert">
             {error}
@@ -320,11 +338,12 @@ function LibraryAssociationDialog({
           >
             Annulla
           </Button>
-          <Button type="submit" variant="primary" disabled={saving}>
+          <Button type="submit" variant="primary" disabled={saving || !ready || !hydrated}>
             <Save size={16} aria-hidden="true" />
             {saving ? "Salvataggio..." : "Salva associazioni"}
           </Button>
         </footer>
+        </QueryStateBoundary>
         </form>
       </DialogBackdrop>
       {confirmation.dialog}

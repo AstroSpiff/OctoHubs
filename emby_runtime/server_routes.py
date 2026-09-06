@@ -214,9 +214,13 @@ def _allow_server_runtime(server_id: str) -> None:
 
 def _forget_server_runtime(server_id: str) -> None:
     """Drop all non-persisted state owned by a successfully deleted server."""
+    from emby_runtime.event_bridge_credentials import (
+        clear_event_bridge_credential_rejection_state,
+    )
     from emby_runtime.streams import get_streams_manager
     from emby_runtime.transcode_guard import get_transcode_guard_service
 
+    clear_event_bridge_credential_rejection_state(server_id)
     get_streams_manager().clear_server(server_id)
     get_transcode_guard_service().forget_server(server_id)
 

@@ -2,6 +2,7 @@ import { RefreshCw } from "@/components/ui/icons";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
 import { useConfirmationDialog } from "@/components/ui/use-confirmation-dialog";
 import { WorkspaceHeading } from "@/components/ui/workspace-heading";
 import { IconProfileDialog } from "@/features/user-icons/components/icon-profile-dialog";
@@ -53,12 +54,19 @@ function UserIconManagementSection({ icons, servers, onDirtyChange }: { icons: U
         title="Gestione icone utente"
         description="Gestisci i template grafici e le regole di assegnazione per gruppi e utenti singoli."
         actions={<>
-          <Button type="button" requiresWriteAccess variant="primary" size="compact" onClick={() => editProfile()}>Nuovo profilo</Button>
+          <Button type="button" requiresWriteAccess variant="primary" size="compact" onClick={() => editProfile()} disabled={!icons.config.data}>Nuovo profilo</Button>
           <Button type="button" variant="secondary" size="icon" title="Aggiorna profili icona" aria-label="Aggiorna profili icona" onClick={() => void icons.config.refetch()} disabled={icons.config.isFetching}><RefreshCw size={16} className={icons.config.isFetching ? "animate-spin" : ""} aria-hidden="true" /></Button>
         </>}
       />
-      {icons.config.error ? <div className="inline-alert inline-alert--error" role="alert">{icons.config.error.message}</div> : null}
-      <IconProfilesMatrix config={config} servers={servers} revision={revision} pendingProfileKeys={icons.profileOperations.pendingKeys} pendingRuleKeys={icons.ruleOperations.pendingKeys} profileErrors={icons.profileOperations.errors} ruleErrors={icons.ruleOperations.errors} showHeader={false} onCreate={() => editProfile()} onEdit={editProfile} onDeleteProfile={(profile) => void deleteProfile(profile)} onUpload={uploadRule} onDeleteRule={(profileId, serverId) => void deleteRule(profileId, serverId)} />
+      <QueryStateBoundary
+        error={icons.config.error}
+        hasData={Boolean(icons.config.data)}
+        loadingLabel="Caricamento profili icona..."
+        retrying={icons.config.isFetching}
+        onRetry={() => void icons.config.refetch()}
+      >
+        <IconProfilesMatrix config={config} servers={servers} revision={revision} pendingProfileKeys={icons.profileOperations.pendingKeys} pendingRuleKeys={icons.ruleOperations.pendingKeys} profileErrors={icons.profileOperations.errors} ruleErrors={icons.ruleOperations.errors} showHeader={false} onCreate={() => editProfile()} onEdit={editProfile} onDeleteProfile={(profile) => void deleteProfile(profile)} onUpload={uploadRule} onDeleteRule={(profileId, serverId) => void deleteRule(profileId, serverId)} />
+      </QueryStateBoundary>
       <IconProfileDialog open={profileDialogOpen} profile={dialogProfile} saving={icons.profile.isPending} error={profileDialogError} onClose={() => setProfileDialogOpen(false)} onSave={saveProfile} onDirtyChange={onDirtyChange} />
       {confirmation.dialog}
     </section>

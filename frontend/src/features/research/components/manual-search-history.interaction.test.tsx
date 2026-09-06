@@ -47,6 +47,36 @@ describe("ManualSearchHistory", () => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = undefined;
   });
 
+  it("shows empty history only after a successful snapshot", async () => {
+    let resolveHistory!: (value: Awaited<ReturnType<typeof getManualSearchHistory>>) => void;
+    vi.mocked(getManualSearchHistory).mockReturnValue(new Promise((resolve) => {
+      resolveHistory = resolve;
+    }));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <ManualSearchHistory
+            refreshToken={0}
+            searching={false}
+            onView={() => undefined}
+            onEdit={() => undefined}
+            onRepeat={() => Promise.resolve()}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    expect(container.textContent).toContain("Caricamento storico");
+    expect(container.textContent).not.toContain("Nessuna ricerca manuale salvata");
+
+    await act(async () => {
+      resolveHistory({ success: true, searches: [] });
+      await Promise.resolve();
+    });
+    await waitForText(container, "Nessuna ricerca manuale salvata");
+    expect(container.textContent).not.toContain("Caricamento storico");
+  });
+
   it("announces a failed deletion with the affected history id", async () => {
     vi.mocked(getManualSearchHistory).mockResolvedValue({
       success: true,

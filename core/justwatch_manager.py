@@ -15,21 +15,13 @@ from core.http_response_limits import read_bounded_json_response
 from core.log_sanitization import format_exception_for_log, sanitize_diagnostic_text
 
 if TYPE_CHECKING:
-    from justwatch import JustWatch
     from core.storage import DatabaseStorage
-
-try:
-    from justwatch import JustWatch
-    JUSTWATCH_AVAILABLE = True
-except ImportError:  # pragma: no cover - optional dependency
-    JUSTWATCH_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 TV_EPISODE_CACHE_SUFFIX = "::episode-v2"
 JW_HEADERS = {
     "User-Agent": "Mozilla/5.0"
 }
-JW_HTTP_TIMEOUT = (3.05, 15.0)
 JW_GRAPHQL_URL = "https://apis.justwatch.com/graphql"
 JW_SEARCH_QUERY = """
 query GetSearchTitles($searchTitlesFilter: TitleFilter!, $country: Country!, $language: Language!, $first: Int!, $filter: OfferFilter!) {
@@ -127,19 +119,6 @@ class JustWatchError(RuntimeError):
     """Raised when JustWatch operations fail."""
 
 
-class _TimeoutSession(requests.Session):
-    """Requests session that makes a missing timeout impossible."""
-
-    def request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
-        kwargs.setdefault("timeout", JW_HTTP_TIMEOUT)
-        return super().request(method, url, **kwargs)
-
-
-def is_justwatch_available() -> bool:
-    """Check if JustWatch library is available."""
-    return JUSTWATCH_AVAILABLE
-
-
 class JustWatchManager:
     """Manages JustWatch availability checks with intelligent caching."""
 
@@ -151,19 +130,12 @@ class JustWatchManager:
             storage: DatabaseStorage instance for caching
             locale: JustWatch locale (default: it_IT for Italy)
         """
-        if not JUSTWATCH_AVAILABLE:  # pragma: no cover - runtime guard
-            raise JustWatchError(
-                "Per usare JustWatch installa la libreria: pip install JustWatch"
-            )
         self.storage = storage
         self.locale = locale
         self.language = locale.split("_")[0].lower()
         self.country = locale.split("_")[1].upper()  # IT from it_IT
-        self.jw = JustWatch(country=self.country)
-        self.jw.requests = _TimeoutSession()
         self._last_request_time: Optional[float] = None
         self._min_request_interval = 1.0  # Minimum 1 second between requests
-        self._provider_map: Optional[Dict[int, str]] = None
         self._show_cache: Dict[str, Optional[Dict[str, Any]]] = {}
         self._show_details_cache: Dict[str, Optional[Dict[str, Any]]] = {}
         self._jw_id: Optional[str] = None
@@ -376,251 +348,6 @@ class JustWatchManager:
         offers = node.get("offers") or []
         return offers if isinstance(offers, list) else []
 
-    def _get_season_id(self, show_id: int, season_num: int) -> Optional[int]:
-        """
-        Get JustWatch internal season_id for a specific season number.
-
-        Args:
-            show_id: JustWatch show ID
-            season_num: Season number to find
-
-        Returns:
-            Internal season_id if found, None otherwise
-        """
-        try:
-            self._rate_limit()
-
-            # Get full show details including all seasons
-            show_details = self._get_title_details(show_id)
-
-            if not show_details:
-                logger.debug(f"Dettagli show non trovati per show_id={show_id}")
-                return None
-
-            # Look for seasons list
-            seasons = show_details.get("seasons", [])
-
-            if not seasons:
-                logger.debug(f"Nessuna stagione trovata nei dettagli di show_id={show_id}")
-                return None
-
-            # Find the season matching season_num
-            for season in seasons:
-                if season.get("season_number") == season_num:
-                    season_id = season.get("id")
-                    if season_id:
-                        logger.debug(
-                            f"Trovato season_id={season_id} per stagione {season_num}"
-                        )
-                        return season_id
-
-            logger.debug(
-                f"Stagione {season_num} non trovata tra le {len(seasons)} stagioni "
-                f"di show_id={show_id}"
-            )
-            return None
-
-        except Exception as exc:
-            logger.error(
-                "Errore recupero season_id per S%s di show_id=%s:\n%s",
-                season_num,
-                show_id,
-                format_exception_for_log(exc),
-            )
-            return None
-
-    def _get_title_details(self, show_id: int) -> Optional[Dict[str, Any]]:
-        try:
-            self._rate_limit()
-            return self.jw.get_title(title_id=show_id, content_type="show")
-        except requests.exceptions.HTTPError as exc:
-            if exc.response is None or exc.response.status_code != 404:
-                logger.error("Errore dettagli show_id=%s:\n%s", show_id, format_exception_for_log(exc))
-                return None
-            try:
-                path = f"titles/show/{show_id}/locale/{self.country}"
-                api_url = self.jw.api_base_template.format(path=path)
-                self._rate_limit()
-                response = self.jw.requests.get(
-                    api_url,
-                    headers=JW_HEADERS,
-                    timeout=JW_HTTP_TIMEOUT,
-                    stream=True,
-                )
-                return read_bounded_json_response(response)
-            except Exception as fallback_exc:
-                logger.error("Errore dettagli show_id=%s:\n%s", show_id, format_exception_for_log(fallback_exc))
-                return None
-        except Exception as exc:
-            logger.error("Errore dettagli show_id=%s:\n%s", show_id, format_exception_for_log(exc))
-            return None
-
-    def _get_season_details(self, season_id: int) -> Optional[Dict[str, Any]]:
-        try:
-            self._rate_limit()
-            return self.jw.get_season(season_id)
-        except requests.exceptions.HTTPError as exc:
-            if exc.response is None or exc.response.status_code != 404:
-                logger.error("Errore dati stagione season_id=%s:\n%s", season_id, format_exception_for_log(exc))
-                return None
-            try:
-                api_url = (
-                    "https://apis.justwatch.com/content/titles/show_season/"
-                    f"{season_id}/locale/{self.country}"
-                )
-                self._rate_limit()
-                response = self.jw.requests.get(
-                    api_url,
-                    headers=JW_HEADERS,
-                    timeout=JW_HTTP_TIMEOUT,
-                    stream=True,
-                )
-                return read_bounded_json_response(response)
-            except Exception as fallback_exc:
-                logger.error("Errore dati stagione season_id=%s:\n%s", season_id, format_exception_for_log(fallback_exc))
-                return None
-        except Exception as exc:
-            logger.error("Errore dati stagione season_id=%s:\n%s", season_id, format_exception_for_log(exc))
-            return None
-
-    def _get_provider_map(self) -> Dict[int, str]:
-        if self._provider_map is not None:
-            return self._provider_map
-        try:
-            self._rate_limit()
-            providers = self.jw.get_providers()
-        except requests.exceptions.HTTPError as exc:
-            providers = None
-            if exc.response is not None and exc.response.status_code == 404:
-                try:
-                    path = f"providers/locale/{self.country}"
-                    api_url = self.jw.api_base_template.format(path=path)
-                    self._rate_limit()
-                    response = self.jw.requests.get(
-                        api_url,
-                        headers=JW_HEADERS,
-                        timeout=JW_HTTP_TIMEOUT,
-                        stream=True,
-                    )
-                    providers = read_bounded_json_response(response)
-                except Exception as fallback_exc:
-                    logger.error("Errore recupero provider JustWatch:\n%s", format_exception_for_log(fallback_exc))
-                    self._provider_map = {}
-                    return self._provider_map
-            else:
-                logger.error("Errore recupero provider JustWatch:\n%s", format_exception_for_log(exc))
-                self._provider_map = {}
-                return self._provider_map
-        except Exception as exc:
-            logger.error("Errore recupero provider JustWatch:\n%s", format_exception_for_log(exc))
-            self._provider_map = {}
-            return self._provider_map
-        mapping: Dict[int, str] = {}
-        for provider in providers or []:
-            if not isinstance(provider, dict):
-                continue
-            provider_id_raw = provider.get("id") or provider.get("provider_id")
-            if provider_id_raw is None:
-                continue
-            try:
-                provider_id = int(provider_id_raw)
-            except (TypeError, ValueError):
-                continue
-            label = (
-                provider.get("clear_name")
-                or provider.get("name")
-                or provider.get("short_name")
-            )
-            if label:
-                mapping[provider_id] = str(label)
-        self._provider_map = mapping
-        return mapping
-
-    def _get_episode_data(
-        self,
-        show_id: int,
-        season_num: int,
-        episode_num: int
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Get data for a specific episode.
-
-        Args:
-            show_id: JustWatch show ID
-            season_num: Season number
-            episode_num: Episode number
-
-        Returns:
-            Episode data if found, None otherwise
-        """
-        try:
-            # Step 1: Get internal season_id
-            season_id = self._get_season_id(show_id, season_num)
-
-            if not season_id:
-                logger.debug(
-                    f"Impossibile recuperare season_id per S{season_num} "
-                    f"di show_id={show_id}"
-                )
-                return None
-
-            # Step 2: Get season data using season_id
-            season_data = self._get_season_details(season_id)
-
-            if not season_data:
-                logger.debug(f"Dati stagione non trovati per season_id={season_id}")
-                return None
-
-            # Step 3: Look for the specific episode in the season's episodes list
-            episodes = season_data.get("episodes", [])
-
-            if not episodes:
-                logger.debug(
-                    f"Nessun episodio trovato nella stagione {season_num} "
-                    f"(season_id={season_id})"
-                )
-                return None
-
-            for ep in episodes:
-                if ep.get("episode_number") == episode_num:
-                    logger.debug(
-                        f"Episodio {episode_num} trovato nella stagione {season_num} "
-                        f"(season_id={season_id})"
-                    )
-                    return ep
-
-            logger.debug(
-                f"Episodio {episode_num} non trovato nella stagione {season_num} "
-                f"(trovati {len(episodes)} episodi in season_id={season_id})"
-            )
-            return None
-
-        except Exception as exc:
-            logger.error(
-                "Errore recupero episodio S%sE%s per show_id=%s:\n%s",
-                season_num,
-                episode_num,
-                show_id,
-                format_exception_for_log(exc),
-            )
-            return None
-
-    def _get_valid_offers(self, episode_data: Optional[Dict[str, Any]]) -> list:
-        if not episode_data:
-            return []
-        offers = episode_data.get("offers", [])
-        if not isinstance(offers, list):
-            return []
-        valid_offers = []
-        for offer in offers:
-            if not isinstance(offer, dict):
-                continue
-            monetization_type = offer.get("monetizationType") or offer.get("monetization_type", "")
-            monetization_type = str(monetization_type).lower()
-            if monetization_type in ["flatrate", "rent", "buy"]:
-                valid_offers.append(offer)
-        return valid_offers
-
     def _extract_offer_providers(self, offers: list) -> list:
         if not offers:
             return []
@@ -643,31 +370,6 @@ class JustWatchManager:
             seen.add(label)
             labels.append(label)
         return labels
-
-    def _check_episode_availability(self, episode_data: Optional[Dict[str, Any]]) -> bool:
-        """
-        Check if episode has streaming offers available.
-
-        Args:
-            episode_data: Episode data from JustWatch
-
-        Returns:
-            True if episode is available for streaming, False otherwise
-        """
-        if not episode_data:
-            return False
-
-        offers = self._get_valid_offers(episode_data)
-        if not offers:
-            logger.debug("Nessuna offerta valida trovata per l'episodio")
-            return False
-
-        for offer in offers:
-            provider_id = offer.get("provider_id", "unknown")
-            logger.debug(
-                f"Offerta trovata: {offer.get('monetization_type')} su provider {provider_id}"
-            )
-        return True
 
     def check_availability_details(
         self,
@@ -908,5 +610,4 @@ class JustWatchManager:
 __all__ = [
     "JustWatchManager",
     "JustWatchError",
-    "is_justwatch_available"
 ]

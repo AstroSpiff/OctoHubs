@@ -21,6 +21,110 @@ def test_scheduler_worker_stops_within_the_requested_timeout():
     assert scheduler._thread.is_alive() is False
 
 
+def test_scheduler_constructor_pre_start_signal_leaves_no_worker(monkeypatch):
+    captured_threads = []
+    captured_schedulers = []
+    primary = KeyboardInterrupt("scheduler pre-start interrupted")
+
+    def fail_before_native_start(thread):
+        captured_threads.append(thread)
+        captured_schedulers.append(getattr(getattr(thread, "_target", None), "__self__", None))
+        raise primary
+
+    monkeypatch.setattr(threading.Thread, "start", fail_before_native_start)
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        AutoScheduler()
+
+    scheduler = captured_schedulers[0]
+    assert caught.value is primary
+    assert scheduler._stop.is_set()
+    assert scheduler._wake.is_set()
+    assert captured_threads[0].is_alive() is False
+
+
+def test_scheduler_constructor_post_native_start_signal_joins_worker(monkeypatch):
+    captured_threads = []
+    captured_schedulers = []
+    primary = KeyboardInterrupt("scheduler post-start interrupted")
+    original_start = threading.Thread.start
+
+    def start_then_interrupt(thread):
+        captured_threads.append(thread)
+        captured_schedulers.append(getattr(getattr(thread, "_target", None), "__self__", None))
+        original_start(thread)
+        raise primary
+
+    monkeypatch.setattr(threading.Thread, "start", start_then_interrupt)
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        AutoScheduler()
+
+    scheduler = captured_schedulers[0]
+    assert caught.value is primary
+    assert scheduler._stop.is_set()
+    assert captured_threads[0].is_alive() is False
+
+
+def test_scheduler_singleton_is_not_published_when_callback_wiring_fails(monkeypatch):
+    from services import scheduler_manager
+
+    events = []
+    primary = KeyboardInterrupt("callback wiring interrupted")
+
+    class Candidate:
+        def set_callbacks(self, **_kwargs):
+            raise primary
+
+        def stop(self):
+            events.append("stop")
+
+        def wait(self, timeout):
+            events.append(("wait", timeout))
+            return True
+
+    monkeypatch.setattr(scheduler_manager, "_AUTO_SCHEDULER", None)
+    monkeypatch.setattr(scheduler_manager, "AutoScheduler", lambda **_kwargs: Candidate())
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        scheduler_manager._ensure_auto_scheduler()
+
+    assert caught.value is primary
+    assert scheduler_manager._AUTO_SCHEDULER is None
+    assert events == ["stop", ("wait", 1.0)]
+
+
+def test_scheduler_singleton_cleanup_preserves_primary_and_attempts_all_actions(
+    monkeypatch,
+):
+    from services import scheduler_manager
+
+    events = []
+    primary = KeyboardInterrupt("callback wiring interrupted")
+
+    class Candidate:
+        def set_callbacks(self, **_kwargs):
+            raise primary
+
+        def stop(self):
+            events.append("stop")
+            raise GeneratorExit("secondary stop")
+
+        def wait(self, timeout):
+            events.append(("wait", timeout))
+            raise SystemExit("secondary wait")
+
+    monkeypatch.setattr(scheduler_manager, "_AUTO_SCHEDULER", None)
+    monkeypatch.setattr(scheduler_manager, "AutoScheduler", lambda **_kwargs: Candidate())
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        scheduler_manager._ensure_auto_scheduler()
+
+    assert caught.value is primary
+    assert scheduler_manager._AUTO_SCHEDULER is None
+    assert events == ["stop", ("wait", 1.0)]
+
+
 def test_scheduler_manager_releases_its_worker_for_a_future_lifespan(monkeypatch):
     from services import scheduler_manager
 

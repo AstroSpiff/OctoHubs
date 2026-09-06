@@ -151,9 +151,11 @@ Emby servers, integrations, search rules and automations from the authenticated
 UI. OctoHubs does not read or create `config.json` and does not import SQLite
 databases.
 
-The `/config` mount contains only application-generated secret material and
-coordination files. Its location can be changed with `OCTOHUBS_CONFIG_DIR`; keep
-it persistent and private.
+The `/config` mount contains application-generated secret material and internal
+coordination files. This includes the Event Bridge rejection journal, which
+stores only credential digests and never plaintext credentials. Its location
+can be changed with `OCTOHUBS_CONFIG_DIR`; no additional setting is required.
+Keep this directory persistent, writable by OctoHubs, and private.
 
 ## First access
 On first deployment, OctoHubs redirects to the read-only bootstrap instructions at `/setup`:

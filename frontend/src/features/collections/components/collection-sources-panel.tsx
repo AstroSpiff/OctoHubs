@@ -150,6 +150,7 @@ function CollectionSourcesPanel({
       <CollectionSourceInventorySection
         options={options}
         items={inventory.data?.items || []}
+        hasData={Boolean(inventory.data)}
         refreshing={inventory.isFetching}
         error={inventory.error?.message}
         busy={disabled || busy}
@@ -164,6 +165,7 @@ function CollectionSourcesPanel({
         defaultSourceType="trakt_list"
         unavailable={!options?.trakt_enabled}
         loading={trakt.isLoading}
+        hasData={Boolean(trakt.data)}
         busy={disabled || busy}
         error={trakt.error?.message}
         items={trakt.data?.lists || []}
@@ -175,6 +177,7 @@ function CollectionSourcesPanel({
         defaultSourceType="mdblist"
         unavailable={!options?.mdblist_enabled}
         loading={mdblist.isLoading}
+        hasData={Boolean(mdblist.data)}
         busy={disabled || busy}
         error={mdblist.error?.message}
         items={mdblist.data?.lists || []}

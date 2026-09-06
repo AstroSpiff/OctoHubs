@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+from typing import Any
+
 import pytest
 
 from core.storage.storage_workflows import (
@@ -60,9 +64,23 @@ class _Engine:
         return self.connection
 
 
+class _InterruptingEngine:
+    def connect(self):
+        raise KeyboardInterrupt("connect interrupted")
+
+
+class _CloseSignalConnection(_FaultConnection):
+    def __init__(self):
+        super().__init__(None)
+
+    def close(self):
+        self.close_attempted = True
+        raise GeneratorExit("close interrupted")
+
+
 class _Provider(StorageWorkflowMixin):
     def __init__(self, connection):
-        self._engine = _Engine(connection)
+        self._engine: Any = _Engine(connection)
 
     def ensure_ready(self):
         return None
@@ -104,3 +122,46 @@ def test_acquire_lease_failure_discards_connection_and_releases_mutex(failure):
     assert connection.invalidated is True
     assert connection.close_attempted is True
     _assert_process_mutex_released()
+
+
+def test_acquire_lease_process_signal_still_releases_process_mutex():
+    provider = _Provider(_FaultConnection(None))
+    provider._engine = _InterruptingEngine()
+
+    with pytest.raises(KeyboardInterrupt, match="connect interrupted"):
+        provider.acquire_workflow_lease()
+
+    _assert_process_mutex_released()
+
+
+def test_release_lease_close_signal_still_marks_and_releases_resources():
+    connection = _CloseSignalConnection()
+    provider = _Provider(connection)
+    assert _workflow_process_lease.acquire(blocking=False) is True
+    lease = _WorkflowLease(connection)
+
+    with pytest.raises(GeneratorExit, match="close interrupted"):
+        provider.release_workflow_lease(lease)
+
+    assert lease.released is True
+    assert connection.invalidated is True
+    assert connection.close_attempted is True
+    _assert_process_mutex_released()
+
+
+def test_repository_routes_workflow_lease_release_through_safe_helper():
+    root = Path(__file__).resolve().parents[1]
+    allowed = root / "core/workflow_lease_cleanup.py"
+    findings = []
+    for path in (root / "core").rglob("*.py"):
+        if path == allowed:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "release_workflow_lease"
+            ):
+                findings.append(f"{path.relative_to(root)}:{node.lineno}")
+    assert findings == []

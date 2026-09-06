@@ -71,12 +71,19 @@ describe("SettingsPresetControls reconciliation", () => {
       );
       await Promise.resolve();
     });
+    await act(async () => {
+      await vi.waitFor(() => {
+        expect(
+          container.querySelector<HTMLSelectElement>(
+            '[aria-label="Preset salvati"]',
+          )?.options.length,
+        ).toBe(2);
+      });
+    });
     const select = container.querySelector<HTMLSelectElement>(
       '[aria-label="Preset salvati"]',
     );
-    await act(async () => {
-      await vi.waitFor(() => expect(select?.options.length).toBe(2));
-    });
+    expect(select).not.toBeNull();
     act(() => {
       const setValue = Object.getOwnPropertyDescriptor(
         HTMLSelectElement.prototype,
@@ -101,5 +108,29 @@ describe("SettingsPresetControls reconciliation", () => {
       (button) => button.textContent?.includes("Aggiorna"),
     );
     expect(update?.disabled).toBe(true);
+  });
+
+  it("does not describe an unresolved preset query as an empty result", async () => {
+    vi.mocked(getSettingsPresets).mockImplementation(
+      () => new Promise(() => undefined),
+    );
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <SettingsPresetControls
+            settings={{} as UserSettings}
+            applyLibraries
+            disabled={false}
+            onLoad={vi.fn()}
+          />
+        </QueryClientProvider>,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("Caricamento preset impostazioni");
+    expect(container.textContent).not.toContain("Nessun preset salvato");
+    expect(container.querySelector('[aria-label="Preset salvati"]')).toBeNull();
   });
 });

@@ -153,7 +153,6 @@ def test_justwatch_initialization_logs_sanitized_traceback(monkeypatch, caplog, 
 
     monkeypatch.setattr(integrations, "_active_justwatch_settings", lambda: {"LOCALE": "it_IT"})
     monkeypatch.setattr(integrations, "_justwatch_enabled", lambda _settings: True)
-    monkeypatch.setattr(integrations, "is_justwatch_available", lambda: True)
     monkeypatch.setattr(integrations, "_get_justwatch_manager", fail_manager)
     capsys.readouterr()
     with caplog.at_level(logging.ERROR, logger=integrations.__name__):

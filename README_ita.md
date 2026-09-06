@@ -150,9 +150,11 @@ poi aggiungi server Emby, integrazioni, regole di ricerca e automazioni dalla UI
 autenticata. OctoHubs non legge o crea `config.json` e non importa database
 SQLite.
 
-Il volume `/config` contiene soltanto secret generati dall'applicazione e file
-di coordinamento. Puoi cambiarne il percorso con `OCTOHUBS_CONFIG_DIR`; deve
-restare persistente e privato.
+Il volume `/config` contiene secret generati dall'applicazione e file interni di
+coordinamento. Tra questi c'è il journal dei rifiuti Event Bridge, che conserva
+solo digest delle credenziali e mai credenziali in chiaro. Puoi cambiare il
+percorso con `OCTOHUBS_CONFIG_DIR`; non serve alcuna impostazione aggiuntiva.
+La directory deve restare persistente, scrivibile da OctoHubs e privata.
 
 ## Primo accesso
 Al primo deployment, OctoHubs reindirizza alle istruzioni di bootstrap in sola lettura su `/setup`:

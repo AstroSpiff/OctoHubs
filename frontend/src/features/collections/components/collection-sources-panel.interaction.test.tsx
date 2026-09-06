@@ -110,6 +110,11 @@ describe("CollectionSourcesPanel refresh lifecycle", () => {
       new Error("Salvataggio fonte non riuscito"),
     );
     await renderPanel();
+    await act(async () => {
+      await vi.waitFor(() => {
+        expect(container.querySelector(".collection-source-add")).not.toBeNull();
+      });
+    });
     const name = container.querySelector<HTMLInputElement>("#collection-source-name");
     const value = container.querySelector<HTMLInputElement>("#collection-source-value");
     const form = container.querySelector<HTMLFormElement>(".collection-source-add");
@@ -141,5 +146,18 @@ describe("CollectionSourcesPanel refresh lifecycle", () => {
 
     expect(name?.value).toBe("Cinema personale");
     expect(value?.value).toBe("https://trakt.tv/users/example/lists/cinema");
+  });
+
+  it("does not render the saved-source empty state before inventory resolves", async () => {
+    vi.mocked(getCollectionSourceInventory).mockImplementation(
+      () => new Promise(() => undefined),
+    );
+    vi.mocked(getTraktLists).mockResolvedValue({ success: true, lists: [] });
+
+    await renderPanel();
+
+    expect(container.textContent).toContain("Caricamento liste salvate");
+    expect(container.textContent).not.toContain("Nessuna lista salvata");
+    expect(container.querySelector(".collection-source-add")).not.toBeNull();
   });
 });

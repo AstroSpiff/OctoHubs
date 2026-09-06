@@ -28,6 +28,7 @@ def latest_refresh_guard(storage: Any | None) -> Iterator[None]:
             return
 
         guard_session: Any = cast(Callable[[], Any], get_session)()
+        primary_error: BaseException | None = None
         try:
             bind = guard_session.get_bind()
             if getattr(getattr(bind, "dialect", None), "name", "") == "postgresql":
@@ -41,11 +42,20 @@ def latest_refresh_guard(storage: Any | None) -> Iterator[None]:
             finally:
                 exit_latest_refresh_guard()
             guard_session.commit()
-        except BaseException:
-            rollback_session_safely(guard_session, context="Latest refresh guard")
+        except BaseException as exc:
+            primary_error = exc
+            rollback_session_safely(
+                guard_session,
+                context="Latest refresh guard",
+                primary_error=primary_error,
+            )
             raise
         finally:
-            close_session_safely(guard_session, context="Latest refresh guard")
+            close_session_safely(
+                guard_session,
+                context="Latest refresh guard",
+                primary_error=primary_error,
+            )
 
 
 __all__ = ["latest_refresh_guard"]

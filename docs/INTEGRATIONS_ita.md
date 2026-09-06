@@ -111,7 +111,7 @@ Campi config:
 - `JUSTWATCH.LOCALE` (esempio: `it_IT`)
 
 Note:
-- Richiede il pacchetto Python `JustWatch`.
+- Usa il client GraphQL mantenuto da OctoHubs; non richiede pacchetti Python aggiuntivi.
 - Usa il database PostgreSQL applicativo obbligatorio per la cache; non serve
   abilitare un database separato.
 - Cache: episodi disponibili non ricontrollati; non disponibili ricontrollati ogni 24h.
@@ -163,6 +163,17 @@ Passi manuali:
 - Premi nuovamente **Collega** per ruotarla. OctoHubs non mostra né salva il valore
   in chiaro: conserva soltanto l'hash.
 
+Le rotazioni rifiutate vengono coordinate tra i riavvii tramite un journal
+interno scritto atomicamente in `OCTOHUBS_CONFIG_DIR`
+(`.event-bridge-rejections.json`). Il journal contiene soltanto digest delle
+credenziali per-server, viene creato con permessi privati e non richiede alcuna
+configurazione aggiuntiva. Mantieni persistente e scrivibile la directory di
+configurazione esistente. Se il journal diventa illeggibile, le credenziali
+pending vengono rifiutate. Ripristina l'accesso alla directory e riprova
+**Collega**: il marker durevole in PostgreSQL consente il retry e OctoHubs rimuove
+un journal illeggibile soltanto dopo che PostgreSQL conferma l'assenza di
+generazioni pending.
+
 Il plugin invia automaticamente `X-OctoHubs-Server-Id` e `X-Webhook-Secret`. Le
 chiamate curl generiche e il precedente `WEBHOOK_SECRET` condiviso non sono supportati.
 
@@ -176,4 +187,4 @@ caso di frequenza anomala.
 - 413 webhook: riduci il payload raw o il batch inviato da un client non ufficiale.
 - 429 webhook: il server sta superando temporaneamente la quota Event Bridge.
 - Ricerca non funziona: verifica URL/API key e flag in `SEARCH_RULES`.
-- JustWatch non funziona: verifica installazione pacchetto e DB abilitato.
+- JustWatch non funziona: verifica locale, disponibilita del DB e connettivita HTTPS in uscita.

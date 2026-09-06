@@ -16,7 +16,7 @@ from core import config_manager
 from core.config import _merge_trakt_settings
 from core.config_manager import _db_enabled, _ensure_db_backend
 from core.http_response_limits import close_response_safely, read_bounded_json_response
-from core.justwatch_manager import JustWatchManager, JustWatchError, is_justwatch_available
+from core.justwatch_manager import JustWatchManager, JustWatchError
 from core.safe_output import safe_print as print
 from core.log_sanitization import format_exception_for_log
 from core.outbound_redirects import response_is_redirect
@@ -352,9 +352,6 @@ def _log_justwatch_status() -> None:
     if not _justwatch_enabled(settings):
         return
     locale = (settings.get("LOCALE") or "it_IT").strip() or "it_IT"
-    if not is_justwatch_available():
-        print("   -> JustWatch: libreria non installata (pip install JustWatch)")
-        return
     try:
         manager = _get_justwatch_manager(settings)
     except Exception as exc:
@@ -486,8 +483,6 @@ def _get_justwatch_manager(settings: Dict[str, Any] | None) -> Optional[JustWatc
     if not settings:
         return None
     if not _justwatch_enabled(settings):
-        return None
-    if not is_justwatch_available():
         return None
     db_settings = (
         config_manager._ACTIVE_CONFIG.get("DATABASE")

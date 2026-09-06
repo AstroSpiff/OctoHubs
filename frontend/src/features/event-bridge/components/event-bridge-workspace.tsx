@@ -3,6 +3,7 @@ import { useEffect } from "react";
 
 import { StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
 import { WorkspaceHeading } from "@/components/ui/workspace-heading";
 import { WorkspaceSection } from "@/components/ui/workspace-layout";
 import { WorkspaceStatusOverview } from "@/components/ui/workspace-status-overview";
@@ -33,65 +34,71 @@ function EventBridgeWorkspace({ embedded = false, onDirtyChange }: { embedded?: 
 
   return <WorkspaceSection id={embedded ? "event-bridge-configuration" : undefined} className={embedded ? "embedded-workspace event-bridge-workspace" : "event-bridge-workspace"} tabIndex={embedded ? -1 : undefined}>
     {heading}
-    <WorkspaceStatusOverview
-      aria-live="polite"
-      className="bridge-overview"
-      description="Stato aggiornato automaticamente dai plugin configurati."
-      icon={<Cable size={22} aria-hidden="true" />}
-      iconTone={connectedCount ? "ok" : "warning"}
-      metrics={[
-        { label: "Server configurati", value: serverCount },
-        {
-          label: "WebSocket",
-          tone: serverCount && connectedCount === serverCount ? "ok" : connectedCount ? "warning" : "neutral",
-          value: serverCount ? `${connectedCount}/${serverCount}` : "Nessuno",
-        },
-        {
-          label: "Modifiche da salvare",
-          tone: pendingChanges ? "warning" : "neutral",
-          value: pendingChanges || "Nessuna",
-        },
-        {
-          label: "Credenziali",
-          tone: serverCount && credentialCount === serverCount ? "ok" : "warning",
-          value: serverCount ? `${credentialCount}/${serverCount}` : "Nessuna",
-        },
-      ]}
-      status={<StatusBadge severity={connectedCount ? "ok" : "warning"}>{connectedCount ? "Connesso" : "In attesa"}</StatusBadge>}
-      title="Collegamenti Event Bridge"
-    />
     {bridge.notice ? <div className={`inline-alert inline-alert--${bridge.notice.tone}`} role="status"><Check size={17} aria-hidden="true" /> {bridge.notice.message}</div> : null}
-    {bridge.status.error ? <div className="inline-alert inline-alert--error" role="alert">{bridge.status.error.message}</div> : null}
-    {bridge.status.isLoading ? <div className="loading-state">Caricamento Event Bridge...</div> : null}
-    <div className="bridge-servers">
-      {bridge.servers.map((server) => {
-        const saving = bridge.save.isPending && bridge.save.variables?.serverId === server.id;
-        const saveError = bridge.save.isError && bridge.save.variables?.serverId === server.id
-          ? bridge.save.error.message
-          : "";
-        const provisioning = bridge.provisionOperations.pendingKeys.has(server.id);
-        const provisionError = bridge.provisionOperations.errors[server.id] || "";
-        return (
-          <EventBridgeServerCard
-            key={server.id}
-            server={server}
-            draft={bridge.drafts[server.id] || server.settings}
-            dirty={bridge.dirtyIds.has(server.id)}
-            saving={saving}
-            locked={bridge.save.isPending}
-            saveError={saveError}
-            provisioning={provisioning}
-            provisionError={provisionError}
-            onChange={(settings) => bridge.updateDraft(server.id, settings)}
-            onSave={() => bridge.save.mutate({
-              serverId: server.id,
-              settings: bridge.drafts[server.id] || server.settings,
-            })}
-            onProvision={() => bridge.provision.mutate(server.id)}
-          />
-        );
-      })}
-    </div>
+    <QueryStateBoundary
+      error={bridge.status.error}
+      hasData={Boolean(bridge.status.data)}
+      loadingLabel="Caricamento Event Bridge..."
+      retrying={bridge.status.isFetching}
+      onRetry={() => void bridge.status.refetch()}
+    >
+      <WorkspaceStatusOverview
+        aria-live="polite"
+        className="bridge-overview"
+        description="Stato aggiornato automaticamente dai plugin configurati."
+        icon={<Cable size={22} aria-hidden="true" />}
+        iconTone={connectedCount ? "ok" : "warning"}
+        metrics={[
+          { label: "Server configurati", value: serverCount },
+          {
+            label: "WebSocket",
+            tone: serverCount && connectedCount === serverCount ? "ok" : connectedCount ? "warning" : "neutral",
+            value: serverCount ? `${connectedCount}/${serverCount}` : "Nessuno",
+          },
+          {
+            label: "Modifiche da salvare",
+            tone: pendingChanges ? "warning" : "neutral",
+            value: pendingChanges || "Nessuna",
+          },
+          {
+            label: "Credenziali",
+            tone: serverCount && credentialCount === serverCount ? "ok" : "warning",
+            value: serverCount ? `${credentialCount}/${serverCount}` : "Nessuna",
+          },
+        ]}
+        status={<StatusBadge severity={connectedCount ? "ok" : "warning"}>{connectedCount ? "Connesso" : "In attesa"}</StatusBadge>}
+        title="Collegamenti Event Bridge"
+      />
+      <div className="bridge-servers">
+        {bridge.servers.map((server) => {
+          const saving = bridge.save.isPending && bridge.save.variables?.serverId === server.id;
+          const saveError = bridge.save.isError && bridge.save.variables?.serverId === server.id
+            ? bridge.save.error.message
+            : "";
+          const provisioning = bridge.provisionOperations.pendingKeys.has(server.id);
+          const provisionError = bridge.provisionOperations.errors[server.id] || "";
+          return (
+            <EventBridgeServerCard
+              key={server.id}
+              server={server}
+              draft={bridge.drafts[server.id] || server.settings}
+              dirty={bridge.dirtyIds.has(server.id)}
+              saving={saving}
+              locked={bridge.save.isPending}
+              saveError={saveError}
+              provisioning={provisioning}
+              provisionError={provisionError}
+              onChange={(settings) => bridge.updateDraft(server.id, settings)}
+              onSave={() => bridge.save.mutate({
+                serverId: server.id,
+                settings: bridge.drafts[server.id] || server.settings,
+              })}
+              onProvision={() => bridge.provision.mutate(server.id)}
+            />
+          );
+        })}
+      </div>
+    </QueryStateBoundary>
     {confirmation.dialog}
   </WorkspaceSection>;
 }

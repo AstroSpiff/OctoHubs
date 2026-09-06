@@ -1,6 +1,7 @@
 import { ExternalLink, RefreshCw } from "@/components/ui/icons";
 
 import { Button } from "@/components/ui/button";
+import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
 import { safeCollectionProviderLink } from "@/features/collections/collection-provider-links";
 import type { SourceSelection } from "@/features/collections/collection-source-selection";
 import type { PersonalCollectionList } from "@/features/collections/types";
@@ -10,6 +11,7 @@ type CollectionSourceRemoteSectionProps = {
   defaultSourceType: string;
   unavailable: boolean;
   loading: boolean;
+  hasData: boolean;
   busy: boolean;
   error?: string;
   items: PersonalCollectionList[];
@@ -22,6 +24,7 @@ function CollectionSourceRemoteSection({
   defaultSourceType,
   unavailable,
   loading,
+  hasData,
   busy,
   error,
   items,
@@ -51,63 +54,69 @@ function CollectionSourceRemoteSection({
       </header>
       {unavailable ? (
         <p className="collection-source-empty">Servizio non configurato.</p>
-      ) : error ? (
-        <p className="users-dialog-error" role="alert">
-          {error}
-        </p>
-      ) : !items.length && !loading ? (
-        <p className="collection-source-empty">Nessuna lista disponibile.</p>
       ) : (
-        <ul className="collection-source-rows">
-          {items.map((item, index) => {
-            const sourceValue = collectionListSourceValue(item);
-            const label = item.name || item.title || sourceValue;
-            const link = safeCollectionProviderLink(
-              item.url || item.link,
-              item.source_type || defaultSourceType,
-            );
-            return (
-              <li key={`${sourceValue}:${index}`}>
-                <div>
-                  <strong>{label}</strong>
-                  <small>
-                    {item.item_count ?? item.count ?? 0} elementi
-                    {item.description ? ` · ${item.description}` : ""}
-                  </small>
-                </div>
-                <span>
-                  {link ? (
-                    <a
-                      href={link}
-                      target="_blank"
-                      rel="noreferrer"
-                      title="Apri lista"
-                      aria-label={`Apri ${label}`}
-                    >
-                      <ExternalLink size={16} aria-hidden="true" />
-                    </a>
-                  ) : null}
-                  <Button
-                    type="button"
-                    requiresWriteAccess
-                    variant="secondary"
-                    size="compact"
-                    onClick={() =>
-                      onChoose({
-                        sourceType: item.source_type || defaultSourceType,
-                        sourceValue,
-                        sourceOrigin: "personal",
-                      })
-                    }
-                    disabled={busy}
-                  >
-                    Usa
-                  </Button>
-                </span>
-              </li>
-            );
-          })}
-        </ul>
+        <QueryStateBoundary
+          error={error ? new Error(error) : null}
+          hasData={hasData}
+          loadingLabel={`Caricamento ${title.toLowerCase()}...`}
+          retrying={loading}
+          onRetry={onRefresh}
+        >
+          {!items.length ? (
+            <p className="collection-source-empty">Nessuna lista disponibile.</p>
+          ) : (
+            <ul className="collection-source-rows">
+              {items.map((item, index) => {
+                const sourceValue = collectionListSourceValue(item);
+                const label = item.name || item.title || sourceValue;
+                const link = safeCollectionProviderLink(
+                  item.url || item.link,
+                  item.source_type || defaultSourceType,
+                );
+                return (
+                  <li key={`${sourceValue}:${index}`}>
+                    <div>
+                      <strong>{label}</strong>
+                      <small>
+                        {item.item_count ?? item.count ?? 0} elementi
+                        {item.description ? ` · ${item.description}` : ""}
+                      </small>
+                    </div>
+                    <span>
+                      {link ? (
+                        <a
+                          href={link}
+                          target="_blank"
+                          rel="noreferrer"
+                          title="Apri lista"
+                          aria-label={`Apri ${label}`}
+                        >
+                          <ExternalLink size={16} aria-hidden="true" />
+                        </a>
+                      ) : null}
+                      <Button
+                        type="button"
+                        requiresWriteAccess
+                        variant="secondary"
+                        size="compact"
+                        onClick={() =>
+                          onChoose({
+                            sourceType: item.source_type || defaultSourceType,
+                            sourceValue,
+                            sourceOrigin: "personal",
+                          })
+                        }
+                        disabled={busy}
+                      >
+                        Usa
+                      </Button>
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </QueryStateBoundary>
       )}
     </section>
   );

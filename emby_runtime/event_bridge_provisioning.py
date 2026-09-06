@@ -15,7 +15,6 @@ from emby_runtime.event_bridge_credentials import (
     finish_event_bridge_credential_rotation_attempt,
     generate_event_bridge_credential,
     promote_event_bridge_credential_if_pending,
-    reconcile_rejected_event_bridge_credential_rotation,
     remember_rejected_event_bridge_credential_rotation,
 )
 from emby_runtime.event_bridge_plugin_client import push_event_bridge_settings_to_plugin
@@ -65,7 +64,6 @@ def provision_event_bridge_credential(
         )
     credential = ""
     try:
-        reconcile_rejected_event_bridge_credential_rotation(server_id)
         credential = generate_event_bridge_credential()
         preparation_error = _prepare_credential_rotation(server_id, credential)
         if preparation_error is not None:
@@ -150,15 +148,31 @@ def _promote_confirmed_credential(
 
 
 def _cancel_rejected_rotation_safely(server_id: str, credential: str) -> None:
-    remember_rejected_event_bridge_credential_rotation(server_id, credential)
+    primary_signal: BaseException | None = None
+    try:
+        remember_rejected_event_bridge_credential_rotation(server_id, credential)
+    except BaseException as exc:
+        # Keep going: the in-process marker was installed before its durable
+        # write, and cancellation may still remove the pending record entirely.
+        logger.warning(
+            "Persistenza rifiuto rotazione Event Bridge non riuscita per %s:\n%s",
+            str(server_id or "").strip(),
+            format_exception_for_log(exc),
+        )
+        if not isinstance(exc, Exception):
+            primary_signal = exc
     try:
         cancel_event_bridge_credential_rotation(server_id, credential)
-    except Exception as exc:
+    except BaseException as exc:
         logger.warning(
             "Cleanup rotazione credenziale Event Bridge non riuscito per %s:\n%s",
             str(server_id or "").strip(),
             format_exception_for_log(exc),
         )
+        if primary_signal is None and not isinstance(exc, Exception):
+            primary_signal = exc
+    if primary_signal is not None:
+        raise primary_signal
 
 
 def _credential_was_rejected(response: dict[str, Any] | None, server_id: str) -> bool:

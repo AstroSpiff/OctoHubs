@@ -19,7 +19,9 @@ type LibrariesBoardProps = {
   workflowMode: boolean;
   scanningIds?: ReadonlySet<string>;
   scanJobs: ScanJob[];
+  scanJobsReady: boolean;
   scanHistory: LibraryScanHistoryJob[];
+  scanHistoryReady: boolean;
   scanningLibraryKeys?: ReadonlySet<string>;
   libraryScanBusy: boolean;
   onScan: (group: LibraryGroup, scanType: "content" | "metadata") => void;
@@ -34,7 +36,9 @@ function LibrariesBoard({
   workflowMode,
   scanningIds = new Set(),
   scanJobs,
+  scanJobsReady,
   scanHistory,
+  scanHistoryReady,
   scanningLibraryKeys = new Set(),
   libraryScanBusy,
   onScan,
@@ -68,7 +72,9 @@ function LibrariesBoard({
                   workflowMode={workflowMode}
                   scanning={scanningIds.has(group.group_name)}
                   scanJobs={scanJobs}
+                  scanJobsReady={scanJobsReady}
                   scanHistory={scanHistory}
+                  scanHistoryReady={scanHistoryReady}
                   scanningLibraryKeys={scanningLibraryKeys}
                   libraryScanBusy={libraryScanBusy}
                   onScan={(scanType) => onScan(group, scanType)}

@@ -56,12 +56,12 @@ function AccountsWorkspace({ onDirtyChange }: { onDirtyChange?: (dirty: boolean)
               onSecretPendingChange={onDirtyChange}
             /> : null}
           </QueryStateBoundary>
-          <QueryStateBoundary error={audit.error} hasData={Boolean(audit.data)} loadingLabel="Caricamento audit token..." retrying={audit.isFetching} onRetry={() => void audit.refetch()}>
-            {audit.data ? <ApiTokenAuditPanel
+          <QueryStateBoundary error={audit.error || accounts.apiTokens.error} hasData={Boolean(audit.data && accounts.apiTokens.data)} loadingLabel="Caricamento audit token..." retrying={audit.isFetching || accounts.apiTokens.isFetching} onRetry={() => { void audit.refetch(); void accounts.apiTokens.refetch(); }}>
+            {audit.data && accounts.apiTokens.data ? <ApiTokenAuditPanel
               events={audit.data.events}
               filters={auditFilters}
               loading={audit.isLoading}
-              tokens={accounts.apiTokens.data?.tokens || []}
+              tokens={accounts.apiTokens.data.tokens}
               onChangeFilters={setAuditFilters}
               onExport={accounts.exportApiTokenAudit}
               onRefresh={() => void audit.refetch()}

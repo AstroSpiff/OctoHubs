@@ -10,6 +10,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
 import { useConfirmationDialog } from "@/components/ui/use-confirmation-dialog";
 import {
   deleteManualSearch,
@@ -102,30 +103,26 @@ function ManualSearchHistory({
         </div>
         <History size={22} aria-hidden="true" />
       </header>
-      {history.isLoading ? (
-        <div className="research-empty-state">
-          <LoaderCircle size={18} className="animate-spin" aria-hidden="true" />{" "}
-          Caricamento storico...
-        </div>
-      ) : null}
-      {history.error ? (
-        <div className="inline-alert inline-alert--error" role="alert">
-          {history.error.message}
-        </div>
-      ) : null}
       {remove.error ? (
         <div className="inline-alert inline-alert--error" role="alert">
           Eliminazione della ricerca {failedRemovalId !== null ? `#${failedRemovalId} ` : ""}non riuscita: {remove.error.message}
         </div>
       ) : null}
-      {!history.isLoading && !history.error && !entries.length ? (
-        <div className="research-empty-state">
-          Nessuna ricerca manuale salvata.
-        </div>
-      ) : null}
-      {entries.length ? (
-        <ul className="manual-search-history-list">
-          {entries.map((entry) => {
+      <QueryStateBoundary
+        error={history.error}
+        hasData={Boolean(history.data)}
+        loadingLabel="Caricamento storico..."
+        retrying={history.isFetching}
+        onRetry={() => void history.refetch()}
+      >
+        {!entries.length ? (
+          <div className="research-empty-state">
+            Nessuna ricerca manuale salvata.
+          </div>
+        ) : null}
+        {entries.length ? (
+          <ul className="manual-search-history-list">
+            {entries.map((entry) => {
             const first = entry.items?.[0];
             const results = first?.results || [];
             const input = manualSearchInputFromHistory(entry);
@@ -216,9 +213,10 @@ function ManualSearchHistory({
                 </div>
               </li>
             );
-          })}
-        </ul>
-      ) : null}
+            })}
+          </ul>
+        ) : null}
+      </QueryStateBoundary>
       {confirmation.dialog}
     </section>
   );

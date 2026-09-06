@@ -27,7 +27,9 @@ describe("LibraryGroupCard", () => {
         workflowMode={false}
         scanning={false}
         scanJobs={[]}
+        scanJobsReady
         scanHistory={[]}
+        scanHistoryReady
         libraryScanBusy={false}
         onScan={() => undefined}
         onScanLibrary={() => undefined}
@@ -46,7 +48,9 @@ describe("LibraryGroupCard", () => {
         workflowMode={false}
         scanning
         scanJobs={[]}
+        scanJobsReady
         scanHistory={[]}
+        scanHistoryReady
         libraryScanBusy={false}
         onScan={() => undefined}
         onScanLibrary={() => undefined}
@@ -73,7 +77,9 @@ describe("LibraryGroupCard", () => {
             progress: 0.5,
           },
         ]}
+        scanJobsReady
         scanHistory={[]}
+        scanHistoryReady
         libraryScanBusy={false}
         onScan={() => undefined}
         onScanLibrary={() => undefined}
@@ -90,6 +96,7 @@ describe("LibraryGroupCard", () => {
         workflowMode={false}
         scanning={false}
         scanJobs={[]}
+        scanJobsReady
         scanHistory={[
           {
             id: "old",
@@ -112,6 +119,7 @@ describe("LibraryGroupCard", () => {
             completed_at: "2026-08-22T10:00:00Z",
           },
         ]}
+        scanHistoryReady
         libraryScanBusy={false}
         onScan={() => undefined}
         onScanLibrary={() => undefined}
@@ -121,5 +129,25 @@ describe("LibraryGroupCard", () => {
     expect(markup).toContain("Ultima attività registrata");
     expect(markup).toContain("Metadata");
     expect(markup).not.toContain("Errore");
+  });
+
+  it("keeps scan mutations disabled until the active-jobs snapshot exists", () => {
+    const markup = renderToStaticMarkup(
+      <LibraryGroupCard
+        group={group}
+        workflowMode={false}
+        scanning={false}
+        scanJobs={[]}
+        scanJobsReady={false}
+        scanHistory={[]}
+        scanHistoryReady={false}
+        libraryScanBusy={false}
+        onScan={() => undefined}
+        onScanLibrary={() => undefined}
+      />,
+    );
+
+    expect(markup.match(/<button[^>]*\sdisabled(?:=|\s|>)/g)).toHaveLength(2);
+    expect(markup).not.toContain("Ultima attività registrata");
   });
 });

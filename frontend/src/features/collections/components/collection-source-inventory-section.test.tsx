@@ -26,6 +26,7 @@ describe("CollectionSourceInventorySection", () => {
             source_value: "example/preferiti",
           },
         ]}
+        hasData
         refreshing={false}
         error="Servizio fonti non raggiungibile."
         busy={false}

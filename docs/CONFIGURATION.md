@@ -14,8 +14,10 @@ managed by OctoHubs.
 - PostgreSQL stores all application settings, users, sessions, preferences, API
   tokens and audit logs.
 - The authenticated UI manages integrations, Emby servers, rules and jobs.
-- `/config` contains generated application secrets only; configure a different
-  persistent directory with `OCTOHUBS_CONFIG_DIR` when required.
+- `/config` contains generated application secrets and private coordination
+  files. The internal Event Bridge rejection journal stores credential digests,
+  never plaintext credentials. Configure a different persistent directory with
+  `OCTOHUBS_CONFIG_DIR` when required; no separate journal setting is needed.
 
 ## Editing workflow
 

@@ -6,6 +6,7 @@ function OperationsCenter() {
 
   return <OperationsCenterView
     operations={operations.data?.operations || []}
+    hasData={Boolean(operations.data)}
     activeCount={operations.data?.active_count || 0}
     fetching={operations.isFetching}
     clearing={clearCompleted.isPending}

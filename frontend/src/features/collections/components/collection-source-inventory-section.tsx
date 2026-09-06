@@ -2,6 +2,7 @@ import { ExternalLink, Plus, RefreshCw, Trash2 } from "@/components/ui/icons";
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
 import { WriteAction } from "@/features/session/workspace-capabilities";
 import {
   detectCollectionSourceType,
@@ -18,6 +19,7 @@ import { safeExternalHttpUrl } from "@/lib/external-url";
 type CollectionSourceInventorySectionProps = {
   options?: CollectionOptions;
   items: CollectionSourceInventoryItem[];
+  hasData: boolean;
   refreshing: boolean;
   error?: string;
   busy: boolean;
@@ -31,6 +33,7 @@ type CollectionSourceInventorySectionProps = {
 function CollectionSourceInventorySection({
   options,
   items,
+  hasData,
   refreshing,
   error: loadError,
   busy,
@@ -152,18 +155,21 @@ function CollectionSourceInventorySection({
           {error}
         </p>
       ) : null}
-      {loadError ? (
-        <p className="users-dialog-error" role="alert">
-          {loadError}
-        </p>
-      ) : null}
-      <CollectionSourceRows
-        items={items}
-        sourceTypes={options?.source_types || []}
-        disabled={disabled}
-        onChoose={onChoose}
-        onDelete={onDelete}
-      />
+      <QueryStateBoundary
+        error={loadError ? new Error(loadError) : null}
+        hasData={hasData}
+        loadingLabel="Caricamento liste salvate..."
+        retrying={refreshing}
+        onRetry={onRefresh}
+      >
+        <CollectionSourceRows
+          items={items}
+          sourceTypes={options?.source_types || []}
+          disabled={disabled}
+          onChoose={onChoose}
+          onDelete={onDelete}
+        />
+      </QueryStateBoundary>
     </section>
   );
 }

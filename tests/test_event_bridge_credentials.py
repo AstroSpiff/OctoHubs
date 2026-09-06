@@ -8,6 +8,11 @@ import pytest
 from fastapi import HTTPException
 
 
+@pytest.fixture(autouse=True)
+def _isolated_event_bridge_rejection_journal(monkeypatch, tmp_path):
+    monkeypatch.setenv("OCTOHUBS_CONFIG_DIR", str(tmp_path))
+
+
 class _Backend:
     def __init__(self):
         self.settings = {"EMBY": {"SERVERS": [{"id": "green"}]}}
@@ -315,7 +320,8 @@ def test_pending_only_cancel_failure_recovers_after_restart_without_third_genera
     from emby_runtime import event_bridge_provisioning as provisioning
 
     backend = _FailingMutationBackend()
-    backend.fail_on_calls = {2}  # prepare pending, then fail definite-rejection cleanup
+    # prepare pending, persist definitive rejection, then fail cleanup
+    backend.fail_on_calls = {3}
     monkeypatch.setattr(credentials._config_manager, "_ensure_db_backend", lambda: backend)
     generated = iter(("rejected-secret", "retry-secret"))
     monkeypatch.setattr(
@@ -640,7 +646,7 @@ def test_provisioning_cancels_pending_generation_when_remote_push_fails(monkeypa
     assert credentials.verify_event_bridge_credential("green", "rejected-secret") is False
 
 
-def test_cancel_failure_preserves_both_generations_until_current_proves_rejection(
+def test_cancel_failure_preserves_current_and_durable_rejection_until_retry(
     monkeypatch,
     caplog,
 ):
@@ -650,7 +656,8 @@ def test_cancel_failure_preserves_both_generations_until_current_proves_rejectio
     backend = _FailingMutationBackend()
     monkeypatch.setattr(credentials._config_manager, "_ensure_db_backend", lambda: backend)
     credentials.save_event_bridge_credential("green", "current-secret")
-    backend.fail_on_calls = {3}  # save current, prepare pending, fail cancellation
+    # save current, prepare pending, persist definitive rejection, fail cancellation
+    backend.fail_on_calls = {4}
     monkeypatch.setattr(
         provisioning,
         "generate_event_bridge_credential",
@@ -672,20 +679,23 @@ def test_cancel_failure_preserves_both_generations_until_current_proves_rejectio
     assert result.ok is False
     assert result.error == "plugin rejected update"
     assert "pending_digest" in stored
+    assert stored["pending_outcome"] == "rejected"
     assert credentials.event_bridge_credential_generation_is_current(
         "green", stored["digest"]
     )
-    assert credentials.event_bridge_credential_generation_is_current(
+    assert not credentials.event_bridge_credential_generation_is_current(
         "green", stored["pending_digest"]
     )
     assert "rejected-secret" not in str(backend.settings)
     assert "rejected-secret" not in caplog.text
 
-    # Once storage recovers, a fresh current-generation authentication is
-    # remote evidence that makes abandoning the stale pending digest safe.
+    # The durable rejection is sufficient after storage recovery and restart;
+    # no spontaneous authentication from the remote plugin is required.
+    from emby_runtime import event_bridge_credential_rotation_state as rotation_state
+
+    rotation_state.clear_server("green")
     backend.fail_on_calls.clear()
-    stored["pending_started_at"] = "2000-01-01T00:00:00+00:00"
-    assert credentials.verify_event_bridge_credential("green", "current-secret") is True
+    assert credentials.reconcile_rejected_event_bridge_credential_rotation("green") is True
     assert "pending_digest" not in backend.settings[
         credentials.EVENT_BRIDGE_CREDENTIALS_SECTION
     ]["green"]
