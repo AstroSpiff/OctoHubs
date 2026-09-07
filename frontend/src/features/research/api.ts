@@ -116,14 +116,15 @@ function sendBatchToQbittorrent(links: string[]): Promise<ActionResult> {
   return request("/api/v1/research/torrents/send-batch", { method: "POST", body: JSON.stringify({ links }) });
 }
 
-function downloadTorrentArchive(links: string[]): Promise<Blob> {
-  return requestBlob("/api/v1/research/torrents/archive", { method: "POST", body: JSON.stringify({ links }) });
+function downloadTorrentArchive(links: string[], signal?: AbortSignal): Promise<Blob> {
+  return requestBlob("/api/v1/research/torrents/archive", { method: "POST", body: JSON.stringify({ links }), signal });
 }
 
-function resolveMagnetReferences(references: string[]): Promise<{ success: boolean; magnets: string[] }> {
+function resolveMagnetReferences(references: string[], signal?: AbortSignal): Promise<{ success: boolean; magnets: string[] }> {
   return request("/api/v1/research/torrents/magnets", {
     method: "POST",
     body: JSON.stringify({ references }),
+    signal,
   });
 }
 

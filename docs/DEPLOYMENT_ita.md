@@ -38,7 +38,7 @@ Imposta le variabili in Portainer o nella shell. Il lifecycle canonico e gli
 esempi per i secret sono in [Deploy Docker](DOCKER_DEPLOY_ita.md#variabili-di-deployment-e-lifecycle).
 
 - `SECRET_KEY` (persistente; Docker la genera in `/config/.env` se assente o uguale a un placeholder noto; i valori espliciti richiedono almeno 32 byte UTF-8 non banali)
-- `PASSWORD_SECRET` (persistente e dedicata alle password Emby salvate; Docker può generarla in `/config/.env`)
+- `PASSWORD_SECRET` (persistente e dedicata alle password Emby e alle credenziali riutilizzabili delle impostazioni; Docker può generarla in `/config/.env`)
 - `ADMIN_USERNAME`, `ADMIN_PASSWORD` oppure `ADMIN_PASSWORD_FILE`, `ADMIN_EMAIL` (necessari solo finché viene creato il primo amministratore)
 - `OCTOHUBS_DB_URL`, oppure `OCTOHUBS_DB_HOST`, `OCTOHUBS_DB_PORT`, `OCTOHUBS_DB_NAME`, `OCTOHUBS_DB_USER`, `OCTOHUBS_DB_PASSWORD` (database PostgreSQL obbligatorio)
 - `WEBHOOK_IP_WHITELIST` e `WEBHOOK_TRUST_PROXY_HEADERS`; le credenziali Event Bridge
@@ -53,6 +53,9 @@ esempi per i secret sono in [Deploy Docker](DOCKER_DEPLOY_ita.md#variabili-di-de
 PostgreSQL è l'unico archivio delle impostazioni applicative. Gestisci server
 Emby, task programmati e integrazioni dalla UI autenticata. Consulta
 `CONFIGURATION_ita.md` per le impostazioni di deployment e runtime.
+Le credenziali riutilizzabili nelle impostazioni vengono conservate in envelope
+cifrati e versionati. Proteggi comunque i backup, conserva `PASSWORD_SECRET` e
+usa la procedura di rotazione current/previous documentata.
 
 ## Checklist sicurezza
 - Mantieni `/config` persistente e scrivibile, così le chiavi generate sopravvivono ai riavvii.

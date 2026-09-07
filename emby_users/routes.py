@@ -13,7 +13,7 @@ from realtime.manager import publish_application_event
 from core.log_sanitization import format_exception_for_log
 from web.session_auth import has_mutation_capability
 from web.openapi_requests import no_request_body
-from web.http_responses import error_response, success_response
+from web.http_responses import error_response, no_store_json_response, success_response
 from emby_users.sync_state_refresh import refresh_sync_states
 from emby_users.api_models import (
     AccessToggleRequest,
@@ -385,7 +385,10 @@ async def api_emby_users_password_get(
 ):
     manager = _get_manager()
     if not manager:
-        return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
+        return no_store_json_response(
+            {"ok": False, "error": "User manager not initialized"},
+            status_code=503,
+        )
 
     include_password = has_mutation_capability(request, user, "write:users")
     result = await run_in_threadpool(
@@ -396,10 +399,13 @@ async def api_emby_users_password_get(
         include_password=include_password,
     )
     if not result.get("ok"):
-        return JSONResponse(status_code=409 if result.get("busy") else 400, content=result)
+        return no_store_json_response(
+            result,
+            status_code=409 if result.get("busy") else 400,
+        )
     if not include_password:
         result.pop("password", None)
-    return result
+    return no_store_json_response(result)
 
 
 @router.get(

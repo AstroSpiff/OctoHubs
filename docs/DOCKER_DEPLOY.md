@@ -131,8 +131,10 @@ Public password examples are rejected during administrator bootstrap. Set a
 unique secret instead. The `/config` mount must remain
 persistent and writable so generated `SECRET_KEY` and `PASSWORD_SECRET` values do
 not change between restarts. Losing `PASSWORD_SECRET` makes saved Emby passwords
-undecryptable. Follow the [rotation procedure](PASSWORD_SECRET_ROTATION.md) before
-replacing it.
+and encrypted application-setting credentials undecryptable. PostgreSQL backups
+remain sensitive even though reusable credentials use versioned encrypted
+envelopes. Follow the [rotation procedure](PASSWORD_SECRET_ROTATION.md) before
+replacing the key.
 
 An explicit non-placeholder `SECRET_KEY` shorter than 32 UTF-8 bytes, or made of
 trivially repeated characters, stops container startup instead of enabling weak

@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.password_policy import PasswordTooLongError, bcrypt_password_bytes  # noqa: E402
+from core.log_sanitization import sanitize_diagnostic_text  # noqa: E402
 
 from core.auth import (  # noqa: E402
     init_auth,
@@ -145,7 +146,11 @@ def main(argv=None) -> int:
             print("[AUTH] Inizializzazione database non riuscita", file=sys.stderr)
             return 1
     except Exception as exc:
-        print(f"[AUTH] Inizializzazione database non riuscita: {exc}", file=sys.stderr)
+        print(
+            "[AUTH] Inizializzazione database non riuscita: "
+            f"{sanitize_diagnostic_text(exc, max_length=1000)}",
+            file=sys.stderr,
+        )
         return 1
 
     if args.command == "list":

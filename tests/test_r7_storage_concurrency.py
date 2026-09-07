@@ -37,8 +37,14 @@ def postgresql_schema_url():
 
 def _storage(database_url):
     from core.storage import DatabaseStorage
+    from emby_users.password_crypto import PasswordCipher
 
-    storage = DatabaseStorage({"URL": database_url})
+    storage = DatabaseStorage(
+        {"URL": database_url},
+        app_settings_cipher=PasswordCipher(
+            "postgres-r7-settings-secret-with-enough-entropy"
+        ),
+    )
     storage.ensure_ready()
     return storage
 

@@ -6,6 +6,7 @@ This module provides handler functions for API routes using the manager.
 
 import logging
 import threading
+import time
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from core.log_sanitization import format_exception_for_log
@@ -19,6 +20,7 @@ from core.thread_lifecycle import (
 logger = logging.getLogger(__name__)
 
 _latest_refresh_lifecycle_lock = threading.RLock()
+_latest_refresh_lifecycle_condition = threading.Condition(_latest_refresh_lifecycle_lock)
 _latest_refresh_request_reserved = False
 _latest_refresh_thread: Optional[threading.Thread] = None
 _latest_refresh_stop_event: Optional[threading.Event] = None
@@ -42,11 +44,16 @@ def _reserve_latest_refresh_request(manager) -> bool:
 def _release_latest_refresh_request() -> None:
     """Release the background Latest refresh request reservation."""
     global _latest_refresh_request_reserved
-    with _latest_refresh_lifecycle_lock:
+    with _latest_refresh_lifecycle_condition:
         _latest_refresh_request_reserved = False
+        _latest_refresh_lifecycle_condition.notify_all()
 
 
-def _fail_latest_refresh_safely(operation_tracker, operation_id: str, error: BaseException) -> None:
+def _fail_latest_refresh_safely(
+    operation_tracker,
+    operation_id: Optional[str],
+    error: BaseException,
+) -> None:
     try:
         from emby_latest.operations import fail_latest_refresh_operation
 
@@ -74,6 +81,7 @@ def _start_latest_refresh_worker(target: Callable[[threading.Event], None]) -> b
                 if _latest_refresh_thread is worker:
                     _latest_refresh_thread = None
                     _latest_refresh_stop_event = None
+                    _latest_refresh_lifecycle_condition.notify_all()
             _release_latest_refresh_request()
 
     worker = threading.Thread(target=_run, daemon=False)
@@ -82,12 +90,14 @@ def _start_latest_refresh_worker(target: Callable[[threading.Event], None]) -> b
             return False
         _latest_refresh_thread = worker
         _latest_refresh_stop_event = stop_event
+        _latest_refresh_lifecycle_condition.notify_all()
         def rollback_unstarted() -> None:
             global _latest_refresh_thread, _latest_refresh_stop_event
             with _latest_refresh_lifecycle_lock:
                 if _latest_refresh_thread is worker:
                     _latest_refresh_thread = None
                     _latest_refresh_stop_event = None
+                    _latest_refresh_lifecycle_condition.notify_all()
             stop_event.set()
             _release_latest_refresh_request()
 
@@ -103,11 +113,10 @@ def _start_latest_refresh_worker(target: Callable[[threading.Event], None]) -> b
 
 def start_accepting_latest_refresh() -> None:
     """Open admission for a new application lifespan."""
-    global _latest_refresh_accepting, _latest_refresh_request_reserved
+    global _latest_refresh_accepting
     with _latest_refresh_lifecycle_lock:
-        if _latest_refresh_thread is not None:
+        if _latest_refresh_thread is not None or _latest_refresh_request_reserved:
             raise RuntimeError("Latest refresh precedente non certamente drenato")
-        _latest_refresh_request_reserved = False
         _latest_refresh_accepting = True
 
 
@@ -123,8 +132,14 @@ def begin_latest_refresh_shutdown() -> None:
 
 def shutdown_latest_refresh(timeout_seconds: float = 5.0) -> bool:
     """Signal and join the active Latest refresh before shared DB pools close."""
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
     begin_latest_refresh_shutdown()
-    with _latest_refresh_lifecycle_lock:
+    with _latest_refresh_lifecycle_condition:
+        while _latest_refresh_request_reserved and _latest_refresh_thread is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            _latest_refresh_lifecycle_condition.wait(remaining)
         worker = _latest_refresh_thread
         stop_event = _latest_refresh_stop_event
     if worker is None:
@@ -133,7 +148,7 @@ def shutdown_latest_refresh(timeout_seconds: float = 5.0) -> bool:
         stop_event.set()
     if worker is threading.current_thread():
         return False
-    return join_owned_thread(worker, max(0.0, float(timeout_seconds)))
+    return join_owned_thread(worker, max(0.0, deadline - time.monotonic()))
 
 
 def _latest_manager_unavailable_payload() -> Tuple[Dict[str, Any], int]:
@@ -230,6 +245,88 @@ def build_latest_snapshot_payload(
     }, 404
 
 
+def _start_reserved_latest_operation(
+    *,
+    full_refresh: bool,
+    limit: int,
+    per_server_limit: int,
+):
+    from emby_latest.operations import start_latest_refresh_operation
+
+    try:
+        return start_latest_refresh_operation(
+            full_refresh=full_refresh,
+            limit=limit,
+            per_server_limit=per_server_limit,
+        )
+    except BaseException:
+        _release_latest_refresh_request()
+        raise
+
+
+def _run_latest_refresh_operation(
+    stop_event: threading.Event,
+    manager,
+    operation_tracker,
+    operation_id: Optional[str],
+    *,
+    full_refresh: bool,
+    limit: int,
+    per_server_limit: int,
+) -> None:
+    from emby_latest.operations import (
+        fail_latest_refresh_operation,
+        finish_latest_refresh_operation,
+        make_latest_operation_progress_tracker,
+    )
+
+    progress_tracker = make_latest_operation_progress_tracker(
+        manager.progress_tracker,
+        operation_tracker,
+        operation_id,
+        full_refresh=full_refresh,
+        limit=limit,
+        per_server_limit=per_server_limit,
+    )
+    try:
+        if stop_event.is_set():
+            fail_latest_refresh_operation(
+                operation_tracker,
+                operation_id,
+                "Aggiornamento interrotto durante lo shutdown",
+            )
+            return
+        refresh = manager.refresh_full if full_refresh else manager.refresh_incremental
+        payload, error = refresh(
+            limit,
+            per_server_limit,
+            progress_tracker=progress_tracker,
+        )
+        finish_latest_refresh_operation(operation_tracker, operation_id, payload, error)
+    except BaseException as exc:
+        _fail_latest_refresh_safely(operation_tracker, operation_id, exc)
+        log_lifecycle_exception_safely(
+            logger,
+            "Aggiornamento Pubblicazioni fallito:\n%s",
+            exc,
+        )
+        if not isinstance(exc, Exception):
+            raise
+
+
+def _start_latest_operation_worker(
+    target: Callable[[threading.Event], None],
+    operation_tracker,
+    operation_id: Optional[str],
+) -> bool:
+    try:
+        return _start_latest_refresh_worker(target)
+    except BaseException as exc:
+        _release_latest_refresh_request()
+        _fail_latest_refresh_safely(operation_tracker, operation_id, exc)
+        raise
+
+
 def build_latest_refresh_payload(
     limit: int,
     per_server_limit: int,
@@ -247,12 +344,6 @@ def build_latest_refresh_payload(
         Tuple of (payload_dict, http_status_code)
     """
     from emby_latest import get_manager
-    from emby_latest.operations import (
-        fail_latest_refresh_operation,
-        finish_latest_refresh_operation,
-        make_latest_operation_progress_tracker,
-        start_latest_refresh_operation,
-    )
     manager = get_manager()
     if not manager:
         return _latest_manager_unavailable_payload()
@@ -266,7 +357,7 @@ def build_latest_refresh_payload(
             "refreshing": True
         }, 409
 
-    operation_tracker, operation_id = start_latest_refresh_operation(
+    operation_tracker, operation_id = _start_reserved_latest_operation(
         full_refresh=full_refresh,
         limit=limit,
         per_server_limit=per_server_limit,
@@ -274,45 +365,21 @@ def build_latest_refresh_payload(
 
     # Start background refresh
     def _do_refresh(stop_event: threading.Event):
-        progress_tracker = make_latest_operation_progress_tracker(
-            manager.progress_tracker,
+        _run_latest_refresh_operation(
+            stop_event,
+            manager,
             operation_tracker,
             operation_id,
             full_refresh=full_refresh,
             limit=limit,
             per_server_limit=per_server_limit,
         )
-        try:
-            if stop_event.is_set():
-                fail_latest_refresh_operation(
-                    operation_tracker,
-                    operation_id,
-                    "Aggiornamento interrotto durante lo shutdown",
-                )
-                return
-            if full_refresh:
-                payload, error = manager.refresh_full(
-                    limit,
-                    per_server_limit,
-                    progress_tracker=progress_tracker,
-                )
-            else:
-                payload, error = manager.refresh_incremental(
-                    limit,
-                    per_server_limit,
-                    progress_tracker=progress_tracker,
-                )
-            finish_latest_refresh_operation(operation_tracker, operation_id, payload, error)
-        except BaseException as exc:
-            _fail_latest_refresh_safely(operation_tracker, operation_id, exc)
-            log_lifecycle_exception_safely(
-                logger,
-                "Aggiornamento Pubblicazioni fallito:\n%s",
-                exc,
-            )
-            if not isinstance(exc, Exception):
-                raise
-    worker_started = _start_latest_refresh_worker(_do_refresh)
+
+    worker_started = _start_latest_operation_worker(
+        _do_refresh,
+        operation_tracker,
+        operation_id,
+    )
     if not worker_started:
         _release_latest_refresh_request()
         _fail_latest_refresh_safely(

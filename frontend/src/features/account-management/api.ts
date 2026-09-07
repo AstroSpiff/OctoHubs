@@ -23,9 +23,10 @@ async function updateCurrentPassword(input: { currentPassword: string; newPasswo
   });
 }
 
-async function logoutCurrentSession(): Promise<string> {
+async function logoutCurrentSession(signal?: AbortSignal): Promise<string> {
   const response = await request<{ success: boolean; redirect?: string }>("/logout", {
     method: "POST",
+    signal,
   });
   return response.redirect || "/login";
 }
@@ -84,9 +85,12 @@ async function getApiTokenAudit(filters: ApiTokenAuditFilters = {}): Promise<Api
   return request<ApiTokenAuditList>(`/api/v1/account/tokens/audit${query ? `?${query}` : ""}`);
 }
 
-async function exportApiTokenAudit(filters: ApiTokenAuditFilters = {}): Promise<Blob> {
+async function exportApiTokenAudit(filters: ApiTokenAuditFilters = {}, signal?: AbortSignal): Promise<Blob> {
   const query = auditQuery(filters);
-  return requestBlob(`/api/v1/account/tokens/audit/export${query ? `?${query}` : ""}`);
+  return requestBlob(
+    `/api/v1/account/tokens/audit/export${query ? `?${query}` : ""}`,
+    { signal },
+  );
 }
 
 export {

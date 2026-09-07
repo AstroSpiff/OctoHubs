@@ -2,6 +2,7 @@ import requests
 import time
 
 from core.http_response_limits import (
+    close_http_session_safely,
     close_response_safely,
     read_bounded_json_response,
     read_bounded_text_response,
@@ -34,6 +35,15 @@ def _normalize_download_url(link: str) -> str:
 
 
 def send_to_qbittorrent(link, config, max_retries=2):
+    """Send one torrent and deterministically release the authenticated pool."""
+    session = requests.Session()
+    try:
+        return _send_to_qbittorrent_with_session(link, config, session, max_retries)
+    finally:
+        close_http_session_safely(session)
+
+
+def _send_to_qbittorrent_with_session(link, config, session, max_retries=2):
     """
     Invia un torrent (magnet link o URL .torrent) a qBittorrent.
 
@@ -65,7 +75,6 @@ def send_to_qbittorrent(link, config, max_retries=2):
 
     print(f"   -> [QB] Invio torrent a qBittorrent: {sanitize_download_reference_for_log(link)}")
 
-    session = requests.Session()
     base_url = qb_url.rstrip('/')
 
     for attempt in range(max_retries + 1):
@@ -192,6 +201,20 @@ def send_to_qbittorrent(link, config, max_retries=2):
 
 
 def send_to_qbittorrent_batch(links, config, max_retries=2):
+    """Send a torrent batch and deterministically release its HTTP pool."""
+    session = requests.Session()
+    try:
+        return _send_to_qbittorrent_batch_with_session(
+            links,
+            config,
+            session,
+            max_retries,
+        )
+    finally:
+        close_http_session_safely(session)
+
+
+def _send_to_qbittorrent_batch_with_session(links, config, session, max_retries=2):
     """
     Invia una lista di torrent (magnet link o URL .torrent) a qBittorrent usando
     una singola sessione/login.
@@ -239,7 +262,6 @@ def send_to_qbittorrent_batch(links, config, max_retries=2):
         message = "Nessun link valido da inviare."
         return False, message, {"sent": 0, "failed": failed, "total": len(links)}
 
-    session = requests.Session()
     base_url = qb_url.rstrip('/')
 
     for attempt in range(max_retries + 1):

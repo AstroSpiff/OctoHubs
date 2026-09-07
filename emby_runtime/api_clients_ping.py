@@ -2,6 +2,7 @@ import requests
 
 from core.http_error_messages import safe_http_error_message
 from core.http_response_limits import (
+    close_http_session_safely,
     close_response_safely,
     read_bounded_text_response,
     require_success_and_close,
@@ -83,3 +84,5 @@ def _ping_qbittorrent(config):
         return False, "Autenticazione non riuscita"
     except requests.exceptions.RequestException as exc:
         return False, safe_http_error_message(exc)
+    finally:
+        close_http_session_safely(session)

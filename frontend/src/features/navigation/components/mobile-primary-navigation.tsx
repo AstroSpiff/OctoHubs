@@ -13,10 +13,12 @@ import {
   isSecondaryNavigationItemActive,
   type SecondaryNavigationItem,
 } from "@/features/navigation/secondary-navigation";
+import { useMobileNavigationMode } from "@/features/navigation/use-mobile-navigation-mode";
 import {
   usePersistedTabOrder,
   type TabOrderInteraction,
 } from "@/features/navigation/use-persisted-tab-order";
+import { focusFirstRendered } from "@/lib/focus-target";
 import { cn } from "@/lib/utils";
 
 const longPressDelay = 480;
@@ -24,8 +26,10 @@ const longPressDelay = 480;
 function MobilePrimaryNavigation({ accountId, pathname }: { accountId?: number | null; pathname: string }) {
   const { hash } = useLocation();
   const pressTimer = useRef<number | null>(null);
+  const focusFrame = useRef<number | null>(null);
   const suppressClickFor = useRef<string | null>(null);
   const [secondaryMenu, setSecondaryMenu] = useState<PrimaryNavigationItem | null>(null);
+  const isMobile = useMobileNavigationMode();
   const primaryOrder = usePersistedTabOrder({ accountId, page: "primary", tabs: primaryNavigation });
   const orderedPrimaryNavigation = primaryOrder.order
     .map((id) => primaryNavigation.find((item) => item.id === id))
@@ -33,7 +37,27 @@ function MobilePrimaryNavigation({ accountId, pathname }: { accountId?: number |
 
   useEffect(() => () => {
     if (pressTimer.current !== null) window.clearTimeout(pressTimer.current);
+    if (focusFrame.current !== null) window.cancelAnimationFrame(focusFrame.current);
   }, []);
+
+  useEffect(() => {
+    if (isMobile) {
+      if (focusFrame.current !== null) {
+        window.cancelAnimationFrame(focusFrame.current);
+        focusFrame.current = null;
+      }
+      return;
+    }
+    clearLongPress();
+    suppressClickFor.current = null;
+    if (!secondaryMenu) return;
+    const itemId = secondaryMenu.id;
+    setSecondaryMenu(null);
+    focusFrame.current = window.requestAnimationFrame(() => {
+      focusFrame.current = null;
+      focusDesktopNavigationItem(itemId);
+    });
+  }, [isMobile, secondaryMenu]);
 
   function clearLongPress() {
     if (pressTimer.current === null) return;
@@ -72,6 +96,7 @@ function MobilePrimaryNavigation({ accountId, pathname }: { accountId?: number |
             <NavLink
               key={item.to}
               to={item.to}
+              data-primary-navigation-id={item.id}
               className={cn("mobile-navigation-link", active && "is-active", primaryOrder.draggingId === item.id && "is-dragging")}
               onPointerDown={() => beginLongPress(item)}
               onPointerUp={clearLongPress}
@@ -102,7 +127,7 @@ function MobilePrimaryNavigation({ accountId, pathname }: { accountId?: number |
         })}
         <span className="sr-only" aria-live="polite">{primaryOrder.announcement}</span>
       </nav>
-      {secondaryMenu?.secondary ? (
+      {isMobile && secondaryMenu?.secondary ? (
         <SecondaryNavigationSheet
           accountId={accountId}
           hash={hash}
@@ -112,6 +137,15 @@ function MobilePrimaryNavigation({ accountId, pathname }: { accountId?: number |
         />
       ) : null}
     </>
+  );
+}
+
+function focusDesktopNavigationItem(itemId: string) {
+  focusFirstRendered(
+    document.querySelectorAll<HTMLElement>(
+      `.app-navigation [data-primary-navigation-id="${itemId}"]`,
+    ),
+    document.getElementById("app-content"),
   );
 }
 

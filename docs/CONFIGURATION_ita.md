@@ -132,6 +132,13 @@ almeno 32 byte UTF-8 non banali; un valore debole blocca l'avvio. Per un endpoin
 TLS esterno imposta `OCTOHUBS_PUBLIC_ORIGIN` sull'origine browser esatta, così il
 controllo WebSocket comprende schema, hostname e porta effettiva.
 
+`PASSWORD_SECRET` cifra ogni credenziale riutilizzabile salvata nelle impostazioni
+PostgreSQL, incluse API key delle integrazioni, token OAuth, token bot Telegram e
+API key dei server Emby. Le impostazioni plaintext esistenti vengono migrate in
+modo atomico e idempotente al primo caricamento. Una chiave mancante o errata
+blocca l'operazione; prima di sostituirla segui la
+[procedura di rotazione](PASSWORD_SECRET_ROTATION_ita.md).
+
 I canali SSE e WebSocket browser autenticati consentono per default 3
 connessioni concorrenti per utente e per canale. Imposta
 `OCTOHUBS_REALTIME_CONNECTIONS_PER_CHANNEL` a un valore tra 1 e 20 se il

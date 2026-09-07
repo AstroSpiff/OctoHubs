@@ -350,6 +350,7 @@ def test_sqlalchemy_cleanup_receivers_are_canonical_or_semantically_allowlisted(
         ("core/config_manager.py", "close_database_backend", "backend", "close", "direct"): (1, "DatabaseStorage wrapper"),
         ("web/auth_db_session_middleware.py", "_remove_auth_session", "registry", "remove", "direct"): (1, "request-aware registry wrapper"),
         ("core/http_response_limits.py", "close_response_safely", "response", "close", "getattr"): (1, "bounded HTTP response wrapper"),
+        ("core/http_response_limits.py", "close_http_session_safely", "session", "close", "getattr"): (1, "owned HTTP session wrapper"),
         ("core/websocket_io.py", "close_bounded", "websocket", "close", "direct"): (1, "bounded WebSocket wrapper"),
         # Non-SQLAlchemy response, socket, spooled-file and coroutine owners.
         ("emby_latest/notification_images.py", "_download_emby_image", "response", "close", "direct"): (1, "HTTP response"),
@@ -374,7 +375,7 @@ def test_sqlalchemy_cleanup_receivers_are_canonical_or_semantically_allowlisted(
         ("emby_runtime/event_bridge_manager.py", "close_server_connection", "websocket", "close", "direct"): (1, "owned WebSocket"),
         ("emby_runtime/scan_websocket_manager.py", "_close_slow_client", "websocket", "close", "direct"): (1, "bounded WebSocket"),
         ("emby_runtime/scan_websocket_manager.py", "shutdown", "websocket", "close", "direct"): (1, "bounded WebSocket"),
-        ("emby_runtime/websocket_manager.py", "stop", "self.ws", "close", "direct"): (1, "websocket-client transport"),
+        ("emby_runtime/websocket_manager.py", "close_transport", "websocket", "close", "direct"): (1, "owned bounded websocket-client close worker"),
         ("realtime/subscribers.py", "close_all", "subscriber", "close", "direct"): (1, "owned subscriber"),
         ("realtime/subscribers.py", "unsubscribe", "subscriber", "close", "direct"): (1, "owned subscriber"),
         ("realtime/subscribers.py", "publish", "self._subscribers", "remove", "direct"): (1, "list membership"),

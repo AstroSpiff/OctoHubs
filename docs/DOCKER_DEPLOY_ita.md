@@ -127,8 +127,11 @@ Gli esempi di password pubblici vengono rifiutati durante il bootstrap
 dell'amministratore: imposta un secret univoco. Il mount `/config` deve
 rimanere persistente e scrivibile, così i valori generati di `SECRET_KEY` e
 `PASSWORD_SECRET` non cambiano tra i riavvii. Perdere `PASSWORD_SECRET` rende non
-decifrabili le password Emby salvate. Segui la
-[procedura di rotazione](PASSWORD_SECRET_ROTATION_ita.md) prima di sostituirla.
+decifrabili le password Emby e le credenziali cifrate delle impostazioni. I backup
+PostgreSQL restano sensibili anche se le credenziali riutilizzabili usano envelope
+cifrati e versionati. Segui la
+[procedura di rotazione](PASSWORD_SECRET_ROTATION_ita.md) prima di sostituire la
+chiave.
 
 Una `SECRET_KEY` esplicita non-placeholder più corta di 32 byte UTF-8, o composta
 da caratteri ripetuti in modo banale, interrompe l'avvio del container invece di

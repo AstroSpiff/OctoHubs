@@ -1,4 +1,5 @@
 import type { RequestSearchRule } from "@/features/research/types";
+import { AlternativeTitleLanguageField } from "@/features/research/components/alternative-title-language-field";
 import { boundedWholeNumberInput } from "@/lib/numeric-input";
 
 function RequestRuleFields({
@@ -33,23 +34,14 @@ function RequestRuleFields({
       <input type="checkbox" checked={rule.use_alt_titles_original} disabled={disabled} onChange={(event) => onChange({ use_alt_titles_original: event.target.checked })} />
       <span>Titoli alt. originali</span>
     </label>
-    <label className="research-toggle">
-      <input type="checkbox" checked={rule.use_alt_titles_language} disabled={disabled} onChange={(event) => onChange({ use_alt_titles_language: event.target.checked })} />
-      <span>Titoli alt. lingua</span>
-      <select aria-label="Lingua titoli alternativi" disabled={disabled || !rule.use_alt_titles_language} value={rule.alt_titles_language} onChange={(event) => onChange({ alt_titles_language: event.target.value })}>
-        <option value="it">IT</option>
-        <option value="en">EN</option>
-        <option value="es">ES</option>
-        <option value="fr">FR</option>
-        <option value="de">DE</option>
-        <option value="pt">PT</option>
-        <option value="ru">RU</option>
-        <option value="ja">JA</option>
-        <option value="ko">KO</option>
-        <option value="zh">ZH</option>
-        <option value="ar">AR</option>
-      </select>
-    </label>
+    <AlternativeTitleLanguageField
+      checked={rule.use_alt_titles_language}
+      disabled={disabled}
+      label="Titoli alt. lingua"
+      language={rule.alt_titles_language}
+      onCheckedChange={(checked) => onChange({ use_alt_titles_language: checked })}
+      onLanguageChange={(language) => onChange({ alt_titles_language: language })}
+    />
     {mediaType !== "tv" ? <label>
       Anno +/-
       <input type="number" min="0" max="10" disabled={disabled} value={rule.year_variance} onChange={(event) => onChange({ year_variance: boundedWholeNumberInput(event.target.value, 0, 10) })} />

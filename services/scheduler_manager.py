@@ -88,8 +88,10 @@ def init_scheduler() -> None:
     with _AUTO_SCHEDULER_LOCK:
         if _AUTO_SCHEDULER is not None and not _AUTO_SCHEDULER_ACCEPTING:
             raise RuntimeError("AutoScheduler precedente non certamente drenato")
+        # Open the child owner before publishing scheduler admission.  A scan
+        # left alive by a timed-out drain must fence the next lifespan.
+        scan_manager.start_accepting()
         _AUTO_SCHEDULER_ACCEPTING = True
-    scan_manager.start_accepting()
     set_sync_auto_scheduler(sync_auto_scheduler)
 
 
@@ -117,7 +119,7 @@ def shutdown_scheduler(timeout_seconds: float = 5.0) -> bool:
         scheduler_stopped = scheduler.wait(max(0.0, deadline - time.monotonic()))
     scan_stopped = scan_manager.wait(max(0.0, deadline - time.monotonic()))
 
-    if scheduler_stopped:
+    if scheduler_stopped and scan_stopped:
         with _AUTO_SCHEDULER_LOCK:
             if _AUTO_SCHEDULER is scheduler:
                 _AUTO_SCHEDULER = None

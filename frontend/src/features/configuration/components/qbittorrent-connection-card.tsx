@@ -23,7 +23,7 @@ function QbittorrentConnectionCard({
     <p>Destinazione dei torrent inviati dalle ricerche manuali e automatiche.</p>
     <label>Indirizzo<input type="url" value={value.url} placeholder="http://host:8080" onChange={(event) => onChange({ ...value, url: event.target.value })} /></label>
     <label>Username<input type="text" autoComplete="username" value={value.username} onChange={(event) => onChange({ ...value, username: event.target.value })} /></label>
-    <label>Password<input type="password" autoComplete="current-password" disabled={pendingRemoval} placeholder={snapshot.password_configured ? "Lascia vuota per conservarla" : "Password"} value={value.password || ""} onChange={(event) => onChange({ ...value, password: event.target.value, clear_password: false })} /><SavedCredentialControl configured={snapshot.password_configured} pendingRemoval={pendingRemoval} label="Rimuovi password salvata" onPendingRemovalChange={(clear_password) => onChange({ ...value, clear_password, password: "" })} /></label>
+    <div className="service-credential-field"><label>Password<input type="password" autoComplete="current-password" disabled={pendingRemoval} placeholder={snapshot.password_configured ? "Lascia vuota per conservarla" : "Password"} value={value.password || ""} onChange={(event) => onChange({ ...value, password: event.target.value, clear_password: false })} /></label><SavedCredentialControl configured={snapshot.password_configured} pendingRemoval={pendingRemoval} label="Rimuovi password salvata" onPendingRemovalChange={(clear_password) => onChange({ ...value, clear_password, password: "" })} /></div>
   </section>;
 }
 

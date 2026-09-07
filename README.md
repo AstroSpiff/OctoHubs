@@ -88,6 +88,9 @@ entrypoint generates and persists it in `/config/.env`; keep the `/config` mount
 persistent and writable. An explicit custom `SECRET_KEY` must contain at least 32
 non-trivial UTF-8 bytes or startup fails closed. See
 [password-key rotation](docs/PASSWORD_SECRET_ROTATION.md).
+`PASSWORD_SECRET` also protects reusable integration, Telegram and Emby server
+credentials stored in PostgreSQL; losing or changing it without the rotation
+procedure makes those saved credentials unreadable.
 Essential example:
 ```env
 # Omit SECRET_KEY to let Docker generate and persist a strong value, or provide

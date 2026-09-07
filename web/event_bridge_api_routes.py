@@ -22,6 +22,7 @@ from emby_runtime.event_bridge_configuration import (
     _push_event_bridge_settings,
     _raw_emby_servers_by_id,
     _save_event_bridge_settings,
+    event_bridge_settings_delivery_guard,
 )
 from emby_runtime.event_bridge_manager import get_event_bridge_manager
 from emby_runtime.event_bridge_credentials import event_bridge_credential_server_ids
@@ -216,26 +217,27 @@ async def update_event_bridge_settings_api_route(request: Request):
             raise HTTPException(status_code=422, detail=f"Impostazioni non valide per {server_id}")
         submitted_server_settings[server_id] = normalize_event_bridge_settings(raw_settings)
 
-    try:
-        bridge_config = await run_in_threadpool(
-            _save_event_bridge_settings,
-            submitted_server_settings,
-        )
-    except StorageError as exc:
-        logger.error("Salvataggio Event Bridge non riuscito:\n%s", format_exception_for_log(exc))
-        raise HTTPException(status_code=500, detail="Errore salvataggio Event Bridge") from exc
+    async with event_bridge_settings_delivery_guard(submitted_server_settings):
+        try:
+            bridge_config = await run_in_threadpool(
+                _save_event_bridge_settings,
+                submitted_server_settings,
+            )
+        except StorageError as exc:
+            logger.error("Salvataggio Event Bridge non riuscito:\n%s", format_exception_for_log(exc))
+            raise HTTPException(status_code=500, detail="Errore salvataggio Event Bridge") from exc
 
-    push_error = ""
-    try:
-        push_result = await _push_event_bridge_settings(
-            current_config,
-            bridge_config,
-            submitted_server_settings,
-        )
-    except Exception as exc:  # Settings are saved even when a live delivery fails.
-        logger.error("Push impostazioni Event Bridge non riuscito:\n%s", format_exception_for_log(exc))
-        push_result = _empty_event_bridge_push_result()
-        push_error = "Invio impostazioni al plugin non riuscito"
+        push_error = ""
+        try:
+            push_result = await _push_event_bridge_settings(
+                current_config,
+                bridge_config,
+                submitted_server_settings,
+            )
+        except Exception as exc:  # Settings are saved even when a live delivery fails.
+            logger.error("Push impostazioni Event Bridge non riuscito:\n%s", format_exception_for_log(exc))
+            push_result = _empty_event_bridge_push_result()
+            push_error = "Invio impostazioni al plugin non riuscito"
 
     return JSONResponse(
         {

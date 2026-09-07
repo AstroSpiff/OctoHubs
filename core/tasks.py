@@ -84,6 +84,9 @@ class ScanManager:
     def start_accepting(self) -> None:
         """Open the scan lifecycle for a newly started application lifespan."""
         with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                raise RuntimeError("Scan precedente non certamente drenato")
+            self._thread = None
             self._accept_scans = True
 
     def begin_shutdown(self) -> None:

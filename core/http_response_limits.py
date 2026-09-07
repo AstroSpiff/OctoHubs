@@ -27,6 +27,16 @@ def close_response_safely(response: Any) -> None:
             pass
 
 
+def close_http_session_safely(session: Any) -> None:
+    """Release a requests-style pool without masking the primary operation."""
+    close = getattr(session, "close", None)
+    if callable(close):
+        try:
+            close()
+        except BaseException:
+            pass
+
+
 def require_success_and_close(response: Any) -> None:
     """Check an HTTP status for operations that do not consume a body."""
     try:

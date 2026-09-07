@@ -82,6 +82,7 @@ def test_emby_websocket_unsubscribes_from_session_updates_on_stop():
     connection.ws = fake_ws
 
     connection.stop()
+    assert connection.wait_stopped(1) is True
 
     assert fake_ws.sent[0] == {"MessageType": "SessionsStop"}
     assert fake_ws.closed is True

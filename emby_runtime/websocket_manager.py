@@ -19,6 +19,10 @@ from core.thread_lifecycle import (
 logger = logging.getLogger(__name__)
 
 
+class EmbyWebSocketLifecycleBusyError(RuntimeError):
+    """A previous connection owner did not drain within the update budget."""
+
+
 _NON_STREAM_EVENT_TYPES = {
     "ConnectionEstablished",
     "ConnectionClosed",
@@ -106,6 +110,9 @@ class EmbyWebSocketConnection:
         self.max_reconnect_delay = 60  # Max 60 seconds
         self.last_connection_time = 0
         self._reconnect_wake = threading.Event()
+        self._stop_lock = threading.RLock()
+        self._stop_io_thread: Optional[threading.Thread] = None
+        self._stop_io_succeeded = True
 
         # Statistics
         self.connection_attempts = 0
@@ -146,24 +153,74 @@ class EmbyWebSocketConnection:
         logger.info("[WS:%s] WebSocket thread started", sanitize_diagnostic_text(self.server_id))
 
     def stop(self):
-        """Stop WebSocket connection gracefully."""
+        """Fence reconnects and start potentially blocking close I/O."""
         logger.info("[WS:%s] Stopping WebSocket connection", sanitize_diagnostic_text(self.server_id))
         self.should_reconnect = False
         self._reconnect_wake.set()
 
-        if self.ws:
-            try:
-                self._send_sessions_stop()
-                self.ws.close()
-            except Exception as e:
-                logger.error("[WS:%s] Error closing WebSocket: %s", sanitize_diagnostic_text(self.server_id), sanitize_diagnostic_text(e))
-
         self.state = self.STATE_DISCONNECTED
+        with self._stop_lock:
+            if self._stop_io_thread is not None and self._stop_io_thread.is_alive():
+                return
+            websocket = self.ws
+            if websocket is None:
+                self._stop_io_thread = None
+                self._stop_io_succeeded = True
+                return
+
+            closer: threading.Thread
+
+            def close_transport() -> None:
+                try:
+                    self._send_sessions_stop()
+                    websocket.close()
+                    with self._stop_lock:
+                        self._stop_io_succeeded = True
+                except Exception as exc:
+                    logger.error(
+                        "[WS:%s] Error closing WebSocket: %s",
+                        sanitize_diagnostic_text(self.server_id),
+                        sanitize_diagnostic_text(exc),
+                    )
+
+            closer = threading.Thread(
+                target=close_transport,
+                name=f"emby-websocket-close-{self.server_id}",
+                daemon=True,
+            )
+            self._stop_io_thread = closer
+            self._stop_io_succeeded = False
+
+            def rollback_unstarted() -> None:
+                if self._stop_io_thread is closer:
+                    self._stop_io_thread = None
+
+            try:
+                start_owned_thread_confirmed(
+                    closer,
+                    rollback_unstarted=rollback_unstarted,
+                    context=f"Emby WebSocket close {self.server_id}",
+                )
+            except BaseException:
+                rollback_unstarted()
+                raise
 
     def wait_stopped(self, timeout_seconds: float | None = None) -> bool:
-        """Wait for the connection thread without blocking indefinitely."""
-        thread = self.ws_thread
-        return join_owned_thread(thread, timeout_seconds)
+        """Wait for both close I/O and connection worker within one deadline."""
+        deadline = None if timeout_seconds is None else time.monotonic() + max(0.0, timeout_seconds)
+        with self._stop_lock:
+            closer = self._stop_io_thread
+        closer_stopped = join_owned_thread(
+            closer,
+            None if deadline is None else max(0.0, deadline - time.monotonic()),
+        )
+        worker_stopped = join_owned_thread(
+            self.ws_thread,
+            None if deadline is None else max(0.0, deadline - time.monotonic()),
+        )
+        with self._stop_lock:
+            close_succeeded = self._stop_io_succeeded
+        return closer_stopped and worker_stopped and close_succeeded
 
     def _run(self):
         """Main WebSocket connection loop with auto-reconnect."""
@@ -340,7 +397,9 @@ class EmbyWebSocketManager:
         self.event_handlers: Dict[str, Callable] = {}
         self._lock = threading.Lock()
         self._event_fence = threading.RLock()
+        self._connection_lifecycle_lock = threading.RLock()
         self._accepting_connections = True
+        self._stopping_server_ids: set[str] = set()
 
         # Global event callback
         self.global_event_callback: Optional[Callable] = None
@@ -351,88 +410,138 @@ class EmbyWebSocketManager:
 
     def add_server(self, server_id: str, server_url: str, api_key: str):
         """Add an Emby server and establish WebSocket connection."""
-        with self._event_fence:
-            with self._lock:
-                if not self._accepting_connections:
-                    logger.info("[WSManager] Ignoring server %s while stopping", sanitize_diagnostic_text(server_id))
-                    return
-                existing = self.connections.get(server_id)
-                if existing is not None and _connection_worker_is_active(existing):
-                    logger.warning("[WSManager] Server %s already connected", sanitize_diagnostic_text(server_id))
-                    return
-                if existing is not None:
-                    existing.stop()
-                    self.connections.pop(server_id, None)
+        self.upsert_server(server_id, server_url, api_key)
 
-                conn = self._build_connection(server_id, server_url, api_key)
-                self.connections[server_id] = conn
-                try:
-                    conn.start()
-                except BaseException:
-                    if (
-                        getattr(conn, "ws_thread", None) is None
-                        and self.connections.get(server_id) is conn
-                    ):
-                        self.connections.pop(server_id, None)
-                    raise
-
-            logger.info("[WSManager] Added server %s", sanitize_diagnostic_text(server_id))
-
-    def upsert_server(self, server_id: str, server_url: str, api_key: str) -> bool:
+    def upsert_server(
+        self,
+        server_id: str,
+        server_url: str,
+        api_key: str,
+        timeout_seconds: float = 5.0,
+    ) -> bool:
         """Create or replace a server connection when its endpoint changes."""
         normalized_url = str(server_url or "").rstrip("/")
         normalized_key = str(api_key or "")
         if not server_id or not normalized_url or not normalized_key:
             raise ValueError("Server ID, URL e API key sono necessari per il WebSocket Emby.")
 
-        with self._event_fence:
-            with self._lock:
-                if not self._accepting_connections:
-                    logger.info("[WSManager] Ignoring server %s while stopping", sanitize_diagnostic_text(server_id))
-                    return False
-                existing = self.connections.get(server_id)
-                if (
-                    existing is not None
-                    and existing.server_url == normalized_url
-                    and existing.api_key == normalized_key
-                    and _connection_worker_is_active(existing)
-                ):
-                    return False
-
-                if existing is not None:
-                    existing.stop()
-
-                connection = self._build_connection(server_id, normalized_url, normalized_key)
-                self.connections[server_id] = connection
-                try:
-                    connection.start()
-                except BaseException:
+        with self._connection_lifecycle_lock:
+            with self._event_fence:
+                with self._lock:
+                    if not self._accepting_connections:
+                        logger.info("[WSManager] Ignoring server %s while stopping", sanitize_diagnostic_text(server_id))
+                        return False
+                    existing = self.connections.get(server_id)
+                    was_stopping = server_id in self._stopping_server_ids
                     if (
-                        getattr(connection, "ws_thread", None) is None
-                        and self.connections.get(server_id) is connection
+                        existing is not None
+                        and server_id not in self._stopping_server_ids
+                        and existing.server_url == normalized_url
+                        and existing.api_key == normalized_key
+                        and _connection_worker_is_active(existing)
                     ):
-                        self.connections.pop(server_id, None)
-                    raise
+                        return False
+                    if existing is not None:
+                        self._stopping_server_ids.add(server_id)
+
+            if existing is not None and not self._stop_connection(
+                server_id,
+                existing,
+                timeout_seconds,
+                retry_existing_stop=was_stopping,
+            ):
+                raise EmbyWebSocketLifecycleBusyError(
+                    f"WebSocket Emby precedente non ancora arrestato per {server_id}"
+                )
+
+            with self._event_fence:
+                with self._lock:
+                    if not self._accepting_connections or server_id in self._stopping_server_ids:
+                        return False
+                    connection = self._build_connection(server_id, normalized_url, normalized_key)
+                    self.connections[server_id] = connection
+                    try:
+                        connection.start()
+                    except BaseException:
+                        if (
+                            getattr(connection, "ws_thread", None) is None
+                            and self.connections.get(server_id) is connection
+                        ):
+                            self.connections.pop(server_id, None)
+                        raise
         logger.info("[WSManager] Synchronized server %s", sanitize_diagnostic_text(server_id))
         return True
 
     def start_accepting(self) -> None:
         """Open connection registration for a newly initialized app lifespan."""
         with self._lock:
+            if self.connections or self._stopping_server_ids:
+                raise RuntimeError("WebSocket Emby precedenti non certamente drenati")
             self._accepting_connections = True
 
-    def remove_server(self, server_id: str):
-        """Remove an Emby server and close WebSocket connection."""
-        with self._event_fence:
+    def _stop_connection(
+        self,
+        server_id: str,
+        connection: Any,
+        timeout_seconds: float,
+        *,
+        retry_existing_stop: bool | None = None,
+    ) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        with self._lock:
+            if self.connections.get(server_id) is not connection:
+                return True
+            already_stopping = server_id in self._stopping_server_ids
+            self._stopping_server_ids.add(server_id)
+
+        wait_stopped = getattr(connection, "wait_stopped", None)
+        should_retry = already_stopping if retry_existing_stop is None else retry_existing_stop
+        if should_retry and wait_stopped is not None:
+            if bool(wait_stopped(max(0.0, deadline - time.monotonic()))):
+                with self._lock:
+                    if self.connections.get(server_id) is connection:
+                        self.connections.pop(server_id, None)
+                    self._stopping_server_ids.discard(server_id)
+                return True
+        try:
+            connection.stop()
+        except BaseException as exc:
+            log_lifecycle_exception_safely(
+                logger,
+                f"[WSManager] Unable to stop server {sanitize_diagnostic_text(server_id)}: %s",
+                exc,
+            )
+            return False
+        stopped = True if wait_stopped is None else bool(
+            wait_stopped(max(0.0, deadline - time.monotonic()))
+        )
+        if stopped:
             with self._lock:
-                if server_id not in self.connections:
-                    logger.warning("[WSManager] Server %s not found", sanitize_diagnostic_text(server_id))
-                    return
+                if self.connections.get(server_id) is connection:
+                    self.connections.pop(server_id, None)
+                self._stopping_server_ids.discard(server_id)
+        return stopped
 
-                conn = self.connections.pop(server_id)
-                conn.stop()
-
-                logger.info("[WSManager] Removed server %s", sanitize_diagnostic_text(server_id))
+    def remove_server(self, server_id: str, timeout_seconds: float = 5.0) -> bool:
+        """Remove an Emby server and close WebSocket connection."""
+        with self._connection_lifecycle_lock:
+            with self._event_fence:
+                with self._lock:
+                    conn = self.connections.get(server_id)
+                    if conn is None:
+                        logger.warning("[WSManager] Server %s not found", sanitize_diagnostic_text(server_id))
+                        return True
+                    was_stopping = server_id in self._stopping_server_ids
+                    self._stopping_server_ids.add(server_id)
+            stopped = self._stop_connection(
+                server_id,
+                conn,
+                timeout_seconds,
+                retry_existing_stop=was_stopping,
+            )
+        if stopped:
+            logger.info("[WSManager] Removed server %s", sanitize_diagnostic_text(server_id))
+        return stopped
 
     def _build_connection(self, server_id: str, server_url: str, api_key: str):
         connection = None
@@ -460,6 +569,9 @@ class EmbyWebSocketManager:
             with self._lock:
                 if self.connections.get(server_id) is not source:
                     logger.debug("[WSManager] Ignored stale event for server %s", sanitize_diagnostic_text(server_id))
+                    return
+                if server_id in self._stopping_server_ids:
+                    logger.debug("[WSManager] Ignored stopping event for server %s", sanitize_diagnostic_text(server_id))
                     return
             self._handle_event(server_id, event_data)
 
@@ -522,23 +634,26 @@ class EmbyWebSocketManager:
     def stop_all(self, timeout_seconds: float = 5.0) -> bool:
         """Stop all WebSocket connections within one shared deadline."""
         logger.info("[WSManager] Stopping all connections")
-        with self._event_fence:
-            with self._lock:
-                self._accepting_connections = False
-                connections = list(self.connections.values())
-                self.connections.clear()
-
-        for connection in connections:
-            connection.stop()
-
         deadline = time.monotonic() + max(0.0, timeout_seconds)
-        stopped = True
-        for connection in connections:
-            wait_stopped = getattr(connection, "wait_stopped", None)
-            if wait_stopped is None:
-                continue
-            stopped = bool(wait_stopped(max(0.0, deadline - time.monotonic()))) and stopped
-        return stopped
+        with self._connection_lifecycle_lock:
+            with self._event_fence:
+                with self._lock:
+                    self._accepting_connections = False
+                    connections = [
+                        (server_id, connection, server_id in self._stopping_server_ids)
+                        for server_id, connection in self.connections.items()
+                    ]
+                    self._stopping_server_ids.update(server_id for server_id, _, _ in connections)
+
+            stopped = True
+            for server_id, connection, was_stopping in connections:
+                stopped = self._stop_connection(
+                    server_id,
+                    connection,
+                    max(0.0, deadline - time.monotonic()),
+                    retry_existing_stop=was_stopping,
+                ) and stopped
+            return stopped
 
     def setup_scan_progress_forwarding(self):
         """

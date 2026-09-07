@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 from fastapi import FastAPI
@@ -99,8 +100,9 @@ def test_read_only_bearer_password_read_never_receives_saved_value():
     )
 
     assert calls == [False]
-    assert response["saved"] is True
-    assert "password" not in response
+    payload = _json_response_body(response)
+    assert payload["saved"] is True
+    assert "password" not in payload
 
 
 def test_password_manager_omits_the_field_for_an_unsaved_bearer_target():
@@ -140,7 +142,7 @@ def test_session_with_mutation_capability_keeps_password_management_flow(role):
     )
 
     assert calls == [True]
-    assert response["password"] == "saved-value"
+    assert _json_response_body(response)["password"] == "saved-value"
 
 
 @pytest.mark.parametrize(
@@ -181,8 +183,9 @@ def test_viewer_receives_password_metadata_without_saved_value(auth_state):
     )
 
     assert calls == [False]
-    assert response["saved"] is True
-    assert "password" not in response
+    payload = _json_response_body(response)
+    assert payload["saved"] is True
+    assert "password" not in payload
 
 
 @pytest.mark.parametrize("scopes", [["write:users"], ["admin:all"]])
@@ -219,4 +222,6 @@ def test_bearer_with_mutation_capability_can_read_saved_password(scopes):
     )
 
     assert calls == [True]
-    assert response["password"] == "saved-value"
+    assert _json_response_body(response)["password"] == "saved-value"
+def _json_response_body(response):
+    return json.loads(response.body.decode("utf-8"))

@@ -2,7 +2,6 @@ import { Download, LoaderCircle, Magnet, Send } from "@/components/ui/icons";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { downloadBrowserFile } from "@/lib/browser-download";
 import {
   downloadTorrentArchive,
   resolveMagnetReferences,
@@ -10,6 +9,14 @@ import {
 } from "@/features/research/api";
 import type { SearchResultActionNotice } from "@/features/research/components/search-result-actions";
 import { batchSendNotice } from "@/features/research/batch-send-outcome";
+import {
+  isOwnerBoundBrowserActionCancelled,
+  useOwnerBoundBrowserAction,
+} from "@/features/session/use-owner-bound-browser-action";
+import {
+  downloadBrowserFile,
+  writeBrowserClipboardIfAvailable,
+} from "@/lib/browser-download";
 
 type SearchResultBatchActionsProps = {
   selectedCount: number;
@@ -31,6 +38,7 @@ function SearchResultBatchActions({
   const [sending, setSending] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const actionPending = sending || downloading;
+  const beginBrowserAction = useOwnerBoundBrowserAction();
 
   async function sendSelected() {
     if (!resultLinks.length) {
@@ -66,17 +74,17 @@ function SearchResultBatchActions({
       });
       return;
     }
+    const action = beginBrowserAction();
     setDownloading(true);
     try {
-      downloadBrowserFile(
-        await downloadTorrentArchive(torrentLinks),
-        "torrents.zip",
-      );
+      const archive = await downloadTorrentArchive(torrentLinks, action.signal);
+      downloadBrowserFile(archive, "torrents.zip", action);
       onNotice({
         message: `${torrentLinks.length} torrent preparati nel file ZIP.`,
         tone: "success",
       });
     } catch (reason) {
+      if (isOwnerBoundBrowserActionCancelled(reason)) return;
       onNotice({
         message:
           reason instanceof Error
@@ -85,6 +93,7 @@ function SearchResultBatchActions({
         tone: "error",
       });
     } finally {
+      action.release();
       setDownloading(false);
     }
   }
@@ -97,26 +106,29 @@ function SearchResultBatchActions({
       });
       return;
     }
-    let content = "";
+    const action = beginBrowserAction();
     try {
-      const response = await resolveMagnetReferences(magnets);
-      content = response.magnets.join("\n");
-      await navigator.clipboard?.writeText(content);
+      const response = await resolveMagnetReferences(magnets, action.signal);
+      const content = response.magnets.join("\n");
+      await writeBrowserClipboardIfAvailable(content, action);
+      downloadBrowserFile(
+        new Blob([content], { type: "text/plain" }),
+        "magnets.txt",
+        action,
+      );
+      onNotice({
+        message: `Creato magnets.txt con ${magnets.length} link magnet.`,
+        tone: "success",
+      });
     } catch (reason) {
+      if (isOwnerBoundBrowserActionCancelled(reason)) return;
       onNotice({
         message: reason instanceof Error ? reason.message : "Esportazione magnet non riuscita.",
         tone: "error",
       });
-      return;
+    } finally {
+      action.release();
     }
-    downloadBrowserFile(
-      new Blob([content], { type: "text/plain" }),
-      "magnets.txt",
-    );
-    onNotice({
-      message: `Creato magnets.txt con ${magnets.length} link magnet.`,
-      tone: "success",
-    });
   }
 
   if (!selectedCount) return null;

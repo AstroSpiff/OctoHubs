@@ -23,9 +23,11 @@ screenshots and measured timings) for each applicable item.
 | P0 | PostgreSQL 16 | `./scripts/run_postgresql_release_gate.sh` | Real PostgreSQL migrations/CRUD pass with no required skips |
 | P0 | Frontend suite | `cd frontend && npm test -- --run` | Complete Vitest suite passes |
 | P0 | Frontend dependencies | `cd frontend && npm audit --omit=dev --audit-level=high` | No high/critical runtime vulnerability |
+| P0 | Frontend build/test dependencies | `cd frontend && npm audit --audit-level=high` | No high/critical vulnerability in any installed npm dependency |
 | P0 | Frontend quality | `cd frontend && npm run lint && npm run build` | ESLint clean; production build succeeds |
 | P0 | External API | `venv/bin/python scripts/audit_external_api_contract.py --strict` | No public contract violations |
 | P0 | Python security | `venv/bin/python -m pip_audit -r requirements.txt` | No known vulnerability in auditable production dependencies |
+| P0 | Python build/test security | `venv/bin/python -m pip_audit -r requirements-dev.txt` | No known vulnerability in auditable build/test dependencies |
 | P0 | Python static quality | `venv/bin/python -m ruff check .` | Ruff reports no errors |
 | P0 | Complexity regression gate | `venv/bin/python scripts/check_cyclomatic_complexity.py` | No new or worsened C901 finding |
 | P0 | Python types | `venv/bin/python -m pyright` | Incremental typed-module gate reports no errors |
@@ -48,8 +50,10 @@ does not create PostgreSQL and does not provide a development password.
 - P0: restore the candidate backup in a separate environment and start the
   candidate image against it.
 - P0: `/config` is persistent and writable by the configured non-root UID/GID.
-- P0: `SECRET_KEY` and `PASSWORD_SECRET` are unique and persistent; any password
-  key rotation follows the documented current/previous procedure.
+- P0: `SECRET_KEY` and `PASSWORD_SECRET` are unique and persistent; any saved
+  credential key rotation follows the documented current/previous procedure.
+- P0: restored backups decrypt saved integration and Emby credentials with the
+  deployment `PASSWORD_SECRET`; no credential sentinel is plaintext in the row.
 - P0: no `ADMIN_*` bootstrap values remain after the first successful login.
 - P1: enabled Emby servers and optional integrations either respond or produce a
   controlled, actionable error.

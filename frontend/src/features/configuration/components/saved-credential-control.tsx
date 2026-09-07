@@ -13,7 +13,7 @@ function SavedCredentialControl({
 }) {
   if (!configured) return null;
 
-  return <span className="saved-credential-control">
+  return <label className="saved-credential-control">
     <input
       type="checkbox"
       checked={pendingRemoval}
@@ -22,7 +22,7 @@ function SavedCredentialControl({
       onChange={(event) => onPendingRemovalChange(event.target.checked)}
     />
     <span>{pendingRemoval ? "Rimozione al prossimo salvataggio" : label}</span>
-  </span>;
+  </label>;
 }
 
 export { SavedCredentialControl };

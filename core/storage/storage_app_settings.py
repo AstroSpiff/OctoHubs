@@ -6,6 +6,12 @@ import copy
 import threading
 from typing import Any, Callable, Dict, Optional, Protocol
 
+from core.app_settings_crypto import (
+    AppSettingsCryptoError,
+    SettingsCipher,
+    decode_app_settings_document,
+    encode_app_settings_document,
+)
 from core.storage.storage_errors import StorageError
 from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_models import SQLAlchemyError, AppSettings, text
@@ -26,8 +32,34 @@ def _lock_app_settings_row(session: Any) -> None:
 
 class _SessionProvider(Protocol):
     _app_settings_lock: threading.RLock
+    _app_settings_cipher: SettingsCipher | None
 
     def _get_session(self) -> Any: ...
+
+
+def _settings_cipher(provider: _SessionProvider) -> SettingsCipher:
+    cipher = provider._app_settings_cipher
+    if cipher is not None:
+        return cipher
+    try:
+        from emby_users.password_crypto import password_cipher_from_environment
+
+        cipher = password_cipher_from_environment()
+    except Exception as exc:
+        raise AppSettingsCryptoError(
+            "PASSWORD_SECRET non disponibile per proteggere app_settings"
+        ) from exc
+    provider._app_settings_cipher = cipher
+    return cipher
+
+
+def _decode_settings(provider: _SessionProvider, value: Any) -> tuple[Dict[str, Any], bool]:
+    document = copy.deepcopy(value) if isinstance(value, dict) else {}
+    return decode_app_settings_document(document, lambda: _settings_cipher(provider))
+
+
+def _encode_settings(provider: _SessionProvider, value: Dict[str, Any]) -> Dict[str, Any]:
+    return encode_app_settings_document(value, lambda: _settings_cipher(provider))
 
 
 class _AppSettingsSnapshot(dict[str, Any]):
@@ -81,17 +113,35 @@ def _merge_snapshot_changes(
 
 class StorageAppSettingsMixin(_SessionProvider):
     def load_app_settings(self) -> Optional[Dict[str, Any]]:
-        session = self._get_session()
-        try:
-            entry = session.get(AppSettings, 1)
-            if not entry:
-                return None
-            data = entry.data if isinstance(entry.data, dict) else {}
-            return _AppSettingsSnapshot(data)
-        except SQLAlchemyError as exc:  # pragma: no cover - runtime guard
-            raise StorageError(f"Errore lettura configurazione: {exc}") from exc
-        finally:
-            close_session_safely(session)
+        with self._app_settings_lock:
+            session = self._get_session()
+            try:
+                _lock_app_settings_row(session)
+                entry = (
+                    session.query(AppSettings)
+                    .filter(AppSettings.id == 1)  # type: ignore[attr-defined]
+                    .with_for_update()
+                    .one_or_none()
+                )
+                if not entry:
+                    return None
+                data, rewrite_required = _decode_settings(self, entry.data)
+                if rewrite_required:
+                    entry.data = _encode_settings(self, data)  # type: ignore[assignment]
+                    session.add(entry)
+                    session.commit()
+                return _AppSettingsSnapshot(data)
+            except AppSettingsCryptoError as exc:
+                rollback_session_safely(session)
+                raise StorageError(str(exc)) from exc
+            except SQLAlchemyError as exc:  # pragma: no cover - runtime guard
+                rollback_session_safely(session)
+                raise StorageError(f"Errore lettura configurazione: {exc}") from exc
+            except Exception:
+                rollback_session_safely(session)
+                raise
+            finally:
+                close_session_safely(session)
 
     def save_app_settings(self, data: Dict[str, Any]) -> None:
         if not isinstance(data, dict):
@@ -111,14 +161,17 @@ class StorageAppSettingsMixin(_SessionProvider):
                     entry = AppSettings(id=1, data={})
 
                 if isinstance(data, _AppSettingsSnapshot):
-                    latest = dict(entry.data) if isinstance(entry.data, dict) else {}
+                    latest, _needs_rewrite = _decode_settings(self, entry.data)
                     persisted = _merge_snapshot_changes(latest, data.original, data)
                 else:
                     persisted = copy.deepcopy(data)
 
-                entry.data = persisted  # type: ignore[assignment]
+                entry.data = _encode_settings(self, persisted)  # type: ignore[assignment]
                 session.add(entry)
                 session.commit()
+            except AppSettingsCryptoError as exc:
+                rollback_session_safely(session)
+                raise StorageError(str(exc)) from exc
             except SQLAlchemyError as exc:  # pragma: no cover - runtime guard
                 rollback_session_safely(session)
                 raise StorageError(f"Errore salvataggio configurazione: {exc}") from exc
@@ -144,12 +197,15 @@ class StorageAppSettingsMixin(_SessionProvider):
                 )
                 if not entry:
                     entry = AppSettings(id=1, data={})
-                current = dict(entry.data) if isinstance(entry.data, dict) else {}
+                current, _needs_rewrite = _decode_settings(self, entry.data)
                 current.update(copy.deepcopy(updates))
-                entry.data = current  # type: ignore[assignment]
+                entry.data = _encode_settings(self, current)  # type: ignore[assignment]
                 session.add(entry)
                 session.commit()
                 return copy.deepcopy(current)
+            except AppSettingsCryptoError as exc:
+                rollback_session_safely(session)
+                raise StorageError(str(exc)) from exc
             except SQLAlchemyError as exc:  # pragma: no cover - runtime guard
                 rollback_session_safely(session)
                 raise StorageError(f"Errore aggiornamento configurazione: {exc}") from exc
@@ -205,13 +261,16 @@ class StorageAppSettingsMixin(_SessionProvider):
                 if not entry:
                     entry = AppSettings(id=1, data={})
 
-                current = copy.deepcopy(entry.data) if isinstance(entry.data, dict) else {}
+                current, _needs_rewrite = _decode_settings(self, entry.data)
                 current[section] = copy.deepcopy(updater(copy.deepcopy(current.get(section))))
 
-                entry.data = current  # type: ignore[assignment]
+                entry.data = _encode_settings(self, current)  # type: ignore[assignment]
                 session.add(entry)
                 session.commit()
                 return copy.deepcopy(current)
+            except AppSettingsCryptoError as exc:
+                rollback_session_safely(session)
+                raise StorageError(str(exc)) from exc
             except SQLAlchemyError as exc:  # pragma: no cover - runtime guard
                 rollback_session_safely(session)
                 raise StorageError(f"Errore aggiornamento configurazione: {exc}") from exc
@@ -237,15 +296,18 @@ class StorageAppSettingsMixin(_SessionProvider):
                 )
                 if entry is None:
                     entry = AppSettings(id=1, data={})
-                current = copy.deepcopy(entry.data) if isinstance(entry.data, dict) else {}
+                current, _needs_rewrite = _decode_settings(self, entry.data)
                 result = updater(copy.deepcopy(current))
                 persisted = current if result is None else result
                 if not isinstance(persisted, dict):
                     raise StorageError("Aggiornamento configurazione non valido")
-                entry.data = copy.deepcopy(persisted)  # type: ignore[assignment]
+                entry.data = _encode_settings(self, persisted)  # type: ignore[assignment]
                 session.add(entry)
                 session.commit()
                 return copy.deepcopy(persisted)
+            except AppSettingsCryptoError as exc:
+                rollback_session_safely(session)
+                raise StorageError(str(exc)) from exc
             except SQLAlchemyError as exc:  # pragma: no cover - runtime guard
                 rollback_session_safely(session)
                 raise StorageError(f"Errore aggiornamento configurazione: {exc}") from exc

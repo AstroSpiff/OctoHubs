@@ -126,15 +126,17 @@
 .service-connection-card header, .database-settings header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .service-connection-card h3 { font-size: 13px; }
 .service-connection-card p { min-height: 31px; margin: 0; color: var(--color-muted); font-size: 11px; line-height: 1.4; }
-.service-connection-card label, .service-form-grid > label, .database-settings label { display: grid; min-width: 0; gap: 6px; color: var(--color-ink); font-size: 11px; font-weight: 720; }
+.service-connection-card label:not(.saved-credential-control), .service-form-grid > label, .service-credential-field > label:not(.saved-credential-control), .database-settings label { display: grid; min-width: 0; gap: 6px; color: var(--color-ink); font-size: 11px; font-weight: 720; }
 .service-connection-card input, .service-form-grid input, .service-form-grid select, .service-form-grid textarea, .database-settings input { width: 100%; min-width: 0; border: 1px solid var(--color-border); border-radius: var(--radius-control); background: var(--color-surface-raised); padding: 8px 9px; color: var(--color-ink-strong); outline: none; }
 .service-connection-card input, .service-form-grid input, .service-form-grid select, .database-settings input { height: var(--control-height); }
 .service-connection-card input:focus, .service-form-grid input:focus, .service-form-grid select:focus, .service-form-grid textarea:focus, .database-settings input:focus { border-color: var(--color-accent); box-shadow: 0 0 0 3px var(--color-focus); }
 .saved-credential-control { display: inline-flex; align-items: center; gap: 6px; margin-top: 1px; color: var(--color-muted); font-size: 10px; font-weight: 650; line-height: 1.35; }
 .saved-credential-control input { width: 14px !important; min-width: 14px !important; height: 14px !important; margin: 0; border: 0; padding: 0; accent-color: var(--color-accent); box-shadow: none !important; }
+.service-credential-field { display: grid; min-width: 0; align-content: start; gap: 6px; }
 .service-form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 14px; }
 .service-form-grid > header { grid-column: 1 / -1; padding: 0 !important; }
 .service-form-grid > label small { color: var(--color-muted); font-weight: 500; }
+.service-credential-field small { color: var(--color-muted); font-weight: 500; }
 .service-form-grid textarea { min-height: 74px; resize: vertical; }
 .service-form-grid--integrations { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .service-catalog-advanced { grid-column: 1 / -1; border-top: 1px solid var(--color-border); padding-top: 12px; }

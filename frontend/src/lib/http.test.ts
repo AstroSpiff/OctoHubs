@@ -1,3 +1,5 @@
+// @vitest-environment jsdom
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError, SessionOwnerChangedError, request, setCsrfToken } from "@/lib/http";
@@ -66,6 +68,25 @@ describe("HTTP client CSRF handling", () => {
       "/api/ui/preferences",
       "/api/ui/session",
     ]);
+  });
+
+  it("does not redirect a stale 401 response after the authenticated owner changes", async () => {
+    setCsrfToken("csrf-a", 1);
+    window.history.replaceState({}, "", "/app/research?tab=requests#pending");
+    let resolveResponse!: (response: Response) => void;
+    const response = new Promise<Response>((resolve) => {
+      resolveResponse = resolve;
+    });
+    vi.stubGlobal("fetch", vi.fn(() => response));
+
+    const staleRequest = request("/api/stale-owner");
+    setCsrfToken("csrf-b", 2);
+    resolveResponse(new Response(JSON.stringify({ detail: "Sessione scaduta" }), { status: 401 }));
+
+    await expect(staleRequest).rejects.toBeInstanceOf(SessionOwnerChangedError);
+    expect(window.location.pathname).toBe("/app/research");
+    expect(window.location.search).toBe("?tab=requests");
+    expect(window.location.hash).toBe("#pending");
   });
 });
 

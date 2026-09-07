@@ -57,11 +57,11 @@ persist_password_secret_pair() (
       "$target_file" > "$temp_file" || return 1
   fi
   printf \
-    '\n# Chiave dedicata per le password Emby cifrate. Non modificare senza rotazione.\nPASSWORD_SECRET=%s\n' \
+    '\n# Chiave dedicata per password Emby e credenziali app_settings cifrate. Non modificare senza rotazione.\nPASSWORD_SECRET=%s\n' \
     "$password_secret" >> "$temp_file" || return 1
   if [ -n "$previous_secret" ]; then
     printf \
-      '# Chiave precedente temporanea per la rotazione delle password Emby.\nPASSWORD_SECRET_PREVIOUS=%s\n' \
+      '# Chiave precedente temporanea per la rotazione di password Emby e credenziali app_settings.\nPASSWORD_SECRET_PREVIOUS=%s\n' \
       "$previous_secret" >> "$temp_file" || return 1
   fi
   chmod 600 "$temp_file" || return 1
@@ -162,8 +162,9 @@ if [ "$SECRET_KEY_WAS_SUPPLIED" = "0" ] && ! is_strong_secret "$SECRET_KEY"; the
 fi
 export SECRET_KEY
 
-# Emby passwords use a dedicated persistent key. PASSWORD_SECRET_PREVIOUS is
-# accepted only for an explicit key rotation.
+# Saved Emby passwords and reusable app_settings credentials use a dedicated
+# persistent key. PASSWORD_SECRET_PREVIOUS is accepted only for an explicit
+# key rotation.
 PERSISTED_PASSWORD_SECRET=""
 PERSISTED_PASSWORD_SECRET_PREVIOUS=""
 PASSWORD_SECRET_WAS_SUPPLIED=1

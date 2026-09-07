@@ -8,6 +8,7 @@ from sqlalchemy.orm import sessionmaker
 
 from core.storage import AppSettings, DatabaseStorage, StorageError
 from core.storage.storage_models import RequestRuleEntry
+from emby_users.password_crypto import PasswordCipher
 
 
 def test_concurrent_read_modify_write_preserves_independent_sections(tmp_path):
@@ -120,7 +121,12 @@ def test_stale_snapshot_cannot_resurrect_a_deleted_section(tmp_path):
     database_url = f"sqlite:///{tmp_path / 'settings-delete-edit.db'}"
     engine = create_engine(database_url, future=True)
     AppSettings.__table__.create(engine)
-    storage = DatabaseStorage({"URL": database_url})
+    storage = DatabaseStorage(
+        {"URL": database_url},
+        app_settings_cipher=PasswordCipher(
+            "test-app-settings-secret-with-enough-entropy"
+        ),
+    )
     storage._engine = engine
     storage._Session = sessionmaker(bind=engine, expire_on_commit=False)
     storage.save_app_settings({"KEEP": 1, "TRAKT": {"ACCESS_TOKEN": "old"}})

@@ -157,6 +157,7 @@ class EmbyStreamsManager:
         *,
         max_age_seconds: int = 5,
         force: bool = False,
+        is_current: Optional[Callable[[], bool]] = None,
     ) -> Tuple[List[Dict[str, Any]], Optional[Any]]:
         """Refresh a server via API only when the shared cache needs it."""
         server_id = str((server or {}).get("id") or "")
@@ -172,6 +173,10 @@ class EmbyStreamsManager:
                 return self.get_streams(server_id), self.get_error(server_id)
 
             streams, error = fetch_sessions(server)
+            # A refresh can outlive the application lifespan that requested it.
+            # Do not let that retired owner mutate the next lifespan's cache.
+            if is_current is not None and not is_current():
+                return self.get_streams(server_id), None
             if error is None:
                 self.refresh_from_api(server_id, streams or [])
             else:

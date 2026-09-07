@@ -129,6 +129,12 @@ absent or a known placeholder. If supplied explicitly, it must contain at least
 TLS endpoint, set `OCTOHUBS_PUBLIC_ORIGIN` to the exact browser origin so
 WebSocket checks include scheme, hostname and effective port.
 
+`PASSWORD_SECRET` encrypts every reusable credential saved inside PostgreSQL
+application settings, including integration API keys, OAuth tokens, Telegram bot
+tokens and Emby server API keys. Existing plaintext settings migrate atomically
+and idempotently when first loaded. A missing or incorrect key fails closed;
+follow [the rotation procedure](PASSWORD_SECRET_ROTATION.md) before replacing it.
+
 Authenticated SSE and browser WebSocket channels allow 3 concurrent
 connections per user and channel by default. Set
 `OCTOHUBS_REALTIME_CONNECTIONS_PER_CHANNEL` to a value from 1 to 20 when a

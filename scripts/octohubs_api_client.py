@@ -8,9 +8,17 @@ import json
 import os
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib import error, request
 from urllib.parse import urljoin, urlsplit
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from core.log_sanitization import redact_mapping_for_log, sanitize_diagnostic_text  # noqa: E402
 
 
 DEFAULT_BASE_URL = "http://127.0.0.1:5050"
@@ -303,10 +311,21 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return run(args)
     except (OctoHubsApiError, ValueError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print(
+            f"ERROR: {sanitize_diagnostic_text(exc, max_length=1000)}",
+            file=sys.stderr,
+        )
         payload = getattr(exc, "payload", None)
         if payload is not None:
-            print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), file=sys.stderr)
+            print(
+                json.dumps(
+                    redact_mapping_for_log(payload),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                ),
+                file=sys.stderr,
+            )
         return 1
 
 

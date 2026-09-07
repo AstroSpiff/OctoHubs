@@ -108,4 +108,8 @@ class SessionRefreshDispatcher:
             self._condition.notify_all()
         for worker in self._workers:
             join_owned_thread(worker, max(0.0, deadline - time.monotonic()))
+        return self.is_shutdown_complete()
+
+    def is_shutdown_complete(self) -> bool:
+        """Return whether every owned worker has terminated."""
         return all(not worker.is_alive() for worker in self._workers)

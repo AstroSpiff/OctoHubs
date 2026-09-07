@@ -41,6 +41,7 @@
 }
 
 .users-compact-dialog > label,
+.users-compact-dialog > .users-password-field,
 .users-clone-dialog > label {
   display: grid;
   gap: 6px;
@@ -139,7 +140,8 @@
   background: var(--color-danger-soft);
   color: var(--color-danger-strong);
 }
-.users-compact-dialog label small {
+.users-compact-dialog label small,
+.users-password-field > small {
   color: var(--color-muted);
   font-size: 11px;
   font-weight: 500;

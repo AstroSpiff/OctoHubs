@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 from contextlib import ExitStack
+from dataclasses import dataclass
 import logging
 from typing import Any, Callable, Optional
 
@@ -30,7 +31,10 @@ from emby_runtime.settings_manager import (
 )
 from emby_runtime.event_bridge_manager import get_event_bridge_manager
 from emby_latest.refresh_coordination import latest_refresh_guard
-from emby_runtime.websocket_manager import get_websocket_manager
+from emby_runtime.websocket_manager import (
+    EmbyWebSocketLifecycleBusyError,
+    get_websocket_manager,
+)
 from realtime.manager import publish_configuration_update
 
 router = APIRouter()
@@ -43,6 +47,14 @@ class EmbyServerUserSyncBusyError(RuntimeError):
 
 class EmbyServerLifecycleBusyError(RuntimeError):
     """A server configuration lifecycle change is already in progress."""
+
+
+@dataclass(frozen=True)
+class _ServerConfigurationRollback:
+    server_id: str
+    created: bool
+    previous_server: dict[str, Any] | None
+    previous_index: int | None
 
 _require_auth: Optional[Callable[[Request], Any]] = None
 _validate_csrf: Optional[Callable[[Request, Optional[str]], bool]] = None
@@ -165,10 +177,18 @@ def _sync_server_websocket(server: dict[str, Any]) -> None:
     api_key = str(server.get("api_key") or "").strip()
     if not server.get("enabled", True) or not url or not api_key:
         if manager.get_connection(server_id) is not None:
-            manager.remove_server(server_id)
+            if manager.remove_server(server_id) is False:
+                raise EmbyServerLifecycleBusyError(
+                    "Il WebSocket Emby precedente non si è ancora arrestato; riprova."
+                )
         return
 
-    manager.upsert_server(server_id, url, api_key)
+    try:
+        manager.upsert_server(server_id, url, api_key)
+    except EmbyWebSocketLifecycleBusyError as exc:
+        raise EmbyServerLifecycleBusyError(
+            "Il WebSocket Emby precedente non si è ancora arrestato; riprova."
+        ) from exc
 
 
 def _invalidate_server_status_cache() -> None:
@@ -249,9 +269,42 @@ def _save_server_values_guarded(values: Any, server_id: Optional[str]) -> tuple[
 
     updated_server = _build_emby_server_from_form(values, existing_server)
     _refresh_emby_server_identity(updated_server)
-    updated_server, created = _persist_emby_server(updated_server, server_id)
-    _refresh_saved_server_runtime(updated_server)
-    return updated_server, created
+    updated_server, rollback = _persist_emby_server(updated_server, server_id)
+    try:
+        _refresh_saved_server_runtime(updated_server)
+    except EmbyServerLifecycleBusyError:
+        _restore_server_configuration_after_runtime_busy(
+            rollback,
+        )
+        raise
+    return updated_server, rollback.created
+
+
+def _restore_server_configuration_after_runtime_busy(
+    rollback: _ServerConfigurationRollback,
+) -> None:
+    """Compensate the committed config before reporting a retryable 409."""
+    server_key = rollback.server_id
+
+    def restore(emby: dict[str, Any]) -> dict[str, Any]:
+        servers: list[dict[str, Any]] = []
+        restored = False
+        for server in emby.get("SERVERS") or []:
+            if str(server.get("id") or "") == server_key:
+                if not rollback.created and rollback.previous_server is not None and not restored:
+                    servers.append(copy.deepcopy(rollback.previous_server))
+                    restored = True
+                continue
+            servers.append(copy.deepcopy(server))
+        if not rollback.created and rollback.previous_server is not None and not restored:
+            insertion_index = min(rollback.previous_index or 0, len(servers))
+            servers.insert(insertion_index, copy.deepcopy(rollback.previous_server))
+        emby["SERVERS"] = servers
+        return emby
+
+    _mutate_emby_settings_in_db(restore)
+    _load_config_dep()
+    _invalidate_server_status_cache()
 
 
 def _refresh_emby_server_identity(updated_server: dict[str, Any]) -> None:
@@ -266,8 +319,13 @@ def _refresh_emby_server_identity(updated_server: dict[str, Any]) -> None:
 def _persist_emby_server(
     updated_server: dict[str, Any],
     server_id: Optional[str],
-) -> tuple[dict[str, Any], bool]:
-    save_result = {"created": False, "server_id": str(updated_server.get("id") or "")}
+) -> tuple[dict[str, Any], _ServerConfigurationRollback]:
+    save_result: dict[str, Any] = {
+        "created": False,
+        "server_id": str(updated_server.get("id") or ""),
+        "previous_server": None,
+        "previous_index": None,
+    }
 
     def persist(emby: dict[str, Any]) -> dict[str, Any]:
         current_servers = copy.deepcopy(emby.get("SERVERS") or [])
@@ -313,6 +371,8 @@ def _persist_emby_server(
             save_result["created"] = True
         else:
             current_server = current_servers[current_index]
+            save_result["previous_server"] = copy.deepcopy(current_server)
+            save_result["previous_index"] = current_index
             replacement = {**current_server, **copy.deepcopy(updated_server)}
             replacement["id"] = current_server.get("id") or updated_server.get("id")
             if not updated_server.get("api_key") and current_server.get("api_key"):
@@ -331,7 +391,13 @@ def _persist_emby_server(
         ),
         updated_server,
     )
-    return saved_server, bool(save_result["created"])
+    rollback = _ServerConfigurationRollback(
+        server_id=str(save_result["server_id"]),
+        created=bool(save_result["created"]),
+        previous_server=save_result["previous_server"],
+        previous_index=save_result["previous_index"],
+    )
+    return saved_server, rollback
 
 
 def _refresh_saved_server_runtime(updated_server: dict[str, Any]) -> None:
@@ -346,6 +412,8 @@ def _refresh_saved_server_runtime(updated_server: dict[str, Any]) -> None:
         )
     try:
         _sync_server_websocket(updated_server)
+    except EmbyServerLifecycleBusyError:
+        raise
     except Exception as exc:
         logger.warning(
             "Impossibile sincronizzare il WebSocket del server Emby %s:\n%s",
@@ -448,13 +516,28 @@ async def _quiesce_server(server_id: str) -> None:
             detail="Attendi il completamento delle operazioni in background e riprova.",
         )
     try:
-        get_websocket_manager().remove_server(server_id)
+        websocket_stopped = await run_in_threadpool(
+            get_websocket_manager().remove_server,
+            server_id,
+            10.0,
+        )
+        if websocket_stopped is False:
+            raise HTTPException(
+                status_code=409,
+                detail="Il WebSocket Emby del server non si è ancora arrestato; riprova.",
+            )
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.warning(
             "Errore arrestando il WebSocket del server %s:\n%s",
             server_id,
             format_exception_for_log(exc),
         )
+        raise HTTPException(
+            status_code=409,
+            detail="Il WebSocket Emby del server non si è arrestato correttamente; riprova.",
+        ) from exc
     try:
         await get_event_bridge_manager().close_server_connection(server_id, code=1008)
     except Exception as exc:

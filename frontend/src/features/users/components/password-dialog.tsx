@@ -196,10 +196,11 @@ function PasswordDialog({ target, saving, mutationError, onClose, onSave, onDirt
           {statusDetail ? ` · ${statusDetail}` : ""}
           {updatedAt ? <small>Ultimo aggiornamento: {formatUserTime(updatedAt)}</small> : null}
         </p>
-        <label>
-          Password
+        <div className="users-password-field">
+          <label htmlFor="users-password-value">Password</label>
           <div className="users-password-input">
             <input
+              id="users-password-value"
               autoFocus
               type={revealed ? "text" : "password"}
               value={authoritative ? password : ""}
@@ -219,7 +220,7 @@ function PasswordDialog({ target, saving, mutationError, onClose, onSave, onDirt
             </Button>
           </div>
           <small>Lascia vuoto per rimuovere la password.</small>
-        </label>
+        </div>
         <footer className="users-password-dialog-actions">
           <Button type="button" variant="ghost" className="users-password-reset" onClick={() => void requestReset()} disabled={!authoritative || saving}>
             Reimposta

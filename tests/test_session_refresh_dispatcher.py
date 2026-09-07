@@ -58,11 +58,12 @@ def test_manager_rejects_sessions_arriving_during_shutdown(monkeypatch):
     assert shutdown_entered.wait(timeout=1)
 
     assert manager._schedule_sessions_update("server-a", {}) is False
-    assert manager._sessions_dispatcher is None
+    assert manager._sessions_dispatcher is not None
 
     release_shutdown.set()
     shutdown.join(timeout=1)
     assert result == [True]
+    assert manager._sessions_dispatcher is None
 
 
 def test_manager_creates_only_one_dispatcher_for_concurrent_startup(monkeypatch):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 from core.log_sanitization import format_exception_for_log, sanitize_diagnostic_text
 from core.safe_output import safe_print as print
@@ -323,7 +323,11 @@ def _handle_emby_websocket_event(server_id: str, event_data: Dict):
         )
 
 
-def _handle_sessions_update(server_id: str, sessions_data):
+def _handle_sessions_update(
+    server_id: str,
+    sessions_data,
+    is_current: Optional[Callable[[], bool]] = None,
+):
     """
     Handle Sessions event from Emby WebSocket.
     Fetch full session data and broadcast to frontend for real-time playback updates.
@@ -331,6 +335,9 @@ def _handle_sessions_update(server_id: str, sessions_data):
     from core.emby_servers import _get_emby_server_by_id
     from emby_runtime.api_clients import _fetch_emby_active_sessions
     from emby_runtime.streams import get_streams_manager
+
+    if is_current is not None and not is_current():
+        return
 
     # Get configured server to fetch full session data
     server = _get_emby_server_by_id(server_id)
@@ -347,7 +354,10 @@ def _handle_sessions_update(server_id: str, sessions_data):
         _fetch_emby_active_sessions,
         max_age_seconds=0,
         force=True,
+        is_current=is_current,
     )
+    if is_current is not None and not is_current():
+        return
     if error:
         logger.error(
             "[WS_SESSIONS:%s] Error fetching sessions: %s",
@@ -373,11 +383,33 @@ def initialize_session_refresh_dispatcher() -> None:
     """Open one lifecycle-owned dispatcher before WebSocket events can arrive."""
     global _sessions_dispatcher, _sessions_dispatcher_accepting
     with _sessions_dispatcher_lock:
-        _sessions_dispatcher_accepting = True
-        if _sessions_dispatcher is None:
-            from realtime.session_refresh_dispatcher import SessionRefreshDispatcher
+        if _sessions_dispatcher is not None:
+            if _sessions_dispatcher_accepting:
+                return
+            raise RuntimeError("Dispatcher sessioni precedente non certamente drenato")
+        from realtime.session_refresh_dispatcher import SessionRefreshDispatcher
 
-            _sessions_dispatcher = SessionRefreshDispatcher(_handle_sessions_update)
+        dispatcher = None
+
+        def handle_if_current(server_id: str, data) -> None:
+            _handle_sessions_update(
+                server_id,
+                data,
+                is_current=lambda: _session_dispatcher_is_current(dispatcher),
+            )
+
+        dispatcher = SessionRefreshDispatcher(handle_if_current)
+        _sessions_dispatcher = dispatcher
+        _sessions_dispatcher_accepting = True
+
+
+def _session_dispatcher_is_current(dispatcher) -> bool:
+    with _sessions_dispatcher_lock:
+        return bool(
+            _sessions_dispatcher_accepting
+            and dispatcher is not None
+            and _sessions_dispatcher is dispatcher
+        )
 
 
 def _schedule_sessions_update(server_id: str, sessions_data) -> bool:
@@ -392,8 +424,14 @@ def shutdown_session_refresh_dispatcher(timeout_seconds: float = 5.0) -> bool:
     with _sessions_dispatcher_lock:
         _sessions_dispatcher_accepting = False
         dispatcher = _sessions_dispatcher
-        _sessions_dispatcher = None
-    return dispatcher.shutdown(timeout_seconds) if dispatcher is not None else True
+    if dispatcher is None:
+        return True
+    stopped = dispatcher.shutdown(timeout_seconds)
+    if stopped:
+        with _sessions_dispatcher_lock:
+            if _sessions_dispatcher is dispatcher:
+                _sessions_dispatcher = None
+    return stopped
 
 def _initialize_emby_websockets():
     """Initialize WebSocket connections to all configured Emby servers."""

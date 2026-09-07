@@ -8,6 +8,7 @@ import type {
   ResearchMediaType,
   SortOption,
 } from "@/features/research/types";
+import { AlternativeTitleLanguageField } from "@/features/research/components/alternative-title-language-field";
 import { boundedWholeNumberInput } from "@/lib/numeric-input";
 
 type SearchAdvancedOptionsProps = {
@@ -157,37 +158,18 @@ function SearchAdvancedOptions({
               updateRules({ use_alt_titles_original: checked })
             }
           />
-          <label className="research-toggle">
-            <input
-              type="checkbox"
-              checked={Boolean(rules.use_alt_titles_language)}
-              onChange={(event) =>
-                updateRules({ use_alt_titles_language: event.target.checked })
-              }
-            />
-            <span>Titoli alternativi in lingua</span>
-            <select
-              aria-label="Lingua titoli alternativi"
-              value={rules.alt_titles_language || "all"}
-              disabled={!rules.use_alt_titles_language}
-              onChange={(event) =>
-                updateRules({ alt_titles_language: event.target.value })
-              }
-            >
-              <option value="all">Tutte</option>
-              <option value="it">IT</option>
-              <option value="en">EN</option>
-              <option value="es">ES</option>
-              <option value="fr">FR</option>
-              <option value="de">DE</option>
-              <option value="pt">PT</option>
-              <option value="ru">RU</option>
-              <option value="ja">JA</option>
-              <option value="ko">KO</option>
-              <option value="zh">ZH</option>
-              <option value="ar">AR</option>
-            </select>
-          </label>
+          <AlternativeTitleLanguageField
+            checked={Boolean(rules.use_alt_titles_language)}
+            includeAllLanguages
+            label="Titoli alternativi in lingua"
+            language={rules.alt_titles_language || "all"}
+            onCheckedChange={(checked) =>
+              updateRules({ use_alt_titles_language: checked })
+            }
+            onLanguageChange={(language) =>
+              updateRules({ alt_titles_language: language })
+            }
+          />
           <ToggleField
             label="Richiedi lingua audio"
             checked={Boolean(rules.require_audio_language)}

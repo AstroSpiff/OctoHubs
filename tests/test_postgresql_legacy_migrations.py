@@ -1583,10 +1583,15 @@ def test_postgresql_app_settings_stale_edit_cannot_resurrect_deleted_key(
     postgresql_schema_url,
 ):
     from core.storage import DatabaseStorage, StorageError
+    from emby_users.password_crypto import PasswordCipher
 
-    seed = DatabaseStorage({"URL": postgresql_schema_url})
-    deleter = DatabaseStorage({"URL": postgresql_schema_url})
-    stale_writer = DatabaseStorage({"URL": postgresql_schema_url})
+    cipher = PasswordCipher("postgres-settings-secret-with-enough-entropy")
+    seed = DatabaseStorage({"URL": postgresql_schema_url}, app_settings_cipher=cipher)
+    deleter = DatabaseStorage({"URL": postgresql_schema_url}, app_settings_cipher=cipher)
+    stale_writer = DatabaseStorage(
+        {"URL": postgresql_schema_url},
+        app_settings_cipher=cipher,
+    )
     try:
         seed.ensure_ready()
         seed.save_app_settings(
@@ -1606,6 +1611,52 @@ def test_postgresql_app_settings_stale_edit_cannot_resurrect_deleted_key(
     finally:
         for storage in (seed, deleter, stale_writer):
             storage.close()
+
+
+def test_postgresql_app_settings_plaintext_migration_is_atomic_and_idempotent(
+    postgresql_schema_url,
+):
+    import json
+
+    from core.storage import AppSettings, DatabaseStorage
+    from emby_users.password_crypto import PasswordCipher
+
+    cipher = PasswordCipher("postgres-migration-secret-with-enough-entropy")
+    storage = DatabaseStorage(
+        {"URL": postgresql_schema_url},
+        app_settings_cipher=cipher,
+    )
+    try:
+        storage.ensure_ready()
+        legacy = {
+            "JELLYSEERR_API_KEY": "postgres-api-canary",
+            "EMBY": {
+                "SERVERS": [
+                    {"id": "green", "api_key": "postgres-emby-canary"},
+                ]
+            },
+            "TELEGRAM": {"BOTS": [{"token": "postgres-bot-canary"}]},
+        }
+        session = storage._get_session()
+        session.add(AppSettings(id=1, data=legacy))
+        session.commit()
+        session.close()
+
+        assert storage.load_app_settings() == legacy
+        session = storage._get_session()
+        first_envelope = session.get(AppSettings, 1).data
+        session.close()
+        serialized = json.dumps(first_envelope, sort_keys=True)
+        assert "postgres-api-canary" not in serialized
+        assert "postgres-emby-canary" not in serialized
+        assert "postgres-bot-canary" not in serialized
+
+        assert storage.load_app_settings() == legacy
+        session = storage._get_session()
+        assert session.get(AppSettings, 1).data == first_envelope
+        session.close()
+    finally:
+        storage.close()
 
 
 def test_postgresql_probe_retry_preserves_diagnostics_for_claimed_duplicate(

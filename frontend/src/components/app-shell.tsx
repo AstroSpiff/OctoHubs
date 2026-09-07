@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, type ReactNode } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
 
 import { AccountMenu } from "@/components/account-menu";
@@ -22,6 +22,7 @@ import { applicationTitle } from "@/features/navigation/application-title";
 import { sessionRoleLabel } from "@/features/navigation/session-role-label";
 import { OperationsCenter } from "@/features/operations/components/operations-center";
 import { WorkspaceCapabilitiesProvider } from "@/features/session/workspace-capabilities";
+import { useOwnerBoundDisclosure } from "@/features/session/use-owner-bound-disclosure";
 import { useApplicationTheme } from "@/hooks/use-application-theme";
 import { getSession, type Session } from "@/lib/session";
 import { cn } from "@/lib/utils";
@@ -40,9 +41,12 @@ function AppShell() {
   const { pathname, search } = useLocation();
   const { theme, toggleTheme } = useApplicationTheme();
   const accessState = workspaceAccessState(session);
-  const [preferencesOpen, setPreferencesOpen] = useState(false);
   const hasAuthenticatedAccess = isAuthenticatedAccessState(accessState);
   const accountId = hasAuthenticatedAccess ? session.data?.user.id ?? null : null;
+  const currentOwnerKey = hasAuthenticatedAccess
+    ? workspaceContentOwnerKey(accessState, session.data?.user)
+    : null;
+  const preferencesDialog = useOwnerBoundDisclosure(currentOwnerKey);
   const navigationPreferences = useNavigationPreferences(session.data?.preferences, accountId);
   useDeepLinkFocus(search);
 
@@ -53,10 +57,6 @@ function AppShell() {
   useEffect(() => {
     document.title = applicationTitle(pathname);
   }, [pathname]);
-
-  useEffect(() => {
-    if (!hasAuthenticatedAccess) setPreferencesOpen(false);
-  }, [hasAuthenticatedAccess]);
 
   return (
     <NavigationPreferencesProvider value={navigationPreferences}>
@@ -79,7 +79,7 @@ function AppShell() {
             session={session.data}
             theme={theme}
             onToggleTheme={toggleTheme}
-            onOpenPreferences={() => setPreferencesOpen(true)}
+            onOpenPreferences={preferencesDialog.open}
           />
         </aside>
 
@@ -95,7 +95,7 @@ function AppShell() {
             session={session.data}
             theme={theme}
             onToggleTheme={toggleTheme}
-            onOpenPreferences={() => setPreferencesOpen(true)}
+            onOpenPreferences={preferencesDialog.open}
             compact
           />
         </header>
@@ -116,11 +116,11 @@ function AppShell() {
         {accessState === "editor" && !isUsersPath(pathname) ? <OperationsCenter /> : null}
       </div>
       <NavigationPreferencesDialog
-        open={preferencesOpen && hasAuthenticatedAccess}
+        open={preferencesDialog.isOpen}
         preferences={navigationPreferences.preferences}
         isSaving={navigationPreferences.isSaving}
         error={navigationPreferences.error}
-        onClose={() => setPreferencesOpen(false)}
+        onClose={preferencesDialog.close}
         onUpdate={navigationPreferences.updatePreferences}
       />
     </NavigationPreferencesProvider>
@@ -200,14 +200,17 @@ function SessionSummary({
   const user = session?.user;
   return (
     <div className={cn("session-summary", compact && "session-summary--compact")}>
-      <AccountMenu
-        compact={compact}
-        onOpenPreferences={onOpenPreferences}
-        onToggleTheme={onToggleTheme}
-        roleLabel={sessionRoleLabel(user?.role)}
-        theme={theme}
-        username={user?.username}
-      />
+      <WorkspaceCapabilitiesProvider accountId={user?.id ?? null} canMutate={user?.role !== "viewer"}>
+        <AccountMenu
+          key={user?.id ?? "anonymous"}
+          compact={compact}
+          onOpenPreferences={onOpenPreferences}
+          onToggleTheme={onToggleTheme}
+          roleLabel={sessionRoleLabel(user?.role)}
+          theme={theme}
+          username={user?.username}
+        />
+      </WorkspaceCapabilitiesProvider>
     </div>
   );
 }

@@ -5,7 +5,12 @@ from __future__ import annotations
 import copy
 from typing import Any, Protocol, Sequence
 
-from core.storage.storage_app_settings import _lock_app_settings_row
+from core.app_settings_crypto import SettingsCipher
+from core.storage.storage_app_settings import (
+    _decode_settings,
+    _encode_settings,
+    _lock_app_settings_row,
+)
 from core.storage.storage_errors import StorageError
 from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_locks import (
@@ -92,6 +97,8 @@ def _prune_server_from_settings(
 
 
 class _SessionProvider(Protocol):
+    _app_settings_cipher: SettingsCipher | None
+
     def _get_session(self) -> Any: ...
 
 
@@ -124,7 +131,7 @@ class StorageMaintenanceMixin(_SessionProvider):
                 )
                 if settings_row is None:
                     settings_row = AppSettings(id=1, data={})
-                settings = settings_row.data if isinstance(settings_row.data, dict) else {}
+                settings, _needs_rewrite = _decode_settings(self, settings_row.data)
                 if remove_configuration:
                     emby = settings.get("EMBY") if isinstance(settings, dict) else {}
                     servers = emby.get("SERVERS") if isinstance(emby, dict) else []
@@ -140,10 +147,13 @@ class StorageMaintenanceMixin(_SessionProvider):
                         raise ValueError("Server non trovato.")
                     remaining_servers = remaining
                 assert remaining_servers is not None
-                settings_row.data = _prune_server_from_settings(  # type: ignore[assignment]
-                    settings,
-                    server_id,
-                    remaining_servers,
+                settings_row.data = _encode_settings(  # type: ignore[assignment]
+                    self,
+                    _prune_server_from_settings(
+                        settings,
+                        server_id,
+                        remaining_servers,
+                    ),
                 )
                 session.add(settings_row)
 

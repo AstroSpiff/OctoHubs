@@ -1,10 +1,17 @@
 import { ChevronDown, LogOut, Moon, Settings2, Sun, X } from "@/components/ui/icons";
 import { createPortal } from "react-dom";
-import { useEffect, useState } from "react";
+import { useLayoutEffect, useState } from "react";
 
 import { DialogBackdrop } from "@/components/ui/dialog-backdrop";
 import { usePopoverDisclosure } from "@/components/ui/use-popover-disclosure";
 import { logoutCurrentSession } from "@/features/account-management/api";
+import { useMobileNavigationMode } from "@/features/navigation/use-mobile-navigation-mode";
+import {
+  isOwnerBoundBrowserActionCancelled,
+  useOwnerBoundBrowserAction,
+} from "@/features/session/use-owner-bound-browser-action";
+import { navigateBrowser } from "@/lib/browser-download";
+import { focusFirstRendered } from "@/lib/focus-target";
 import type { ApplicationTheme } from "@/lib/theme-preference";
 import { cn } from "@/lib/utils";
 
@@ -25,10 +32,26 @@ type AccountActionsProps = Pick<
 };
 
 function AccountMenu(props: AccountMenuProps) {
-  const isMobile = useMobileAccountMenu();
+  const isMobile = useMobileNavigationMode();
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const restoreDesktopFocus = !isMobile && mobileOpen;
 
-  if (isMobile) return <MobileAccountMenu {...props} />;
-  return <DesktopAccountMenu {...props} />;
+  if (isMobile) {
+    return (
+      <MobileAccountMenu
+        {...props}
+        open={mobileOpen}
+        onOpenChange={setMobileOpen}
+      />
+    );
+  }
+  return (
+    <DesktopAccountMenu
+      {...props}
+      focusOnMount={restoreDesktopFocus}
+      onFocusRestored={() => setMobileOpen(false)}
+    />
+  );
 }
 
 function DesktopAccountMenu({
@@ -38,9 +61,20 @@ function DesktopAccountMenu({
   roleLabel,
   theme,
   username,
-}: AccountMenuProps) {
+  focusOnMount = false,
+  onFocusRestored,
+}: AccountMenuProps & { focusOnMount?: boolean; onFocusRestored?: () => void }) {
   const menu = usePopoverDisclosure();
   const displayName = username || "Sessione";
+
+  useLayoutEffect(() => {
+    if (!focusOnMount) return;
+    focusFirstRendered(
+      document.querySelectorAll<HTMLElement>('[data-account-menu-trigger="desktop"]'),
+      document.getElementById("app-content"),
+    );
+    onFocusRestored?.();
+  }, [focusOnMount, menu.summaryRef, onFocusRestored]);
 
   return (
     <details
@@ -50,6 +84,7 @@ function DesktopAccountMenu({
     >
       <summary
         ref={menu.summaryRef}
+        data-account-menu-trigger="desktop"
         aria-controls={menu.contentId}
         aria-expanded={menu.open}
         aria-label={`Apri menu account di ${displayName}`}
@@ -75,12 +110,13 @@ function MobileAccountMenu({
   roleLabel,
   theme,
   username,
-}: AccountMenuProps) {
-  const [open, setOpen] = useState(false);
+  open,
+  onOpenChange,
+}: AccountMenuProps & { open: boolean; onOpenChange: (open: boolean) => void }) {
   const displayName = username || "Sessione";
 
   function close() {
-    setOpen(false);
+    onOpenChange(false);
   }
 
   return (
@@ -92,7 +128,7 @@ function MobileAccountMenu({
         aria-haspopup="dialog"
         aria-label={`Apri menu account di ${displayName}`}
         title="Menu account"
-        onClick={() => setOpen(true)}
+        onClick={() => onOpenChange(true)}
       >
         <AccountAvatar displayName={displayName} />
       </button>
@@ -182,6 +218,7 @@ function AccountActions({ onAction, onOpenPreferences, onToggleTheme, theme }: A
   const ThemeIcon = isDark ? Sun : Moon;
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutError, setLogoutError] = useState("");
+  const beginBrowserAction = useOwnerBoundBrowserAction();
 
   function openPreferences() {
     onAction?.();
@@ -195,15 +232,26 @@ function AccountActions({ onAction, onOpenPreferences, onToggleTheme, theme }: A
 
   async function logout() {
     if (loggingOut) return;
+    const action = beginBrowserAction();
     setLoggingOut(true);
     setLogoutError("");
     try {
-      const redirect = await logoutCurrentSession();
+      const redirect = await logoutCurrentSession(action.signal);
+      action.assertCurrent();
       onAction?.();
-      window.location.assign(redirect);
+      navigateBrowser(redirect, action);
     } catch (error) {
+      if (isOwnerBoundBrowserActionCancelled(error)) return;
+      try {
+        action.assertCurrent();
+      } catch (ownerError) {
+        if (isOwnerBoundBrowserActionCancelled(ownerError)) return;
+        throw ownerError;
+      }
       setLogoutError(error instanceof Error ? error.message : "Disconnessione non riuscita.");
       setLoggingOut(false);
+    } finally {
+      action.release();
     }
   }
 
@@ -230,23 +278,6 @@ function AccountActions({ onAction, onOpenPreferences, onToggleTheme, theme }: A
       {logoutError ? <p className="session-account-menu-error" role="alert">{logoutError}</p> : null}
     </div>
   );
-}
-
-function useMobileAccountMenu() {
-  const [isMobile, setIsMobile] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return window.matchMedia("(max-width: 899px)").matches;
-  });
-
-  useEffect(() => {
-    const query = window.matchMedia("(max-width: 899px)");
-    const update = () => setIsMobile(query.matches);
-    update();
-    query.addEventListener("change", update);
-    return () => query.removeEventListener("change", update);
-  }, []);
-
-  return isMobile;
 }
 
 export { AccountMenu };

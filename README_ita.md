@@ -87,6 +87,9 @@ documentato, l'entrypoint Docker li genera e li conserva in `/config/.env`: mant
 il mount `/config` persistente e scrivibile. Una `SECRET_KEY` personalizzata deve
 contenere almeno 32 byte UTF-8 non banali, altrimenti l'avvio viene rifiutato. Vedi la
 [procedura di rotazione](docs/PASSWORD_SECRET_ROTATION_ita.md#procedura-di-rotazione).
+`PASSWORD_SECRET` protegge anche le credenziali riutilizzabili di integrazioni,
+Telegram e server Emby salvate in PostgreSQL: perderla o sostituirla senza la
+procedura di rotazione rende illeggibili tali credenziali.
 Esempio essenziale:
 ```env
 # Ometti SECRET_KEY per far generare e persistere a Docker un valore robusto,

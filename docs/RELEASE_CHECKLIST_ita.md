@@ -25,9 +25,11 @@ Per ogni riga compila:
 | P0 | PostgreSQL 16 | Migrazioni e CRUD reali | `./scripts/run_postgresql_release_gate.sh` | Upgrade legacy valido e rifiuto dati ambigui passano su PostgreSQL 16 effimero, senza test saltati |  |  |
 | P0 | Test suite frontend | Vitest completo | `cd frontend && npm test -- --run` | Tutti i test frontend passano |  |  |
 | P0 | Dipendenze frontend | Audit runtime | `cd frontend && npm audit --omit=dev --audit-level=high` | Nessuna vulnerabilità alta/critica nelle dipendenze runtime |  |  |
+| P0 | Dipendenze frontend | Audit build/test completo | `cd frontend && npm audit --audit-level=high` | Nessuna vulnerabilità alta/critica nelle dipendenze npm installate |  |  |
 | P0 | Frontend statico | Lint e build produzione | `cd frontend && npm run lint && npm run build` | Lint pulito e build completata |  |  |
 | P0 | API esterna | Audit contratto pubblico | `./venv/bin/python scripts/audit_external_api_contract.py --strict` | Nessuna violazione del contratto pubblico |  |  |
 | P0 | Sicurezza Python | Audit dipendenze produzione | `./venv/bin/python -m pip_audit -r requirements.txt` | Nessuna vulnerabilità nota nelle dipendenze verificabili |  |  |
+| P0 | Sicurezza Python | Audit dipendenze build/test | `./venv/bin/python -m pip_audit -r requirements-dev.txt` | Nessuna vulnerabilità nota nelle dipendenze build/test verificabili |  |  |
 | P0 | Qualità statica Python | Ruff | `./venv/bin/python -m ruff check .` | Nessun errore Ruff |  |  |
 | P0 | Regressioni di complessità | Baseline C901 | `./venv/bin/python scripts/check_cyclomatic_complexity.py` | Nessun finding C901 nuovo o peggiorato |  |  |
 | P0 | Tipi Python | Pyright incrementale | `./venv/bin/python -m pyright` | Nessun errore nei moduli inclusi nel gate tipizzato |  |  |
@@ -42,6 +44,10 @@ Prima dello smoke locale con `./start_dev.sh`, configura il collegamento al
 PostgreSQL esterno: `OCTOHUBS_DB_URL`, oppure i valori separati `OCTOHUBS_DB_*`
 incluso `OCTOHUBS_DB_PASSWORD`/`OCTOHUBS_DB_PASSWORD_FILE`. Lo script non crea
 PostgreSQL e non fornisce una password di sviluppo predefinita.
+
+Verifica inoltre che `PASSWORD_SECRET` sia persistente, che un backup ripristinato
+decifri le credenziali di integrazioni ed Emby e che nessuna sentinella credenziale
+sia presente in chiaro nella riga `app_settings`.
 
 ## 2. Ambiente e dati di test
 

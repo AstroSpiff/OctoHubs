@@ -482,6 +482,12 @@
   padding: 3px 6px !important;
   font-size: 11px !important;
 }
+.research-toggle-choice,
+.research-language-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 .research-card-actions {
   display: flex;
   flex-wrap: wrap;

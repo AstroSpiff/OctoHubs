@@ -258,44 +258,84 @@ class EventBridgeConnectionManager:
 
     async def push_configuration(self, server_id: str | None, settings: dict[str, Any]) -> int:
         async def push_one(state: EventBridgeServerState) -> bool:
-            websocket = state.websocket
-            if websocket is None:
-                return False
-            generation = state.generation
-            now = _utc_now()
-            message_id = f"cfg-{state.server_id}-{uuid4().hex}"
-            payload = {
-                "type": "configure",
-                "id": message_id,
-                "sentAt": now,
-                "settings": build_plugin_settings_payload(settings),
-            }
-            try:
-                await asyncio.wait_for(
-                    websocket.send_json(payload),
-                    timeout=EVENT_BRIDGE_SEND_TIMEOUT_SECONDS,
-                )
-            except Exception:
-                self._detach_websocket(websocket)
-                self._publish_update([state.server_id], "configuration_send_failed")
-                return False
-            current = self._servers.get(state.server_id)
-            if current is not state or state.websocket is not websocket or state.generation != generation:
-                return False
-            state.last_seen_at = now
-            state.last_config_sent_at = now
-            state.last_config_transport = "websocket"
-            state.last_config_message_id = message_id
-            state.last_config_ack_status = "pending"
-            state.last_config_ack_error = ""
-            self._publish_update([state.server_id], "configuration_sent")
-            return True
+            async with self._dispatch_lock(state.server_id):
+                current = self._servers.get(state.server_id)
+                if not self._accepting or current is not state:
+                    return False
+                websocket = state.websocket
+                if websocket is None:
+                    return False
+                generation = state.generation
+                now = _utc_now()
+                message_id = f"cfg-{state.server_id}-{uuid4().hex}"
+                previous_delivery = {
+                    "last_seen_at": state.last_seen_at,
+                    "last_config_sent_at": state.last_config_sent_at,
+                    "last_config_transport": state.last_config_transport,
+                    "last_config_message_id": state.last_config_message_id,
+                    "last_config_ack_status": state.last_config_ack_status,
+                    "last_config_ack_error": state.last_config_ack_error,
+                }
+                payload = {
+                    "type": "configure",
+                    "id": message_id,
+                    "sentAt": now,
+                    "settings": build_plugin_settings_payload(settings),
+                }
+                # Publish ownership before send_json: test transports and some
+                # adapters can synchronously deliver an ACK from inside send.
+                state.last_seen_at = now
+                state.last_config_sent_at = now
+                state.last_config_transport = "websocket"
+                state.last_config_message_id = message_id
+                state.last_config_ack_status = "pending"
+                state.last_config_ack_error = ""
+                self._publish_update([state.server_id], "configuration_sent")
+                try:
+                    await asyncio.wait_for(
+                        websocket.send_json(payload),
+                        timeout=EVENT_BRIDGE_SEND_TIMEOUT_SECONDS,
+                    )
+                except BaseException as exc:
+                    ack_received, rolled_back = self._rollback_configuration_send(
+                        state,
+                        message_id,
+                        previous_delivery,
+                    )
+                    if isinstance(exc, Exception):
+                        if not ack_received:
+                            self._detach_websocket(websocket)
+                            self._publish_update([state.server_id], "configuration_send_failed")
+                            return False
+                        return True
+                    if rolled_back:
+                        self._publish_update([state.server_id], "configuration_send_cancelled")
+                    raise
+                current = self._servers.get(state.server_id)
+                if current is not state or state.websocket is not websocket or state.generation != generation:
+                    return False
+                return True
 
         outcomes = await asyncio.gather(
             *(push_one(state) for state in self._target_states(server_id)),
             return_exceptions=False,
         )
         return sum(1 for pushed in outcomes if pushed)
+
+    def _rollback_configuration_send(
+        self,
+        state: EventBridgeServerState,
+        message_id: str,
+        previous_delivery: dict[str, Any],
+    ) -> tuple[bool, bool]:
+        """Restore delivery diagnostics only while this failed send still owns them."""
+        ack_received = state.last_config_ack_message_id == message_id
+        current = self._servers.get(state.server_id)
+        if current is not state or state.last_config_message_id != message_id or ack_received:
+            return ack_received, False
+        for field_name, value in previous_delivery.items():
+            setattr(state, field_name, value)
+        return False, True
 
     def record_config_ack(self, websocket: Any, payload: dict[str, Any]) -> EventBridgeServerState | None:
         if not self._accepting:

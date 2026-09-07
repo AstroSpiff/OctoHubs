@@ -37,6 +37,9 @@ jobs:
       - name: Audit production npm dependencies
         run: npm audit --omit=dev --audit-level=high
 
+      - name: Audit all npm build and test dependencies
+        run: npm audit --audit-level=high
+
       - name: Run ESLint
         run: npm run lint
 
@@ -105,6 +108,9 @@ jobs:
 
       - name: Audit production Python dependencies
         run: python -m pip_audit -r requirements.txt
+
+      - name: Audit Python build and test dependencies
+        run: python -m pip_audit -r requirements-dev.txt
 
       - name: Run Ruff
         run: python -m ruff check .

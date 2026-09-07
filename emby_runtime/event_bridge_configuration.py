@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime
+import threading
 from typing import Any
+from weakref import WeakKeyDictionary
 
 from fastapi.concurrency import run_in_threadpool
 
@@ -34,6 +38,34 @@ EVENT_BRIDGE_SETTING_LABELS = {
     "SESSION_EVENT_NAMES": "Eventi sessione",
     "PLUGIN_EVENT_NAMES": "Eventi plugin",
 }
+
+_delivery_lock_registry_guard = threading.Lock()
+_delivery_locks_by_loop: WeakKeyDictionary[Any, dict[str, asyncio.Lock]] = WeakKeyDictionary()
+
+
+def _event_bridge_delivery_lock(server_id: str) -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    with _delivery_lock_registry_guard:
+        locks = _delivery_locks_by_loop.setdefault(loop, {})
+        return locks.setdefault(server_id, asyncio.Lock())
+
+
+@asynccontextmanager
+async def event_bridge_settings_delivery_guard(server_ids):
+    """Serialize committed settings and live delivery for overlapping servers."""
+    locks = [
+        _event_bridge_delivery_lock(server_id)
+        for server_id in sorted({str(value) for value in server_ids if str(value)})
+    ]
+    acquired: list[asyncio.Lock] = []
+    try:
+        for lock in locks:
+            await lock.acquire()
+            acquired.append(lock)
+        yield
+    finally:
+        for lock in reversed(acquired):
+            lock.release()
 
 
 @_config_manager.serialized_config_update
@@ -67,12 +99,10 @@ async def _push_event_bridge_settings(
     """Deliver saved settings to plugins, preferring their authenticated HTTP API."""
     result = _empty_event_bridge_push_result()
     manager = get_event_bridge_manager()
-    connected_ids = {
-        str(item.get("server_id") or "")
-        for item in manager.status().get("servers", [])
-        if isinstance(item, dict) and item.get("connected")
-    }
-    target_ids = set(submitted_server_settings) | {server_id for server_id in connected_ids if server_id}
+    # The route's per-server delivery guard owns exactly the submitted set.
+    # Pushing every connected server here would let disjoint PUTs race on
+    # transports they did not lock and could replay unrelated old settings.
+    target_ids = set(submitted_server_settings)
     raw_servers = _raw_emby_servers_by_id(current_config)
     websocket_target_ids = set(target_ids)
 

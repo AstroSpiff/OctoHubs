@@ -68,6 +68,7 @@ function PrimaryNavigationLinks({
           >
             <NavLink
               to={item.to}
+              data-primary-navigation-id={item.id}
               onClick={() => {
                 closeTopSubmenu();
                 onNavigate?.();

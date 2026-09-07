@@ -1,3 +1,5 @@
+import { navigateBrowser, type BrowserEffectGuard } from "@/lib/browser-download";
+
 export class ApiError extends Error {
   readonly status: number;
 
@@ -48,11 +50,15 @@ export function captureAuthenticatedActionOwner(): AuthenticatedActionOwner {
 
 export function assertAuthenticatedActionOwner(owner: AuthenticatedActionOwner): void {
   if (
-    owner.ownerId !== null
-    && (owner.ownerId !== sessionOwnerId || owner.generation !== sessionOwnerGeneration)
+    owner.ownerId !== sessionOwnerId
+    || owner.generation !== sessionOwnerGeneration
   ) {
     throw new SessionOwnerChangedError();
   }
+}
+
+function authenticatedBrowserEffectGuard(owner: AuthenticatedActionOwner): BrowserEffectGuard {
+  return { assertCurrent: () => assertAuthenticatedActionOwner(owner) };
 }
 
 function clearCsrfTokenForRetry() {
@@ -165,7 +171,10 @@ async function sendRequest(
     }
     if (response.status === 401 && window.location.pathname.startsWith("/app")) {
       const next = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-      window.location.assign(`/login?next=${encodeURIComponent(next)}`);
+      navigateBrowser(
+        `/login?next=${encodeURIComponent(next)}`,
+        authenticatedBrowserEffectGuard(owner),
+      );
     }
     throw new ApiError(message, response.status);
   }

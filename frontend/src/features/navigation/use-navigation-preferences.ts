@@ -37,6 +37,10 @@ function useNavigationPreferences(
   const serverSignature = serverPreferences
     ? `${serverPreferences.primary_navigation}|${serverPreferences.secondary_navigation}`
     : "";
+  const mutation = useMutation({
+    mutationFn: saveNavigationPreferences,
+  });
+  const resetMutation = mutation.reset;
 
   const persistLocally = useCallback((next: NavigationPreferences) => {
     persistNavigationPreferences(next, browserLocalStorage());
@@ -52,16 +56,13 @@ function useNavigationPreferences(
 
   useEffect(() => {
     mutationGenerationRef.current += 1;
+    resetMutation();
     if (!serverPreferences) {
       const next = resolveNavigationPreferences(browserLocalStorage());
       preferencesRef.current = next;
       setOwnedPreferences({ accountId, preferences: next });
     }
-  }, [accountId, serverPreferences]);
-
-  const mutation = useMutation({
-    mutationFn: saveNavigationPreferences,
-  });
+  }, [accountId, resetMutation, serverPreferences]);
 
   const updatePreferences = useCallback((partial: UiPreferencesRequest) => {
     const ownerId = accountIdRef.current;

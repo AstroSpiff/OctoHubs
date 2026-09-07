@@ -10,7 +10,8 @@ from sqlalchemy import and_, func, text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from core.storage.storage_app_settings import _lock_app_settings_row
+from core.app_settings_crypto import SettingsCipher
+from core.storage.storage_app_settings import _decode_settings, _lock_app_settings_row
 from core.storage.storage_errors import StorageError
 from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_locks import lock_snapshot_writer
@@ -28,6 +29,8 @@ from core.storage.storage_models import (
 
 
 class _SessionProvider(Protocol):
+    _app_settings_cipher: SettingsCipher | None
+
     def _get_session(self) -> Any: ...
 
 
@@ -1220,7 +1223,10 @@ class StorageProbeMixin(_SessionProvider):
                 .with_for_update()
                 .one_or_none()
             )
-            settings = settings_row.data if settings_row is not None and isinstance(settings_row.data, dict) else {}
+            settings, _needs_rewrite = _decode_settings(
+                self,
+                settings_row.data if settings_row is not None else {},
+            )
             emby = settings.get("EMBY") if isinstance(settings, dict) else {}
             servers = emby.get("SERVERS") if isinstance(emby, dict) else []
             if not any(

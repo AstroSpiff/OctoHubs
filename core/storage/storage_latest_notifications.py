@@ -7,7 +7,9 @@ from typing import Any, Protocol
 
 from sqlalchemy.exc import IntegrityError
 
+from core.app_settings_crypto import SettingsCipher
 from core.storage.storage_errors import StorageError
+from core.storage.storage_app_settings import _decode_settings
 from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_locks import lock_latest_refresh
 from core.storage.storage_models import (
@@ -19,6 +21,8 @@ from core.storage.storage_models import (
 
 
 class _SessionProvider(Protocol):
+    _app_settings_cipher: SettingsCipher | None
+
     def _get_session(self) -> Any: ...
 
 
@@ -27,8 +31,7 @@ class StorageLatestNotificationMixin(_SessionProvider):
     _LATEST_NOTIFICATION_RETENTION = timedelta(days=90)
     _LATEST_NOTIFICATION_UNKNOWN_RETENTION = timedelta(days=365)
 
-    @staticmethod
-    def _notification_server_exists(session: Any, server_id: str) -> bool:
+    def _notification_server_exists(self, session: Any, server_id: str) -> bool:
         if session.get_bind().dialect.name != "postgresql":
             # SQLite is retained only for isolated unit tests and does not
             # provide the shared advisory-lock/delete contract.
@@ -37,7 +40,8 @@ class StorageLatestNotificationMixin(_SessionProvider):
         if settings is None or not isinstance(settings.data, dict):
             # Compatibility for isolated storage tests and pre-seed upgrades.
             return True
-        emby = settings.data.get("EMBY")
+        decoded, _needs_rewrite = _decode_settings(self, settings.data)
+        emby = decoded.get("EMBY")
         servers = emby.get("SERVERS") if isinstance(emby, dict) else None
         if not isinstance(servers, list):
             return True

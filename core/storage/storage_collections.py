@@ -6,8 +6,9 @@ import copy
 import threading
 from typing import Any, Callable, Dict, Optional, Protocol, Tuple
 
+from core.app_settings_crypto import SettingsCipher
 from core.library_group_names import normalize_library_group_name, project_library_group_name
-from core.storage.storage_app_settings import _lock_app_settings_row
+from core.storage.storage_app_settings import _decode_settings, _lock_app_settings_row
 from core.storage.storage_errors import CollectionDefinitionNotFoundError, StorageError
 from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_locks import lock_collection_definition, lock_snapshot_writer
@@ -26,6 +27,8 @@ from core.storage.storage_models import (
 
 
 class _SessionProvider(Protocol):
+    _app_settings_cipher: SettingsCipher | None
+
     def _get_session(self) -> Any: ...
 
 
@@ -64,7 +67,7 @@ class StorageCollectionsMixin(_SessionProvider):
                 )
                 lock_snapshot_writer(session, "library-associations")
                 if settings_row is not None:
-                    settings = settings_row.data if isinstance(settings_row.data, dict) else {}
+                    settings, _needs_rewrite = _decode_settings(self, settings_row.data)
                     emby = settings.get("EMBY") if isinstance(settings, dict) else {}
                     servers = emby.get("SERVERS") if isinstance(emby, dict) else []
                     configured_server_ids = {

@@ -38,7 +38,7 @@ Set environment variables in Portainer or your shell. The canonical lifecycle an
 secret examples are in [Docker Deploy](DOCKER_DEPLOY.md#deployment-variables-and-lifecycle).
 
 - `SECRET_KEY` (persistent; Docker generates it in `/config/.env` when absent or a known placeholder; explicit values require at least 32 non-trivial UTF-8 bytes)
-- `PASSWORD_SECRET` (persistent and dedicated to saved Emby passwords; Docker can generate it in `/config/.env`)
+- `PASSWORD_SECRET` (persistent and dedicated to saved Emby passwords and reusable application-setting credentials; Docker can generate it in `/config/.env`)
 - `ADMIN_USERNAME`, `ADMIN_PASSWORD` or `ADMIN_PASSWORD_FILE`, `ADMIN_EMAIL` (required only until the first administrator is created)
 - `OCTOHUBS_DB_URL`, or `OCTOHUBS_DB_HOST`, `OCTOHUBS_DB_PORT`, `OCTOHUBS_DB_NAME`, `OCTOHUBS_DB_USER`, `OCTOHUBS_DB_PASSWORD` (required PostgreSQL application database)
 - `WEBHOOK_IP_WHITELIST` and `WEBHOOK_TRUST_PROXY_HEADERS`; Event Bridge credentials
@@ -53,6 +53,9 @@ secret examples are in [Docker Deploy](DOCKER_DEPLOY.md#deployment-variables-and
 PostgreSQL is the only application settings store. Manage Emby servers,
 scheduled tasks and integrations from the authenticated UI. See
 `CONFIGURATION.md` for deployment and runtime settings.
+Reusable credentials inside application settings are stored as versioned
+encrypted envelopes. Keep database backups protected and preserve
+`PASSWORD_SECRET`; use its documented current/previous rotation procedure.
 
 ## Security checklist
 - Keep `/config` persistent and writable so generated keys survive restarts.

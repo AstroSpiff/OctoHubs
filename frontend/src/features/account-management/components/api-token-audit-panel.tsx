@@ -4,6 +4,11 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { formatAccountDate, formatApiTokenAction } from "@/features/account-management/account-presentation";
 import type { ApiToken, ApiTokenAuditEvent, ApiTokenAuditFilters, ApiTokenAuditResult, ApiTokenAuditVersion } from "@/features/account-management/types";
+import {
+  isOwnerBoundBrowserActionCancelled,
+  useOwnerBoundBrowserAction,
+} from "@/features/session/use-owner-bound-browser-action";
+import { downloadBrowserFile } from "@/lib/browser-download";
 
 type ApiTokenAuditPanelProps = {
   events: ApiTokenAuditEvent[];
@@ -12,33 +17,27 @@ type ApiTokenAuditPanelProps = {
   error?: string;
   tokens: ApiToken[];
   onChangeFilters: (filters: ApiTokenAuditFilters) => void;
-  onExport: (filters: ApiTokenAuditFilters) => Promise<Blob>;
+  onExport: (filters: ApiTokenAuditFilters, signal?: AbortSignal) => Promise<Blob>;
   onRefresh: () => void;
 };
-
-function downloadAudit(blob: Blob) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = "octohubs-api-token-audit.json";
-  document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
-}
 
 function ApiTokenAuditPanel({ events, error, filters, loading, onChangeFilters, onExport, onRefresh, tokens }: ApiTokenAuditPanelProps) {
   const [exportError, setExportError] = useState("");
   const [exporting, setExporting] = useState(false);
+  const beginBrowserAction = useOwnerBoundBrowserAction();
 
   async function exportAudit() {
+    const action = beginBrowserAction();
     setExportError("");
     setExporting(true);
     try {
-      downloadAudit(await onExport(filters));
+      const audit = await onExport(filters, action.signal);
+      downloadBrowserFile(audit, "octohubs-api-token-audit.json", action);
     } catch (requestError) {
+      if (isOwnerBoundBrowserActionCancelled(requestError)) return;
       setExportError(requestError instanceof Error ? requestError.message : "Impossibile esportare l'audit token.");
     } finally {
+      action.release();
       setExporting(false);
     }
   }

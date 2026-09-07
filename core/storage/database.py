@@ -46,7 +46,7 @@ class DatabaseStorage(
 ):
     """SQLAlchemy-backed storage for configuration, request rules and results."""
 
-    def __init__(self, settings: Dict[str, Any]):
+    def __init__(self, settings: Dict[str, Any], *, app_settings_cipher: Any = None):
         if not SQLALCHEMY_AVAILABLE:  # pragma: no cover - runtime guard
             raise StorageError(
                 "Per usare il database installa SQLAlchemy e un driver PostgreSQL (es. psycopg2)."
@@ -57,6 +57,7 @@ class DatabaseStorage(
         self._Session: Any = None
         self._lock = threading.Lock()
         self._app_settings_lock = threading.RLock()
+        self._app_settings_cipher = app_settings_cipher
 
     def _get_session(self) -> Any:
         if self._Session is None:

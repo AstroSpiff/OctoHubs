@@ -14,6 +14,11 @@ import { Button } from "@/components/ui/button";
 import { resolveMagnetReferences, resultLink, sendToQbittorrent } from "@/features/research/api";
 import { magnetExportLink } from "@/features/research/presentation";
 import { WriteAction } from "@/features/session/workspace-capabilities";
+import {
+  isOwnerBoundBrowserActionCancelled,
+  useOwnerBoundBrowserAction,
+} from "@/features/session/use-owner-bound-browser-action";
+import { navigateBrowser, writeBrowserClipboard } from "@/lib/browser-download";
 import { safeExternalHttpUrl } from "@/lib/external-url";
 import type { SearchResult } from "@/features/research/types";
 
@@ -40,6 +45,7 @@ function SearchResultActions({
   const link = resultLink(result);
   const magnet = magnetExportLink(result);
   const webUrl = safeExternalHttpUrl(result.web);
+  const beginBrowserAction = useOwnerBoundBrowserAction();
 
   async function send() {
     if (!link) return;
@@ -65,34 +71,40 @@ function SearchResultActions({
 
   async function copyMagnet() {
     if (!magnet) return;
+    const action = beginBrowserAction();
     setResolvingMagnet(true);
     try {
-      const response = await resolveMagnetReferences([magnet]);
-      await navigator.clipboard.writeText(response.magnets[0] || "");
+      const response = await resolveMagnetReferences([magnet], action.signal);
+      await writeBrowserClipboard(response.magnets[0] || "", action);
       onNotice({ message: "Magnet copiato negli appunti.", tone: "success" });
-    } catch {
+    } catch (reason) {
+      if (isOwnerBoundBrowserActionCancelled(reason)) return;
       onNotice({
         message: "Copia magnet non disponibile in questo browser.",
         tone: "error",
       });
     } finally {
+      action.release();
       setResolvingMagnet(false);
     }
   }
 
   async function openMagnet() {
     if (!magnet) return;
+    const action = beginBrowserAction();
     setResolvingMagnet(true);
     try {
-      const response = await resolveMagnetReferences([magnet]);
+      const response = await resolveMagnetReferences([magnet], action.signal);
       const resolved = response.magnets[0];
-      if (resolved) window.location.assign(resolved);
+      if (resolved) navigateBrowser(resolved, action);
     } catch (reason) {
+      if (isOwnerBoundBrowserActionCancelled(reason)) return;
       onNotice({
         message: reason instanceof Error ? reason.message : "Apertura magnet non riuscita.",
         tone: "error",
       });
     } finally {
+      action.release();
       setResolvingMagnet(false);
     }
   }

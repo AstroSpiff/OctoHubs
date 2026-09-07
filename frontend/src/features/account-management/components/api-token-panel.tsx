@@ -6,6 +6,11 @@ import { useConfirmationDialog } from "@/components/ui/use-confirmation-dialog";
 import { apiTokenPermissionProfileLabels, apiTokenScopeLabels, formatAccountDate, formatApiTokenAction } from "@/features/account-management/account-presentation";
 import type { ApiToken, ApiTokenPermissionProfile, ApiTokenPermissionProfileId, CreatedApiToken } from "@/features/account-management/types";
 import { WriteAction } from "@/features/session/workspace-capabilities";
+import {
+  isOwnerBoundBrowserActionCancelled,
+  useOwnerBoundBrowserAction,
+} from "@/features/session/use-owner-bound-browser-action";
+import { writeBrowserClipboard } from "@/lib/browser-download";
 
 const apiTokenPermissionProfileDescriptions: Record<ApiTokenPermissionProfileId, string> = {
   read_only: "Consulta dati e stato senza modificare nulla.",
@@ -45,6 +50,7 @@ function ApiTokenPanel({
   tokens,
 }: ApiTokenPanelProps) {
   const confirmation = useConfirmationDialog();
+  const beginBrowserAction = useOwnerBoundBrowserAction();
   const profilesReady = availablePermissionProfiles.length > 0;
   const [name, setName] = useState("");
   const [permissionProfile, setPermissionProfile] = useState<ApiTokenPermissionProfileId>("read_only");
@@ -106,16 +112,25 @@ function ApiTokenPanel({
   }
 
   async function copySecret(secret: string) {
+    const action = beginBrowserAction();
     setNotice("");
     secretInputRef.current?.focus();
     secretInputRef.current?.select();
     try {
-      if (!navigator.clipboard?.writeText) throw new Error("Clipboard non disponibile");
-      await navigator.clipboard.writeText(secret);
+      await writeBrowserClipboard(secret, action);
       setSecretCopied(true);
       setNotice("Token copiato negli appunti.");
-    } catch {
+    } catch (error) {
+      if (isOwnerBoundBrowserActionCancelled(error)) return;
+      try {
+        action.assertCurrent();
+      } catch (ownerError) {
+        if (isOwnerBoundBrowserActionCancelled(ownerError)) return;
+        throw ownerError;
+      }
       setNotice("Seleziona manualmente il token se il browser blocca la copia.");
+    } finally {
+      action.release();
     }
   }
 
