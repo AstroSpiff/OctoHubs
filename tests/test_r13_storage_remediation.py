@@ -98,18 +98,19 @@ def test_first_interface_preferences_and_order_writes_share_one_lock(tmp_path):
         )
         user = auth.create_user("r13-user", "password-one")
         assert user is not None
+        user_id = int(user.id)
         start = threading.Barrier(2)
 
         def save_preferences():
             start.wait(timeout=5)
             return auth.save_user_interface_preferences(
-                user.id,
+                user_id,
                 {"primary_navigation": "sidebar", "secondary_navigation": "sidebar"},
             )
 
         def save_order():
             start.wait(timeout=5)
-            return auth.save_user_interface_order(user.id, "research", ["requests", "rules"])
+            return auth.save_user_interface_order(user_id, "research", ["requests", "rules"])
 
         with ThreadPoolExecutor(2) as executor:
             preferences = executor.submit(save_preferences)
@@ -120,11 +121,11 @@ def test_first_interface_preferences_and_order_writes_share_one_lock(tmp_path):
             }
             assert order.result(timeout=5) == ["requests", "rules"]
 
-        assert auth.get_user_interface_preferences(user.id) == {
+        assert auth.get_user_interface_preferences(user_id) == {
             "primary_navigation": "sidebar",
             "secondary_navigation": "sidebar",
         }
-        assert auth.get_user_interface_order(user.id, "research") == ["requests", "rules"]
+        assert auth.get_user_interface_order(user_id, "research") == ["requests", "rules"]
     finally:
         if auth.db_session is not None:
             auth.shutdown_auth()

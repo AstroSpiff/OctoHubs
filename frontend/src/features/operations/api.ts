@@ -13,6 +13,9 @@ export function clearCompletedOperations(): Promise<ClearCompletedResult> {
   return request<ClearCompletedResult>("/api/v1/operations/clear-completed", { method: "POST" });
 }
 
-export function stopWorkflow(): Promise<{ success: boolean; message: string }> {
-  return request<{ success: boolean; message: string }>("/api/v1/workflow/stop", { method: "POST" });
+export function stopWorkflow(operationId: string): Promise<{ success: boolean; message: string }> {
+  return request<{ success: boolean; message: string }>("/api/v1/workflow/stop", {
+    method: "POST",
+    body: JSON.stringify({ operation_id: operationId }),
+  });
 }

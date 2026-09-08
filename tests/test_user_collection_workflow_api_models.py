@@ -38,6 +38,10 @@ def test_collection_and_workflow_routes_publish_external_response_contracts():
     assert _response_ref(schema, "/api/emby/collections/options", "get") == "#/components/schemas/CollectionsOptionsResponse"
     assert _response_ref(schema, "/api/emby/collections/{collection_id}/sync", "post", "202") == "#/components/schemas/CollectionBackgroundOperationResponse"
     assert _response_ref(schema, "/api/workflow/start", "post") == "#/components/schemas/WorkflowSuccessResponse"
+    stop = schema["paths"]["/api/workflow/stop"]["post"]
+    assert stop["requestBody"]["required"] is True
+    assert stop["requestBody"]["content"]["application/json"]["schema"]["$ref"] == "#/components/schemas/WorkflowStopRequest"
+    assert _response_ref(schema, "/api/workflow/stop", "post", "409") == "#/components/schemas/WorkflowErrorResponse"
 
 
 def test_external_binary_routes_publish_their_real_media_types():

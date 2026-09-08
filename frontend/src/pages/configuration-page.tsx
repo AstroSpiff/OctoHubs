@@ -16,6 +16,7 @@ import { TelegramPanel } from "@/features/configuration/components/telegram-pane
 import { testConfigurationConnections } from "@/features/configuration/api";
 import { configurationTabHasDraft } from "@/features/configuration/configuration-draft-guard";
 import { configurationPath, configurationTabFromRoute } from "@/features/configuration/configuration-navigation";
+import { useConfigurationFeedback } from "@/features/configuration/use-configuration-feedback";
 import { useConfigurationSettings } from "@/features/configuration/use-configuration-settings";
 import { useEmbyServers } from "@/features/configuration/use-emby-servers";
 import { EventBridgeWorkspace } from "@/features/event-bridge/components/event-bridge-workspace";
@@ -30,10 +31,10 @@ function ConfigurationPage() {
   const previousTabRef = useRef(activeTab);
   const navigate = useNavigate();
   const confirmation = useConfirmationDialog();
-  const [notice, setNotice] = useState("");
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [refreshEpoch, setRefreshEpoch] = useState(0);
   const settings = useConfigurationSettings();
+  const feedback = useConfigurationFeedback(activeTab);
   const navigationPreferences = useNavigationPreferencesContext();
   const servers = useEmbyServers();
   const headerRefreshVisible = activeTab === "servers" || activeTab === "telegram" || activeTab === "automations" || activeTab === "services";
@@ -49,7 +50,6 @@ function ConfigurationPage() {
     if (previousTabRef.current === activeTab) return;
     previousTabRef.current = activeTab;
     setHasUnsavedChanges(false);
-    setNotice("");
   }, [activeTab]);
 
   useBeforeUnloadWarning(hasUnsavedChanges);
@@ -67,7 +67,7 @@ function ConfigurationPage() {
         tone: "danger",
       })
     ) return;
-    setNotice("");
+    feedback.clear();
     if (protectsDraft) setRefreshEpoch((current) => current + 1);
     if (activeTab === "servers") void servers.refresh();
     else if (activeTab === "telegram") void settings.telegram.refetch();
@@ -81,6 +81,25 @@ function ConfigurationPage() {
   async function removeServer(serverId: string) {
     if (!await confirmation.confirm({ title: "Rimuovi server Emby", description: "Rimuovere questo server Emby e i dati associati?", confirmLabel: "Rimuovi server", tone: "danger" })) return;
     servers.remove.mutate(serverId);
+  }
+
+  async function runWithFeedback<T>(
+    action: () => Promise<T>,
+    successMessage: (payload: T) => string,
+  ): Promise<T> {
+    const lease = feedback.begin();
+    if (!lease) throw new Error("La sezione di configurazione non è più attiva");
+    try {
+      const payload = await action();
+      feedback.publishNotice(lease, successMessage(payload));
+      return payload;
+    } catch (error) {
+      feedback.publishError(
+        lease,
+        error instanceof Error ? error.message : "Operazione non riuscita",
+      );
+      throw error;
+    }
   }
 
   return (
@@ -102,12 +121,12 @@ function ConfigurationPage() {
             <EmbyServersPanel key={`servers-${refreshEpoch}`} servers={servers.servers.data?.servers || []} loading={servers.servers.isLoading} creating={servers.create.isPending} updatingIds={servers.updatingIds} deletingIds={servers.deletingIds} removalErrors={servers.removalErrors} onCreate={async (input) => { await servers.create.mutateAsync(input); }} onUpdate={async (serverId, input) => { await servers.update.mutateAsync({ serverId, input }); }} onDelete={(serverId) => { void removeServer(serverId); }} onRefresh={() => void servers.refresh()} onDirtyChange={onDraftChange} />
           </QueryStateBoundary>
         </> : null}
-        {activeTab === "telegram" ? <TelegramPanel key={`telegram-${refreshEpoch}`} settings={settings.telegram.data} busy={settings.telegramAction.isPending} notice={notice} actionError={settings.telegramAction.error?.message || ""} loadError={settings.telegram.error} retrying={settings.telegram.isFetching} onRetry={() => void settings.telegram.refetch()} onAction={async (action) => { const payload = await settings.telegramAction.mutateAsync(action); setNotice(payload.message || "Configurazione Telegram aggiornata"); return payload; }} onDirtyChange={onDraftChange} /> : null}
+        {activeTab === "telegram" ? <TelegramPanel key={`telegram-${refreshEpoch}`} settings={settings.telegram.data} busy={settings.telegramAction.isPending} notice={feedback.notice} actionError={feedback.error} loadError={settings.telegram.error} retrying={settings.telegram.isFetching} onRetry={() => void settings.telegram.refetch()} onAction={(action) => runWithFeedback(() => settings.telegramAction.mutateAsync(action), (payload) => payload.message || "Configurazione Telegram aggiornata")} onDirtyChange={onDraftChange} /> : null}
         {activeTab === "automations" ? <QueryStateBoundary error={settings.settings.error} hasData={Boolean(settings.settings.data)} loadingLabel="Caricamento automazioni..." retrying={settings.settings.isFetching} onRetry={() => void settings.settings.refetch()}>
-          {!automationUnavailable ? <AutomationsPanel key={`automations-${refreshEpoch}`} automations={settings.settings.data?.automations} requestRefresh={settings.settings.data?.request_refresh} saving={settings.saveAutomations.isPending} savedMessage={notice} onSave={async (value) => { const payload = await settings.saveAutomations.mutateAsync(value); setNotice(payload.message || "Automazioni aggiornate"); return payload.automations; }} onRefresh={refreshCurrent} onDirtyChange={onDraftChange} /> : null}
+          {!automationUnavailable ? <AutomationsPanel key={`automations-${refreshEpoch}`} automations={settings.settings.data?.automations} requestRefresh={settings.settings.data?.request_refresh} saving={settings.saveAutomations.isPending} savedMessage={feedback.notice} onSave={async (value) => (await runWithFeedback(() => settings.saveAutomations.mutateAsync(value), (payload) => payload.message || "Automazioni aggiornate")).automations} onRefresh={refreshCurrent} onDirtyChange={onDraftChange} /> : null}
         </QueryStateBoundary> : null}
         {activeTab === "services" ? <QueryStateBoundary error={settings.settings.error} hasData={Boolean(settings.settings.data)} loadingLabel="Caricamento configurazione servizi..." retrying={settings.settings.isFetching} onRetry={() => void settings.settings.refetch()}>
-          <ServiceSettingsPanel key={`services-${refreshEpoch}`} services={settings.settings.data?.services} saving={settings.saveServices.isPending} savedMessage={notice} onSave={async (value) => { const payload = await settings.saveServices.mutateAsync(value); setNotice(payload.message || "Configurazione servizi aggiornata"); return payload.services; }} onTestConnections={testConfigurationConnections} onRefreshSettings={() => void settings.settings.refetch()} onNotice={setNotice} onDirtyChange={onDraftChange} />
+          <ServiceSettingsPanel key={`services-${refreshEpoch}`} services={settings.settings.data?.services} saving={settings.saveServices.isPending} savedMessage={feedback.notice} onSave={async (value) => (await runWithFeedback(() => settings.saveServices.mutateAsync(value), (payload) => payload.message || "Configurazione servizi aggiornata")).services} onTestConnections={testConfigurationConnections} onRefreshSettings={() => void settings.settings.refetch()} onNotice={feedback.publishImmediateNotice} onDirtyChange={onDraftChange} />
         </QueryStateBoundary> : null}
         {activeTab === "event-bridge" ? <EventBridgeWorkspace embedded onDirtyChange={onDraftChange} /> : null}
         {activeTab === "system-status" ? <SystemStatusWorkspace embedded /> : null}

@@ -9,8 +9,12 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from core.tasks import workflow_manager
-from services.workflow_api_models import WorkflowErrorResponse, WorkflowStartRequest, WorkflowSuccessResponse
-from web.openapi_requests import no_request_body
+from services.workflow_api_models import (
+    WorkflowErrorResponse,
+    WorkflowStartRequest,
+    WorkflowStopRequest,
+    WorkflowSuccessResponse,
+)
 
 router = APIRouter()
 
@@ -77,12 +81,20 @@ async def workflow_start(request: Request, payload: WorkflowStartRequest):
 
 @router.post(
     "/api/workflow/stop",
-    responses={200: {"model": WorkflowSuccessResponse}, 400: {"model": WorkflowErrorResponse}},
-    openapi_extra=no_request_body(),
+    responses={
+        200: {"model": WorkflowSuccessResponse},
+        400: {"model": WorkflowErrorResponse},
+        409: {"model": WorkflowErrorResponse},
+    },
 )
-async def workflow_stop(request: Request):
+async def workflow_stop(request: Request, payload: WorkflowStopRequest):
     await run_in_threadpool(_require_auth_dep, request)
-    if not await run_in_threadpool(workflow_manager.is_running):
+    outcome = await run_in_threadpool(workflow_manager.stop, payload.operation_id)
+    if outcome == "not_running":
         return _error_response_dep("Nessun workflow in esecuzione", 400)
-    await run_in_threadpool(workflow_manager.stop)
+    if outcome == "target_changed":
+        return _error_response_dep(
+            "Il workflow selezionato non è più quello in esecuzione",
+            409,
+        )
     return _success_response_dep(message="Richiesta di interruzione inviata")

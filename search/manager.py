@@ -6,9 +6,7 @@ import os
 import time
 from email.message import Message
 from typing import Any, Dict, Mapping, Optional, Tuple
-import unicodedata
-
-from urllib.parse import parse_qsl, quote, unquote, urlparse
+from urllib.parse import parse_qsl, unquote, urlparse
 
 from search.torrent_download import download_torrent
 from search.manual_search_pipeline import build_manual_search_snapshot
@@ -25,6 +23,7 @@ from emby_runtime.api_clients import (
 )
 
 from core.config_manager import load_config
+from web.download_headers import attachment_content_disposition
 
 
 JsonResult = tuple[Dict[str, Any], int]
@@ -83,11 +82,7 @@ def _guess_torrent_filename(url: str, headers: Mapping[str, str]) -> str:
 
 def _torrent_content_disposition(filename: str) -> str:
     """Build an ASCII-safe header with an RFC 5987 Unicode filename."""
-    safe_name = _guess_torrent_filename("", {"content-disposition": f'attachment; filename="{filename}"'})
-    fallback = unicodedata.normalize("NFKD", safe_name).encode("ascii", "ignore").decode("ascii")
-    fallback = fallback.replace("\\", "_").replace('"', "_") or "download.torrent"
-    encoded = quote(safe_name, safe="!#$&+-.^_`|~")
-    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
+    return attachment_content_disposition(filename, fallback="download.torrent")
 
 
 def _download_torrent_file(

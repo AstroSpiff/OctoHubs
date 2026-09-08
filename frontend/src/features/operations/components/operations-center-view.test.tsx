@@ -178,4 +178,90 @@ describe("OperationsCenterView", () => {
     expect(container.querySelector('[aria-label="Pulisci operazioni completate"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Interrompi Sincronizzazione"]')).not.toBeNull();
   });
+
+  it("keeps the confirmed stop bound to the operation originally selected", async () => {
+    window.localStorage.setItem("test.operations.target", "true");
+    const onStop = vi.fn();
+    const operationX = runningOperation("operation-x", "Workflow X");
+    const operationY = runningOperation("operation-y", "Workflow Y");
+    const renderOperation = (operation: Operation) => (
+      <WorkspaceCapabilitiesProvider accountId={1} canMutate>
+        <OperationsCenterView
+          operations={[operation]}
+          hasData
+          activeCount={1}
+          fetching={false}
+          onRefresh={vi.fn()}
+          onClear={vi.fn()}
+          onStop={onStop}
+          storageKey="test.operations.target"
+          label="Operazioni test"
+        />
+      </WorkspaceCapabilitiesProvider>
+    );
+
+    await act(async () => root.render(renderOperation(operationX)));
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Interrompi Workflow X"]')?.click());
+    expect(container.querySelector('[role="alertdialog"]')?.textContent).toContain("Workflow X");
+
+    await act(async () => root.render(renderOperation(operationY)));
+    await act(async () => {
+      const confirm = [...container.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')]
+        .find((button) => button.textContent === "Interrompi");
+      confirm?.click();
+    });
+
+    expect(onStop).toHaveBeenCalledOnce();
+    expect(onStop).toHaveBeenCalledWith("operation-x");
+  });
+
+  it("drops an open confirmation when the account owner changes", async () => {
+    window.localStorage.setItem("test.operations.owner", "true");
+    const onStop = vi.fn();
+    const operation = runningOperation("operation-x", "Workflow X");
+    const renderOwner = (accountId: number) => (
+      <WorkspaceCapabilitiesProvider accountId={accountId} canMutate>
+        <OperationsCenterView
+          key={accountId}
+          operations={[operation]}
+          hasData
+          activeCount={1}
+          fetching={false}
+          onRefresh={vi.fn()}
+          onClear={vi.fn()}
+          onStop={onStop}
+          storageKey="test.operations.owner"
+          label="Operazioni test"
+        />
+      </WorkspaceCapabilitiesProvider>
+    );
+
+    await act(async () => root.render(renderOwner(1)));
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Interrompi Workflow X"]')?.click());
+    expect(container.querySelector('[role="alertdialog"]')).not.toBeNull();
+
+    await act(async () => root.render(renderOwner(2)));
+
+    expect(container.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(onStop).not.toHaveBeenCalled();
+  });
 });
+
+function runningOperation(id: string, title: string): Operation {
+  return {
+    id,
+    kind: "workflow",
+    title,
+    summary: "Server A",
+    status: "running",
+    message: "In corso",
+    progress: 25,
+    current: 1,
+    total: 4,
+    details: { can_stop: true },
+    error: null,
+    started_at: "2026-09-01T12:00:00Z",
+    updated_at: "2026-09-01T12:01:00Z",
+    finished_at: null,
+  };
+}

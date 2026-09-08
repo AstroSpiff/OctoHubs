@@ -14,7 +14,7 @@ function OperationsCenter() {
     error={operations.error || clearCompleted.error || stopActiveWorkflow.error}
     onRefresh={() => void operations.refetch()}
     onClear={() => clearCompleted.mutate()}
-    onStop={() => stopActiveWorkflow.mutate()}
+    onStop={(operationId) => stopActiveWorkflow.mutate(operationId)}
     storageKey="octohubs.operations.open"
     label="Operazioni applicazione"
   />;

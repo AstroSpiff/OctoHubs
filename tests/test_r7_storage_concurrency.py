@@ -391,7 +391,8 @@ def test_workflow_lease_stop_and_reacquire_are_cross_storage(postgresql_schema_u
     active = second.get_active_workflow_status()
     assert active is not None
     assert active["workflow_id"] == "workflow-a"
-    assert second.request_active_workflow_stop() is True
+    assert second.request_active_workflow_stop("workflow-replaced") is False
+    assert second.request_active_workflow_stop("workflow-a") is True
     assert first.workflow_stop_requested("workflow-a", "owner-a") is True
     assert first.finalize_workflow_execution(
         "workflow-a", "owner-a", "completed", "interrupted"

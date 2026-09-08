@@ -50,11 +50,13 @@ async def register_runtime_event_loop(storage=None) -> None:
     print("🚀 OCTOHUBS STARTUP - MEGA LOGGING ENABLED", flush=True)
     print("=" * 100 + "\n", flush=True)
     register_app_event_loop(asyncio.get_running_loop())
+    from app_state import _LIBRARY_SCAN_TRACKER
     from emby_runtime.library_poller import get_library_poller
 
     resolved_storage = storage if storage is not None else _ensure_db_backend()
     poller = get_library_poller()
     poller.configure(resolved_storage, reopen=True)
+    _LIBRARY_SCAN_TRACKER.reopen()
     interrupted = await poller.finalize_interrupted_states()
     if interrupted:
         print(
@@ -106,6 +108,21 @@ def _initialize_latest_runtime(config, is_valid, db_storage) -> None:
     get_latest_manager(config, db_storage)
 
 
+def _initialize_transcode_guard_monitor() -> None:
+    """Open and start the monitor, failing closed on an undrained old owner."""
+    from emby_runtime.transcode_guard import (
+        TranscodeGuardLifecycleError,
+        get_transcode_guard_service,
+    )
+
+    transcode_guard = get_transcode_guard_service()
+    if not transcode_guard.start_accepting():
+        raise TranscodeGuardLifecycleError(
+            "Worker Transcode Guard precedente ancora in arresto"
+        )
+    transcode_guard.start()
+
+
 def initialize_runtime_services(*, config=None, is_valid=None, db_storage=None) -> None:
     """Initialize background services."""
     from app_state import set_connection_check_state
@@ -143,10 +160,12 @@ def initialize_runtime_services(*, config=None, is_valid=None, db_storage=None) 
     get_probe_manager().configure(storage_provider, reopen=True)
     _initialize_emby_websockets()
     try:
-        from emby_runtime.transcode_guard import get_transcode_guard_service
+        from emby_runtime.transcode_guard import TranscodeGuardLifecycleError
 
-        get_transcode_guard_service().start()
+        _initialize_transcode_guard_monitor()
         print("[STARTUP] Transcode Guard monitor pronto.")
+    except TranscodeGuardLifecycleError:
+        raise
     except Exception as exc:
         _log_startup_exception("⚠️ Transcode Guard non avviato", exc)
     workflow_manager.set_callbacks(
@@ -260,6 +279,7 @@ async def _run_async_shutdown_step(
 async def shutdown_runtime_services(timeout_seconds: float = 5.0) -> bool:
     """Stop runtime workers concurrently, then release subscribers and DB pools."""
     from app_state import (
+        _LIBRARY_SCAN_TRACKER,
         clear_app_event_loop,
         set_connection_check_state,
         shutdown_operation_tracker,
@@ -284,6 +304,7 @@ async def shutdown_runtime_services(timeout_seconds: float = 5.0) -> bool:
     workflow_manager.begin_shutdown()
     get_probe_manager().begin_shutdown()
     begin_status_snapshot_shutdown()
+    _LIBRARY_SCAN_TRACKER.begin_shutdown()
     worker_steps = [
         _run_threaded_shutdown_step(name, callback, timeout_seconds)
         for name, callback in _threaded_shutdown_steps()

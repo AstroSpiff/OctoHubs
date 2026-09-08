@@ -10,6 +10,7 @@ from web.request_validation import StrictRequestModel
 
 
 ProbeScope = Literal["libraries", "recent"]
+PROBE_SCOPE_VALUES: tuple[ProbeScope, ...] = ("libraries", "recent")
 ProbeMode = Literal["smart", "forced"]
 ProbeMediaPolicy = Literal["strm_only", "missing_media_info"]
 
@@ -177,11 +178,19 @@ def request_body_schema(model: type[BaseModel], *, required: bool = True) -> dic
     }
 
 
-def query_parameters(*items: tuple[str, bool, str]) -> dict[str, Any]:
+def query_parameters(
+    *items: tuple[str, bool, str] | tuple[str, bool, str, tuple[str, ...]],
+) -> dict[str, Any]:
     """Publish query parameters for Request-based routes without changing parsing."""
+    parameters = []
+    for item in items:
+        name, required, schema_type = item[:3]
+        schema: dict[str, Any] = {"type": schema_type}
+        if len(item) == 4:
+            schema["enum"] = list(item[3])
+        parameters.append(
+            {"name": name, "in": "query", "required": required, "schema": schema}
+        )
     return {
-        "parameters": [
-            {"name": name, "in": "query", "required": required, "schema": {"type": schema_type}}
-            for name, required, schema_type in items
-        ]
+        "parameters": parameters
     }

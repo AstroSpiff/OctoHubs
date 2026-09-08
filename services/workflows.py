@@ -395,7 +395,8 @@ def _wf_trigger_probe(context: Dict[str, Any]) -> bool:
         mode = "forced"  # Usa modalità forced per processare tutti i file STRM
         scope = "recent"  # Scope "ultimi aggiunti"
         print(f"[WORKFLOW] [PROBE] Chiamata start_combo_workflow_all_servers() con mode={mode}, scope={scope}")
-        probe_run_id = uuid.uuid4().hex
+        probe_run_id = str(context.get("_probe_run_id") or uuid.uuid4().hex)
+        context["_probe_run_id"] = probe_run_id
         started = get_probe_manager().start_combo_workflow_all_servers(
             servers_payload,
             mode=mode,
@@ -418,18 +419,8 @@ def _wf_trigger_probe(context: Dict[str, Any]) -> bool:
         return False
 
 
-def _wf_stop_probe(context: Dict[str, Any] | None = None) -> bool:
-    """
-    Ferma i worker probe "ultimi aggiunti" avviati dal workflow.
-
-    Lo stop del WorkflowManager interrompe il polling del workflow; questa callback
-    propaga la richiesta ai worker del probe, evitando processing/discovery orfani.
-    """
-    context = context or {}
-    print("[WORKFLOW] [PROBE] Stop richiesto per STRM Probe Ultimi Aggiunti")
-    manager = get_probe_manager()
+def _wf_stop_global_probe_workers(manager: Any) -> bool:
     stopped_any = False
-
     try:
         if manager.stop_combo_workflow_all_servers(scope="recent"):
             stopped_any = True
@@ -439,10 +430,13 @@ def _wf_stop_probe(context: Dict[str, Any] | None = None) -> bool:
             stopped_any = True
     except Exception as exc:
         _log_workflow_exception("[PROBE] ⚠ Errore stop globale probe", exc)
+    return stopped_any
 
+
+def _wf_probe_servers_for_stop(context: Dict[str, Any]) -> list[dict[str, Any]]:
     config, is_valid = load_config()
     if not is_valid or not config:
-        return stopped_any
+        return []
 
     emby_servers = (config.get("EMBY") or {}).get("SERVERS") or []
     enabled_servers = [
@@ -463,8 +457,12 @@ def _wf_stop_probe(context: Dict[str, Any] | None = None) -> bool:
         enabled_servers = [server for server in enabled_servers if str(server.get("id")) in library_server_ids]
     elif server_id:
         enabled_servers = [server for server in enabled_servers if str(server.get("id")) == str(server_id)]
+    return enabled_servers
 
-    for server in enabled_servers:
+
+def _wf_stop_probe_servers(manager: Any, servers: list[dict[str, Any]]) -> bool:
+    stopped_any = False
+    for server in servers:
         target_server_id = server.get("id")
         if not target_server_id:
             continue
@@ -474,6 +472,39 @@ def _wf_stop_probe(context: Dict[str, Any] | None = None) -> bool:
             stopped_any = True
         if manager.stop_recent_processing(target_server_id):
             stopped_any = True
+    return stopped_any
+
+
+def _wf_stop_probe(context: Dict[str, Any] | None = None) -> bool:
+    """
+    Ferma i worker probe "ultimi aggiunti" avviati dal workflow.
+
+    Lo stop del WorkflowManager interrompe il polling del workflow; questa callback
+    propaga la richiesta ai worker del probe, evitando processing/discovery orfani.
+    """
+    context = context or {}
+    print("[WORKFLOW] [PROBE] Stop richiesto per STRM Probe Ultimi Aggiunti")
+    manager = get_probe_manager()
+
+    expected_run_id = str(context.get("_probe_run_id") or "").strip()
+    if expected_run_id:
+        stopped_any = False
+        try:
+            stopped_any = manager.stop_combo_workflow_all_servers(
+                scope="recent",
+                expected_run_id=expected_run_id,
+            )
+        except Exception as exc:
+            _log_workflow_exception("[PROBE] ⚠ Errore stop probe proprietario", exc)
+        print(
+            "[WORKFLOW] [PROBE] Stop probe proprietario propagato, "
+            f"stopped_any={stopped_any}"
+        )
+        return stopped_any
+
+    stopped_any = _wf_stop_global_probe_workers(manager)
+    if _wf_stop_probe_servers(manager, _wf_probe_servers_for_stop(context)):
+        stopped_any = True
 
     print(f"[WORKFLOW] [PROBE] Stop probe propagato, stopped_any={stopped_any}")
     return stopped_any

@@ -113,7 +113,11 @@ function AppShell() {
           </div>
         </main>
         <MobilePrimaryNavigation accountId={accountId} pathname={pathname} />
-        {accessState === "editor" && !isUsersPath(pathname) ? <OperationsCenter /> : null}
+        {accessState === "editor" && !isUsersPath(pathname) ? (
+          <WorkspaceCapabilitiesProvider accountId={accountId} canMutate>
+            <OperationsCenter key={currentOwnerKey} />
+          </WorkspaceCapabilitiesProvider>
+        ) : null}
       </div>
       <NavigationPreferencesDialog
         open={preferencesDialog.isOpen}

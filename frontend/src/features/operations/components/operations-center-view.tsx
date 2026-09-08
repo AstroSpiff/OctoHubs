@@ -23,6 +23,10 @@ import type {
   Operation,
   OperationWorkflowStep,
 } from "@/features/operations/types";
+import {
+  isOwnerBoundBrowserActionCancelled,
+  useOwnerBoundBrowserAction,
+} from "@/features/session/use-owner-bound-browser-action";
 import { useWorkspaceCapabilities } from "@/features/session/workspace-capabilities-context";
 import {
   browserLocalStorage,
@@ -41,7 +45,7 @@ type OperationsCenterViewProps = {
   error?: Error | null;
   onRefresh: () => void;
   onClear: () => void;
-  onStop?: () => void;
+  onStop?: (operationId: string) => void;
   storageKey: string;
   label: string;
   className?: string;
@@ -63,6 +67,7 @@ function OperationsCenterView({
   className,
 }: OperationsCenterViewProps) {
   const confirmation = useConfirmationDialog();
+  const beginOwnerBoundAction = useOwnerBoundBrowserAction();
   const { canMutate } = useWorkspaceCapabilities();
   const [open, setOpen] = useState(
     () => readStoredValue(browserLocalStorage(), storageKey) === "true",
@@ -85,33 +90,44 @@ function OperationsCenterView({
   if (!operations.length && !error) return null;
   const panelOpen = open;
 
-  async function requestStopWorkflow() {
-    if (
-      !onStop ||
-      !(await confirmation.confirm({
+  async function requestStopWorkflow(operation: Operation) {
+    if (!onStop) return;
+    const ownerAction = beginOwnerBoundAction();
+    try {
+      const confirmed = await confirmation.confirm({
         title: "Interrompi workflow",
-        description:
-          "Vuoi interrompere il workflow in corso? Le attività già completate non verranno annullate.",
+        description: `Vuoi interrompere “${operation.title || "Workflow"}” (${operation.summary || operation.id})? Le attività già completate non verranno annullate.`,
         confirmLabel: "Interrompi",
         tone: "danger",
-      }))
-    )
-      return;
-    onStop();
+      });
+      if (!confirmed) return;
+      ownerAction.assertCurrent();
+      onStop(operation.id);
+    } catch (error) {
+      if (!isOwnerBoundBrowserActionCancelled(error)) throw error;
+    } finally {
+      ownerAction.release();
+    }
   }
 
   async function requestClearCompleted() {
-    if (
-      !(await confirmation.confirm({
+    const ownerAction = beginOwnerBoundAction();
+    try {
+      const confirmed = await confirmation.confirm({
         title: "Pulisci operazioni completate",
         description:
           "Le operazioni completate, interrotte o con errore verranno rimosse da questa lista.",
         confirmLabel: "Pulisci elenco",
         tone: "danger",
-      }))
-    )
-      return;
-    onClear();
+      });
+      if (!confirmed) return;
+      ownerAction.assertCurrent();
+      onClear();
+    } catch (error) {
+      if (!isOwnerBoundBrowserActionCancelled(error)) throw error;
+    } finally {
+      ownerAction.release();
+    }
   }
 
   return (
@@ -191,7 +207,7 @@ function OperationsCenterView({
                 key={operation.id}
                 operation={operation}
                 stopping={stopping}
-                onStop={canMutate && onStop ? () => void requestStopWorkflow() : undefined}
+                onStop={canMutate && onStop ? () => void requestStopWorkflow(operation) : undefined}
               />
             ))}
           </div>

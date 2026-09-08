@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, cast
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from emby_probe.api_models import (
+    PROBE_SCOPE_VALUES,
     ProbeActionResponse,
     ProbeBlacklistDeleteRequest,
     ProbeBlacklistResponse,
@@ -24,6 +25,7 @@ from emby_probe.api_models import (
     ProbeQueueResponse,
     ProbeRecentStartRequest,
     ProbeRetryRequest,
+    ProbeScope,
     ProbeScopeDeleteRequest,
     ProbeServerLibrariesRequest,
     ProbeServerRequest,
@@ -72,12 +74,20 @@ from core.config_manager import load_config
 from core.utils import _coerce_request_int
 from web.openapi_responses import binary_response
 from web.request_validation import validated_json_payload
+from web.download_headers import attachment_content_disposition
+from web.owned_streaming_response import IdempotentCleanup, OwnedStreamingResponse
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 _PROBE_CSV_EXPORT_SLOTS = threading.BoundedSemaphore(value=2)
 
 _require_auth: Optional[Callable[[Request], Any]] = None
+
+
+def _probe_csv_scope(value: object) -> ProbeScope:
+    if value in PROBE_SCOPE_VALUES:
+        return cast(ProbeScope, value)
+    raise HTTPException(status_code=422, detail="Scope Probe non valido")
 
 
 def init_emby_probe_routes(require_auth: Callable[[Request], Any]) -> None:
@@ -718,14 +728,16 @@ async def probe_blacklist_delete(request: Request):
         )
     },
     openapi_extra=query_parameters(
-        ("server_id", False, "string"), ("scope", False, "string")
+        ("server_id", False, "string"),
+        ("scope", False, "string", PROBE_SCOPE_VALUES),
     ),
 )
 async def probe_export_csv(request: Request):
     """Export blacklist and incomplete items as CSV"""
     await run_in_threadpool(_require_auth_dep, request)
     server_id = request.query_params.get("server_id")
-    scope = request.query_params.get("scope") or "libraries"
+    requested_scope = request.query_params.get("scope")
+    scope = _probe_csv_scope("libraries" if requested_scope is None else requested_scope)
 
     from datetime import datetime as dt
 
@@ -755,21 +767,36 @@ async def probe_export_csv(request: Request):
         _PROBE_CSV_EXPORT_SLOTS.release()
         return JSONResponse(export_error, status_code=export_status)
 
-    def csv_stream():
-        try:
-            while chunk := spool.read(64 * 1024):
-                yield chunk
-        finally:
-            spool.close()
-            _PROBE_CSV_EXPORT_SLOTS.release()
-
-    filename = f"strm_probe_report_{scope}_{dt.now().strftime('%Y%m%d_%H%M%S')}.csv"
-
-    return StreamingResponse(
-        csv_stream(),
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    owner = IdempotentCleanup(
+        spool.close,
+        _PROBE_CSV_EXPORT_SLOTS.release,
+        context="Probe CSV export",
     )
+
+    try:
+        def csv_stream():
+            try:
+                while chunk := spool.read(64 * 1024):
+                    yield chunk
+            finally:
+                owner.run()
+
+        filename = f"strm_probe_report_{scope}_{dt.now().strftime('%Y%m%d_%H%M%S')}.csv"
+
+        return OwnedStreamingResponse(
+            csv_stream(),
+            owner=owner,
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": attachment_content_disposition(
+                    filename,
+                    fallback="strm_probe_report.csv",
+                )
+            },
+        )
+    except BaseException as exc:
+        owner.run(primary_error=exc)
+        raise
 
 
 @router.get(

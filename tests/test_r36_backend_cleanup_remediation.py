@@ -356,7 +356,7 @@ def test_sqlalchemy_cleanup_receivers_are_canonical_or_semantically_allowlisted(
         ("emby_latest/notification_images.py", "_download_emby_image", "response", "close", "direct"): (1, "HTTP response"),
         ("emby_libraries/image_snapshots.py", "_build_emby_image_stream", "response", "close", "direct"): (4, "HTTP response"),
         ("emby_probe/csv_export.py", "build_probe_csv_export", "spool", "close", "direct"): (5, "spooled file"),
-        ("emby_probe/routes.py", "csv_stream", "spool", "close", "direct"): (1, "spooled file"),
+        ("emby_probe/combo.py", "_start_recent_combo_all_servers_locked", "self._cancelled_combo_run_ids", "remove", "direct"): (1, "bounded run reservation membership"),
         ("emby_runtime/api_clients_indexers.py", "search_jackett", "response", "close", "getattr"): (1, "HTTP response"),
         ("emby_runtime/api_clients_indexers.py", "search_prowlarr", "response", "close", "getattr"): (1, "HTTP response"),
         ("emby_runtime/library_poller.py", "_spawn_background_task", "coroutine", "close", "direct"): (1, "unstarted coroutine"),

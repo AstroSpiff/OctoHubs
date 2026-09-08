@@ -29,7 +29,10 @@ from emby_runtime.transcode_guard_constants import (  # noqa: F401 - public faca
     TRANSCODE_GUARD_STREAM_LOG_LIMIT,
     TRANSCODE_GUARD_STREAM_STATUS_LIMIT,
 )
-from emby_runtime.transcode_guard_control import TranscodeGuardControlMixin
+from emby_runtime.transcode_guard_control import (
+    TranscodeGuardControlMixin,
+    TranscodeGuardLifecycleError as TranscodeGuardLifecycleError,
+)
 from emby_runtime.transcode_guard_enforcement import TranscodeGuardEnforcementMixin
 from emby_runtime.transcode_guard_history import TranscodeGuardHistoryMixin
 from emby_runtime.transcode_guard_rules import (  # noqa: F401 - public facade
@@ -85,6 +88,7 @@ class TranscodeGuardService(
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
+        self._accepting_starts = True
 
 _TRANSCODE_GUARD_SERVICE: Optional[TranscodeGuardService] = None
 

@@ -6,9 +6,9 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Callable
 
 from core.library_group_names import normalize_library_group_name
-from core.log_sanitization import format_exception_for_log
-from core.safe_output import safe_print as print
 from core.utils import get_nested
+from emby_libraries.tracker_broadcast import LibraryScanBroadcastMixin
+from emby_libraries.tracker_lifecycle import terminalize_active_scan_jobs
 
 
 def _terminal_scan_result(library_status: dict) -> tuple[str, Optional[str]]:
@@ -22,7 +22,7 @@ def _terminal_scan_result(library_status: dict) -> tuple[str, Optional[str]]:
     return "error", f"Scansione non riuscita per {failed_count} {noun}"
 
 
-class LibraryScanTracker:
+class LibraryScanTracker(LibraryScanBroadcastMixin):
     """
     Tracks library scan jobs for Emby servers.
     Manages single library and group library scans with progress monitoring.
@@ -34,6 +34,50 @@ class LibraryScanTracker:
         self._job_retention_hours = 24
         self._get_app_event_loop = get_app_event_loop
         self._log_flush = log_flush
+        self._lifecycle_generation = 0
+        self._job_generations: dict[str, int] = {}
+        self._accepting_jobs = True
+        self._broadcast_lock = threading.Lock()
+
+    def begin_shutdown(self) -> int:
+        """Fence callbacks and terminalize jobs owned by the closing lifespan."""
+        with self._broadcast_lock:
+            with self._lock:
+                self._accepting_jobs = False
+                interrupted = terminalize_active_scan_jobs(self._jobs)
+                self._lifecycle_generation += 1
+                return interrupted
+
+    def reopen(self) -> int:
+        """Open a fresh generation after the poller has drained completely."""
+        with self._broadcast_lock:
+            with self._lock:
+                interrupted = terminalize_active_scan_jobs(self._jobs)
+                self._lifecycle_generation += 1
+                self._accepting_jobs = True
+                return interrupted
+
+    def _dispatch_current_broadcasts(
+        self,
+        job_id: str,
+        generation: int,
+        progress_args: tuple | None,
+        completion_data: dict | None,
+    ) -> None:
+        """Publish only while this job still belongs to the open generation."""
+        with self._broadcast_lock:
+            with self._lock:
+                current = (
+                    self._accepting_jobs
+                    and self._lifecycle_generation == generation
+                    and self._job_generations.get(job_id) == generation
+                )
+            if not current:
+                return
+            if progress_args is not None:
+                self._broadcast_scan_progress(*progress_args)
+            if completion_data is not None:
+                self._broadcast_scan_completion(job_id, completion_data)
 
     def create_job(self, server_id: str, library_ids: list, group_name: Optional[str] = None, scan_type: str = "content") -> str:
         """
@@ -53,6 +97,8 @@ class LibraryScanTracker:
 
         self._log_flush("[TRACKER]   acquiring lock...")
         with self._lock:
+            if not self._accepting_jobs:
+                raise RuntimeError("Tracker scansioni librerie in arresto")
             self._log_flush("[TRACKER]   lock acquired, creating job data...")
             self._jobs[job_id] = {
                 "id": job_id,
@@ -70,6 +116,7 @@ class LibraryScanTracker:
                 "completed_at": None,
                 "error": None
             }
+            self._job_generations[job_id] = self._lifecycle_generation
             self._jobs[job_id]["created_at"] = datetime.now(timezone.utc).isoformat()
             self._log_flush("[TRACKER]   calling _enforce_job_limits...")
             self._enforce_job_limits(server_id)
@@ -88,6 +135,8 @@ class LibraryScanTracker:
         group_name = normalize_library_group_name(group_name, optional=True)
         normalized_ids = {str(library_id) for library_id in library_ids}
         with self._lock:
+            if not self._accepting_jobs:
+                raise RuntimeError("Tracker scansioni librerie in arresto")
             conflicting_jobs = sorted(
                 job_id
                 for job_id, job in self._jobs.items()
@@ -115,7 +164,11 @@ class LibraryScanTracker:
     def update_job(self, job_id: str, **kwargs):
         """Update job fields."""
         with self._lock:
-            if job_id not in self._jobs:
+            if (
+                not self._accepting_jobs
+                or job_id not in self._jobs
+                or self._job_generations.get(job_id) != self._lifecycle_generation
+            ):
                 return
             job = self._jobs[job_id]
             for key, value in kwargs.items():
@@ -143,13 +196,19 @@ class LibraryScanTracker:
         should_broadcast_progress = False
         overall_progress = 0.0
         lib_metadata = None
+        event_generation = -1
 
         with self._lock:
             self._log_flush(f"[TRACKER] Lock acquired for job {job_id}")
-            if job_id not in self._jobs:
+            if (
+                not self._accepting_jobs
+                or job_id not in self._jobs
+                or self._job_generations.get(job_id) != self._lifecycle_generation
+            ):
                 self._log_flush(f"[TRACKER] ✗ Job {job_id} NOT FOUND in tracker!")
                 return
             self._log_flush(f"[TRACKER] ✓ Job {job_id} found in tracker")
+            event_generation = self._lifecycle_generation
             job = self._jobs[job_id]
             if "library_status" not in job:
                 job["library_status"] = {}
@@ -204,15 +263,17 @@ class LibraryScanTracker:
 
         # Broadcast progress fuori dal lock
         self._log_flush(f"[TRACKER] Lock released. should_broadcast_progress={should_broadcast_progress}")
+        progress_args = None
         if should_broadcast_progress:
-            self._log_flush("[TRACKER] Calling _broadcast_scan_progress...")
-            self._broadcast_scan_progress(job_id, library_id, overall_progress, message, metadata=lib_metadata)
+            progress_args = (job_id, library_id, overall_progress, message, lib_metadata)
         else:
             self._log_flush("[TRACKER] Skipping broadcast (should_broadcast_progress=False)")
-
-        # Broadcast completion fuori dal lock
-        if job_completed and job_data_copy:
-            self._broadcast_scan_completion(job_id, job_data_copy)
+        self._dispatch_current_broadcasts(
+            job_id,
+            event_generation,
+            progress_args,
+            job_data_copy if job_completed else None,
+        )
 
     def delete_job(self, job_id: str) -> str:
         """Delete terminal history without detaching a live poller owner."""
@@ -223,6 +284,7 @@ class LibraryScanTracker:
             if job.get("status") not in ("completed", "error", "timeout"):
                 return "active"
             self._jobs.pop(job_id, None)
+            self._job_generations.pop(job_id, None)
             return "deleted"
 
     def cleanup_old_jobs(self, max_age_hours: int = 24):
@@ -242,11 +304,13 @@ class LibraryScanTracker:
                             pass
             for job_id in to_delete:
                 self._jobs.pop(job_id, None)
+                self._job_generations.pop(job_id, None)
 
     def clear_jobs(self):
         """Remove all tracked scan jobs (used when forcing a reset)."""
         with self._lock:
             self._jobs.clear()
+            self._job_generations.clear()
 
     def _parse_iso(self, iso_str: Optional[str]) -> Optional[datetime]:
         if not iso_str:
@@ -296,6 +360,7 @@ class LibraryScanTracker:
             excess = server_job_count - self._max_jobs_per_server
             for job_id, _ in terminal_jobs[:excess]:
                 self._jobs.pop(job_id, None)
+                self._job_generations.pop(job_id, None)
 
     def limit_jobs(self, max_per_server: int, max_age_hours: int = 24):
         """Adjust job retention and per-server limits."""
@@ -358,103 +423,3 @@ class LibraryScanTracker:
                     matching_jobs.append(job_id)
 
             return matching_jobs
-
-    def _broadcast_scan_completion(self, job_id: str, job_data: dict):
-        """
-        Broadcast evento di completamento/errore scan via WebSocket.
-
-        Args:
-            job_id: ID del job completato
-            job_data: Dati completi del job
-        """
-        from emby_runtime.scan_websocket_manager import get_scan_connection_manager
-
-        status = job_data.get("status")
-
-        if status == "completed":
-            message = {
-                "type": "completed",
-                "job_id": job_id,
-                "summary": {
-                    "total_libraries": job_data.get("total_libraries"),
-                    "completed_libraries": job_data.get("completed_libraries"),
-                    "started_at": job_data.get("started_at"),
-                    "completed_at": job_data.get("completed_at")
-                }
-            }
-        elif status == "error":
-            message = {
-                "type": "error",
-                "job_id": job_id,
-                "error": job_data.get("error", "Unknown error")
-            }
-        else:
-            return
-
-        # Broadcast async e ferma poller per le librerie completate
-        try:
-            from emby_runtime.library_poller import get_library_poller
-
-            manager = get_scan_connection_manager()
-            library_poller = get_library_poller()
-            loop = self._get_app_event_loop()
-
-            if loop and loop.is_running():
-                manager.schedule_broadcast(loop, job_id, message)
-
-                server_id = job_data.get("server_id")
-                library_ids = job_data.get("library_ids", [])
-                if server_id:
-                    for library_id in library_ids:
-                        asyncio.run_coroutine_threadsafe(
-                            library_poller.stop_tracking_library(
-                                str(server_id),
-                                str(library_id),
-                                expected_job_id=str(job_id),
-                            ),
-                            loop
-                        )
-            else:
-                print(f"[SCAN_BROADCAST] Warning: no event loop available for job {job_id}")
-        except Exception as exc:
-            self._log_flush(
-                f"[SCAN_BROADCAST] Error broadcasting completion for job {job_id}:\n"
-                f"{format_exception_for_log(exc)}"
-            )
-
-    def _broadcast_scan_progress(self, job_id: str, library_id: str, progress: float, message: Optional[str] = None, metadata: Optional[dict] = None):
-        """
-        Broadcast evento di progress scan via WebSocket durante l'esecuzione.
-
-        Args:
-            job_id: ID del job
-            library_id: ID della libreria in progress
-            progress: Progress 0.0-1.0
-            message: Messaggio opzionale
-        """
-        from emby_runtime.scan_websocket_manager import get_scan_connection_manager
-
-        try:
-            manager = get_scan_connection_manager()
-            loop = self._get_app_event_loop()
-
-            if loop and loop.is_running():
-                ws_message = {
-                    "type": "progress",
-                    "job_id": job_id,
-                    "library_id": str(library_id),
-                    "progress": progress,
-                    "message": message or f"Scanning library {library_id}...",
-                    "source": "virtualfolders.RefreshProgress"
-                }
-                if metadata:
-                    ws_message["metadata"] = metadata
-
-                manager.schedule_broadcast(loop, job_id, ws_message)
-                self._log_flush(
-                    f"[SCAN_PROGRESS] ✓ Broadcast scheduled: job={job_id}, lib={library_id}, progress={progress:.1%}, msg='{message}'"
-                )
-            else:
-                self._log_flush(f"[SCAN_PROGRESS] ✗ Warning: no event loop available for job {job_id}")
-        except Exception as e:
-            self._log_flush(f"[SCAN_PROGRESS] Error broadcasting progress for job {job_id}: {e}")

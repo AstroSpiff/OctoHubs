@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from collections import deque
 from typing import Any, Callable, Dict, Optional, Protocol
 
 
@@ -11,6 +12,7 @@ class ProbeManagerProtocol(Protocol):
     _stop_flags: Dict[str, Dict[str, threading.Event]]
     _global_workers: Dict[str, threading.Thread]
     _global_stop_flags: Dict[str, threading.Event]
+    _cancelled_combo_run_ids: deque[str]
     _libraries_pause_flags: Dict[str, threading.Event]
     _db_getter: Optional[Callable[[], Any]]
 
@@ -90,9 +92,23 @@ class ProbeManagerProtocol(Protocol):
     def _get_retry_count(self, blacklist: dict, item_id: str, media_source_id: str | None = None) -> int: ...
     def _get_probe_parallelism(self, server: Dict[str, Any], server_id: str) -> int: ...
 
-    def start_recent_discovery(self, server: Dict[str, Any], server_id: str, limit: int = 200) -> bool: ...
+    def start_recent_discovery(
+        self,
+        server: Dict[str, Any],
+        server_id: str,
+        limit: int = 200,
+        *,
+        run_id: str | None = None,
+    ) -> bool: ...
     def start_recent_discovery_sequence(self, servers: list[Dict[str, Any]], limit: int = 200) -> bool: ...
-    def start_recent_processing(self, server: Dict[str, Any], server_id: str, mode: str = "smart") -> bool: ...
+    def start_recent_processing(
+        self,
+        server: Dict[str, Any],
+        server_id: str,
+        mode: str = "smart",
+        *,
+        run_id: str | None = None,
+    ) -> bool: ...
     def start_recent_processing_sequence(self, servers: list[Dict[str, Any]], mode: str = "smart") -> bool: ...
     def stop_recent_discovery(self, server_id: str) -> bool: ...
     def stop_recent_processing(self, server_id: str) -> bool: ...

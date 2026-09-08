@@ -339,12 +339,15 @@ class StorageWorkflowMixin(_SessionProvider):
         finally:
             close_session_safely(session)
 
-    def request_active_workflow_stop(self) -> bool:
+    def request_active_workflow_stop(self, workflow_id: str | None = None) -> bool:
         session = self._get_session()
         try:
-            updated = session.query(WorkflowExecution).filter(  # type: ignore[attr-defined]
+            query = session.query(WorkflowExecution).filter(  # type: ignore[attr-defined]
                 WorkflowExecution.active_slot == 1
-            ).update(
+            )
+            if workflow_id is not None:
+                query = query.filter(WorkflowExecution.id == workflow_id)
+            updated = query.update(
                 {
                     WorkflowExecution.status: "stopping",
                     WorkflowExecution.stop_requested: True,

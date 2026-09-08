@@ -23,7 +23,6 @@ from search.download_references import (
 )
 from search.manager import (
     _download_torrent_file,
-    _torrent_content_disposition,
     _build_manual_search_snapshot,
     _build_send_torrent_batch_snapshot,
     _build_send_torrent_snapshot,
@@ -31,6 +30,7 @@ from search.manager import (
     _build_tmdb_search_snapshot,
     _build_tmdb_tv_details_snapshot,
 )
+from web.download_headers import attachment_content_disposition
 from services.scan_result_cleanup import clean_scan_results_payload
 from web.research_api_models import (
     LinkBatchPayload,
@@ -424,7 +424,7 @@ async def torrent_proxy_api(request: Request, ref: str = ""):
         return _error_response("Download torrent non valido", 502)
 
     headers = {
-        "Content-Disposition": _torrent_content_disposition(filename),
+        "Content-Disposition": attachment_content_disposition(filename, fallback="download.torrent"),
     }
     return Response(content, media_type="application/x-bittorrent", headers=headers)
 
@@ -458,7 +458,7 @@ async def torrent_proxy_post_api(request: Request, payload: TorrentProxyPayload)
         return _error_response("Download torrent non valido", 502)
 
     headers = {
-        "Content-Disposition": _torrent_content_disposition(filename),
+        "Content-Disposition": attachment_content_disposition(filename, fallback="download.torrent"),
     }
     return Response(content, media_type="application/x-bittorrent", headers=headers)
 

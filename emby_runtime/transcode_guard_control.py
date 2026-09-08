@@ -17,6 +17,10 @@ from emby_runtime.transcode_guard_values import _parse_datetime
 from emby_runtime.transcode_guard_validation import validate_transcode_guard_persisted_size
 
 
+class TranscodeGuardLifecycleError(RuntimeError):
+    """Raised when a previous monitor owner prevents a safe lifecycle transition."""
+
+
 class TranscodeGuardControlMixin:
     def allow_server(self, server_id: str) -> None:
         """Admit a newly saved server and invalidate work from its older identity."""
@@ -99,24 +103,73 @@ class TranscodeGuardControlMixin:
         storage.set_key_value(TRANSCODE_GUARD_SETTINGS_KEY, settings)
         return settings
 
-    def start(self) -> bool:
+    def start_accepting(self, timeout_seconds: float = 5.0) -> bool:
+        """Reopen lifecycle admission only after the previous owner is reaped."""
         with self._lock:
-            if self._thread and self._thread.is_alive():
+            thread = self._thread
+            if thread and thread.is_alive() and not self._stop_event.is_set():
+                return self._accepting_starts
+
+        if thread and thread.is_alive() and not join_owned_thread(
+            thread,
+            max(0.0, timeout_seconds),
+        ):
+            return False
+
+        with self._lock:
+            current = self._thread
+            if current is not thread and current and current.is_alive():
+                return False
+            if thread and thread.is_alive():
+                return False
+            self._accepting_starts = True
+            return True
+
+    def start(self, timeout_seconds: float = 5.0) -> bool:
+        with self._lock:
+            if not self._accepting_starts:
+                raise TranscodeGuardLifecycleError("Transcode Guard in arresto")
+            thread = self._thread
+            if thread and thread.is_alive() and not self._stop_event.is_set():
                 self._wake_event.set()
                 return False
+
+        if thread and thread.is_alive() and not join_owned_thread(
+            thread,
+            max(0.0, timeout_seconds),
+        ):
+            raise TranscodeGuardLifecycleError(
+                "Worker Transcode Guard precedente ancora in arresto"
+            )
+
+        with self._lock:
+            if not self._accepting_starts:
+                raise TranscodeGuardLifecycleError("Transcode Guard in arresto")
+            current = self._thread
+            if current is not thread and current and current.is_alive():
+                self._wake_event.set()
+                return False
+            if thread and thread.is_alive():
+                raise TranscodeGuardLifecycleError(
+                    "Worker Transcode Guard precedente ancora in arresto"
+                )
             self._stop_event.clear()
             self._wake_event.set()
-            thread = threading.Thread(target=self._run_loop, name="octohubs-transcode-guard", daemon=True)
-            self._thread = thread
+            new_thread = threading.Thread(
+                target=self._run_loop,
+                name="octohubs-transcode-guard",
+                daemon=True,
+            )
+            self._thread = new_thread
 
             def rollback_unstarted() -> None:
-                if self._thread is thread:
+                if self._thread is new_thread:
                     self._thread = None
                 self._stop_event.set()
                 self._wake_event.set()
 
             start_owned_thread_confirmed(
-                thread,
+                new_thread,
                 rollback_unstarted=rollback_unstarted,
                 context="transcode guard",
             )
@@ -132,15 +185,22 @@ class TranscodeGuardControlMixin:
 
     def shutdown(self, timeout_seconds: float = 5.0) -> bool:
         """Stop the monitor and wait for its worker within a bounded timeout."""
-        self.stop()
         with self._lock:
+            self._accepting_starts = False
+            self._stop_event.set()
+            self._wake_event.set()
             thread = self._thread
         return join_owned_thread(thread, max(0.0, timeout_seconds))
 
     def is_running(self) -> bool:
         """Return whether the lifecycle-owned monitor is currently active."""
         with self._lock:
-            return bool(self._thread and self._thread.is_alive())
+            return bool(
+                self._accepting_starts
+                and not self._stop_event.is_set()
+                and self._thread
+                and self._thread.is_alive()
+            )
 
     def wake(self) -> None:
         """Wake the worker so WebSocket session events are checked promptly."""

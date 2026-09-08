@@ -126,22 +126,12 @@ class ComboProbeMixin(ProbeManagerProtocol):
         effective_run_id = run_id or uuid.uuid4().hex
         print(f"[COMBO_ALL] Avvio combo workflow per {len(enabled_servers)} server(s), scope={scope}, mode={mode}")
         if scope == PROBE_SCOPE_RECENT:
-            any_started = False
-            for idx, server in enumerate(enabled_servers, 1):
-                server_id = server.get("id")
-                if not server_id:
-                    print(f"[COMBO_ALL] Server {idx}: ✗ ID mancante, skip")
-                    continue
-                server_name = server.get("name") or server.get("url") or server_id
-                print(f"[COMBO_ALL] Server {idx}/{len(enabled_servers)} ({server_name}): tentativo avvio combo workflow...")
-                started = self.start_combo_workflow(
-                    server, server_id, mode, scope=scope, run_id=effective_run_id
+            with self._lock:
+                any_started = self._start_recent_combo_all_servers_locked(
+                    enabled_servers,
+                    mode,
+                    effective_run_id,
                 )
-                if started:
-                    print(f"[COMBO_ALL] Server {idx}/{len(enabled_servers)} ({server_name}): ✓ combo workflow avviato")
-                    any_started = True
-                else:
-                    print(f"[COMBO_ALL] Server {idx}/{len(enabled_servers)} ({server_name}): ✗ combo workflow NON avviato (worker già attivo?)")
             print(f"[COMBO_ALL] Risultato finale: any_started={any_started}")
             return any_started
 
@@ -169,50 +159,134 @@ class ComboProbeMixin(ProbeManagerProtocol):
 
         return True
 
-    def stop_combo_workflow(self, server_id: str, scope: str = PROBE_SCOPE_RECENT) -> bool:
+    def _start_recent_combo_all_servers_locked(
+        self,
+        enabled_servers: list[Dict[str, Any]],
+        mode: str,
+        run_id: str,
+    ) -> bool:
+        """Publish one recent Probe owner atomically across its target servers."""
+        if run_id in self._cancelled_combo_run_ids:
+            self._cancelled_combo_run_ids.remove(run_id)
+            return False
+        any_started = False
+        total_servers = len(enabled_servers)
+        for index, server in enumerate(enabled_servers, 1):
+            server_id = server.get("id")
+            if not server_id:
+                print(f"[COMBO_ALL] Server {index}: ✗ ID mancante, skip")
+                continue
+            server_name = server.get("name") or server.get("url") or server_id
+            print(
+                f"[COMBO_ALL] Server {index}/{total_servers} ({server_name}): "
+                "tentativo avvio combo workflow..."
+            )
+            started = self.start_combo_workflow(
+                server,
+                server_id,
+                mode,
+                scope=PROBE_SCOPE_RECENT,
+                run_id=run_id,
+            )
+            outcome = "✓ combo workflow avviato" if started else "✗ combo workflow NON avviato (worker già attivo?)"
+            print(f"[COMBO_ALL] Server {index}/{total_servers} ({server_name}): {outcome}")
+            any_started = any_started or started
+        return any_started
+
+    def _stop_combo_workflow_locked(
+        self,
+        server_id: str,
+        scope: str,
+        expected_run_id: str | None,
+    ) -> bool:
+        worker_key = f"combo_{scope}"
+        if expected_run_id is not None:
+            combo_state = self._status.get(server_id, {}).get(worker_key, {})
+            if str(combo_state.get("run_id") or "") != expected_run_id:
+                return False
+
+        server_flags = self._stop_flags.get(server_id)
+        if not server_flags:
+            return False
+        worker_keys = [worker_key]
+        if scope == PROBE_SCOPE_RECENT:
+            worker_keys.extend(["recent_discovery", "recent_processing"])
+        else:
+            worker_keys.extend(["discovery", "processing"])
+
+        stopped_any = False
+        for owned_worker_key in worker_keys:
+            if expected_run_id is not None and owned_worker_key != worker_key:
+                child_state = self._status.get(server_id, {}).get(owned_worker_key, {})
+                if str(child_state.get("run_id") or "") != expected_run_id:
+                    continue
+            stop_flag = server_flags.get(owned_worker_key)
+            if stop_flag:
+                stop_flag.set()
+                stopped_any = True
+        return stopped_any
+
+    def stop_combo_workflow(
+        self,
+        server_id: str,
+        scope: str = PROBE_SCOPE_RECENT,
+        *,
+        expected_run_id: str | None = None,
+    ) -> bool:
         """Stop combo workflow for a specific server."""
         with self._lock:
-            server_flags = self._stop_flags.get(server_id)
-            if not server_flags:
-                return False
-            worker_keys = [f"combo_{scope}"]
-            if scope == PROBE_SCOPE_RECENT:
-                worker_keys.extend(["recent_discovery", "recent_processing"])
-            else:
-                worker_keys.extend(["discovery", "processing"])
+            return self._stop_combo_workflow_locked(
+                str(server_id),
+                scope,
+                str(expected_run_id) if expected_run_id is not None else None,
+            )
 
-            stopped_any = False
-            for worker_key in worker_keys:
-                stop_flag = server_flags.get(worker_key)
-                if stop_flag:
-                    stop_flag.set()
-                    stopped_any = True
-        return stopped_any
-
-    def stop_combo_workflow_all_servers(self, scope: str = PROBE_SCOPE_RECENT) -> bool:
+    def stop_combo_workflow_all_servers(
+        self,
+        scope: str = PROBE_SCOPE_RECENT,
+        *,
+        expected_run_id: str | None = None,
+    ) -> bool:
         """Stop combo workflow for all servers."""
         with self._lock:
-            worker_keys = [f"combo_{scope}"]
-            global_worker_keys = [f"combo_all_{scope}"]
-            if scope == PROBE_SCOPE_RECENT:
-                worker_keys.extend(["recent_discovery", "recent_processing"])
-                global_worker_keys.extend(["recent_discovery_all", "recent_processing_all"])
-            else:
-                worker_keys.extend(["discovery", "processing"])
+            if expected_run_id is not None:
+                return self._stop_expected_combo_run_locked(
+                    scope,
+                    str(expected_run_id),
+                )
+            return self._stop_combo_scope_locked(scope)
 
-            stopped_any = False
-            for worker_key in global_worker_keys:
-                stop_flag = self._global_stop_flags.get(worker_key)
-                if stop_flag:
-                    stop_flag.set()
-                    stopped_any = True
-            for server_flags in self._stop_flags.values():
-                for worker_key in worker_keys:
-                    stop_flag = server_flags.get(worker_key)
-                    if stop_flag:
-                        stop_flag.set()
-                        stopped_any = True
+    def _stop_expected_combo_run_locked(self, scope: str, owner: str) -> bool:
+        stopped_any = False
+        for server_id in list(self._status):
+            if self._stop_combo_workflow_locked(server_id, scope, owner):
+                stopped_any = True
+        if not stopped_any and owner not in self._cancelled_combo_run_ids:
+            self._cancelled_combo_run_ids.append(owner)
         return stopped_any
+
+    def _stop_combo_scope_locked(self, scope: str) -> bool:
+        worker_keys = [f"combo_{scope}"]
+        global_worker_keys = [f"combo_all_{scope}"]
+        if scope == PROBE_SCOPE_RECENT:
+            worker_keys.extend(["recent_discovery", "recent_processing"])
+            global_worker_keys.extend(["recent_discovery_all", "recent_processing_all"])
+        else:
+            worker_keys.extend(["discovery", "processing"])
+
+        stop_flags = [
+            self._global_stop_flags.get(worker_key)
+            for worker_key in global_worker_keys
+        ]
+        stop_flags.extend(
+            server_flags.get(worker_key)
+            for server_flags in self._stop_flags.values()
+            for worker_key in worker_keys
+        )
+        active_flags = [stop_flag for stop_flag in stop_flags if stop_flag]
+        for stop_flag in active_flags:
+            stop_flag.set()
+        return bool(active_flags)
 
     def _build_combo_queue(
         self,
@@ -405,6 +479,102 @@ class ComboProbeMixin(ProbeManagerProtocol):
             "tasks": tasks
         }
 
+    def _set_combo_phase(
+        self,
+        server_id: str,
+        worker_key: str,
+        phase: str,
+    ) -> None:
+        phase_label = "Discovery" if phase == "discovery" else "Processing"
+        with self._lock:
+            combo_state = self._status.get(server_id, {}).get(worker_key)
+            if combo_state is not None:
+                combo_state["phase"] = phase
+                combo_state["last_log"] = f"Fase {'1' if phase == 'discovery' else '2'}/2: {phase_label} in corso..."
+
+    def _start_combo_child(
+        self,
+        server: Dict[str, Any],
+        server_id: str,
+        mode: str,
+        scope: str,
+        target_libraries: Optional[list[str]],
+        run_id: str,
+        phase: str,
+    ) -> tuple[Optional[threading.Thread], Optional[threading.Event]]:
+        if phase == "discovery":
+            if scope == PROBE_SCOPE_RECENT:
+                started = self.start_recent_discovery(server, server_id, run_id=run_id)
+                child_key = "recent_discovery"
+            else:
+                started = self.start_discovery(server, server_id, target_libraries)
+                child_key = "discovery"
+        elif scope == PROBE_SCOPE_RECENT:
+            started = self.start_recent_processing(
+                server,
+                server_id,
+                mode,
+                run_id=run_id,
+            )
+            child_key = "recent_processing"
+        else:
+            started = self.start_processing(server, server_id, mode, target_libraries)
+            child_key = "processing"
+        child_worker = self._workers.get(server_id, {}).get(child_key)
+        owned_stop_flag = (
+            self._stop_flags.get(server_id, {}).get(child_key) if started else None
+        )
+        return child_worker, owned_stop_flag
+
+    def _run_combo_phase(
+        self,
+        server: Dict[str, Any],
+        server_id: str,
+        mode: str,
+        scope: str,
+        target_libraries: Optional[list[str]],
+        stop_flag: threading.Event,
+        run_id: str,
+        phase: str,
+    ) -> bool:
+        worker_key = f"combo_{scope}"
+        self._set_combo_phase(server_id, worker_key, phase)
+        if stop_flag.is_set():
+            return False
+        child_worker, child_stop_flag = self._start_combo_child(
+            server,
+            server_id,
+            mode,
+            scope,
+            target_libraries,
+            run_id,
+            phase,
+        )
+        self._wait_for_worker(child_worker, stop_flag)
+        if not stop_flag.is_set():
+            return True
+        if child_stop_flag is not None:
+            child_stop_flag.set()
+        return False
+
+    def _mark_combo_worker_stopped(
+        self,
+        server_id: str,
+        worker_key: str,
+        *,
+        interrupted: bool,
+    ) -> None:
+        with self._lock:
+            combo_state = self._status.get(server_id, {}).get(worker_key)
+            if combo_state is None:
+                return
+            combo_state["last_log"] = (
+                "Combo workflow interrotto dall'utente"
+                if interrupted
+                else "Combo workflow completato"
+            )
+            combo_state["running"] = False
+
     def _combo_workflow_worker(
         self,
         server: Dict[str, Any],
@@ -419,54 +589,43 @@ class ComboProbeMixin(ProbeManagerProtocol):
         worker_key = f"combo_{scope}"
         primary_error = None
         try:
-
-            # Phase 1: Discovery
-            with self._lock:
-                if server_id in self._status and worker_key in self._status[server_id]:
-                    self._status[server_id][worker_key]["phase"] = "discovery"
-                    self._status[server_id][worker_key]["last_log"] = "Fase 1/2: Discovery in corso..."
-
-            if scope == PROBE_SCOPE_RECENT:
-                self.start_recent_discovery(server, server_id)
-                discovery_worker = self._workers.get(server_id, {}).get("recent_discovery")
-            else:
-                self.start_discovery(server, server_id, target_libraries)
-                discovery_worker = self._workers.get(server_id, {}).get("discovery")
-
-            # Wait for discovery to complete
-            self._wait_for_worker(discovery_worker, stop_flag)
-
-            if stop_flag.is_set():
-                with self._lock:
-                    if server_id in self._status and worker_key in self._status[server_id]:
-                        self._status[server_id][worker_key]["last_log"] = "Combo workflow interrotto dall'utente"
-                        self._status[server_id][worker_key]["running"] = False
+            if not self._run_combo_phase(
+                server,
+                server_id,
+                mode,
+                scope,
+                target_libraries,
+                stop_flag,
+                run_id,
+                "discovery",
+            ):
+                self._mark_combo_worker_stopped(
+                    server_id,
+                    worker_key,
+                    interrupted=True,
+                )
                 return
-
-            # Phase 2: Processing
-            with self._lock:
-                if server_id in self._status and worker_key in self._status[server_id]:
-                    self._status[server_id][worker_key]["phase"] = "processing"
-                    self._status[server_id][worker_key]["last_log"] = "Fase 2/2: Processing in corso..."
-
-            if scope == PROBE_SCOPE_RECENT:
-                self.start_recent_processing(server, server_id, mode)
-                processing_worker = self._workers.get(server_id, {}).get("recent_processing")
-            else:
-                self.start_processing(server, server_id, mode, target_libraries)
-                processing_worker = self._workers.get(server_id, {}).get("processing")
-
-            # Wait for processing to complete
-            self._wait_for_worker(processing_worker, stop_flag)
-
-            # Final status
-            with self._lock:
-                if server_id in self._status and worker_key in self._status[server_id]:
-                    if stop_flag.is_set():
-                        self._status[server_id][worker_key]["last_log"] = "Combo workflow interrotto dall'utente"
-                    else:
-                        self._status[server_id][worker_key]["last_log"] = "Combo workflow completato"
-                    self._status[server_id][worker_key]["running"] = False
+            if not self._run_combo_phase(
+                server,
+                server_id,
+                mode,
+                scope,
+                target_libraries,
+                stop_flag,
+                run_id,
+                "processing",
+            ):
+                self._mark_combo_worker_stopped(
+                    server_id,
+                    worker_key,
+                    interrupted=True,
+                )
+                return
+            self._mark_combo_worker_stopped(
+                server_id,
+                worker_key,
+                interrupted=False,
+            )
 
         except BaseException as exc:
             primary_error = exc
@@ -559,7 +718,7 @@ class ComboProbeMixin(ProbeManagerProtocol):
                                 )
 
                 if scope == PROBE_SCOPE_RECENT:
-                    self.start_recent_discovery(server, server_id)
+                    self.start_recent_discovery(server, server_id, run_id=run_id)
                     worker = self._workers.get(server_id, {}).get("recent_discovery")
                 else:
                     self.start_discovery(server, server_id)

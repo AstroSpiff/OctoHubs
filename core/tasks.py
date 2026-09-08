@@ -819,6 +819,7 @@ class WorkflowManager:
         self._workflow_heartbeat_stop = None
         self._workflow_heartbeat_thread = None
         self._accept_workflows = True
+        self._active_probe_run_id = None
 
     def start_accepting(self) -> None:
         """Reopen workflow admission for a new application lifespan."""
@@ -1105,6 +1106,7 @@ class WorkflowManager:
         self._workflow_lease = None
         self._finalized_workflow_id = None
         self._finalizing_workflow_id = None
+        self._active_probe_run_id = None
         self._thread = None
         self._status = {
             "status": "idle",
@@ -1301,6 +1303,7 @@ class WorkflowManager:
         }
         self._finalized_workflow_id = None
         self._finalizing_workflow_id = None
+        self._active_probe_run_id = None
         stop_event = threading.Event()
         self._stop_event = stop_event
         return workflow_id, steps, stop_event
@@ -1549,47 +1552,103 @@ class WorkflowManager:
         if primary_error is not None:
             raise primary_error
 
-    def stop(self):
-        """Richiede l'interruzione del workflow corrente."""
+    def _capture_workflow_stop_locked(self, expected_operation_id):
+        """Capture one immutable stop target while holding the workflow lock."""
         operation_id = None
+        workflow_id = None
         operation_tracker = None
         operation_details = None
         stop_probe_func = None
         stop_probe_context = None
-        with self._lock:
-            if self._status["status"] in ("running", "stopping"):
-                self._stop_event.set()
-                self._status["status"] = "stopping"
-                operation_id = self._status.get("operation_id")
-                operation_tracker = self._operation_tracker
-                operation_details = self._workflow_operation_details_locked()
-                current_step_index = self._status.get("current_step_index", -1)
-                steps = self._status.get("steps") or []
-                current_step = steps[current_step_index] if 0 <= current_step_index < len(steps) else {}
-                if current_step.get("id") == "probe" and self._stop_probe_func:
-                    stop_probe_func = self._stop_probe_func
-                    stop_probe_context = copy.deepcopy(self._status.get("context") or {})
-            db_storage = self._db_storage
+        local_running = False
+        db_storage = self._db_storage
+        local_running = self._status["status"] in ("running", "stopping")
+        if local_running:
+            operation_id = self._status.get("operation_id")
+            workflow_id = self._status.get("workflow_id")
+            if expected_operation_id is not None and operation_id != expected_operation_id:
+                return "target_changed", None
+            self._stop_event.set()
+            self._status["status"] = "stopping"
+            operation_tracker = self._operation_tracker
+            operation_details = self._workflow_operation_details_locked()
+            current_step_index = self._status.get("current_step_index", -1)
+            steps = self._status.get("steps") or []
+            current_step = steps[current_step_index] if 0 <= current_step_index < len(steps) else {}
+            if current_step.get("id") == "probe" and self._stop_probe_func:
+                stop_probe_func = self._stop_probe_func
+                stop_probe_context = copy.deepcopy(self._status.get("context") or {})
+                if self._active_probe_run_id:
+                    stop_probe_context["_probe_run_id"] = self._active_probe_run_id
+        elif expected_operation_id is not None:
+            return "not_running", None
+        return None, (
+            db_storage,
+            local_running,
+            workflow_id,
+            stop_probe_func,
+            stop_probe_context,
+            operation_tracker,
+            operation_id,
+            operation_details,
+        )
+
+    @staticmethod
+    def _request_persisted_workflow_stop(db_storage, workflow_id):
         request_stop = getattr(db_storage, "request_active_workflow_stop", None) if db_storage else None
-        if callable(request_stop):
-            try:
-                request_stop()
-            except Exception as exc:
-                _log_task_exception("Richiesta stop persistente non riuscita", exc)
-        if stop_probe_func:
-            try:
-                stop_probe_func(stop_probe_context or {})
-            except Exception as exc:
-                _log_task_exception("Errore stop probe workflow", exc)
-        if operation_tracker and operation_id:
-            try:
-                operation_tracker.update(
-                    operation_id,
-                    message="Interruzione workflow richiesta",
-                    details=operation_details,
-                )
-            except Exception as exc:
-                _log_task_exception("Errore aggiornamento operazione workflow", exc)
+        if not callable(request_stop):
+            return False
+        try:
+            return bool(request_stop(workflow_id) if workflow_id else request_stop())
+        except Exception as exc:
+            _log_task_exception("Richiesta stop persistente non riuscita", exc)
+            return False
+
+    @staticmethod
+    def _propagate_workflow_stop(stop_probe_func, stop_probe_context):
+        if not stop_probe_func:
+            return
+        try:
+            stop_probe_func(stop_probe_context or {})
+        except Exception as exc:
+            _log_task_exception("Errore stop probe workflow", exc)
+
+    @staticmethod
+    def _publish_workflow_stop(operation_tracker, operation_id, operation_details):
+        if not operation_tracker or not operation_id:
+            return
+        try:
+            operation_tracker.update(
+                operation_id,
+                message="Interruzione workflow richiesta",
+                details=operation_details,
+            )
+        except Exception as exc:
+            _log_task_exception("Errore aggiornamento operazione workflow", exc)
+
+    def stop(self, expected_operation_id=None):
+        """Stop the current workflow only when it still owns the expected operation."""
+        with self._lock:
+            rejected, captured = self._capture_workflow_stop_locked(expected_operation_id)
+        if rejected is not None:
+            return rejected
+        (
+            db_storage,
+            local_running,
+            workflow_id,
+            stop_probe_func,
+            stop_probe_context,
+            operation_tracker,
+            operation_id,
+            operation_details,
+        ) = captured
+        persisted_stop_requested = self._request_persisted_workflow_stop(
+            db_storage,
+            workflow_id,
+        )
+        self._propagate_workflow_stop(stop_probe_func, stop_probe_context)
+        self._publish_workflow_stop(operation_tracker, operation_id, operation_details)
+        return "stop_requested" if local_running or persisted_stop_requested else "not_running"
 
     def wait(self, timeout_seconds: float | None = None) -> bool:
         """Wait for the workflow worker without blocking indefinitely."""
@@ -1652,6 +1711,22 @@ class WorkflowManager:
     def _is_current_workflow_locked(self, workflow_id):
         """Treat the workflow UUID as a generation token for worker updates."""
         return self._status.get("workflow_id") == workflow_id
+
+    def _execute_workflow_step(self, step, step_index, context, workflow_id, stop_event):
+        """Dispatch one workflow step while retaining its established diagnostics."""
+        step_id = step["id"]
+        if step_id == "scan":
+            self._execute_scan_step(step_index, context, workflow_id, stop_event)
+            print("[WORKFLOW] [DEBUG] _execute_scan_step returned successfully")
+        elif step_id == "probe":
+            self._execute_probe_step(step_index, context, workflow_id, stop_event)
+            print("[WORKFLOW] [DEBUG] _execute_probe_step returned successfully")
+        elif step_id == "cache":
+            self._execute_cache_step(step_index, context, workflow_id)
+            print("[WORKFLOW] [DEBUG] _execute_cache_step returned successfully")
+        elif step_id == "notify":
+            self._execute_notify_step(step_index, context, workflow_id)
+            print("[WORKFLOW] [DEBUG] _execute_notify_step returned successfully")
 
     def _initialize_steps(self, workflow_type):
         """
@@ -1737,6 +1812,12 @@ class WorkflowManager:
                 with self._lock:
                     if not self._is_current_workflow_locked(workflow_id):
                         return
+                    if step["id"] == "probe":
+                        probe_run_id = str(
+                            context.get("_probe_run_id") or uuid.uuid4().hex
+                        )
+                        context["_probe_run_id"] = probe_run_id
+                        self._active_probe_run_id = probe_run_id
                     self._status["current_step_index"] = i
 
                 # Marca lo step come in esecuzione
@@ -1752,18 +1833,13 @@ class WorkflowManager:
 
                 try:
                     # Esegue la logica specifica dello step
-                    if step["id"] == "scan":
-                        self._execute_scan_step(i, context, workflow_id, stop_event)
-                        print("[WORKFLOW] [DEBUG] _execute_scan_step returned successfully")
-                    elif step["id"] == "probe":
-                        self._execute_probe_step(i, context, workflow_id, stop_event)
-                        print("[WORKFLOW] [DEBUG] _execute_probe_step returned successfully")
-                    elif step["id"] == "cache":
-                        self._execute_cache_step(i, context, workflow_id)
-                        print("[WORKFLOW] [DEBUG] _execute_cache_step returned successfully")
-                    elif step["id"] == "notify":
-                        self._execute_notify_step(i, context, workflow_id)
-                        print("[WORKFLOW] [DEBUG] _execute_notify_step returned successfully")
+                    self._execute_workflow_step(
+                        step,
+                        i,
+                        context,
+                        workflow_id,
+                        stop_event,
+                    )
 
                     # Calcola la durata
                     print(f"[WORKFLOW] [DEBUG] Calculating duration for step {i} ({step['id']})")

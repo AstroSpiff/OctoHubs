@@ -47,6 +47,43 @@ class _OperationTracker:
 
 
 class WorkflowOperationTests(unittest.TestCase):
+    def test_stop_is_atomic_and_rejects_a_replaced_operation(self):
+        manager = WorkflowManager()
+        manager._status.update({"status": "running", "operation_id": "operation-y"})
+
+        self.assertEqual("target_changed", manager.stop("operation-x"))
+        self.assertFalse(manager._stop_event.is_set())
+        self.assertEqual("running", manager.get_status()["status"])
+
+        self.assertEqual("stop_requested", manager.stop("operation-y"))
+        self.assertTrue(manager._stop_event.is_set())
+        self.assertEqual("stopping", manager.get_status()["status"])
+
+    def test_stop_reports_when_no_workflow_is_running(self):
+        manager = WorkflowManager()
+
+        self.assertEqual("not_running", manager.stop("operation-x"))
+        self.assertFalse(manager._stop_event.is_set())
+
+    def test_stop_binds_the_persisted_request_to_the_same_workflow(self):
+        requested = []
+
+        class _Storage:
+            def request_active_workflow_stop(self, workflow_id):
+                requested.append(workflow_id)
+                return True
+
+        manager = WorkflowManager()
+        manager._db_storage = _Storage()
+        manager._status.update({
+            "status": "running",
+            "operation_id": "operation-x",
+            "workflow_id": "workflow-x",
+        })
+
+        self.assertEqual("stop_requested", manager.stop("operation-x"))
+        self.assertEqual(["workflow-x"], requested)
+
     def test_workflow_creates_and_updates_global_operation(self):
         tracker = _OperationTracker()
         manager = WorkflowManager()
@@ -158,7 +195,8 @@ class WorkflowOperationTests(unittest.TestCase):
             manager._thread.join(timeout=3)
 
         self.assertFalse(manager._thread.is_alive())
-        self.assertEqual([{"server_id": "server-a"}], stopped_contexts)
+        self.assertEqual("server-a", stopped_contexts[0]["server_id"])
+        self.assertTrue(stopped_contexts[0]["_probe_run_id"])
 
     def test_start_is_rejected_until_stopping_thread_has_exited(self):
         manager = WorkflowManager()

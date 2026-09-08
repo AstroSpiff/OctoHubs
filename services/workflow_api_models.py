@@ -42,6 +42,18 @@ class WorkflowStartRequest(BaseModel):
     context: WorkflowContextRequest = Field(default_factory=WorkflowContextRequest)
 
 
+class WorkflowStopRequest(BaseModel):
+    """Identify the exact operation that the caller intends to stop."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    operation_id: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=WORKFLOW_TEXT_PATTERN,
+    )
+
+
 class WorkflowSuccessResponse(BaseModel):
     success: Literal[True]
     message: str

@@ -6,6 +6,7 @@ import copy
 import logging
 import threading
 import time
+from collections import deque
 from typing import Any, Callable, Dict, Optional
 
 import requests
@@ -36,6 +37,7 @@ class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
         self._stop_flags: Dict[str, Dict[str, threading.Event]] = {}
         self._global_workers: Dict[str, threading.Thread] = {}
         self._global_stop_flags: Dict[str, threading.Event] = {}
+        self._cancelled_combo_run_ids: deque[str] = deque(maxlen=256)
         self._lock = threading.RLock()
         self._db_getter: Optional[Callable[[], Any]] = None
         self._libraries_pause_flags: Dict[str, threading.Event] = {}

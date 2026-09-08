@@ -316,17 +316,15 @@ async def test_workflow_start_storage_is_offloaded(monkeypatch):
 @pytest.mark.anyio
 async def test_workflow_stop_storage_is_offloaded(monkeypatch):
     from services import workflow_routes
+    from services.workflow_api_models import WorkflowStopRequest
 
     event_loop_thread = threading.get_ident()
     calls = []
 
-    def is_running():
+    def stop(operation_id):
         assert threading.get_ident() != event_loop_thread
-        return True
-
-    def stop():
-        assert threading.get_ident() != event_loop_thread
-        calls.append("stop")
+        calls.append(("stop", operation_id))
+        return "stop_requested"
 
     monkeypatch.setattr(workflow_routes, "_require_auth", lambda _request: 1)
     monkeypatch.setattr(
@@ -334,13 +332,49 @@ async def test_workflow_stop_storage_is_offloaded(monkeypatch):
         "_success_response",
         lambda **payload: JSONResponse({"success": True, **payload}),
     )
-    monkeypatch.setattr(workflow_routes.workflow_manager, "is_running", is_running)
     monkeypatch.setattr(workflow_routes.workflow_manager, "stop", stop)
 
-    response = await workflow_routes.workflow_stop(_request())
+    response = await workflow_routes.workflow_stop(
+        _request(),
+        WorkflowStopRequest(operation_id="operation-x"),
+    )
 
     assert response.status_code == 200
-    assert calls == ["stop"]
+    assert calls == [("stop", "operation-x")]
+
+
+@pytest.mark.anyio
+async def test_workflow_stop_rejects_a_replaced_target_without_toctou(monkeypatch):
+    from services import workflow_routes
+    from services.workflow_api_models import WorkflowStopRequest
+
+    monkeypatch.setattr(workflow_routes, "_require_auth", lambda _request: 1)
+    monkeypatch.setattr(
+        workflow_routes,
+        "_error_response",
+        lambda message, status: JSONResponse(
+            {"success": False, "message": message},
+            status_code=status,
+        ),
+    )
+    monkeypatch.setattr(
+        workflow_routes.workflow_manager,
+        "is_running",
+        lambda: pytest.fail("route must not perform a separate running check"),
+    )
+    monkeypatch.setattr(
+        workflow_routes.workflow_manager,
+        "stop",
+        lambda operation_id: "target_changed" if operation_id == "operation-x" else "stop_requested",
+    )
+
+    response = await workflow_routes.workflow_stop(
+        _request(),
+        WorkflowStopRequest(operation_id="operation-x"),
+    )
+
+    assert response.status_code == 409
+    assert "non è più" in response.body.decode("utf-8")
 
 
 @pytest.mark.anyio

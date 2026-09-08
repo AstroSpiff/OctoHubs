@@ -31,7 +31,9 @@ class RecentProbeMixin(ProbeManagerProtocol):
         self,
         server: Dict[str, Any],
         server_id: str,
-        limit: int = 200
+        limit: int = 200,
+        *,
+        run_id: str | None = None,
     ) -> bool:
         """
         Start a discovery worker for recent items missing mediainfo.
@@ -61,7 +63,8 @@ class RecentProbeMixin(ProbeManagerProtocol):
                 "total_scanned": 0,
                 "last_log": "Avvio discovery ultimi aggiunti...",
                 "started_at": datetime.now(timezone.utc).isoformat(),
-                "limit": limit
+                "limit": limit,
+                "run_id": run_id,
             }
 
             worker = threading.Thread(
@@ -107,7 +110,9 @@ class RecentProbeMixin(ProbeManagerProtocol):
         self,
         server: Dict[str, Any],
         server_id: str,
-        mode: str = "smart"
+        mode: str = "smart",
+        *,
+        run_id: str | None = None,
     ) -> bool:
         """Start a processing worker for recent discovery items."""
         with self._lock:
@@ -137,7 +142,8 @@ class RecentProbeMixin(ProbeManagerProtocol):
                 "current_item": None,
                 "last_log": f"Avvio processing recenti in modalità {mode}...",
                 "mode": mode,
-                "started_at": datetime.now(timezone.utc).isoformat()
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "run_id": run_id,
             }
 
             worker = threading.Thread(
