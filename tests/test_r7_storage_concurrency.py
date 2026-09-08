@@ -276,7 +276,7 @@ def test_identifier_migration_postgresql_downgrade_is_atomic_on_oversize_value(
         with engine.connect() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM alembic_version")
-            ).scalar_one() == "20260908_22"
+            ).scalar_one() == "20260908_23"
             assert connection.execute(
                 text("SELECT target_id FROM emby_icon_bindings")
             ).scalar_one() == target_id
@@ -317,7 +317,7 @@ def test_synthetic_group_downgrade_is_atomic_on_real_postgresql(
         with engine.connect() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM alembic_version")
-            ).scalar_one() == "20260908_22"
+            ).scalar_one() == "20260908_23"
             assert connection.execute(
                 text("SELECT group_id FROM emby_group_passwords")
             ).scalar_one() == synthetic_id

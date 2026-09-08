@@ -126,7 +126,10 @@ Mantieni anche gli altri override usati durante l'installazione. In Portainer,
 aggiorna il tag repository fissato (per esempio `#v0.4.8`) prima del redeploy: un
 riavvio del vecchio tag non installa nuove correzioni. Per il rollback, ripristina
 un backup database compatibile prima di avviare una release precedente quando le
-migrazioni non sono retrocompatibili.
+migrazioni non sono retrocompatibili. Per l'upgrade dal branch `FastAPI`
+pubblicato segui le [note sulle migrazioni database](DATABASE_MIGRATIONS_ita.md):
+gli account web vengono ricreati in PostgreSQL e le password Emby salvate nel
+vecchio formato vanno inserite di nuovo.
 
 ## Troubleshooting
 - Errori di persistenza dei secret generati: verifica ownership e permessi di

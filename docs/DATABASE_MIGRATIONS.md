@@ -91,6 +91,22 @@ to avoid truncation collisions. Downgrade performs a global preflight over all
 four columns before changing any of them and refuses to narrow a schema while
 values outside the previous limits exist.
 
+Revision `20260908_23` completes the supported upgrade from the published
+`FastAPI` branch. That release stored saved Emby group/user passwords as
+unversioned Fernet tokens, while the current runtime deliberately accepts only
+versioned `v1:` envelopes. During the upgrade Alembic removes only those
+unversioned rows; already-versioned passwords and all non-password Emby data are
+preserved. Re-enter the affected Emby passwords in OctoHubs after the first
+successful startup. The deleted ciphertexts cannot be recreated by downgrade,
+so take and retain a PostgreSQL backup before upgrading.
+
+The published `FastAPI` deployment kept web-login accounts in its separate
+SQLite auth database. OctoHubs does not import that database into PostgreSQL.
+When the migrated PostgreSQL `users` table is empty, the normal
+`ADMIN_USERNAME` plus `ADMIN_PASSWORD`/`ADMIN_PASSWORD_FILE` bootstrap creates
+the first administrator from the Portainer environment. Create any additional
+accounts again through the current user-management flow.
+
 ## PostgreSQL integration test
 
 The migration integration test uses an isolated temporary schema on a PostgreSQL 16

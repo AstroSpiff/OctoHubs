@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-import os
+import base64
+import hashlib
 import multiprocessing
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -13,6 +15,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
+from cryptography.fernet import Fernet
 from sqlalchemy import BigInteger, create_engine, inspect, text
 from sqlalchemy.exc import DataError
 from sqlalchemy.engine import make_url
@@ -86,6 +89,13 @@ def _postgresql_migration_worker(database_url, barrier, result_queue):
         result_queue.put(f"{type(exc).__name__}: {exc}")
 
 
+def _legacy_emby_password_ciphertext(secret: str, plaintext: str) -> str:
+    digest = hashlib.sha256(secret.encode("utf-8")).digest()
+    return Fernet(base64.urlsafe_b64encode(digest)).encrypt(
+        plaintext.encode("utf-8")
+    ).decode("ascii")
+
+
 @pytest.fixture
 def postgresql_schema_url():
     base_url = os.getenv("OCTOHUBS_TEST_POSTGRES_URL")
@@ -128,6 +138,68 @@ def test_documented_manage_users_list_works_with_external_postgresql(
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_postgresql_fastapi_password_upgrade_discards_only_unversioned_rows(
+    postgresql_schema_url,
+):
+    from alembic import command
+
+    from core.database_migrations import alembic_config, upgrade_database
+    from core.storage import DatabaseStorage
+    from emby_users.password_crypto import (
+        PasswordCipher,
+        rotate_stored_password_ciphertexts,
+    )
+
+    config = alembic_config(postgresql_schema_url)
+    command.upgrade(config, "20260908_22")
+    current_cipher = PasswordCipher("current-password-secret-that-is-long-enough")
+    current_token = current_cipher.encrypt("current-password")
+    legacy_token = _legacy_emby_password_ciphertext(
+        "legacy-fastapi-secret-that-is-long-enough",
+        "legacy-password",
+    )
+    engine = create_engine(postgresql_schema_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO emby_group_passwords (group_id, password_enc) "
+                    "VALUES (:legacy_id, :legacy_token), "
+                    "(:wrong_case_id, :wrong_case_token), "
+                    "(:current_id, :current_token)"
+                ),
+                {
+                    "legacy_id": "legacy-group",
+                    "legacy_token": legacy_token,
+                    "wrong_case_id": "wrong-case-group",
+                    "wrong_case_token": "V1:not-accepted-by-the-runtime",
+                    "current_id": "current-group",
+                    "current_token": current_token,
+                },
+            )
+
+        result = upgrade_database(postgresql_schema_url)
+        assert result["applied"] == ["20260908_23"]
+
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT group_id, password_enc FROM emby_group_passwords "
+                    "ORDER BY group_id"
+                )
+            ).all()
+        assert rows == [("current-group", current_token)]
+
+        storage = DatabaseStorage({"URL": postgresql_schema_url})
+        try:
+            assert rotate_stored_password_ciphertexts(storage, current_cipher) == 0
+        finally:
+            if storage._engine is not None:
+                storage._engine.dispose()
+    finally:
+        engine.dispose()
 
 
 def test_postgresql_concurrent_migrations_are_serialized(postgresql_schema_url):
@@ -1185,6 +1257,26 @@ def _create_legacy_schema(database_url: str) -> None:
                 VALUES ('Legacy show', 1, 2, TRUE)
             """))
             connection.execute(text("""
+                CREATE TABLE emby_group_passwords (
+                    group_id VARCHAR(255) PRIMARY KEY,
+                    password_enc TEXT NOT NULL,
+                    updated_at TIMESTAMP
+                )
+            """))
+            connection.execute(
+                text(
+                    "INSERT INTO emby_group_passwords "
+                    "(group_id, password_enc, updated_at) "
+                    "VALUES ('legacy-password-group', :password_enc, NOW())"
+                ),
+                {
+                    "password_enc": _legacy_emby_password_ciphertext(
+                        "legacy-fastapi-secret-that-is-long-enough",
+                        "legacy-password",
+                    )
+                },
+            )
+            connection.execute(text("""
                 CREATE TABLE key_value_store (
                     key VARCHAR(255) PRIMARY KEY,
                     value JSON NOT NULL,
@@ -1246,6 +1338,7 @@ def test_postgresql_legacy_upgrade_matches_runtime_contract(postgresql_schema_ur
         "20260906_20",
         "20260908_21",
         "20260908_22",
+        "20260908_23",
     ]
     assert validate_migrations(postgresql_schema_url)["ok"] is True
 
@@ -1304,6 +1397,9 @@ def test_postgresql_legacy_upgrade_matches_runtime_contract(postgresql_schema_ur
             connection.execute(
                 text("INSERT INTO emby_latest_cache_changes (size) VALUES (3000000000)")
             )
+            assert connection.execute(
+                text("SELECT COUNT(*) FROM emby_group_passwords")
+            ).scalar_one() == 0
         assert legacy_key == {"visible": True}
         assert request_cache == {"items": [7]}
     finally:
@@ -1442,6 +1538,7 @@ def test_postgresql_probe_blacklist_identity_migration_merges_existing_duplicate
             "20260906_20",
             "20260908_21",
             "20260908_22",
+            "20260908_23",
         ]
 
         with engine.connect() as connection:

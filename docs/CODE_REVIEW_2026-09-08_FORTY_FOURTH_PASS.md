@@ -7,16 +7,16 @@
 - **Baseline immutabile:** `cef2a66cd8cdd72f21b41031860635e39b4ce0cd`
   (`fix: complete R43 review remediation cycle`, 2026-09-08T12:43:40+02:00).
 - **Worktree iniziale:** pulita.
-- **Esito:** **3 finding risolti, 0 aperti**, 0 decisioni accettate nuove e 0
+- **Esito:** **4 finding risolti, 0 aperti**, 0 decisioni accettate nuove e 0
   finding bloccati.
-- **Modifiche:** implementazione, migrazione Alembic 22, regressori, canary,
+- **Modifiche:** implementazione, migrazioni Alembic 22 e 23, regressori, canary,
   gate di classe e aggiornamento dello stesso report. Il ciclo viene chiuso con
   un checkpoint locale; nessun push o tag è stato eseguito.
 
 | Severità | Aperti | Risolti |
 | --- | ---: | --- |
 | Alta | 0 | — |
-| Media | 0 | R44-M-01 |
+| Media | 0 | R44-M-01 … R44-M-02 |
 | Bassa | 0 | R44-L-01 … R44-L-02 |
 
 ## Metodo e perimetro
@@ -46,6 +46,11 @@ con le decisioni architetturali accettate non sono stati promossi.
 La review è rimasta read-only per il codice applicativo. I canary hanno creato
 soltanto risorse temporanee esterne o artefatti ignorati, poi rimossi; nessun
 test o fixture è stato aggiunto in questa fase.
+
+Prima della pubblicazione, il successivo audit richiesto della migrazione dal
+commit remoto `origin/FastAPI` ha promosso R44-M-02. Il finding è stato aggiunto
+allo stesso ciclo perché riguarda la compatibilità della baseline pubblicata,
+quindi corretto e verificato prima del checkpoint successivo.
 
 ## Finding medio
 
@@ -85,6 +90,45 @@ R43-L-03. Famiglia: allineamento del contratto Pydantic/manager/storage/schema.
   verifica che nessun effetto Emby inizi se la chiave non è persistibile;
   inventario statico dei key builder e migrazione upgrade/downgrade con preflight
   globale.
+
+### R44-M-02 — Le password Emby della release `FastAPI` bloccano il nuovo runtime — resolved
+
+**Classificazione:** superficie analoga della famiglia R2-M-13/R26-M-02/R41-H-04
+emersa nel canary di pubblicazione. Famiglia: evoluzione e rotazione del formato
+dei segreti persistiti.
+
+- **Posizioni:** `origin/FastAPI:emby_users/password_manager.py`;
+  `emby_users/password_crypto.py:75-106,123-151`;
+  `runtime/bootstrap.py:81-106`; `core/storage/storage_users.py:860-917`;
+  `alembic/versions/20260908_23_retire_unversioned_emby_passwords.py`.
+- **Causa radice:** la release pubblicata cifrava le password con un token Fernet
+  privo di versione e key ID. Il runtime corrente accetta intenzionalmente solo
+  envelope `v1:<key_id>:<token>` e valida tutte le righe prima di inizializzare i
+  servizi; una singola password precedente causava quindi un arresto fail-closed
+  prima che l'amministratore potesse sostituirla.
+- **Canary esatto:** lo schema PostgreSQL generato dal commit remoto
+  `origin/FastAPI` (`375b9c1e89e2d874c1ba7374b868782fd98aa596`) è stato popolato
+  con una riga rappresentativa per tutte le 37 tabelle e aggiornato fino alla
+  head corrente. Sono sopravvissute tutte le 32 tabelle dati non sostituite;
+  cinque proiezioni Latest sono state materializzate nel documento canonico e
+  poi rimosse come previsto. Un token Fernet creato dal vecchio codice è stato
+  riprodotto come incompatibile con il reader corrente.
+- **Impatto:** una installazione che avesse salvato almeno una password Emby non
+  poteva avviare la nuova release. Gli altri dati del server e dei gruppi erano
+  integri, ma l'interfaccia necessaria a reinserire la password non diventava
+  raggiungibile.
+- **Soluzione:** la revisione Alembic 23 elimina una sola volta esclusivamente le
+  righe con `password_enc` non versionato e conserva gli envelope `v1:`. Non è
+  stata reintrodotta alcuna compatibilità legacy nel runtime. L'operatore
+  reinserisce le password Emby dopo il primo avvio, scelta esplicitamente
+  accettata per la pubblicazione.
+- **Regressori e gate:** test SQLite di selettività, irreversibilità e startup;
+  test PostgreSQL 16 reale con token generato esattamente dall'algoritmo
+  precedente; catena Alembic 01→23 e liste di revisioni aggiornate.
+- **Rischio residuo:** il downgrade non può ricostruire credenziali eliminate.
+  Il backup PostgreSQL obbligatorio prima dell'upgrade è il punto di recupero.
+  Un envelope `v1:` malformato o cifrato con una chiave non dichiarata continua
+  correttamente a fermare l'avvio anziché essere cancellato silenziosamente.
 
 ## Finding bassi
 
@@ -148,12 +192,17 @@ allineamento del contratto Pydantic/manager/storage/schema.
 
 ### Causa comune e invariante
 
-I tre finding derivavano dalla stessa lacuna: i limiti erano duplicati fra
+I primi tre finding derivavano dalla stessa lacuna: i limiti erano duplicati fra
 modelli HTTP, builder, writer e schema e mancava un inventario obbligatorio delle
 colonne testuali persistite. L'invariante applicato è ora: ogni identità viene
 validata senza trasformazioni e prima di sessioni o side effect; i testi
 descrittivi vengono proiettati in modo deterministico e senza NUL; schema,
 modelli e boundary importano limiti canonici condivisi.
+
+Il quarto finding aveva una causa distinta nel confine di migrazione fra la
+release `FastAPI` pubblicata e il formato versionato corrente. L'invariante
+aggiunto è: Alembic rende avviabile ogni database supportato senza rendere il
+runtime permissivo verso ciphertext privi di provenienza.
 
 ### Soluzione applicata
 
@@ -171,6 +220,10 @@ modelli e boundary importano limiti canonici condivisi.
   allineati a 257, le chiavi JustWatch a 512. La revisione 22 applica un
   preflight aggregato globale prima di qualunque DDL anche nel downgrade e
   ignora in modo sicuro tabelle/colonne non presenti.
+- La revisione 23 ritira in modo selettivo le sole password Emby pre-versionate.
+  Dati server, gruppi, impostazioni e password già `v1:` restano invariati; gli
+  account web del vecchio SQLite non vengono importati e l'admin viene creato
+  dal normale bootstrap Portainer quando la tabella PostgreSQL utenti è vuota.
 - Sono stati introdotti helper focalizzati per identità bounded e testi
   persistiti. Account, token, request rules, Jellyseerr, Probe, Latest,
   notifiche, cache immagini, backup utenti, icone, workflow e audit log sono
@@ -185,8 +238,10 @@ modelli e boundary importano limiti canonici condivisi.
 - `tests/test_r44_contract_remediation.py` copre i tre casi originali, i boundary
   `max/max+1`, ogni operazione KV, poster/backdrop/mutate/delete, quattro domini
   sync e l'assenza di sessioni o side effect prematuri.
-- `tests/test_r44_schema_migration.py` e i test migrazione PostgreSQL verificano
-  upgrade/downgrade, preflight globale, schemi parziali e head Alembic 22.
+- `tests/test_r44_schema_migration.py`,
+  `tests/test_r44_password_migration.py` e i test migrazione PostgreSQL
+  verificano upgrade/downgrade, preflight globale, schemi parziali, selettività
+  della rimozione credenziali e head Alembic 23.
 - `tests/test_r44_analog_contract_remediation.py` copre account, token,
   JustWatch, Telegram, Jellyseerr, Probe, Latest e gli altri writer analoghi.
 - `tests/test_bounded_string_contract_manifest.py` inventaria esattamente tutte
@@ -200,7 +255,11 @@ Un revisore indipendente ha riesaminato causa comune, migrazione, ordine degli
 effetti, superfici analoghe e regressori. Ha individuato durante la remediation
 ulteriori writer descrittivi e una collocazione errata del campo errore nella
 notifica: entrambi sono stati corretti e rieseguiti. La review finale non ha
-trovato gap azionabili o bloccanti.
+trovato gap azionabili o bloccanti. Sul successivo R44-M-02 lo stesso controllo
+indipendente ha rilevato la diversa case sensitivity di `LIKE` in SQLite e
+l'assenza iniziale di un regressore permanente dal database pre-Alembic. Il
+confronto è stato sostituito con `substr` case-sensitive e sono stati aggiunti i
+canary `V1:` e `origin/FastAPI` 01→23; la re-review non ha trovato altri gap.
 
 Il rischio residuo è strutturale ma basso: il manifest semantico richiede una
 scelta umana della policy quando viene aggiunta una nuova colonna testuale. Il
@@ -216,7 +275,7 @@ inventari statici coprono tutti i writer e builder di produzione noti.
 - **Lifecycle e realtime:** ownership ASGI di SSE/export, lease e cleanup,
   WebSocket generation/origin, Event Bridge, status snapshot, Latest/Search,
   queue bounded, timeout, cancellazione, registry task e shutdown.
-- **Storage:** catena Alembic lineare 01→22, lock advisory/row, CAS key-value,
+- **Storage:** catena Alembic lineare 01→23, lock advisory/row, CAS key-value,
   cleanup server, integrità binding/utenti, cifratura credenziali e transazioni.
 - **Frontend:** capability viewer, ownership e purge delle query private, fence
   target-scoped, dialog/focus, navigazione, XSS, URL, storage browser,
@@ -294,8 +353,9 @@ non include e non amministra PostgreSQL.
 
 | Gate | Esito | Evidenza finale |
 | --- | --- | --- |
-| Backend completo | **PASS** | 2.171 passed, 64 skipped, 71 warning, 32 subtest; 52,07 s |
-| PostgreSQL 16 reale | **PASS** | 69 passed, 2 warning; 171,38 s; upgrade fino alla revisione 22 |
+| Backend completo | **PASS** | 2.173 passed, 65 skipped, 72 warning, 32 subtest; 44,77 s |
+| PostgreSQL 16 reale | **PASS** | 70 passed, 2 warning; 182,52 s; upgrade fino alla revisione 23 |
+| Canary `origin/FastAPI` → 23 | **PASS** | schema pre-Alembic, token Fernet legacy rimosso e sentinelle non-password conservate |
 | Regressori R44 e analoghi | **PASS** | 282 test mirati finali; originali, manifest e account |
 | Frontend Vitest | **PASS** | 272 file, 733 test |
 | Ruff | **PASS** | nessun errore |
@@ -306,9 +366,10 @@ non include e non amministra PostgreSQL.
 | Dipendenze frontend | **PASS** | npm audit runtime/completo: 0 vulnerabilità; `npm ls --all` coerente |
 | ESLint | **PASS** | nessun errore |
 | Build frontend | **PASS** | TypeScript e Vite; 505 moduli; warning chunk noto da 547,77 kB |
+| Alembic | **PASS** | unico head `20260908_23`; canary `v1:`/`V1:` coerenti su SQLite e PostgreSQL |
 | Shell | **PASS** | `bash -n` su entrypoint, script operativi e launcher sviluppo |
 | Compose | **PASS** | base, secrets e admin-bootstrap validi; unico servizio `app` |
-| Docker riproducibile | **PASS** | due build no-cache con inventory identica; immagine `octohubs:r44-remediation` |
+| Docker riproducibile | **PASS** | due build no-cache con inventory identica; immagine `octohubs:r44-migration-remediation` |
 | Smoke immagine | **PASS** | readiness, login, SPA asset e UID/GID 1000 su PostgreSQL esterno |
 | Docker Scout CVE | **NON ESEGUITO** | CLI presente, ma richiede autenticazione Docker ID non disponibile |
 | `git diff --check` | **PASS** | nessun errore di whitespace o conflict marker |
@@ -321,23 +382,28 @@ dei lockfile Python e npm sono completi e verdi.
 
 Il conteggio usa una sola occorrenza per ID, ignorando la ripetizione dello
 stesso heading fra review e remediation. R43 registrava **534 finding risolti**;
-i 3 nuovi ID R44 portano il totale storico a **537**.
+i 4 nuovi ID R44 portano il totale storico a **538**.
 
 | Categoria storica | Prima di R44 | R44 | Totale | Stato corrente |
 | --- | ---: | ---: | ---: | --- |
-| Finding numerati | 534 | 3 | **537** | **537 risolti; 0 aperti** |
+| Finding numerati | 534 | 4 | **538** | **538 risolti; 0 aperti** |
 | Riaperture/remediation esplicitamente incomplete | 73 | 0 | **73** | 73 risolte; 0 aperte |
-| Superfici analoghe o ricorrenze in forma diversa | 67 | 3 | **70** | 70 risolte; 0 aperte |
+| Superfici analoghe o ricorrenze in forma diversa | 67 | 4 | **71** | 71 risolte; 0 aperte |
 | Cause non classificate come ricorrenza storica | 394 | 0 | **394** | tutte risolte |
 | Decisioni storiche accettate/non remediated | 4 | 0 | **4** | non sono difetti aperti |
 | Finding bloccati da decisione utente | 0 | 0 | **0** | — |
 
-I tre finding appartengono alla stessa famiglia di R43-L-03, ma sono superfici
+I primi tre finding appartengono alla stessa famiglia di R43-L-03, ma sono superfici
 distinte: chiavi composte nel KV generico, identità delle collezioni e tipo
 dell'ordine gruppi. Non sono duplicati dello stesso heading e non sono nuove
 cause. La ricorrenza dimostra che il precedente inventario dei limiti testuali
 non comprendeva ogni builder composto e ogni writer in `storage_collections`;
 non dimostra una regressione introdotta dalle correzioni R43.
+
+R44-M-02 è una superficie analoga distinta della famiglia di gestione dei
+segreti: la cifratura corrente era corretta, ma mancava il passaggio Alembic che
+rendesse esplicito il trattamento dei ciphertext prodotti dalla release
+pubblicata.
 
 La famiglia è stata chiusa con l'inventario di classe e il gate
 schema-contratto su tutte le colonne testuali e le chiavi derivate, oltre ai tre
@@ -346,7 +412,7 @@ riprodotti in R44.
 
 ## Stato finale della fase
 
-Il ciclo R44 è completo sulla baseline registrata: **3 finding risolti, 0
+Il ciclo R44 è completo sulla baseline registrata: **4 finding risolti, 0
 aperti**, 0 nuove decisioni accettate e 0 blocchi. La causa comune e le superfici
 analoghe sono state corrette; regressori, canary PostgreSQL, gate di classe e
 review indipendente sono documentati sopra. Tutti i gate applicabili sono

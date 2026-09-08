@@ -65,6 +65,7 @@
  - Direct HTTP operation is supported. Reverse proxies and TLS are external and optional; OctoHubs must not depend internally on Nginx.
  - The supported deployment model is a single application worker unless the user explicitly changes that decision.
  - Release tags are created and numbered manually by the user.
+ - The remote branch `origin/FastAPI` is an immutable historical reference and must never receive local commits or pushes. All work developed locally on the `FastAPI` branch is destined to replace `main`; when the user explicitly authorizes publication, transfer the verified local state to `main` and push only `main` without modifying `origin/FastAPI`.
  - Do not reintroduce runtime legacy paths or compatibility layers that have already been removed unless the user explicitly requests them.
 
  UI migration standards:

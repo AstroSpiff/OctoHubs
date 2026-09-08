@@ -123,7 +123,9 @@ Preserve any other override used during installation. In Portainer, update a
 pinned repository tag (for example `#v0.4.8`) before redeploying; a restart of the
 old tag does not install new fixes. For rollback, restore a compatible database
 backup before starting an older release whenever migrations are not backward
-compatible.
+compatible. When upgrading from the published `FastAPI` branch, follow the
+[database migration notes](DATABASE_MIGRATIONS.md): web accounts are recreated
+in PostgreSQL and pre-versioned saved Emby passwords must be entered again.
 
 ## Troubleshooting
 - Generated-secret persistence errors: verify ownership and write access for
