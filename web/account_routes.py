@@ -212,6 +212,10 @@ def _email(payload: dict[str, Any]) -> str | None:
     value = _text(payload, "email")
     if value is None:
         return None
+    from core.auth_field_limits import ACCOUNT_EMAIL_MAX_LENGTH
+
+    if len(value) > ACCOUNT_EMAIL_MAX_LENGTH:
+        raise HTTPException(status_code=422, detail="Email troppo lunga")
     if value and ("@" not in value or value.startswith("@") or value.endswith("@")):
         raise HTTPException(status_code=422, detail="Email non valida")
     return value

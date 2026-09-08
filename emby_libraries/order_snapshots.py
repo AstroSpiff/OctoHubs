@@ -12,6 +12,7 @@ from core.library_group_names import (
 )
 from core.log_sanitization import format_exception_for_log
 from core.storage import StorageError
+from core.storage.field_limits import require_library_collection_type
 from core.utils import json_error, json_success
 from emby_runtime.settings_manager import _mutate_emby_settings_in_db
 
@@ -85,11 +86,14 @@ def _build_group_order_post_snapshot(payload):
         if collection_type is None or group_name is None or position is None:
             continue
         try:
+            normalized_collection_type = require_library_collection_type(
+                collection_type
+            )
             normalized_group_name = normalize_library_group_name(group_name)
         except ValueError as exc:
             return json_error(str(exc))
         assert normalized_group_name is not None
-        positions[(str(collection_type), normalized_group_name)] = int(position)
+        positions[(normalized_collection_type, normalized_group_name)] = int(position)
     try:
         backend = _ensure_db_backend()
         backend.save_library_group_order(positions)

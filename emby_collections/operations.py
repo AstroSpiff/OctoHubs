@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from typing import Any, Callable, Dict, List
 
+from core.storage.field_limits import require_collection_definition_id
 from services.background_jobs import BackgroundJobContext, start_tracked_background_job
 
 
@@ -69,6 +70,7 @@ def start_collection_sync_operation(
     runner: Callable[[str], Dict[str, Any]],
 ) -> Dict[str, Any]:
     """Synchronize one collection to Emby in the background."""
+    collection_id = require_collection_definition_id(collection_id)
 
     def _work(context: BackgroundJobContext) -> Dict[str, Any]:
         context.raise_if_cancelled()

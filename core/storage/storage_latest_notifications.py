@@ -8,6 +8,12 @@ from typing import Any, Protocol
 from sqlalchemy.exc import IntegrityError
 
 from core.app_settings_crypto import SettingsCipher
+from core.persisted_text import project_persisted_text, require_persisted_text
+from core.storage.field_limits import (
+    INTERNAL_SERVER_ID_MAX_LENGTH,
+    require_bounded_text,
+    require_telegram_destination_key,
+)
 from core.storage.storage_errors import StorageError
 from core.storage.storage_app_settings import _decode_settings
 from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
@@ -89,6 +95,21 @@ class StorageLatestNotificationMixin(_SessionProvider):
         claim_token: str,
     ) -> str:
         """Claim a delivery once, or report its already-persisted state."""
+        delivery_key = require_bounded_text(
+            delivery_key, field="delivery_key", max_length=64
+        )
+        server_id = require_bounded_text(
+            server_id,
+            field="server_id",
+            max_length=INTERNAL_SERVER_ID_MAX_LENGTH,
+        )
+        destination_key = require_telegram_destination_key(destination_key)
+        claim_token = require_bounded_text(
+            claim_token, field="claim_token", max_length=32
+        )
+        publication_key = require_persisted_text(
+            publication_key, field="publication_key"
+        )
         session = self._get_session()
         now = _utcnow()
         try:
@@ -174,6 +195,12 @@ class StorageLatestNotificationMixin(_SessionProvider):
         claim_token: str,
     ) -> bool:
         """Complete only the claim owned by the caller."""
+        delivery_key = require_bounded_text(
+            delivery_key, field="delivery_key", max_length=64
+        )
+        claim_token = require_bounded_text(
+            claim_token, field="claim_token", max_length=32
+        )
         session = self._get_session()
         now = _utcnow()
         try:
@@ -210,6 +237,13 @@ class StorageLatestNotificationMixin(_SessionProvider):
         error: str,
     ) -> bool:
         """Make a confirmed failed delivery claim available for a later retry."""
+        delivery_key = require_bounded_text(
+            delivery_key, field="delivery_key", max_length=64
+        )
+        claim_token = require_bounded_text(
+            claim_token, field="claim_token", max_length=32
+        )
+        error = project_persisted_text(error, 2000) or ""
         session = self._get_session()
         now = _utcnow()
         try:
@@ -225,7 +259,7 @@ class StorageLatestNotificationMixin(_SessionProvider):
                     {
                         "status": "failed",
                         "failed_at": now,
-                        "last_error": str(error or "")[:2000] or None,
+                        "last_error": error or None,
                         "updated_at": now,
                     },
                     synchronize_session=False,

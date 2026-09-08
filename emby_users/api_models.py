@@ -9,6 +9,7 @@ from core.storage.field_limits import (
     EMBY_GROUP_ID_MAX_LENGTH,
     EMBY_STORED_IDENTIFIER_MAX_LENGTH,
     EMBY_USER_NAME_MAX_LENGTH,
+    SETTINGS_PRESET_ID_MAX_LENGTH,
     require_emby_username,
 )
 
@@ -21,6 +22,15 @@ StoredEmbyIdentifier = Annotated[
         min_length=1,
         max_length=EMBY_STORED_IDENTIFIER_MAX_LENGTH,
         pattern=EMBY_IDENTIFIER_PATTERN,
+    ),
+]
+SettingsPresetIdentifier = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=SETTINGS_PRESET_ID_MAX_LENGTH,
+        pattern=r"^[^\x00]*$",
     ),
 ]
 
@@ -79,7 +89,7 @@ class GroupPasswordRequest(ApiRequest):
 
 
 class SettingsPresetRequest(ApiRequest):
-    id: Optional[str] = None
+    id: Optional[SettingsPresetIdentifier] = None
     label: str = ""
     description: str = ""
     settings: Dict[str, Any] = Field(default_factory=dict)
@@ -169,7 +179,7 @@ class CreateUsersRequest(ApiRequest):
         max_length=MAX_USER_BATCH_TARGETS,
     )
     settings: Dict[str, Any] = Field(default_factory=dict)
-    preset_id: Optional[str] = None
+    preset_id: Optional[SettingsPresetIdentifier] = None
     apply_libraries: bool = False
     password: str = ""
     link_group: bool = False

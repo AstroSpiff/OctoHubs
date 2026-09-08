@@ -126,6 +126,23 @@ class JustWatchManagerTests(unittest.TestCase):
             ],
         )
 
+    def test_long_cache_titles_are_bounded_and_collision_resistant(self):
+        from core.storage.field_limits import (
+            JUSTWATCH_CACHE_KEY_MAX_LENGTH,
+            JUSTWATCH_TITLE_MAX_LENGTH,
+        )
+
+        manager = self._manager()
+        common = "x" * (JUSTWATCH_TITLE_MAX_LENGTH + 20)
+        first = manager._episode_cache_key(common + "a")
+        second = manager._episode_cache_key(common + "b")
+        movie = manager._movie_cache_key(common)
+
+        self.assertEqual(len(first), JUSTWATCH_CACHE_KEY_MAX_LENGTH)
+        self.assertLessEqual(len(movie), JUSTWATCH_CACHE_KEY_MAX_LENGTH)
+        self.assertNotEqual(first, second)
+        self.assertEqual(manager._episode_cache_key("Cape Fear"), "Cape Fear::episode-v2")
+
     def test_justwatch_graphql_transport_is_streamed_and_bounded(self):
         from unittest.mock import patch
 

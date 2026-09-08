@@ -157,6 +157,17 @@ class SettingsApplyMixin:
         apply_libraries: bool = False,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
+        persistence_keys = {
+            (
+                str(target.get("server_id") or ""),
+                str(target.get("user_id") or ""),
+            ): self.settings_user_key(
+                str(target.get("server_id") or ""),
+                str(target.get("user_id") or ""),
+            )
+            for target in targets
+            if isinstance(target, dict) and target.get("server_id") and target.get("user_id")
+        }
         _, library_index, libraries_by_server, membership = self._build_library_group_index()
         normalized = self._normalize_settings_payload(settings, protect_fields=True)
         policy_patch = normalized.get("policy") or {}
@@ -220,7 +231,7 @@ class SettingsApplyMixin:
                         result.display_payload
                     )
                     self._save_settings_entry(
-                        self.settings_user_key(server_id, user_id), snapshot
+                        persistence_keys[(server_id, user_id)], snapshot
                     )
                 except Exception as exc:
                     logger.error(
@@ -289,6 +300,7 @@ class SettingsApplyMixin:
             return self._update_user_settings_guarded(server_id, user_id, settings)
 
     def _update_user_settings_guarded(self, server_id: str, user_id: str, settings: Dict[str, Any]) -> Dict[str, Any]:
+        persistence_key = self.settings_user_key(server_id, user_id)
         _, library_index, libraries_by_server, membership = self._build_library_group_index()
         normalized = self._normalize_settings_payload(settings)
         items = normalized.get("libraries", {}).get("items") or []
@@ -314,7 +326,7 @@ class SettingsApplyMixin:
             return {"ok": False, "error": "Update failed", "policy": ok_p, "config": ok_c, "display_preferences": ok_d}
         try:
             entry = self._save_settings_entry(
-                self.settings_user_key(server_id, user_id), normalized
+                persistence_key, normalized
             )
         except Exception as exc:
             logger.error(
@@ -455,11 +467,16 @@ class SettingsApplyMixin:
         settings: Dict[str, Any],
         users: List[Tuple[str, str, Optional[str]]],
     ) -> Dict[str, Any]:
+        group_persistence_key = self.settings_group_key(group_id)
+        user_persistence_keys = {
+            (server_id, user_id): self.settings_user_key(server_id, user_id)
+            for server_id, user_id, _username in users
+        }
         _, library_index, libraries_by_server, membership = self._build_library_group_index()
         normalized = self._normalize_settings_payload(settings, protect_fields=True)
         normalized["libraries"]["items"] = []
         try:
-            entry = self._save_settings_entry(self.settings_group_key(group_id), normalized)
+            entry = self._save_settings_entry(group_persistence_key, normalized)
         except Exception as exc:
             logger.error(
                 "[SETTINGS] Group snapshot persistence failed before remote update for %s:\n%s",
@@ -494,7 +511,7 @@ class SettingsApplyMixin:
                 applied += 1
                 try:
                     self._save_settings_entry(
-                        self.settings_user_key(server_id, user_id), normalized
+                        user_persistence_keys[(server_id, user_id)], normalized
                     )
                 except Exception as exc:
                     logger.error(

@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    RootModel,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from core.emby_identifiers import OpaqueEmbyIdentifier, OpaqueEmbyServerIdentifier
 from core.library_group_names import BoundedLibraryGroupName, LibraryGroupName
+from core.storage.field_limits import LIBRARY_COLLECTION_TYPE_MAX_LENGTH
 from emby_libraries.scan_limits import (
     MAX_SCAN_LIBRARIES_PER_REQUEST,
     MAX_SCAN_LIBRARIES_PER_SERVER,
@@ -15,6 +24,17 @@ from emby_libraries.scan_limits import (
     normalize_library_ids,
 )
 from web.request_validation import StrictRequestModel
+
+
+LibraryCollectionType = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=LIBRARY_COLLECTION_TYPE_MAX_LENGTH,
+        pattern=r"^[^\x00]*$",
+    ),
+]
 
 
 class LibraryScanApiModel(BaseModel):
@@ -174,7 +194,7 @@ class LibraryEntry(LibraryScanApiModel):
     server_icon: str | None = None
     server_icon_style: str | None = None
     server_icon_color: str | None = None
-    collection_type: str | None = None
+    collection_type: LibraryCollectionType | None = None
     library_id: str | None = None
     id: str | None = None
     library_name: str | None = None
@@ -182,7 +202,7 @@ class LibraryEntry(LibraryScanApiModel):
 
 class LibraryGroup(LibraryScanApiModel):
     group_name: BoundedLibraryGroupName
-    collection_type: str
+    collection_type: LibraryCollectionType
     servers: list[str] = Field(default_factory=list)
     libraries: list[LibraryEntry] = Field(default_factory=list)
 
@@ -214,13 +234,13 @@ class LibraryAssociationsResponse(LibraryScanApiModel):
 
 
 class LibraryGroupOrderEntry(StrictRequestModel):
-    collection_type: str
+    collection_type: LibraryCollectionType
     group_name: LibraryGroupName
     position: int
 
 
 class LibraryGroupOrderResponseEntry(LibraryScanApiModel):
-    collection_type: str
+    collection_type: LibraryCollectionType
     group_name: LibraryGroupName
     position: int
 

@@ -6,6 +6,8 @@ from typing import Annotated, Any, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
+from core.storage.field_limits import REQUEST_RULE_ID_MAX_LENGTH
+
 
 MAX_SEARCH_RULE_TERMS = 100
 MAX_SEARCH_TERM_LENGTH = 200
@@ -13,7 +15,7 @@ MAX_SEARCH_LANGUAGES = 32
 # Match the bounded Jellyseerr request cache so the UI can save every visible
 # request while fabricated IDs are still rejected against that cache.
 MAX_REQUEST_RULE_UPDATES = 5_000
-MAX_REQUEST_ID_LENGTH = 50
+MAX_REQUEST_ID_LENGTH = REQUEST_RULE_ID_MAX_LENGTH
 MAX_CUSTOM_FILTER_LENGTH = 2_000
 MAX_TAG_REGEX_CACHE_ENTRIES = 512
 
@@ -26,7 +28,12 @@ SearchTermList = Annotated[list[SearchTerm], Field(max_length=MAX_SEARCH_RULE_TE
 SearchLanguageList = Annotated[list[SearchTerm], Field(max_length=MAX_SEARCH_LANGUAGES)]
 RequestIdentifier = Annotated[
     str,
-    StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_REQUEST_ID_LENGTH),
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=MAX_REQUEST_ID_LENGTH,
+        pattern=r"^[^\x00]*$",
+    ),
 ]
 PositiveRequestIdentifier = Annotated[int, Field(strict=True, ge=1)]
 ShortRuleValue = Annotated[str, StringConstraints(strip_whitespace=True, max_length=64)]

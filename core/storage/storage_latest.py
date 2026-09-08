@@ -11,6 +11,7 @@ from core.emby_image_urls import build_latest_emby_image_urls
 from core.storage.field_limits import (
     INTERNAL_SERVER_ID_MAX_LENGTH,
     optional_emby_identifier,
+    require_bounded_text,
 )
 from core.storage.storage_errors import StorageError
 from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
@@ -78,12 +79,23 @@ def _cache_text(value: Any, max_len: Optional[int] = None) -> Optional[str]:
     return _truncate_text_value(value, max_len)
 
 
+def _optional_latest_server_id(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    return require_bounded_text(
+        value,
+        field="server_id",
+        max_length=INTERNAL_SERVER_ID_MAX_LENGTH,
+    )
+
+
 def _validate_latest_cache_identifiers(payload: Dict[str, Any]) -> None:
     """Reject unsafe remote IDs before opening a cache-write transaction."""
     source = payload if isinstance(payload, dict) else {}
     for entry in (source.get("movies") or []) + (source.get("series") or []):
         if not isinstance(entry, dict):
             continue
+        _optional_latest_server_id(entry.get("server_id"))
         optional_emby_identifier(entry.get("item_id"), field="item_id")
         optional_emby_identifier(entry.get("library_id"), field="library_id")
         changes = entry.get("changes")
@@ -94,6 +106,9 @@ def _validate_latest_cache_identifiers(payload: Dict[str, Any]) -> None:
                 optional_emby_identifier(
                     change.get("media_source_id"), field="media_source_id"
                 )
+    for error in source.get("errors") or []:
+        if isinstance(error, dict):
+            _optional_latest_server_id(error.get("server_id"))
 
 
 def _build_latest_cache_item(kind: str, entry: Dict[str, Any]) -> Any:
@@ -107,7 +122,7 @@ def _build_latest_cache_item(kind: str, entry: Dict[str, Any]) -> Any:
     row = EmbyLatestCacheItem(
         cache_kind=kind,
         item_type=item_type,
-        server_id=_cache_text(entry.get("server_id"), INTERNAL_SERVER_ID_MAX_LENGTH),
+        server_id=_optional_latest_server_id(entry.get("server_id")),
         item_id=optional_emby_identifier(entry.get("item_id"), field="item_id"),
         signature=_cache_text(entry.get("signature"), 255),
         batch_id=_cache_text(entry.get("batch_id"), 255),
@@ -238,7 +253,7 @@ def _add_latest_cache_errors(session: Any, kind: str, errors: Any, stamp: dateti
             session.add(
                 EmbyLatestCacheError(
                     cache_kind=kind,
-                    server_id=_cache_text(entry.get("server_id")),
+                    server_id=_optional_latest_server_id(entry.get("server_id")),
                     message=_cache_text(entry.get("message")),
                     created_at=stamp,
                 )

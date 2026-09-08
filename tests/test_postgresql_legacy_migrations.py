@@ -1245,6 +1245,7 @@ def test_postgresql_legacy_upgrade_matches_runtime_contract(postgresql_schema_ur
         "20260906_19",
         "20260906_20",
         "20260908_21",
+        "20260908_22",
     ]
     assert validate_migrations(postgresql_schema_url)["ok"] is True
 
@@ -1440,6 +1441,7 @@ def test_postgresql_probe_blacklist_identity_migration_merges_existing_duplicate
             "20260906_19",
             "20260906_20",
             "20260908_21",
+            "20260908_22",
         ]
 
         with engine.connect() as connection:
@@ -1742,3 +1744,83 @@ def test_postgresql_probe_retry_preserves_diagnostics_for_claimed_duplicate(
             session.close()
     finally:
         storage.close()
+
+
+def test_postgresql_composed_identifier_widths_accept_canonical_maxima(
+    postgresql_schema_url,
+):
+    """Exercise every revision-22 width against PostgreSQL's real indexes."""
+    from core.database_migrations import upgrade_database
+    from core.storage.field_limits import (
+        EMBY_USER_LINK_KEY_MAX_LENGTH,
+        JUSTWATCH_CACHE_KEY_MAX_LENGTH,
+        KEY_VALUE_KEY_MAX_LENGTH,
+        TELEGRAM_DESTINATION_KEY_MAX_LENGTH,
+    )
+
+    upgrade_database(postgresql_schema_url)
+    engine = create_engine(postgresql_schema_url, future=True)
+    try:
+        inspector = inspect(engine)
+        expected = {
+            ("key_value", "key"): KEY_VALUE_KEY_MAX_LENGTH,
+            (
+                "emby_latest_notification_deliveries",
+                "destination_key",
+            ): TELEGRAM_DESTINATION_KEY_MAX_LENGTH,
+            ("emby_user_links", "link_key"): EMBY_USER_LINK_KEY_MAX_LENGTH,
+            ("justwatch_cache", "show_name"): JUSTWATCH_CACHE_KEY_MAX_LENGTH,
+        }
+        for (table_name, column_name), maximum in expected.items():
+            columns = {
+                column["name"]: column
+                for column in inspector.get_columns(table_name)
+            }
+            assert columns[column_name]["type"].length == maximum
+
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO key_value (key, value) "
+                    "VALUES (:key, '{}'::json)"
+                ),
+                {"key": "😀" * KEY_VALUE_KEY_MAX_LENGTH},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO emby_user_links "
+                    "(server_id, user_id, group_id, username, link_key) "
+                    "VALUES ('server', 'user', 'group', 'User', :link_key)"
+                ),
+                {"link_key": "a" * EMBY_USER_LINK_KEY_MAX_LENGTH},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO emby_latest_notification_deliveries "
+                    "(delivery_key, server_id, publication_key, destination_key, "
+                    "status, claim_token, claimed_at, created_at, updated_at) "
+                    "VALUES ('delivery', 'server', 'publication', :destination, "
+                    "'claimed', 'token', NOW(), NOW(), NOW())"
+                ),
+                {
+                    "destination": "😀" * TELEGRAM_DESTINATION_KEY_MAX_LENGTH,
+                },
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO justwatch_cache "
+                    "(show_name, season, episode, is_available, last_checked) "
+                    "VALUES (:show_name, 1, 1, FALSE, NOW())"
+                ),
+                {"show_name": "😀" * JUSTWATCH_CACHE_KEY_MAX_LENGTH},
+            )
+
+        with engine.connect() as connection:
+            assert connection.execute(text("SELECT COUNT(*) FROM key_value")).scalar_one() == 1
+            assert connection.execute(text("SELECT COUNT(*) FROM emby_user_links")).scalar_one() == 1
+            assert connection.execute(
+                text("SELECT COUNT(*) FROM emby_latest_notification_deliveries")
+            ).scalar_one() == 1
+            assert connection.execute(text("SELECT COUNT(*) FROM justwatch_cache")).scalar_one() == 1
+    finally:
+        engine.dispose()

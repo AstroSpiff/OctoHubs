@@ -6,6 +6,7 @@ from datetime import timedelta, timezone
 import threading
 from typing import Any, Dict, Optional, Protocol
 
+from core.persisted_text import project_persisted_text
 from core.storage.storage_errors import StorageError
 from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_models import SQLAlchemyError, WorkflowExecution, WorkflowStep, _utcnow, text
@@ -381,6 +382,7 @@ class StorageWorkflowMixin(_SessionProvider):
         status: str,
         error: Optional[str] = None,
     ) -> bool:
+        error = project_persisted_text(error)
         session = self._get_session()
         try:
             updated = session.query(WorkflowExecution).filter(  # type: ignore[attr-defined]
@@ -428,6 +430,7 @@ class StorageWorkflowMixin(_SessionProvider):
 
     def update_workflow_execution(self, workflow_id: str, status: str, error: Optional[str] = None) -> None:
         """Aggiorna lo stato di un workflow execution."""
+        error = project_persisted_text(error)
         session = self._get_session()
         try:
             execution = session.query(WorkflowExecution).filter(  # type: ignore[attr-defined]
@@ -485,6 +488,7 @@ class StorageWorkflowMixin(_SessionProvider):
         details: Optional[str] = None
     ) -> None:
         """Aggiorna lo stato di uno step del workflow."""
+        details = project_persisted_text(details)
         session = self._get_session()
         try:
             step = session.query(WorkflowStep).filter(  # type: ignore[attr-defined]

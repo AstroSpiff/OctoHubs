@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.log_sanitization import format_exception_for_log
+from core.storage.field_limits import require_key_value_key
 from emby_users.sync_results import SyncStepError, require_complete_snapshots
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,9 @@ class UserSyncStateTracker:
         self._extract_settings = extract_settings
 
     def key(self, domain: str, server_id: str, user_id: str) -> str:
-        return f"emby_user_sync_state:{domain}:{server_id}:{user_id}"
+        return require_key_value_key(
+            f"emby_user_sync_state:{domain}:{server_id}:{user_id}"
+        )
 
     def load(self, domain: str, server_id: str, user_id: str) -> Optional[Dict[str, Any]]:
         entry = self.storage.get_key_value(self.key(domain, server_id, user_id))

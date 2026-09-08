@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional, Protocol
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+from core.storage.field_limits import require_justwatch_cache_key
 from core.storage.storage_errors import StorageError
 from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_models import SQLAlchemyError, JustWatchCache, _utcnow
@@ -24,6 +25,7 @@ class StorageJustWatchMixin(_SessionProvider):
         episode: int
     ) -> Optional[Dict[str, Any]]:
         """Get cached JustWatch availability data for a specific episode."""
+        show_name = require_justwatch_cache_key(show_name)
         session = self._get_session()
         try:
             entry = (
@@ -57,6 +59,7 @@ class StorageJustWatchMixin(_SessionProvider):
         providers: Optional[list] = None
     ) -> None:
         """Save or update JustWatch availability data for an episode."""
+        show_name = require_justwatch_cache_key(show_name)
         session = self._get_session()
         try:
             dialect_name = session.get_bind().dialect.name
@@ -128,6 +131,8 @@ class StorageJustWatchMixin(_SessionProvider):
         Returns:
             Number of entries deleted
         """
+        if show_name is not None:
+            show_name = require_justwatch_cache_key(show_name)
         session = self._get_session()
         try:
             query = session.query(JustWatchCache)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import logging
 import os
 import requests
@@ -13,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from core.http_response_limits import read_bounded_json_response
 from core.log_sanitization import format_exception_for_log, sanitize_diagnostic_text
+from core.storage.field_limits import JUSTWATCH_TITLE_MAX_LENGTH
 
 if TYPE_CHECKING:
     from core.storage import DatabaseStorage
@@ -142,8 +144,23 @@ class JustWatchManager:
         self._jw_id_registered = False
 
     @staticmethod
-    def _episode_cache_key(show_name: str) -> str:
-        return f"{show_name}{TV_EPISODE_CACHE_SUFFIX}"
+    def _cache_title(show_name: str) -> str:
+        """Project an external title to a stable, collision-resistant cache subject."""
+        raw_title = str(show_name or "")
+        title = raw_title.replace("\x00", "")
+        if "\x00" not in raw_title and len(title) <= JUSTWATCH_TITLE_MAX_LENGTH:
+            return title
+        digest = hashlib.sha256(raw_title.encode("utf-8")).hexdigest()[:16]
+        prefix_length = JUSTWATCH_TITLE_MAX_LENGTH - len(digest) - 1
+        return f"{title[:prefix_length]}~{digest}"
+
+    @classmethod
+    def _episode_cache_key(cls, show_name: str) -> str:
+        return f"{cls._cache_title(show_name)}{TV_EPISODE_CACHE_SUFFIX}"
+
+    @classmethod
+    def _movie_cache_key(cls, title: str) -> str:
+        return f"{cls._cache_title(title)}::movie"
 
     def _rate_limit(self) -> None:
         """Enforce rate limiting between API requests."""
@@ -469,7 +486,7 @@ class JustWatchManager:
         title: str,
         year: Optional[int] = None
     ) -> tuple:
-        cache_key = f"{title}::movie"
+        cache_key = self._movie_cache_key(title)
         cached = self.storage.get_justwatch_cache(
             show_name=cache_key,
             season=0,
@@ -590,7 +607,8 @@ class JustWatchManager:
         Returns:
             Number of entries cleared
         """
-        cleared = self.storage.clear_justwatch_cache(show_name=show_name)
+        cache_title = self._cache_title(show_name) if show_name else None
+        cleared = self.storage.clear_justwatch_cache(show_name=cache_title)
         if show_name:
             cleared += self.storage.clear_justwatch_cache(
                 show_name=self._episode_cache_key(show_name)

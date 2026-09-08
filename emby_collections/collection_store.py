@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 
 from core.config_manager import _ensure_db_backend
 from core.log_sanitization import format_exception_for_log
+from core.storage.field_limits import require_collection_definition_id
 from .collection_common import (
     SYNC_STATE_FIELDS,
     _enrich_definition,
@@ -77,6 +78,7 @@ def list_collection_definitions() -> List[Dict[str, Any]]:
 
 
 def get_collection_sync_details(definition_id: str) -> List[Dict[str, Any]]:
+    definition_id = require_collection_definition_id(definition_id)
     backend = _ensure_db_backend()
     existing = backend.get_emby_collection_definition(definition_id)
     if not isinstance(existing, dict):
@@ -88,43 +90,58 @@ def get_collection_sync_details(definition_id: str) -> List[Dict[str, Any]]:
 
 
 def get_collection_poster_blob(definition_id: str) -> Dict[str, Any] | None:
+    definition_id = require_collection_definition_id(definition_id)
     backend = _ensure_db_backend()
     return backend.get_emby_collection_poster(definition_id)
 
 
 def save_collection_poster_blob(definition_id: str, mime_type: str, data: bytes) -> None:
+    definition_id = require_collection_definition_id(definition_id)
     backend = _ensure_db_backend()
     backend.save_emby_collection_poster(definition_id, mime_type, data)
 
 
 def delete_collection_poster_blob(definition_id: str) -> None:
+    definition_id = require_collection_definition_id(definition_id)
     backend = _ensure_db_backend()
     backend.delete_emby_collection_poster(definition_id)
 
 
 def get_collection_backdrop_blob(definition_id: str) -> Dict[str, Any] | None:
+    definition_id = require_collection_definition_id(definition_id)
     backend = _ensure_db_backend()
     return backend.get_emby_collection_backdrop(definition_id)
 
 
 def save_collection_backdrop_blob(definition_id: str, mime_type: str, data: bytes) -> None:
+    definition_id = require_collection_definition_id(definition_id)
     backend = _ensure_db_backend()
     backend.save_emby_collection_backdrop(definition_id, mime_type, data)
 
 
 def delete_collection_backdrop_blob(definition_id: str) -> None:
+    definition_id = require_collection_definition_id(definition_id)
     backend = _ensure_db_backend()
     backend.delete_emby_collection_backdrop(definition_id)
 
 
 @serialized_collection_mutation
 def save_collection_definition(payload: Dict[str, Any]) -> Dict[str, Any]:
+    requested_id = payload.get("id")
+    if requested_id:
+        requested_id = require_collection_definition_id(requested_id)
     backend = _ensure_db_backend()
-    existing = backend.get_emby_collection_definition(payload.get("id") or "")
+    existing = (
+        backend.get_emby_collection_definition(requested_id)
+        if requested_id
+        else None
+    )
     existing_data = existing or {}
     now = _now_iso()
     existing_id = existing.get("id") if existing else None
-    definition_id = str(payload.get("id") or existing_id or uuid.uuid4())
+    definition_id = require_collection_definition_id(
+        requested_id or existing_id or uuid.uuid4()
+    )
     name = str(payload.get("name") or existing_data.get("name") or "").strip()
     if not name:
         raise ValueError("Nome collezione obbligatorio")
@@ -250,6 +267,7 @@ def save_collection_definition(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 @serialized_collection_mutation
 def set_collection_enabled(definition_id: str, enabled: bool) -> Dict[str, Any]:
+    definition_id = require_collection_definition_id(definition_id)
     backend = _ensure_db_backend()
     existing = backend.get_emby_collection_definition(definition_id)
     if not isinstance(existing, dict):
@@ -287,6 +305,7 @@ def set_collection_enabled(definition_id: str, enabled: bool) -> Dict[str, Any]:
 
 @serialized_collection_mutation
 def remove_collection_definition(definition_id: str) -> Dict[str, Any]:
+    definition_id = require_collection_definition_id(definition_id)
     backend = _ensure_db_backend()
     existing = backend.get_emby_collection_definition(definition_id)
     if not isinstance(existing, dict):

@@ -32,6 +32,7 @@ from emby_users.api_models import (
     RenameUserRequest,
     ServerUserTarget,
     SettingsPresetDuplicateRequest,
+    SettingsPresetIdentifier,
     SettingsPresetRequest,
     UserPasswordRequest,
     UserSettingsRequest,
@@ -433,7 +434,10 @@ async def api_emby_users_settings_presets(user=Depends(_require_user_dep)):
     "/api/emby/users/settings-presets/{preset_id}",
     responses={200: {"model": UserSettingsPresetResponse}, 404: {"model": UserApiErrorResponse}},
 )
-async def api_emby_users_settings_preset_get(preset_id: str, user=Depends(_require_user_dep)):
+async def api_emby_users_settings_preset_get(
+    preset_id: SettingsPresetIdentifier,
+    user=Depends(_require_user_dep),
+):
     manager = _get_manager()
     if not manager:
         return JSONResponse(status_code=503, content={"ok": False, "error": "User manager not initialized"})
@@ -492,7 +496,7 @@ async def api_emby_users_settings_preset_save(
     },
 )
 async def api_emby_users_settings_preset_duplicate(
-    preset_id: str,
+    preset_id: SettingsPresetIdentifier,
     payload: SettingsPresetDuplicateRequest,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
@@ -513,7 +517,7 @@ async def api_emby_users_settings_preset_duplicate(
 
 @router.post("/api/emby/users/settings-presets/{preset_id}/delete", responses={200: {"model": UserApiSuccessResponse}})
 async def api_emby_users_settings_preset_delete_post(
-    preset_id: str,
+    preset_id: SettingsPresetIdentifier,
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
 ):

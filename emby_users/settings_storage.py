@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.storage.field_limits import require_key_value_key
 from emby_libraries.grouping import group_libraries
 from emby_users.settings_library_ids import iter_library_identity_ids, library_access_id
 from emby_users.settings_schema import SETTINGS_DISPLAY_PREF_FIELDS, USER_SETTINGS_SCHEMA_VERSION
@@ -12,10 +13,10 @@ from emby_users.settings_schema import SETTINGS_DISPLAY_PREF_FIELDS, USER_SETTIN
 
 class SettingsStorageMixin:
     def settings_group_key(self, group_id: str) -> str:
-        return f"emby_group_settings:{group_id}"
+        return require_key_value_key(f"emby_group_settings:{group_id}")
 
     def settings_user_key(self, server_id: str, user_id: str) -> str:
-        return f"emby_user_settings:{server_id}:{user_id}"
+        return require_key_value_key(f"emby_user_settings:{server_id}:{user_id}")
 
     def load_settings_entry(self, key: str) -> Optional[Dict[str, Any]]:
         entry = self.storage.get_key_value(key)

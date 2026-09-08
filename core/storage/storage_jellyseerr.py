@@ -6,7 +6,16 @@ from datetime import datetime
 import threading
 from typing import Any, Dict, List, Optional, Protocol, cast
 
+from core.persisted_text import project_persisted_text
 from core.storage.storage_errors import StorageError
+from core.storage.field_limits import (
+    JELLYSEERR_MEDIA_TYPE_MAX_LENGTH,
+    JELLYSEERR_REQUESTED_BY_MAX_LENGTH,
+    JELLYSEERR_REQUEST_ID_MAX_LENGTH,
+    JELLYSEERR_STATUS_LABEL_MAX_LENGTH,
+    JELLYSEERR_STATUS_MAX_LENGTH,
+    require_bounded_text,
+)
 from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_locks import lock_snapshot_writer
 from core.storage.storage_models import SQLAlchemyError, JellyseerrRequest, func
@@ -19,7 +28,6 @@ class _SessionProvider(Protocol):
 
 _jellyseerr_write_lock = threading.RLock()
 
-
 def _string(value: Any) -> Optional[str]:
     return _normalize_text_value(value)
 
@@ -31,8 +39,48 @@ def _int(value: Any) -> Optional[int]:
         return None
 
 
+def _project(value: Any, max_length: int) -> Optional[str]:
+    """Bound untrusted descriptive upstream text to its projection column."""
+    return project_persisted_text(value, max_length)
+
+
+def normalize_jellyseerr_request_entries(
+    entries: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Validate identities and project all descriptive values before a transaction."""
+    normalized_entries: List[Dict[str, Any]] = []
+    for raw_entry in entries or []:
+        if not isinstance(raw_entry, dict):
+            continue
+        raw_request_id = raw_entry.get("request_id")
+        if raw_request_id is None or str(raw_request_id) == "":
+            continue
+        request_id = require_bounded_text(
+            raw_request_id,
+            field="request_id",
+            max_length=JELLYSEERR_REQUEST_ID_MAX_LENGTH,
+        )
+        entry = dict(raw_entry)
+        entry["request_id"] = request_id
+        entry["media_type"] = _project(
+            raw_entry.get("media_type"), JELLYSEERR_MEDIA_TYPE_MAX_LENGTH
+        )
+        entry["status"] = _project(
+            raw_entry.get("status"), JELLYSEERR_STATUS_MAX_LENGTH
+        )
+        entry["status_label"] = _project(
+            raw_entry.get("status_label"), JELLYSEERR_STATUS_LABEL_MAX_LENGTH
+        )
+        entry["requested_by"] = _project(
+            raw_entry.get("requested_by"), JELLYSEERR_REQUESTED_BY_MAX_LENGTH
+        )
+        normalized_entries.append(entry)
+    return normalized_entries
+
+
 def replace_jellyseerr_requests_in_session(session: Any, entries: List[Dict[str, Any]]) -> int:
     """Replace the Jellyseerr projection inside a caller-owned transaction."""
+    entries = normalize_jellyseerr_request_entries(entries)
     incoming_ids = {
         request_id
         for entry in entries or []
@@ -99,6 +147,7 @@ class StorageJellyseerrMixin(_SessionProvider):
             return self._save_jellyseerr_requests_locked(entries)
 
     def _save_jellyseerr_requests_locked(self, entries: List[Dict[str, Any]]) -> int:
+        entries = normalize_jellyseerr_request_entries(entries)
         session = self._get_session()
         try:
             lock_snapshot_writer(session, "jellyseerr-requests")

@@ -82,6 +82,15 @@ prefix, two identifiers, and separator. Internal OctoHubs server keys remain
 UUID-sized. The migration preserves existing values and keeps API, manager, and
 PostgreSQL boundaries aligned.
 
+Revision `20260908_22` aligns the remaining composed persistence identities.
+Generic key-value keys are widened to 512 characters; Telegram destination
+keys and reserved Emby user link keys to 257 characters; and JustWatch cache
+keys to 512 characters so a 500-character title can retain its media suffix.
+Longer external JustWatch titles use a bounded, digest-suffixed cache identity
+to avoid truncation collisions. Downgrade performs a global preflight over all
+four columns before changing any of them and refuses to narrow a schema while
+values outside the previous limits exist.
+
 ## PostgreSQL integration test
 
 The migration integration test uses an isolated temporary schema on a PostgreSQL 16

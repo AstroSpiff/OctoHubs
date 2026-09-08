@@ -6,6 +6,11 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from core.auth_field_limits import (
+    ACCOUNT_EMAIL_MAX_LENGTH,
+    ACCOUNT_USERNAME_MAX_LENGTH,
+    API_TOKEN_NAME_MAX_LENGTH,
+)
 from web.request_validation import StrictRequestModel
 
 
@@ -126,20 +131,36 @@ class PasswordUpdateRequest(StrictRequestModel):
 
 
 class ApiTokenCreateRequest(StrictRequestModel):
-    name: str
+    name: str = Field(
+        min_length=1,
+        max_length=API_TOKEN_NAME_MAX_LENGTH,
+        pattern=r"^[^\x00]*$",
+    )
     permission_profile: Literal["read_only", "operator", "administrator"]
     expires_in_days: int | None = None
 
 
 class AccountCreateRequest(StrictRequestModel):
-    username: str
+    username: str = Field(
+        min_length=1,
+        max_length=ACCOUNT_USERNAME_MAX_LENGTH,
+        pattern=r"^[^\x00]*$",
+    )
     password: str
-    email: str | None = None
+    email: str | None = Field(
+        default=None,
+        max_length=ACCOUNT_EMAIL_MAX_LENGTH,
+        pattern=r"^[^\x00]*$",
+    )
     role: Literal["admin", "user", "viewer"] = "user"
 
 
 class AccountUpdateRequest(StrictRequestModel):
-    email: str | None = None
+    email: str | None = Field(
+        default=None,
+        max_length=ACCOUNT_EMAIL_MAX_LENGTH,
+        pattern=r"^[^\x00]*$",
+    )
     role: Literal["admin", "user", "viewer"] | None = None
     # A default keeps PATCH omission valid; exclude_unset prevents it from
     # becoming a mutation, while the non-optional type rejects explicit null.

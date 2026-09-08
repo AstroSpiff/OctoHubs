@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 
 from core.config_manager import _ensure_db_backend
 from core.log_sanitization import sanitize_diagnostic_text
+from core.storage.field_limits import require_collection_definition_id
 from .collection_common import (
     _enrich_definition,
     _extract_octohubs_definition_id,
@@ -75,6 +76,7 @@ def _save_sync_state(
     total: int,
     per_server: List[Dict[str, Any]] | None = None
 ) -> Dict[str, Any]:
+    definition_id = require_collection_definition_id(definition_id)
     backend = _ensure_db_backend()
     existing = backend.get_emby_collection_definition(definition_id)
     if not existing:
@@ -253,6 +255,7 @@ def _sync_collection_to_server(
 
 @serialized_collection_mutation
 def run_collection_sync(definition_id: str) -> Dict[str, Any]:
+    definition_id = require_collection_definition_id(definition_id)
     backend = _ensure_db_backend()
     existing = backend.get_emby_collection_definition(definition_id)
     if not existing:

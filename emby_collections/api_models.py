@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from core.storage.field_limits import COLLECTION_DEFINITION_ID_MAX_LENGTH
 from web.request_validation import StrictRequestModel
+
+
+CollectionDefinitionId = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=COLLECTION_DEFINITION_ID_MAX_LENGTH,
+        pattern=r"^[^\x00]*$",
+    ),
+]
 
 
 class CollectionErrorResponse(BaseModel):
@@ -19,13 +31,13 @@ class CollectionDefinition(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    id: str
+    id: CollectionDefinitionId
 
 
 class CollectionDefinitionRequest(StrictRequestModel):
     """Writable collection fields accepted by the React editor."""
 
-    id: str | None = None
+    id: CollectionDefinitionId | None = None
     name: str
     sort_name: str | None = None
     source_type: str

@@ -18,6 +18,14 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from core.auth_admin_invariant import active_admin_mutation_guard
+from core.auth_field_limits import (
+    ACCOUNT_EMAIL_MAX_LENGTH,
+    ACCOUNT_USERNAME_MAX_LENGTH,
+    API_TOKEN_NAME_MAX_LENGTH,
+    normalize_account_email,
+    require_account_username,
+    require_api_token_name,
+)
 from core.auth_session_scope import RequestAwareSessionRegistry
 from core.client_address import resolve_client_address
 from core.database_timeouts import postgres_engine_options
@@ -28,6 +36,7 @@ from core.password_policy import (
     is_public_admin_bootstrap_password,
     password_fits_bcrypt,
 )
+from core.persisted_text import project_persisted_text
 from core.safe_output import safe_print as print
 from core.sqlalchemy_session_cleanup import dispose_engine_safely, rollback_session_safely
 
@@ -156,9 +165,9 @@ class User(Base):
     __tablename__ = 'users'
 
     id = Column(Integer, primary_key=True)
-    username = Column(String(80), unique=True, nullable=False, index=True)
+    username = Column(String(ACCOUNT_USERNAME_MAX_LENGTH), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
-    email = Column(String(120), unique=True, nullable=True)
+    email = Column(String(ACCOUNT_EMAIL_MAX_LENGTH), unique=True, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     is_admin = Column(Boolean, default=False, nullable=False)
     role = Column(String(20), default="user", nullable=False)
@@ -247,7 +256,7 @@ class ApiToken(Base):
 
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, nullable=False, index=True)
-    name = Column(String(120), nullable=False)
+    name = Column(String(API_TOKEN_NAME_MAX_LENGTH), nullable=False)
     token_hash = Column(String(64), unique=True, nullable=False, index=True)
     token_prefix = Column(String(16), nullable=False)
     scopes = Column(Text, default="[]", nullable=False)
@@ -423,34 +432,50 @@ def shutdown_auth() -> bool:
         return cleaned
 
 
+def _read_environment_secret(key: str) -> Optional[str]:
+    """Read one bootstrap secret from Docker-style file or environment input."""
+    file_path = os.environ.get(f"{key}_FILE")
+    if file_path:
+        try:
+            with open(file_path, "r") as handle:
+                value = handle.read().strip()
+            if value:
+                return value
+        except OSError:
+            pass
+    value = os.environ.get(key)
+    return value.strip() or None if isinstance(value, str) else None
+
+
+def _initial_admin_credentials() -> tuple[str, str, Optional[str]] | None:
+    """Validate the complete bootstrap identity before any database mutation."""
+    raw_username = os.environ.get("ADMIN_USERNAME")
+    password = _read_environment_secret("ADMIN_PASSWORD")
+    if not raw_username or not password:
+        return None
+    try:
+        username = require_account_username(raw_username)
+        email = normalize_account_email(os.environ.get("ADMIN_EMAIL"))
+    except ValueError as exc:
+        logger.error(
+            "[AUTH] Amministratore iniziale non creato: %s",
+            format_exception_for_log(exc),
+        )
+        return None
+    return username, password, email
+
+
 def _create_default_admin():
     """Create default admin user if database is empty."""
     try:
         assert db_session is not None, "Database session not initialized"
         user_count = db_session.query(User).count()
         if user_count == 0:
-            def _read_env_secret(key: str) -> Optional[str]:
-                file_key = f"{key}_FILE"
-                file_path = os.environ.get(file_key)
-                if file_path:
-                    try:
-                        with open(file_path, "r") as handle:
-                            value = handle.read().strip()
-                        if value:
-                            return value
-                    except OSError:
-                        pass
-                value = os.environ.get(key)
-                if isinstance(value, str):
-                    value = value.strip()
-                return value or None
-
-            admin_username = (os.environ.get('ADMIN_USERNAME') or "").strip()
-            admin_password = _read_env_secret('ADMIN_PASSWORD')
-            admin_email = (os.environ.get('ADMIN_EMAIL') or "").strip() or None
-
-            if not admin_username or not admin_password:
+            credentials = _initial_admin_credentials()
+            if credentials is None:
                 return
+            admin_username, admin_password, admin_email = credentials
+
             if is_public_admin_bootstrap_password(admin_password):
                 print(
                     "[AUTH] Amministratore iniziale non creato: "
@@ -486,6 +511,10 @@ def _create_default_admin():
 def get_user_by_username(username: str) -> Optional[User]:
     """Get user by username."""
     try:
+        username = require_account_username(username)
+    except ValueError:
+        return None
+    try:
         assert db_session is not None
         return db_session.query(User).filter_by(username=username).first()
     except SQLAlchemyError as exc:
@@ -510,14 +539,16 @@ def create_user(username: str, password: str, email: Optional[str] = None,
     Returns User object if successful, None otherwise.
     """
     try:
+        normalized_username = require_account_username(username)
+        normalized_email = normalize_account_email(email)
         bcrypt_password_bytes(password)
-    except (TypeError, PasswordTooLongError) as exc:
+    except (TypeError, ValueError, PasswordTooLongError) as exc:
         logger.error("[AUTH] Utente non creato:\n%s", format_exception_for_log(exc))
         return None
 
     try:
         # Check if username already exists
-        existing = get_user_by_username(username)
+        existing = get_user_by_username(normalized_username)
         if existing:
             print(f"[AUTH] Utente '{username}' già esistente")
             return None
@@ -525,8 +556,8 @@ def create_user(username: str, password: str, email: Optional[str] = None,
         assert db_session is not None
         normalized_role = _normalize_role(role, is_admin)
         user = User(
-            username=username,
-            email=email,
+            username=normalized_username,
+            email=normalized_email,
             is_active=True,
             is_admin=normalized_role == "admin",
             role=normalized_role
@@ -536,7 +567,7 @@ def create_user(username: str, password: str, email: Optional[str] = None,
         db_session.add(user)
         db_session.commit()
 
-        print(f"[AUTH] Utente creato: {username} (ruolo: {normalized_role})")
+        print(f"[AUTH] Utente creato: {normalized_username} (ruolo: {normalized_role})")
         return user
     except IntegrityError as e:
         _log_auth_exception("Errore durante la creazione dell'utente", e)
@@ -582,9 +613,35 @@ def update_user_password(user: User, new_password: str) -> bool:
         raise AuthStorageError("Aggiornamento password non disponibile") from e
 
 
+def _normalize_email_update(email: str | None | object) -> Optional[str]:
+    """Normalize an optional patch value without duplicating branching at callers."""
+    if email is _UNSET:
+        return None
+    return normalize_account_email(email)
+
+
+def _hash_password_update(password: str | object) -> tuple[bool, Optional[str]]:
+    """Validate and hash an optional password patch before opening a transaction."""
+    if password is _UNSET:
+        return True, None
+    try:
+        if not isinstance(password, str):
+            raise TypeError("La password deve essere una stringa")
+        password_bytes = bcrypt_password_bytes(password)
+        return True, bcrypt.hashpw(password_bytes, bcrypt.gensalt()).decode("utf-8")
+    except (TypeError, PasswordTooLongError) as exc:
+        _log_auth_exception("Password account non valida", exc)
+        return False, None
+
+
 def update_user_details(user: User, *, email: str | None | object = _UNSET,
                         role: Optional[str] = None, is_active: Optional[bool] = None) -> bool:
     """Update the safe, non-secret properties of a login account."""
+    try:
+        normalized_email = _normalize_email_update(email)
+    except ValueError:
+        return False
+
     try:
         assert db_session is not None
         session = db_session()
@@ -607,7 +664,6 @@ def update_user_details(user: User, *, email: str | None | object = _UNSET,
                     return False
 
             if email is not _UNSET:
-                normalized_email = str(email).strip() or None
                 if normalized_email:
                     duplicate = session.query(User).filter(
                         User.email == normalized_email,
@@ -640,16 +696,14 @@ def update_user_account(
     password: str | object = _UNSET,
 ) -> bool:
     """Apply one administrative account patch in a single transaction."""
-    password_hash: str | None = None
-    if password is not _UNSET:
-        try:
-            if not isinstance(password, str):
-                raise TypeError("La password deve essere una stringa")
-            password_bytes = bcrypt_password_bytes(password)
-            password_hash = bcrypt.hashpw(password_bytes, bcrypt.gensalt()).decode("utf-8")
-        except (TypeError, PasswordTooLongError) as exc:
-            _log_auth_exception("Password account non valida", exc)
-            return False
+    try:
+        normalized_email = _normalize_email_update(email)
+    except ValueError:
+        return False
+
+    password_valid, password_hash = _hash_password_update(password)
+    if not password_valid:
+        return False
 
     try:
         assert db_session is not None
@@ -673,7 +727,6 @@ def update_user_account(
                     return False
 
             if email is not _UNSET:
-                normalized_email = str(email).strip() or None
                 if normalized_email:
                     duplicate = session.query(User).filter(
                         User.email == normalized_email,
@@ -785,7 +838,7 @@ def _new_api_token(user_id: int, name: str, scopes: list[str], expires_at: datet
     return (
         ApiToken(
             user_id=int(user_id),
-            name=name[:120],
+            name=name,
             token_hash=_api_token_hash(plaintext),
             token_prefix=plaintext[:12],
             scopes=json.dumps(scopes, separators=(",", ":")),
@@ -849,10 +902,13 @@ def create_api_token(
     expires_in_days: Any = None,
 ) -> Optional[tuple[ApiToken, str]]:
     """Create an API token for an active user and return its one-time plaintext value."""
-    normalized_name = str(name or "").strip()
+    try:
+        normalized_name = require_api_token_name(name)
+    except ValueError:
+        return None
     normalized_scopes = normalize_api_token_scopes(scopes)
     expires_at = _api_token_expiry(expires_in_days)
-    if not normalized_name or not normalized_scopes or expires_at is _UNSET or not db_session:
+    if not normalized_scopes or expires_at is _UNSET or not db_session:
         return None
     try:
         if _lock_api_token_owner(int(user.id)) is None:
@@ -1216,12 +1272,13 @@ def log_audit_event(user: Optional[Any], action: str, detail: Optional[str] = No
             user_agent = headers.get("User-Agent")
         except Exception:
             pass
-    username = str(username or "")[:80] or None
-    action = str(action or "")[:120]
-    ip_address = str(ip_address or "")[:64] or None
-    path = str(path or "")[:255] or None
-    method = str(method or "")[:10] or None
-    user_agent = str(user_agent or "")[:255] or None
+    username = project_persisted_text(username, 80)
+    action = project_persisted_text(action, 120, empty_as_none=False) or ""
+    detail = project_persisted_text(detail)
+    ip_address = project_persisted_text(ip_address, 64)
+    path = project_persisted_text(path, 255)
+    method = project_persisted_text(method, 10)
+    user_agent = project_persisted_text(user_agent, 255)
     try:
         assert db_session is not None
         global _last_audit_prune_at

@@ -8,6 +8,7 @@ import threading
 from typing import Any, Callable, Dict, Iterable, Optional, Protocol, Tuple
 
 from core.storage.storage_errors import StorageError
+from core.storage.field_limits import require_request_rule_id
 from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_locks import lock_snapshot_writer
 from core.storage.storage_models import SQLAlchemyError, RequestRuleEntry, ScanResultEntry, RequestCacheEntry
@@ -44,11 +45,15 @@ class StorageRequestsMixin(_SessionProvider):
             close_session_safely(session)
 
     def save_request_rules(self, rules: Dict[str, Dict[str, Any]]) -> None:
+        normalized_rules = {
+            require_request_rule_id(request_id): data
+            for request_id, data in rules.items()
+        }
         with _request_rules_write_lock:
             session = self._get_session()
             try:
                 lock_snapshot_writer(session, "request-rules")
-                keys = list(rules.keys())
+                keys = list(normalized_rules.keys())
                 existing = {}
                 if keys:
                     existing = {
@@ -59,7 +64,7 @@ class StorageRequestsMixin(_SessionProvider):
                     }
                 else:
                     session.query(RequestRuleEntry).delete()
-                for request_id, data in rules.items():
+                for request_id, data in normalized_rules.items():
                     entry = existing.get(request_id)
                     if entry:
                         entry.data = data  # type: ignore[assignment]
@@ -90,13 +95,13 @@ class StorageRequestsMixin(_SessionProvider):
         if not isinstance(updates, dict):
             raise StorageError("Aggiornamento regole non valido")
         normalized_updates = {
-            str(request_id): data
+            require_request_rule_id(request_id): data
             for request_id, data in updates.items()
             if isinstance(data, dict)
         }
         if len(normalized_updates) != len(updates):
             raise StorageError("Aggiornamento regole non valido")
-        deletion_ids = {str(request_id) for request_id in deletions}
+        deletion_ids = {require_request_rule_id(request_id) for request_id in deletions}
         deletion_ids.difference_update(normalized_updates)
 
         with _request_rules_write_lock:
@@ -198,9 +203,13 @@ class StorageRequestsMixin(_SessionProvider):
         """Atomically publish both projections produced by one Jellyseerr fetch."""
         from core.storage.storage_jellyseerr import (
             _jellyseerr_write_lock,
+            normalize_jellyseerr_request_entries,
             replace_jellyseerr_requests_in_session,
         )
 
+        jellyseerr_entries = normalize_jellyseerr_request_entries(
+            jellyseerr_entries
+        )
         with _request_cache_write_lock, _jellyseerr_write_lock:
             session = self._get_session()
             try:

@@ -10,7 +10,12 @@ from core.app_settings_crypto import SettingsCipher
 from core.library_group_names import normalize_library_group_name, project_library_group_name
 from core.storage.storage_app_settings import _decode_settings, _lock_app_settings_row
 from core.storage.storage_errors import CollectionDefinitionNotFoundError, StorageError
-from core.storage.field_limits import require_emby_identifier
+from core.storage.field_limits import (
+    require_collection_definition_id,
+    require_emby_identifier,
+    require_key_value_key,
+    require_library_collection_type,
+)
 from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_locks import lock_collection_definition, lock_snapshot_writer
 from core.storage.storage_models import (
@@ -120,7 +125,10 @@ class StorageCollectionsMixin(_SessionProvider):
 
     def save_library_group_order(self, positions: Dict[Tuple[str, str], int]) -> None:
         normalized_positions = {
-            (str(collection_type), normalize_library_group_name(group_name)): int(position)
+            (
+                require_library_collection_type(collection_type),
+                normalize_library_group_name(group_name),
+            ): int(position)
             for (collection_type, group_name), position in positions.items()
         }
         with _snapshot_write_lock:
@@ -182,6 +190,7 @@ class StorageCollectionsMixin(_SessionProvider):
 
     def set_key_value(self, key: str, value: Any) -> None:
         """Set a generic key-value pair."""
+        key = require_key_value_key(key)
         with _snapshot_write_lock:
             session = self._get_session()
             try:
@@ -207,10 +216,15 @@ class StorageCollectionsMixin(_SessionProvider):
         if not updates:
             return True
 
+        validated_updates = {
+            require_key_value_key(key): value
+            for key, value in updates.items()
+        }
+
         session = self._get_session()
         try:
             bind = session.get_bind()
-            keys = sorted(updates)
+            keys = sorted(validated_updates)
             if bind.dialect.name == "postgresql":
                 for key in keys:
                     session.execute(
@@ -227,14 +241,14 @@ class StorageCollectionsMixin(_SessionProvider):
                     .all()
                 )
             }
-            for key, (expected_hash, _value) in updates.items():
+            for key, (expected_hash, _value) in validated_updates.items():
                 entry = existing.get(key)
                 current = entry.value if entry is not None and isinstance(entry.value, dict) else {}
                 if current.get("hash") != expected_hash:
                     rollback_session_safely(session)
                     return False
 
-            for key, (_expected_hash, value) in updates.items():
+            for key, (_expected_hash, value) in validated_updates.items():
                 entry = existing.get(key)
                 if entry is None:
                     session.add(KeyValueEntry(key=key, value=value))
@@ -250,6 +264,7 @@ class StorageCollectionsMixin(_SessionProvider):
 
     def get_key_value(self, key: str) -> Optional[Any]:
         """Get a generic key-value pair."""
+        key = require_key_value_key(key)
         session = self._get_session()
         try:
             entry = session.get(KeyValueEntry, key)
@@ -259,8 +274,9 @@ class StorageCollectionsMixin(_SessionProvider):
 
     def update_key_value(self, key: str, updater: Callable[[Any], Any]) -> Any:
         """Atomically transform one key-value entry and return the stored value."""
-        if not isinstance(key, str) or not key or not callable(updater):
+        if not callable(updater):
             raise StorageError("Aggiornamento key-value non valido")
+        key = require_key_value_key(key)
 
         session = self._get_session()
         try:
@@ -298,6 +314,7 @@ class StorageCollectionsMixin(_SessionProvider):
 
     def get_keys_by_prefix(self, prefix: str) -> list[str]:
         """Get all keys starting with prefix."""
+        prefix = require_key_value_key(prefix)
         session = self._get_session()
         try:
             entries = session.query(KeyValueEntry.key).filter(
@@ -309,6 +326,7 @@ class StorageCollectionsMixin(_SessionProvider):
 
     def delete_key(self, key: str) -> None:
         """Delete a key-value pair."""
+        key = require_key_value_key(key)
         session = self._get_session()
         try:
             entry = session.get(KeyValueEntry, key)
@@ -337,6 +355,7 @@ class StorageCollectionsMixin(_SessionProvider):
 
     def get_emby_collection_definition(self, definition_id: str) -> Optional[Dict[str, Any]]:
         """Return a single Emby collection definition."""
+        definition_id = require_collection_definition_id(definition_id)
         session = self._get_session()
         try:
             entry = session.get(EmbyCollectionDefinition, definition_id)
@@ -350,6 +369,9 @@ class StorageCollectionsMixin(_SessionProvider):
         definition_id = definition.get("id")
         if not definition_id:
             raise StorageError("Missing collection id")
+        definition_id = require_collection_definition_id(definition_id)
+        normalized_definition = copy.deepcopy(definition)
+        normalized_definition["id"] = definition_id
         with _collection_write_lock:
             session = self._get_session()
             try:
@@ -361,11 +383,11 @@ class StorageCollectionsMixin(_SessionProvider):
                     .one_or_none()
                 )
                 if entry:
-                    entry.data = copy.deepcopy(definition)  # type: ignore[assignment]
+                    entry.data = copy.deepcopy(normalized_definition)  # type: ignore[assignment]
                 else:
                     entry = EmbyCollectionDefinition(
                         id=str(definition_id),
-                        data=copy.deepcopy(definition),
+                        data=copy.deepcopy(normalized_definition),
                     )
                     session.add(entry)
                 session.commit()
@@ -381,8 +403,9 @@ class StorageCollectionsMixin(_SessionProvider):
         updater: Callable[[Dict[str, Any]], Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
         """Atomically transform one existing definition across app workers."""
-        if not definition_id or not callable(updater):
+        if not callable(updater):
             raise StorageError("Aggiornamento collezione Emby non valido")
+        definition_id = require_collection_definition_id(definition_id)
         with _collection_write_lock:
             session = self._get_session()
             try:
@@ -415,6 +438,7 @@ class StorageCollectionsMixin(_SessionProvider):
 
     def delete_emby_collection_definition(self, definition_id: str) -> None:
         """Remove an Emby collection definition."""
+        definition_id = require_collection_definition_id(definition_id)
         session = self._get_session()
         try:
             entry = session.get(EmbyCollectionDefinition, definition_id)
@@ -429,6 +453,7 @@ class StorageCollectionsMixin(_SessionProvider):
 
     def delete_emby_collection_bundle(self, definition_id: str) -> None:
         """Atomically remove a collection definition and its stored images."""
+        definition_id = require_collection_definition_id(definition_id)
         with _collection_write_lock:
             session = self._get_session()
             try:
@@ -460,6 +485,7 @@ class StorageCollectionsMixin(_SessionProvider):
 
     def get_emby_collection_poster(self, collection_id: str) -> Optional[Dict[str, Any]]:
         """Return poster data for a collection."""
+        collection_id = require_collection_definition_id(collection_id)
         session = self._get_session()
         try:
             entry = session.get(EmbyCollectionPoster, collection_id)
@@ -476,6 +502,7 @@ class StorageCollectionsMixin(_SessionProvider):
 
     def save_emby_collection_poster(self, collection_id: str, mime_type: str, data: bytes) -> None:
         """Create or update a collection poster blob."""
+        collection_id = require_collection_definition_id(collection_id)
         with _collection_write_lock:
             session = self._get_session()
             try:
@@ -511,6 +538,7 @@ class StorageCollectionsMixin(_SessionProvider):
 
     def delete_emby_collection_poster(self, collection_id: str) -> None:
         """Remove a collection poster blob."""
+        collection_id = require_collection_definition_id(collection_id)
         session = self._get_session()
         try:
             entry = session.get(EmbyCollectionPoster, collection_id)
@@ -534,6 +562,7 @@ class StorageCollectionsMixin(_SessionProvider):
 
     def get_emby_collection_backdrop(self, collection_id: str) -> Optional[Dict[str, Any]]:
         """Return backdrop data for a collection."""
+        collection_id = require_collection_definition_id(collection_id)
         session = self._get_session()
         try:
             entry = session.get(EmbyCollectionBackdrop, collection_id)
@@ -550,6 +579,7 @@ class StorageCollectionsMixin(_SessionProvider):
 
     def save_emby_collection_backdrop(self, collection_id: str, mime_type: str, data: bytes) -> None:
         """Create or update a collection backdrop blob."""
+        collection_id = require_collection_definition_id(collection_id)
         with _collection_write_lock:
             session = self._get_session()
             try:
@@ -585,6 +615,7 @@ class StorageCollectionsMixin(_SessionProvider):
 
     def delete_emby_collection_backdrop(self, collection_id: str) -> None:
         """Remove a collection backdrop blob."""
+        collection_id = require_collection_definition_id(collection_id)
         session = self._get_session()
         try:
             entry = session.get(EmbyCollectionBackdrop, collection_id)

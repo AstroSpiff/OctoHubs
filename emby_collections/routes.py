@@ -43,6 +43,7 @@ from emby_collections.source_inventory import (
 from emby_collections.api_models import (
     CollectionBackgroundOperationResponse,
     CollectionDefinitionRequest,
+    CollectionDefinitionId,
     CollectionEnabledRequest,
     CollectionErrorResponse,
     CollectionMutationResponse,
@@ -221,7 +222,7 @@ async def api_emby_collections_save(request: Request, user=Depends(_require_user
 
 @router.post("/api/emby/collections/{collection_id}/poster", responses={200: {"model": CollectionSuccessResponse}})
 async def api_emby_collections_upload_poster(
-    collection_id: str,
+    collection_id: CollectionDefinitionId,
     file: UploadFile = File(...),
     user=Depends(_require_user_dep),
 ):
@@ -250,13 +251,13 @@ async def api_emby_collections_upload_poster(
     response_class=Response,
     responses={200: binary_response("image/*", "Poster della collezione nel formato immagine salvato.")},
 )
-async def api_emby_collections_get_poster(collection_id: str, user=Depends(_require_user_dep)):
+async def api_emby_collections_get_poster(collection_id: CollectionDefinitionId, user=Depends(_require_user_dep)):
     poster = await run_in_threadpool(get_collection_poster_blob, collection_id)
     return await _stored_collection_image_response(poster)
 
 
 @router.post("/api/emby/collections/{collection_id}/poster/delete", responses={200: {"model": CollectionSuccessResponse}})
-async def api_emby_collections_delete_poster(collection_id: str, user=Depends(_require_user_dep)):
+async def api_emby_collections_delete_poster(collection_id: CollectionDefinitionId, user=Depends(_require_user_dep)):
     backend = await run_in_threadpool(_ensure_db_backend)
     existing = await run_in_threadpool(backend.get_emby_collection_definition, collection_id)
     if not existing:
@@ -271,7 +272,7 @@ async def api_emby_collections_delete_poster(collection_id: str, user=Depends(_r
 
 @router.post("/api/emby/collections/{collection_id}/backdrop", responses={200: {"model": CollectionSuccessResponse}})
 async def api_emby_collections_upload_backdrop(
-    collection_id: str,
+    collection_id: CollectionDefinitionId,
     file: UploadFile = File(...),
     user=Depends(_require_user_dep),
 ):
@@ -300,13 +301,13 @@ async def api_emby_collections_upload_backdrop(
     response_class=Response,
     responses={200: binary_response("image/*", "Backdrop della collezione nel formato immagine salvato.")},
 )
-async def api_emby_collections_get_backdrop(collection_id: str, user=Depends(_require_user_dep)):
+async def api_emby_collections_get_backdrop(collection_id: CollectionDefinitionId, user=Depends(_require_user_dep)):
     backdrop = await run_in_threadpool(get_collection_backdrop_blob, collection_id)
     return await _stored_collection_image_response(backdrop)
 
 
 @router.post("/api/emby/collections/{collection_id}/backdrop/delete", responses={200: {"model": CollectionSuccessResponse}})
-async def api_emby_collections_delete_backdrop(collection_id: str, user=Depends(_require_user_dep)):
+async def api_emby_collections_delete_backdrop(collection_id: CollectionDefinitionId, user=Depends(_require_user_dep)):
     backend = await run_in_threadpool(_ensure_db_backend)
     existing = await run_in_threadpool(backend.get_emby_collection_definition, collection_id)
     if not existing:
@@ -324,7 +325,7 @@ async def api_emby_collections_delete_backdrop(collection_id: str, user=Depends(
     responses={200: {"model": CollectionMutationResponse}},
     openapi_extra=json_request_body(CollectionEnabledRequest),
 )
-async def api_emby_collections_toggle(collection_id: str, request: Request, user=Depends(_require_user_dep)):
+async def api_emby_collections_toggle(collection_id: CollectionDefinitionId, request: Request, user=Depends(_require_user_dep)):
     logger = _logger_dep()
     actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
     logger.info("User %s toggling collection %s", actor_id or "unknown", collection_id)
@@ -341,7 +342,7 @@ async def api_emby_collections_toggle(collection_id: str, request: Request, user
 
 
 @router.post("/api/emby/collections/{collection_id}/delete", responses={200: {"model": CollectionMutationResponse}})
-async def api_emby_collections_delete(collection_id: str, request: Request, user=Depends(_require_user_dep)):
+async def api_emby_collections_delete(collection_id: CollectionDefinitionId, request: Request, user=Depends(_require_user_dep)):
     logger = _logger_dep()
     actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
     logger.info("User %s deleting collection %s", actor_id or "unknown", collection_id)
@@ -365,7 +366,7 @@ async def api_emby_collections_delete(collection_id: str, request: Request, user
         500: {"model": CollectionErrorResponse},
     },
 )
-async def api_emby_collections_sync(collection_id: str, request: Request, user=Depends(_require_user_dep)):
+async def api_emby_collections_sync(collection_id: CollectionDefinitionId, request: Request, user=Depends(_require_user_dep)):
     logger = _logger_dep()
     actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
     logger.info("User %s syncing collection %s", actor_id or "unknown", collection_id)
@@ -404,7 +405,7 @@ async def api_emby_collections_sync(collection_id: str, request: Request, user=D
     "/api/emby/collections/{collection_id}/sync-details",
     responses={200: {"model": CollectionSyncDetailsResponse}, 404: {"model": CollectionErrorResponse}},
 )
-async def api_emby_collections_sync_details(collection_id: str, request: Request, user=Depends(_require_user_dep)):
+async def api_emby_collections_sync_details(collection_id: CollectionDefinitionId, request: Request, user=Depends(_require_user_dep)):
     logger = _logger_dep()
     actor_id = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
     logger.info("User %s requested collection sync details %s", actor_id or "unknown", collection_id)

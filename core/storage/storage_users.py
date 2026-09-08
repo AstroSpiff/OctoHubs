@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any, Dict, Iterable, Optional, Protocol, Tuple
 
+from core.persisted_text import project_persisted_text, require_persisted_text
 from core.storage.storage_errors import StorageError
 from core.storage.field_limits import (
     EMBY_BACKUP_TYPE_MAX_LENGTH,
@@ -539,12 +540,12 @@ class StorageUsersMixin(_SessionProvider):
             field="user_id",
             max_length=EMBY_STORED_IDENTIFIER_MAX_LENGTH,
         )
-        username = require_bounded_text(
+        username = project_persisted_text(
             username,
-            field="username",
-            max_length=EMBY_USER_NAME_MAX_LENGTH,
-            allow_empty=True,
+            EMBY_USER_NAME_MAX_LENGTH,
+            empty_as_none=False,
         )
+        assert username is not None
         backup_type = require_bounded_text(
             backup_type,
             field="backup_type",
@@ -733,6 +734,8 @@ class StorageUsersMixin(_SessionProvider):
             field="column_key",
             max_length=ICON_RULE_COLUMN_KEY_MAX_LENGTH,
         )
+        icon_path = require_persisted_text(icon_path, field="icon_path")
+        mime_type = project_persisted_text(mime_type, 50)
         session = self._get_session()
         try:
             self._require_icon_profile(session, profile_id)

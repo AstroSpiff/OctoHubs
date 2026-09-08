@@ -11,11 +11,16 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from core.app_settings_crypto import SettingsCipher
+from core.persisted_text import project_persisted_text
 from core.storage.field_limits import (
     INTERNAL_SERVER_ID_MAX_LENGTH,
+    PROBE_DESCRIPTION_MAX_LENGTH,
+    PROBE_SHORT_STATE_MAX_LENGTH,
+    PROBE_TYPE_MAX_LENGTH,
     optional_emby_identifier,
     require_bounded_text,
     require_emby_identifier,
+    require_key_value_key,
 )
 from core.storage.storage_app_settings import _decode_settings, _lock_app_settings_row
 from core.storage.storage_errors import StorageError
@@ -50,6 +55,39 @@ class StorageProbeMixin(_SessionProvider):
     _PROBE_HISTORY_RETENTION = timedelta(days=90)
     _PROBE_QUEUE_LEASE_SECONDS = 300
     _PROBE_RENEWAL_STATEMENT_TIMEOUT_MS = 2_000
+
+    @staticmethod
+    def _project_probe_text(value: Any, max_length: int | None) -> str | None:
+        """Project descriptive upstream text to a PostgreSQL-safe value."""
+        return project_persisted_text(value, max_length)
+
+    def _normalize_probe_history_data(
+        self,
+        data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        normalized = dict(data)
+        normalized["server_id"] = self._normalize_probe_server_id(
+            normalized.get("server_id")
+        )
+        normalized["item_id"] = require_emby_identifier(
+            normalized.get("item_id"), field="item_id"
+        )
+        normalized["media_source_id"] = self._normalize_probe_media_source_id(
+            normalized.get("media_source_id")
+        )
+        normalized["name"] = self._project_probe_text(
+            normalized.get("name") or "Sconosciuto", PROBE_DESCRIPTION_MAX_LENGTH
+        )
+        normalized["library_name"] = self._project_probe_text(
+            normalized.get("library_name"), PROBE_DESCRIPTION_MAX_LENGTH
+        )
+        normalized["status"] = self._project_probe_text(
+            normalized.get("status") or "UNKNOWN", PROBE_SHORT_STATE_MAX_LENGTH
+        )
+        normalized["error_details"] = self._project_probe_text(
+            normalized.get("error_details"), max_length=None
+        )
+        return normalized
 
     @staticmethod
     def _probe_queue_payload(entry: EmbyProbeQueue) -> Dict[str, Any]:
@@ -122,6 +160,21 @@ class StorageProbeMixin(_SessionProvider):
             item["library_id"] = optional_emby_identifier(
                 item.get("library_id"), field="library_id"
             )
+            item["library_name"] = self._project_probe_text(
+                item.get("library_name"), PROBE_DESCRIPTION_MAX_LENGTH
+            )
+            item["name"] = self._project_probe_text(
+                item.get("name") or "Sconosciuto", PROBE_DESCRIPTION_MAX_LENGTH
+            )
+            item["series_name"] = self._project_probe_text(
+                item.get("series_name"), PROBE_DESCRIPTION_MAX_LENGTH
+            )
+            item["media_type"] = self._project_probe_text(
+                item.get("media_type"), PROBE_TYPE_MAX_LENGTH
+            )
+            item["path"] = self._project_probe_text(
+                item.get("path"), max_length=None
+            )
             normalized.append(item)
         return normalized
 
@@ -176,6 +229,18 @@ class StorageProbeMixin(_SessionProvider):
         item_id = require_emby_identifier(item_id, field="item_id")
         media_source_id = self._normalize_probe_media_source_id(media_source_id)
         library_id = optional_emby_identifier(library_id, field="library_id")
+        name = self._project_probe_text(
+            name or "Sconosciuto", PROBE_DESCRIPTION_MAX_LENGTH
+        ) or "Sconosciuto"
+        library_name = self._project_probe_text(
+            library_name, PROBE_DESCRIPTION_MAX_LENGTH
+        )
+        error_type = self._project_probe_text(
+            error_type, PROBE_SHORT_STATE_MAX_LENGTH
+        )
+        reason = self._project_probe_text(
+            reason, max_length=None
+        ) or "Errore probe"
         session = self._get_session()
         try:
             retry_count = self._update_probe_blacklist_in_session(
@@ -220,6 +285,18 @@ class StorageProbeMixin(_SessionProvider):
         scope_value = self._normalize_probe_scope(scope)
         media_source_value = self._normalize_probe_media_source_id(media_source_id)
         library_id = optional_emby_identifier(library_id, field="library_id")
+        name = self._project_probe_text(
+            name or "Sconosciuto", PROBE_DESCRIPTION_MAX_LENGTH
+        ) or "Sconosciuto"
+        library_name = self._project_probe_text(
+            library_name, PROBE_DESCRIPTION_MAX_LENGTH
+        )
+        error_type = self._project_probe_text(
+            error_type, PROBE_SHORT_STATE_MAX_LENGTH
+        )
+        reason = self._project_probe_text(
+            reason, max_length=None
+        ) or "Errore probe"
         if session.get_bind().dialect.name == "postgresql":
             retry_count_value = 1 if increment_retry else 0
             values = {
@@ -737,20 +814,14 @@ class StorageProbeMixin(_SessionProvider):
         """
         if not claim_token:
             return None
-        history = dict(history)
-        history["server_id"] = self._normalize_probe_server_id(
-            history.get("server_id")
-        )
-        history["item_id"] = require_emby_identifier(
-            history.get("item_id"), field="item_id"
-        )
-        history["media_source_id"] = self._normalize_probe_media_source_id(
-            history.get("media_source_id")
-        )
+        history = self._normalize_probe_history_data(history)
         if failure is not None:
             failure = dict(failure)
             failure["library_id"] = optional_emby_identifier(
                 failure.get("library_id"), field="library_id"
+            )
+            failure["error_type"] = self._project_probe_text(
+                failure.get("error_type") or "ERROR", PROBE_SHORT_STATE_MAX_LENGTH
             )
         session = self._get_session()
         try:
@@ -1051,14 +1122,7 @@ class StorageProbeMixin(_SessionProvider):
     # --- Emby Probe History ---
 
     def add_probe_history(self, data: Dict[str, Any]) -> None:
-        data = dict(data)
-        data["server_id"] = self._normalize_probe_server_id(data.get("server_id"))
-        data["item_id"] = require_emby_identifier(
-            data.get("item_id"), field="item_id"
-        )
-        data["media_source_id"] = self._normalize_probe_media_source_id(
-            data.get("media_source_id")
-        )
+        data = self._normalize_probe_history_data(data)
         session = self._get_session()
         try:
             new_entry = EmbyProbeHistory(
@@ -1258,7 +1322,8 @@ class StorageProbeMixin(_SessionProvider):
             "probe_parallelism": 1,
             "media_policy": "strm_only",
         }
-        key = f"probe_config:{server_id}"
+        server_id = self._normalize_probe_server_id(server_id)
+        key = require_key_value_key(f"probe_config:{server_id}")
         provider = cast(_KeyValueProvider, self)
         value = provider.get_key_value(key)
         if isinstance(value, dict):
@@ -1273,7 +1338,8 @@ class StorageProbeMixin(_SessionProvider):
         """Save the shared Probe configuration for one server."""
         if not isinstance(config, dict):
             raise StorageError("Configurazione Probe non valida")
-        key = f"probe_config:{server_id}"
+        server_id = self._normalize_probe_server_id(server_id)
+        key = require_key_value_key(f"probe_config:{server_id}")
         provider = cast(_KeyValueProvider, self)
         provider.set_key_value(key, config)
 
@@ -1281,10 +1347,11 @@ class StorageProbeMixin(_SessionProvider):
         """Persist Probe settings only while the owning server still exists."""
         if not isinstance(config, dict):
             raise StorageError("Configurazione Probe non valida")
-        server_key = str(server_id or "").strip()
-        if not server_key:
+        try:
+            server_key = self._normalize_probe_server_id(server_id)
+            key = require_key_value_key(f"probe_config:{server_key}")
+        except ValueError:
             return False
-        key = f"probe_config:{server_key}"
         session = self._get_session()
         try:
             _lock_app_settings_row(session)

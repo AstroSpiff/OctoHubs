@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple, Callable
 
+from core.storage.field_limits import require_key_value_key
 from .mutation_coordinator import UserMutationCoordinator, group_sync_key, user_mutation_keys
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,7 @@ class GroupManager:
             yield acquired
 
     def _update_group_settings(self, group_id: str, updater: Callable[[Dict[str, Any]], Dict[str, Any]]):
-        key = f"group_settings:{group_id}"
+        key = require_key_value_key(f"group_settings:{group_id}")
         atomic_update = getattr(self.storage, "update_key_value", None)
         if callable(atomic_update):
             def apply(current):
@@ -76,7 +77,10 @@ class GroupManager:
             else:
                 return False
 
-        self.storage.set_key_value(f"group_name:{target_group_id}", new_name)
+        self.storage.set_key_value(
+            require_key_value_key(f"group_name:{target_group_id}"),
+            new_name,
+        )
         return True
 
     def save_group_settings(

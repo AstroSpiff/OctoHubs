@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.log_sanitization import sanitize_diagnostic_text
+from core.storage.field_limits import build_telegram_destination_key
 
 from emby_latest.notification_checkpoint import NotificationCheckpointMixin
 from emby_latest.notification_delivery_workflow import DeliveryOutcome, NotificationDeliveryMixin
@@ -25,7 +26,7 @@ def failure_result(message: str, errors: Optional[List[str]] = None) -> Result:
 
 
 def destination_key(bot_id: Any, chat_id: Any) -> str:
-    return f"{str(bot_id or '').strip()}:{str(chat_id or '').strip()}"
+    return build_telegram_destination_key(bot_id, chat_id)
 
 
 def item_signature(item: Dict[str, Any]) -> str:

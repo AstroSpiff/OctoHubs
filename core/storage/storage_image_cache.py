@@ -6,6 +6,12 @@ from datetime import timedelta
 import hashlib
 from typing import Any, Dict, Optional, Protocol
 
+from core.persisted_text import project_persisted_text
+from core.storage.field_limits import (
+    IMAGE_CACHE_KEY_MAX_LENGTH,
+    IMAGE_CACHE_MIME_TYPE_MAX_LENGTH,
+    require_bounded_text,
+)
 from core.storage.storage_errors import StorageError
 from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_models import SQLAlchemyError, EmbyImageCache, _utcnow, func
@@ -17,7 +23,13 @@ class _SessionProvider(Protocol):
 
 class StorageImageCacheMixin(_SessionProvider):
     def load_emby_image_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:
-        if not cache_key:
+        try:
+            cache_key = require_bounded_text(
+                cache_key,
+                field="cache_key",
+                max_length=IMAGE_CACHE_KEY_MAX_LENGTH,
+            )
+        except ValueError:
             return None
         session = self._get_session()
         try:
@@ -54,6 +66,15 @@ class StorageImageCacheMixin(_SessionProvider):
     ) -> None:
         if not cache_key or not data:
             return
+        cache_key = require_bounded_text(
+            cache_key,
+            field="cache_key",
+            max_length=IMAGE_CACHE_KEY_MAX_LENGTH,
+        )
+        content_type = (
+            project_persisted_text(content_type, IMAGE_CACHE_MIME_TYPE_MAX_LENGTH)
+            or "application/octet-stream"
+        )
         session = self._get_session()
         try:
             expires_at = _utcnow() + timedelta(seconds=max(ttl_seconds, 0))

@@ -93,6 +93,15 @@ separatore. Le chiavi server interne di OctoHubs restano dimensionate come UUID.
 La migrazione conserva i dati esistenti e allinea i limiti di API, manager e
 PostgreSQL.
 
+La revisione `20260908_22` allinea le restanti identità persistenti composte.
+Le chiavi key-value generiche vengono ampliate a 512 caratteri; le destinazioni
+Telegram e le chiavi link utenti Emby riservate a 257; le chiavi cache
+JustWatch a 512, così un titolo di 500 caratteri conserva il suffisso del tipo
+di contenuto. I titoli JustWatch esterni più lunghi usano un'identità cache
+limitata con digest, evitando collisioni da semplice troncamento. Il downgrade
+esegue un preflight globale sulle quattro colonne prima di modificarne una e
+rifiuta il restringimento se esistono valori oltre i limiti precedenti.
+
 ## Test di integrazione PostgreSQL
 
 Il test delle migrazioni usa uno schema temporaneo isolato in PostgreSQL 16 e lo

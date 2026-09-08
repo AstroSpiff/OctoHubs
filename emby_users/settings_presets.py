@@ -9,6 +9,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from core.storage.field_limits import (
+    SETTINGS_PRESET_ID_MAX_LENGTH,
+    require_bounded_text,
+    require_key_value_key,
+)
 from .mutation_coordinator import UserMutationCoordinator
 
 
@@ -27,7 +32,12 @@ class SettingsPresetManager:
         return self._mutation_coordinator.guard(["emby-user-settings-presets"])
 
     def _key(self, preset_id: str) -> str:
-        return f"{PRESET_KEY_PREFIX}{preset_id}"
+        bounded_id = require_bounded_text(
+            preset_id,
+            field="preset_id",
+            max_length=SETTINGS_PRESET_ID_MAX_LENGTH,
+        )
+        return require_key_value_key(f"{PRESET_KEY_PREFIX}{bounded_id}")
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -88,6 +98,13 @@ class SettingsPresetManager:
         description: str = "",
         apply_libraries: Optional[bool] = None,
     ) -> Dict[str, Any]:
+        if preset_id is not None:
+            preset_id = require_bounded_text(
+                preset_id,
+                field="preset_id",
+                max_length=SETTINGS_PRESET_ID_MAX_LENGTH,
+            )
+            self._key(preset_id)
         with self._mutation_lock:
             with self._mutation_guard() as acquired:
                 if not acquired:
@@ -143,6 +160,12 @@ class SettingsPresetManager:
         return {"ok": True, "preset": self._public_payload(payload, include_settings=True)}
 
     def duplicate_preset(self, preset_id: str, label: Optional[str] = None) -> Dict[str, Any]:
+        preset_id = require_bounded_text(
+            preset_id,
+            field="preset_id",
+            max_length=SETTINGS_PRESET_ID_MAX_LENGTH,
+        )
+        self._key(preset_id)
         with self._mutation_lock:
             with self._mutation_guard() as acquired:
                 if not acquired:
@@ -161,6 +184,12 @@ class SettingsPresetManager:
                 )
 
     def delete_preset(self, preset_id: str) -> Dict[str, Any]:
+        preset_id = require_bounded_text(
+            preset_id,
+            field="preset_id",
+            max_length=SETTINGS_PRESET_ID_MAX_LENGTH,
+        )
+        self._key(preset_id)
         with self._mutation_lock:
             with self._mutation_guard() as acquired:
                 if not acquired:
