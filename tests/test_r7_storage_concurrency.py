@@ -912,6 +912,28 @@ def test_schema_validation_rejects_type_and_nullability_drift(postgresql_schema_
     engine.dispose()
 
 
+def test_schema_validation_accepts_safely_wider_varchar_columns(
+    postgresql_schema_url,
+):
+    from core.database_migrations import validate_migrations
+
+    storage = _storage(postgresql_schema_url)
+    storage.close()
+    engine = create_engine(postgresql_schema_url, future=True)
+    with engine.begin() as connection:
+        connection.execute(text(
+            "ALTER TABLE emby_collection_posters "
+            "ALTER COLUMN mime_type TYPE VARCHAR(100)"
+        ))
+        connection.execute(text(
+            "ALTER TABLE emby_collection_backdrops "
+            "ALTER COLUMN mime_type TYPE VARCHAR(100)"
+        ))
+    validation = validate_migrations(postgresql_schema_url)
+    assert validation["ok"] is True, validation["errors"]
+    engine.dispose()
+
+
 def test_schema_validation_rejects_missing_workflow_active_slot_unique(
     postgresql_schema_url,
 ):

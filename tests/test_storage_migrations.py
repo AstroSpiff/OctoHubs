@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import DateTime, Integer, String, create_engine, inspect, text
+from sqlalchemy.dialects.postgresql import TIMESTAMP, VARCHAR
 
 
 _MIGRATED_IDENTIFIER_LENGTHS = {
@@ -29,6 +30,25 @@ _MIGRATED_IDENTIFIER_LENGTHS = {
     ("emby_probe_history", "media_source_id"): (36, 128),
     ("emby_probe_recent_scans", "library_id"): (36, 128),
 }
+
+
+@pytest.mark.parametrize(
+    ("actual_type", "expected_type", "compatible"),
+    [
+        (TIMESTAMP(timezone=False), DateTime(timezone=False), True),
+        (TIMESTAMP(timezone=True), DateTime(timezone=False), False),
+        (VARCHAR(100), String(50), True),
+        (VARCHAR(), String(50), True),
+        (VARCHAR(49), String(50), False),
+        (Integer(), String(50), False),
+    ],
+)
+def test_schema_contract_type_compatibility(
+    actual_type, expected_type, compatible
+):
+    from core.database_migrations import _column_type_is_compatible
+
+    assert _column_type_is_compatible(actual_type, expected_type) is compatible
 
 
 def _assert_migrated_identifier_lengths(engine, *, upgraded: bool) -> None:

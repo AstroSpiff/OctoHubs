@@ -10,7 +10,7 @@ from alembic import command
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import Column, UniqueConstraint, create_engine, inspect, text
+from sqlalchemy import Column, DateTime, String, UniqueConstraint, create_engine, inspect, text
 from sqlalchemy.engine import URL
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -36,6 +36,22 @@ class AlembicMigrationStatus:
     applied: list[str]
     pending: list[str]
     unknown_applied: list[str]
+
+
+def _column_type_is_compatible(actual_type: Any, expected_type: Any) -> bool:
+    """Accept PostgreSQL-equivalent or safely wider deployed column types."""
+    if isinstance(actual_type, DateTime) and isinstance(expected_type, DateTime):
+        return bool(getattr(actual_type, "timezone", False)) == bool(
+            getattr(expected_type, "timezone", False)
+        )
+
+    if isinstance(actual_type, String) and isinstance(expected_type, String):
+        expected_length = getattr(expected_type, "length", None)
+        actual_length = getattr(actual_type, "length", None)
+        if expected_length is not None:
+            return actual_length is None or actual_length >= expected_length
+
+    return False
 
 
 def _schema_contract_errors(connection: Any) -> list[str]:
@@ -74,7 +90,12 @@ def _schema_contract_errors(connection: Any) -> list[str]:
                     deployed_column["type"],
                     nullable=bool(deployed_column.get("nullable", True)),
                 )
-                if migration_context.impl.compare_type(actual_column, expected_column):
+                if (
+                    migration_context.impl.compare_type(actual_column, expected_column)
+                    and not _column_type_is_compatible(
+                        deployed_column["type"], expected_column.type
+                    )
+                ):
                     errors.append(
                         f"column type mismatch in {table_name}.{column_name}: "
                         f"expected {expected_column.type}, found {deployed_column['type']}"

@@ -7,7 +7,7 @@
 - **Baseline immutabile:** `cef2a66cd8cdd72f21b41031860635e39b4ce0cd`
   (`fix: complete R43 review remediation cycle`, 2026-09-08T12:43:40+02:00).
 - **Worktree iniziale:** pulita.
-- **Esito:** **4 finding risolti, 0 aperti**, 0 decisioni accettate nuove e 0
+- **Esito:** **5 finding risolti, 0 aperti**, 0 decisioni accettate nuove e 0
   finding bloccati.
 - **Modifiche:** implementazione, migrazioni Alembic 22 e 23, regressori, canary,
   gate di classe e aggiornamento dello stesso report. Il ciclo viene chiuso con
@@ -16,7 +16,7 @@
 | Severità | Aperti | Risolti |
 | --- | ---: | --- |
 | Alta | 0 | — |
-| Media | 0 | R44-M-01 … R44-M-02 |
+| Media | 0 | R44-M-01 … R44-M-03 |
 | Bassa | 0 | R44-L-01 … R44-L-02 |
 
 ## Metodo e perimetro
@@ -130,6 +130,32 @@ dei segreti persistiti.
   Un envelope `v1:` malformato o cifrato con una chiave non dichiarata continua
   correttamente a fermare l'avvio anziché essere cancellato silenziosamente.
 
+### R44-M-03 — Il validatore rifiuta tipi PostgreSQL equivalenti o più capienti — resolved
+
+**Classificazione:** superficie analoga della famiglia migrazione/schema-contract,
+emersa nel canary di deploy Hetzner della release `v0.5.0`.
+
+- **Posizioni:** `core/database_migrations.py:_schema_contract_errors`;
+  `tests/test_storage_migrations.py`;
+  `tests/test_r7_storage_concurrency.py`.
+- **Causa radice:** il controllo post-Alembic delegava ogni confronto a token di
+  tipo SQLAlchemy. Su uno schema proveniente dalla release pubblicata trattava
+  `DATETIME` e `TIMESTAMP WITHOUT TIME ZONE` come diversi e pretendeva una
+  corrispondenza esatta fra `VARCHAR(50)` e colonne più capienti
+  `VARCHAR(100)`, pur non esistendo perdita di dominio o incompatibilità.
+- **Canary esatto:** il primo avvio Hetzner dopo l'upgrade ha completato la
+  catena Alembic, poi si è fermato segnalando due timestamp e i `mime_type` di
+  poster/backdrop come mismatch. Nessuna riga è stata cancellata; il backup
+  pre-upgrade era già stato creato.
+- **Soluzione:** il validatore mantiene il confronto SQLAlchemy e aggiunge una
+  compatibilità conservativa solo per timestamp con identica semantica di
+  timezone e stringhe deployate con capacità uguale, superiore o illimitata.
+  Colonne più strette, timezone diverse e famiglie di tipo diverse restano
+  errori bloccanti.
+- **Regressori e rischio residuo:** matrice unitaria per timestamp/timezone,
+  varchar più largo/illimitato/più stretto e tipo estraneo; canary PostgreSQL 16
+  reale sui due `mime_type`. Il controllo non modifica lo schema né i dati.
+
 ## Finding bassi
 
 ### R44-L-01 — L'ID collezione accettato dall'API supera PK e FK da 50 caratteri — resolved
@@ -204,6 +230,10 @@ release `FastAPI` pubblicata e il formato versionato corrente. L'invariante
 aggiunto è: Alembic rende avviabile ogni database supportato senza rendere il
 runtime permissivo verso ciphertext privi di provenienza.
 
+Il quinto finding riguardava invece il significato del contratto schema: il
+database deve offrire lo stesso dominio richiesto dal modello o un dominio
+strettamente più capiente, senza nascondere differenze semantiche reali.
+
 ### Soluzione applicata
 
 - `key_value.key` è stato portato da 100 a 512 caratteri, capacità sufficiente
@@ -224,6 +254,9 @@ runtime permissivo verso ciphertext privi di provenienza.
   Dati server, gruppi, impostazioni e password già `v1:` restano invariati; gli
   account web del vecchio SQLite non vengono importati e l'admin viene creato
   dal normale bootstrap Portainer quando la tabella PostgreSQL utenti è vuota.
+- Il controllo finale dello schema riconosce timestamp PostgreSQL equivalenti e
+  varchar deployati più capienti, continuando a fermare tipi incompatibili,
+  timezone diverse e colonne più strette.
 - Sono stati introdotti helper focalizzati per identità bounded e testi
   persistiti. Account, token, request rules, Jellyseerr, Probe, Latest,
   notifiche, cache immagini, backup utenti, icone, workflow e audit log sono
@@ -248,6 +281,8 @@ runtime permissivo verso ciphertext privi di provenienza.
   le colonne `VARCHAR` e `TEXT` dei modelli storage/auth, i costruttori KV diretti
   e i caller delle API KV. Una nuova colonna o un nuovo caller resta rosso finché
   non dichiara esplicitamente la propria policy.
+- I regressori del validatore coprono sia la matrice pura dei tipi sia un
+  PostgreSQL 16 reale con i due `mime_type` allargati a 100 caratteri.
 
 ### Review indipendente e rischi residui
 
@@ -353,8 +388,9 @@ non include e non amministra PostgreSQL.
 
 | Gate | Esito | Evidenza finale |
 | --- | --- | --- |
-| Backend completo | **PASS** | 2.173 passed, 65 skipped, 72 warning, 32 subtest; 44,77 s |
-| PostgreSQL 16 reale | **PASS** | 70 passed, 2 warning; 182,52 s; upgrade fino alla revisione 23 |
+| Backend completo | **PASS** | 2.179 passed, 66 skipped, 72 warning, 32 subtest; 44,28 s |
+| PostgreSQL 16 reale | **PASS** | 71 passed, 2 warning; 331,94 s; upgrade fino alla revisione 23 |
+| Canary compatibilità tipi deployati | **PASS** | 2 regressori PostgreSQL reali; timestamp equivalenti e varchar più capienti accettati, drift reale respinto |
 | Canary `origin/FastAPI` → 23 | **PASS** | schema pre-Alembic, token Fernet legacy rimosso e sentinelle non-password conservate |
 | Regressori R44 e analoghi | **PASS** | 282 test mirati finali; originali, manifest e account |
 | Frontend Vitest | **PASS** | 272 file, 733 test |
@@ -382,13 +418,13 @@ dei lockfile Python e npm sono completi e verdi.
 
 Il conteggio usa una sola occorrenza per ID, ignorando la ripetizione dello
 stesso heading fra review e remediation. R43 registrava **534 finding risolti**;
-i 4 nuovi ID R44 portano il totale storico a **538**.
+i 5 nuovi ID R44 portano il totale storico a **539**.
 
 | Categoria storica | Prima di R44 | R44 | Totale | Stato corrente |
 | --- | ---: | ---: | ---: | --- |
-| Finding numerati | 534 | 4 | **538** | **538 risolti; 0 aperti** |
+| Finding numerati | 534 | 5 | **539** | **539 risolti; 0 aperti** |
 | Riaperture/remediation esplicitamente incomplete | 73 | 0 | **73** | 73 risolte; 0 aperte |
-| Superfici analoghe o ricorrenze in forma diversa | 67 | 4 | **71** | 71 risolte; 0 aperte |
+| Superfici analoghe o ricorrenze in forma diversa | 67 | 5 | **72** | 72 risolte; 0 aperte |
 | Cause non classificate come ricorrenza storica | 394 | 0 | **394** | tutte risolte |
 | Decisioni storiche accettate/non remediated | 4 | 0 | **4** | non sono difetti aperti |
 | Finding bloccati da decisione utente | 0 | 0 | **0** | — |
@@ -405,6 +441,10 @@ segreti: la cifratura corrente era corretta, ma mancava il passaggio Alembic che
 rendesse esplicito il trattamento dei ciphertext prodotti dalla release
 pubblicata.
 
+R44-M-03 è una superficie analoga della famiglia schema-contract: le migrazioni
+erano corrette, ma il validatore successivo confondeva equivalenza semantica e
+uguaglianza testuale del tipo, bloccando il deploy su uno schema più permissivo.
+
 La famiglia è stata chiusa con l'inventario di classe e il gate
 schema-contratto su tutte le colonne testuali e le chiavi derivate, oltre ai tre
 regressori locali. La remediation non si è quindi limitata ai soli esempi
@@ -412,7 +452,7 @@ riprodotti in R44.
 
 ## Stato finale della fase
 
-Il ciclo R44 è completo sulla baseline registrata: **4 finding risolti, 0
+Il ciclo R44 è completo sulla baseline registrata: **5 finding risolti, 0
 aperti**, 0 nuove decisioni accettate e 0 blocchi. La causa comune e le superfici
 analoghe sono state corrette; regressori, canary PostgreSQL, gate di classe e
 review indipendente sono documentati sopra. Tutti i gate applicabili sono
