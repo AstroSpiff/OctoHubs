@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import datetime
 import hashlib
 import multiprocessing
 import os
@@ -181,7 +182,7 @@ def test_postgresql_fastapi_password_upgrade_discards_only_unversioned_rows(
             )
 
         result = upgrade_database(postgresql_schema_url)
-        assert result["applied"] == ["20260908_23"]
+        assert result["applied"] == ["20260908_23", "20260908_24"]
 
         with engine.connect() as connection:
             rows = connection.execute(
@@ -198,6 +199,81 @@ def test_postgresql_fastapi_password_upgrade_discards_only_unversioned_rows(
         finally:
             if storage._engine is not None:
                 storage._engine.dispose()
+    finally:
+        engine.dispose()
+
+
+def test_postgresql_normalizes_fastapi_latest_timestamps_without_losing_instants(
+    postgresql_schema_url,
+):
+    from alembic import command
+
+    from core.database_migrations import (
+        alembic_config,
+        upgrade_database,
+        validate_migrations,
+    )
+
+    config = alembic_config(postgresql_schema_url)
+    command.upgrade(config, "20260908_23")
+    expected_instant = datetime(2026, 9, 8, 18, 30, 0)
+    engine = create_engine(postgresql_schema_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(
+                "ALTER TABLE emby_latest_cache_items "
+                "ALTER COLUMN trakt_fetched_at TYPE TIMESTAMP WITH TIME ZONE "
+                "USING trakt_fetched_at AT TIME ZONE 'UTC'"
+            ))
+            connection.execute(text(
+                "ALTER TABLE emby_latest_cache_changes "
+                "ALTER COLUMN created_at TYPE TIMESTAMP WITH TIME ZONE "
+                "USING created_at AT TIME ZONE 'UTC'"
+            ))
+            cache_item_id = connection.execute(
+                text(
+                    "INSERT INTO emby_latest_cache_items "
+                    "(cache_kind, trakt_fetched_at) VALUES ('recent', :instant) "
+                    "RETURNING id"
+                ),
+                {"instant": expected_instant},
+            ).scalar_one()
+            connection.execute(
+                text(
+                    "INSERT INTO emby_latest_cache_changes "
+                    "(cache_kind, cache_item_id, created_at) "
+                    "VALUES ('recent', :cache_item_id, :instant)"
+                ),
+                {"cache_item_id": cache_item_id, "instant": expected_instant},
+            )
+
+        assert upgrade_database(postgresql_schema_url)["applied"] == ["20260908_24"]
+        columns = {
+            (table_name, column["name"]): column["type"]
+            for table_name in (
+                "emby_latest_cache_items",
+                "emby_latest_cache_changes",
+            )
+            for column in inspect(engine).get_columns(table_name)
+        }
+        assert columns[("emby_latest_cache_items", "trakt_fetched_at")].timezone is False
+        assert columns[("emby_latest_cache_changes", "created_at")].timezone is False
+        with engine.connect() as connection:
+            assert connection.execute(
+                text(
+                    "SELECT trakt_fetched_at FROM emby_latest_cache_items "
+                    "WHERE id = :cache_item_id"
+                ),
+                {"cache_item_id": cache_item_id},
+            ).scalar_one() == expected_instant
+            assert connection.execute(
+                text(
+                    "SELECT created_at FROM emby_latest_cache_changes "
+                    "WHERE cache_item_id = :cache_item_id"
+                ),
+                {"cache_item_id": cache_item_id},
+            ).scalar_one() == expected_instant
+        assert validate_migrations(postgresql_schema_url)["ok"] is True
     finally:
         engine.dispose()
 
@@ -1339,6 +1415,7 @@ def test_postgresql_legacy_upgrade_matches_runtime_contract(postgresql_schema_ur
         "20260908_21",
         "20260908_22",
         "20260908_23",
+        "20260908_24",
     ]
     assert validate_migrations(postgresql_schema_url)["ok"] is True
 
@@ -1539,6 +1616,7 @@ def test_postgresql_probe_blacklist_identity_migration_merges_existing_duplicate
             "20260908_21",
             "20260908_22",
             "20260908_23",
+            "20260908_24",
         ]
 
         with engine.connect() as connection:

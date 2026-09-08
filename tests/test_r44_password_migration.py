@@ -89,7 +89,7 @@ def test_upgrade_discards_only_unversioned_emby_passwords_and_unblocks_startup(
             ).all()
             assert connection.execute(
                 text("SELECT version_num FROM alembic_version")
-            ).scalar_one() == "20260908_23"
+                ).scalar_one() == "20260908_24"
         assert rows == [("current-group", current_token)]
 
         storage = DatabaseStorage({"URL": database_url})

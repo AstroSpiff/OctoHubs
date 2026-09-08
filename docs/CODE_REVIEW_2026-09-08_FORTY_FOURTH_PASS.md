@@ -130,7 +130,7 @@ dei segreti persistiti.
   Un envelope `v1:` malformato o cifrato con una chiave non dichiarata continua
   correttamente a fermare l'avvio anziché essere cancellato silenziosamente.
 
-### R44-M-03 — Il validatore rifiuta tipi PostgreSQL equivalenti o più capienti — resolved
+### R44-M-03 — L'upgrade lascia drift PostgreSQL e il validatore rifiuta colonne più capienti — resolved
 
 **Classificazione:** superficie analoga della famiglia migrazione/schema-contract,
 emersa nel canary di deploy Hetzner della release `v0.5.0`.
@@ -138,23 +138,24 @@ emersa nel canary di deploy Hetzner della release `v0.5.0`.
 - **Posizioni:** `core/database_migrations.py:_schema_contract_errors`;
   `tests/test_storage_migrations.py`;
   `tests/test_r7_storage_concurrency.py`.
-- **Causa radice:** il controllo post-Alembic delegava ogni confronto a token di
-  tipo SQLAlchemy. Su uno schema proveniente dalla release pubblicata trattava
-  `DATETIME` e `TIMESTAMP WITHOUT TIME ZONE` come diversi e pretendeva una
-  corrispondenza esatta fra `VARCHAR(50)` e colonne più capienti
-  `VARCHAR(100)`, pur non esistendo perdita di dominio o incompatibilità.
+- **Causa radice:** il controllo post-Alembic pretendeva una corrispondenza
+  esatta fra `VARCHAR(50)` e colonne più capienti `VARCHAR(100)`. Inoltre la
+  baseline non normalizzava due colonne che il runtime `FastAPI` aggiungeva come
+  `TIMESTAMP WITH TIME ZONE`, mentre modelli e installazioni nuove usano
+  `TIMESTAMP WITHOUT TIME ZONE`.
 - **Canary esatto:** il primo avvio Hetzner dopo l'upgrade ha completato la
   catena Alembic, poi si è fermato segnalando due timestamp e i `mime_type` di
   poster/backdrop come mismatch. Nessuna riga è stata cancellata; il backup
   pre-upgrade era già stato creato.
-- **Soluzione:** il validatore mantiene il confronto SQLAlchemy e aggiunge una
-  compatibilità conservativa solo per timestamp con identica semantica di
-  timezone e stringhe deployate con capacità uguale, superiore o illimitata.
-  Colonne più strette, timezone diverse e famiglie di tipo diverse restano
+- **Soluzione:** il validatore mantiene il confronto SQLAlchemy e accetta
+  stringhe deployate con capacità uguale, superiore o illimitata. La revisione
+  Alembic 24 converte attraverso UTC i due timestamp legacy nel tipo canonico.
+  Colonne più strette, timezone non migrate e famiglie di tipo diverse restano
   errori bloccanti.
 - **Regressori e rischio residuo:** matrice unitaria per timestamp/timezone,
   varchar più largo/illimitato/più stretto e tipo estraneo; canary PostgreSQL 16
-  reale sui due `mime_type`. Il controllo non modifica lo schema né i dati.
+  reale sui due `mime_type` e sull'upgrade 23→24 con istanti sentinella. La
+  migrazione modifica soltanto il tipo e conserva l'istante normalizzato UTC.
 
 ## Finding bassi
 
@@ -254,9 +255,10 @@ strettamente più capiente, senza nascondere differenze semantiche reali.
   Dati server, gruppi, impostazioni e password già `v1:` restano invariati; gli
   account web del vecchio SQLite non vengono importati e l'admin viene creato
   dal normale bootstrap Portainer quando la tabella PostgreSQL utenti è vuota.
-- Il controllo finale dello schema riconosce timestamp PostgreSQL equivalenti e
-  varchar deployati più capienti, continuando a fermare tipi incompatibili,
-  timezone diverse e colonne più strette.
+- Il controllo finale dello schema riconosce varchar deployati più capienti e
+  la revisione 24 normalizza i due timestamp con timezone rimasti dal branch
+  `FastAPI`; tipi incompatibili, timezone diverse e colonne più strette restano
+  bloccanti.
 - Sono stati introdotti helper focalizzati per identità bounded e testi
   persistiti. Account, token, request rules, Jellyseerr, Probe, Latest,
   notifiche, cache immagini, backup utenti, icone, workflow e audit log sono
@@ -388,8 +390,8 @@ non include e non amministra PostgreSQL.
 
 | Gate | Esito | Evidenza finale |
 | --- | --- | --- |
-| Backend completo | **PASS** | 2.179 passed, 66 skipped, 72 warning, 32 subtest; 44,28 s |
-| PostgreSQL 16 reale | **PASS** | 71 passed, 2 warning; 331,94 s; upgrade fino alla revisione 23 |
+| Backend completo | **PASS** | 2.179 passed, 67 skipped, 72 warning, 32 subtest; 45,11 s |
+| PostgreSQL 16 reale | **PASS** | 72 passed, 2 warning; 170,13 s; upgrade fino alla revisione 24 |
 | Canary compatibilità tipi deployati | **PASS** | 2 regressori PostgreSQL reali; timestamp equivalenti e varchar più capienti accettati, drift reale respinto |
 | Canary `origin/FastAPI` → 23 | **PASS** | schema pre-Alembic, token Fernet legacy rimosso e sentinelle non-password conservate |
 | Regressori R44 e analoghi | **PASS** | 282 test mirati finali; originali, manifest e account |
@@ -402,7 +404,7 @@ non include e non amministra PostgreSQL.
 | Dipendenze frontend | **PASS** | npm audit runtime/completo: 0 vulnerabilità; `npm ls --all` coerente |
 | ESLint | **PASS** | nessun errore |
 | Build frontend | **PASS** | TypeScript e Vite; 505 moduli; warning chunk noto da 547,77 kB |
-| Alembic | **PASS** | unico head `20260908_23`; canary `v1:`/`V1:` coerenti su SQLite e PostgreSQL |
+| Alembic | **PASS** | unico head `20260908_24`; canary credenziali e timestamp legacy coerenti su SQLite e PostgreSQL |
 | Shell | **PASS** | `bash -n` su entrypoint, script operativi e launcher sviluppo |
 | Compose | **PASS** | base, secrets e admin-bootstrap validi; unico servizio `app` |
 | Docker riproducibile | **PASS** | due build no-cache con inventory identica; immagine `octohubs:r44-migration-remediation` |

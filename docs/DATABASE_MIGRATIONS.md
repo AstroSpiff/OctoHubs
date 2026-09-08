@@ -100,6 +100,13 @@ preserved. Re-enter the affected Emby passwords in OctoHubs after the first
 successful startup. The deleted ciphertexts cannot be recreated by downgrade,
 so take and retain a PostgreSQL backup before upgrading.
 
+Revision `20260908_24` normalizes the last two timezone-aware timestamp columns
+that the published `FastAPI` runtime could add to existing Latest tables. It
+converts stored instants through UTC to the timezone-naive representation used
+by the canonical models and fresh Alembic schema. The repair is data-preserving
+and intentionally does not reintroduce the deployment-specific type on
+downgrade.
+
 The published `FastAPI` deployment kept web-login accounts in its separate
 SQLite auth database. OctoHubs does not import that database into PostgreSQL.
 When the migrated PostgreSQL `users` table is empty, the normal

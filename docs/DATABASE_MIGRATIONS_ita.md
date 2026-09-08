@@ -111,6 +111,13 @@ dalle password vengono conservati. Dopo il primo avvio riuscito reinserisci in
 OctoHubs le password Emby interessate. Il downgrade non può ricostruire i
 ciphertext eliminati: prima dell'upgrade crea e conserva un backup PostgreSQL.
 
+La revisione `20260908_24` normalizza le ultime due colonne timestamp con fuso
+orario che il runtime `FastAPI` pubblicato poteva aggiungere alle tabelle Latest
+già esistenti. Gli istanti vengono convertiti tramite UTC nella rappresentazione
+senza fuso usata dai modelli canonici e da uno schema Alembic nuovo. La
+correzione conserva i dati e il downgrade non reintroduce intenzionalmente il
+tipo specifico del vecchio deployment.
+
 Il deployment `FastAPI` pubblicato conservava gli account di accesso web nel
 proprio database auth SQLite separato. OctoHubs non importa quel database in
 PostgreSQL. Se dopo la migrazione la tabella PostgreSQL `users` è vuota, il
