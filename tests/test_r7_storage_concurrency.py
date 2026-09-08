@@ -14,6 +14,47 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
+from tests.workflow_test_support import attach_test_operation_tracker
+
+
+_R43_MIGRATED_IDENTIFIER_LENGTHS = {
+    ("emby_user_links", "server_id"): (36, 128),
+    ("emby_user_links", "user_id"): (36, 128),
+    ("emby_user_backups", "server_id"): (36, 128),
+    ("emby_user_backups", "user_id"): (36, 128),
+    ("emby_user_creation_journal", "server_id"): (36, 128),
+    ("emby_icon_bindings", "target_id"): (255, 257),
+    ("emby_group_passwords", "group_id"): (255, 266),
+    ("library_associations", "server_id"): (36, 128),
+    ("library_associations", "library_id"): (36, 128),
+    ("emby_latest_cache_items", "item_id"): (36, 128),
+    ("emby_latest_cache_items", "library_id"): (36, 128),
+    ("emby_latest_cache_changes", "media_source_id"): (100, 128),
+    ("emby_probe_blacklist", "item_id"): (36, 128),
+    ("emby_probe_blacklist", "library_id"): (36, 128),
+    ("emby_probe_blacklist", "media_source_id"): (36, 128),
+    ("emby_probe_queue", "item_id"): (36, 128),
+    ("emby_probe_queue", "library_id"): (36, 128),
+    ("emby_probe_queue", "media_source_id"): (36, 128),
+    ("emby_probe_history", "item_id"): (36, 128),
+    ("emby_probe_history", "media_source_id"): (36, 128),
+    ("emby_probe_recent_scans", "library_id"): (36, 128),
+}
+
+
+def _assert_r43_pg_identifier_lengths(engine, *, upgraded: bool) -> None:
+    with engine.connect() as connection:
+        for (table_name, column_name), lengths in _R43_MIGRATED_IDENTIFIER_LENGTHS.items():
+            actual = connection.execute(
+                text(
+                    "SELECT character_maximum_length FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() AND table_name = :table_name "
+                    "AND column_name = :column_name"
+                ),
+                {"table_name": table_name, "column_name": column_name},
+            ).scalar_one()
+            assert actual == lengths[int(upgraded)]
+
 
 @pytest.fixture
 def postgresql_schema_url():
@@ -47,6 +88,290 @@ def _storage(database_url):
     )
     storage.ensure_ready()
     return storage
+
+
+def test_icon_and_creation_boundaries_match_real_postgresql(postgresql_schema_url):
+    from core.storage.field_limits import (
+        EMBY_STORED_IDENTIFIER_MAX_LENGTH,
+        EMBY_USER_NAME_MAX_LENGTH,
+        ICON_BINDING_TARGET_ID_MAX_LENGTH,
+        ICON_PROFILE_LABEL_MAX_LENGTH,
+        ICON_RULE_COLUMN_KEY_MAX_LENGTH,
+    )
+
+    storage = _storage(postgresql_schema_url)
+    try:
+        profile_id = "p" * 36
+        storage.save_icon_profile(
+            profile_id,
+            "l" * ICON_PROFILE_LABEL_MAX_LENGTH,
+            False,
+        )
+        storage.save_icon_rule(
+            profile_id,
+            "c" * ICON_RULE_COLUMN_KEY_MAX_LENGTH,
+            "/api/v1/emby/icons/image/canary",
+        )
+        storage.save_icon_binding(
+            "user",
+            f"{'s' * EMBY_STORED_IDENTIFIER_MAX_LENGTH}:{'u' * EMBY_STORED_IDENTIFIER_MAX_LENGTH}",
+            profile_id,
+        )
+        remote_id = "r" * EMBY_STORED_IDENTIFIER_MAX_LENGTH
+        synthetic_group_id = f"unlinked_{remote_id}_{remote_id}"
+        storage.save_group_password(synthetic_group_id, "encrypted")
+        assert len(synthetic_group_id) == 266
+        assert storage.get_group_password(synthetic_group_id) is not None
+        association_id = "a" * EMBY_STORED_IDENTIFIER_MAX_LENGTH
+        storage.save_library_associations(
+            {(association_id, association_id): "R43 boundary"}
+        )
+        assert storage.reserve_emby_user_creation(
+            "s" * EMBY_STORED_IDENTIFIER_MAX_LENGTH,
+            "u" * EMBY_USER_NAME_MAX_LENGTH,
+        ) is True
+        storage.save_latest_cache(
+            "feed",
+            {
+                "movies": [
+                    {
+                        "server_id": "00000000-0000-0000-0000-000000000001",
+                        "item_id": remote_id,
+                        "library_id": remote_id,
+                        "changes": [{"media_source_id": remote_id}],
+                    }
+                ]
+            },
+            1,
+            1,
+        )
+        storage.add_to_probe_queue(
+            [
+                {
+                    "server_id": "00000000-0000-0000-0000-000000000001",
+                    "item_id": remote_id,
+                    "library_id": remote_id,
+                    "media_source_id": remote_id,
+                }
+            ]
+        )
+        storage.add_probe_history(
+            {
+                "server_id": "00000000-0000-0000-0000-000000000001",
+                "item_id": remote_id,
+                "media_source_id": remote_id,
+            }
+        )
+        storage.save_recent_scan_timestamp(
+            "00000000-0000-0000-0000-000000000001",
+            None,
+            remote_id,
+        )
+
+        assert storage.get_icon_profiles()[0]["label"] == "l" * ICON_PROFILE_LABEL_MAX_LENGTH
+        assert storage.get_icon_rules()[0]["column_key"] == "c" * ICON_RULE_COLUMN_KEY_MAX_LENGTH
+        assert len(storage.get_icon_bindings()[0]["target_id"]) == ICON_BINDING_TARGET_ID_MAX_LENGTH
+        assert storage.load_library_associations() == {
+            (association_id, association_id): "R43 boundary"
+        }
+        with storage._engine.connect() as connection:
+            journal_server_length = connection.execute(
+                text(
+                    "SELECT character_maximum_length FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() "
+                    "AND table_name = 'emby_user_creation_journal' "
+                    "AND column_name = 'server_id'"
+                )
+            ).scalar_one()
+        assert journal_server_length == EMBY_STORED_IDENTIFIER_MAX_LENGTH
+        with storage._engine.connect() as connection:
+            binding_target_length = connection.execute(
+                text(
+                    "SELECT character_maximum_length FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() "
+                    "AND table_name = 'emby_icon_bindings' "
+                    "AND column_name = 'target_id'"
+                )
+            ).scalar_one()
+        assert binding_target_length == ICON_BINDING_TARGET_ID_MAX_LENGTH
+        with storage._engine.connect() as connection:
+            association_lengths = dict(
+                connection.execute(
+                    text(
+                        "SELECT column_name, character_maximum_length "
+                        "FROM information_schema.columns "
+                        "WHERE table_schema = current_schema() "
+                        "AND table_name = 'library_associations' "
+                        "AND column_name IN ('server_id', 'library_id')"
+                    )
+                ).all()
+            )
+        assert association_lengths == {
+            "server_id": EMBY_STORED_IDENTIFIER_MAX_LENGTH,
+            "library_id": EMBY_STORED_IDENTIFIER_MAX_LENGTH,
+        }
+        remote_columns = {
+            ("emby_latest_cache_items", "item_id"),
+            ("emby_latest_cache_items", "library_id"),
+            ("emby_latest_cache_changes", "media_source_id"),
+            ("emby_probe_blacklist", "item_id"),
+            ("emby_probe_blacklist", "library_id"),
+            ("emby_probe_blacklist", "media_source_id"),
+            ("emby_probe_queue", "item_id"),
+            ("emby_probe_queue", "library_id"),
+            ("emby_probe_queue", "media_source_id"),
+            ("emby_probe_history", "item_id"),
+            ("emby_probe_history", "media_source_id"),
+            ("emby_probe_recent_scans", "library_id"),
+        }
+        with storage._engine.connect() as connection:
+            actual = {
+                (table_name, column_name): connection.execute(
+                    text(
+                        "SELECT character_maximum_length FROM information_schema.columns "
+                        "WHERE table_schema = current_schema() AND table_name = :table_name "
+                        "AND column_name = :column_name"
+                    ),
+                    {"table_name": table_name, "column_name": column_name},
+                ).scalar_one()
+                for table_name, column_name in remote_columns
+            }
+        assert set(actual.values()) == {EMBY_STORED_IDENTIFIER_MAX_LENGTH}
+
+        with pytest.raises(ValueError):
+            storage.save_icon_profile(
+                "another-profile",
+                "l" * (ICON_PROFILE_LABEL_MAX_LENGTH + 1),
+                False,
+            )
+        with pytest.raises(ValueError):
+            storage.reserve_emby_user_creation(
+                "server",
+                "u" * (EMBY_USER_NAME_MAX_LENGTH + 1),
+            )
+    finally:
+        storage.close()
+
+
+def test_identifier_migration_postgresql_downgrade_is_atomic_on_oversize_value(
+    postgresql_schema_url,
+):
+    from alembic import command
+
+    from core.database_migrations import alembic_config
+    from core.emby_identifiers import EMBY_IDENTIFIER_MAX_LENGTH
+
+    storage = _storage(postgresql_schema_url)
+    profile_id = "profile"
+    target_id = f"{'s' * EMBY_IDENTIFIER_MAX_LENGTH}:{'u' * EMBY_IDENTIFIER_MAX_LENGTH}"
+    storage.save_icon_profile(profile_id, "Profile", False)
+    storage.save_icon_binding("user", target_id, profile_id)
+    storage.close()
+
+    with pytest.raises(RuntimeError, match="Cannot downgrade.*target_id"):
+        command.downgrade(alembic_config(postgresql_schema_url), "20260906_20")
+
+    engine = create_engine(postgresql_schema_url, future=True)
+    try:
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == "20260908_21"
+            assert connection.execute(
+                text("SELECT target_id FROM emby_icon_bindings")
+            ).scalar_one() == target_id
+            lengths = dict(
+                connection.execute(
+                    text(
+                        "SELECT column_name, character_maximum_length "
+                        "FROM information_schema.columns "
+                        "WHERE table_schema = current_schema() AND ("
+                        "(table_name = 'emby_user_links' AND column_name = 'server_id') "
+                        "OR (table_name = 'emby_icon_bindings' AND column_name = 'target_id'))"
+                    )
+                ).all()
+            )
+        assert lengths == {"server_id": 128, "target_id": 257}
+        _assert_r43_pg_identifier_lengths(engine, upgraded=True)
+    finally:
+        engine.dispose()
+
+
+def test_synthetic_group_downgrade_is_atomic_on_real_postgresql(
+    postgresql_schema_url,
+):
+    from alembic import command
+
+    from core.database_migrations import alembic_config
+
+    synthetic_id = f"unlinked_{'s' * 128}_{'u' * 128}"
+    storage = _storage(postgresql_schema_url)
+    storage.save_group_password(synthetic_id, "encrypted")
+    storage.close()
+
+    with pytest.raises(RuntimeError, match="Cannot downgrade.*group_id"):
+        command.downgrade(alembic_config(postgresql_schema_url), "20260906_20")
+
+    engine = create_engine(postgresql_schema_url, future=True)
+    try:
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == "20260908_21"
+            assert connection.execute(
+                text("SELECT group_id FROM emby_group_passwords")
+            ).scalar_one() == synthetic_id
+        _assert_r43_pg_identifier_lengths(engine, upgraded=True)
+    finally:
+        engine.dispose()
+
+
+def test_identifier_migration_postgresql_round_trip_when_values_fit(
+    postgresql_schema_url,
+):
+    from alembic import command
+
+    from core.database_migrations import alembic_config
+
+    storage = _storage(postgresql_schema_url)
+    storage.close()
+    config = alembic_config(postgresql_schema_url)
+
+    command.downgrade(config, "20260906_20")
+    engine = create_engine(postgresql_schema_url, future=True)
+    try:
+        with engine.connect() as connection:
+            lengths = dict(
+                connection.execute(
+                    text(
+                        "SELECT column_name, character_maximum_length "
+                        "FROM information_schema.columns "
+                        "WHERE table_schema = current_schema() AND ("
+                        "(table_name = 'emby_user_links' AND column_name = 'server_id') "
+                        "OR (table_name = 'emby_icon_bindings' AND column_name = 'target_id'))"
+                    )
+                ).all()
+            )
+        assert lengths == {"server_id": 36, "target_id": 255}
+        _assert_r43_pg_identifier_lengths(engine, upgraded=False)
+
+        command.upgrade(config, "head")
+        with engine.connect() as connection:
+            lengths = dict(
+                connection.execute(
+                    text(
+                        "SELECT column_name, character_maximum_length "
+                        "FROM information_schema.columns "
+                        "WHERE table_schema = current_schema() AND ("
+                        "(table_name = 'emby_user_links' AND column_name = 'server_id') "
+                        "OR (table_name = 'emby_icon_bindings' AND column_name = 'target_id'))"
+                    )
+                ).all()
+            )
+        assert lengths == {"server_id": 128, "target_id": 257}
+        _assert_r43_pg_identifier_lengths(engine, upgraded=True)
+    finally:
+        engine.dispose()
 
 
 def _claim_workflow_in_process(database_url, result_queue):
@@ -413,6 +738,8 @@ def test_workflow_managers_share_status_and_remote_stop(postgresql_schema_url):
     remote_storage = _storage(postgresql_schema_url)
     owner = WorkflowManager()
     remote = WorkflowManager()
+    attach_test_operation_tracker(owner)
+    attach_test_operation_tracker(remote)
     owner.set_db_storage(owner_storage)
     remote.set_db_storage(remote_storage)
     scan_started = Event()
@@ -504,6 +831,7 @@ def test_workflow_heartbeat_fences_replica_after_advisory_backend_termination(
 
     owner_storage = _storage(postgresql_schema_url)
     owner = WorkflowManager()
+    attach_test_operation_tracker(owner)
     owner.set_db_storage(owner_storage)
     callback_started = Event()
     release_callback = Event()

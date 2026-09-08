@@ -6,6 +6,64 @@ import pytest
 from sqlalchemy import create_engine, inspect, text
 
 
+_MIGRATED_IDENTIFIER_LENGTHS = {
+    ("emby_user_links", "server_id"): (36, 128),
+    ("emby_user_links", "user_id"): (36, 128),
+    ("emby_user_backups", "server_id"): (36, 128),
+    ("emby_user_backups", "user_id"): (36, 128),
+    ("emby_user_creation_journal", "server_id"): (36, 128),
+    ("emby_icon_bindings", "target_id"): (255, 257),
+    ("emby_group_passwords", "group_id"): (255, 266),
+    ("library_associations", "server_id"): (36, 128),
+    ("library_associations", "library_id"): (36, 128),
+    ("emby_latest_cache_items", "item_id"): (36, 128),
+    ("emby_latest_cache_items", "library_id"): (36, 128),
+    ("emby_latest_cache_changes", "media_source_id"): (100, 128),
+    ("emby_probe_blacklist", "item_id"): (36, 128),
+    ("emby_probe_blacklist", "library_id"): (36, 128),
+    ("emby_probe_blacklist", "media_source_id"): (36, 128),
+    ("emby_probe_queue", "item_id"): (36, 128),
+    ("emby_probe_queue", "library_id"): (36, 128),
+    ("emby_probe_queue", "media_source_id"): (36, 128),
+    ("emby_probe_history", "item_id"): (36, 128),
+    ("emby_probe_history", "media_source_id"): (36, 128),
+    ("emby_probe_recent_scans", "library_id"): (36, 128),
+}
+
+
+def _assert_migrated_identifier_lengths(engine, *, upgraded: bool) -> None:
+    schema = inspect(engine)
+    for (table_name, column_name), lengths in _MIGRATED_IDENTIFIER_LENGTHS.items():
+        columns = {
+            column["name"]: column for column in schema.get_columns(table_name)
+        }
+        assert columns[column_name]["type"].length == lengths[int(upgraded)]
+
+
+def _create_sqlite_remote_identifier_tables(engine) -> None:
+    """Bootstrap storage-only tables absent from the SQLite migration baseline."""
+    definitions = {
+        "emby_latest_cache_items": "item_id VARCHAR(128), library_id VARCHAR(128)",
+        "emby_latest_cache_changes": "media_source_id VARCHAR(128)",
+        "emby_probe_blacklist": (
+            "item_id VARCHAR(128), library_id VARCHAR(128), media_source_id VARCHAR(128)"
+        ),
+        "emby_probe_queue": (
+            "item_id VARCHAR(128), library_id VARCHAR(128), media_source_id VARCHAR(128)"
+        ),
+        "emby_probe_history": "item_id VARCHAR(128), media_source_id VARCHAR(128)",
+        "emby_probe_recent_scans": "library_id VARCHAR(128)",
+    }
+    with engine.begin() as connection:
+        for table_name, columns in definitions.items():
+            connection.execute(
+                text(
+                    f'CREATE TABLE IF NOT EXISTS "{table_name}" '
+                    f'(id INTEGER PRIMARY KEY, {columns})'
+                )
+            )
+
+
 def test_postgresql_version_floor_is_enforced_before_migrations():
     from core.database_migrations import DatabaseMigrationError, ensure_supported_database
 
@@ -39,6 +97,211 @@ def test_alembic_config_preserves_percent_encoded_database_urls():
     assert alembic_config(database_url).get_main_option("sqlalchemy.url") == database_url
 
 
+def test_identifier_downgrade_refuses_to_truncate_new_values(tmp_path):
+    from alembic import command
+
+    from core.database_migrations import alembic_config, upgrade_database
+    from core.emby_identifiers import EMBY_IDENTIFIER_MAX_LENGTH
+    from core.storage.storage_models import (
+        EmbyIconBinding,
+        EmbyIconProfile,
+        EmbyGroupPassword,
+        EmbyUserBackup,
+        EmbyUserLink,
+        LibraryAssociation,
+    )
+
+    database_url = f"sqlite:///{tmp_path / 'identifier-downgrade.db'}"
+    upgrade_database(database_url)
+    target_id = f"{'s' * EMBY_IDENTIFIER_MAX_LENGTH}:{'u' * EMBY_IDENTIFIER_MAX_LENGTH}"
+    engine = create_engine(database_url, future=True)
+    try:
+        for table in (
+            EmbyUserLink,
+            EmbyUserBackup,
+            EmbyIconProfile,
+            EmbyIconBinding,
+            EmbyGroupPassword,
+            LibraryAssociation,
+        ):
+            table.__table__.create(engine, checkfirst=True)
+        _create_sqlite_remote_identifier_tables(engine)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO emby_icon_profiles "
+                    "(id, label, is_group_profile) VALUES ('profile', 'Profile', 0)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO emby_icon_bindings "
+                    "(target_type, target_id, profile_id) "
+                    "VALUES ('user', :target_id, 'profile')"
+                ),
+                {"target_id": target_id},
+            )
+
+        with pytest.raises(RuntimeError, match="Cannot downgrade.*target_id"):
+            command.downgrade(alembic_config(database_url), "20260906_20")
+
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT target_id FROM emby_icon_bindings")
+            ).scalar_one() == target_id
+        inspector = inspect(engine)
+        binding_columns = {
+            column["name"]: column for column in inspector.get_columns("emby_icon_bindings")
+        }
+        journal_columns = {
+            column["name"]: column
+            for column in inspector.get_columns("emby_user_creation_journal")
+        }
+        assert binding_columns["target_id"]["type"].length == 257
+        assert journal_columns["server_id"]["type"].length == 128
+        _assert_migrated_identifier_lengths(engine, upgraded=True)
+    finally:
+        engine.dispose()
+
+
+def test_identifier_downgrade_refuses_oversize_synthetic_group_atomically(tmp_path):
+    from alembic import command
+
+    from core.database_migrations import alembic_config, upgrade_database
+    from core.storage.storage_models import EmbyGroupPassword
+
+    database_url = f"sqlite:///{tmp_path / 'synthetic-group-downgrade.db'}"
+    upgrade_database(database_url)
+    engine = create_engine(database_url, future=True)
+    synthetic_id = f"unlinked_{'s' * 128}_{'u' * 128}"
+    try:
+        EmbyGroupPassword.__table__.create(engine, checkfirst=True)
+        _create_sqlite_remote_identifier_tables(engine)
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO emby_group_passwords (group_id, password_enc) "
+                    "VALUES (:group_id, 'encrypted')"
+                ),
+                {"group_id": synthetic_id},
+            )
+
+        with pytest.raises(RuntimeError, match="Cannot downgrade.*group_id"):
+            command.downgrade(alembic_config(database_url), "20260906_20")
+
+        group_columns = {
+            column["name"]: column
+            for column in inspect(engine).get_columns("emby_group_passwords")
+        }
+        assert group_columns["group_id"]["type"].length == 266
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == "20260908_21"
+    finally:
+        engine.dispose()
+
+
+def test_identifier_migration_round_trips_when_values_fit_old_contract(tmp_path):
+    from alembic import command
+
+    from core.database_migrations import alembic_config, upgrade_database
+    from core.storage.storage_models import (
+        EmbyIconBinding,
+        EmbyIconProfile,
+        EmbyGroupPassword,
+        EmbyUserBackup,
+        EmbyUserLink,
+        LibraryAssociation,
+    )
+
+    database_url = f"sqlite:///{tmp_path / 'identifier-roundtrip.db'}"
+    upgrade_database(database_url)
+    config = alembic_config(database_url)
+    bootstrap_engine = create_engine(database_url, future=True)
+    try:
+        for table in (
+            EmbyUserLink,
+            EmbyUserBackup,
+            EmbyIconProfile,
+            EmbyIconBinding,
+            EmbyGroupPassword,
+            LibraryAssociation,
+        ):
+            table.__table__.create(bootstrap_engine, checkfirst=True)
+        _create_sqlite_remote_identifier_tables(bootstrap_engine)
+    finally:
+        bootstrap_engine.dispose()
+
+    command.downgrade(config, "20260906_20")
+    engine = create_engine(database_url, future=True)
+    try:
+        downgraded_links = {
+            column["name"]: column for column in inspect(engine).get_columns("emby_user_links")
+        }
+        downgraded_bindings = {
+            column["name"]: column
+            for column in inspect(engine).get_columns("emby_icon_bindings")
+        }
+        assert downgraded_links["server_id"]["type"].length == 36
+        assert downgraded_links["user_id"]["type"].length == 36
+        assert downgraded_bindings["target_id"]["type"].length == 255
+        downgraded_associations = {
+            column["name"]: column
+            for column in inspect(engine).get_columns("library_associations")
+        }
+        assert downgraded_associations["server_id"]["type"].length == 36
+        assert downgraded_associations["library_id"]["type"].length == 36
+        latest_columns = {
+            column["name"]: column
+            for column in inspect(engine).get_columns("emby_latest_cache_items")
+        }
+        assert latest_columns["item_id"]["type"].length == 36
+        assert latest_columns["library_id"]["type"].length == 36
+        probe_queue_columns = {
+            column["name"]: column
+            for column in inspect(engine).get_columns("emby_probe_queue")
+        }
+        assert probe_queue_columns["item_id"]["type"].length == 36
+        assert probe_queue_columns["library_id"]["type"].length == 36
+        assert probe_queue_columns["media_source_id"]["type"].length == 36
+        _assert_migrated_identifier_lengths(engine, upgraded=False)
+
+        command.upgrade(config, "head")
+        upgraded_links = {
+            column["name"]: column for column in inspect(engine).get_columns("emby_user_links")
+        }
+        upgraded_bindings = {
+            column["name"]: column
+            for column in inspect(engine).get_columns("emby_icon_bindings")
+        }
+        assert upgraded_links["server_id"]["type"].length == 128
+        assert upgraded_links["user_id"]["type"].length == 128
+        assert upgraded_bindings["target_id"]["type"].length == 257
+        upgraded_associations = {
+            column["name"]: column
+            for column in inspect(engine).get_columns("library_associations")
+        }
+        assert upgraded_associations["server_id"]["type"].length == 128
+        assert upgraded_associations["library_id"]["type"].length == 128
+        latest_columns = {
+            column["name"]: column
+            for column in inspect(engine).get_columns("emby_latest_cache_items")
+        }
+        assert latest_columns["item_id"]["type"].length == 128
+        assert latest_columns["library_id"]["type"].length == 128
+        probe_queue_columns = {
+            column["name"]: column
+            for column in inspect(engine).get_columns("emby_probe_queue")
+        }
+        assert probe_queue_columns["item_id"]["type"].length == 128
+        assert probe_queue_columns["library_id"]["type"].length == 128
+        assert probe_queue_columns["media_source_id"]["type"].length == 128
+        _assert_migrated_identifier_lengths(engine, upgraded=True)
+    finally:
+        engine.dispose()
+
+
 def test_dry_run_reports_uninitialized_database_without_writing(tmp_path):
     from core.database_migrations import upgrade_database
 
@@ -68,6 +331,7 @@ def test_dry_run_reports_uninitialized_database_without_writing(tmp_path):
         "20260905_18",
         "20260906_19",
         "20260906_20",
+        "20260908_21",
     ]
     engine = create_engine(database_url, future=True)
     try:
@@ -106,6 +370,7 @@ def test_upgrade_records_the_unified_alembic_baseline(tmp_path):
         "20260905_18",
         "20260906_19",
         "20260906_20",
+        "20260908_21",
     ]
     assert status.applied == [
         "20260829_01",
@@ -128,6 +393,7 @@ def test_upgrade_records_the_unified_alembic_baseline(tmp_path):
         "20260905_18",
         "20260906_19",
         "20260906_20",
+        "20260908_21",
     ]
     assert status.pending == []
     assert validation["ok"] is True
@@ -413,6 +679,7 @@ def test_reconciliation_runs_for_database_already_marked_at_broken_baseline(tmp_
             "20260905_18",
             "20260906_19",
             "20260906_20",
+            "20260908_21",
         ]
         assert {"name", "scope", "error_details"}.issubset(columns)
     finally:

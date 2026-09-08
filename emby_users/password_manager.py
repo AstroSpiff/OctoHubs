@@ -4,6 +4,7 @@ from typing import Dict, Any, Optional, Tuple, List, Callable
 from .password_crypto import PasswordCipher, password_cipher_from_environment
 from .mutation_coordinator import UserMutationCoordinator, group_sync_key, user_mutation_keys
 from core.log_sanitization import format_exception_for_log
+from core.storage.field_limits import require_group_password_id
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,13 @@ class PasswordManager:
         users: List[Tuple[str, str, Optional[str]]],
     ) -> Dict[str, Any]:
 
+        group_id = require_group_password_id(group_id)
+        user_password_ids = {
+            (server_id, user_id): require_group_password_id(
+                self._get_unlinked_group_id(server_id, user_id)
+            )
+            for server_id, user_id, _ in users
+        }
         logger.info("[PASSWORD] Apply: group=%s users=%s", group_id, len(users))
         failures = []
         applied = 0
@@ -164,7 +172,7 @@ class PasswordManager:
             ok, update_error = self._update_user_password(server, user_id, new_password)
             if ok:
                 applied += 1
-                user_password_id = self._get_unlinked_group_id(server_id, user_id)
+                user_password_id = user_password_ids[(server_id, user_id)]
                 try:
                     if encrypted_password:
                         self.storage.save_group_password(user_password_id, encrypted_password)
@@ -236,6 +244,9 @@ class PasswordManager:
             return self._update_user_password_guarded(server_id, user_id, new_password)
 
     def _update_user_password_guarded(self, server_id: str, user_id: str, new_password: str) -> Dict[str, Any]:
+        user_password_id = require_group_password_id(
+            self._get_unlinked_group_id(server_id, user_id)
+        )
         server = self._get_server_by_id(server_id)
         if not server:
             return {"ok": False, "error": "Server not found"}
@@ -248,7 +259,6 @@ class PasswordManager:
         if not ok:
             return {"ok": False, "error": "Update failed"}
 
-        user_password_id = self._get_unlinked_group_id(server_id, user_id)
         try:
             if new_password:
                 enc = self.encrypt_password(new_password)

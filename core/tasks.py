@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, Optional
 from core.config import _normalize_auto_settings, _default_auto_tasks, _coerce_request_int
 from core.auto_scheduler_workers import AutoSchedulerWorkerPool
 from core.log_sanitization import format_exception_for_log
+from core.operation_identity import is_valid_public_operation_id
 from core.safe_output import safe_print as print
 from core.thread_lifecycle import (
     join_owned_thread,
@@ -877,26 +878,25 @@ class WorkflowManager:
 
     def set_operation_tracker(self, operation_tracker):
         """Imposta il tracker globale usato dal centro operazioni."""
-        self._operation_tracker = operation_tracker
+        with self._lock:
+            self._operation_tracker = operation_tracker
 
     def _start_operation_tracking_locked(self, context=None):
         """Crea lo snapshot persistente del workflow nel centro operazioni."""
         if not self._operation_tracker:
-            return None
-        try:
-            operation = self._operation_tracker.start(
-                "workflow",
-                "Workflow aggiornamento",
-                summary=self._status.get("workflow_type") or "full",
-                details=self._workflow_operation_details_locked(context or {}),
-                total=len(self._status.get("steps") or []),
-            )
-            operation_id = operation.get("id")
-            self._status["operation_id"] = operation_id
-            return operation_id
-        except Exception as exc:
-            _log_task_exception("Errore creazione operazione workflow", exc)
-            return None
+            raise RuntimeError("Operation tracker workflow non disponibile")
+        operation = self._operation_tracker.start(
+            "workflow",
+            "Workflow aggiornamento",
+            summary=self._status.get("workflow_type") or "full",
+            details=self._workflow_operation_details_locked(context or {}),
+            total=len(self._status.get("steps") or []),
+        )
+        operation_id = operation.get("id") if isinstance(operation, dict) else None
+        if not is_valid_public_operation_id(operation_id):
+            raise RuntimeError("Operation tracker workflow privo di un ID valido")
+        self._status["operation_id"] = operation_id
+        return operation_id
 
     def _workflow_operation_details_locked(self, context=None):
         steps = copy.deepcopy(self._status.get("steps") or [])
@@ -1089,6 +1089,8 @@ class WorkflowManager:
         with self._lock:
             lease = self._workflow_lease
             self._workflow_lease = None
+        if lease is None:
+            return
         release_workflow_lease_safely(
             db_storage,
             lease,
@@ -1264,12 +1266,15 @@ class WorkflowManager:
 
             try:
                 self._start_operation_tracking_locked(context or {})
-            except BaseException:
+            except BaseException as exc:
                 self._cleanup_unstarted_workflow_after_signal(
                     workflow_id,
                     _WORKFLOW_FAILURE_MESSAGE,
                 )
-                raise
+                if not isinstance(exc, Exception):
+                    raise
+                _log_task_exception("Errore creazione operazione workflow", exc)
+                return False
 
             start_error = self._start_workflow_thread_locked(
                 context or {},
@@ -1632,6 +1637,7 @@ class WorkflowManager:
             rejected, captured = self._capture_workflow_stop_locked(expected_operation_id)
         if rejected is not None:
             return rejected
+        assert captured is not None
         (
             db_storage,
             local_running,

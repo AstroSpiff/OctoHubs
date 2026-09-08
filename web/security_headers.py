@@ -20,6 +20,11 @@ SECURITY_HEADERS = {
     b"x-content-type-options": b"nosniff",
     b"x-frame-options": b"DENY",
 }
+PRIVATE_RESPONSE_HEADERS = {
+    b"cache-control": b"no-store",
+    b"pragma": b"no-cache",
+}
+PRIVATE_API_PREFIXES = ("/api/account/", "/api/admin/")
 
 ASGIMessage = dict[str, Any]
 Receive = Callable[[], Awaitable[ASGIMessage]]
@@ -41,6 +46,14 @@ class SecurityHeadersMiddleware:
         async def send_with_security_headers(message: ASGIMessage) -> None:
             if message.get("type") == "http.response.start":
                 headers = list(message.get("headers") or [])
+                if _is_private_api_response(scope):
+                    private_names = set(PRIVATE_RESPONSE_HEADERS)
+                    headers = [
+                        (name, value)
+                        for name, value in headers
+                        if name.lower() not in private_names
+                    ]
+                    headers.extend(PRIVATE_RESPONSE_HEADERS.items())
                 existing_names = {name.lower() for name, _value in headers}
                 headers.extend(
                     (name, value)
@@ -51,3 +64,11 @@ class SecurityHeadersMiddleware:
             await send(message)
 
         await self.app(scope, receive, send_with_security_headers)
+
+
+def _is_private_api_response(scope: dict[str, Any]) -> bool:
+    path = str(scope.get("path") or "")
+    return any(
+        path == prefix.removesuffix("/") or path.startswith(prefix)
+        for prefix in PRIVATE_API_PREFIXES
+    )

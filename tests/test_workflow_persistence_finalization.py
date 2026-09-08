@@ -6,6 +6,7 @@ import threading
 from unittest.mock import patch
 
 from core.tasks import WorkflowManager
+from tests.workflow_test_support import attach_test_operation_tracker
 
 
 class _WorkflowStorage:
@@ -35,6 +36,7 @@ class _WorkflowStorage:
 
 def _manager_with_storage(storage: _WorkflowStorage) -> WorkflowManager:
     manager = WorkflowManager()
+    attach_test_operation_tracker(manager)
     manager.set_db_storage(storage)
     manager.set_callbacks(
         trigger_scan_func=lambda _context: True,

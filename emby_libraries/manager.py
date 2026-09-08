@@ -8,6 +8,7 @@ from core.library_group_names import (
     project_library_group_name,
 )
 from core.log_sanitization import format_exception_for_log
+from core.emby_identifiers import normalize_emby_identifier
 from core.utils import get_emby_servers
 
 logger = logging.getLogger(__name__)
@@ -99,11 +100,15 @@ class EmbyLibrariesManager:
         for entry in payload:
             if not isinstance(entry, dict):
                 continue
-            server_id = entry.get("server_id")
-            library_id = entry.get("library_id")
+            raw_server_id = entry.get("server_id")
+            raw_library_id = entry.get("library_id")
             group_name = entry.get("group_name")
-            if not (server_id and library_id and group_name):
+            if not (raw_server_id and raw_library_id and group_name):
                 continue
+            server_id = normalize_emby_identifier(raw_server_id)
+            library_id = normalize_emby_identifier(raw_library_id)
+            if not (server_id and library_id):
+                return self._json_error("Associazione libreria non valida", 400)
             try:
                 normalized_group_name = normalize_library_group_name(group_name)
             except ValueError as exc:

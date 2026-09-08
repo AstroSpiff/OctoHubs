@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.workflow_test_support import attach_test_operation_tracker
+
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("consume_initial", [False, True])
@@ -65,6 +67,7 @@ def test_probe_callback_error_marks_workflow_failed(monkeypatch: pytest.MonkeyPa
     from core.tasks import WorkflowManager
 
     manager = WorkflowManager()
+    attach_test_operation_tracker(manager)
     manager.set_callbacks(
         trigger_scan_func=lambda _context: True,
         check_scan_func=lambda _context: True,

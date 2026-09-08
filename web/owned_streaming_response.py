@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import inspect
 import logging
 import sys
 import threading
@@ -72,9 +73,41 @@ class OwnedStreamingResponse(StreamingResponse):
         try:
             await super().__call__(scope, receive, send)
         except BaseException as exc:
+            try:
+                await self._close_body_iterator(primary_error=exc)
+            finally:
+                self.owner.run(primary_error=exc)
+            raise
+        try:
+            await self._close_body_iterator()
+        except BaseException as exc:
             self.owner.run(primary_error=exc)
             raise
         self.owner.run()
+
+    async def _close_body_iterator(
+        self,
+        *,
+        primary_error: BaseException | None = None,
+    ) -> None:
+        """Close generator-owned resources before releasing the outer owner."""
+        close = getattr(self.body_iterator, "aclose", None)
+        if not callable(close):
+            return
+        try:
+            result = close()
+            if inspect.isawaitable(result):
+                await result
+        except BaseException as exc:
+            try:
+                logger.error(
+                    "Chiusura body stream non riuscita:\n%s",
+                    format_exception_for_log(exc),
+                )
+            except BaseException:
+                pass
+            if primary_error is None:
+                raise
 
 
 __all__ = ["IdempotentCleanup", "OwnedStreamingResponse"]

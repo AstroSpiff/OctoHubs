@@ -14,7 +14,9 @@ vi.mock("@/features/research/api", () => ({
 }));
 
 vi.mock("@/features/research/components/emby-media-browser", () => ({
-  EmbyMediaBrowser: () => null,
+  EmbyMediaBrowser: ({ selected }: { selected: { tmdb_id: number } }) => (
+    <div data-testid="emby-browser">Target {selected.tmdb_id}</div>
+  ),
 }));
 
 declare global {
@@ -139,6 +141,58 @@ describe("TmdbSearchPicker suggestion disclosure", () => {
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
+  it("resets the selected Emby server synchronously across A to B to A", async () => {
+    const targetA = suggestion;
+    const targetB = {
+      tmdb_id: 349,
+      title: "Aliens",
+      media_type: "movie" as const,
+      year: 1986,
+    };
+    for (const target of [targetA, targetB]) {
+      queryClient.setQueryData(
+        ["emby-availability", target.tmdb_id, target.media_type],
+        {
+          success: true,
+          available_on: [
+            {
+              server_id: "server-shared",
+              server_name: "Emby principale",
+              item_id: `item-${target.tmdb_id}`,
+            },
+            {
+              server_id: "server-peer",
+              server_name: "Emby secondario",
+              item_id: `peer-${target.tmdb_id}`,
+            },
+          ],
+        },
+      );
+    }
+
+    await renderSelected(targetA);
+    const primary = buttonWithText(container, "Emby principale");
+    const secondary = buttonWithText(container, "Emby secondario");
+    expect(primary.getAttribute("aria-pressed")).toBe("false");
+    expect(secondary.getAttribute("aria-pressed")).toBe("false");
+
+    act(() => primary.click());
+    expect(primary.getAttribute("aria-pressed")).toBe("true");
+    expect(secondary.getAttribute("aria-pressed")).toBe("false");
+    expect(container.querySelector('[data-testid="emby-browser"]')?.textContent)
+      .toBe("Target 348");
+
+    await renderSelected(targetB);
+    expect(container.querySelector('[data-testid="emby-browser"]')).toBeNull();
+    expect(buttonWithText(container, "Emby principale").getAttribute("aria-pressed"))
+      .toBe("false");
+
+    await renderSelected(targetA);
+    expect(container.querySelector('[data-testid="emby-browser"]')).toBeNull();
+    expect(buttonWithText(container, "Emby principale").getAttribute("aria-pressed"))
+      .toBe("false");
+  });
+
   async function renderSuggestions() {
     await renderPicker();
     await act(async () => {
@@ -163,4 +217,27 @@ describe("TmdbSearchPicker suggestion disclosure", () => {
       );
     });
   }
+
+  async function renderSelected(selected: typeof suggestion) {
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TmdbSearchPicker
+            query={selected.title}
+            selected={selected}
+            onClear={vi.fn()}
+            onQueryChange={vi.fn()}
+            onSelect={onSelect}
+          />
+        </QueryClientProvider>,
+      );
+    });
+  }
 });
+
+function buttonWithText(container: HTMLElement, text: string) {
+  const button = [...container.querySelectorAll<HTMLButtonElement>("button")]
+    .find((candidate) => candidate.textContent?.includes(text));
+  if (!button) throw new Error(`Button not found: ${text}`);
+  return button;
+}

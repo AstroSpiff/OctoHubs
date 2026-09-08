@@ -24,6 +24,22 @@ type TmdbSearchPickerProps = {
 };
 
 function TmdbSearchPicker({
+  selected,
+  ...props
+}: TmdbSearchPickerProps) {
+  const targetKey = selected
+    ? `${selected.media_type}:${selected.tmdb_id}`
+    : "search";
+  return (
+    <TmdbSearchPickerState
+      key={targetKey}
+      selected={selected}
+      {...props}
+    />
+  );
+}
+
+function TmdbSearchPickerState({
   query,
   selected,
   onClear,
@@ -165,6 +181,7 @@ function TmdbSearchPicker({
                   className={
                     entry.server_id === activeServerId ? "is-active" : ""
                   }
+                  aria-pressed={entry.server_id === activeServerId}
                   onClick={() => setActiveServerId(entry.server_id || "")}
                 >
                   {entry.server_name || entry.label || "Emby"}

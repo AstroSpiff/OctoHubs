@@ -5,16 +5,23 @@ from typing import Any, Callable, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import ValidationError
 
 from core.image_uploads import ImageUploadError
 from core.storage import StorageError
+from core.storage.field_limits import (
+    ICON_PROFILE_ID_MAX_LENGTH,
+    ICON_RULE_COLUMN_KEY_MAX_LENGTH,
+)
 from emby_users.routes import USERS_UPDATED_MESSAGE
 from emby_users.icon_api_models import (
     IconBindingRequest,
     IconProfileDeleteRequest,
     IconProfileRequest,
     IconRuleDeleteRequest,
+    IconRuleCoordinates,
 )
+from emby_users.icon_manager import IconTargetBusyError
 from emby_users.response_models import (
     UserApiErrorResponse,
     UserApiSuccessResponse,
@@ -70,12 +77,17 @@ def _publish_icons_updated() -> None:
         pass
 
 
-def _missing_icon_profile_response(exc: Exception) -> JSONResponse | None:
-    if not str(exc).startswith("Icon profile not found:"):
+def _missing_icon_resource_response(exc: Exception) -> JSONResponse | None:
+    message = str(exc)
+    if message.startswith("Icon profile not found:"):
+        error = "Icon profile not found"
+    elif message.startswith("Icon target not found:"):
+        error = "Icon target not found"
+    else:
         return None
     return JSONResponse(
         status_code=404,
-        content={"ok": False, "error": "Icon profile not found"},
+        content={"ok": False, "error": error},
     )
 
 
@@ -155,6 +167,7 @@ async def api_emby_icons_profile_delete(
     responses={
         200: {"model": UserApiSuccessResponse},
         404: {"model": UserApiErrorResponse},
+        409: {"model": UserApiErrorResponse},
     },
 )
 async def api_emby_icons_binding_save(
@@ -172,8 +185,13 @@ async def api_emby_icons_binding_save(
             payload.target_id,
             payload.profile_id,
         )
+    except IconTargetBusyError:
+        return JSONResponse(
+            status_code=409,
+            content={"ok": False, "error": "Icon target busy"},
+        )
     except (StorageError, ValueError) as exc:
-        response = _missing_icon_profile_response(exc)
+        response = _missing_icon_resource_response(exc)
         if response is None:
             raise
         return response
@@ -189,8 +207,16 @@ async def api_emby_icons_binding_save(
     },
 )
 async def api_emby_icons_rule_save(
-    profile_id: str = Form(...),
-    column_key: str = Form(...),
+    profile_id: str = Form(
+        ...,
+        min_length=1,
+        max_length=ICON_PROFILE_ID_MAX_LENGTH,
+    ),
+    column_key: str = Form(
+        ...,
+        min_length=1,
+        max_length=ICON_RULE_COLUMN_KEY_MAX_LENGTH,
+    ),
     file: UploadFile = File(...),
     _csrf=Depends(_validate_csrf_dep),
     user=Depends(_require_user_dep)
@@ -200,16 +226,24 @@ async def api_emby_icons_rule_save(
         return JSONResponse(status_code=503, content={"error": "User manager not initialized"})
 
     try:
+        coordinates = IconRuleCoordinates(
+            profile_id=profile_id,
+            column_key=column_key,
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+    try:
         path = await run_in_threadpool(
             manager.icon_manager.save_icon_rule,
-            profile_id,
-            column_key,
+            coordinates.profile_id,
+            coordinates.column_key,
             file,
         )
     except ImageUploadError as exc:
         return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
     except (StorageError, ValueError) as exc:
-        response = _missing_icon_profile_response(exc)
+        response = _missing_icon_resource_response(exc)
         if response is None:
             raise
         return response

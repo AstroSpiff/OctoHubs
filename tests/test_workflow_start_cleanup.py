@@ -12,6 +12,7 @@ from core.storage.storage_errors import StorageError
 from core.storage.storage_workflows import StorageWorkflowMixin
 from core.tasks import ScanManager, WorkflowManager
 from core.workflow_lease_cleanup import release_workflow_lease_safely
+from tests.workflow_test_support import attach_test_operation_tracker
 
 
 class _StartStorage:
@@ -101,6 +102,7 @@ def test_workflow_start_release_failure_cannot_strand_local_lifecycle(
 ):
     storage = _StartStorage(claim_result, release_error)
     manager = WorkflowManager()
+    attach_test_operation_tracker(manager)
     manager._db_storage = storage
 
     with caplog.at_level(logging.ERROR):
@@ -162,6 +164,7 @@ def test_workflow_start_resets_before_propagating_primary_process_signal(caplog)
 def test_workflow_thread_start_signal_releases_every_published_resource(monkeypatch):
     storage = _ThreadStartStorage()
     manager = WorkflowManager()
+    attach_test_operation_tracker(manager)
     manager._db_storage = storage
     primary = KeyboardInterrupt("workflow thread start interrupted")
     monkeypatch.setattr(threading.Thread, "start", lambda _thread: (_ for _ in ()).throw(primary))

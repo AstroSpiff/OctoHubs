@@ -10,6 +10,7 @@ from core.app_settings_crypto import SettingsCipher
 from core.library_group_names import normalize_library_group_name, project_library_group_name
 from core.storage.storage_app_settings import _decode_settings, _lock_app_settings_row
 from core.storage.storage_errors import CollectionDefinitionNotFoundError, StorageError
+from core.storage.field_limits import require_emby_identifier
 from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_locks import lock_collection_definition, lock_snapshot_writer
 from core.storage.storage_models import (
@@ -52,7 +53,10 @@ class StorageCollectionsMixin(_SessionProvider):
 
     def save_library_associations(self, associations: Dict[Tuple[str, str], str]) -> None:
         normalized_associations = {
-            (str(server_id), str(library_id)): normalize_library_group_name(group_name)
+            (
+                require_emby_identifier(server_id, field="server_id"),
+                require_emby_identifier(library_id, field="library_id"),
+            ): normalize_library_group_name(group_name)
             for (server_id, library_id), group_name in associations.items()
         }
         with _snapshot_write_lock:

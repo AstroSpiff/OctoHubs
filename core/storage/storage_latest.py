@@ -8,6 +8,10 @@ import threading
 from typing import Any, Dict, List, Optional, Protocol
 
 from core.emby_image_urls import build_latest_emby_image_urls
+from core.storage.field_limits import (
+    INTERNAL_SERVER_ID_MAX_LENGTH,
+    optional_emby_identifier,
+)
 from core.storage.storage_errors import StorageError
 from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_latest_state_merge import merge_notification_updates
@@ -74,6 +78,24 @@ def _cache_text(value: Any, max_len: Optional[int] = None) -> Optional[str]:
     return _truncate_text_value(value, max_len)
 
 
+def _validate_latest_cache_identifiers(payload: Dict[str, Any]) -> None:
+    """Reject unsafe remote IDs before opening a cache-write transaction."""
+    source = payload if isinstance(payload, dict) else {}
+    for entry in (source.get("movies") or []) + (source.get("series") or []):
+        if not isinstance(entry, dict):
+            continue
+        optional_emby_identifier(entry.get("item_id"), field="item_id")
+        optional_emby_identifier(entry.get("library_id"), field="library_id")
+        changes = entry.get("changes")
+        if not isinstance(changes, list):
+            continue
+        for change in changes:
+            if isinstance(change, dict):
+                optional_emby_identifier(
+                    change.get("media_source_id"), field="media_source_id"
+                )
+
+
 def _build_latest_cache_item(kind: str, entry: Dict[str, Any]) -> Any:
     item_type = _cache_text(entry.get("item_type"), 20)
     is_series = str(item_type or "").lower() in ("series", "episode")
@@ -85,8 +107,8 @@ def _build_latest_cache_item(kind: str, entry: Dict[str, Any]) -> Any:
     row = EmbyLatestCacheItem(
         cache_kind=kind,
         item_type=item_type,
-        server_id=_cache_text(entry.get("server_id"), 36),
-        item_id=_cache_text(entry.get("item_id"), 36),
+        server_id=_cache_text(entry.get("server_id"), INTERNAL_SERVER_ID_MAX_LENGTH),
+        item_id=optional_emby_identifier(entry.get("item_id"), field="item_id"),
         signature=_cache_text(entry.get("signature"), 255),
         batch_id=_cache_text(entry.get("batch_id"), 255),
         title=_cache_text(entry.get("title"), 500),
@@ -124,7 +146,7 @@ def _build_latest_cache_item(kind: str, entry: Dict[str, Any]) -> Any:
         imdb_id=_cache_text(entry.get("imdb_id"), 50),
         tvdb_id=_cache_text(entry.get("tvdb_id"), 50),
         trakt_id=_cache_text(entry.get("trakt_id"), 100),
-        library_id=_cache_text(entry.get("library_id"), 36),
+        library_id=optional_emby_identifier(entry.get("library_id"), field="library_id"),
         library_name=_cache_text(entry.get("library_name"), 500),
         server_name=_cache_text(entry.get("server_name"), 255),
         server_icon=_cache_text(entry.get("server_icon"), 100),
@@ -170,7 +192,9 @@ def _build_latest_cache_change(kind: str, item_id: int, index: int, change: Dict
         source_name=_cache_text(change.get("source_name"), 200),
         path=_cache_text(change.get("path")),
         size=_parse_int(change.get("size")),
-        media_source_id=_cache_text(change.get("media_source_id"), 100),
+        media_source_id=optional_emby_identifier(
+            change.get("media_source_id"), field="media_source_id"
+        ),
         added_at=_parse_datetime_value(change.get("added_at")),
         video_details=_cache_text(change.get("video_details")),
         audio_details=_cache_text(change.get("audio_details")),
@@ -418,6 +442,7 @@ class StorageLatestMixin(_SessionProvider):
         updated_at: Optional[datetime] = None
     ) -> None:
         kind = self._normalize_latest_cache_kind(cache_kind)
+        _validate_latest_cache_identifiers(payload)
         with _latest_cache_write_lock:
             self._save_latest_cache_locked(
                 kind,
@@ -493,6 +518,7 @@ class StorageLatestMixin(_SessionProvider):
         latest_state: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Atomically replace both caches and optional collector state."""
+        _validate_latest_cache_identifiers(payload)
         session = self._get_session()
         try:
             lock_latest_refresh(session)

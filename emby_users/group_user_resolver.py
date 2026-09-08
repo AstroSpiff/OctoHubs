@@ -1,5 +1,7 @@
 from typing import List, Tuple, Optional, Dict, Any, Callable
 
+from core.storage.field_limits import build_unlinked_group_id
+
 
 class GroupUserResolver:
     def __init__(self, storage):
@@ -10,7 +12,7 @@ class GroupUserResolver:
         self._get_users_dashboard_data = getter
 
     def get_unlinked_group_id(self, server_id: str, user_id: str) -> str:
-        return f"unlinked_{server_id}_{user_id}"
+        return build_unlinked_group_id(server_id, user_id)
 
     def get_group_users(self, group_id: str) -> List[Tuple[str, str, Optional[str]]]:
         if group_id == "owners":

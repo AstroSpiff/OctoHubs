@@ -46,6 +46,31 @@ function EmbyMediaBrowser({
   server: AvailabilityEntry;
   onClose: () => void;
 }) {
+  const targetKey = JSON.stringify([
+    selected.media_type,
+    selected.tmdb_id,
+    server.server_id || "",
+    server.item_id || "",
+  ]);
+  return (
+    <EmbyMediaBrowserState
+      key={targetKey}
+      selected={selected}
+      server={server}
+      onClose={onClose}
+    />
+  );
+}
+
+function EmbyMediaBrowserState({
+  selected,
+  server,
+  onClose,
+}: {
+  selected: TmdbSearchResult;
+  server: AvailabilityEntry;
+  onClose: () => void;
+}) {
   const serverId = server.server_id || "";
   const itemId = server.item_id || "";
   const isTv = selected.media_type === "tv";

@@ -11,6 +11,12 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from core.app_settings_crypto import SettingsCipher
+from core.storage.field_limits import (
+    INTERNAL_SERVER_ID_MAX_LENGTH,
+    optional_emby_identifier,
+    require_bounded_text,
+    require_emby_identifier,
+)
 from core.storage.storage_app_settings import _decode_settings, _lock_app_settings_row
 from core.storage.storage_errors import StorageError
 from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
@@ -84,8 +90,40 @@ class StorageProbeMixin(_SessionProvider):
         return query.filter(model.scope == normalized)  # type: ignore[attr-defined]
 
     def _normalize_probe_media_source_id(self, media_source_id: Optional[str]) -> Optional[str]:
-        value = str(media_source_id or "").strip()
-        return value or None
+        return optional_emby_identifier(media_source_id, field="media_source_id")
+
+    @staticmethod
+    def _normalize_probe_server_id(server_id: Any) -> str:
+        # Server keys are OctoHubs-generated UUIDs, not remote Emby identifiers.
+        return require_bounded_text(
+            server_id,
+            field="server_id",
+            max_length=INTERNAL_SERVER_ID_MAX_LENGTH,
+        )
+
+    def _normalize_probe_queue_items(
+        self,
+        items: list[Dict[str, Any]],
+    ) -> list[Dict[str, Any]]:
+        normalized: list[Dict[str, Any]] = []
+        for item_data in items:
+            if not isinstance(item_data, dict):
+                continue
+            if not item_data.get("server_id") or not item_data.get("item_id"):
+                continue
+            item = dict(item_data)
+            item["server_id"] = self._normalize_probe_server_id(item["server_id"])
+            item["item_id"] = require_emby_identifier(
+                item["item_id"], field="item_id"
+            )
+            item["media_source_id"] = self._normalize_probe_media_source_id(
+                item.get("media_source_id")
+            )
+            item["library_id"] = optional_emby_identifier(
+                item.get("library_id"), field="library_id"
+            )
+            normalized.append(item)
+        return normalized
 
     def _apply_media_source_filter(self, query, model, media_source_id: Optional[str]):
         normalized = self._normalize_probe_media_source_id(media_source_id)
@@ -134,6 +172,10 @@ class StorageProbeMixin(_SessionProvider):
         library_id: Optional[str] = None,
         library_name: Optional[str] = None
     ) -> int:
+        server_id = self._normalize_probe_server_id(server_id)
+        item_id = require_emby_identifier(item_id, field="item_id")
+        media_source_id = self._normalize_probe_media_source_id(media_source_id)
+        library_id = optional_emby_identifier(library_id, field="library_id")
         session = self._get_session()
         try:
             retry_count = self._update_probe_blacklist_in_session(
@@ -173,8 +215,11 @@ class StorageProbeMixin(_SessionProvider):
         library_name: Optional[str],
     ) -> int:
         """Update one blacklist identity without committing the caller's transaction."""
+        server_id = self._normalize_probe_server_id(server_id)
+        item_id = require_emby_identifier(item_id, field="item_id")
         scope_value = self._normalize_probe_scope(scope)
         media_source_value = self._normalize_probe_media_source_id(media_source_id)
+        library_id = optional_emby_identifier(library_id, field="library_id")
         if session.get_bind().dialect.name == "postgresql":
             retry_count_value = 1 if increment_retry else 0
             values = {
@@ -456,6 +501,7 @@ class StorageProbeMixin(_SessionProvider):
         return claimed_at >= stale_before
 
     def add_to_probe_queue(self, items: list[Dict[str, Any]]) -> None:
+        items = self._normalize_probe_queue_items(items)
         session = self._get_session()
         try:
             self._add_probe_queue_items_in_session(session, items)
@@ -472,11 +518,12 @@ class StorageProbeMixin(_SessionProvider):
         items: list[Dict[str, Any]],
     ) -> int:
         """Insert concrete queue identities without committing the transaction."""
+        items = self._normalize_probe_queue_items(items)
         queued = 0
         for item_data in items:
             server_id = item_data.get("server_id")
             item_id = item_data.get("item_id")
-            media_source_id = self._normalize_probe_media_source_id(item_data.get("media_source_id"))
+            media_source_id = item_data.get("media_source_id")
             scope_value = self._normalize_probe_scope(item_data.get("scope"))
             if not server_id or not item_id:
                 continue
@@ -690,6 +737,21 @@ class StorageProbeMixin(_SessionProvider):
         """
         if not claim_token:
             return None
+        history = dict(history)
+        history["server_id"] = self._normalize_probe_server_id(
+            history.get("server_id")
+        )
+        history["item_id"] = require_emby_identifier(
+            history.get("item_id"), field="item_id"
+        )
+        history["media_source_id"] = self._normalize_probe_media_source_id(
+            history.get("media_source_id")
+        )
+        if failure is not None:
+            failure = dict(failure)
+            failure["library_id"] = optional_emby_identifier(
+                failure.get("library_id"), field="library_id"
+            )
         session = self._get_session()
         try:
             queue_entry = (
@@ -989,6 +1051,14 @@ class StorageProbeMixin(_SessionProvider):
     # --- Emby Probe History ---
 
     def add_probe_history(self, data: Dict[str, Any]) -> None:
+        data = dict(data)
+        data["server_id"] = self._normalize_probe_server_id(data.get("server_id"))
+        data["item_id"] = require_emby_identifier(
+            data.get("item_id"), field="item_id"
+        )
+        data["media_source_id"] = self._normalize_probe_media_source_id(
+            data.get("media_source_id")
+        )
         session = self._get_session()
         try:
             new_entry = EmbyProbeHistory(
@@ -1125,6 +1195,8 @@ class StorageProbeMixin(_SessionProvider):
 
     def save_recent_scan_timestamp(self, server_id: str, oldest_timestamp: Optional[datetime], library_id: Optional[str] = None) -> None:
         """Save the oldest scanned timestamp for a server/library."""
+        server_id = self._normalize_probe_server_id(server_id)
+        library_id = optional_emby_identifier(library_id, field="library_id")
         session = self._get_session()
         try:
             lib_id = library_id or "__all__"

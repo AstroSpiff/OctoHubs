@@ -14,6 +14,7 @@ from emby_latest.manager import EmbyLatestManager, get_manager, reset_manager
 from emby_latest.operations import make_latest_operation_progress_tracker
 from emby_probe.manager import EmbyProbeManager
 from emby_runtime.library_poller import EmbyLibraryPoller
+from tests.workflow_test_support import attach_test_operation_tracker
 
 
 class _PollerStorage:
@@ -29,6 +30,7 @@ class _PollerStorage:
 
 def test_workflow_shutdown_fence_rejects_late_start_until_reopened():
     manager = WorkflowManager()
+    attach_test_operation_tracker(manager)
 
     assert manager.shutdown(0.1) is True
     assert manager.start("full") is False

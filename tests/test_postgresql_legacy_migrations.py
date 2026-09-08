@@ -1244,6 +1244,7 @@ def test_postgresql_legacy_upgrade_matches_runtime_contract(postgresql_schema_ur
         "20260905_18",
         "20260906_19",
         "20260906_20",
+        "20260908_21",
     ]
     assert validate_migrations(postgresql_schema_url)["ok"] is True
 
@@ -1438,6 +1439,7 @@ def test_postgresql_probe_blacklist_identity_migration_merges_existing_duplicate
             "20260905_18",
             "20260906_19",
             "20260906_20",
+            "20260908_21",
         ]
 
         with engine.connect() as connection:

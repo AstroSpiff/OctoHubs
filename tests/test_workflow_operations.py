@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from core.tasks import WorkflowManager
+from tests.workflow_test_support import attach_test_operation_tracker
 
 
 class _OperationTracker:
@@ -171,6 +172,7 @@ class WorkflowOperationTests(unittest.TestCase):
 
     def test_stop_during_probe_step_calls_probe_stop_callback(self):
         manager = WorkflowManager()
+        attach_test_operation_tracker(manager)
         probe_started = threading.Event()
         stopped_contexts = []
 
@@ -200,6 +202,7 @@ class WorkflowOperationTests(unittest.TestCase):
 
     def test_start_is_rejected_until_stopping_thread_has_exited(self):
         manager = WorkflowManager()
+        attach_test_operation_tracker(manager)
         scan_started = threading.Event()
         release_scan = threading.Event()
 
@@ -250,6 +253,7 @@ class WorkflowOperationTests(unittest.TestCase):
 
     def test_start_is_rejected_while_completed_thread_finishes_tracking(self):
         manager = WorkflowManager()
+        attach_test_operation_tracker(manager)
         completion_started = threading.Event()
         release_completion = threading.Event()
         manager.set_callbacks(

@@ -193,8 +193,8 @@ class GroupedLibrariesResponse(LibraryScanApiModel):
 
 
 class LibraryAssociation(StrictRequestModel):
-    server_id: str
-    library_id: str
+    server_id: OpaqueEmbyServerIdentifier
+    library_id: OpaqueEmbyIdentifier
     group_name: LibraryGroupName
 
 

@@ -1,13 +1,28 @@
 """Request contracts for the public Emby user-management API."""
 
-from typing import Any, Dict, List, Literal, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
-from core.emby_identifiers import OpaqueEmbyIdentifier, OpaqueEmbyServerIdentifier
+from core.emby_identifiers import EMBY_IDENTIFIER_PATTERN
+from core.storage.field_limits import (
+    EMBY_GROUP_ID_MAX_LENGTH,
+    EMBY_STORED_IDENTIFIER_MAX_LENGTH,
+    EMBY_USER_NAME_MAX_LENGTH,
+    require_emby_username,
+)
 
 
 MAX_USER_BATCH_TARGETS = 100
+StoredEmbyIdentifier = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=EMBY_STORED_IDENTIFIER_MAX_LENGTH,
+        pattern=EMBY_IDENTIFIER_PATTERN,
+    ),
+]
 
 
 class ApiRequest(BaseModel):
@@ -17,8 +32,8 @@ class ApiRequest(BaseModel):
 
 
 class ServerUserTarget(ApiRequest):
-    server_id: OpaqueEmbyServerIdentifier
-    user_id: OpaqueEmbyIdentifier
+    server_id: StoredEmbyIdentifier
+    user_id: StoredEmbyIdentifier
 
 
 class AccessToggleRequest(ServerUserTarget):
@@ -26,15 +41,15 @@ class AccessToggleRequest(ServerUserTarget):
 
 
 class UserLink(ApiRequest):
-    server_id: OpaqueEmbyServerIdentifier
-    user_id: OpaqueEmbyIdentifier
-    username: str = ""
+    server_id: StoredEmbyIdentifier
+    user_id: StoredEmbyIdentifier
+    username: str = Field(default="", max_length=EMBY_USER_NAME_MAX_LENGTH)
     is_leader: bool = False
 
 
 class LinkUsersRequest(ApiRequest):
     links: List[UserLink] = Field(min_length=1, max_length=MAX_USER_BATCH_TARGETS)
-    group_id: Optional[str] = None
+    group_id: Optional[str] = Field(default=None, max_length=EMBY_GROUP_ID_MAX_LENGTH)
 
     @field_validator("links")
     @classmethod
@@ -46,12 +61,12 @@ class LinkUsersRequest(ApiRequest):
 
 
 class RenameGroupRequest(ApiRequest):
-    group_id: str = Field(min_length=1)
-    new_name: str = Field(min_length=1)
+    group_id: str = Field(min_length=1, max_length=EMBY_GROUP_ID_MAX_LENGTH)
+    new_name: str = Field(min_length=1, max_length=EMBY_USER_NAME_MAX_LENGTH)
 
 
 class RenameUserRequest(ServerUserTarget):
-    new_name: str = Field(min_length=1)
+    new_name: str = Field(min_length=1, max_length=EMBY_USER_NAME_MAX_LENGTH)
 
 
 class UserPasswordRequest(ServerUserTarget):
@@ -59,7 +74,7 @@ class UserPasswordRequest(ServerUserTarget):
 
 
 class GroupPasswordRequest(ApiRequest):
-    group_id: str = Field(min_length=1)
+    group_id: str = Field(min_length=1, max_length=EMBY_GROUP_ID_MAX_LENGTH)
     new_password: str = ""
 
 
@@ -80,7 +95,7 @@ class UserSettingsRequest(ServerUserTarget):
 
 
 class GroupSettingsRequest(ApiRequest):
-    group_id: str = Field(min_length=1)
+    group_id: str = Field(min_length=1, max_length=EMBY_GROUP_ID_MAX_LENGTH)
     settings: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -109,7 +124,7 @@ class BulkSettingsApplyRequest(ApiRequest):
 
 
 class GroupSyncSettingsRequest(ApiRequest):
-    group_id: str = Field(min_length=1)
+    group_id: str = Field(min_length=1, max_length=EMBY_GROUP_ID_MAX_LENGTH)
     auto_sync: bool = False
     sync_type: Literal["merge", "one_way"] = "merge"
     sync_resume: bool = False
@@ -125,17 +140,27 @@ class GroupSyncSettingsRequest(ApiRequest):
 
 
 class GroupIdRequest(ApiRequest):
-    group_id: str = Field(min_length=1)
+    group_id: str = Field(min_length=1, max_length=EMBY_GROUP_ID_MAX_LENGTH)
 
 
 class CheckUserRequest(ApiRequest):
-    server_id: OpaqueEmbyServerIdentifier
-    username: str = Field(min_length=1)
+    server_id: StoredEmbyIdentifier
+    username: str = Field(min_length=1, max_length=EMBY_USER_NAME_MAX_LENGTH)
+
+    @field_validator("username")
+    @classmethod
+    def validate_normalized_username(cls, username: str) -> str:
+        return require_emby_username(username)
 
 
 class CreateUserTarget(ApiRequest):
-    server_id: OpaqueEmbyServerIdentifier
-    username: str = Field(min_length=1)
+    server_id: StoredEmbyIdentifier
+    username: str = Field(min_length=1, max_length=EMBY_USER_NAME_MAX_LENGTH)
+
+    @field_validator("username")
+    @classmethod
+    def validate_normalized_username(cls, username: str) -> str:
+        return require_emby_username(username)
 
 
 class CreateUsersRequest(ApiRequest):
@@ -171,10 +196,10 @@ class DeleteGroupUsersRequest(GroupIdRequest):
 
 
 class CloneUserRequest(ApiRequest):
-    source_server_id: OpaqueEmbyServerIdentifier
-    source_user_id: OpaqueEmbyIdentifier
-    target_server_id: OpaqueEmbyServerIdentifier
-    new_username: Optional[str] = None
+    source_server_id: StoredEmbyIdentifier
+    source_user_id: StoredEmbyIdentifier
+    target_server_id: StoredEmbyIdentifier
+    new_username: Optional[str] = Field(default=None, max_length=EMBY_USER_NAME_MAX_LENGTH)
     sync_config: bool = True
     sync_playstate: bool = True
     sync_resume: bool = False

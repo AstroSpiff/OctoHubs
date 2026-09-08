@@ -6,6 +6,20 @@ from datetime import timedelta
 from typing import Any, Dict, Iterable, Optional, Protocol, Tuple
 
 from core.storage.storage_errors import StorageError
+from core.storage.field_limits import (
+    EMBY_BACKUP_TYPE_MAX_LENGTH,
+    EMBY_GROUP_ID_MAX_LENGTH,
+    EMBY_STORED_IDENTIFIER_MAX_LENGTH,
+    EMBY_USER_NAME_MAX_LENGTH,
+    ICON_PROFILE_ID_MAX_LENGTH,
+    ICON_PROFILE_LABEL_MAX_LENGTH,
+    ICON_RULE_COLUMN_KEY_MAX_LENGTH,
+    require_group_password_id,
+    require_bounded_text,
+    require_emby_username,
+    require_icon_target_id,
+    require_icon_target_type,
+)
 from core.storage.storage_session_cleanup import close_session_safely, rollback_session_safely
 from core.storage.storage_locks import lock_user_backup_subject
 from core.storage.storage_models import (
@@ -25,6 +39,37 @@ from core.storage.storage_models import (
 
 class _SessionProvider(Protocol):
     def _get_session(self) -> Any: ...
+
+
+def _normalize_user_link_upserts(
+    upserts: Iterable[Dict[str, Any]],
+) -> list[Dict[str, Any]]:
+    """Validate bounded membership fields before a transaction is opened."""
+    normalized = [dict(item) for item in upserts]
+    for item in normalized:
+        item["server_id"] = require_bounded_text(
+            item.get("server_id"),
+            field="server_id",
+            max_length=EMBY_STORED_IDENTIFIER_MAX_LENGTH,
+        )
+        item["user_id"] = require_bounded_text(
+            item.get("user_id"),
+            field="user_id",
+            max_length=EMBY_STORED_IDENTIFIER_MAX_LENGTH,
+        )
+        item["group_id"] = require_bounded_text(
+            item.get("group_id"),
+            field="group_id",
+            max_length=EMBY_GROUP_ID_MAX_LENGTH,
+        )
+        if item.get("username") is not None:
+            item["username"] = require_bounded_text(
+                item.get("username"),
+                field="username",
+                max_length=EMBY_USER_NAME_MAX_LENGTH,
+                allow_empty=True,
+            )
+    return normalized
 
 
 class StorageUsersMixin(_SessionProvider):
@@ -54,6 +99,12 @@ class StorageUsersMixin(_SessionProvider):
             close_session_safely(session)
 
     def reserve_emby_user_creation(self, server_id: str, username: str) -> bool:
+        server_id = require_bounded_text(
+            server_id,
+            field="server_id",
+            max_length=EMBY_STORED_IDENTIFIER_MAX_LENGTH,
+        )
+        username = require_emby_username(username)
         session = self._get_session()
         try:
             normalized = self._normalized_creation_username(username)
@@ -208,10 +259,13 @@ class StorageUsersMixin(_SessionProvider):
         group_passwords: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Apply membership changes and leader normalization in one transaction."""
-        upsert_list = [dict(item) for item in upserts]
+        upsert_list = _normalize_user_link_upserts(upserts)
         removal_list = list(removals)
         preferred_leaders = preferred_leaders or {}
-        group_passwords = group_passwords or {}
+        group_passwords = {
+            require_group_password_id(group_id): password_enc
+            for group_id, password_enc in (group_passwords or {}).items()
+        }
         dissolve = set(dissolve_singletons)
         session = self._get_session()
         try:
@@ -401,6 +455,28 @@ class StorageUsersMixin(_SessionProvider):
         username: Optional[str] = None,
         is_leader: bool = False
     ) -> None:
+        server_id = require_bounded_text(
+            server_id,
+            field="server_id",
+            max_length=EMBY_STORED_IDENTIFIER_MAX_LENGTH,
+        )
+        user_id = require_bounded_text(
+            user_id,
+            field="user_id",
+            max_length=EMBY_STORED_IDENTIFIER_MAX_LENGTH,
+        )
+        group_id = require_bounded_text(
+            group_id,
+            field="group_id",
+            max_length=EMBY_GROUP_ID_MAX_LENGTH,
+        )
+        if username is not None:
+            username = require_bounded_text(
+                username,
+                field="username",
+                max_length=EMBY_USER_NAME_MAX_LENGTH,
+                allow_empty=True,
+            )
         session = self._get_session()
         try:
             entry = session.query(EmbyUserLink).filter(
@@ -453,6 +529,27 @@ class StorageUsersMixin(_SessionProvider):
         data: Dict[str, Any]
     ) -> int:
         """Creates a backup and returns its ID."""
+        server_id = require_bounded_text(
+            server_id,
+            field="server_id",
+            max_length=EMBY_STORED_IDENTIFIER_MAX_LENGTH,
+        )
+        user_id = require_bounded_text(
+            user_id,
+            field="user_id",
+            max_length=EMBY_STORED_IDENTIFIER_MAX_LENGTH,
+        )
+        username = require_bounded_text(
+            username,
+            field="username",
+            max_length=EMBY_USER_NAME_MAX_LENGTH,
+            allow_empty=True,
+        )
+        backup_type = require_bounded_text(
+            backup_type,
+            field="backup_type",
+            max_length=EMBY_BACKUP_TYPE_MAX_LENGTH,
+        )
         session = self._get_session()
         try:
             lock_user_backup_subject(
@@ -564,6 +661,16 @@ class StorageUsersMixin(_SessionProvider):
             raise StorageError(f"Icon profile not found: {profile_id}")
 
     def save_icon_profile(self, profile_id: str, label: str, is_group_profile: bool) -> None:
+        profile_id = require_bounded_text(
+            profile_id,
+            field="profile_id",
+            max_length=ICON_PROFILE_ID_MAX_LENGTH,
+        )
+        label = require_bounded_text(
+            label,
+            field="label",
+            max_length=ICON_PROFILE_LABEL_MAX_LENGTH,
+        )
         session = self._get_session()
         try:
             entry = session.get(EmbyIconProfile, profile_id)
@@ -616,6 +723,16 @@ class StorageUsersMixin(_SessionProvider):
             close_session_safely(session)
 
     def save_icon_rule(self, profile_id: str, column_key: str, icon_path: str, image_data: Optional[bytes] = None, mime_type: Optional[str] = None) -> None:
+        profile_id = require_bounded_text(
+            profile_id,
+            field="profile_id",
+            max_length=ICON_PROFILE_ID_MAX_LENGTH,
+        )
+        column_key = require_bounded_text(
+            column_key,
+            field="column_key",
+            max_length=ICON_RULE_COLUMN_KEY_MAX_LENGTH,
+        )
         session = self._get_session()
         try:
             self._require_icon_profile(session, profile_id)
@@ -681,6 +798,13 @@ class StorageUsersMixin(_SessionProvider):
             close_session_safely(session)
 
     def save_icon_binding(self, target_type: str, target_id: str, profile_id: str) -> None:
+        target_type = require_icon_target_type(target_type)
+        target_id = require_icon_target_id(target_type, target_id)
+        profile_id = require_bounded_text(
+            profile_id,
+            field="profile_id",
+            max_length=ICON_PROFILE_ID_MAX_LENGTH,
+        )
         session = self._get_session()
         try:
             self._require_icon_profile(session, profile_id)
@@ -746,6 +870,7 @@ class StorageUsersMixin(_SessionProvider):
             close_session_safely(session)
 
     def save_group_password(self, group_id: str, password_enc: str) -> None:
+        group_id = require_group_password_id(group_id)
         session = self._get_session()
         try:
             entry = session.get(EmbyGroupPassword, group_id)
@@ -768,6 +893,10 @@ class StorageUsersMixin(_SessionProvider):
         """Replace existing ciphertexts in one database transaction."""
         if not updates:
             return
+        updates = [
+            (require_group_password_id(group_id), password_enc)
+            for group_id, password_enc in updates
+        ]
         session = self._get_session()
         try:
             for group_id, password_enc in updates:

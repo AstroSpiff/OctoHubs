@@ -7,6 +7,8 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
+from tests.workflow_test_support import attach_test_operation_tracker
+
 
 def test_workflow_public_context_rejects_unknown_large_and_forged_fields():
     from services.workflow_api_models import WorkflowStartRequest
@@ -27,6 +29,7 @@ def test_workflow_manager_projects_internal_context_before_every_sink():
     from core.tasks import WorkflowManager
 
     manager = WorkflowManager()
+    attach_test_operation_tracker(manager)
     manager._start_workflow_thread_locked = lambda *_args, **_kwargs: None
 
     assert manager.start(

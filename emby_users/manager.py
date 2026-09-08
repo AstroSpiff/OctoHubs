@@ -121,7 +121,8 @@ class EmbyUserManager:
         self.icon_manager = IconManager(
             storage=self.storage,
             get_users_dashboard_data=self.dashboard_manager.get_users_dashboard_data,
-            get_server_by_id=self._get_server_by_id
+            get_server_by_id=self._get_server_by_id,
+            mutation_coordinator=self.mutation_coordinator,
         )
         self.playstate_manager = PlaystateManager(
             get_server_by_id=self._get_server_by_id,

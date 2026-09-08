@@ -10,7 +10,7 @@ from typing import Any, Callable, Optional
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 from starlette.concurrency import run_in_threadpool
 
 from app_helpers import DateTimeEncoder
@@ -21,7 +21,7 @@ from realtime.external_api_models import ExternalRealtimeChangesResponse
 from realtime.external_change_feed import EXTERNAL_CHANGE_RETENTION, read_external_changes
 from realtime.subscribers import sse_subscribers, websocket_subscribers
 from realtime.connection_limits import acquire_connection, auth_subject_id
-from realtime.lease_stream import LeaseBoundAsyncIterator
+from realtime.lease_stream import lease_owned_streaming_response
 from realtime.status_snapshot import shared_status_snapshot
 from core.websocket_io import accept_bounded, close_bounded, send_json_bounded
 from realtime.scan_socket_policy import (
@@ -378,10 +378,11 @@ async def emby_events_stream_api(request: Request):
         finally:
             if subscriber is not None:
                 sse_subscribers.unsubscribe(subscriber)
-            lease.release()
 
-    return StreamingResponse(
-        LeaseBoundAsyncIterator(event_stream(), lease),
+    return lease_owned_streaming_response(
+        event_stream(),
+        lease,
+        context="events SSE",
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -398,22 +399,21 @@ async def emby_status_stream_api(request: Request):
         raise HTTPException(status_code=429, detail="Troppe connessioni realtime")
 
     async def event_stream():
-        try:
-            while True:
-                if not await _revalidate_subject(request, subject):
-                    break
-                try:
-                    payload = await shared_status_snapshot(_build_emby_status_stream_payload)
-                    msg = f"data: {json.dumps(payload, cls=DateTimeEncoder)}\n\n"
-                    yield msg
-                    await asyncio.sleep(2)
-                except Exception:
-                    await asyncio.sleep(5)
-        finally:
-            lease.release()
+        while True:
+            if not await _revalidate_subject(request, subject):
+                break
+            try:
+                payload = await shared_status_snapshot(_build_emby_status_stream_payload)
+                msg = f"data: {json.dumps(payload, cls=DateTimeEncoder)}\n\n"
+                yield msg
+                await asyncio.sleep(2)
+            except Exception:
+                await asyncio.sleep(5)
 
-    return StreamingResponse(
-        LeaseBoundAsyncIterator(event_stream(), lease),
+    return lease_owned_streaming_response(
+        event_stream(),
+        lease,
+        context="status SSE",
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -441,38 +441,37 @@ async def workflow_events(request: Request):
         raise HTTPException(status_code=429, detail="Troppe connessioni realtime")
 
     async def generate():
-        try:
+        status = await asyncio.to_thread(workflow_manager.get_status)
+        yield f"data: {json.dumps(status)}\n\n"
+        last_status = status
+        updates_without_change = 0
+
+        while True:
+            await asyncio.sleep(2)
+            if not await _revalidate_subject(request, subject):
+                break
             status = await asyncio.to_thread(workflow_manager.get_status)
-            yield f"data: {json.dumps(status)}\n\n"
-            last_status = status
-            updates_without_change = 0
 
-            while True:
-                await asyncio.sleep(2)
-                if not await _revalidate_subject(request, subject):
-                    break
-                status = await asyncio.to_thread(workflow_manager.get_status)
-
-                # Invia aggiornamento se cambiato o periodicamente per il timer.
-                if status != last_status:
+            # Invia aggiornamento se cambiato o periodicamente per il timer.
+            if status != last_status:
+                yield f"data: {json.dumps(status)}\n\n"
+                last_status = status
+                updates_without_change = 0
+            else:
+                updates_without_change += 1
+                # Ogni 5 poll invia comunque per aggiornare il timer elapsed.
+                if updates_without_change >= 5:
                     yield f"data: {json.dumps(status)}\n\n"
-                    last_status = status
                     updates_without_change = 0
-                else:
-                    updates_without_change += 1
-                    # Ogni 5 poll invia comunque per aggiornare il timer elapsed.
-                    if updates_without_change >= 5:
-                        yield f"data: {json.dumps(status)}\n\n"
-                        updates_without_change = 0
 
-                if status.get("status") in ("completed", "failed", "idle"):
-                    await asyncio.sleep(1)
-                    break
-        finally:
-            lease.release()
+            if status.get("status") in ("completed", "failed", "idle"):
+                await asyncio.sleep(1)
+                break
 
-    return StreamingResponse(
-        LeaseBoundAsyncIterator(generate(), lease),
+    return lease_owned_streaming_response(
+        generate(),
+        lease,
+        context="workflow SSE",
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

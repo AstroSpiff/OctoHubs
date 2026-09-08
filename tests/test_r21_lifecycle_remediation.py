@@ -7,6 +7,7 @@ import time
 from unittest.mock import patch
 
 from core.tasks import ScanManager, WorkflowManager
+from tests.workflow_test_support import attach_test_operation_tracker
 
 
 def test_scan_manager_rejects_late_start_until_next_lifespan():
@@ -32,6 +33,7 @@ def test_workflow_start_is_joinable_before_shutdown_can_observe_it():
             return super().start()
 
     manager = WorkflowManager()
+    attach_test_operation_tracker(manager)
     start_result = []
     shutdown_result = []
     shutdown_error = []

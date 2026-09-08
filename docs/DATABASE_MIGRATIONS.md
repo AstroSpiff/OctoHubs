@@ -73,6 +73,15 @@ Revision `20260906_20` removes obsolete `EMBY_LATEST.STATE` and
 cache now have one authoritative PostgreSQL representation and are never read
 from or written back to the settings document.
 
+Revision `20260908_21` widens persisted remote Emby identifiers in user,
+library-association, Latest-cache, and Probe tables to the canonical
+128-character opaque identifier limit. It also widens icon binding targets to
+257 characters, enough for two maximum-length identifiers plus their separator.
+Synthetic unlinked-user password keys are widened to 266 characters for their
+prefix, two identifiers, and separator. Internal OctoHubs server keys remain
+UUID-sized. The migration preserves existing values and keeps API, manager, and
+PostgreSQL boundaries aligned.
+
 ## PostgreSQL integration test
 
 The migration integration test uses an isolated temporary schema on a PostgreSQL 16

@@ -26,6 +26,7 @@ from emby_latest.operations import fail_latest_refresh_operation
 from realtime.session_refresh_dispatcher import SessionRefreshDispatcher
 from services.background_job_registry import BackgroundJobRegistry
 from services.scheduler_occurrences import SchedulerOccurrenceClaim, SchedulerOccurrenceLease
+from tests.workflow_test_support import attach_test_operation_tracker
 
 
 pytestmark = pytest.mark.filterwarnings(
@@ -361,6 +362,7 @@ def test_workflow_ordinary_post_native_start_failure_stops_before_finalization(m
     exited = threading.Event()
     real_start = threading.Thread.start
     manager = WorkflowManager()
+    attach_test_operation_tracker(manager)
     storage = Storage()
     manager._db_storage = storage
 
@@ -851,6 +853,7 @@ def test_workflow_late_heartbeat_start_signal_has_generation_fenced_caretaker(
             self.release_done.set()
 
     manager = WorkflowManager()
+    attach_test_operation_tracker(manager)
     storage = Storage()
     manager._db_storage = storage
     monkeypatch.setattr(tasks_module, "_WORKFLOW_HEARTBEAT_INTERVAL_SECONDS", 0.01)

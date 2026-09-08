@@ -7,6 +7,10 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from core.library_group_names import LibraryGroupName
+from core.operation_identity import (
+    MAX_PUBLIC_OPERATION_ID_LENGTH,
+    PUBLIC_OPERATION_ID_PATTERN,
+)
 from core.workflow_context import MAX_WORKFLOW_TARGETS, MAX_WORKFLOW_TEXT_LENGTH
 
 
@@ -49,8 +53,8 @@ class WorkflowStopRequest(BaseModel):
 
     operation_id: str = Field(
         min_length=1,
-        max_length=128,
-        pattern=WORKFLOW_TEXT_PATTERN,
+        max_length=MAX_PUBLIC_OPERATION_ID_LENGTH,
+        pattern=PUBLIC_OPERATION_ID_PATTERN,
     )
 
 

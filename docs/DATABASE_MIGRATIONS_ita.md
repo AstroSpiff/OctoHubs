@@ -83,6 +83,16 @@ La revisione `20260906_20` elimina i payload obsoleti `EMBY_LATEST.STATE` ed
 ora una sola rappresentazione autorevole in PostgreSQL e non vengono più letti
 o riscritti nel documento delle impostazioni.
 
+La revisione `20260908_21` amplia a 128 caratteri, il limite canonico degli
+identificatori opachi, gli ID Emby remoti persistiti nelle tabelle utenti,
+associazioni libreria, cache Latest e Probe. Amplia inoltre a 257 caratteri i
+target dei binding icona, così possono contenere due identificatori alla
+lunghezza massima e il relativo separatore. Le chiavi password sintetiche degli
+utenti non collegati vengono ampliate a 266 caratteri per prefisso, due ID e
+separatore. Le chiavi server interne di OctoHubs restano dimensionate come UUID.
+La migrazione conserva i dati esistenti e allinea i limiti di API, manager e
+PostgreSQL.
+
 ## Test di integrazione PostgreSQL
 
 Il test delle migrazioni usa uno schema temporaneo isolato in PostgreSQL 16 e lo

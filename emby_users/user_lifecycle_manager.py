@@ -14,6 +14,11 @@ from emby_users.mutation_coordinator import (
     user_mutation_keys,
 )
 from core.log_sanitization import format_exception_for_log
+from core.storage.field_limits import (
+    EMBY_STORED_IDENTIFIER_MAX_LENGTH,
+    require_bounded_text,
+    require_emby_username,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +175,23 @@ class UserLifecycleManager:
         total: int,
         progress_callback: Optional[Callable[[Dict[str, Any]], None]],
     ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        try:
+            server_id = require_bounded_text(
+                server_id,
+                field="server_id",
+                max_length=EMBY_STORED_IDENTIFIER_MAX_LENGTH,
+            )
+            username = require_emby_username(username)
+        except ValueError:
+            return [], [self._creation_failure(
+                server_id,
+                username,
+                "Target non valido",
+                f"Target non valido: {username}",
+                index,
+                total,
+                progress_callback,
+            )]
         emit_progress(
             progress_callback,
             "create",

@@ -10,6 +10,14 @@ from core.http_response_limits import (
     read_bounded_json_response,
     require_success_and_close,
 )
+from core.storage.field_limits import (
+    ICON_PROFILE_ID_MAX_LENGTH,
+    ICON_PROFILE_LABEL_MAX_LENGTH,
+    ICON_RULE_COLUMN_KEY_MAX_LENGTH,
+    require_bounded_text,
+    require_icon_target_id,
+    require_icon_target_type,
+)
 from emby_runtime.api_clients import _emby_base_url
 from core.image_uploads import ImageUploadError, sanitize_image_bytes, sanitize_image_file
 from core.log_sanitization import (
@@ -19,8 +27,21 @@ from core.log_sanitization import (
 )
 from core.outbound_redirects import response_is_redirect
 from core.utils import get_nested
+from emby_users.mutation_coordinator import (
+    UserMutationCoordinator,
+    group_sync_key,
+    user_mutation_keys,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class IconTargetNotFoundError(ValueError):
+    """The requested binding target is absent from the current Emby snapshot."""
+
+
+class IconTargetBusyError(RuntimeError):
+    """The target is being changed by another coordinated user operation."""
 
 
 class IconManager:
@@ -29,10 +50,12 @@ class IconManager:
         storage,
         get_users_dashboard_data: Callable[[], Dict[str, Any]],
         get_server_by_id: Callable[[str], Optional[Dict[str, Any]]],
+        mutation_coordinator: UserMutationCoordinator | None = None,
     ):
         self.storage = storage
         self._get_users_dashboard_data = get_users_dashboard_data
         self._get_server_by_id = get_server_by_id
+        self._mutation_coordinator = mutation_coordinator or UserMutationCoordinator(storage)
 
     def get_icon_dashboard_data(self) -> Dict[str, Any]:
         """
@@ -61,8 +84,18 @@ class IconManager:
         }
 
     def save_icon_profile(self, label: str, is_group_profile: bool = False, profile_id: Optional[str] = None) -> str:
+        label = require_bounded_text(
+            label,
+            field="label",
+            max_length=ICON_PROFILE_LABEL_MAX_LENGTH,
+        )
         if not profile_id:
             profile_id = str(uuid.uuid4())
+        profile_id = require_bounded_text(
+            profile_id,
+            field="profile_id",
+            max_length=ICON_PROFILE_ID_MAX_LENGTH,
+        )
         self.storage.save_icon_profile(profile_id, label, is_group_profile)
         return profile_id
 
@@ -74,18 +107,46 @@ class IconManager:
         Binds a User or Group to a Profile and triggers sync.
         An empty profile removes the binding without changing the Emby image.
         """
-        if not (profile_id or "").strip():
-            self.storage.delete_icon_binding(target_type, target_id)
-            return
-        self._require_icon_profile(profile_id)
-        self.storage.save_icon_binding(target_type, target_id, profile_id)
-        self._sync_icons_for_binding(target_type, target_id)
+        target_type = require_icon_target_type(target_type)
+        target_id = require_icon_target_id(target_type, target_id)
+        normalized_profile_id = require_bounded_text(
+            profile_id,
+            field="profile_id",
+            max_length=ICON_PROFILE_ID_MAX_LENGTH,
+            allow_empty=True,
+        )
+        keys = self._binding_target_keys(target_type, target_id)
+        with self._mutation_coordinator.guard(keys) as acquired:
+            if not acquired:
+                raise IconTargetBusyError("Icon binding target is busy")
+            if normalized_profile_id:
+                self._require_icon_profile(normalized_profile_id)
+            if not normalized_profile_id:
+                self.storage.delete_icon_binding(target_type, target_id)
+                return
+            self._require_icon_target(target_type, target_id)
+            self.storage.save_icon_binding(
+                target_type,
+                target_id,
+                normalized_profile_id,
+            )
+            self._sync_icons_for_binding(target_type, target_id)
 
     def save_icon_rule(self, profile_id: str, column_key: str, file_storage) -> str:
         """
         Saves an uploaded icon file to DB and creates the rule. Triggers sync.
         file_storage: FastAPI UploadFile or similar
         """
+        profile_id = require_bounded_text(
+            profile_id,
+            field="profile_id",
+            max_length=ICON_PROFILE_ID_MAX_LENGTH,
+        )
+        column_key = require_bounded_text(
+            column_key,
+            field="column_key",
+            max_length=ICON_RULE_COLUMN_KEY_MAX_LENGTH,
+        )
         self._require_icon_profile(profile_id)
         image = sanitize_image_file(file_storage.file)
 
@@ -105,6 +166,31 @@ class IconManager:
         exists = getattr(self.storage, "icon_profile_exists", None)
         if callable(exists) and not exists(profile_id):
             raise ValueError(f"Icon profile not found: {profile_id}")
+
+    @staticmethod
+    def _binding_target_keys(target_type: str, target_id: str) -> tuple[str, ...]:
+        if target_type == "group":
+            return (group_sync_key(target_id),)
+        server_id, user_id = target_id.split(":", 1)
+        return user_mutation_keys(server_id, user_id)
+
+    def _require_icon_target(self, target_type: str, target_id: str) -> None:
+        dashboard = self._get_users_dashboard_data()
+        groups = dashboard.get("groups", []) if isinstance(dashboard, dict) else []
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            if target_type == "group" and str(group.get("id") or "") == target_id:
+                return
+            if target_type != "user":
+                continue
+            for user in group.get("users", []):
+                if not isinstance(user, dict):
+                    continue
+                user_target = f"{user.get('server_id') or ''}:{user.get('user_id') or ''}"
+                if user_target == target_id:
+                    return
+        raise IconTargetNotFoundError(f"Icon target not found: {target_type}:{target_id}")
 
     def delete_icon_rule(self, profile_id: str, column_key: str) -> None:
         """

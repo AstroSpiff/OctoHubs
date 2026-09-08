@@ -6,6 +6,19 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from core.library_group_names import MAX_LIBRARY_GROUP_NAME_LENGTH
+from core.storage.field_limits import (
+    EMBY_BACKUP_TYPE_MAX_LENGTH,
+    EMBY_GROUP_ID_MAX_LENGTH,
+    EMBY_STORED_IDENTIFIER_MAX_LENGTH,
+    EMBY_USER_NAME_MAX_LENGTH,
+    INTERNAL_SERVER_ID_MAX_LENGTH,
+    SYNTHETIC_GROUP_PASSWORD_ID_MAX_LENGTH,
+    ICON_BINDING_TARGET_ID_MAX_LENGTH,
+    ICON_BINDING_TARGET_TYPE_MAX_LENGTH,
+    ICON_PROFILE_ID_MAX_LENGTH,
+    ICON_PROFILE_LABEL_MAX_LENGTH,
+    ICON_RULE_COLUMN_KEY_MAX_LENGTH,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, BigInteger, String, Text, LargeBinary, ForeignKey, Index, UniqueConstraint, create_engine, func, or_, text
@@ -63,8 +76,9 @@ if SQLALCHEMY_AVAILABLE:
         id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
         cache_kind = Column(String(20), nullable=False, index=True)  # type: ignore[assignment]
         item_type = Column(String(20), index=True)  # type: ignore[assignment]
-        server_id = Column(String(36), index=True)  # type: ignore[assignment]
-        item_id = Column(String(36), index=True)  # type: ignore[assignment]
+        # OctoHubs server keys are generated UUIDs; remote Emby IDs are opaque.
+        server_id = Column(String(INTERNAL_SERVER_ID_MAX_LENGTH), index=True)  # type: ignore[assignment]
+        item_id = Column(String(EMBY_STORED_IDENTIFIER_MAX_LENGTH), index=True)  # type: ignore[assignment]
         signature = Column(String(255), index=True)  # type: ignore[assignment]
         batch_id = Column(String(255), index=True)  # type: ignore[assignment]
         title = Column(String(500))  # type: ignore[assignment]
@@ -102,7 +116,7 @@ if SQLALCHEMY_AVAILABLE:
         imdb_id = Column(String(50))  # type: ignore[assignment]
         tvdb_id = Column(String(50))  # type: ignore[assignment]
         trakt_id = Column(String(100))  # type: ignore[assignment]
-        library_id = Column(String(36))  # type: ignore[assignment]
+        library_id = Column(String(EMBY_STORED_IDENTIFIER_MAX_LENGTH))  # type: ignore[assignment]
         library_name = Column(String(500))  # type: ignore[assignment]
         server_name = Column(String(255))  # type: ignore[assignment]
         server_icon = Column(String(100))  # type: ignore[assignment]
@@ -162,7 +176,7 @@ if SQLALCHEMY_AVAILABLE:
         source_name = Column(String(200))  # type: ignore[assignment]
         path = Column(Text)  # type: ignore[assignment]
         size = Column(BigInteger)  # type: ignore[assignment]
-        media_source_id = Column(String(100))  # type: ignore[assignment]
+        media_source_id = Column(String(EMBY_STORED_IDENTIFIER_MAX_LENGTH))  # type: ignore[assignment]
         added_at = Column(DateTime)  # type: ignore[assignment]
         video_details = Column(Text)  # type: ignore[assignment]
         audio_details = Column(Text)  # type: ignore[assignment]
@@ -276,8 +290,8 @@ if SQLALCHEMY_AVAILABLE:
 
     class LibraryAssociation(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "library_associations"
-        server_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
-        library_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
+        server_id = Column(String(EMBY_STORED_IDENTIFIER_MAX_LENGTH), primary_key=True)  # type: ignore[assignment]
+        library_id = Column(String(EMBY_STORED_IDENTIFIER_MAX_LENGTH), primary_key=True)  # type: ignore[assignment]
         library_name = Column(String(500))  # type: ignore[assignment]
         group_name = Column(String(MAX_LIBRARY_GROUP_NAME_LENGTH), index=True)  # type: ignore[assignment]
         collection_type = Column(String(50))  # type: ignore[assignment]
@@ -311,17 +325,17 @@ if SQLALCHEMY_AVAILABLE:
             ),
         )
         id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
-        item_id = Column(String(36), index=True)  # type: ignore[assignment]
+        item_id = Column(String(EMBY_STORED_IDENTIFIER_MAX_LENGTH), index=True)  # type: ignore[assignment]
         item_name = Column(String(500))  # type: ignore[assignment]
         item_type = Column(String(50))  # type: ignore[assignment]
         reason = Column(Text)  # type: ignore[assignment]
         error_type = Column(String(20))  # type: ignore[assignment]
         retry_count = Column(Integer, default=0)  # type: ignore[assignment]
-        server_id = Column(String(36), index=True)  # type: ignore[assignment]
+        server_id = Column(String(INTERNAL_SERVER_ID_MAX_LENGTH), index=True)  # type: ignore[assignment]
         server_name = Column(String(255))  # type: ignore[assignment]
-        library_id = Column(String(36))  # type: ignore[assignment]
+        library_id = Column(String(EMBY_STORED_IDENTIFIER_MAX_LENGTH))  # type: ignore[assignment]
         library_name = Column(String(500))  # type: ignore[assignment]
-        media_source_id = Column(String(36))  # type: ignore[assignment]
+        media_source_id = Column(String(EMBY_STORED_IDENTIFIER_MAX_LENGTH))  # type: ignore[assignment]
         scope = Column(String(20))  # type: ignore[assignment]
         failed_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
 
@@ -340,11 +354,11 @@ if SQLALCHEMY_AVAILABLE:
             Index("ix_emby_probe_queue_claim", "claim_token", "claimed_at"),
         )
         id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
-        item_id = Column(String(36), index=True)  # type: ignore[assignment]
-        server_id = Column(String(36), index=True)  # type: ignore[assignment]
-        media_source_id = Column(String(36))  # type: ignore[assignment]
+        item_id = Column(String(EMBY_STORED_IDENTIFIER_MAX_LENGTH), index=True)  # type: ignore[assignment]
+        server_id = Column(String(INTERNAL_SERVER_ID_MAX_LENGTH), index=True)  # type: ignore[assignment]
+        media_source_id = Column(String(EMBY_STORED_IDENTIFIER_MAX_LENGTH))  # type: ignore[assignment]
         scope = Column(String(20))  # type: ignore[assignment]
-        library_id = Column(String(36))  # type: ignore[assignment]
+        library_id = Column(String(EMBY_STORED_IDENTIFIER_MAX_LENGTH))  # type: ignore[assignment]
         library_name = Column(String(500))  # type: ignore[assignment]
         name = Column(String(500))  # type: ignore[assignment]
         series_name = Column(String(500))  # type: ignore[assignment]
@@ -360,9 +374,9 @@ if SQLALCHEMY_AVAILABLE:
     class EmbyProbeHistory(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "emby_probe_history"
         id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
-        item_id = Column(String(36), index=True)  # type: ignore[assignment]
-        server_id = Column(String(36), index=True)  # type: ignore[assignment]
-        media_source_id = Column(String(36))  # type: ignore[assignment]
+        item_id = Column(String(EMBY_STORED_IDENTIFIER_MAX_LENGTH), index=True)  # type: ignore[assignment]
+        server_id = Column(String(INTERNAL_SERVER_ID_MAX_LENGTH), index=True)  # type: ignore[assignment]
+        media_source_id = Column(String(EMBY_STORED_IDENTIFIER_MAX_LENGTH))  # type: ignore[assignment]
         scope = Column(String(20))  # type: ignore[assignment]
         name = Column(String(500))  # type: ignore[assignment]
         library_name = Column(String(500))  # type: ignore[assignment]
@@ -390,8 +404,8 @@ if SQLALCHEMY_AVAILABLE:
             ),
         )
         id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
-        server_id = Column(String(36), index=True)  # type: ignore[assignment]
-        library_id = Column(String(36), index=True)  # type: ignore[assignment]
+        server_id = Column(String(INTERNAL_SERVER_ID_MAX_LENGTH), index=True)  # type: ignore[assignment]
+        library_id = Column(String(EMBY_STORED_IDENTIFIER_MAX_LENGTH), index=True)  # type: ignore[assignment]
         server_name = Column(String(255))  # type: ignore[assignment]
         event_type = Column(String(50))  # type: ignore[assignment]
         status = Column(String(50))  # type: ignore[assignment]
@@ -416,10 +430,10 @@ if SQLALCHEMY_AVAILABLE:
                 sqlite_where=text("is_leader = 1"),
             ),
         )
-        server_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
-        user_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
-        group_id = Column(String(255))  # type: ignore[assignment]
-        username = Column(String(255), nullable=False)  # type: ignore[assignment]
+        server_id = Column(String(EMBY_STORED_IDENTIFIER_MAX_LENGTH), primary_key=True)  # type: ignore[assignment]
+        user_id = Column(String(EMBY_STORED_IDENTIFIER_MAX_LENGTH), primary_key=True)  # type: ignore[assignment]
+        group_id = Column(String(EMBY_GROUP_ID_MAX_LENGTH))  # type: ignore[assignment]
+        username = Column(String(EMBY_USER_NAME_MAX_LENGTH), nullable=False)  # type: ignore[assignment]
         link_key = Column(String(255), nullable=True, index=True)  # type: ignore[assignment]
         is_leader = Column(Boolean, default=False)  # type: ignore[assignment]
         updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
@@ -436,37 +450,37 @@ if SQLALCHEMY_AVAILABLE:
             ),
         )
         id = Column(Integer, primary_key=True, autoincrement=True)  # type: ignore[assignment]
-        server_id = Column(String(36), nullable=False, index=True)  # type: ignore[assignment]
-        user_id = Column(String(36), nullable=False, index=True)  # type: ignore[assignment]
-        username = Column(String(255), nullable=True)  # type: ignore[assignment]
-        backup_type = Column(String(50), nullable=True)  # type: ignore[assignment]
+        server_id = Column(String(EMBY_STORED_IDENTIFIER_MAX_LENGTH), nullable=False, index=True)  # type: ignore[assignment]
+        user_id = Column(String(EMBY_STORED_IDENTIFIER_MAX_LENGTH), nullable=False, index=True)  # type: ignore[assignment]
+        username = Column(String(EMBY_USER_NAME_MAX_LENGTH), nullable=True)  # type: ignore[assignment]
+        backup_type = Column(String(EMBY_BACKUP_TYPE_MAX_LENGTH), nullable=True)  # type: ignore[assignment]
         data = Column(JSON, nullable=False)  # type: ignore[assignment]
         created_at = Column(DateTime, default=_utcnow, nullable=False)  # type: ignore[assignment]
 
     class EmbyUserCreationJournal(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "emby_user_creation_journal"
-        server_id = Column(String(36), primary_key=True)  # type: ignore[assignment]
-        normalized_username = Column(String(255), primary_key=True)  # type: ignore[assignment]
-        username = Column(String(255), nullable=False)  # type: ignore[assignment]
+        server_id = Column(String(EMBY_STORED_IDENTIFIER_MAX_LENGTH), primary_key=True)  # type: ignore[assignment]
+        normalized_username = Column(String(EMBY_USER_NAME_MAX_LENGTH), primary_key=True)  # type: ignore[assignment]
+        username = Column(String(EMBY_USER_NAME_MAX_LENGTH), nullable=False)  # type: ignore[assignment]
         status = Column(String(32), nullable=False, default="creating")  # type: ignore[assignment]
         created_at = Column(DateTime, default=_utcnow, nullable=False)  # type: ignore[assignment]
         updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)  # type: ignore[assignment]
 
     class EmbyIconProfile(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "emby_icon_profiles"
-        id = Column(String(36), primary_key=True)  # type: ignore[assignment]
-        label = Column(String(255), nullable=False)  # type: ignore[assignment]
+        id = Column(String(ICON_PROFILE_ID_MAX_LENGTH), primary_key=True)  # type: ignore[assignment]
+        label = Column(String(ICON_PROFILE_LABEL_MAX_LENGTH), nullable=False)  # type: ignore[assignment]
         is_group_profile = Column(Boolean, default=False)  # type: ignore[assignment]
         updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
 
     class EmbyIconRule(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "emby_icon_rules"
         profile_id = Column(
-            String(36),
+            String(ICON_PROFILE_ID_MAX_LENGTH),
             ForeignKey("emby_icon_profiles.id", ondelete="CASCADE"),
             primary_key=True,
         )  # type: ignore[assignment]
-        column_key = Column(String(100), primary_key=True)  # type: ignore[assignment]
+        column_key = Column(String(ICON_RULE_COLUMN_KEY_MAX_LENGTH), primary_key=True)  # type: ignore[assignment]
         icon_path = Column(Text)  # type: ignore[assignment]
         image_data = Column(LargeBinary)  # type: ignore[assignment]
         mime_type = Column(String(50))  # type: ignore[assignment]
@@ -474,10 +488,10 @@ if SQLALCHEMY_AVAILABLE:
 
     class EmbyIconBinding(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "emby_icon_bindings"
-        target_type = Column(String(20), primary_key=True)  # type: ignore[assignment]
-        target_id = Column(String(255), primary_key=True)  # type: ignore[assignment]
+        target_type = Column(String(ICON_BINDING_TARGET_TYPE_MAX_LENGTH), primary_key=True)  # type: ignore[assignment]
+        target_id = Column(String(ICON_BINDING_TARGET_ID_MAX_LENGTH), primary_key=True)  # type: ignore[assignment]
         profile_id = Column(
-            String(36),
+            String(ICON_PROFILE_ID_MAX_LENGTH),
             ForeignKey("emby_icon_profiles.id", ondelete="CASCADE"),
             nullable=False,
             index=True,
@@ -486,7 +500,7 @@ if SQLALCHEMY_AVAILABLE:
 
     class EmbyGroupPassword(Base):  # type: ignore[valid-type,misc]
         __tablename__ = "emby_group_passwords"
-        group_id = Column(String(255), primary_key=True)  # type: ignore[assignment]
+        group_id = Column(String(SYNTHETIC_GROUP_PASSWORD_ID_MAX_LENGTH), primary_key=True)  # type: ignore[assignment]
         password_enc = Column(Text, nullable=False)  # type: ignore[assignment]
         updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow)  # type: ignore[assignment]
 
