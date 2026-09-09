@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from emby_runtime.routes import router as runtime_router
 from emby_runtime.runtime_api_models import EmbyStatusSnapshotResponse
 from emby_runtime.transcode_guard_api_models import (
+    TranscodeGuardStatusResponse,
     TranscodeGuardStatsResponse,
     TranscodeGuardStreamDetailResponse,
 )
@@ -59,10 +60,36 @@ def test_transcode_guard_routes_publish_stats_and_detail_models():
     app.include_router(transcode_router)
     schema = app.openapi()
 
+    status = schema["paths"]["/api/emby/transcode-guard/status"]["get"]["responses"]["200"]
     stats = schema["paths"]["/api/emby/transcode-guard/stats"]["get"]["responses"]["200"]
     detail = schema["paths"]["/api/emby/transcode-guard/streams/{stream_id}"]["get"]["responses"]["200"]
+    assert status["content"]["application/json"]["schema"]["$ref"] == "#/components/schemas/TranscodeGuardStatusResponse"
     assert stats["content"]["application/json"]["schema"]["$ref"] == "#/components/schemas/TranscodeGuardStatsResponse"
     assert detail["content"]["application/json"]["schema"]["$ref"] == "#/components/schemas/TranscodeGuardStreamDetailResponse"
+
+
+def test_transcode_guard_status_model_accepts_runtime_summary_envelopes():
+    payload = TranscodeGuardStatusResponse.model_validate({
+        "ok": True,
+        "running": True,
+        "settings": {"enabled": True},
+        "active_violations": [],
+        "recent_events": [],
+        "stream_history": {
+            "rows": [{"id": "stream-1"}],
+            "total": 3,
+            "correct": 1,
+            "violations": 2,
+            "active": 1,
+        },
+        "playback_events": {"rows": [{"id": "event-1"}], "total": 4},
+        "last_result": {"checked": 1},
+    })
+
+    assert payload.stream_history.rows == [{"id": "stream-1"}]
+    assert payload.stream_history.total == 3
+    assert payload.playback_events.rows == [{"id": "event-1"}]
+    assert payload.playback_events.total == 4
 
 
 def test_transcode_guard_stat_models_accept_existing_snapshot_shapes():

@@ -355,6 +355,7 @@ def test_dry_run_reports_uninitialized_database_without_writing(tmp_path):
         "20260908_22",
         "20260908_23",
         "20260908_24",
+        "20260909_25",
     ]
     engine = create_engine(database_url, future=True)
     try:
@@ -397,6 +398,7 @@ def test_upgrade_records_the_unified_alembic_baseline(tmp_path):
         "20260908_22",
         "20260908_23",
         "20260908_24",
+        "20260909_25",
     ]
     assert status.applied == [
         "20260829_01",
@@ -423,6 +425,7 @@ def test_upgrade_records_the_unified_alembic_baseline(tmp_path):
         "20260908_22",
         "20260908_23",
         "20260908_24",
+        "20260909_25",
     ]
     assert status.pending == []
     assert validation["ok"] is True
@@ -712,6 +715,7 @@ def test_reconciliation_runs_for_database_already_marked_at_broken_baseline(tmp_
             "20260908_22",
             "20260908_23",
             "20260908_24",
+            "20260909_25",
         ]
         assert {"name", "scope", "error_details"}.issubset(columns)
     finally:

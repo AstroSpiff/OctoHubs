@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from io import BytesIO
 from unittest.mock import patch
 
 import requests
@@ -72,6 +73,43 @@ def test_emby_redirect_is_rejected_without_following_credentials():
     assert (success, message) == (False, "Redirect Emby rifiutato")
     assert request.call_count == 1
     assert request.call_args.kwargs["allow_redirects"] is False
+
+
+def test_emby_mutation_accepts_empty_success_response():
+    response = requests.Response()
+    response.status_code = 204
+    response._content = b""
+    response.raw = BytesIO(b"")
+
+    with patch(
+        "emby_runtime.api_clients_emby.requests.request", return_value=response
+    ) as request:
+        success, payload = _call_emby_api(
+            {"url": "https://emby.example.test", "api_key": CANARY},
+            "Sessions/session-1/Message",
+            method="POST",
+        )
+
+    assert (success, payload) == (True, {})
+    assert request.call_args.args[:2] == (
+        "POST",
+        "https://emby.example.test/Sessions/session-1/Message",
+    )
+
+
+def test_emby_read_rejects_empty_success_response():
+    response = requests.Response()
+    response.status_code = 200
+    response._content = b""
+    response.raw = BytesIO(b"")
+
+    with patch(
+        "emby_runtime.api_clients_emby.requests.get", return_value=response
+    ):
+        assert _call_emby_api(
+            {"url": "https://emby.example.test", "api_key": CANARY},
+            "System/Info",
+        ) == (False, "Risposta Emby non valida")
 
 
 def test_jellyseerr_request_failure_is_generic_through_snapshot(monkeypatch, caplog):

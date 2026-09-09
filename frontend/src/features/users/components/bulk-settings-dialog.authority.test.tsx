@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getSettingsInfo, getSettingsSchema } from "@/features/user-settings/api";
+import type { UserSettings } from "@/features/user-settings/types";
 import { BulkSettingsDialog } from "@/features/users/components/bulk-settings-dialog";
 import type { EmbyUser } from "@/features/users/types";
 
@@ -85,7 +86,10 @@ describe("BulkSettingsDialog authoritative targets", () => {
   });
 });
 
-function dialog(users: EmbyUser[], onApply: ReturnType<typeof vi.fn>) {
+function dialog(
+  users: EmbyUser[],
+  onApply: (input: { users: EmbyUser[]; settings: UserSettings; applyLibraries: boolean }) => void,
+) {
   return (
     <BulkSettingsDialog
       users={users}

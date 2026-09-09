@@ -3,6 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Mock } from "vitest";
 
 import {
   pollTraktDeviceFlow,
@@ -48,7 +49,7 @@ function device(code: string, interval = 2): TraktDeviceStart {
 describe("TraktDeviceFlow lifecycle", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
-  let onChanged: ReturnType<typeof vi.fn>;
+  let onChanged: Mock<(message: string) => void>;
 
   beforeEach(() => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true;

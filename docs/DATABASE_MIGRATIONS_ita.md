@@ -118,6 +118,36 @@ senza fuso usata dai modelli canonici e da uno schema Alembic nuovo. La
 correzione conserva i dati e il downgrade non reintroduce intenzionalmente il
 tipo specifico del vecchio deployment.
 
+La revisione `20260909_25` completa la pulizia fisica di un database `FastAPI`
+pubblicato. Prima dell'avvio di Alembic, il lifecycle riconosce le due forme
+pubblicate della cache immagini Emby e valorizza il riferimento deterministico
+`cache://` richiesto dalla revisione 04. La revisione 25 trasferisce quindi byte
+e MIME type delle immagini nelle colonne canoniche, riconcilia per timestamp
+key-value, regole richieste, overview richieste e checkpoint Probe recenti e
+infine elimina le sorgenti sostituite. Riconcilia inoltre tutti i cambi nome di
+colonna supportati dalle revisioni 03/04, rimuove le impostazioni RSS ritirate e
+le relative tabelle vuote ed elimina i campi di sola cache obsoleti. Le tabelle
+sorgente restano bloccate per l'intera transazione, così un vecchio container non
+può scrivere tra riconciliazione e rimozione. Conflitti allo stesso timestamp,
+valori sorgente/destinazione discordanti o tabelle popolate senza destinazione
+canonica interrompono atomicamente l'upgrade senza cancellare dati. Dopo un
+upgrade riuscito, il validatore rifiuta ogni tabella, colonna o sequenza ritirata
+ancora presente.
+
+La revisione 25 è intenzionalmente irreversibile: il suo downgrade Alembic è un
+no-op e non ricrea tabelle, colonne o dati ritirati. Per tornare a un container
+`FastAPI` dopo il completamento della revisione 25, arresta OctoHubs e ripristina
+nel database gestito dall'operatore il dump PostgreSQL precedente all'upgrade.
+Arretrare soltanto il marker di revisione Alembic non è un rollback valido.
+
+Per aggiornare un'installazione esistente, collega il nuovo container al database
+PostgreSQL che contiene i dati `FastAPI`. Non scegliere un database nuovo e vuoto,
+a meno di avervi prima ripristinato un backup del database precedente. Conserva
+il dump PostgreSQL gestito dall'operatore finché avvio dell'applicazione, `python
+cli.py db validate`, confronto dei conteggi e login non sono riusciti. La prima
+lettura delle impostazioni cifra con `PASSWORD_SECRET` le credenziali prima in
+chiaro; conserva lo stesso secret per ogni riavvio successivo.
+
 Il deployment `FastAPI` pubblicato conservava gli account di accesso web nel
 proprio database auth SQLite separato. OctoHubs non importa quel database in
 PostgreSQL. Se dopo la migrazione la tabella PostgreSQL `users` è vuota, il

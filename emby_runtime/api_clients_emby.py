@@ -44,7 +44,8 @@ def _call_emby_api(server, path, method="GET", params=None, json_payload=None) -
         "Accept": "application/json"
     }
     try:
-        if method.upper() == "GET":
+        normalized_method = method.upper()
+        if normalized_method == "GET":
             response = requests.get(
                 target,
                 headers=headers,
@@ -55,7 +56,7 @@ def _call_emby_api(server, path, method="GET", params=None, json_payload=None) -
             )
         else:
             response = requests.request(
-                method.upper(),
+                normalized_method,
                 target,
                 headers=headers,
                 params=merged_params,
@@ -68,7 +69,13 @@ def _call_emby_api(server, path, method="GET", params=None, json_payload=None) -
             close_response_safely(response)
             return False, "Redirect Emby rifiutato"
         try:
-            payload = read_bounded_json_response(response)
+            # Emby command endpoints commonly acknowledge successful writes
+            # with 204 No Content. Reads still require a JSON document, while
+            # mutating calls accept either bounded JSON or an empty success.
+            payload = read_bounded_json_response(
+                response,
+                allow_empty=normalized_method != "GET",
+            )
         except requests.HTTPError as exc:
             failed_response = exc.response
             if failed_response is not None:
@@ -539,7 +546,7 @@ def _send_emby_session_message(
 ):
     if not session_id:
         return False, "ID sessione mancante"
-    params = {
+    params: Dict[str, Any] = {
         "Header": header or "OctoHubs",
         "Text": text or "",
     }

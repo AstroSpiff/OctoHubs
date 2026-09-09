@@ -149,6 +149,50 @@ class _RaisingEnrichManager:
 
 
 class LatestApiHandlerTests(unittest.TestCase):
+    def test_latest_snapshot_projects_cached_feed_to_requested_bounds(self):
+        cached_movies = [
+            {"id": "a-1", "server_id": "a"},
+            {"id": "a-2", "server_id": "a"},
+            {"id": "b-1", "server_id": "b"},
+            {"id": "c-1", "server_id": "c"},
+        ]
+        cached_series = [
+            {"id": "series-a", "server_id": "a"},
+            {"id": "series-b", "server_id": "b"},
+            {"id": "series-c", "server_id": "c"},
+        ]
+        manager = _RefreshingSnapshotManager(
+            initial_payload={
+                "movies": cached_movies,
+                "series": cached_series,
+                "errors": [],
+            }
+        )
+
+        with patch("emby_latest.get_manager", return_value=manager), patch(
+            "core.config_manager.load_config",
+            return_value=({"DATABASE": {"enabled": True}}, True),
+        ), patch("core.config_manager._db_enabled", return_value=True), patch(
+            "emby_latest.jellyseerr._apply_jellyseerr_request_info"
+        ):
+            payload, status_code = build_latest_snapshot_payload(
+                limit=2,
+                per_server_limit=1,
+                force=False,
+                cache_only=True,
+                view="history",
+            )
+
+        assert status_code == 200
+        assert [item["id"] for item in payload["movies"]] == ["a-1", "b-1"]
+        assert [item["id"] for item in payload["series"]] == ["series-a", "series-b"]
+        assert cached_movies == [
+            {"id": "a-1", "server_id": "a"},
+            {"id": "a-2", "server_id": "a"},
+            {"id": "b-1", "server_id": "b"},
+            {"id": "c-1", "server_id": "c"},
+        ]
+
     def test_latest_snapshot_normalizes_view_aliases(self):
         cases = (
             ("history", "feed"),

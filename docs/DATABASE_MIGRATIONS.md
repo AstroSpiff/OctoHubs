@@ -107,6 +107,35 @@ by the canonical models and fresh Alembic schema. The repair is data-preserving
 and intentionally does not reintroduce the deployment-specific type on
 downgrade.
 
+Revision `20260909_25` completes the physical cleanup of a published `FastAPI`
+database. Before Alembic starts, the migration lifecycle recognizes the two
+published Emby image-cache shapes and supplies the deterministic `cache://`
+reference required by revision 04. Revision 25 then copies the old image bytes
+and MIME type into the canonical columns, reconciles key-value settings,
+request rules, request overview and recent Probe checkpoints by timestamp, and
+drops their superseded sources. It also reconciles every column rename supported
+by revisions 03/04, removes the retired RSS settings and empty RSS storage, and
+deletes obsolete cache-only fields. Source tables are locked for the whole
+transaction so a previous container cannot write between reconciliation and
+removal. Equal-time conflicts, conflicting source/target values, or populated
+tables without a canonical destination stop the upgrade atomically instead of
+deleting data. After a successful upgrade, schema validation rejects every known
+retired table, column or sequence that remains.
+
+Revision 25 is intentionally irreversible: its Alembic downgrade is a no-op and
+does not recreate retired tables, columns or data. To return to a `FastAPI`
+container after revision 25 has succeeded, stop OctoHubs and restore the
+pre-upgrade PostgreSQL dump into the operator-managed database. Moving only the
+Alembic revision marker backwards is not a valid rollback.
+
+For an existing installation, point the new container at the PostgreSQL database
+that contains the `FastAPI` data. Do not select a newly created empty database
+unless a backup of the old database has first been restored into it. Keep an
+operator-managed PostgreSQL dump until application startup, `python cli.py db
+validate`, record-count checks and login have all succeeded. The first settings
+load encrypts previously plaintext credentials with `PASSWORD_SECRET`; retain
+that same secret for every later restart.
+
 The published `FastAPI` deployment kept web-login accounts in its separate
 SQLite auth database. OctoHubs does not import that database into PostgreSQL.
 When the migrated PostgreSQL `users` table is empty, the normal

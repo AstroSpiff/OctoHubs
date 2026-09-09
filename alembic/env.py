@@ -11,6 +11,7 @@ from alembic import context
 from sqlalchemy import create_engine, engine_from_config, pool, text
 
 from core.auth import Base as AuthBase
+from core.database_fastapi_upgrade import prepare_published_fastapi_schema
 from core.database_timeouts import postgres_engine_options
 from core.log_sanitization import format_exception_for_log
 from core.storage.storage_models import Base as StorageBase
@@ -163,6 +164,13 @@ def run_migrations_online() -> None:
             # session-level advisory lock survives this commit, while Alembic
             # must start its own transaction so successful DDL is not rolled
             # back when the connection closes.
+            connection.commit()
+            # Prepare the recognized published FastAPI image-cache shape before
+            # the immutable Alembic revision chain inspects its nullability.
+            prepare_published_fastapi_schema(connection)
+            # Inspection itself starts SQLAlchemy's autobegin transaction.
+            # End it even when no preparation was required so Alembic owns and
+            # commits the following migration transaction.
             connection.commit()
         context.configure(
             connection=connection,

@@ -7,16 +7,17 @@
 - **Baseline immutabile:** `cef2a66cd8cdd72f21b41031860635e39b4ce0cd`
   (`fix: complete R43 review remediation cycle`, 2026-09-08T12:43:40+02:00).
 - **Worktree iniziale:** pulita.
-- **Esito:** **5 finding risolti, 0 aperti**, 0 decisioni accettate nuove e 0
+- **Esito:** **10 finding risolti, 0 aperti**, 0 decisioni accettate nuove e 0
   finding bloccati.
-- **Modifiche:** implementazione, migrazioni Alembic 22 e 23, regressori, canary,
-  gate di classe e aggiornamento dello stesso report. Il ciclo viene chiuso con
-  un checkpoint locale; nessun push o tag è stato eseguito.
+- **Modifiche:** implementazione, migrazioni Alembic 22-25, regressori, canary,
+  gate di classe e addendum della validazione sul deployment. Il ciclo iniziale
+  è stato chiuso con un checkpoint locale; l'addendum è in attesa del successivo
+  checkpoint. Nessun push o tag è stato eseguito per l'addendum.
 
 | Severità | Aperti | Risolti |
 | --- | ---: | --- |
-| Alta | 0 | — |
-| Media | 0 | R44-M-01 … R44-M-03 |
+| Alta | 0 | R44-H-01 … R44-H-04 |
+| Media | 0 | R44-M-01 … R44-M-04 |
 | Bassa | 0 | R44-L-01 … R44-L-02 |
 
 ## Metodo e perimetro
@@ -454,10 +455,227 @@ riprodotti in R44.
 
 ## Stato finale della fase
 
-Il ciclo R44 è completo sulla baseline registrata: **5 finding risolti, 0
-aperti**, 0 nuove decisioni accettate e 0 blocchi. La causa comune e le superfici
+Il ciclo R44 iniziale è completo sulla baseline registrata: **5 finding risolti,
+0 aperti**, 0 nuove decisioni accettate e 0 blocchi. La causa comune e le superfici
 analoghe sono state corrette; regressori, canary PostgreSQL, gate di classe e
 review indipendente sono documentati sopra. Tutti i gate applicabili sono
 verdi; Docker Scout è l'unico controllo esterno non eseguito perché manca
 l'autenticazione Docker ID. Il ciclo viene chiuso con un checkpoint locale;
 nessun push o tag è stato eseguito.
+
+## Addendum — validazione del deployment `v0.5.2` (2026-09-08)
+
+### Contesto e baseline
+
+- **Baseline dell'addendum:** `9b6a2b3` (`main`), worktree iniziale pulita.
+- **Metodo:** navigazione autenticata della UI pubblicata, lettura dei log
+  container tramite Portainer, richieste HTTP autenticate e riproduzioni locali
+  isolate. Il deployment è stato fermato dall'operatore prima della remediation
+  e non è stato riavviato o modificato durante il lavoro locale.
+- **Esito:** cinque ulteriori finding risolti; nessun finding dell'addendum resta
+  aperto.
+
+### R44-H-01 — Lo status Transcode Guard restituisce sempre HTTP 500 — resolved
+
+**Classificazione:** superficie analoga della famiglia contratto
+runtime/FastAPI/OpenAPI/TypeScript; non è una riapertura esplicita di un finding
+precedente.
+
+- **Riproduzione produzione:** `GET
+  /api/v1/emby/transcode-guard/status` restituiva 500, mentre settings e statistiche
+  restavano raggiungibili. La pagina mostrava `Errore HTTP 500` e disabilitava i
+  controlli dipendenti dallo stato.
+- **Causa radice:** `TranscodeGuardService.get_status()` restituisce
+  `stream_history` e `playback_events` come summary envelope con `rows` e
+  contatori; `TranscodeGuardStatusResponse` li dichiarava erroneamente come
+  liste. FastAPI rifiutava la risposta durante la serializzazione.
+- **Soluzione:** introdotti modelli espliciti per i due envelope, coerenti con il
+  servizio e con i tipi TypeScript già utilizzati dalla UI.
+- **Regressori:** validazione Pydantic della forma di produzione e asserzione
+  OpenAPI della route status in `tests/test_emby_runtime_api_models.py`.
+- **Superfici analoghe:** verificati status, statistiche, dettaglio stream,
+  settings e relativi tipi frontend. Nessun altro mismatch della stessa area è
+  stato trovato.
+- **Rischio residuo:** nessuno noto sul contratto corrente; i record interni
+  restano intenzionalmente estensibili.
+
+### R44-H-02 — Le risposte Emby vuote causano un ciclo continuo di falsi errori — resolved
+
+**Classificazione:** nuova causa nella famiglia semantica delle risposte HTTP
+upstream; non è una regressione introdotta dalla remediation R44 iniziale.
+
+- **Riproduzione produzione:** le ultime 40 operazioni erano tutte errori
+  `Avviso Transcode Guard` con `Risposta Emby non valida`; i log ripetevano lo
+  stesso invio a ogni poll. Il warning non veniva marcato come riuscito e veniva
+  quindi ritentato.
+- **Causa radice:** `_call_emby_api` pretendeva JSON anche per i comandi mutanti.
+  Emby può confermare un comando riuscito con una risposta vuota, che il client
+  classificava come errore di trasporto.
+- **Soluzione:** le letture `GET` continuano a richiedere JSON valido; i comandi
+  non-GET accettano sia JSON bounded sia un corpo vuoto riuscito. Status HTTP,
+  redirect, limite di dimensione e chiusura della risposta restano invariati.
+- **Regressori e canary:** risposta reale `requests.Response` 204 vuota accettata
+  come `(True, {})`; risposta GET 200 vuota ancora respinta. I test di servizio
+  Transcode Guard già verificano che un warning riuscito sia conteggiato e non
+  reiterato oltre `max_warnings`.
+- **Superfici analoghe:** inventariati tutti i caller di `_call_emby_api`: comandi
+  scan/task, stop/pausa/messaggi, utenti, playstate, playlist, collezioni ed Event
+  Bridge usano la stessa correzione canonica. I soli metodi mutanti in produzione
+  sono POST e DELETE.
+- **Rischio residuo:** non è stato inviato un messaggio reale a un utente Emby
+  durante il canary, per evitare un side effect operativo. La semantica HTTP è
+  verificata deterministicamente e lo smoke dell'immagine copre il runtime.
+
+### R44-M-04 — L'API Pubblicazioni ignora i limiti della richiesta — resolved
+
+**Classificazione:** superficie analoga della famiglia limiti/bounded payload;
+non è una riapertura esplicita.
+
+- **Riproduzione produzione:** richieste con `limit=1`, `10` e `50` restituivano
+  sempre 790 film e 284 serie, circa 8,37 MB. La pagina richiedeva circa 12
+  secondi per completare il rendering pur mostrando soltanto il sottoinsieme
+  selezionato.
+- **Causa radice:** `build_latest_snapshot_payload()` caricava correttamente la
+  cache `feed`, ma restituiva integralmente le liste persistite senza applicare
+  `limit` o `per_server_limit`.
+- **Soluzione:** una proiezione focalizzata applica prima il limite per server e
+  poi quello globale, con le stesse semantiche del collector. Il sottoinsieme è
+  copiato prima dell'arricchimento Jellyseerr, così la lettura non muta la cache.
+- **Regressori e canary:** cache sovradimensionata con tre server, duplicazione
+  sullo stesso server e limiti `2/1`; verificati ordine, limite per server,
+  limite globale e immutabilità della cache originaria.
+- **Superfici analoghe:** verificati collector finalization, batch/feed cache,
+  calcolo limiti React e azioni refresh/notifica. Non sono state cambiate route,
+  query o forma della risposta.
+- **Rischio residuo:** il payload resta proporzionale ai limiti configurati e al
+  numero di server, ma non può più includere arbitrariamente l'intera cache.
+
+### R44-H-03 — Il database reale `FastAPI` non può essere migrato e conserva sorgenti obsolete — resolved
+
+**Classificazione:** riapertura esplicita della copertura di migrazione
+R44-M-02/R44-M-03; il precedente canary sintetico riproduceva il modello Git ma
+non il drift fisico accumulato dal database pubblicato.
+
+- **Riproduzione reale:** il dump PostgreSQL del 16 agosto, proveniente dal
+  deployment del branch `FastAPI` (`375b9c1e`), conteneva 88 righe nella vecchia
+  forma di `emby_image_cache`. L'upgrade 01→24 si arrestava in revisione 04 con
+  `Cannot migrate emby_image_cache.image_url: required legacy values are NULL`.
+  Se si aggirava manualmente il blocco, restavano 15 tabelle e 19 colonne
+  ritirate; byte e MIME type delle immagini rimanevano nelle colonne non lette
+  dal runtime corrente.
+- **Causa radice:** `create_all(checkfirst=True)` del vecchio runtime aveva
+  lasciato divergere tabella fisica e modello pubblicato. La revisione 03
+  aggiungeva `image_url` nullable ma non poteva dedurne il valore; la revisione
+  04 applicava correttamente il vincolo senza prima riconciliare questa forma
+  reale. I bridge delle altre sorgenti copiavano i dati ma non eliminavano le
+  posizioni precedenti e il validatore ignorava oggetti extra.
+- **Soluzione:** una preparazione pre-Alembic, serializzata dallo stesso advisory
+  lock, riconosce esclusivamente le due forme pubblicate della cache e genera
+  `cache://<cache_key>`. La nuova revisione append-only `20260909_25` trasferisce
+  byte/MIME, riconcilia per timestamp key-value, regole, overview e checkpoint
+  Probe e tutti gli undici rename supportati dalle revisioni 03/04, quindi elimina
+  tabelle, colonne e la sequenza RSS sostituite. Rimuove soltanto le chiavi RSS
+  ritirate dal documento impostazioni, preservandone i sibling. Un lock
+  `ACCESS EXCLUSIVE` impedisce scritture del vecchio runtime tra riconciliazione
+  e drop. Conflitti allo stesso timestamp, valori source/target discordanti o
+  tabelle senza mapping ma popolate bloccano atomicamente l'upgrade. Il validatore
+  e un manifest congelato segnalano ora ogni oggetto ritirato residuo.
+- **Canary sul dump reale:** 25 revisioni applicate, schema valido, zero tabelle
+  e zero colonne estranee. Sono rimasti 4 server Emby, 5 collezioni, 88 immagini,
+  127.773 record Probe storici, 213.315 righe di coda, 89 link utenti e 1.142
+  risultati scansione. `key_value` è passato a 142 righe dopo il trasferimento
+  delle 35 mancanti; le 40 regole e i 4 checkpoint recenti sono integri. Solo le
+  20 password Emby pre-versionate sono state eliminate come già concordato.
+- **Regressori e failure path:** schema fisico reale della cache, trasferimento
+  byte/MIME, tutti i rename, pulizia RSS con sibling preservation, selezione del
+  JSON più recente, timestamp Probe null/ordinati, conflitti con rollback,
+  rifiuto di sorgenti popolate, registro Alembic vuoto e writer concorrente.
+  Gate statici impongono l'uguaglianza tra manifest di drop e validatore e che
+  ogni source rinominata venga ritirata. PostgreSQL 16 completo: 82 test verdi.
+- **Rischio residuo:** il dump disponibile è una fotografia del 16 agosto; un
+  database Hetzner successivo con dati non mappabili si arresterà intenzionalmente
+  senza eliminazioni. Il dump operatore deve essere conservato fino a validazione,
+  confronto conteggi e login riusciti sul deployment aggiornato. Il downgrade
+  della revisione 25 non ricrea le sorgenti: il rollback al container `FastAPI`
+  richiede il ripristino del dump.
+
+### R44-H-04 — Il gate dipendenze frontend rileva una vulnerabilità alta — resolved
+
+**Classificazione:** causa nuova emersa durante i gate finali; non è una
+riapertura di un finding precedente.
+
+- **Riproduzione:** `npm audit --audit-level=high` segnalava `js-yaml` 4.3.1 con
+  advisory high e `@vitest/mocker` 3.2.7 con advisory moderate.
+- **Causa radice:** il lockfile risolveva versioni precedenti alle release che
+  correggono gli advisory; il vecchio gate documentato come verde non rifletteva
+  più il database advisory corrente.
+- **Soluzione:** aggiornati `js-yaml` transitivo a 4.3.2 e Vitest a 4.1.11. Le
+  annotazioni dei mock nei test sono state rese esplicite per il contratto type
+  più stretto di Vitest 4, senza cambiare il codice applicativo.
+- **Regressori e rischio residuo:** 272 file/733 test Vitest, ESLint e build
+  TypeScript sono verdi; audit runtime e completo riportano zero vulnerabilità.
+  Restano applicabili i normali audit periodici perché il database advisory è
+  esterno e può cambiare dopo il checkpoint.
+
+### Review indipendente dell'addendum
+
+La review successiva alle modifiche ha verificato separatamente status Transcode,
+semantica Emby, proiezione Latest e l'intero inventario storage di
+`origin/FastAPI` più i bridge 03/04. Ha inizialmente trovato rename/RSS omessi,
+un ordinamento errato dei checkpoint senza timestamp, una finestra TOCTOU tra
+preflight e drop e il registro Alembic vuoto non riconosciuto come base. Tutti i
+gap sono stati corretti e sottoposti a una seconda review indipendente.
+
+La verifica finale read-only ha confermato mapping source/target, policy dei
+conflitti, lock del writer, timestamp Probe, RSS, sequenza, registro vuoto e
+coincidenza dei manifest migrazione/validatore. Ha eseguito 54 test
+schema/lifecycle e 7 regressori PostgreSQL reali senza trovare blocker residui.
+
+### Gate finali dell'addendum
+
+| Gate | Esito | Evidenza finale |
+| --- | --- | --- |
+| Regressori mirati | **PASS** | 225 applicativi, 54 schema/lifecycle e 10 PostgreSQL finali; 6 subtest applicativi |
+| Backend completo | **PASS** | 2.214 passed, 77 skipped, 72 warning, 32 subtest; 45,62 s |
+| PostgreSQL 16 reale | **PASS** | 82 passed, 2 warning; 197,46 s |
+| Frontend Vitest | **PASS** | Vitest 4.1.11; 272 file, 733 test; 6,85 s |
+| Ruff | **PASS** | nessun errore |
+| Pyright | **PASS** | 0 errori, 0 warning, 0 informazioni |
+| Complessità | **PASS** | baseline C901 rispettata: 175 attive, 45 ridotte/rimosse |
+| Contratto API esterna | **PASS** | 203 operation v1; 0 violazioni |
+| Dipendenze Python | **PASS** | `pip check`; audit runtime/dev: 0 vulnerabilità note |
+| Dipendenze frontend | **PASS** | audit runtime/completo: 0 vulnerabilità; albero coerente |
+| ESLint | **PASS** | nessun errore |
+| Build frontend | **PASS** | 505 moduli; warning chunk noto da 547,77 kB |
+| Compose | **PASS** | base, secrets e admin-bootstrap; unico servizio `app` |
+| Docker riproducibile | **PASS** | due build no-cache; inventory Python e asset identica (`c76ff12c…`) |
+| Smoke immagine | **PASS** | dump FastAPI migrato su PostgreSQL 16 esterno; readiness, login, SPA e UID/GID 1000 |
+| `git diff --check` | **PASS** | nessun errore di whitespace o conflict marker |
+
+Il replay definitivo ha ripristinato da zero il dump FastAPI da 325 MB e applicato
+tutte le 25 revisioni senza backfill manuali. Sono rimasti invariati 5 collezioni,
+88 immagini, 127.773 record Probe storici, 213.315 righe di coda, 89 link utenti,
+1.142 risultati scan e il documento impostazioni con 4 server Emby. Tutte le 88
+immagini hanno URL e payload canonici e non resta alcuna tabella ritirata. Le sole
+20 password Emby pre-versionate sono state eliminate come concordato e dovranno
+essere reinserite. Il database e i container temporanei sono stati rimossi.
+
+### Audit di ricorrenza aggiornato
+
+Il conteggio resta basato su ID unici. Ai 539 finding registrati dal ciclo R44
+iniziale si aggiungono i cinque ID dell'addendum, per **544 finding storici**.
+
+| Categoria storica | Prima dell'addendum | Addendum | Totale | Stato corrente |
+| --- | ---: | ---: | ---: | --- |
+| Finding numerati | 539 | 5 | **544** | **544 risolti; 0 aperti** |
+| Riaperture esplicitamente incomplete | 73 | 1 | **74** | 74 risolte; 0 aperte |
+| Superfici analoghe/ricorrenze diverse | 72 | 2 | **74** | 74 risolte; 0 aperte |
+| Cause nuove | 394 | 2 | **396** | tutte risolte |
+| Decisioni storiche accettate | 4 | 0 | **4** | non sono difetti aperti |
+| Finding bloccati da decisione utente | 0 | 0 | **0** | — |
+
+**Stato finale aggiornato:** R44 comprende **10 finding risolti e 0 aperti**.
+L'addendum non modifica configurazione o dati del deployment e non ha riavviato
+né Hetzner né l'istanza locale ordinaria; lo smoke ha usato soltanto container e
+database temporanei poi eliminati. Tutti i gate applicabili sono verdi; non è
+stato eseguito alcun push, tag o commit per queste modifiche.

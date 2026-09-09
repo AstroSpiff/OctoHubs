@@ -4,6 +4,7 @@ import { act } from "react";
 import { readFileSync } from "node:fs";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Mock } from "vitest";
 
 import { LibraryAssociationDialog } from "@/features/libraries/components/library-association-dialog";
 import type {
@@ -56,15 +57,15 @@ describe("LibraryAssociationDialog", () => {
       ready = true,
       groups: nextGroups = groups,
       loadError = null,
-      onClose = vi.fn(),
-      onSave = vi.fn().mockResolvedValue(undefined),
+      onClose = vi.fn<() => void>(),
+      onSave = vi.fn<(associations: LibraryAssociation[]) => Promise<void>>().mockResolvedValue(undefined),
     }: {
       open?: boolean;
       ready?: boolean;
       groups?: LibraryGroup[];
       loadError?: Error | null;
-      onClose?: ReturnType<typeof vi.fn>;
-      onSave?: ReturnType<typeof vi.fn>;
+      onClose?: Mock<() => void>;
+      onSave?: Mock<(associations: LibraryAssociation[]) => Promise<void>>;
     } = {},
   ) {
     act(() => {

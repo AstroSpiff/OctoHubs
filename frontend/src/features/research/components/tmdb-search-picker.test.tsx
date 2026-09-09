@@ -4,9 +4,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Mock } from "vitest";
 
 import { searchTmdb } from "@/features/research/api";
 import { TmdbSearchPicker } from "@/features/research/components/tmdb-search-picker";
+import type { TmdbSearchResult } from "@/features/research/types";
 
 vi.mock("@/features/research/api", () => ({
   checkEmbyAvailability: vi.fn(),
@@ -34,7 +36,7 @@ describe("TmdbSearchPicker suggestion disclosure", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
   let queryClient: QueryClient;
-  let onSelect: ReturnType<typeof vi.fn>;
+  let onSelect: Mock<(result: TmdbSearchResult) => void>;
 
   beforeEach(() => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true;

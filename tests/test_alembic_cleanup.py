@@ -12,11 +12,37 @@ import alembic.context as alembic_context
 import pytest
 import sqlalchemy
 
+import core.database_fastapi_upgrade as database_fastapi_upgrade
 import core.log_sanitization as log_sanitization
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ALEMBIC_ENV = PROJECT_ROOT / "alembic" / "env.py"
+
+
+def test_empty_alembic_registry_is_an_unversioned_database():
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text("CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL)")
+            )
+            assert (
+                database_fastapi_upgrade._current_revision(
+                    connection, {"alembic_version"}
+                )
+                is None
+            )
+            connection.execute(
+                text("INSERT INTO alembic_version (version_num) VALUES ('one'), ('two')")
+            )
+            assert database_fastapi_upgrade._current_revision(
+                connection, {"alembic_version"}
+            ) == "__unsupported__"
+    finally:
+        engine.dispose()
 
 
 class _Config:
@@ -89,7 +115,14 @@ def _run_online_environment(
     connection: _Connection,
     *,
     migration_error: BaseException | None = None,
+    preparation_error: BaseException | None = None,
 ) -> None:
+    # Alembic imports these transitively through ``core.storage``. Load them
+    # before replacing SQLAlchemy's factory so later tests cannot retain the
+    # fake factory in module-level bindings.
+    import core.database_migrations  # noqa: F401
+    import core.storage.storage_models  # noqa: F401
+
     monkeypatch.setattr(alembic_context, "config", _Config(), raising=False)
     monkeypatch.setattr(alembic_context, "is_offline_mode", lambda: False)
     monkeypatch.setattr(alembic_context, "configure", lambda **_kwargs: None)
@@ -102,6 +135,19 @@ def _run_online_environment(
 
     monkeypatch.setattr(alembic_context, "run_migrations", run_migrations)
     monkeypatch.setattr(sqlalchemy, "create_engine", lambda *_args, **_kwargs: _Engine(connection))
+    # This suite isolates Alembic lock/cleanup behavior. The published-schema
+    # preparation has its own real-connection coverage and is outside the fake
+    # connection contract exercised here.
+    def prepare_published_schema(_connection: object) -> bool:
+        if preparation_error is not None:
+            raise preparation_error
+        return False
+
+    monkeypatch.setattr(
+        database_fastapi_upgrade,
+        "prepare_published_fastapi_schema",
+        prepare_published_schema,
+    )
     runpy.run_path(str(ALEMBIC_ENV), run_name="octohubs_alembic_cleanup_canary")
 
 
@@ -119,6 +165,7 @@ def test_primary_migration_error_survives_every_cleanup_failure(
     assert raised.value is primary
     assert connection.events == [
         "lock",
+        "initial_commit",
         "initial_commit",
         "migrate",
         "in_transaction",
@@ -180,6 +227,24 @@ def test_lock_acquisition_phase_failure_still_attempts_complete_cleanup(
 
     with pytest.raises(RuntimeError, match="LOCK ACQUISITION PHASE") as raised:
         _run_online_environment(monkeypatch, connection)
+
+    assert raised.value is primary
+    assert "migrate" not in connection.events
+    assert connection.events[-4:] == ["rollback", "unlock", "cleanup_commit", "close"]
+
+
+def test_published_schema_preparation_failure_uses_the_same_cleanup_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = RuntimeError("PREPARATION")
+    connection = _Connection()
+
+    with pytest.raises(RuntimeError, match="PREPARATION") as raised:
+        _run_online_environment(
+            monkeypatch,
+            connection,
+            preparation_error=primary,
+        )
 
     assert raised.value is primary
     assert "migrate" not in connection.events

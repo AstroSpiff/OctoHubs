@@ -21,6 +21,79 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ALEMBIC_INI = PROJECT_ROOT / "alembic.ini"
 ALEMBIC_SCRIPT_LOCATION = PROJECT_ROOT / "alembic"
 MINIMUM_POSTGRESQL_VERSION_NUM = 160000
+RETIRED_DATABASE_TABLES = frozenset(
+    {
+        "category_blacklist",
+        "category_hidden",
+        "emby_probe_recent_scan",
+        "emby_latest_state_episodes",
+        "emby_latest_state_movies",
+        "emby_latest_state_series",
+        "emby_latest_state_series_changes",
+        "emby_latest_state_series_groups",
+        "inoreader_item_alternates",
+        "inoreader_item_canonicals",
+        "inoreader_item_categories",
+        "inoreader_item_enclosures",
+        "inoreader_items",
+        "inoreader_streams",
+        "inoreader_sync_state",
+        "key_value_store",
+        "legacy_auth_imports",
+        "manual_search_results",
+        "manual_search_sessions",
+        "request_overview",
+        "request_rules",
+        "rss_items",
+        "schema_migrations",
+        "user_icons",
+    }
+)
+RETIRED_DATABASE_SEQUENCES = frozenset({"rss_items_id_seq"})
+RETIRED_DATABASE_COLUMNS = {
+    "emby_image_cache": frozenset(
+        {
+            "server_id",
+            "item_id",
+            "image_type",
+            "max_width",
+            "max_height",
+            "tag",
+            "scope",
+            "content_type",
+            "data",
+            "size",
+        }
+    ),
+    "emby_icon_profiles": frozenset({"name", "profile_id"}),
+    "emby_icon_rules": frozenset(
+        {"excluded_terms", "label", "required_terms", "rule_id", "rule_type"}
+    ),
+    "emby_collection_backdrops": frozenset({"image_data"}),
+    "emby_collection_definitions": frozenset({"collection_id"}),
+    "emby_collection_posters": frozenset({"image_data"}),
+    "emby_latest_cache_errors": frozenset({"error"}),
+    "emby_latest_cache_items": frozenset(
+        {
+            "cast",
+            "critic_rating",
+            "tmdb_logo_url",
+            "rt_tomatometer",
+            "rt_audience",
+            "letterboxd_rating",
+            "jellyseerr_request_id",
+            "jellyseerr_request_status",
+            "jellyseerr_request_status_label",
+            "jellyseerr_requested_by",
+        }
+    ),
+    "emby_probe_blacklist": frozenset({"error_message"}),
+    "emby_probe_history": frozenset({"error_message", "item_name"}),
+    "emby_probe_queue": frozenset({"item_name"}),
+    "emby_user_links": frozenset({"referral_admin"}),
+    "justwatch_cache": frozenset({"id"}),
+    "library_group_order": frozenset({"order_index"}),
+}
 
 
 class DatabaseMigrationError(RuntimeError):
@@ -54,6 +127,34 @@ def _column_type_is_compatible(actual_type: Any, expected_type: Any) -> bool:
     return False
 
 
+def _retired_table_contract_errors(deployed_tables: set[str]) -> list[str]:
+    return [
+        f"retired table still present: {table_name}"
+        for table_name in sorted(deployed_tables & RETIRED_DATABASE_TABLES)
+    ]
+
+
+def _retired_sequence_contract_errors(deployed_sequences: set[str]) -> list[str]:
+    return [
+        f"retired sequence still present: {sequence_name}"
+        for sequence_name in sorted(deployed_sequences & RETIRED_DATABASE_SEQUENCES)
+    ]
+
+
+def _retired_column_contract_errors(
+    table_name: str,
+    deployed_columns: set[str],
+) -> list[str]:
+    retired_columns = deployed_columns & RETIRED_DATABASE_COLUMNS.get(
+        table_name, frozenset()
+    )
+    if not retired_columns:
+        return []
+    return [
+        f"retired columns in {table_name}: " + ", ".join(sorted(retired_columns))
+    ]
+
+
 def _schema_contract_errors(connection: Any) -> list[str]:
     """Compare deployed tables, columns and primary keys with canonical models."""
     from core.auth import Base as AuthBase
@@ -65,7 +166,8 @@ def _schema_contract_errors(connection: Any) -> list[str]:
         opts={"compare_type": True},
     )
     deployed_tables = set(inspector.get_table_names())
-    errors: list[str] = []
+    errors = _retired_table_contract_errors(deployed_tables)
+    errors.extend(_retired_sequence_contract_errors(set(inspector.get_sequence_names())))
     for metadata in (cast(Any, AuthBase).metadata, cast(Any, StorageBase).metadata):
         for table_name, table in metadata.tables.items():
             if table_name not in deployed_tables:
@@ -76,6 +178,9 @@ def _schema_contract_errors(connection: Any) -> list[str]:
                 for column in inspector.get_columns(table_name)
             }
             deployed_columns = set(deployed_column_details)
+            errors.extend(
+                _retired_column_contract_errors(table_name, deployed_columns)
+            )
             missing_columns = sorted(set(table.columns.keys()) - deployed_columns)
             if missing_columns:
                 errors.append(

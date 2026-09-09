@@ -182,7 +182,11 @@ def test_postgresql_fastapi_password_upgrade_discards_only_unversioned_rows(
             )
 
         result = upgrade_database(postgresql_schema_url)
-        assert result["applied"] == ["20260908_23", "20260908_24"]
+        assert result["applied"] == [
+            "20260908_23",
+            "20260908_24",
+            "20260909_25",
+        ]
 
         with engine.connect() as connection:
             rows = connection.execute(
@@ -247,7 +251,10 @@ def test_postgresql_normalizes_fastapi_latest_timestamps_without_losing_instants
                 {"cache_item_id": cache_item_id, "instant": expected_instant},
             )
 
-        assert upgrade_database(postgresql_schema_url)["applied"] == ["20260908_24"]
+        assert upgrade_database(postgresql_schema_url)["applied"] == [
+            "20260908_24",
+            "20260909_25",
+        ]
         columns = {
             (table_name, column["name"]): column["type"]
             for table_name in (
@@ -1277,6 +1284,28 @@ def _create_legacy_schema(database_url: str) -> None:
     try:
         with engine.begin() as connection:
             connection.execute(text("""
+                CREATE TABLE emby_image_cache (
+                    cache_key VARCHAR(255) PRIMARY KEY,
+                    server_id VARCHAR(36),
+                    item_id VARCHAR(36),
+                    image_type VARCHAR(50),
+                    max_width INTEGER,
+                    max_height INTEGER,
+                    tag VARCHAR(255),
+                    scope VARCHAR(50),
+                    content_type VARCHAR(100),
+                    data BYTEA,
+                    size INTEGER,
+                    created_at TIMESTAMP,
+                    expires_at TIMESTAMP
+                )
+            """))
+            connection.execute(text("""
+                INSERT INTO emby_image_cache
+                    (cache_key, content_type, data, size)
+                VALUES ('legacy-image', 'image/jpeg', '\\x01'::bytea, 1)
+            """))
+            connection.execute(text("""
                 CREATE TABLE emby_collection_definitions (
                     collection_id VARCHAR(50) PRIMARY KEY,
                     data JSON NOT NULL,
@@ -1374,6 +1403,33 @@ def _create_legacy_schema(database_url: str) -> None:
                 INSERT INTO request_overview (id, payload, updated_at)
                 VALUES (7, '{"items":[7]}'::json, NOW())
             """))
+            connection.execute(text("""
+                CREATE TABLE request_rules (
+                    request_id VARCHAR(50) PRIMARY KEY,
+                    data JSON NOT NULL,
+                    updated_at TIMESTAMP
+                )
+            """))
+            connection.execute(text("""
+                INSERT INTO request_rules (request_id, data, updated_at)
+                VALUES ('legacy-request', '{"enabled": true}'::json, NOW())
+            """))
+            connection.execute(text("""
+                CREATE TABLE emby_probe_recent_scan (
+                    server_id VARCHAR(36) PRIMARY KEY,
+                    oldest_scanned_timestamp TIMESTAMP,
+                    last_scan_at TIMESTAMP,
+                    library_id VARCHAR(36)
+                )
+            """))
+            connection.execute(text("""
+                INSERT INTO emby_probe_recent_scan
+                    (server_id, library_id, oldest_scanned_timestamp, last_scan_at)
+                VALUES ('legacy-server', 'legacy-library', NOW(), NOW())
+            """))
+            connection.execute(text("CREATE TABLE inoreader_items (id INTEGER PRIMARY KEY)"))
+            connection.execute(text("CREATE TABLE manual_search_sessions (id INTEGER PRIMARY KEY)"))
+            connection.execute(text("CREATE TABLE user_icons (id INTEGER PRIMARY KEY)"))
     finally:
         engine.dispose()
 
@@ -1416,6 +1472,7 @@ def test_postgresql_legacy_upgrade_matches_runtime_contract(postgresql_schema_ur
         "20260908_22",
         "20260908_23",
         "20260908_24",
+        "20260909_25",
     ]
     assert validate_migrations(postgresql_schema_url)["ok"] is True
 
@@ -1430,7 +1487,7 @@ def test_postgresql_legacy_upgrade_matches_runtime_contract(postgresql_schema_ur
             for column in inspector.get_columns("emby_collection_definitions")
         }
         assert definition_columns["id"]["nullable"] is False
-        assert definition_columns["collection_id"]["nullable"] is True
+        assert "collection_id" not in definition_columns
 
         assert inspector.get_pk_constraint("emby_probe_blacklist")[
             "constrained_columns"
@@ -1477,6 +1534,62 @@ def test_postgresql_legacy_upgrade_matches_runtime_contract(postgresql_schema_ur
             assert connection.execute(
                 text("SELECT COUNT(*) FROM emby_group_passwords")
             ).scalar_one() == 0
+            assert connection.execute(
+                text(
+                    "SELECT image_url FROM emby_image_cache "
+                    "WHERE cache_key='legacy-image'"
+                )
+            ).scalar_one() == "cache://legacy-image"
+            assert connection.execute(
+                text(
+                    "SELECT mime_type FROM emby_image_cache "
+                    "WHERE cache_key='legacy-image'"
+                )
+            ).scalar_one() == "image/jpeg"
+            assert bytes(
+                connection.execute(
+                    text(
+                        "SELECT image_data FROM emby_image_cache "
+                        "WHERE cache_key='legacy-image'"
+                    )
+                ).scalar_one()
+            ) == b"\x01"
+            assert connection.execute(
+                text(
+                    "SELECT rules FROM request_rule_entries "
+                    "WHERE request_id='legacy-request'"
+                )
+            ).scalar_one() == {"enabled": True}
+            assert connection.execute(
+                text(
+                    "SELECT COUNT(*) FROM emby_probe_recent_scans "
+                    "WHERE server_id='legacy-server' "
+                    "AND library_id='legacy-library'"
+                )
+            ).scalar_one() == 1
+        retired_tables = {
+            "emby_probe_recent_scan",
+            "inoreader_items",
+            "key_value_store",
+            "legacy_auth_imports",
+            "manual_search_sessions",
+            "request_overview",
+            "request_rules",
+            "user_icons",
+        }
+        assert retired_tables.isdisjoint(set(inspector.get_table_names()))
+        assert {
+            "server_id",
+            "item_id",
+            "content_type",
+            "data",
+            "size",
+        }.isdisjoint(
+            {
+                column["name"]
+                for column in inspector.get_columns("emby_image_cache")
+            }
+        )
         assert legacy_key == {"visible": True}
         assert request_cache == {"items": [7]}
     finally:
@@ -1521,6 +1634,479 @@ def test_postgresql_legacy_upgrade_matches_runtime_contract(postgresql_schema_ur
     finally:
         if storage._engine is not None:
             storage._engine.dispose()
+
+
+def test_postgresql_fastapi_cleanup_is_atomic_and_prefers_newest_json(
+    postgresql_schema_url,
+):
+    from alembic import command
+
+    from core.database_migrations import (
+        DatabaseMigrationError,
+        alembic_config,
+        upgrade_database,
+    )
+
+    config = alembic_config(postgresql_schema_url)
+    command.upgrade(config, "20260908_24")
+    engine = create_engine(postgresql_schema_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO key_value (key, value, updated_at) "
+                    "VALUES ('shared', '{\"source\": \"current\"}'::json, "
+                    "TIMESTAMP '2026-09-09 10:00:00')"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE TABLE key_value_store ("
+                    "key VARCHAR(512) PRIMARY KEY, value JSON NOT NULL, "
+                    "updated_at TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO key_value_store (key, value, updated_at) "
+                    "VALUES ('shared', '{\"source\": \"legacy\"}'::json, "
+                    "TIMESTAMP '2026-09-09 10:00:00')"
+                )
+            )
+
+        with pytest.raises(DatabaseMigrationError, match="equal-time rows disagree"):
+            upgrade_database(postgresql_schema_url)
+
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == "20260908_24"
+            assert connection.execute(
+                text("SELECT value FROM key_value WHERE key='shared'")
+            ).scalar_one() == {"source": "current"}
+            assert inspect(connection).has_table("key_value_store") is True
+
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE key_value_store "
+                    "SET updated_at=TIMESTAMP '2026-09-09 10:00:01'"
+                )
+            )
+
+        assert upgrade_database(postgresql_schema_url)["applied"] == [
+            "20260909_25"
+        ]
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT value FROM key_value WHERE key='shared'")
+            ).scalar_one() == {"source": "legacy"}
+            assert inspect(connection).has_table("key_value_store") is False
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("table_name", ["inoreader_items", "rss_items"])
+def test_postgresql_fastapi_cleanup_refuses_unmapped_populated_tables(
+    postgresql_schema_url,
+    table_name,
+):
+    from alembic import command
+
+    from core.database_migrations import (
+        DatabaseMigrationError,
+        alembic_config,
+        upgrade_database,
+    )
+
+    config = alembic_config(postgresql_schema_url)
+    command.upgrade(config, "20260908_24")
+    engine = create_engine(postgresql_schema_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(f'CREATE TABLE "{table_name}" (id INTEGER PRIMARY KEY)')
+            )
+            connection.execute(text(f'INSERT INTO "{table_name}" (id) VALUES (1)'))
+
+        with pytest.raises(
+            DatabaseMigrationError,
+            match=f"Cannot retire populated unsupported tables: {table_name}",
+        ):
+            upgrade_database(postgresql_schema_url)
+
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == "20260908_24"
+            assert connection.execute(
+                text(f'SELECT count(*) FROM "{table_name}"')
+            ).scalar_one() == 1
+    finally:
+        engine.dispose()
+
+
+def test_postgresql_fastapi_cleanup_reconciles_renamed_text_binary_and_integer(
+    postgresql_schema_url,
+):
+    from alembic import command
+
+    from core.database_migrations import alembic_config, upgrade_database
+
+    config = alembic_config(postgresql_schema_url)
+    command.upgrade(config, "20260908_24")
+    engine = create_engine(postgresql_schema_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE emby_probe_queue ADD COLUMN item_name VARCHAR(500)")
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO emby_probe_queue "
+                    "(server_id, item_id, scope, item_name, added_at) VALUES "
+                    "('server', 'item', 'libraries', 'Legacy title', NOW())"
+                )
+            )
+            connection.execute(
+                text("ALTER TABLE emby_collection_posters ADD COLUMN image_data BYTEA")
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO emby_collection_definitions (id, data) "
+                    "VALUES ('collection', '{}'::json)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO emby_collection_posters (collection_id, image_data) "
+                    "VALUES ('collection', '\\x0102'::bytea)"
+                )
+            )
+            connection.execute(
+                text("ALTER TABLE library_group_order ADD COLUMN order_index INTEGER")
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO library_group_order "
+                    "(collection_type, group_name, position, order_index) "
+                    "VALUES ('movies', 'group', 7, 7)"
+                )
+            )
+
+        assert upgrade_database(postgresql_schema_url)["applied"] == ["20260909_25"]
+
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT name FROM emby_probe_queue WHERE item_id='item'")
+            ).scalar_one() == "Legacy title"
+            assert bytes(
+                connection.execute(
+                    text(
+                        "SELECT data FROM emby_collection_posters "
+                        "WHERE collection_id='collection'"
+                    )
+                ).scalar_one()
+            ) == b"\x01\x02"
+            assert connection.execute(
+                text(
+                    "SELECT position FROM library_group_order "
+                    "WHERE collection_type='movies' AND group_name='group'"
+                )
+            ).scalar_one() == 7
+            inspector = inspect(connection)
+            assert "item_name" not in {
+                column["name"] for column in inspector.get_columns("emby_probe_queue")
+            }
+            assert "image_data" not in {
+                column["name"]
+                for column in inspector.get_columns("emby_collection_posters")
+            }
+            assert "order_index" not in {
+                column["name"]
+                for column in inspector.get_columns("library_group_order")
+            }
+    finally:
+        engine.dispose()
+
+
+def test_postgresql_fastapi_cleanup_rolls_back_conflicting_renamed_values(
+    postgresql_schema_url,
+):
+    from alembic import command
+
+    from core.database_migrations import (
+        DatabaseMigrationError,
+        alembic_config,
+        upgrade_database,
+    )
+
+    command.upgrade(alembic_config(postgresql_schema_url), "20260908_24")
+    engine = create_engine(postgresql_schema_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE emby_probe_queue ADD COLUMN item_name VARCHAR(500)")
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO emby_probe_queue "
+                    "(server_id, item_id, scope, name, item_name, added_at) VALUES "
+                    "('server', 'item', 'libraries', 'Current', 'Legacy', NOW())"
+                )
+            )
+
+        with pytest.raises(DatabaseMigrationError, match="conflicting name values"):
+            upgrade_database(postgresql_schema_url)
+
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == "20260908_24"
+            assert connection.execute(
+                text("SELECT name, item_name FROM emby_probe_queue")
+            ).one() == ("Current", "Legacy")
+    finally:
+        engine.dispose()
+
+
+def test_postgresql_fastapi_cleanup_removes_only_rss_settings_and_empty_storage(
+    postgresql_schema_url,
+):
+    from alembic import command
+
+    from core.database_migrations import alembic_config, upgrade_database
+
+    command.upgrade(alembic_config(postgresql_schema_url), "20260908_24")
+    engine = create_engine(postgresql_schema_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("CREATE TABLE rss_items (id SERIAL PRIMARY KEY)"))
+            connection.execute(text("CREATE TABLE category_blacklist (id INTEGER)"))
+            connection.execute(text("CREATE TABLE category_hidden (id INTEGER)"))
+            connection.execute(text("DELETE FROM app_settings"))
+            connection.execute(
+                text(
+                    "INSERT INTO app_settings (id, data) VALUES "
+                    "(1, '{\"RSS_IMPORT\": {\"enabled\": true}, "
+                    "\"AUTO_TASKS\": {\"rss\": {\"enabled\": true}, "
+                    "\"scan\": {\"enabled\": true}}, \"KEEP\": 7}'::json)"
+                )
+            )
+
+        assert upgrade_database(postgresql_schema_url)["applied"] == ["20260909_25"]
+
+        with engine.connect() as connection:
+            tables = set(inspect(connection).get_table_names())
+            assert {"rss_items", "category_blacklist", "category_hidden"}.isdisjoint(
+                tables
+            )
+            assert connection.execute(
+                text("SELECT to_regclass('rss_items_id_seq')")
+            ).scalar_one_or_none() is None
+            assert connection.execute(
+                text("SELECT data FROM app_settings WHERE id=1")
+            ).scalar_one() == {
+                "AUTO_TASKS": {"scan": {"enabled": True}},
+                "KEEP": 7,
+            }
+    finally:
+        engine.dispose()
+
+
+def test_postgresql_fastapi_recent_scan_merge_preserves_timestamp_ordering(
+    postgresql_schema_url,
+):
+    from alembic import command
+
+    from core.database_migrations import alembic_config, upgrade_database
+
+    command.upgrade(alembic_config(postgresql_schema_url), "20260908_24")
+    engine = create_engine(postgresql_schema_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "CREATE TABLE emby_probe_recent_scan ("
+                    "server_id VARCHAR(36) PRIMARY KEY, library_id VARCHAR(128), "
+                    "oldest_scanned_timestamp TIMESTAMP, last_scan_at TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO emby_probe_recent_scan VALUES "
+                    "('missing', 'lib', TIMESTAMP '2026-01-01', NULL), "
+                    "('legacy-newer', 'lib', TIMESTAMP '2026-01-02', TIMESTAMP '2026-02-02'), "
+                    "('current-newer', 'lib', TIMESTAMP '2026-01-03', TIMESTAMP '2026-02-01'), "
+                    "('null-legacy', 'lib', TIMESTAMP '2026-01-04', NULL)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO emby_probe_recent_scans "
+                    "(server_id, library_id, oldest_scanned_timestamp, last_scan_at, payload) "
+                    "VALUES "
+                    "('legacy-newer', 'lib', TIMESTAMP '2025-01-02', TIMESTAMP '2026-02-01', '{}'::json), "
+                    "('current-newer', 'lib', TIMESTAMP '2025-01-03', TIMESTAMP '2026-02-02', '{}'::json), "
+                    "('null-legacy', 'lib', TIMESTAMP '2025-01-04', TIMESTAMP '2026-02-02', '{}'::json)"
+                )
+            )
+
+        assert upgrade_database(postgresql_schema_url)["applied"] == ["20260909_25"]
+
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT server_id, oldest_scanned_timestamp, last_scan_at "
+                    "FROM emby_probe_recent_scans ORDER BY server_id"
+                )
+            ).all()
+        assert rows == [
+            ("current-newer", datetime(2025, 1, 3), datetime(2026, 2, 2)),
+            ("legacy-newer", datetime(2026, 1, 2), datetime(2026, 2, 2)),
+            ("missing", datetime(2026, 1, 1), None),
+            ("null-legacy", datetime(2025, 1, 4), datetime(2026, 2, 2)),
+        ]
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("last_scan_at", [None, datetime(2026, 2, 2)])
+def test_postgresql_fastapi_recent_scan_equal_time_conflicts_roll_back(
+    postgresql_schema_url,
+    last_scan_at,
+):
+    from alembic import command
+
+    from core.database_migrations import (
+        DatabaseMigrationError,
+        alembic_config,
+        upgrade_database,
+    )
+
+    command.upgrade(alembic_config(postgresql_schema_url), "20260908_24")
+    engine = create_engine(postgresql_schema_url, future=True)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "CREATE TABLE emby_probe_recent_scan ("
+                    "server_id VARCHAR(36) PRIMARY KEY, library_id VARCHAR(128), "
+                    "oldest_scanned_timestamp TIMESTAMP, last_scan_at TIMESTAMP)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO emby_probe_recent_scan VALUES "
+                    "('server', 'lib', TIMESTAMP '2026-01-01', :last_scan_at)"
+                ),
+                {"last_scan_at": last_scan_at},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO emby_probe_recent_scans "
+                    "(server_id, library_id, oldest_scanned_timestamp, last_scan_at, payload) "
+                    "VALUES ('server', 'lib', TIMESTAMP '2026-01-02', :last_scan_at, '{}'::json)"
+                ),
+                {"last_scan_at": last_scan_at},
+            )
+
+        with pytest.raises(DatabaseMigrationError, match="equal-time rows disagree"):
+            upgrade_database(postgresql_schema_url)
+
+        with engine.connect() as connection:
+            assert inspect(connection).has_table("emby_probe_recent_scan")
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == "20260908_24"
+    finally:
+        engine.dispose()
+
+
+def test_postgresql_fastapi_cleanup_waits_for_active_legacy_writer(
+    postgresql_schema_url,
+):
+    from alembic import command
+
+    from core.database_migrations import alembic_config, upgrade_database
+
+    command.upgrade(alembic_config(postgresql_schema_url), "20260908_24")
+    engine = create_engine(postgresql_schema_url, future=True)
+    started = threading.Event()
+    outcome: list[object] = []
+
+    def migrate() -> None:
+        started.set()
+        try:
+            outcome.append(upgrade_database(postgresql_schema_url))
+        except BaseException as exc:  # pragma: no cover - asserted by caller
+            outcome.append(exc)
+
+    try:
+        with engine.connect() as writer:
+            transaction = writer.begin()
+            writer.execute(
+                text(
+                    "CREATE TABLE key_value_store ("
+                    "key VARCHAR(512) PRIMARY KEY, value JSON NOT NULL, "
+                    "updated_at TIMESTAMP)"
+                )
+            )
+            writer.execute(
+                text(
+                    "INSERT INTO key_value_store (key, value) "
+                    "VALUES ('locked', '{\"writer\": true}'::json)"
+                )
+            )
+            # Make the table visible, then hold a writer lock in a new transaction.
+            transaction.commit()
+            transaction = writer.begin()
+            writer.execute(
+                text(
+                    "UPDATE key_value_store SET value='{\"writer\": \"held\"}'::json "
+                    "WHERE key='locked'"
+                )
+            )
+
+            worker = threading.Thread(target=migrate)
+            worker.start()
+            assert started.wait(timeout=2)
+            waiting_for_exclusive_lock = False
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and not waiting_for_exclusive_lock:
+                with engine.connect() as observer:
+                    waiting_for_exclusive_lock = bool(
+                        observer.execute(
+                            text(
+                                "SELECT 1 FROM pg_locks lock "
+                                "JOIN pg_class relation ON relation.oid=lock.relation "
+                                "JOIN pg_namespace namespace "
+                                "ON namespace.oid=relation.relnamespace "
+                                "WHERE namespace.nspname=current_schema() "
+                                "AND relation.relname='key_value_store' "
+                                "AND lock.mode='AccessExclusiveLock' "
+                                "AND NOT lock.granted LIMIT 1"
+                            )
+                        ).first()
+                    )
+                if not waiting_for_exclusive_lock:
+                    time.sleep(0.05)
+            assert waiting_for_exclusive_lock
+            worker.join(timeout=0.1)
+            assert worker.is_alive(), "migration bypassed the active legacy writer"
+            transaction.commit()
+            worker.join(timeout=10)
+
+        assert not worker.is_alive()
+        assert len(outcome) == 1
+        assert not isinstance(outcome[0], BaseException), outcome[0]
+        with engine.connect() as connection:
+            assert inspect(connection).has_table("key_value_store") is False
+            assert connection.execute(
+                text("SELECT value FROM key_value WHERE key='locked'")
+            ).scalar_one() == {"writer": "held"}
+    finally:
+        engine.dispose()
 
 
 def test_postgresql_legacy_upgrade_refuses_ambiguous_primary_key_data(
@@ -1617,6 +2203,7 @@ def test_postgresql_probe_blacklist_identity_migration_merges_existing_duplicate
             "20260908_22",
             "20260908_23",
             "20260908_24",
+            "20260909_25",
         ]
 
         with engine.connect() as connection:

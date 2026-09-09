@@ -7,6 +7,7 @@ This module provides handler functions for API routes using the manager.
 import logging
 import threading
 import time
+from copy import deepcopy
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from core.log_sanitization import format_exception_for_log
@@ -168,6 +169,22 @@ def _normalize_latest_view(view: Any) -> str:
     return "feed"
 
 
+def _project_latest_snapshot_items(
+    items: Any,
+    *,
+    limit: int,
+    per_server_limit: int,
+) -> list[dict[str, Any]]:
+    """Project a cached feed to the bounds requested by the API client."""
+    from emby_latest.utils import limit_by_server
+
+    limited = limit_by_server(items, per_server_limit)
+    if not isinstance(limited, list):
+        return []
+    selected = limited[:limit] if limit > 0 else limited
+    return deepcopy(selected)
+
+
 def build_latest_snapshot_payload(
     limit: int,
     per_server_limit: int,
@@ -222,12 +239,22 @@ def build_latest_snapshot_payload(
     # Return cached data if available
     if payload_data:
         from emby_latest.jellyseerr import _apply_jellyseerr_request_info
-        _apply_jellyseerr_request_info(payload_data.get("movies", []), config)
-        _apply_jellyseerr_request_info(payload_data.get("series", []), config)
+        movies = _project_latest_snapshot_items(
+            payload_data.get("movies", []),
+            limit=limit,
+            per_server_limit=per_server_limit,
+        )
+        series = _project_latest_snapshot_items(
+            payload_data.get("series", []),
+            limit=limit,
+            per_server_limit=per_server_limit,
+        )
+        _apply_jellyseerr_request_info(movies, config)
+        _apply_jellyseerr_request_info(series, config)
         return {
             "success": True,
-            "movies": payload_data.get("movies", []),
-            "series": payload_data.get("series", []),
+            "movies": movies,
+            "series": series,
             "errors": payload_data.get("errors", []),
             "cached": True,
             "cached_at": timestamp,

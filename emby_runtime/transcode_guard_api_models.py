@@ -118,6 +118,27 @@ class TranscodeGuardCleanupRequest(StrictRequestModel):
     before: str | None = None
 
 
+class TranscodeGuardStreamHistoryStatus(BaseModel):
+    """Bounded stream-history summary returned by the runtime service."""
+
+    model_config = ConfigDict(extra="allow")
+
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+    total: int = 0
+    correct: int = 0
+    violations: int = 0
+    active: int = 0
+
+
+class TranscodeGuardPlaybackEventsStatus(BaseModel):
+    """Playback-event summary returned by the runtime service."""
+
+    model_config = ConfigDict(extra="allow")
+
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+    total: int = 0
+
+
 class TranscodeGuardStatusResponse(BaseModel):
     """Runtime state, intentionally extensible as rules gain fields."""
 
@@ -128,8 +149,12 @@ class TranscodeGuardStatusResponse(BaseModel):
     settings: dict[str, Any]
     active_violations: list[dict[str, Any]] = Field(default_factory=list)
     recent_events: list[dict[str, Any]] = Field(default_factory=list)
-    stream_history: list[dict[str, Any]] = Field(default_factory=list)
-    playback_events: list[dict[str, Any]] = Field(default_factory=list)
+    stream_history: TranscodeGuardStreamHistoryStatus = Field(
+        default_factory=TranscodeGuardStreamHistoryStatus
+    )
+    playback_events: TranscodeGuardPlaybackEventsStatus = Field(
+        default_factory=TranscodeGuardPlaybackEventsStatus
+    )
     last_result: dict[str, Any] = Field(default_factory=dict)
 
 

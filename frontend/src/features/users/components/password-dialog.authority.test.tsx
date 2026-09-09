@@ -3,6 +3,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Mock } from "vitest";
 
 import { useConfirmationDialog } from "@/components/ui/use-confirmation-dialog";
 import { getPasswordInfo } from "@/features/users/api";
@@ -41,7 +42,7 @@ const target = {
 describe("PasswordDialog authoritative snapshot", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
-  let onSave: ReturnType<typeof vi.fn>;
+  let onSave: Mock<(password: string) => void>;
 
   beforeEach(() => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -136,13 +137,13 @@ describe("PasswordDialog authoritative snapshot", () => {
 
 async function renderDialog(
   root: ReturnType<typeof createRoot>,
-  onSave: ReturnType<typeof vi.fn>,
+  onSave: (password: string) => void,
 ) {
   await act(async () => root.render(dialog(onSave, target)));
 }
 
 function dialog(
-  onSave: ReturnType<typeof vi.fn>,
+  onSave: (password: string) => void,
   nextTarget: typeof target,
 ) {
   return (
