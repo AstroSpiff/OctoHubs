@@ -6,9 +6,21 @@ This module handles Jinja2 template rendering for notification messages.
 
 import re
 from typing import Any, Dict, Optional
-from jinja2 import Undefined, TemplateSyntaxError, nodes
+from jinja2 import Undefined, TemplateSyntaxError
 from jinja2.sandbox import SandboxedEnvironment
 from markupsafe import Markup
+
+from emby_latest.template_policy import (
+    ALLOWED_FILTERS,
+    MAX_TEMPLATE_MACRO_OUTPUT_PARTS,
+    TemplateResourceLimitError,
+    bound_template_context,
+    bounded_template_filter,
+    consume_template_work,
+    template_work_units,
+    template_iteration_budget,
+    validate_template_ast,
+)
 
 
 # Image token constants - tokens that represent image URLs
@@ -35,30 +47,31 @@ MAX_TEMPLATE_SOURCE_LENGTH = 16_384
 MAX_TEMPLATE_OUTPUT_LENGTH = 65_536
 MAX_TEMPLATE_CONTEXT_SIZE = 262_144
 MAX_TEMPLATE_CONTEXT_ITEMS = 5_000
-_ALLOWED_FILTERS = {
-    "default", "e", "escape", "float", "int", "lower", "round", "safe",
-    "title", "trim", "upper",
-}
-_BANNED_NODES = (
-    nodes.Add,
-    nodes.Assign,
-    nodes.AssignBlock,
-    nodes.Block,
-    nodes.Call,
-    nodes.Extends,
-    nodes.For,
-    nodes.FromImport,
-    nodes.Import,
-    nodes.Include,
-    nodes.Macro,
-    nodes.Mul,
-    nodes.Pow,
-    nodes.Concat,
-)
+MAX_TEMPLATE_CONTEXT_STRING_LENGTH = 65_536
 
 
-class TemplateResourceLimitError(ValueError):
-    """Raised when a Latest template exceeds its safe execution budget."""
+def _finalize_template_value(value: Any) -> Any:
+    """Charge an expression before Jinja converts or escapes its output."""
+    consume_template_work(template_work_units((value,)))
+    return value
+
+
+class _LatestTemplateEnvironment(SandboxedEnvironment):
+    """Keep `.split()` bound to actual strings at runtime."""
+
+    def getattr(self, obj: Any, attribute: str) -> Any:
+        if attribute == "split":
+            if not isinstance(obj, str):
+                raise TemplateResourceLimitError("Receiver split non consentito")
+            return bound_template_context(str(obj)).split
+        return super().getattr(obj, attribute)
+
+    def call(self, context: Any, obj: Any, *args: Any, **kwargs: Any) -> Any:
+        from jinja2.runtime import Macro
+
+        if isinstance(obj, Macro):
+            consume_template_work(MAX_TEMPLATE_MACRO_OUTPUT_PARTS)
+        return super().call(context, obj, *args, **kwargs)
 
 
 def _validate_context_budget(value: Any, *, depth: int = 0) -> tuple[int, int]:
@@ -67,6 +80,8 @@ def _validate_context_budget(value: Any, *, depth: int = 0) -> tuple[int, int]:
     if value is None or isinstance(value, (bool, int, float)):
         return 16, 1
     if isinstance(value, str):
+        if len(value) > MAX_TEMPLATE_CONTEXT_STRING_LENGTH:
+            raise TemplateResourceLimitError("Valore del contesto template troppo grande")
         return len(value), 1
     if isinstance(value, dict):
         size = 0
@@ -93,13 +108,7 @@ def validate_template(template: str) -> str:
     if len(normalized) > MAX_TEMPLATE_SOURCE_LENGTH:
         raise TemplateResourceLimitError("Template troppo lungo")
     parsed = get_template_env().parse(normalized)
-    for node in parsed.find_all(_BANNED_NODES):
-        raise TemplateResourceLimitError(
-            f"Costrutto template non consentito: {type(node).__name__}"
-        )
-    for node in parsed.find_all(nodes.Filter):
-        if node.name not in _ALLOWED_FILTERS:
-            raise TemplateResourceLimitError(f"Filtro template non consentito: {node.name}")
+    validate_template_ast(parsed)
     return normalized
 
 
@@ -112,8 +121,9 @@ def get_template_env():
     """
     global _TEMPLATE_ENV
     if _TEMPLATE_ENV is None:
-        env = SandboxedEnvironment(
+        env = _LatestTemplateEnvironment(
             autoescape=True,
+            finalize=_finalize_template_value,
             undefined=Undefined,
             trim_blocks=True,
             lstrip_blocks=True,
@@ -126,6 +136,10 @@ def get_template_env():
             return Markup(str(value))
 
         env.filters["safe"] = _filter_safe
+        for filter_name in ALLOWED_FILTERS:
+            template_filter = env.filters.get(filter_name)
+            if template_filter is not None:
+                env.filters[filter_name] = bounded_template_filter(template_filter)
         env.globals["nl"] = "\n"
         env.globals["br"] = Markup("<br>")
         _TEMPLATE_ENV = env
@@ -236,11 +250,13 @@ def render_template(template: str, context: Dict[str, Any], strict: bool = False
             raise TemplateResourceLimitError("Contesto template troppo grande")
         chunks = []
         output_size = 0
-        for chunk in env.from_string(normalized).generate(context or {}):
-            output_size += len(chunk)
-            if output_size > MAX_TEMPLATE_OUTPUT_LENGTH:
-                raise TemplateResourceLimitError("Output template troppo grande")
-            chunks.append(chunk)
+        bounded_context = bound_template_context(context or {})
+        with template_iteration_budget():
+            for chunk in env.from_string(normalized).generate(bounded_context):
+                output_size += len(chunk)
+                if output_size > MAX_TEMPLATE_OUTPUT_LENGTH:
+                    raise TemplateResourceLimitError("Output template troppo grande")
+                chunks.append(chunk)
         return "".join(chunks)
     except (TemplateSyntaxError, ValueError) as exc:
         if strict:

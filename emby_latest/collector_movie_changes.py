@@ -25,14 +25,79 @@ from emby_latest.collector_notification_state import (
 )
 from emby_latest.collector_server_context import ServerCollectionContext
 from emby_latest.publication_history import (
-    get_history_entry,
+    find_history_movie_entry,
+    find_movie_identity_entry,
     is_notified,
+    matching_movie_identity_entries,
     media_source_key_set,
     merge_key_lists,
     notification_snapshot,
     update_history_entry,
 )
 from emby_latest.utils import debug
+
+
+def _movie_identity_context(
+    state_enabled: bool,
+    movie_items_state: Dict[str, Any],
+    history_state: Dict[str, Any],
+    state_key: str,
+    item_id: Any,
+    signature: str,
+) -> tuple[str, Any, str, Any, list[str], list[str]]:
+    """Resolve canonical movie state plus every obsolete alias key."""
+    if not state_enabled:
+        return "", None, "", None, [], []
+    existing_key, existing = find_movie_identity_entry(
+        movie_items_state,
+        state_key=state_key,
+        item_id=item_id,
+        signature=signature,
+    )
+    history_key, movie_history = find_history_movie_entry(
+        history_state,
+        state_key=state_key,
+        item_id=item_id,
+        signature=signature,
+    )
+    existing_alias_keys = [
+        key
+        for key, _entry in matching_movie_identity_entries(
+            movie_items_state,
+            state_key=state_key,
+            item_id=item_id,
+            signature=signature,
+        )
+    ]
+    history_entries = history_state.get("movies")
+    history_alias_keys = [
+        key
+        for key, _entry in matching_movie_identity_entries(
+            history_entries,
+            state_key=state_key,
+            item_id=item_id,
+            signature=signature,
+        )
+    ]
+    return (
+        existing_key,
+        existing,
+        history_key,
+        movie_history,
+        existing_alias_keys,
+        history_alias_keys,
+    )
+
+
+def _remove_obsolete_aliases(
+    entries: Dict[str, Any],
+    canonical_key: str,
+    aliases: list[str],
+    fallback_key: str,
+) -> None:
+    for alias_key in aliases or [fallback_key]:
+        if alias_key and alias_key != canonical_key:
+            entries.pop(alias_key, None)
 
 
 def process_movie_changes(
@@ -99,8 +164,14 @@ def process_movie_changes(
         _, item = rep_entry
         item_id = item.get("Id") if isinstance(item, dict) else None
         state_key = signature or str(item_id or "")
-        existing = movie_items_state.get(state_key) if state_enabled else None
-        movie_history = get_history_entry(history_state, "movies", state_key) if state_enabled else None
+        _, existing, _, movie_history, _, _ = _movie_identity_context(
+            state_enabled,
+            movie_items_state,
+            history_state,
+            state_key,
+            item_id,
+            signature,
+        )
         return not (
             skip_existing_complete
             and (
@@ -134,8 +205,14 @@ def process_movie_changes(
         if signature.startswith("title:") and title_signature:
             signature = movie_provider_signature_by_title.get(title_signature, signature)
         state_key = signature or str(item_id or "")
-        existing = movie_items_state.get(state_key) if state_enabled else None
-        movie_history = get_history_entry(history_state, "movies", state_key) if state_enabled else None
+        _, existing, _, movie_history, _, _ = _movie_identity_context(
+            state_enabled,
+            movie_items_state,
+            history_state,
+            state_key,
+            item_id,
+            signature,
+        )
         return existing is None and movie_history is None
 
     movie_playback_items: List[Dict[str, Any]] = [
@@ -170,8 +247,21 @@ def process_movie_changes(
         items_for_signature = group_items
         catalog_expanded = False
         state_key = signature or str(item_id or "")
-        existing = movie_items_state.get(state_key) if state_enabled else None
-        movie_history = get_history_entry(history_state, "movies", state_key) if state_enabled else None
+        (
+            existing_key,
+            existing,
+            history_key,
+            movie_history,
+            existing_alias_keys,
+            history_alias_keys,
+        ) = _movie_identity_context(
+            state_enabled,
+            movie_items_state,
+            history_state,
+            state_key,
+            item_id,
+            signature,
+        )
         skip_signature_expansion = (
             skip_existing_complete
             and (
@@ -240,7 +330,11 @@ def process_movie_changes(
         version_times = collect_version_times(versions)
         version_gap = has_version_time_gap(version_times, gap_minutes)
         version_groups = group_version_times(version_times, gap_minutes)
-        version_time_map = {v.get("key"): dt_value for v, dt_value in version_times if v.get("key")}
+        version_time_map = {
+            str(version.get("key")): dt_value
+            for version, dt_value in version_times
+            if version.get("key")
+        }
         raw_baseline_keys = playback_baseline_keys - direct_version_keys
         mediainfo_source_keys = [
             v.get("key")
@@ -318,7 +412,9 @@ def process_movie_changes(
 
                 changes = []
                 for version in group_versions:
-                    version_dt = version_time_map.get(version.get("key")) or group_dt
+                    version_dt = version_time_map.get(
+                        str(version.get("key") or "")
+                    ) or group_dt
                     changes.append({
                         "kind": kind,
                         "label": update_label,
@@ -413,7 +509,9 @@ def process_movie_changes(
                 })
             else:
                 for version in target_versions:
-                    version_dt = version_time_map.get(version.get("key")) or _parse_date_value(version.get("added_at"))
+                    version_dt = version_time_map.get(
+                        str(version.get("key") or "")
+                    ) or _parse_date_value(version.get("added_at"))
                     changes.append({
                         "kind": kind,
                         "label": update_label,
@@ -487,6 +585,12 @@ def process_movie_changes(
                 "mediainfo_source_keys": merged_mediainfo_keys,
                 **notification_state,
             }
+            _remove_obsolete_aliases(
+                movie_items_state,
+                state_key,
+                existing_alias_keys,
+                existing_key,
+            )
             update_history_entry(history_state, "movies", state_key, {
                 "item_id": item_id,
                 "signature": signature,
@@ -498,6 +602,12 @@ def process_movie_changes(
                 "mediainfo_source_keys": merged_mediainfo_keys,
                 **notification_state,
             })
+            _remove_obsolete_aliases(
+                history_state["movies"],
+                state_key,
+                history_alias_keys,
+                history_key,
+            )
 
             local_state_changed = True
 

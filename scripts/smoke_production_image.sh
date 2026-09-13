@@ -65,7 +65,30 @@ for _attempt in $(seq 1 60); do
     asset_path="$(sed -n 's/.*src="\(\/app\/assets\/[^"]*\)".*/\1/p' "$app_html" | head -n 1)"
     test -n "$asset_path"
     curl --fail --silent --show-error --cookie "$cookie_jar" "$base_url$asset_path" >/dev/null
-    echo "Production image reached readiness and served an authenticated SPA asset."
+    api_endpoints=(
+      /api/ui/session
+      /api/v1/account/me
+      /api/v1/configuration/settings
+      /api/v1/operations
+      /api/v1/emby/servers
+      /api/v1/emby/latest/progress
+      /api/v1/emby/latest/config
+      /api/v1/emby/scan-jobs
+      /api/v1/emby/collections
+      /api/v1/emby/collections/options
+      /api/v1/emby/users/list
+      /api/v1/research/overview
+      /api/v1/telegram/settings
+      /api/v1/emby/icons/config
+      /api/v1/emby/transcode-guard/settings
+      /api/v1/emby/transcode-guard/status
+      /api/v1/emby/transcode-guard/stats
+    )
+    for endpoint in "${api_endpoints[@]}"; do
+      curl --fail --silent --show-error --cookie "$cookie_jar" \
+        "$base_url$endpoint" >/dev/null
+    done
+    echo "Production image reached readiness, served the authenticated SPA, and passed the read-only feature smoke."
     exit 0
   fi
   if [[ "$(docker inspect --format '{{.State.Running}}' "$container_name")" != "true" ]]; then

@@ -7,6 +7,10 @@ import logging
 from typing import Any, Dict, Optional
 
 from core.log_sanitization import format_exception_for_log
+from emby_latest.publication_identity import (
+    deduplicate_publication_events,
+    reconcile_publication_events,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -349,7 +353,7 @@ def merge_with_db(new_payload: Dict[str, Any], db_payload: Dict[str, Any]) -> Di
     - Adds new items
     - Updates existing items if new ones have more enriched fields
     - Keeps old items that aren't in new payload
-    - Uses batch_id as unique key to allow duplicates of same item in different batches
+    - Preserves genuinely distinct publication events across refresh batches
 
     Args:
         new_payload: New payload with fresh items
@@ -361,8 +365,22 @@ def merge_with_db(new_payload: Dict[str, Any], db_payload: Dict[str, Any]) -> Di
     if not isinstance(db_payload, dict):
         return new_payload
 
-    merged_movies = list(db_payload.get("movies", []))
-    merged_series = list(db_payload.get("series", []))
+    cached_movies = db_payload.get("movies", [])
+    cached_series = db_payload.get("series", [])
+    merged_movies = deduplicate_publication_events(cached_movies, "movie")
+    merged_series = deduplicate_publication_events(cached_series, "series")
+    fresh_movies = reconcile_publication_events(
+        new_payload.get("movies", []),
+        cached_movies,
+        "movie",
+    )
+    fresh_series = reconcile_publication_events(
+        new_payload.get("series", []),
+        cached_series,
+        "series",
+    )
+    processed_movies = []
+    processed_series = []
 
     # Build lookup maps from DB cache
     db_maps = build_cache_maps(db_payload)
@@ -409,7 +427,7 @@ def merge_with_db(new_payload: Dict[str, Any], db_payload: Dict[str, Any]) -> Di
         return None
 
     # Merge new movies
-    for new_movie in new_payload.get("movies", []):
+    for new_movie in fresh_movies:
         if not isinstance(new_movie, dict):
             continue
 
@@ -427,6 +445,7 @@ def merge_with_db(new_payload: Dict[str, Any], db_payload: Dict[str, Any]) -> Di
         if cached:
             # Merge with cached entry
             merged_entry = merge_cached_entry(new_movie, cached)
+            processed_movies.append(merged_entry)
 
             # Replace in list if batch_id matches, otherwise add as new
             if batch_match or batch_id == cached.get("batch_id"):
@@ -441,9 +460,10 @@ def merge_with_db(new_payload: Dict[str, Any], db_payload: Dict[str, Any]) -> Di
         else:
             # New entry, add it
             merged_movies.append(new_movie)
+            processed_movies.append(new_movie)
 
     # Merge new series
-    for new_series in new_payload.get("series", []):
+    for new_series in fresh_series:
         if not isinstance(new_series, dict):
             continue
 
@@ -457,6 +477,7 @@ def merge_with_db(new_payload: Dict[str, Any], db_payload: Dict[str, Any]) -> Di
 
         if cached:
             merged_entry = merge_cached_entry(new_series, cached)
+            processed_series.append(merged_entry)
 
             if batch_match or batch_id == cached.get("batch_id"):
                 try:
@@ -468,9 +489,24 @@ def merge_with_db(new_payload: Dict[str, Any], db_payload: Dict[str, Any]) -> Di
                 merged_series.append(merged_entry)
         else:
             merged_series.append(new_series)
+            processed_series.append(new_series)
 
     return {
-        "movies": merged_movies,
-        "series": merged_series,
+        # Keep the raw cache aliases in the final equivalence graph.  A legacy
+        # item ID can bridge an old title signature to a fresh provider
+        # signature; collapsing the cache before this pass would discard that
+        # bridge and surface the same publication twice.
+        "movies": deduplicate_publication_events(
+            merged_movies,
+            "movie",
+            bridge_entries=cached_movies,
+            preferred_entries=processed_movies,
+        ),
+        "series": deduplicate_publication_events(
+            merged_series,
+            "series",
+            bridge_entries=cached_series,
+            preferred_entries=processed_series,
+        ),
         "errors": new_payload.get("errors", [])
     }

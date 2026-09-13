@@ -24,6 +24,9 @@ from .queue_leases import (
     run_with_claim_renewal,
 )
 
+RECENT_DISCOVERY_MAX_PAGE_SIZE = 50
+
+
 class RecentProbeMixin(ProbeManagerProtocol):
     """Mixin for probe workflows."""
 
@@ -790,7 +793,13 @@ class RecentProbeMixin(ProbeManagerProtocol):
                 return
 
             db = self._db_getter()
-            page_size = max(20, min(500, int(limit or 200)))
+            # ``Items`` includes MediaSources and MediaStreams, so a page that is
+            # modest in bytes can still exceed the shared JSON node budget. Keep
+            # transport validation intact and paginate the rich payload instead.
+            page_size = max(
+                20,
+                min(RECENT_DISCOVERY_MAX_PAGE_SIZE, int(limit or 200)),
+            )
 
             config = load_probe_config(db, server_id)
 

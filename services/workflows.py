@@ -14,11 +14,23 @@ from core.log_sanitization import format_exception_for_log, redact_mapping_for_l
 from core.safe_output import safe_print as print
 from core.utils import get_emby_servers
 from core.workflow_context import workflow_context_summary
+from core.workflow_failures import (
+    SCAN_FAILURE_CONFIG_UNAVAILABLE,
+    SCAN_FAILURE_NOT_ACCEPTED,
+    SCAN_FAILURE_NO_ENABLED_SERVERS,
+    SCAN_FAILURE_REQUIRES_SERVER,
+    WORKFLOW_SCAN_ERROR_KEY,
+    set_workflow_scan_failure,
+)
 from emby_latest import get_manager as get_emby_latest_manager
 from emby_latest import get_manager_unavailable_reason as get_emby_latest_manager_unavailable_reason
 from emby_probe import get_probe_manager
-from emby_runtime.api_clients import _call_emby_api, _fetch_emby_scheduled_tasks
+from emby_runtime.api_clients import _fetch_emby_scheduled_tasks
 from emby_users.registry import get_emby_user_manager as _get_emby_user_manager
+from services.workflow_scan_inventory import (
+    collect_workflow_scan_libraries,
+    empty_workflow_scan_message,
+)
 
 
 def _log_workflow_exception(context: str, error: BaseException) -> None:
@@ -91,6 +103,12 @@ def _wf_latest_refresh_timeout_seconds(latest_settings: Dict[str, Any] | None = 
     return 7200
 
 
+def _wf_scan_failure(context: Dict[str, Any], message: str) -> bool:
+    set_workflow_scan_failure(context, message)
+    print(f"[WORKFLOW] [SCAN] ✗ {message}")
+    return False
+
+
 def _wf_trigger_sync() -> bool:
     """Wrapper per avviare la sincronizzazione utenti."""
     from app_state import get_operation_tracker
@@ -121,6 +139,7 @@ def _wf_trigger_scan(context: Dict[str, Any]) -> bool:
 
     print("[WORKFLOW] [SCAN] Inizio _wf_trigger_scan()")
     print(f"[WORKFLOW] [SCAN] Context: {workflow_context_summary(context)}")
+    context.pop(WORKFLOW_SCAN_ERROR_KEY, None)
 
     # Il workflow usa il sistema di scan gruppo esistente
     group_name = context.get("group_name")
@@ -154,13 +173,14 @@ def _wf_trigger_scan(context: Dict[str, Any]) -> bool:
     # un server, oppure tutti i server. Il legacy passava server_id ma veniva
     # ignorato qui, rendendo una scansione per server involontariamente globale.
     if library_id_filter and not server_id_filter:
-        print("[WORKFLOW] [SCAN] library_id senza server_id")
-        return False
+        return _wf_scan_failure(
+            context,
+            SCAN_FAILURE_REQUIRES_SERVER,
+        )
 
     config, is_valid = load_config()
     if not is_valid or not config:
-        print("[WORKFLOW] [SCAN] Config non valida")
-        return False
+        return _wf_scan_failure(context, SCAN_FAILURE_CONFIG_UNAVAILABLE)
 
     servers = get_emby_servers(config)
     enabled_servers = [s for s in servers if isinstance(s, dict) and s.get("enabled")]
@@ -172,32 +192,25 @@ def _wf_trigger_scan(context: Dict[str, Any]) -> bool:
         ]
 
     if not enabled_servers:
-        print("[WORKFLOW] [SCAN] Nessun server abilitato")
-        return False
+        return _wf_scan_failure(context, SCAN_FAILURE_NO_ENABLED_SERVERS)
 
-    # Costruisci il payload per lo scope richiesto.
-    all_libraries = []
-    for server in enabled_servers:
-        server_id = str(server.get("id", ""))
-        if not server_id:
-            continue
-
-        # Get libraries for this server
-        success, libs_data = _call_emby_api(server, "Library/VirtualFolders", method="GET")
-        if not success or not isinstance(libs_data, list):
-            continue
-
-        for lib in libs_data:
-            library_id = lib.get("ItemId")
-            if library_id and (not library_id_filter or str(library_id) == library_id_filter):
-                all_libraries.append({
-                    "server_id": server_id,
-                    "library_id": str(library_id),
-                })
+    # Discover from the same canonical inventory used by the scan manager for
+    # authorization. Mixing raw VirtualFolders with the normalized inventory
+    # makes legitimate server-only virtual folders reject the complete batch.
+    all_libraries, inventory_failures = collect_workflow_scan_libraries(
+        enabled_servers,
+        library_id_filter,
+    )
 
     if not all_libraries:
-        print("[WORKFLOW] [SCAN] Nessuna libreria trovata")
-        return False
+        return _wf_scan_failure(
+            context,
+            empty_workflow_scan_message(
+                requested_id=library_id_filter,
+                inventory_failures=inventory_failures,
+                server_count=len(enabled_servers),
+            ),
+        )
 
     payload = {
         "group_name": group_name or ("Workflow-Global" if not server_id_filter else "Workflow-Server"),
@@ -216,7 +229,10 @@ def _wf_trigger_scan(context: Dict[str, Any]) -> bool:
         return True
     else:
         print(f"[WORKFLOW] [SCAN] ✗ Errore: {result.get('message', 'Unknown')}")
-        return False
+        return _wf_scan_failure(
+            context,
+            SCAN_FAILURE_NOT_ACCEPTED,
+        )
 
 
 def _wf_check_scan(context: Dict[str, Any] | None = None) -> bool:

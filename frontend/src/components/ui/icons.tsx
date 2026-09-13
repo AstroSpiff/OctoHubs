@@ -1,3 +1,4 @@
+import { useId } from "react";
 import type { ComponentProps, ComponentType, SVGProps } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faStar as faStarRegular } from "@fortawesome/free-regular-svg-icons";
@@ -51,6 +52,42 @@ function createIcon(definition: IconDefinition): IconComponent {
       />
     );
   };
+}
+
+function WifiOffGlyph({
+  size,
+  strokeWidth: _strokeWidth,
+  absoluteStrokeWidth: _absoluteStrokeWidth,
+  style,
+  ...props
+}: IconProps) {
+  const maskId = `wifi-off-${useId().replaceAll(":", "")}`;
+  const wifiPath = Array.isArray(faWifi.icon[4])
+    ? faWifi.icon[4][0]
+    : faWifi.icon[4];
+  void _strokeWidth;
+  void _absoluteStrokeWidth;
+
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 640 512"
+      width={size ?? "1em"}
+      height={size ?? "1em"}
+      data-prefix="fas"
+      data-icon="wifi-off"
+      focusable="false"
+      style={style}
+      {...props}
+    >
+      <mask id={maskId} maskUnits="userSpaceOnUse" x="0" y="0" width="640" height="512">
+        <rect width="640" height="512" fill="white" />
+        <line x1="96" y1="40" x2="544" y2="472" stroke="black" strokeWidth="92" strokeLinecap="round" />
+      </mask>
+      <path d={wifiPath} fill="currentColor" mask={`url(#${maskId})`} />
+      <line x1="96" y1="40" x2="544" y2="472" stroke="currentColor" strokeWidth="50" strokeLinecap="round" />
+    </svg>
+  );
 }
 
 const Activity = createIcon(faChartLine);
@@ -238,7 +275,7 @@ const UsersRound = createIcon(faUsers);
 const Video = createIcon(faVideo);
 const Warehouse = createIcon(faWarehouse);
 const Wifi = createIcon(faWifi);
-const WifiOff = createIcon(faWifi);
+const WifiOff = WifiOffGlyph;
 const Wrench = createIcon(faWrench);
 const X = createIcon(faXmark);
 const XCircle = createIcon(faCircleXmark);

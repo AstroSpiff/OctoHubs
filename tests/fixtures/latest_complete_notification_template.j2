@@ -1,0 +1,111 @@
+{% macro pick_audio(version) -%}
+{%- set candidates = [] -%}
+{%- if version.audio_details -%}
+  {%- set candidates = version.audio_details.split(' · ') -%}
+{%- elif version.audio_langs -%}
+  {%- set candidates = version.audio_langs.split(',') -%}
+{%- elif version.audio_ita -%}
+  {%- set candidates = [version.audio_ita] -%}
+{%- endif -%}
+
+{%- set ns = namespace(selected=None) -%}
+{%- for a in candidates -%}
+  {%- set a_clean = a|trim -%}
+  {%- set a_low = a_clean|lower -%}
+  {%- if ns.selected is none and ('ita' in a_low or 'italiano' in a_low or 'italian' in a_low) -%}
+    {%- set ns.selected = a_clean -%}
+  {%- endif -%}
+{%- endfor -%}
+
+{%- if ns.selected is none and candidates|length -%}
+  {%- set ns.selected = candidates[0]|trim -%}
+{%- endif -%}
+{{- ns.selected -}}
+{%- endmacro %}
+{% if type == 'movie' %}
+{{ tmdb_poster_url }}
+{% set ns = namespace(ratings=[]) %}
+{% if trakt_rating %}{% set ns.ratings = ns.ratings + ['<b>' ~ trakt_rating ~ '</b> <a href="' ~ trakt_url ~ '">Trakt</a>'] %}{% endif %}
+{% if imdb_rating %}{% set ns.ratings = ns.ratings + ['<b>' ~ imdb_rating ~ '</b> <a href="' ~ imdb_url ~ '">IMDb</a>'] %}{% endif %}
+{% if metacritic_rating %}
+{% set meta10 = (metacritic_rating|float / 10) %}
+{% set meta10_text = '%.1f'|format(meta10) %}
+{% set ns.ratings = ns.ratings + ['<b>' ~ meta10_text ~ '</b> MetaCritic'] %}
+{% endif %}
+{{ ns.ratings | join(' – ') | safe }}
+
+🎬 <b>{{ title }}</b> ({{ year }})
+<i>{{ genres }}</i>
+
+{{ overview | default('') | striptags | truncate(245, False, ' […]') }}
+
+<b>Durata</b> {{ runtime }}
+<b>Regia</b> {{ directors }}
+<b>Cast</b> {{ cast_5 }}
+
+{% if versions %}
+{% for v in versions %}
+<b>Versione {{ v.quality }}</b> - {{ v.video_codec }}
+{% set audio_line = pick_audio(v) %}
+{% if audio_line %}
+Audio - {{ audio_line }}
+{% endif %}
+{% set audio_list = v.audio_langs.split(',') if v.audio_langs else [] %}
+{% set audio_list = audio_list[:3] %}
+
+{% endfor %}
+{% endif %}
+{% if update_type == "update" %}🔄{% else %}🆕{% endif %} {{ update_label }} · Libreria <b>{{ library_name }}</b>
+ {% if jellyseerr_request_id %}✅ Richiesta soddisfatta
+{% endif %}
+
+{% else %}
+{{ tmdb_poster_url }}
+{% set ns = namespace(ratings=[]) %}
+{% if trakt_rating %}{% set ns.ratings = ns.ratings + ['<b>' ~ trakt_rating ~ '</b> <a href="' ~ trakt_url ~ '">Trakt</a>'] %}{% endif %}
+{% if imdb_rating %}{% set ns.ratings = ns.ratings + ['<b>' ~ imdb_rating ~ '</b> <a href="' ~ imdb_url ~ '">IMDb</a>'] %}{% endif %}
+{% if metacritic_rating %}
+{% set meta10 = (metacritic_rating|float / 10) %}
+{% set meta10_text = '%.1f'|format(meta10) %}
+{% set ns.ratings = ns.ratings + ['<b>' ~ meta10_text ~ '</b> MetaCritic'] %}
+{% endif %}
+{{ ns.ratings | join(' – ') | safe }}
+
+🖥 <b>{{ title }}</b> ({{ year }})
+<i>{{ genres }}</i>
+
+{% if season_count|int > 1 %}
+<b>Stagioni</b> – S01-{{ "%02d"|format(season_count|int) }}
+{% elif episodes_compact %}
+<b>Episodi</b> – {{ episodes_compact }}
+{% elif season_number %}
+<b>Stagione:</b> S{{ "%02d"|format(season_number|int) }}
+{% endif %}
+
+{{ overview | default('') | striptags | truncate(245, False, ' […]') }}
+{% if creators %}
+
+<b>Creatori</b> – {{ creators }}
+{% endif %}
+<b>Cast</b> – {{ cast_5 }}
+
+{% if versions %}
+{% set ns = namespace(samples=[], seen=[]) %}
+{% for v in versions %}
+  {% if v.quality and (v.quality not in ns.seen) and (ns.samples|length < 2) %}
+    {% set ns.samples = ns.samples + [v] %}
+    {% set ns.seen = ns.seen + [v.quality] %}
+  {% endif %}
+{% endfor %}
+{% for v in ns.samples %}
+<b>Versione {{ v.quality }}</b> – {{ v.video_codec|lower }}
+{% set audio_line = pick_audio(v) %}
+{% if audio_line %}
+Audio – {{ audio_line }}
+{% endif %}
+
+{% endfor %}
+{% endif %}
+{% if update_type == "update" %}🔄{% else %}🆕{% endif %} {{ update_label }} · Libreria <b>{{ library_name }}</b>
+{% if jellyseerr_request_id %}✅ Richiesta soddisfatta{% endif %}
+{% endif %}

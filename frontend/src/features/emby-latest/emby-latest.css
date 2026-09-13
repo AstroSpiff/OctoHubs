@@ -1,3 +1,7 @@
+.latest-workspace {
+  container: latest-workspace / inline-size;
+}
+
 .latest-config-card h4,
 .latest-config-card p {
   margin: 0;
@@ -41,8 +45,12 @@
 }
 .latest-display-limit {
   display: flex;
+  min-width: 0;
+  flex: 0 1 auto;
   align-items: center;
+  justify-content: flex-end;
   gap: 7px;
+  flex-wrap: wrap;
   color: var(--color-ink);
   font-size: 12px;
   font-weight: 750;
@@ -476,6 +484,21 @@
   }
   .latest-token-groups section > div {
     grid-template-columns: 1fr;
+  }
+}
+
+@container latest-workspace (max-width: 900px) {
+  .latest-server-controls {
+    align-items: flex-start;
+  }
+
+  .latest-server-tabs,
+  .latest-display-limit {
+    flex-basis: 100%;
+  }
+
+  .latest-display-limit {
+    justify-content: flex-start;
   }
 }
 @media (max-width: 480px) {

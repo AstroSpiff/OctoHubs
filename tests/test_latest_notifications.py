@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from pathlib import Path
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from emby_latest.notifications import send_notifications
+from emby_latest.notification_dispatcher import LatestNotificationDispatcher
+from emby_latest.notification_checkpoint import NotificationCheckpointMixin
+from emby_latest.publication_history import notification_snapshot, update_history_entry
+
+
+MIGRATED_COMPLETE_TEMPLATE = (
+    Path(__file__).parent / "fixtures" / "latest_complete_notification_template.j2"
+).read_text(encoding="utf-8")
 
 
 class _ExplicitNotificationStorage:
@@ -27,6 +37,216 @@ class _ExplicitNotificationStorage:
 
 
 class LatestNotificationTests(unittest.TestCase):
+    def test_movie_notification_state_survives_provider_signature_enrichment(self):
+        prior_state = {
+            "movies": {
+                "items": {
+                    "tmdb:1": {
+                        "item_id": "movie-1",
+                        "signature": "tmdb:1",
+                        "notified": True,
+                        "notified_publications": {
+                            "new-batch": {"notified": True}
+                        },
+                    },
+                    "title:movie-one:2026": {
+                        "item_id": "movie-1",
+                        "signature": "title:movie-one:2026",
+                        "notified": True,
+                        "notified_publications": {
+                            "original-batch": {"notified": True}
+                        },
+                    }
+                }
+            }
+        }
+
+        dispatcher = object.__new__(LatestNotificationDispatcher)
+        entry = dispatcher._movie_state_entry(
+            prior_state,
+            {
+                "item_id": "movie-current",
+                "signature": "tmdb:1",
+                "batch_id": "original-batch",
+            },
+        )
+
+        self.assertIsNotNone(entry)
+        assert entry is not None
+        self.assertTrue(entry["notified_publications"]["original-batch"]["notified"])
+        self.assertTrue(entry["notified_publications"]["new-batch"]["notified"])
+
+    def test_notification_checkpoint_canonicalizes_movie_state_aliases(self):
+        server_state = {
+            "movies": {
+                "items": {
+                    "title:movie-one:2026": {
+                        "item_id": "movie-1",
+                        "signature": "title:movie-one:2026",
+                        "notified": True,
+                        "notified_publications": {
+                            "original-batch": {"notified": True}
+                        },
+                    }
+                }
+            }
+        }
+
+        entry, key = NotificationCheckpointMixin._movie_entry(
+            server_state,
+            {"item_id": "movie-1", "signature": "tmdb:1"},
+        )
+
+        self.assertEqual("tmdb:1", key)
+        self.assertIs(server_state["movies"]["items"]["tmdb:1"], entry)
+        self.assertNotIn("title:movie-one:2026", server_state["movies"]["items"])
+        self.assertTrue(entry["notified_publications"]["original-batch"]["notified"])
+
+    def test_notification_checkpoint_merges_disjoint_state_and_history_batches(self):
+        checkpoint = object.__new__(NotificationCheckpointMixin)
+        checkpoint.dep = SimpleNamespace(
+            notification_snapshot=notification_snapshot,
+            update_history_entry=update_history_entry,
+        )
+        server_state = {
+            "movies": {
+                "items": {
+                    "tmdb:1": {
+                        "item_id": "movie-current",
+                        "signature": "tmdb:1",
+                        "notified": True,
+                        "notified_publications": {
+                            "new-batch": {"notified": True}
+                        },
+                    }
+                }
+            }
+        }
+        history = {
+            "movies": {
+                "title:movie-one:2026": {
+                    "item_id": "movie-current",
+                    "signature": "title:movie-one:2026",
+                    "notified": True,
+                    "notified_publications": {
+                        "old-batch": {"notified": True}
+                    },
+                }
+            }
+        }
+
+        checkpoint._persist_movie(
+            server_state,
+            history,
+            {"item_id": "movie-current", "signature": "tmdb:1"},
+            "current-batch",
+            {},
+            set(),
+            "2026-09-12T10:00:00+00:00",
+        )
+
+        publications = server_state["movies"]["items"]["tmdb:1"][
+            "notified_publications"
+        ]
+        self.assertIn("old-batch", publications)
+        self.assertIn("new-batch", publications)
+        self.assertNotIn("title:movie-one:2026", history["movies"])
+
+    def test_notification_checkpoint_preserves_history_mediainfo_completion(self):
+        checkpoint = object.__new__(NotificationCheckpointMixin)
+        checkpoint.dep = SimpleNamespace(
+            notification_snapshot=notification_snapshot,
+            update_history_entry=update_history_entry,
+        )
+        server_state = {
+            "movies": {
+                "items": {
+                    "tmdb:1": {
+                        "item_id": "movie-current",
+                        "signature": "tmdb:1",
+                        "media_source_keys": ["src-a"],
+                    }
+                }
+            }
+        }
+        history = {
+            "movies": {
+                "title:movie-one:2026": {
+                    "item_id": "movie-current",
+                    "signature": "title:movie-one:2026",
+                    "media_source_keys": ["src-a"],
+                    "mediainfo_source_keys": ["src-a"],
+                    "mediainfo_complete": True,
+                }
+            }
+        }
+
+        checkpoint._persist_movie(
+            server_state,
+            history,
+            {"item_id": "movie-current", "signature": "tmdb:1"},
+            "current-batch",
+            {},
+            set(),
+            "2026-09-12T10:00:00+00:00",
+        )
+
+        state_entry = server_state["movies"]["items"]["tmdb:1"]
+        history_entry = history["movies"]["tmdb:1"]
+        for entry in (state_entry, history_entry):
+            self.assertEqual(["src-a"], entry["mediainfo_source_keys"])
+            self.assertTrue(entry["mediainfo_complete"])
+        self.assertNotIn("title:movie-one:2026", history["movies"])
+
+    def test_notification_checkpoint_recomputes_partial_mediainfo_coverage(self):
+        checkpoint = object.__new__(NotificationCheckpointMixin)
+        checkpoint.dep = SimpleNamespace(
+            notification_snapshot=notification_snapshot,
+            update_history_entry=update_history_entry,
+        )
+        server_state = {
+            "movies": {
+                "items": {
+                    "tmdb:1": {
+                        "item_id": "movie-current",
+                        "signature": "tmdb:1",
+                        "media_source_keys": ["src-a"],
+                        "mediainfo_source_keys": ["src-a"],
+                        "mediainfo_complete": True,
+                    }
+                }
+            }
+        }
+        history = {
+            "movies": {
+                "title:movie-one:2026": {
+                    "item_id": "movie-current",
+                    "signature": "title:movie-one:2026",
+                    "media_source_keys": ["src-b"],
+                    "mediainfo_source_keys": [],
+                    "mediainfo_complete": False,
+                }
+            }
+        }
+
+        checkpoint._persist_movie(
+            server_state,
+            history,
+            {"item_id": "movie-current", "signature": "tmdb:1"},
+            "current-batch",
+            {},
+            set(),
+            "2026-09-12T10:00:00+00:00",
+        )
+
+        for entry in (
+            server_state["movies"]["items"]["tmdb:1"],
+            history["movies"]["tmdb:1"],
+        ):
+            self.assertEqual(["src-a", "src-b"], entry["media_source_keys"])
+            self.assertEqual(["src-a"], entry["mediainfo_source_keys"])
+            self.assertFalse(entry["mediainfo_complete"])
+
     def test_send_notifications_uses_explicit_db_storage_for_cache_and_state(self):
         cache_payload = {
             "payload": {
@@ -46,7 +266,13 @@ class LatestNotificationTests(unittest.TestCase):
         }
         storage = _ExplicitNotificationStorage(cache_payload)
         latest_settings = {
-            "PRESETS": [{"id": "preset-a", "name": "Preset", "template": "{{ title }}"}],
+            "PRESETS": [
+                {
+                    "id": "preset-a",
+                    "name": "Completa",
+                    "template": MIGRATED_COMPLETE_TEMPLATE,
+                }
+            ],
             "NOTIFICATION_RULES": [
                 {
                     "id": "rule-a",

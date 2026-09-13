@@ -53,6 +53,7 @@ describe("LatestNotificationPreview", () => {
       root.render(
         <LatestNotificationPreview
           template={request.template}
+          sourceLabel="Preset selezionato: Principale"
           movies={[movie]}
           series={[]}
           result={{
@@ -67,6 +68,7 @@ describe("LatestNotificationPreview", () => {
         />,
       );
     });
+    expect(container.textContent).toContain("Preset selezionato: Principale");
     expect(container.textContent).toContain("Anteprima Film A");
 
     const select = container.querySelector<HTMLSelectElement>("select");
@@ -99,6 +101,7 @@ describe("LatestNotificationPreview", () => {
       root.render(
         <LatestNotificationPreview
           template={oldRequest.template}
+          sourceLabel="Preset selezionato: Principale"
           movies={[movie, newerMovie]}
           series={[]}
           result={oldResult}
@@ -126,6 +129,7 @@ describe("LatestNotificationPreview", () => {
       root.render(
         <LatestNotificationPreview
           template="Nuovo {{ title }}"
+          sourceLabel="Modifiche in corso: Principale"
           movies={[movie, newerMovie]}
           series={[]}
           result={oldResult}
@@ -145,6 +149,7 @@ describe("LatestNotificationPreview", () => {
       root.render(
         <LatestNotificationPreview
           template={currentRequest.template}
+          sourceLabel="Modifiche in corso: Principale"
           movies={[movie, newerMovie]}
           series={[]}
           result={{
@@ -190,6 +195,7 @@ describe("LatestNotificationPreview", () => {
       root.render(
         <LatestNotificationPreview
           template={staleRequest.template}
+          sourceLabel="Preset selezionato: Principale"
           movies={[oldMovie]}
           series={[]}
           result={staleResult}
@@ -205,6 +211,7 @@ describe("LatestNotificationPreview", () => {
       root.render(
         <LatestNotificationPreview
           template={staleRequest.template}
+          sourceLabel="Preset selezionato: Principale"
           movies={[updatedMovie]}
           series={[]}
           result={staleResult}

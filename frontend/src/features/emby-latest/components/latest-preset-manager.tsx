@@ -1,4 +1,4 @@
-import { BookOpenText, Pencil, Plus, Trash2 } from "@/components/ui/icons";
+import { BookOpenText, Eye, Pencil, Plus, Trash2 } from "@/components/ui/icons";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -26,20 +26,24 @@ const quickTokens = [
 
 function LatestPresetManager({
   presets,
+  selectedPresetId,
   saving,
   removingId,
   onSave,
   onRemove,
-  onTemplateChange,
+  onSelectPreset,
+  onDraftChange,
   onDirtyChange,
   error,
 }: {
   presets: LatestPreset[];
+  selectedPresetId: string;
   saving: boolean;
   removingId?: string;
   onSave: (preset: LatestPresetInput) => Promise<unknown>;
   onRemove: (preset: LatestPreset) => void;
-  onTemplateChange: (template: string) => void;
+  onSelectPreset: (presetId: string) => void;
+  onDraftChange: (draft: LatestPresetInput | null) => void;
   onDirtyChange?: (dirty: boolean) => void;
   error?: string;
 }) {
@@ -51,10 +55,9 @@ function LatestPresetManager({
   const editing = Boolean(draft.id);
   const dirty = !latestPresetInputMatches(draft, baseline);
 
-  useEffect(
-    () => onTemplateChange(draft.template),
-    [draft.template, onTemplateChange],
-  );
+  useEffect(() => {
+    onDraftChange(editing || dirty ? copyLatestPresetInput(draft) : null);
+  }, [dirty, draft, editing, onDraftChange]);
 
   useEffect(() => {
     onDirtyChange?.(dirty);
@@ -67,9 +70,14 @@ function LatestPresetManager({
     setDraft(copyLatestPresetInput(copy));
   }
 
-  async function selectDraft(next: LatestPresetInput) {
+  async function selectDraft(next: LatestPresetInput, selectedId?: string) {
     if (dirty && !await confirmation.confirm({ title: "Preset non salvato", description: "Sostituire e perdere le modifiche al preset?", confirmLabel: "Abbandona modifiche", tone: "danger" })) return;
+    if (selectedId !== undefined) onSelectPreset(selectedId);
     accept(next);
+  }
+
+  async function selectPreview(preset: LatestPreset) {
+    await selectDraft(emptyLatestPresetInput(), preset.id);
   }
 
   function insertToken(token: string) {
@@ -179,7 +187,10 @@ function LatestPresetManager({
       </WriteAction>
       <div className="latest-config-list">
         {presets.map((preset) => (
-          <article key={preset.id} className="latest-config-row">
+          <article
+            key={preset.id}
+            className={`latest-config-row${selectedPresetId === preset.id ? " latest-config-row--selected" : ""}`}
+          >
             <div>
               <strong>{preset.name}</strong>
               <p>{preset.template}</p>
@@ -187,11 +198,24 @@ function LatestPresetManager({
             <div>
               <Button
                 type="button"
+                variant={selectedPresetId === preset.id ? "secondary" : "ghost"}
+                size="compact"
+                title={`Mostra anteprima ${preset.name}`}
+                aria-label={`Mostra anteprima ${preset.name}`}
+                aria-pressed={selectedPresetId === preset.id}
+                onClick={() => void selectPreview(preset)}
+                disabled={saving}
+              >
+                <Eye size={15} aria-hidden="true" />
+                {selectedPresetId === preset.id ? "In anteprima" : "Anteprima"}
+              </Button>
+              <Button
+                type="button"
                 requiresWriteAccess
                 variant="ghost"
                 size="compact"
                 title={`Modifica ${preset.name}`}
-                onClick={() => void selectDraft(latestPresetInputFromPreset(preset))}
+                onClick={() => void selectDraft(latestPresetInputFromPreset(preset), preset.id)}
                 disabled={saving}
               >
                 <Pencil size={15} aria-hidden="true" />

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from emby_latest.api_handlers import (
@@ -13,6 +14,11 @@ from emby_latest.api_handlers import (
     build_preview_snapshot,
 )
 from emby_latest.operations import make_latest_operation_progress_tracker
+
+
+MIGRATED_COMPLETE_TEMPLATE = (
+    Path(__file__).parent / "fixtures" / "latest_complete_notification_template.j2"
+).read_text(encoding="utf-8")
 
 
 class _RecordingManager:
@@ -480,6 +486,89 @@ class LatestApiHandlerTests(unittest.TestCase):
                 self.assertTrue(preview["image_enabled"])
                 self.assertEqual(expected_url, preview["image_url"])
                 self.assertEqual("Movie", preview["message"])
+
+    def test_preview_snapshot_renders_saved_macro_and_loop_templates(self):
+        template = """
+        {% macro pick_audio(version) -%}
+        {%- set candidates = version.audio_details.split(' · ') -%}
+        {%- set choice = namespace(selected=None) -%}
+        {%- for audio in candidates -%}
+          {%- set cleaned = audio|trim -%}
+          {%- if choice.selected is none and 'ita' in cleaned|lower -%}
+            {%- set choice.selected = cleaned -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {{- choice.selected -}}
+        {%- endmacro %}
+        {% for version in versions %}Audio - {{ pick_audio(version) }}{% endfor %}
+        """
+        item = {
+            "title": "Movie",
+            "item_type": "movie",
+            "changes": [
+                {
+                    "quality": "2160p",
+                    "audio_details": "English DTS · Italiano AC3",
+                }
+            ],
+        }
+
+        payload, status_code = build_preview_snapshot(
+            {"template": template, "items": {"movie": item}}
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["success"])
+        self.assertIsNone(payload["previews"]["movie"]["error"])
+        self.assertIn("Audio - Italiano AC3", payload["previews"]["movie"]["message"])
+
+    def test_preview_snapshot_renders_migrated_complete_preset(self):
+        item = {
+            "title": "Fauda",
+            "year": 2015,
+            "item_type": "series",
+            "library_name": "Serie TV",
+            "changes": [
+                {
+                    "quality": "2160p",
+                    "video_codec": "HEVC",
+                    "audio_details": "English DTS · Italiano AC3",
+                },
+                {
+                    "quality": "1080p",
+                    "video_codec": "H264",
+                    "audio_details": "Italiano AAC",
+                },
+            ],
+        }
+
+        payload, status_code = build_preview_snapshot(
+            {"template": MIGRATED_COMPLETE_TEMPLATE, "items": {"series": item}}
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["success"])
+        self.assertIsNone(payload["previews"]["series"]["error"])
+        self.assertIn("Fauda", payload["previews"]["series"]["message"])
+        self.assertIn("Audio – Italiano AC3", payload["previews"]["series"]["message"])
+
+    def test_preview_invalid_template_keeps_original_error_with_large_versions(self):
+        item = {
+            "title": "Series",
+            "item_type": "series",
+            "changes": [
+                {"quality": str(index), "path": "x" * 1_024}
+                for index in range(128)
+            ],
+        }
+
+        payload, status_code = build_preview_snapshot(
+            {"template": "{% for", "items": {"series": item}}
+        )
+
+        self.assertEqual(200, status_code)
+        self.assertTrue(payload["success"])
+        self.assertIn("end of template", payload["previews"]["series"]["error"])
 
     def test_enrich_snapshot_normalizes_force_omdb_bool(self):
         cases = (

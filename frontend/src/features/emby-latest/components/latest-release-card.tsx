@@ -14,10 +14,17 @@ function LatestReleaseCard({ item }: { item: LatestItem }) {
   const [expanded, setExpanded] = useState(false);
   const detailsId = useId();
   const rating = Number(item.community_rating);
+  const rawChanges = item.changes || [];
+  const isExistingSnapshot =
+    String(item.update_type || "").toLowerCase() === "existing" ||
+    (rawChanges.length > 0 &&
+      rawChanges.every(
+        (change) => String(change.kind || "").toLowerCase() === "existing",
+      ));
   const badges = [
     item.server_name,
     item.library_name || item.library,
-    item.update_label,
+    isExistingSnapshot ? "" : item.update_label,
     item.jellyseerr_requested
       ? item.jellyseerr_request_status_label || "Richiesto"
       : "",
@@ -29,7 +36,12 @@ function LatestReleaseCard({ item }: { item: LatestItem }) {
       ? `Aggiunto ${formatLatestDate(item.added_at || item.premiere_date)}`
       : "",
   ].filter(Boolean);
-  const changes = item.changes || [];
+  // `existing` is collector state, not a user-visible publication event.
+  const changes = isExistingSnapshot
+    ? []
+    : rawChanges.filter(
+        (change) => String(change.kind || "").toLowerCase() !== "existing",
+      );
 
   return (
     <article className="latest-release-card">

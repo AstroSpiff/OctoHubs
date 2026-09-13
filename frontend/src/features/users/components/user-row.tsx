@@ -1,5 +1,4 @@
 import {
-  Ban,
   CircleEllipsis,
   Copy,
   Download,
@@ -13,7 +12,6 @@ import {
   ShieldCheck,
   Trash2,
   Wifi,
-  WifiOff,
 } from "@/components/ui/icons";
 import type { ReactNode } from "react";
 
@@ -167,7 +165,7 @@ function UserRow({
             requiresWriteAccess
             variant="ghost"
             size="icon"
-            className="user-row-shortcut"
+            className={`user-row-shortcut${user.enable_remote_access ? "" : " user-row-shortcut--permission-disabled"}`}
             title={
               user.enable_remote_access
                 ? "Disabilita accesso remoto"
@@ -181,11 +179,7 @@ function UserRow({
             onClick={onToggleRemote}
             disabled={!canManage}
           >
-            {user.enable_remote_access ? (
-              <Wifi size={16} aria-hidden="true" />
-            ) : (
-              <WifiOff size={16} aria-hidden="true" />
-            )}
+            <Wifi size={16} aria-hidden="true" />
           </Button>
         ) : null}
         {!isOwner ? (
@@ -194,7 +188,7 @@ function UserRow({
             requiresWriteAccess
             variant="ghost"
             size="icon"
-            className="user-row-shortcut"
+            className={`user-row-shortcut${user.enable_downloading ? "" : " user-row-shortcut--permission-disabled"}`}
             title={
               user.enable_downloading ? "Disabilita download" : "Abilita download"
             }
@@ -204,14 +198,7 @@ function UserRow({
             onClick={onToggleDownload}
             disabled={!canManage}
           >
-            {user.enable_downloading ? (
-              <Download size={16} aria-hidden="true" />
-            ) : (
-              <span className="user-download-disabled" aria-hidden="true">
-                <Download size={16} />
-                <Ban size={15} />
-              </span>
-            )}
+            <Download size={16} aria-hidden="true" />
           </Button>
         ) : null}
         <Button

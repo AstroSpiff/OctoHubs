@@ -27,9 +27,11 @@ describe("Latest configuration actions", () => {
       <LatestPresetManager
         presets={[{ id: "main", name: "Principale", template: "{{ title }}" }]}
         saving
+        selectedPresetId="main"
         onSave={async () => undefined}
         onRemove={() => undefined}
-        onTemplateChange={() => undefined}
+        onSelectPreset={() => undefined}
+        onDraftChange={() => undefined}
         error="Impossibile salvare il preset."
       />,
     );

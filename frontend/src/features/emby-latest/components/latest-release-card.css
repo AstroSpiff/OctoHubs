@@ -179,7 +179,7 @@
   font-size: 12px;
 }
 
-@media (max-width: 760px) {
+@container latest-workspace (max-width: 680px) {
   .latest-release-grid {
     grid-template-columns: 1fr;
   }

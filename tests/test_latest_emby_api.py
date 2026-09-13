@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from emby_latest import emby_api
 from emby_latest.emby_api import (
+    LATEST_ITEMS_MAX_PAGE_SIZE,
     _fetch_emby_episode_items,
     _fetch_emby_latest_items,
     _fetch_emby_latest_series_from_episodes,
@@ -87,6 +88,84 @@ class LatestEmbyApiTests(unittest.TestCase):
         self.assertEqual(["new-1", "new-2", "overlap-edge"], [item["Id"] for item in items])
         self.assertEqual([0, 2], [call[2].get("StartIndex") for call in calls])
         self.assertEqual([2, 2], [call[2].get("Limit") for call in calls])
+
+    def test_fetch_emby_latest_items_pages_full_snapshot_with_bounded_responses(self):
+        calls = []
+        source_items = [
+            {"Id": f"movie-{index}", "DateCreated": "2026-07-16T10:00:00+00:00"}
+            for index in range(LATEST_ITEMS_MAX_PAGE_SIZE + 7)
+        ]
+
+        def fake_call(server, path, params=None, method="GET"):
+            calls.append((server, path, params or {}, method))
+            start_index = int((params or {}).get("StartIndex") or 0)
+            page_limit = int((params or {}).get("Limit") or 0)
+            return True, {"Items": source_items[start_index : start_index + page_limit]}
+
+        with patch("emby_latest.emby_api._call_emby_api", fake_call):
+            items, error = _fetch_emby_latest_items(
+                {"id": "server-a"},
+                "Movie",
+                len(source_items),
+            )
+
+        self.assertIsNone(error)
+        self.assertEqual(source_items, items)
+        self.assertEqual([0, LATEST_ITEMS_MAX_PAGE_SIZE], [call[2]["StartIndex"] for call in calls])
+        self.assertTrue(
+            all(call[2]["Limit"] <= LATEST_ITEMS_MAX_PAGE_SIZE for call in calls)
+        )
+
+    def test_fetch_emby_latest_items_discards_partial_snapshot_when_later_page_fails(self):
+        calls = []
+
+        def fake_call(server, path, params=None, method="GET"):
+            calls.append((server, path, params or {}, method))
+            if len(calls) == 1:
+                return True, {
+                    "Items": [
+                        {"Id": f"movie-{index}", "DateCreated": "2026-07-16T10:00:00+00:00"}
+                        for index in range(LATEST_ITEMS_MAX_PAGE_SIZE)
+                    ]
+                }
+            return False, "Errore Emby HTTP 503"
+
+        with patch("emby_latest.emby_api._call_emby_api", fake_call):
+            items, error = _fetch_emby_latest_items(
+                {"id": "server-a"},
+                "Movie",
+                LATEST_ITEMS_MAX_PAGE_SIZE + 1,
+            )
+
+        self.assertEqual([], items)
+        self.assertEqual("Errore Emby HTTP 503", error)
+        self.assertEqual(2, len(calls))
+
+    def test_fetch_emby_latest_items_rejects_repeated_pages_without_partial_snapshot(self):
+        for repeated_page in (
+            [
+                {"Id": f"movie-{index}", "DateCreated": "2026-07-16T10:00:00+00:00"}
+                for index in range(LATEST_ITEMS_MAX_PAGE_SIZE)
+            ],
+            ["malformed"] * LATEST_ITEMS_MAX_PAGE_SIZE,
+        ):
+            with self.subTest(item_shape=type(repeated_page[0]).__name__):
+                calls = []
+
+                def fake_call(server, path, params=None, method="GET"):
+                    calls.append((server, path, params or {}, method))
+                    return True, {"Items": list(repeated_page)}
+
+                with patch("emby_latest.emby_api._call_emby_api", fake_call):
+                    items, error = _fetch_emby_latest_items(
+                        {"id": "server-a"},
+                        "Movie",
+                        LATEST_ITEMS_MAX_PAGE_SIZE * 2,
+                    )
+
+                self.assertEqual([], items)
+                self.assertIn("pagina ripetuta", error)
+                self.assertEqual(2, len(calls))
 
     def test_hydrate_media_source_item_dates_fetches_dates_in_one_items_batch(self):
         calls = []

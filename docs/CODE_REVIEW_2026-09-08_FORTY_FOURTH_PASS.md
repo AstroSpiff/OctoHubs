@@ -7,18 +7,20 @@
 - **Baseline immutabile:** `cef2a66cd8cdd72f21b41031860635e39b4ce0cd`
   (`fix: complete R43 review remediation cycle`, 2026-09-08T12:43:40+02:00).
 - **Worktree iniziale:** pulita.
-- **Esito:** **10 finding risolti, 0 aperti**, 0 decisioni accettate nuove e 0
+- **Esito:** **25 finding risolti, 0 aperti**, 0 decisioni accettate nuove e 0
   finding bloccati.
 - **Modifiche:** implementazione, migrazioni Alembic 22-25, regressori, canary,
   gate di classe e addendum della validazione sul deployment. Il ciclo iniziale
-  è stato chiuso con un checkpoint locale; l'addendum è in attesa del successivo
-  checkpoint. Nessun push o tag è stato eseguito per l'addendum.
+  è stato chiuso con un checkpoint locale. L'addendum è incluso nel checkpoint
+  `b55dd0f` e nel tag `v0.5.3`; i follow-up notifiche, Pubblicazioni, UI e
+  Transcode Guard sono consolidati nel checkpoint release `v0.5.4` richiesto
+  dall'operatore.
 
 | Severità | Aperti | Risolti |
 | --- | ---: | --- |
-| Alta | 0 | R44-H-01 … R44-H-04 |
-| Media | 0 | R44-M-01 … R44-M-04 |
-| Bassa | 0 | R44-L-01 … R44-L-02 |
+| Alta | 0 | R44-H-01 … R44-H-11 |
+| Media | 0 | R44-M-01 … R44-M-07 |
+| Bassa | 0 | R44-L-01 … R44-L-07 |
 
 ## Metodo e perimetro
 
@@ -399,7 +401,7 @@ non include e non amministra PostgreSQL.
 | Frontend Vitest | **PASS** | 272 file, 733 test |
 | Ruff | **PASS** | nessun errore |
 | Pyright | **PASS** | 0 errori, 0 warning, 0 informazioni |
-| Complessità | **PASS** | baseline C901 rispettata: 175 attive, 45 ridotte/rimosse |
+| Complessità | **PASS** | baseline C901 rispettata: 174 attive, 46 ridotte/rimosse |
 | Contratto API esterna | **PASS** | 203 operation v1; 0 violazioni |
 | Dipendenze Python | **PASS** | `pip check`; pip-audit runtime e dev: 0 vulnerabilità note |
 | Dipendenze frontend | **PASS** | npm audit runtime/completo: 0 vulnerabilità; `npm ls --all` coerente |
@@ -678,4 +680,570 @@ iniziale si aggiungono i cinque ID dell'addendum, per **544 finding storici**.
 L'addendum non modifica configurazione o dati del deployment e non ha riavviato
 né Hetzner né l'istanza locale ordinaria; lo smoke ha usato soltanto container e
 database temporanei poi eliminati. Tutti i gate applicabili sono verdi; non è
-stato eseguito alcun push, tag o commit per queste modifiche.
+stato eseguito alcun push, tag o commit durante quella fase. L'addendum è stato
+successivamente pubblicato nel checkpoint `b55dd0f`/`v0.5.3`.
+
+## Follow-up — preset Telegram avanzati (2026-09-10)
+
+### R44-H-05 — Anteprima e invio rifiutano i preset Jinja migrati — resolved
+
+**Classificazione:** riapertura esplicita/incompletezza della remediation
+R4-H-05/R5-H-01. La protezione anti-DoS era efficace, ma aveva ristretto il
+contratto più di quanto dichiarato e più di quanto richiesto dai preset già
+persistiti.
+
+- **Riproduzione sul deployment:** il preset reale `Completa`, regolarmente
+  migrato e selezionabile, mostrava `Costrutto template non consentito: Macro`
+  nell'anteprima. Lo stesso `build_message()` è usato dal delivery Telegram,
+  quindi il difetto non era soltanto visivo: anche un invio con quel preset
+  sarebbe stato respinto prima della chiamata a Telegram.
+- **Causa radice:** l'allowlist introdotta contro l'espansione incontrollata
+  vietava intere primitive Jinja (`Macro`, `For`, `Assign`, `Call`, `Add` e
+  `Concat`). Il catalogo frontend documentava però i cicli Jinja e la migrazione
+  conservava preset che usavano macro, `namespace`, split, loop brevi, join e
+  formattazione. Nessun regressore eseguiva un preset avanzato persistito
+  attraverso il percorso reale di preview.
+- **Soluzione:** la policy è stata separata dal renderer in moduli focalizzati
+  per validazione AST e limiti runtime e ammette il sottoinsieme necessario ai
+  preset notifiche: macro non ricorsive,
+  assegnazioni, `namespace`, split, cicli e concatenazioni limitate, oltre ai
+  filtri effettivamente usati. Restano vietati import/include/extends, chiamate
+  arbitrarie, operatori espansivi, ricorsione e formati dinamici o con ampiezza
+  eccessiva. Contesto, slice e risultati dei filtri sono avvolti in collezioni
+  bounded; ogni iterabile espone al massimo 256 elementi e un rendering dispone
+  di un solo budget da 1.024 unità, ponderato per dimensione di filtri, split,
+  macro e valori prima della conversione/escape. La profondità dei loop viene
+  calcolata anche attraversando le chiamate macro. Sono inoltre respinti append
+  e concat ripetuti, output dinamico nei loop delle macro, catene di concat e
+  materializzazioni di collezioni costruite dal template.
+- **Regressori e canary:** rendering del preset avanzato con scelta audio,
+  rating, HTML Telegram e versioni; anteprima API con macro e ciclo; salvataggio
+  configurazione dello stesso contratto. La matrice negativa copre
+  moltiplicazione, chiamate arbitrarie, ricorsione diretta e mutua, nesting
+  effettivo attraverso macro, formati e separator `join` dinamici, append
+  ripetuti, concat o output macro usati come sorgenti di loop e bypass tramite
+  slice, `lower` e `safe`. I canary di classe includono alias transitivi,
+  container dict/namespace, dispatch `.split` ambiguo, confronti/test ripetuti,
+  buffer macro, collezioni annidate e catene di concatenazioni esponenziali.
+- **Superfici analoghe:** verificati salvataggio preset, anteprima film/serie e
+  delivery. Preview e invio usano entrambi il solo renderer canonico
+  `build_message()` → `render_template()`; non esiste un secondo interprete da
+  mantenere allineato.
+- **Review indipendente:** le iterazioni di audit hanno individuato e fatto
+  chiudere bypass tramite slice/filtri, alias e container, receiver `.split`
+  type-confused, confronti e test Jinja, buffer macro, namespace mutabili,
+  collezioni annidate e concat transitivi. La re-review conclusiva ha ripetuto
+  tutte le riproduzioni anche dopo l'estrazione dei limiti runtime, confermato
+  il preset avanzato e non ha trovato blocker residui. Preview e delivery
+  condividono lo stesso renderer.
+- **Rischio residuo:** la sintassi è intenzionalmente un sottoinsieme bounded di
+  Jinja2, non accesso Jinja arbitrario. Preset esotici fuori dal contratto
+  documentato possono ancora essere respinti con un errore esplicito. I limiti
+  sono molto superiori alla cardinalità normale di versioni e tracce audio, ma
+  impediscono che un amministratore blocchi il worker singolo con un template
+  patologico.
+
+### R44-H-06 — Il Workflow scarta tutti i server per un falso mismatch dell'inventario — resolved
+
+**Classificazione:** riapertura/incompletezza della remediation R34. Il controllo
+di appartenenza introdotto contro ID libreria arbitrari era corretto come
+invariante di sicurezza, ma il producer e il validator usavano due inventari
+Emby diversi.
+
+- **Riproduzione sul deployment:** il PostgreSQL Hetzner è alla revisione
+  `20260909_25`, conserva cinque server Emby abilitati e mostra Workflow completi
+  fino all'8 settembre. Le tre esecuzioni del 10 settembre falliscono tutte nello
+  step `scan` in circa un secondo. Sui dati reali storici, l'endpoint grezzo
+  esponeva 13 cartelle per server mentre l'inventario normalizzato e scansionabile
+  ne esponeva 12: il tredicesimo ID faceva rifiutare l'intero batch dal controllo
+  aggiunto in R34.
+- **Causa radice:** `_wf_trigger_scan()` costruiva il batch da
+  `Library/VirtualFolders`, mentre `EmbyLibraryScanManager` lo autorizzava contro
+  `_fetch_emby_libraries()`, che combina e normalizza le cartelle selezionabili e
+  virtuali. Due rappresentazioni legittimamente diverse venivano trattate come
+  se dovessero essere identiche.
+- **Soluzione:** scoperta e autorizzazione ora condividono l'inventario canonico.
+  Il selettore Workflow sceglie soltanto un ID di refresh verificato, riconosce
+  gli alias correnti (`id`, folder/item/guid e view ID), deduplica per server e
+  continua con i server raggiungibili quando un inventario esterno fallisce. Il
+  controllo R34 contro ID arbitrari rimane invariato. Le ragioni operative note
+  sono centralizzate in un'allowlist bounded: lo storico Workflow conserva un
+  messaggio utile senza persistere errori o segreti provenienti dall'upstream.
+- **Regressori e canary:** coperti scope server e libreria, alias view→ID
+  canonico, inventario 13→12, deduplicazione, indisponibilità parziale e totale,
+  mantenimento del rifiuto per ID sconosciuti, persistenza del motivo noto e
+  redazione di un dettaglio upstream non attendibile. Un canary read-only con il
+  backup reale pre-migrazione ha prodotto 48 target canonici univoci, 12 per
+  ciascuno dei quattro server raggiungibili, senza inviare alcun comando di scan.
+- **Superfici analoghe:** riesaminati scan singolo, scan di gruppo, inventario
+  librerie React, poller, tracking dei job, scope Workflow globale/server/library
+  e finalizzazione persistente. Le mutazioni manuali continuano a essere
+  autorizzate dall'inventario corrente; nessun altro producer Workflow usa più
+  direttamente `Library/VirtualFolders`.
+- **Seconda review delle correzioni:** riletti separatamente producer, validator,
+  persistenza errori e smoke Docker dopo i regressori. La logica aggiunta è stata
+  estratta in moduli focalizzati per non ampliare ulteriormente `core/tasks.py` e
+  `services/workflows.py`; Ruff, Pyright e il gate C901 non rilevano regressioni.
+- **Rischio residuo:** per non mutare le librerie Emby di produzione durante la
+  diagnosi, il canary reale si ferma immediatamente prima del trigger. Il percorso
+  mutante è coperto deterministicamente dai test e dovrà essere confermato con
+  un singolo Workflow controllato soltanto dopo il prossimo deployment approvato.
+
+### R44-H-07 — Il limite JSON condiviso interrompe il Probe recenti reale — resolved
+
+**Classificazione:** riapertura/incompletezza di R35-M-03. Il budget di trasporto
+e complessità introdotto in R35 è corretto, ma il caller Probe non era stato
+provato contro la cardinalità strutturale di una risposta Emby reale.
+
+- **Riproduzione locale reale:** il Workflow `full` del 12 settembre completa lo
+  scan e fallisce nel passaggio `Media Probe Ultimi Aggiunti` su tutti e quattro
+  i server. Ogni `combo_recent.last_run` registra `Risposta Emby non valida`.
+  La stessa richiesta `Items` con 200 record produce circa 2 MB ma supera i
+  100.000 nodi JSON a causa di `MediaSources` e `MediaStreams`; il decoder bounded
+  la rifiuta con `Risposta JSON upstream troppo complessa`. Pagine da 50 record
+  passano sullo stesso endpoint per tutti e quattro i server.
+- **Causa radice:** `RecentProbeMixin` usava l'argomento di avvio, normalmente
+  200, anche come dimensione pagina per un payload ricco. Il limite byte non era
+  superato, ma il budget strutturale sì. Il Workflow esponeva soltanto il messaggio
+  generico perché il dettaglio upstream rimane correttamente confinato allo stato
+  diagnostico del Probe.
+- **Soluzione:** il Probe mantiene invariati i budget comuni di sicurezza e
+  pagina `Items` in batch massimi da 50 elementi. StartIndex, checkpoint,
+  finestra scorrevole e massimo complessivo restano invariati: cambia soltanto la
+  granularità delle chiamate.
+- **Regressori e canary:** un regressore attraversa 107 elementi su quattro
+  pagine, verifica il limite di ogni richiesta, il conteggio completo e
+  l'avanzamento del checkpoint. Il canary read-only ha interrogato i quattro
+  server reali con gli stessi campi del worker e 50 record: quattro risposte
+  bounded valide, senza modificare Emby o il database.
+- **Superfici analoghe:** riesaminati gli altri caller Emby paginati. I percorsi
+  utenti usano payload o pagine più piccoli; Latest applica limiti propri e non
+  richiede insieme la struttura completa di sorgenti e stream. Il difetto è
+  specifico alla combinazione del Probe recenti.
+- **Review indipendente:** la protezione R35 non è stata allentata né aggirata;
+  la correzione limita il producer prima del decoder e conserva chiusura,
+  streaming e budget strutturale condivisi.
+- **Rischio residuo:** un singolo record Emby patologico potrebbe ancora superare
+  il budget e verrebbe rifiutato intenzionalmente. Il caso operativo ordinario è
+  coperto dai dati reali dei quattro server.
+
+### R44-H-08 — Il preset reale `Completa` riapre preview e delivery Telegram — resolved
+
+**Classificazione:** riapertura esplicita/incompletezza di R44-H-05. Famiglia:
+contratto e limiti delle notifiche Jinja persistite.
+
+- **Riproduzione locale reale:** dopo la chiusura di R44-H-05, il Workflow del 12
+  settembre completava scan, Probe e Pubblicazioni ma falliva su `Invio
+  Notifiche Telegram`. I log conservavano il dettaglio redatto
+  `TemplateResourceLimitError: Sorgente ciclo non consentita`; l'anteprima dello
+  stesso preset mostrava l'errore. Il template persistito `Completa` costruisce
+  due liste `namespace`, le limita a due qualità distinte e itera poi i due
+  campioni.
+- **Causa radice:** il regressore precedente usava macro e loop ma non la forma
+  completa conservata nel database. L'analisi di provenienza riconosceva gli
+  append di liste, ma non gli attributi `namespace` come sorgenti bounded e
+  vietava ogni append dentro un ciclo anche quando dominato da un limite
+  monotono. Il fallback trasformava inoltre le liste di versioni in stringhe
+  molto grandi e poteva sollevare una seconda eccezione, facendo fallire l'intero
+  step invece di restituire il solo errore del preset.
+- **Soluzione:** la policy risolve ora la provenienza degli attributi
+  `namespace`, ammette liste letterali a cardinalità statica e membership su
+  iterabili bounded. Un append ripetuto è valido soltanto se si trova nel ramo
+  diretto di una congiunzione senza `or`, con guardia `length` costante entro 32
+  elementi e incremento monotono della stessa collezione. Il fallback considera
+  soltanto scalari e non può più sostituire il diagnostico originale con
+  un'eccezione di budget.
+- **Regressori e canary:** una fixture riproduce semanticamente l'intero preset
+  `Completa` salvato localmente, incluse macro audio, rating, deduplicazione delle
+  qualità e secondo loop. È esercitata attraverso renderer, API preview,
+  validazione/salvataggio e delivery con trasporto Telegram simulato. Canary
+  negativi respingono guardie con `or`, collezione-guardia non incrementata,
+  limite oltre 32, append non protetti e accumuli/nesting eccessivi. Dopo il
+  deployment locale, la preview API sui contenuti reali ha prodotto 578 caratteri
+  per il film e 696 per la serie, entrambi con `error=null`.
+- **Superfici analoghe e review indipendente:** riesaminati editor, salvataggio,
+  preview film/serie, dispatcher e step Workflow. Il renderer resta unico. Una
+  seconda lettura ha verificato che la nuova eccezione statica non riapra i bypass
+  già coperti da R44-H-05 e che un preset invalido resti un fallimento bounded,
+  senza invio né avanzamento del checkpoint.
+- **Rischio residuo:** non è stato eseguito un invio Telegram reale durante la
+  verifica per evitare notifiche operative. Il percorso fino alla richiesta è
+  coperto deterministicamente e la preview reale usa gli stessi dati e renderer.
+
+### R44-H-09 — La ricostruzione Pubblicazioni supera il budget JSON Emby — resolved
+
+**Classificazione:** riapertura esplicita/incompletezza della copertura di classe
+R35-M-03/R44-H-07. Famiglia: payload HTTP esterni bounded e paginazione dei
+collector Emby.
+
+- **Riproduzione locale reale:** dopo la correzione Probe, il Workflow del 12
+  settembre completava scan e Probe ma falliva su `Aggiornamento Pubblicazioni`;
+  Telegram veniva correttamente saltato. In assenza degli snapshot Latest
+  migrati, ognuno dei quattro server riceveva due richieste `Items` da 400 righe
+  ricche. Tutte restituivano `Risposta Emby non valida`; le stesse otto superfici
+  con 50 righe producevano payload validi.
+- **Causa radice:** `_fetch_emby_latest_items()` paginava soltanto quando lo
+  stato precedente forniva `stop_at`. Il primo popolamento o una cache mancante
+  non hanno cursore e materializzavano in un'unica risposta `MediaSources`,
+  `MediaStreams` e `People` di centinaia di elementi, superando il limite
+  strutturale condiviso senza superare necessariamente quello in byte.
+- **Soluzione:** il fetcher canonico Latest pagina ora sempre con batch massimi
+  da 50, sia nel full bootstrap sia nell'incrementale e nel fallback con campi
+  ridotti. Conserva ordinamento, limite complessivo, cutoff e `StartIndex`; se
+  una pagina successiva fallisce scarta l'intera raccolta parziale, preservando
+  lo snapshot autorevole precedente. Ogni pagina attraversa anche il
+  `PaginationGuard` condiviso: una sorgente che ignora `StartIndex`, ripete la
+  pagina o restituisce righe malformate non può produrre duplicati, loop senza
+  progresso o snapshot parziali. Dopo la pubblicazione atomica il collector
+  consegna al manager il totale terminale tramite `CollectionPersistencePlan`;
+  non viene più riletto un contatore persistito potenzialmente stale. Questo
+  elimina sia `done 295/308` sia il falso progresso precedente quando non esiste
+  alcun server Emby attivo.
+- **Regressori e canary:** i test coprono una ricostruzione senza cursore oltre
+  una pagina, il tetto costante, il cutoff sovrapposto e il fallimento della
+  seconda pagina senza pubblicazione parziale. Canary parametrizzati respingono
+  in due chiamate una pagina ripetuta composta sia da record validi sia da righe
+  malformate. I regressori collector/manager verificano che il progresso diventi
+  terminale soltanto dopo `publish_refresh`, chiuda il contatore autorevole e
+  sostituisca uno snapshot stale con `0/0` e il messaggio dedicato in assenza di
+  server. Il canary reale sull'immagine finale ha pubblicato 200 film e 108 serie
+  con zero errori; il successivo incrementale ha completato 8/8 in circa 16
+  secondi e ha conservato le stesse cardinalità.
+- **Superfici analoghe e review indipendente:** verificati Probe recenti,
+  collector utenti/playstate, lookup per firma, episode lookup e fetch metadata
+  per item. Le scansioni potenzialmente ampie usano il guard condiviso; i lookup
+  restanti sono singoli o limitati a 50. Una prima review indipendente ha
+  individuato proprio l'assenza del guard Latest e il totale stale del ramo zero
+  server; dopo la correzione, una seconda review read-only e 62 regressori più 2
+  subtest non hanno trovato gap residui. Il limite del decoder non è stato
+  aumentato né aggirato.
+- **Rischio residuo:** il primo popolamento reale ha richiesto circa nove minuti
+  perché ha arricchito 308 voci esterne; il Workflow ammette esplicitamente fino
+  a due ore per questa ricostruzione e ogni singola chiamata conserva il proprio
+  timeout. Gli aggiornamenti successivi usano lo stato persistito e sono molto
+  più rapidi. Il canary non ha inviato notifiche Telegram.
+
+### R44-H-10 — La stessa pubblicazione compare due volte e può cambiare significato — resolved
+
+**Classificazione:** superficie analoga della famiglia R6-H-01 (identità stabile
+fra stato e cronologia). Famiglia: identità canonica degli eventi Latest e
+conservazione atomica dello stato di pubblicazione/notifica.
+
+- **Riproduzione locale reale:** `Le tigri di Mompracem (2025)` era presente due
+  volte per ognuno dei server Blue, Green, Purple e Red sia nella cache `batch`
+  sia nel feed. Le due schede avevano batch diversi ma lo stesso item, firma,
+  data e insieme di due file reali (circa 24,37 GB e 11,15 GB). Su Green una
+  copia aveva lo stato interno `existing`, che il frontend mostrava mediante il
+  fallback generico `Aggiornamento`; sugli altri server entrambe conservavano
+  `Nuovo film`.
+- **Causa radice:** il merge della cache trattava `batch_id` come identità della
+  pubblicazione. Un refresh invariato poteva quindi aggiungere una seconda
+  scheda e sostituire il significato storico con lo snapshot tecnico
+  `existing`. Inoltre item ID e firma provider potevano evolvere in alias
+  separati; la risoluzione a un solo hop e i checkpoint Telegram non univano
+  tutte le prove di delivery e MediaInfo.
+- **Soluzione:** film e serie condividono ora un'identità di evento basata sulle
+  sorgenti effettive (path normalizzato, MediaSource ID o fallback bounded),
+  indipendente da batch, MediaInfo mutabile e correzioni descrittive degli
+  episodi. La riconciliazione usa componenti transitive di alias e conserva
+  metadata freschi insieme all'envelope originale della pubblicazione. Stato,
+  history, dispatcher e checkpoint Telegram convergono sulla chiave canonica,
+  uniscono tutte le destinazioni/pubblicazioni e derivano
+  `mediainfo_complete` dalla copertura reale di tutte le sorgenti. Il frontend
+  nasconde soltanto snapshot interni interamente `existing`; una vera
+  `Nuova versione` resta visibile.
+- **Invarianti e regressori:** lo stesso evento visto in batch diversi produce
+  una scheda; due file contemporanei restano due righe nella stessa scheda; un
+  path realmente nuovo produce una seconda scheda `Nuova versione`; un refresh
+  invariato non cambia `Nuovo film`; item/firma arricchiti e catene di alias
+  attraversate fra cache e risultato fresco convergono transitivamente. Canary
+  separati coprono collisioni fallback, drift MediaInfo/data/metadata episodio,
+  riuso di MediaSource ID con path nuovo, film e serie distinti nello stesso
+  istante, merge di delivery disgiunte e copertura MediaInfo parziale.
+- **Superfici analoghe e review indipendente:** verificati full e incrementale,
+  cache batch/feed, film/serie, finalizzazione collector, state/history,
+  dispatcher/checkpoint notifiche e rendering React. Dieci letture indipendenti
+  progressive hanno individuato le varianti di alias, fallback, metadata
+  mutabile, conservazione delivery e copertura MediaInfo; ogni variante è stata
+  chiusa nel componente canonico e promossa a regressore prima del gate finale.
+- **Canary locale e rischio residuo:** un refresh incrementale ha normalizzato
+  atomicamente il database senza SQL manuale: una scheda e due file per ciascuno
+  dei quattro server, in `batch` e `feed`, tutti ancora `Nuovo film`. Il numero
+  dei checkpoint di consegna Telegram è rimasto invariato e non è stato eseguito
+  alcun invio reale. Nessun rischio residuo noto; una sorgente storica priva di
+  ogni identificatore durevole resta deliberatamente vincolata anche agli alias
+  logici per evitare collisioni fra titoli diversi.
+
+### R44-H-11 — Event Bridge non risveglia Transcode Guard in tempo reale — resolved
+
+**Classificazione:** causa nuova nella famiglia integrazione realtime/enforcement.
+
+- **Causa radice e impatto:** il WebSocket nativo Emby risvegliava il worker,
+  mentre gli ingressi Event Bridge WebSocket e HTTP si limitavano a registrare
+  l'evento. Con un intervallo fino a 120 secondi, uno stream non conforme poteva
+  iniziare e terminare fra due controlli senza essere valutato.
+- **Soluzione:** il metodo canonico `record_event_bridge_event()` risveglia ora
+  immediatamente il worker per ogni evento playback/session, compreso il formato
+  storico privo di `event.type`. L'evento è solo il trigger a bassa latenza:
+  `check_once()` continua a leggere l'API Sessions di Emby come stato autorevole
+  prima di applicare una regola. Il controllo periodico resta il fallback per
+  eventi persi o collegamenti realtime indisponibili.
+- **Invarianti e regressori:** cinque casi parametrizzati verificano playback,
+  sessione e payload storico, incluso lo sblocco deterministico di un'attesa da
+  120 secondi; gli eventi diagnostici plugin e library non provocano wake
+  spurii. Entrambe le route Event Bridge e i relativi batch attraversano lo
+  stesso metodo canonico; `threading.Event` assorbe raffiche concorrenti senza
+  accodamenti illimitati.
+- **Superfici analoghe e rischio residuo:** verificati WebSocket nativo Emby,
+  Event Bridge WebSocket, fallback HTTP, batch e worker disabilitato. Il plugin
+  non decide direttamente l'azione e una lettura Sessions resta intenzionalmente
+  necessaria; la latenza residua è quindi quella della chiamata autorevole a
+  Emby, non dell'intervallo periodico.
+
+### R44-M-05 — L'anteprima non identifica né seleziona il preset sorgente — resolved
+
+**Classificazione:** causa nuova di ownership dello stato frontend.
+
+- **Causa radice e impatto:** la pagina conservava soltanto una stringa
+  `previewTemplate`. Il form vuoto, il preset attivo e il draft in modifica si
+  sovrascrivevano implicitamente; la lista dei preset esponeva soltanto modifica
+  ed eliminazione. L'utente doveva quindi aprire un preset in modifica per sapere
+  con certezza quale template fosse renderizzato.
+- **Soluzione:** la pagina mantiene separati `selectedPresetId` e draft. In
+  assenza di modifiche usa il preset selezionato nella lista, inizialmente quello
+  attivo; durante una modifica usa sempre il draft. Ogni riga espone il comando
+  read-only `Anteprima`/`In anteprima`, accessibile anche ai viewer, e il pannello
+  dichiara esplicitamente `Preset selezionato: …` oppure `Modifiche in corso: …`.
+  La selezione di un altro preset rispetta la conferma già esistente per le
+  modifiche non salvate.
+- **Regressori e review indipendente:** test DOM verificano selezione senza
+  apertura dell'editor, precedenza del draft, etichetta della sorgente, stato
+  `aria-pressed`, protezione delle modifiche e invalidazione delle anteprime
+  stale. Riesaminati salvataggio, cancellazione, cambio contenuto/server,
+  auto-refresh e capability viewer/admin.
+- **Rischio residuo:** nessuno noto; un preset appena eliminato converge sul
+  preset attivo o sul primo disponibile al successivo snapshot configurazione.
+
+### R44-M-06 — La configurazione manuale dei gruppi dipende impropriamente dall'automatismo — resolved
+
+**Classificazione:** causa nuova di separazione incompleta fra configurazione e
+pianificazione.
+
+- **Causa radice e impatto:** frontend e persistenza trattavano `auto_sync` come
+  interruttore dell'intera funzione. Con l'automatismo disattivato, direzione e
+  domini diventavano inaccessibili e la scheda esponeva un secondo comando
+  manuale separato; il backend azzerava inoltre i checkpoint iniziali di visti,
+  preferiti e playlist. La sincronizzazione manuale era già eseguibile dal
+  backend, ma l'interfaccia impediva di configurarla in modo coerente e un
+  successivo salvataggio poteva ripetere il bootstrap dei dati.
+- **Soluzione:** `auto_sync` controlla ora soltanto la pianificazione periodica.
+  Direzione, domini e comando `Sincronizza ora` rimangono disponibili anche in
+  modalità `Solo manuale`; il comando duplicato nella testata del gruppo è stato
+  rimosso. Le sole direzioni supportate restano bidirezionale e unidirezionale
+  dal leader stabile agli altri utenti, con sorgente dichiarata nell'interfaccia.
+  I checkpoint persistiti dipendono dall'abilitazione del rispettivo dominio,
+  non dall'automatismo.
+- **Invarianti e regressori:** test backend verificano conservazione dei tre
+  checkpoint con automatismo spento, reset del solo dominio disabilitato, uso
+  delle impostazioni salvate nel comando manuale e filtro dei soli gruppi
+  automatici nel job pianificato. Test DOM verificano controlli configurabili,
+  leader visibile e un solo comando manuale sia con automatismo attivo sia
+  disattivato. Riesaminati dialogo, controlli inline, card gruppo, route di
+  salvataggio, dispatcher manuale e automatico e persistenza dei bootstrap.
+- **Rischio residuo:** nessuno noto; non sono stati modificati algoritmi,
+  precedenze o payload della sincronizzazione. Un gruppo monodirezionale privo
+  di un unico leader continua a essere segnalato come configurazione non valida
+  dal contratto esistente.
+
+### R44-M-07 — L'aggiornamento metadata può cancellare i probe senza avvertimento — resolved
+
+**Classificazione:** causa nuova nella famiglia delle azioni distruttive prive
+di conferma esplicita.
+
+- **Causa radice e riproduzione:** la pagina Librerie esponeva quattro ingressi
+  all'aggiornamento completo dei metadata — tutti i server, singolo server,
+  gruppo e singola libreria — e li collegava direttamente alle mutation. Un
+  solo clic avviava quindi l'operazione Emby, che cancella i probe dei file
+  coinvolti e ne richiede la rigenerazione, senza descrivere questo effetto né
+  permettere di annullare.
+- **Soluzione:** i quattro ingressi condividono ora una sola conferma di tono
+  distruttivo. Il dialogo identifica il target preciso, dichiara la cancellazione
+  di tutti i probe coinvolti e la necessità di rieseguire Media Probe, e usa
+  l'etichetta esplicita `Aggiorna e cancella i probe`. L'annullamento è il
+  percorso predefinito e non avvia alcuna mutation. Scansione file e workflow
+  restano invariati.
+- **Regressori e superfici analoghe:** cinque test DOM coprono annullamento per
+  ciascuno dei quattro target, testo/tono/azione della conferma e avvio esatto
+  soltanto dopo assenso. Riesaminati tutti i consumer `refresh_metadata` e
+  `scan_type=metadata` della pagina Librerie; l'automazione metadata delle
+  Collezioni è una funzione distinta e non è stata modificata.
+- **Review indipendente e rischio residuo:** la protezione è centralizzata nel
+  composition root e quindi non può divergere fra card e manutenzione. Le API
+  restano intenzionalmente invocabili dai client autorizzati: questa remediation
+  protegge dall'attivazione accidentale nell'interfaccia, non modifica il
+  contratto o gli effetti dell'endpoint. Nessun rischio residuo UI noto.
+
+### R44-L-03 — Il badge di stato del centro operazioni viene compresso a 30 px — resolved
+
+**Classificazione:** causa nuova di presentazione responsive.
+
+- **Riproduzione:** nel pannello flottante il badge `Errore` appare su tre righe.
+  Il selettore condiviso con i pulsanti icona assegna a ogni `.inline-flex` nello
+  stato larghezza e altezza fisse da 30 px; inoltre il wrapping ereditato
+  dall'header consente di spezzare la parola.
+- **Soluzione:** la dimensione fissa resta esclusiva ai pulsanti azione. I badge
+  tornano content-sized, con altezza automatica e testo non separabile.
+- **Regressore:** il contratto CSS verifica separatamente le regole di azioni e
+  stato e impedisce che il badge rientri nuovamente nel selettore a larghezza
+  fissa.
+- **Superfici analoghe e rischio residuo:** `StatusBadge` resta invariato per le
+  altre pagine; la correzione è locale al centro operazioni. Etichette tradotte
+  eccezionalmente lunghe restano intere e possono occupare più spazio, ma il
+  contenitore conserva il proprio limite responsive.
+
+### R44-L-04 — L'icona dell'accesso remoto disabilitato è identica a quella attiva — resolved
+
+**Classificazione:** causa nuova di fedeltà semantica dei componenti UI
+condivisi.
+
+- **Riproduzione reale e causa radice:** il dashboard locale restituiva
+  correttamente 40 utenti con `enable_remote_access=false` e
+  `is_remote_disabled=true`; badge, tooltip e azione risultavano coerenti. In
+  `frontend/src/components/ui/icons.tsx`, però, sia `Wifi` sia `WifiOff` erano
+  alias dello stesso glifo Font Awesome `faWifi`, rendendo i due stati
+  visivamente indistinguibili.
+- **Soluzione:** il componente condiviso `WifiOff` resta distinguibile nei
+  contesti di stato Event Bridge e Live. Nelle azioni rapide utente, per scelta
+  UX dell'operatore, lo stato remoto conserva invece il medesimo glifo Wi-Fi e
+  diventa rosso quando disattivato. La stessa regola è applicata al permesso di
+  download: glifo Download rosso, senza l'overlay di divieto.
+- **Regressori e superfici analoghe:** il test `UserRow` confronta markup attivo
+  e disabilitato, la classe semantica rossa su entrambi i permessi, l'assenza
+  dell'overlay `Ban`, l'indicatore warning e le azioni accessibili `Abilita
+  accesso remoto` e `Abilita download`. Riesaminati anche Event Bridge e
+  panoramica Live, gli altri due consumer di `WifiOff`: entrambi mantengono il
+  significato con testo/`aria-label` e il glifo decorativo `aria-hidden`.
+- **Review indipendente e rischio residuo:** verificati collisioni degli ID,
+  classi/selettori, dimensionamento, colore e accessibilità. Nessun finding o
+  rischio residuo noto.
+
+### R44-L-05 — Il centro operazioni Utenti usa una variante visiva isolata — resolved
+
+**Classificazione:** causa nuova di coerenza UI.
+
+- **Causa radice:** `UsersOperationsCenter` usava il componente canonico ma gli
+  applicava `operations-center--users`, una variante che cambiava colore e
+  posizione del pulsante. La compensazione non è necessaria: `AppShell`
+  esclude già il centro globale sul percorso Utenti, quindi i due controlli non
+  possono sovrapporsi.
+- **Soluzione:** rimossa la classe speciale e tutte le sue regole responsive.
+  Etichetta, dataset delle operazioni utente, refresh, pulizia e persistenza
+  apertura restano invariati; stile e posizione sono ora quelli canonici delle
+  altre pagine.
+- **Regressore e rischio residuo:** un gate sorgente impedisce di reintrodurre
+  la variante sia nel componente Utenti sia nel foglio condiviso. I test del
+  centro operazioni verificano inoltre apertura, errori, capability e azioni.
+  Nessun rischio residuo noto.
+
+### R44-L-06 — Il riepilogo Transcode Guard si comprime oltre il breakpoint desktop — resolved
+
+**Classificazione:** causa nuova di composizione responsive.
+
+- **Riproduzione e causa radice:** appena superati `1160px`, il riepilogo
+  globale passava da due righe a tre colonne. L'ultima colonna conteneva a sua
+  volta due campi composti da etichetta, input e aiuto: la doppia griglia
+  comprimeva testi e controlli e produceva wrapping irregolare proprio nelle
+  larghezze desktop.
+- **Soluzione:** il riepilogo usa lo spazio desktop in una sola riga bilanciata:
+  identità del monitor, interruttore e due parametri condividono la larghezza
+  disponibile, senza spingere il blocco dei campi a destra. Il componente è un
+  container inline autonomo: sotto 1050 px reali i parametri passano su una
+  seconda riga estesa, mentre sotto 620 px si impilano in una colonna. Testi,
+  icona e controlli possono restringersi senza sovrapporsi.
+- **Regressore, superfici analoghe e rischio residuo:** un contratto CSS
+  verifica composizione desktop, distribuzione non allineata a destra e fallback
+  medium/mobile basati sulla larghezza del pannello. Il follow-up richiesto
+  dall'operatore ha inoltre sostituito la descrizione astratta con l'effetto
+  reale: controllo delle riproduzioni Emby, registrazione, avviso o arresto dello
+  stream e precedenza della prima regola valida. Riesaminati intestazione pagina,
+  pulsante Salva e workspace delle regole. Nessun comportamento o dato
+  Transcode Guard è cambiato e non risultano rischi residui noti.
+
+### R44-L-07 — Pubblicazioni supera il margine subito oltre 1120 px — resolved
+
+**Classificazione:** superficie analoga di R44-L-06 nella famiglia dei
+breakpoint basati sulla finestra invece che sul contenitore.
+
+- **Riproduzione e causa radice:** a `1121px` la griglia Notifiche Telegram,
+  posta sotto le pubblicazioni, tornava a tre colonne con minimi complessivi
+  superiori a 900 px. Con la navigazione laterale aperta, l'area principale era
+  però larga circa 800 px. La griglia inferiore ampliava lo `scrollWidth`
+  dell'intera pagina e faceva uscire dal margine anche toolbar e schede Film/TV.
+- **Soluzione:** `latest-workspace` è ora un contenitore inline nominato. Griglia
+  notifiche, colonne Film/TV e toolbar reagiscono alla larghezza effettiva del
+  workspace: configurazione su due colonne fino a 1120 px reali e su una fino a
+  760 px; Film e Serie TV restano affiancati anche intorno ai 1120 px di viewport
+  e si impilano soltanto quando il contenitore scende sotto 680 px. La toolbar
+  può disporsi su due righe senza ampliare la pagina. Il comportamento è quindi
+  indipendente dalla presenza della sidebar.
+- **Regressori, superfici analoghe e rischio residuo:** due contratti CSS
+  impediscono il ritorno ai breakpoint viewport per queste griglie e verificano
+  la permanenza delle due colonne fino alla soglia realmente stretta. Riesaminati header,
+  selettore server, limite DB, schede, configurazione e pannello laterale. Non
+  cambiano dati, filtri o azioni; nessun rischio residuo noto.
+
+### Verifica funzionale trasversale di recupero
+
+Lo smoke dell'immagine di produzione non controlla più soltanto readiness e
+asset SPA. Dopo un login amministratore reale interroga anche 17 superfici
+read-only: sessione/account, configurazione, centro operazioni, server Emby,
+Latest e progress, job librerie, collezioni e opzioni, utenti, ricerca, Telegram,
+icone e impostazioni/stato/statistiche Transcode Guard. I percorsi mutanti e le
+condizioni di errore restano coperti dalle suite backend/frontend; nessuna
+mutazione è stata eseguita sui servizi Hetzner durante questa verifica.
+
+### Gate finali del follow-up
+
+I gate sono stati rieseguiti dopo l'ultima modifica funzionale. Il controllo
+PostgreSQL usa un database 16 temporaneo esterno; la build Docker non contiene
+né gestisce PostgreSQL.
+
+| Gate | Esito | Evidenza finale |
+| --- | --- | --- |
+| Regressori del follow-up finale | **PASS** | 88 backend mirati per R44-H-10, 5 canary Event Bridge/Transcode Guard, 4 backend per la configurazione manuale dei gruppi, 24 frontend mirati su 5 file, 3 contratti layout/copy Transcode Guard e 2 contratti responsive Pubblicazioni, oltre ai regressori precedenti; deduplica transitive cache/fresh, vere nuove versioni, fallback, film/serie, drift metadata, state/history, notification delivery/MediaInfo, filtro `existing`, wake immediato playback/session con polling di recupero, stati rossi canonici Wi-Fi/Download senza overlay, centro operazioni Utenti canonico, separazione manuale/automatica della sincronizzazione gruppi, conferma distruttiva dei quattro aggiornamenti metadata e layout basati sulla larghezza reale del contenuto |
+| Backend completo | **PASS** | 2.303 passed, 84 skipped, 34 subtest; 51,18 s |
+| PostgreSQL 16 reale | **PASS** | release gate: 82 passed, 2 warning; 174,88 s |
+| Ruff | **PASS** | nessun errore |
+| Pyright | **PASS** | 0 errori, 0 warning, 0 informazioni |
+| Complessità | **PASS** | baseline C901 rispettata: 174 attive, 47 ridotte/rimosse |
+| Contratto API esterna | **PASS** | 203 operation v1; 0 violazioni |
+| Frontend Vitest | **PASS** | 277 file, 753 test |
+| ESLint | **PASS** | nessun errore |
+| Build frontend | **PASS** | 505 moduli; warning chunk noto da 548,56 kB |
+| Dipendenze | **PASS** | audit Python runtime/dev e npm runtime/completo senza vulnerabilità note |
+| Compose | **PASS** | base, secrets e admin-bootstrap; unico servizio `app` |
+| Docker | **PASS** | build completa dell'immagine `octohubs:r44-event-bridge-guard-wake`; base no-cache verificata nel passaggio immediatamente precedente |
+| Smoke immagine | **PASS** | readiness, login, SPA, UID/GID 1000 e 17 superfici funzionali read-only su PostgreSQL 16 temporaneo esterno; l'immagine finale è healthy sull'istanza locale, login amministratore, API Transcode Guard e asset aggiornato sono stati verificati, e `octohubs-local-pre-event-bridge-guard-wake` resta spento come rollback; l'incrementale è terminato `8/8`, `Completato`; Mompracem è una scheda con due versioni su Blue/Green/Purple/Red sia in batch sia nel feed; checkpoint Telegram invariati a 78 |
+| `git diff --check` | **PASS** | nessun errore di whitespace o conflict marker |
+
+### Audit di ricorrenza finale R44
+
+I follow-up R44-H-05 … R44-H-11, R44-M-05 … R44-M-07 e R44-L-03 … R44-L-07 portano il totale
+storico da 544 a **559 finding**, tutti risolti. Cinque sono riaperture esplicite: le remediation
+precedenti avevano chiuso invarianti tecnici senza provare integralmente i
+contratti funzionali reali.
+
+| Categoria storica | Prima del follow-up | Follow-up | Totale | Stato corrente |
+| --- | ---: | ---: | ---: | --- |
+| Finding numerati | 544 | 15 | **559** | **559 risolti; 0 aperti** |
+| Riaperture esplicitamente incomplete | 74 | 5 | **79** | 79 risolte; 0 aperte |
+| Superfici analoghe/ricorrenze diverse | 74 | 2 | **76** | 76 risolte; 0 aperte |
+| Cause nuove | 396 | 8 | **404** | tutte risolte |
+| Decisioni storiche accettate | 4 | 0 | **4** | non sono difetti aperti |
+| Finding bloccati da decisione utente | 0 | 0 | **0** | — |
+
+**Stato finale del follow-up:** R44 comprende **25 finding risolti e 0 aperti**.
+L'immagine verificata è stata distribuita nell'istanza Docker locale con
+rollback e il ciclo è pubblicato su `main` mediante il checkpoint release
+`v0.5.4`. Non è stato eseguito alcun deploy remoto e non sono stati modificati
+dati o configurazione del deployment Hetzner.

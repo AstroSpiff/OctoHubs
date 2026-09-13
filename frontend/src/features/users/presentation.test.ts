@@ -44,14 +44,14 @@ describe("users presentation", () => {
     expect(syncPresentation({ id: "linked", name: "Condiviso", is_linked: true, auto_sync: true, last_sync_status: "skipped", users: [user] }))
       .toEqual({ label: "Sincronizzazione da verificare", severity: "warning" });
     expect(syncPresentation({ id: "linked", name: "Condiviso", is_linked: true, auto_sync: false, last_sync_status: "success", users: [user] }))
-      .toEqual({ label: "Automazione disattivata", severity: "neutral" });
+      .toEqual({ label: "Solo manuale", severity: "neutral" });
   });
 
   it("keeps known idle group states neutral instead of unverified", () => {
     expect(syncPresentation({ id: "standalone", name: "Roy", is_linked: false, users: [user] }))
       .toEqual({ label: "Non associato", severity: "neutral" });
     expect(syncPresentation({ id: "linked", name: "Condiviso", is_linked: true, users: [user] }))
-      .toEqual({ label: "Automazione disattivata", severity: "neutral" });
+      .toEqual({ label: "Solo manuale", severity: "neutral" });
   });
 
   it("filters linked groups through their assigned icon profile", () => {

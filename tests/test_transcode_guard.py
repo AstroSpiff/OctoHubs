@@ -3421,6 +3421,54 @@ def test_service_exposes_real_plugin_events_in_player_event_log():
     assert rows[0]["subtitle_stream_index"] == 3
 
 
+@pytest.mark.parametrize(
+    ("event_type", "event_name"),
+    [
+        ("playback.start", "PlaybackStart"),
+        ("session.updated", "Sessions"),
+        ("", "PlaybackProgress"),
+    ],
+)
+def test_event_bridge_playback_and_session_events_wake_guard_immediately(
+    event_type,
+    event_name,
+):
+    service = TranscodeGuardService(storage_provider=lambda: _Storage())
+    service._wake_event.clear()
+    waiter = threading.Thread(
+        target=service._wait_for_next_cycle,
+        args=(120,),
+        daemon=True,
+    )
+    waiter.start()
+
+    service.record_event_bridge_event({
+        "schema": "octohubs.emby.event.v1",
+        "source": "OctoHubs.EventBridge",
+        "server": {"id": "server-a", "name": "Green"},
+        "event": {"type": event_type, "name": event_name},
+        "session": {"id": "session-1", "playSessionId": "play-1"},
+    })
+
+    waiter.join(timeout=1)
+    assert waiter.is_alive() is False
+
+
+@pytest.mark.parametrize("event_type", ["plugin.start", "library.updated"])
+def test_event_bridge_non_playback_events_do_not_wake_guard(event_type):
+    service = TranscodeGuardService(storage_provider=lambda: _Storage())
+    service._wake_event.clear()
+
+    service.record_event_bridge_event({
+        "schema": "octohubs.emby.event.v1",
+        "source": "OctoHubs.EventBridge",
+        "server": {"id": "server-a", "name": "Green"},
+        "event": {"type": event_type, "name": "Diagnostic"},
+    })
+
+    assert service._wake_event.is_set() is False
+
+
 def test_service_exposes_event_bridge_plugin_diagnostics_in_player_event_log():
     storage = _Storage()
     service = TranscodeGuardService(storage_provider=lambda: storage)

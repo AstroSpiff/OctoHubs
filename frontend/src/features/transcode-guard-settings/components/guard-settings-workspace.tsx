@@ -91,7 +91,7 @@ function GuardSettingsWorkspace({ embedded = true }: { embedded?: boolean }) {
         level={embedded ? "subsection" : "section"}
         title="Regole Transcode Guard"
         titleId="guard-rules-title"
-        description="Imposta la politica del monitor e l&apos;ordine con cui le regole vengono valutate durante la riproduzione."
+        description="Controlla le riproduzioni Emby e scegli se registrare, avvisare l&apos;utente o fermare gli stream che corrispondono alle condizioni. La prima regola valida ha precedenza."
         actions={<GuardSettingsSave dirty={dirty} saving={save.isPending} onSave={saveSettings} />}
       />
 

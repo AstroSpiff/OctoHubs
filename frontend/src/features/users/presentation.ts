@@ -81,7 +81,7 @@ export function syncPresentation(group: EmbyUserGroup): { label: string; severit
   if (group.last_sync_status === "running") return { label: "Sincronizzazione", severity: "info" };
   if (["error", "failed", "interrupted"].includes(String(group.last_sync_status))) return { label: "Errore di sincronizzazione", severity: "error" };
   if (group.last_sync_status === "skipped") return { label: "Sincronizzazione da verificare", severity: "warning" };
-  if (group.auto_sync !== true) return { label: "Automazione disattivata", severity: "neutral" };
+  if (group.auto_sync !== true) return { label: "Solo manuale", severity: "neutral" };
   if (["success", "completed"].includes(String(group.last_sync_status))) return { label: "Sincronizzato", severity: "ok" };
   return { label: group.last_sync_at ? "Da sincronizzare" : "Mai sincronizzato", severity: "neutral" };
 }

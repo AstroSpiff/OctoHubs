@@ -200,6 +200,13 @@
   font-size: 12px;
 }
 
+.users-group-sync-mode > small {
+  grid-column: 1 / -1;
+  color: var(--color-muted);
+  font-size: 10px;
+  font-weight: 650;
+}
+
 .users-group-sync-controls > button {
   width: 31px !important;
   min-width: 31px !important;
@@ -289,10 +296,6 @@
 
 .users-group-sync-status > small {
   color: var(--color-warning);
-}
-
-.users-group-sync-status--idle {
-  justify-content: flex-start;
 }
 
 .users-group-controls {
@@ -660,6 +663,10 @@
 .user-row-shortcut:hover {
   color: var(--color-accent-strong);
 }
+.user-row-shortcut--permission-disabled,
+.user-row-shortcut--permission-disabled:hover {
+  color: var(--color-danger);
+}
 .user-row-shortcuts--linked .user-row-shortcut--password {
   grid-column: 2;
   grid-row: 2;
@@ -676,22 +683,6 @@
   grid-column: 3;
   grid-row: 3;
 }
-.user-download-disabled {
-  position: relative;
-  display: grid;
-  width: 16px;
-  height: 16px;
-  place-items: center;
-}
-.user-download-disabled svg:first-child {
-  opacity: 0.55;
-}
-.user-download-disabled svg:last-child {
-  position: absolute;
-  color: var(--color-danger);
-  stroke-width: 2.5;
-}
-
 .user-row-menu {
   position: relative;
 }

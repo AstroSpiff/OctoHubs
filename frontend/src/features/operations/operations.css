@@ -303,8 +303,7 @@
   gap: 2px;
 }
 
-.operations-center-actions .inline-flex,
-.operations-center-item-status .inline-flex {
+.operations-center-actions .inline-flex {
   width: 30px;
   height: 30px;
   min-height: 30px;
@@ -387,10 +386,14 @@
 }
 
 .operations-center-item-status .inline-flex {
+  width: auto;
+  height: auto;
   min-height: 22px;
   padding-right: 6px;
   padding-left: 6px;
   font-size: 10px;
+  overflow-wrap: normal;
+  white-space: nowrap;
 }
 
 .operations-center-item > p {
@@ -504,26 +507,6 @@
   font-size: 10px;
 }
 
-.operations-center--users {
-  bottom: 76px;
-}
-
-.operations-center--users .operations-center-toggle {
-  border-color: var(--color-info-border);
-  background: var(--color-info-soft);
-  color: var(--color-info);
-}
-
-.operations-center--users.has-active .operations-center-toggle {
-  border-color: var(--color-info-border);
-  background: var(--color-info-soft);
-  color: var(--color-info);
-}
-
-.operations-center--users .operations-center-toggle strong {
-  background: var(--color-info);
-}
-
 @media (max-width: 680px) {
   .operations-summary {
     align-items: flex-start;
@@ -599,8 +582,5 @@
   }
   .operations-center-list {
     max-height: calc(100dvh - 176px);
-  }
-  .operations-center--users {
-    bottom: max(10px, env(safe-area-inset-bottom));
   }
 }

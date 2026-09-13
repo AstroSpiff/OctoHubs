@@ -49,6 +49,16 @@ Manual steps:
 - STRM Guard: start STRM Extract only when there are no active streams.
 - Media Probe: analyze and monitor video files without MediaInfo from the Media Probe page.
 
+### Transcode Guard
+- Monitors Emby sessions and applies the first matching rule in order.
+- Rules can record only, warn the user, warn and then stop the stream, or stop
+  it immediately.
+- Playback/session events from the Event Bridge plugin wake the check
+  immediately; the current state is still verified through Emby's Sessions API
+  before enforcing the rule.
+- The configured interval remains a recovery check for missed events or a
+  temporarily unavailable realtime connection.
+
 Manual steps:
 - Add Emby servers in `EMBY.SERVERS` with an admin API key.
 - Set `strm_task_id` if you want STRM Extract automation (see `EMBY_TOOLS.md`).

@@ -8,8 +8,14 @@ legacy coupling.
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.pagination import (
+    MAX_EMBY_ITEMS,
+    MAX_EMBY_PAGES,
+    PaginationGuard,
+    pagination_error,
+)
+from core.utils import _parse_date_value, normalize_string
 from emby_runtime.api_clients import _call_emby_api
-from core.utils import normalize_string, _parse_date_value
 from emby_latest.runtime_cache import BoundedTTLCache
 
 _EMBY_LIBRARY_CACHE = BoundedTTLCache[str, list[dict]](max_entries=256, ttl_seconds=300)
@@ -18,6 +24,11 @@ _EMBY_LIBRARY_ITEM_CACHE = BoundedTTLCache[tuple[str, str], tuple[str, str]](
     ttl_seconds=900,
 )
 _EMBY_ITEM_CACHE = BoundedTTLCache[tuple[str, str], dict](max_entries=8_192, ttl_seconds=300)
+
+# Rich Latest rows can contain several MediaSources, MediaStreams and People
+# entries.  Keep every upstream response comfortably below the shared JSON
+# structure budget even when a full snapshot has no incremental cursor yet.
+LATEST_ITEMS_MAX_PAGE_SIZE = 50
 
 
 def _coerce_int_value(value: Any) -> Optional[int]:
@@ -403,67 +414,65 @@ def _fetch_emby_latest_items(
                 if not item.get("DateCreated") and item.get("DateLastMediaAdded"):
                     item["DateCreated"] = item["DateLastMediaAdded"]
 
+    try:
+        max_items = max(0, int(limit))
+    except (TypeError, ValueError):
+        max_items = 0
+    if max_items <= 0:
+        return [], None
+
+    try:
+        requested_page_size = int(page_size) if page_size is not None else LATEST_ITEMS_MAX_PAGE_SIZE
+    except (TypeError, ValueError):
+        requested_page_size = LATEST_ITEMS_MAX_PAGE_SIZE
+    effective_page_size = max(
+        1,
+        min(requested_page_size, LATEST_ITEMS_MAX_PAGE_SIZE, max_items),
+    )
+
     stop_dt = _parse_date_value(stop_at)
-    if stop_dt:
-        try:
-            max_items = max(0, int(limit))
-        except (TypeError, ValueError):
-            max_items = 0
-        if max_items <= 0:
-            return [], None
+    collected: List[Dict[str, Any]] = []
+    start_index = 0
+    pagination_guard = PaginationGuard(
+        max_pages=MAX_EMBY_PAGES,
+        max_items=MAX_EMBY_ITEMS,
+    )
+    while len(collected) < max_items:
+        current_limit = min(effective_page_size, max_items - len(collected))
+        page_params = dict(params)
+        page_params["Limit"] = current_limit
+        page_params["StartIndex"] = start_index
+        success, payload = _call_emby_api(server, "Items", params=page_params)
+        if not success or not isinstance(payload, dict):
+            # A partial list is not an authoritative Latest snapshot.
+            return [], payload
+        page_items = payload.get("Items")
+        if not isinstance(page_items, list):
+            return [], "Risposta Items inattesa"
+        page_error = pagination_error(pagination_guard, page_items)
+        if page_error:
+            return [], page_error
+        if not page_items:
+            break
 
-        try:
-            effective_page_size = int(page_size) if page_size is not None else min(max_items, 100)
-        except (TypeError, ValueError):
-            effective_page_size = min(max_items, 100)
-        effective_page_size = max(1, min(effective_page_size, max_items))
-
-        collected: List[Dict[str, Any]] = []
-        start_index = 0
-        while len(collected) < max_items:
-            current_limit = min(effective_page_size, max_items - len(collected))
-            page_params = dict(params)
-            page_params["Limit"] = current_limit
-            page_params["StartIndex"] = start_index
-            success, payload = _call_emby_api(server, "Items", params=page_params)
-            if not success or not isinstance(payload, dict):
-                return [], payload
-            page_items = payload.get("Items")
-            if not isinstance(page_items, list):
-                return [], "Risposta Items inattesa"
-            if not page_items:
+        _normalize_item_dates(page_items)
+        reached_cutoff = False
+        for item in page_items:
+            if not isinstance(item, dict):
+                continue
+            item_dt = _parse_date_value(item.get("DateCreated"))
+            if stop_dt and item_dt and item_dt < stop_dt:
+                reached_cutoff = True
+                break
+            collected.append(item)
+            if len(collected) >= max_items:
                 break
 
-            _normalize_item_dates(page_items)
-            reached_cutoff = False
-            for item in page_items:
-                if not isinstance(item, dict):
-                    continue
-                item_dt = _parse_date_value(item.get("DateCreated"))
-                if item_dt and item_dt < stop_dt:
-                    reached_cutoff = True
-                    break
-                collected.append(item)
-                if len(collected) >= max_items:
-                    break
+        if reached_cutoff or len(page_items) < current_limit or len(collected) >= max_items:
+            break
+        start_index += len(page_items)
 
-            if reached_cutoff or len(page_items) < current_limit or len(collected) >= max_items:
-                break
-            start_index += len(page_items)
-
-        return collected, None
-
-    success, payload = _call_emby_api(server, "Items", params=params)
-    if not success or not isinstance(payload, dict):
-        return [], payload
-    items = payload.get("Items")
-    if not isinstance(items, list):
-        return [], "Risposta Items inattesa"
-
-    # Enrich each item with the best available timestamp
-    _normalize_item_dates(items)
-
-    return items, None
+    return collected, None
 
 
 def _fetch_emby_latest_series_from_episodes(

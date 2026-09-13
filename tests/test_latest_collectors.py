@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from core.utils import _parse_date_value
+from emby_latest.collector_finalization import CollectionPersistencePlan
 from emby_latest.collectors import collect_entries
 
 
@@ -44,6 +45,25 @@ class _RecordingState:
 
 
 class LatestCollectorStateTests(unittest.TestCase):
+    def test_zero_server_collection_records_authoritative_deferred_progress(self):
+        persistence_plan = CollectionPersistencePlan()
+        config = {"DATABASE": {"ENABLED": True}, "EMBY": {"SERVERS": []}}
+
+        with patch("emby_latest.collectors.get_emby_servers", return_value=[]):
+            payload, error = collect_entries(
+                limit=100,
+                per_server_limit=25,
+                enrich=True,
+                config_override=config,
+                publish_progress_completion=False,
+                persistence_plan=persistence_plan,
+            )
+
+        self.assertIsNone(error)
+        self.assertEqual({"movies": [], "series": [], "errors": []}, payload)
+        self.assertEqual(0, persistence_plan.progress_total)
+        self.assertEqual("Nessun server Emby attivo", persistence_plan.completion_message)
+
     def test_upstream_fetch_error_preserves_previous_snapshot(self):
         db_state = _RecordingState(
             {"server-a": {"movies": {"items": {}}, "series": {"items": {}}}}

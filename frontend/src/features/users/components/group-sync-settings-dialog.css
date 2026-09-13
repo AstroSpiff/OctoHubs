@@ -107,6 +107,28 @@
   padding: 0 9px;
 }
 
+.users-sync-source-summary {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.users-sync-source-summary > strong {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  color: var(--color-ink);
+}
+
+.users-sync-source-summary .users-server-identity {
+  min-width: 0;
+}
+
 .users-sync-option-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

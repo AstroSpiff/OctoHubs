@@ -55,6 +55,7 @@ function sanitizeTelegramHtml(value: string) {
 
 function LatestNotificationPreview({
   template,
+  sourceLabel,
   movies,
   series,
   result,
@@ -64,6 +65,7 @@ function LatestNotificationPreview({
   onPreview,
 }: {
   template: string;
+  sourceLabel: string;
   movies: LatestItem[];
   series: LatestItem[];
   result?: LatestPreview;
@@ -132,6 +134,9 @@ function LatestNotificationPreview({
           immagine.
         </p>
       </header>
+      <p className="latest-preview-source" role="status">
+        {sourceLabel}
+      </p>
       <div className="latest-preview-selects">
         <label>
           Film anteprima
@@ -235,7 +240,7 @@ function PreviewItem({
   const message = preview?.error
     ? preview.error
     : preview?.message ||
-      "Salva o modifica un preset, poi aggiorna l'anteprima.";
+      "Seleziona un preset oppure modifica un draft per generarne l'anteprima.";
   return (
     <article className="latest-preview-item">
       <header>

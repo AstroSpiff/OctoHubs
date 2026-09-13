@@ -14,7 +14,6 @@ function UsersOperationsCenter() {
     onClear={() => clearCompleted.mutate()}
     storageKey="octohubs.users.operations.open"
     label="Operazioni utenti"
-    className="operations-center--users"
   />;
 }
 

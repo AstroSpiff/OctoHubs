@@ -182,7 +182,17 @@ class EmbyLatestManager:
             latest_state=persistence_plan.latest_state,
         )
         if progress_tracker:
-            progress_tracker.update(state="done", message="Completato")
+            progress_total = persistence_plan.progress_total
+            completion_message = persistence_plan.completion_message
+            if isinstance(progress_total, int) and not isinstance(progress_total, bool) and progress_total >= 0:
+                progress_tracker.update(
+                    state="done",
+                    total=progress_total,
+                    completed=progress_total,
+                    message=completion_message,
+                )
+            else:
+                progress_tracker.update(state="done", message=completion_message)
 
         return batch_payload, None
 

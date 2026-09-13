@@ -1,4 +1,4 @@
-import { KeyRound, Link2, Pencil, RefreshCw, Repeat2, SlidersHorizontal, Star, Trash2 } from "@/components/ui/icons";
+import { KeyRound, Link2, Pencil, Repeat2, SlidersHorizontal, Star, Trash2 } from "@/components/ui/icons";
 
 import { Button } from "@/components/ui/button";
 import { WriteAction } from "@/features/session/workspace-capabilities";
@@ -125,12 +125,10 @@ function UsersGroupCard({
           </WriteAction>
           <GroupActions
             group={group}
-            syncing={syncing}
             busy={groupBusy}
             onPassword={onPassword}
             onSettings={onSettings}
             onConfigure={onConfigure}
-            onSync={onSync}
             onDelete={onDelete}
           />
         </div>
@@ -170,7 +168,7 @@ function UsersGroupCard({
   );
 }
 
-function GroupActions({ group, syncing, busy, onPassword, onSettings, onConfigure, onSync, onDelete }: Pick<UsersGroupCardProps, "group" | "syncing" | "onPassword" | "onSettings" | "onConfigure" | "onSync" | "onDelete"> & { busy: boolean }) {
+function GroupActions({ group, busy, onPassword, onSettings, onConfigure, onDelete }: Pick<UsersGroupCardProps, "group" | "onPassword" | "onSettings" | "onConfigure" | "onDelete"> & { busy: boolean }) {
   const password = passwordPresentation(group);
   const settings = settingsPresentation(group);
   const passwordTitle = group.password_mismatch_count
@@ -185,7 +183,6 @@ function GroupActions({ group, syncing, busy, onPassword, onSettings, onConfigur
       {!group.is_owners ? <Button type="button" requiresWriteAccess variant="ghost" size="icon" className={`users-group-action--${password.severity}`} title={passwordTitle} aria-label={`Gestisci password gruppo: ${passwordTitle}`} onClick={onPassword} disabled={busy}><KeyRound size={16} aria-hidden="true" /></Button> : null}
       {!group.is_owners ? <Button type="button" requiresWriteAccess variant="ghost" size="icon" className={`users-group-action--${settings.severity}`} title={settingsTitle} aria-label={`Gestisci impostazioni Emby gruppo: ${settingsTitle}`} onClick={onSettings} disabled={busy}><SlidersHorizontal size={16} aria-hidden="true" /></Button> : null}
       {group.is_linked ? <Button type="button" requiresWriteAccess variant="ghost" size="icon" title="Configura sincronizzazione" aria-label="Configura sincronizzazione" onClick={onConfigure} disabled={busy}><Repeat2 size={16} aria-hidden="true" /></Button> : null}
-      {group.is_linked && !group.auto_sync ? <Button type="button" requiresWriteAccess variant="ghost" size="icon" title="Sincronizza gruppo adesso" aria-label="Sincronizza gruppo adesso" onClick={onSync} disabled={busy}><RefreshCw size={16} className={syncing ? "animate-spin" : ""} aria-hidden="true" /></Button> : null}
       {!group.is_owners ? <Button type="button" requiresWriteAccess variant="ghost" size="icon" className="users-group-delete" title="Elimina utenti del gruppo" aria-label="Elimina utenti del gruppo" onClick={onDelete} disabled={busy}><Trash2 size={16} aria-hidden="true" /></Button> : null}
     </div>
   );

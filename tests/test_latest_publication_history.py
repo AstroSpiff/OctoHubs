@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import os
 import tempfile
 import unittest
@@ -180,6 +181,95 @@ class LatestPublicationHistoryTests(unittest.TestCase):
         update_history_entry(history, "series", "series-1", {"seasons": [2, 3]})
 
         self.assertEqual([1, 2, 3], history["series"]["series-1"]["seasons"])
+
+    def test_movie_signature_enrichment_migrates_notification_state(self):
+        source_path = "/media/movie-one.mkv"
+        source_key = hashlib.md5(source_path.encode("utf-8")).hexdigest()[:16]
+        prior_entry = {
+            "item_id": "movie-1",
+            "signature": "title:movie-one:2026",
+            "title": "Movie One",
+            "media_source_keys": [source_key],
+            "notified": True,
+            "notified_at": "2026-09-08T12:30:00+00:00",
+            "notified_publications": {
+                "original-batch": {"notified": True}
+            },
+        }
+        db_state = _RecordingState(
+            {
+                "server-a": {
+                    "movies": {
+                        "items": {
+                            "title:movie-one:2026": deepcopy(prior_entry),
+                            "tmdb:1": {
+                                "item_id": "movie-1",
+                                "signature": "tmdb:1",
+                                "media_source_keys": [source_key],
+                                "notified": True,
+                                "notified_publications": {
+                                    "new-batch": {"notified": True}
+                                },
+                            },
+                        }
+                    },
+                    "series": {"items": {}},
+                    "history": {
+                        "movies": {
+                            "title:movie-one:2026": deepcopy(prior_entry),
+                            "tmdb:1": {
+                                "item_id": "movie-1",
+                                "signature": "tmdb:1",
+                                "media_source_keys": [source_key],
+                                "notified": True,
+                                "notified_publications": {
+                                    "new-batch": {"notified": True}
+                                },
+                            },
+                        }
+                    },
+                }
+            }
+        )
+        movie = {
+            "Id": "movie-current",
+            "Name": "Movie One",
+            "Type": "Movie",
+            "ProductionYear": 2026,
+            "DateCreated": "2026-09-08T12:26:03+00:00",
+            "ProviderIds": {"Tmdb": "1"},
+            "MediaSources": [
+                {
+                    "Id": "source-a",
+                    "Path": source_path,
+                    "DateCreated": "2026-09-08T12:26:03+00:00",
+                    "Container": "mkv",
+                    "Size": 1000,
+                }
+            ],
+        }
+
+        payload, error = _collect_with_mocks(
+            db_state,
+            _RecordingCache(),
+            movie_items=[movie],
+        )
+
+        self.assertIsNone(error)
+        self.assertTrue(payload["movies"])
+        saved_server = db_state.saved[-1]["server-a"]
+        saved_items = saved_server["movies"]["items"]
+        saved_history = saved_server["history"]["movies"]
+        self.assertNotIn("title:movie-one:2026", saved_items)
+        self.assertNotIn("title:movie-one:2026", saved_history)
+        self.assertTrue(saved_items["tmdb:1"]["notified"])
+        self.assertTrue(
+            saved_items["tmdb:1"]["notified_publications"]["original-batch"]["notified"]
+        )
+        self.assertTrue(
+            saved_items["tmdb:1"]["notified_publications"]["new-batch"]["notified"]
+        )
+        self.assertTrue(saved_history["tmdb:1"]["notified"])
 
     def test_movie_history_classifies_pruned_notified_item_as_new_version(self):
         db_state = _RecordingState(

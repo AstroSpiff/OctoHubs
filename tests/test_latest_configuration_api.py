@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from emby_latest.configuration_api import (
@@ -11,6 +12,11 @@ from emby_latest.configuration_api import (
     save_latest_preset,
     save_latest_rule,
 )
+
+
+MIGRATED_COMPLETE_TEMPLATE = (
+    Path(__file__).parent / "fixtures" / "latest_complete_notification_template.j2"
+).read_text(encoding="utf-8")
 
 
 class LatestConfigurationApiTests(unittest.TestCase):
@@ -64,6 +70,55 @@ class LatestConfigurationApiTests(unittest.TestCase):
         self.assertEqual("Preset notifica aggiornato", payload["message"])
         self.assertEqual("preset-1", self.settings["ACTIVE_PRESET_ID"])
         self.assertEqual("<b>{{ title }}</b>", self.settings["PRESETS"][0]["template"])
+        self.assertTrue(save_calls)
+
+    def test_save_preset_accepts_documented_advanced_jinja_constructs(self):
+        template = """
+        {% macro first_version(entries) -%}
+        {%- set selected = namespace(quality=None) -%}
+        {%- for entry in entries -%}
+          {%- if selected.quality is none -%}
+            {%- set selected.quality = entry.quality -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {{- selected.quality -}}
+        {%- endmacro %}
+        {% set values = namespace(labels=[]) %}
+        {% set values.labels = values.labels + ['<b>' ~ title ~ '</b>'] %}
+        {{ values.labels|join(' - ')|safe }} {{ first_version(versions) }}
+        """
+        save_calls = []
+        patchers = self._patches()
+        with patchers[0], patchers[1], patchers[2], patchers[3], patch(
+            "emby_latest.configuration_api.latest_settings._save_latest_settings",
+            side_effect=lambda value: save_calls.append(value.copy()),
+        ):
+            payload, status = save_latest_preset(
+                {"id": "preset-1", "name": "Base", "template": template}
+            )
+
+        self.assertEqual(200, status)
+        self.assertEqual("Preset notifica aggiornato", payload["message"])
+        self.assertTrue(save_calls)
+
+    def test_save_preset_accepts_migrated_complete_template(self):
+        save_calls = []
+        patchers = self._patches()
+        with patchers[0], patchers[1], patchers[2], patchers[3], patch(
+            "emby_latest.configuration_api.latest_settings._save_latest_settings",
+            side_effect=lambda value: save_calls.append(value.copy()),
+        ):
+            payload, status = save_latest_preset(
+                {
+                    "id": "preset-1",
+                    "name": "Completa",
+                    "template": MIGRATED_COMPLETE_TEMPLATE,
+                }
+            )
+
+        self.assertEqual(200, status)
+        self.assertTrue(payload["success"])
+        self.assertEqual(MIGRATED_COMPLETE_TEMPLATE.strip(), self.settings["PRESETS"][0]["template"])
         self.assertTrue(save_calls)
 
     def test_preset_cannot_be_removed_while_a_rule_references_it(self):

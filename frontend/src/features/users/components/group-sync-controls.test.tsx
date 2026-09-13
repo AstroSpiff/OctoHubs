@@ -23,7 +23,18 @@ const group: EmbyUserGroup = {
   id: "family",
   name: "Famiglia",
   is_linked: true,
-  users: [],
+  users: [{
+    server_id: "green",
+    server_name: "Green",
+    user_id: "leader-1",
+    name: "Roy",
+    is_disabled: false,
+    is_user_disabled: false,
+    is_remote_disabled: false,
+    enable_remote_access: true,
+    is_admin: false,
+    is_leader: true,
+  }],
   auto_sync: true,
   sync_type: "merge",
   sync_playstate: true,
@@ -78,7 +89,8 @@ describe("GroupSyncControls", () => {
     expect((container.querySelector("select") as HTMLSelectElement).value).toBe("one_way");
   });
 
-  it("keeps the last outcome visible when automatic synchronization is disabled", () => {
+  it("keeps manual controls and the last outcome available when automation is disabled", () => {
+    const onSync = vi.fn();
     act(() => {
       root.render(
         <GroupSyncControls
@@ -91,13 +103,36 @@ describe("GroupSyncControls", () => {
           saving={false}
           syncing={false}
           onSave={() => Promise.resolve()}
-          onSync={() => undefined}
+          onSync={onSync}
         />,
       );
     });
 
     expect(container.textContent).toContain("Sincronizzazione da verificare");
     expect(container.textContent).toContain("Leader non valido: trovati 0 leader");
+    const direction = container.querySelector("select") as HTMLSelectElement;
+    const syncNow = container.querySelector<HTMLButtonElement>('[aria-label="Sincronizza ora Famiglia"]');
+    expect(direction.disabled).toBe(false);
+    expect(syncNow?.disabled).toBe(false);
+    act(() => syncNow?.click());
+    expect(onSync).toHaveBeenCalledOnce();
+  });
+
+  it("identifies the leader used by one-way synchronization", () => {
+    act(() => {
+      root.render(
+        <GroupSyncControls
+          group={{ ...group, auto_sync: false, sync_type: "one_way" }}
+          saving={false}
+          syncing={false}
+          onSave={() => Promise.resolve()}
+          onSync={() => undefined}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Dal leader agli altri");
+    expect(container.textContent).toContain("Sorgente: Roy");
   });
 
   it("restores the previous value and reports a rejected autosave", async () => {

@@ -84,6 +84,51 @@ def test_step_failure_terminalizes_the_persisted_execution_as_failed():
     assert storage.executions[workflow_id]["status"] == "failed"
 
 
+def test_known_scan_failure_persists_an_actionable_bounded_reason():
+    storage = _WorkflowStorage()
+    manager = _manager_with_storage(storage)
+
+    def fail_inventory(context):
+        context["_workflow_scan_error"] = (
+            "Impossibile leggere gli inventari librerie dai server Emby"
+        )
+        return False
+
+    manager._trigger_scan_func = fail_inventory
+
+    assert manager.start("full") is True
+    _join_workflow(manager)
+
+    workflow_id = manager.get_status()["workflow_id"]
+    expected = "Impossibile leggere gli inventari librerie dai server Emby"
+    assert manager.get_status()["error"] == expected
+    assert storage.execution_updates == [(workflow_id, "failed", expected)]
+    assert any(
+        step_id == "scan" and status == "failed" and details == expected
+        for _workflow_id, step_id, status, _progress, details in storage.step_updates
+    )
+
+
+def test_untrusted_scan_failure_diagnostic_is_not_persisted():
+    storage = _WorkflowStorage()
+    manager = _manager_with_storage(storage)
+
+    def fail_with_untrusted_detail(context):
+        context["_workflow_scan_error"] = "SECRET-UPSTREAM-DIAGNOSTIC"
+        return False
+
+    manager._trigger_scan_func = fail_with_untrusted_detail
+
+    assert manager.start("full") is True
+    _join_workflow(manager)
+
+    workflow_id = manager.get_status()["workflow_id"]
+    expected = "Errore durante l'esecuzione del workflow"
+    assert manager.get_status()["error"] == expected
+    assert storage.execution_updates == [(workflow_id, "failed", expected)]
+    assert "SECRET-UPSTREAM-DIAGNOSTIC" not in str(storage.step_updates)
+
+
 def test_stop_terminalizes_scan_as_interrupted_instead_of_failed():
     storage = _WorkflowStorage()
     manager = _manager_with_storage(storage)

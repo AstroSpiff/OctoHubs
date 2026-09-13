@@ -13,6 +13,7 @@ from emby_latest.builders import _limit_latest_by_server
 from emby_latest.enrichment import entry_needs_enrichment
 from emby_latest.enrichment_cache import SharedEnrichmentCache
 from emby_latest.db_cache import LatestCachePersistenceError
+from emby_latest.publication_identity import reconcile_publication_events
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,21 @@ class CollectionPersistencePlan:
     """Collector output that the manager publishes in one DB transaction."""
 
     latest_state: Optional[Dict[str, Any]] = None
+    progress_total: Optional[int] = None
+    completion_message: str = "Completato"
+
+
+def record_deferred_collection_progress(
+    persistence_plan: Optional[CollectionPersistencePlan],
+    *,
+    total: int,
+    message: str,
+) -> None:
+    """Record the terminal progress that becomes visible after publication."""
+    if persistence_plan is None:
+        return
+    persistence_plan.progress_total = total
+    persistence_plan.completion_message = message
 
 
 def _publish_or_defer_collection(
@@ -253,12 +269,29 @@ def finalize_collection(context: CollectionFinalizationContext):
     _apply_jellyseerr_request_info(final_movies, config)
     _apply_jellyseerr_request_info(final_series, config)
 
+    final_movies = reconcile_publication_events(
+        final_movies,
+        cache_payload.get("movies") or [],
+        "movie",
+    )
+    final_series = reconcile_publication_events(
+        final_series,
+        cache_payload.get("series") or [],
+        "series",
+    )
+
     # Build final payload
     final_payload = {
         "movies": final_movies,
         "series": final_series,
         "errors": errors
     }
+
+    record_deferred_collection_progress(
+        context.persistence_plan,
+        total=progress_total,
+        message="Completato",
+    )
 
     # Incremental mode: merge with existing DB cache so we don't drop older items
     if skip_existing_complete and existing_db_payload and db_cache:

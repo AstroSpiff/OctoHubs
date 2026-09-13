@@ -24,6 +24,7 @@ from emby_latest.collector_finalization import (
     CollectionFinalizationContext,
     CollectionPersistencePlan,
     finalize_collection,
+    record_deferred_collection_progress,
 )
 from emby_latest.collector_cache_maps import _build_latest_cache_maps
 from emby_latest.collector_helpers import (
@@ -151,6 +152,11 @@ def collect_entries(
     # Get enabled Emby servers
     servers = get_emby_servers(config, enabled_only=True)
     if not servers:
+        record_deferred_collection_progress(
+            persistence_plan,
+            total=0,
+            message="Nessun server Emby attivo",
+        )
         if progress_tracker and publish_progress_completion:
             progress_tracker.update(state="done", total=0, completed=0, message="Nessun server Emby attivo")
         return {"movies": [], "series": [], "errors": []}, None

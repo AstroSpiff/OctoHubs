@@ -100,7 +100,7 @@ class GroupManager:
         playlists_bootstrap_done: bool = False,
     ) -> bool:
         """
-        Saves group auto-sync settings.
+        Saves group synchronization settings independently from scheduling.
         """
         if group_id.startswith("unlinked_"):
             return False
@@ -116,9 +116,9 @@ class GroupManager:
                 "sync_favorites": sync_favorites,
                 "sync_playlists": sync_playlists,
                 "config_categories": config_categories or [],
-                "playstate_bootstrap_done": playstate_bootstrap_done if auto_sync and sync_playstate else False,
-                "favorites_bootstrap_done": favorites_bootstrap_done if auto_sync and sync_favorites else False,
-                "playlists_bootstrap_done": playlists_bootstrap_done if auto_sync and sync_playlists else False,
+                "playstate_bootstrap_done": playstate_bootstrap_done if sync_playstate else False,
+                "favorites_bootstrap_done": favorites_bootstrap_done if sync_favorites else False,
+                "playlists_bootstrap_done": playlists_bootstrap_done if sync_playlists else False,
             })
             return settings
 

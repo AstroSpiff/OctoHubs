@@ -67,6 +67,51 @@ describe("UserRow", () => {
     expect(markup).toContain("user-row-shortcut--password user-row-shortcut--warning");
   });
 
+  it("renders disabled remote and download permissions with the canonical red state", () => {
+    const activeMarkup = renderToStaticMarkup(
+      <UserRow
+        user={{ ...user, is_admin: false, name: "Luca" }}
+        checked={false}
+        linked={false}
+        isOwner={false}
+        changing={false}
+        groupSyncing={false}
+        settingsSyncing={false}
+        {...actions}
+      />,
+    );
+    const disabledMarkup = renderToStaticMarkup(
+      <UserRow
+        user={{
+          ...user,
+          is_admin: false,
+          name: "Luca",
+          is_disabled: true,
+          is_remote_disabled: true,
+          enable_remote_access: false,
+          enable_downloading: false,
+        }}
+        checked={false}
+        linked={false}
+        isOwner={false}
+        changing={false}
+        groupSyncing={false}
+        settingsSyncing={false}
+        {...actions}
+      />,
+    );
+
+    expect(activeMarkup).toContain('data-icon="wifi"');
+    expect(activeMarkup).not.toContain("user-row-shortcut--permission-disabled");
+    expect(disabledMarkup).toContain('data-icon="wifi"');
+    expect(disabledMarkup).toContain('data-icon="download"');
+    expect(disabledMarkup.match(/user-row-shortcut--permission-disabled/g)).toHaveLength(2);
+    expect(disabledMarkup).not.toContain('data-icon="ban"');
+    expect(disabledMarkup).toContain("user-access-indicator--warning");
+    expect(disabledMarkup).toContain('aria-label="Abilita accesso remoto"');
+    expect(disabledMarkup).toContain('aria-label="Abilita download"');
+  });
+
   it("keeps unrelated shortcuts available while blocking structural and settings changes during group sync", () => {
     const markup = renderToStaticMarkup(
       <UserRow

@@ -20,6 +20,7 @@ import {
 import type {
   LatestItem,
   LatestPreset,
+  LatestPresetInput,
   LatestRule,
   LatestRuleInput,
 } from "@/features/emby-latest/types";
@@ -33,6 +34,7 @@ import { useBeforeUnloadWarning } from "@/lib/use-before-unload-warning";
 import { useUnsavedChangesNavigationGuard } from "@/lib/use-unsaved-changes-navigation-guard";
 
 const emptyItems: LatestItem[] = [];
+const emptyPresets: LatestPreset[] = [];
 
 function LatestPage() {
   const latest = useEmbyLatest();
@@ -42,7 +44,8 @@ function LatestPage() {
   const [serverId, setServerId] = useState("all");
   const [displayLimit, setDisplayLimit] = useState(readLatestDisplayLimit);
   const [verifyOpen, setVerifyOpen] = useState(false);
-  const [previewTemplate, setPreviewTemplate] = useState("");
+  const [selectedPresetId, setSelectedPresetId] = useState("");
+  const [previewDraft, setPreviewDraft] = useState<LatestPresetInput | null>(null);
   const [drafts, setDrafts] = useState({ preset: false, rule: false });
   const hasUnsavedChanges = drafts.preset || drafts.rule;
   useBeforeUnloadWarning(hasUnsavedChanges);
@@ -51,16 +54,27 @@ function LatestPage() {
   const configuration = latest.configuration.data;
   const movies = snapshot?.movies || emptyItems;
   const series = snapshot?.series || emptyItems;
-  const activeTemplate =
-    configuration?.presets.find(
-      (preset) => preset.id === configuration.settings.active_preset_id,
-    )?.template ||
-    configuration?.presets[0]?.template ||
-    "";
+  const presets = configuration?.presets || emptyPresets;
+  const activePreset =
+    presets.find(
+      (preset) => preset.id === configuration?.settings.active_preset_id,
+    ) || presets[0];
+  const selectedPreset =
+    presets.find((preset) => preset.id === selectedPresetId) || activePreset;
+  const previewTemplate = previewDraft?.template ?? selectedPreset?.template ?? "";
+  const previewSourceLabel = previewDraft
+    ? `Modifiche in corso: ${previewDraft.name.trim() || "nuovo preset"}`
+    : selectedPreset
+      ? `Preset selezionato: ${selectedPreset.name}`
+      : "Nessun preset selezionato";
 
   useEffect(() => {
-    if (!previewTemplate && activeTemplate) setPreviewTemplate(activeTemplate);
-  }, [activeTemplate, previewTemplate]);
+    setSelectedPresetId((current) =>
+      presets.some((preset) => preset.id === current)
+        ? current
+        : activePreset?.id || "",
+    );
+  }, [activePreset?.id, presets]);
 
   const movieItems = useMemo(
     () => visibleLatestItems(movies, serverId, displayLimit),
@@ -78,10 +92,6 @@ function LatestPage() {
     () => latestItemsForServer(series, serverId),
     [series, serverId],
   );
-  const updatePreviewTemplate = useCallback(
-    (template: string) => setPreviewTemplate(template || activeTemplate),
-    [activeTemplate],
-  );
   const updateDisplayLimit = useCallback((limit: number) => {
     setDisplayLimit(limit);
     saveLatestDisplayLimit(limit);
@@ -92,10 +102,10 @@ function LatestPage() {
   const previewNotification = useCallback(
     (items: Partial<Record<"movie" | "series", LatestItem>>) =>
       previewLatest({
-        template: previewTemplate || activeTemplate,
+        template: previewTemplate,
         items,
       }),
-    [activeTemplate, previewLatest, previewTemplate],
+    [previewLatest, previewTemplate],
   );
   async function removePreset(preset: LatestPreset) {
     if (!await confirmation.confirm({ title: "Rimuovi preset", description: `Rimuovere il preset “${preset.name}”?`, confirmLabel: "Rimuovi preset", tone: "danger" })) return;
@@ -241,27 +251,32 @@ function LatestPage() {
         />
         <div className="latest-configuration-grid">
           <LatestPresetManager
-            presets={configuration?.presets || []}
+            presets={presets}
+            selectedPresetId={selectedPreset?.id || ""}
             saving={latest.configurationBusy}
             removingId={
               latest.removePreset.isPending
                 ? latest.removePreset.variables
                 : undefined
             }
-            onSave={(preset) =>
-              actionFeedback.run(
+            onSave={async (preset) => {
+              const result = await actionFeedback.run(
                 () => latest.preset.mutateAsync(preset),
                 "Preset salvato.",
                 "preset",
-              )
-            }
+              );
+              setSelectedPresetId(result.settings.active_preset_id);
+              return result;
+            }}
             onRemove={(preset) => void removePreset(preset)}
-            onTemplateChange={updatePreviewTemplate}
+            onSelectPreset={setSelectedPresetId}
+            onDraftChange={setPreviewDraft}
             onDirtyChange={(dirty) => updateDirty("preset", dirty)}
             error={actionFeedback.errorFor("preset")}
           />
           <LatestNotificationPreview
-            template={previewTemplate || activeTemplate}
+            template={previewTemplate}
+            sourceLabel={previewSourceLabel}
             movies={previewMovies}
             series={previewSeries}
             result={latest.preview.data}

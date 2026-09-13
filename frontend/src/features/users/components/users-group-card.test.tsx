@@ -54,10 +54,10 @@ describe("UsersGroupCard", () => {
     expect(markup).toContain("Icone");
   });
 
-  it("keeps one contextual manual sync action when automation is enabled", () => {
+  it.each([true, false])("keeps one contextual manual sync action when automation is %s", (autoSync) => {
     const markup = renderToStaticMarkup(
       <UsersGroupCard
-        group={{ ...group, auto_sync: true }}
+        group={{ ...group, auto_sync: autoSync }}
         selected={new Set()}
         iconConfig={{ profiles: [], matrix: {}, bindings: {} }}
         iconRevision={0}
@@ -69,7 +69,7 @@ describe("UsersGroupCard", () => {
       />,
     );
 
-    expect(markup).toContain('aria-label="Sincronizza ora Famiglia"');
+    expect(markup.match(/aria-label="Sincronizza ora Famiglia"/g)).toHaveLength(1);
     expect(markup).not.toContain('aria-label="Sincronizza gruppo adesso"');
   });
 });

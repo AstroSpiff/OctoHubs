@@ -211,6 +211,86 @@ class LatestManagerRefreshTests(unittest.TestCase):
         self.assertEqual([True], [call["apply_batch_gap"] for call in collect_calls])
         self.assertEqual(1, len(saved_caches))
 
+    def test_atomic_publication_closes_enrichment_progress_at_total(self):
+        manager = self._manager()
+        events = []
+
+        class _Progress:
+            def __init__(self):
+                self.snapshot = {"state": "enriching", "total": 308, "completed": 295}
+
+            def get_snapshot(self):
+                return dict(self.snapshot)
+
+            def update(self, **values):
+                events.append(("progress", dict(values)))
+                self.snapshot.update({key: value for key, value in values.items() if value is not None})
+
+        manager.progress_tracker = _Progress()
+        manager.db_cache.publish_refresh = lambda *_args, **_kwargs: events.append(("publish", {}))
+
+        def fake_collect_entries(**kwargs):
+            kwargs["persistence_plan"].progress_total = 308
+            return {"movies": [], "series": [], "errors": []}, None
+
+        with patch(
+            "emby_latest.manager.collectors.collect_entries",
+            side_effect=fake_collect_entries,
+        ):
+            payload, error = manager.refresh_full(200, 50, enrich=True)
+
+        self.assertIsNone(error)
+        self.assertEqual({"movies": [], "series": [], "errors": []}, payload)
+        self.assertEqual("publish", events[0][0])
+        self.assertEqual(
+            (
+                "progress",
+                {"state": "done", "total": 308, "completed": 308, "message": "Completato"},
+            ),
+            events[1],
+        )
+
+    def test_zero_server_refresh_replaces_stale_progress_after_publication(self):
+        manager = self._manager()
+        events = []
+
+        class _Progress:
+            def update(self, **values):
+                events.append(("progress", dict(values)))
+
+        manager.progress_tracker = _Progress()
+        manager.db_cache.publish_refresh = lambda *_args, **_kwargs: events.append(("publish", {}))
+
+        def fake_collect_entries(**kwargs):
+            plan = kwargs["persistence_plan"]
+            plan.progress_total = 0
+            plan.completion_message = "Nessun server Emby attivo"
+            return {"movies": [], "series": [], "errors": []}, None
+
+        with patch(
+            "emby_latest.manager.collectors.collect_entries",
+            side_effect=fake_collect_entries,
+        ):
+            payload, error = manager.refresh_full(200, 50, enrich=True)
+
+        self.assertIsNone(error)
+        self.assertEqual({"movies": [], "series": [], "errors": []}, payload)
+        self.assertEqual(
+            [
+                ("publish", {}),
+                (
+                    "progress",
+                    {
+                        "state": "done",
+                        "total": 0,
+                        "completed": 0,
+                        "message": "Nessun server Emby attivo",
+                    },
+                ),
+            ],
+            events,
+        )
+
     def test_incremental_refresh_updates_batch_and_feed_from_one_batch_collection_when_snapshots_exist(self):
         manager = self._manager()
         collect_calls = []

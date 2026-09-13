@@ -260,7 +260,15 @@ class TranscodeGuardControlMixin:
             or ""
         ).strip().lower()
         if not event_type or event_type.startswith("playback.") or event_type.startswith("session."):
-            return self.record_plugin_playback_event(_flatten_event_bridge_payload(payload))
+            result = self.record_plugin_playback_event(
+                _flatten_event_bridge_payload(payload)
+            )
+            # Event Bridge is the low-latency trigger, while check_once() keeps
+            # the Emby Sessions response authoritative for policy enforcement.
+            # Waking even for an unrecordable session event also closes the gap
+            # when a plugin payload is partial but Emby already exposes it.
+            self.wake()
+            return result
         if event_type.startswith("plugin."):
             return self._record_event_bridge_plugin_diagnostic(payload, event_type)
         return {"ok": True, "action": "ignored", "recorded": False, "event_type": event_type}

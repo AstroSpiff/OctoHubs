@@ -4,14 +4,13 @@ import type { EmbyUserGroup } from "@/features/users/types";
 
 type GroupSyncStatusProps = {
   group: EmbyUserGroup;
-  className?: string;
 };
 
-function GroupSyncStatus({ group, className }: GroupSyncStatusProps) {
+function GroupSyncStatus({ group }: GroupSyncStatusProps) {
   const status = syncPresentation(group);
 
   return (
-    <div className={`users-group-sync-status${className ? ` ${className}` : ""}`}>
+    <div className="users-group-sync-status">
       <StatusBadge severity={status.severity}>{status.label}</StatusBadge>
       <span>
         {group.last_sync_at

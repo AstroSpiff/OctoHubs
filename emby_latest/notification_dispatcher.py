@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from core.log_sanitization import sanitize_diagnostic_text
 from core.storage.field_limits import build_telegram_destination_key
+from emby_latest.publication_history import find_movie_identity_entry
 
 from emby_latest.notification_checkpoint import NotificationCheckpointMixin
 from emby_latest.notification_delivery_workflow import DeliveryOutcome, NotificationDeliveryMixin
@@ -193,10 +194,14 @@ class LatestNotificationDispatcher(NotificationDeliveryMixin, NotificationCheckp
         if not isinstance(movie_items, dict):
             return None
         signature = str(item.get("signature") or "")
-        if signature and isinstance(movie_items.get(signature), dict):
-            return movie_items[signature]
         item_id = str(item.get("item_id") or "")
-        return movie_items.get(item_id) if item_id and isinstance(movie_items.get(item_id), dict) else None
+        _, entry = find_movie_identity_entry(
+            movie_items,
+            state_key=signature or item_id,
+            item_id=item_id,
+            signature=signature,
+        )
+        return entry
 
     def _series_state_entry(self, server_state: Dict[str, Any], item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         series = server_state.get("series")

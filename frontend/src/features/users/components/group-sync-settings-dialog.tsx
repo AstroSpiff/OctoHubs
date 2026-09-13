@@ -4,6 +4,7 @@ import { useConfirmationDialog } from "@/components/ui/use-confirmation-dialog";
 import { useDirtyChange } from "@/lib/use-dirty-change";
 import { useSynchronizedDraft } from "@/lib/use-synchronized-draft";
 import { groupSyncSettingsFrom } from "@/features/users/group-sync-settings-state";
+import { ServerIdentity } from "@/features/users/components/server-identity";
 import { userConfigurationCategories } from "@/features/users/user-configuration-categories";
 import type { EmbyUserGroup, GroupSyncSettings } from "@/features/users/types";
 
@@ -28,8 +29,9 @@ function GroupSyncSettingsDialog({ group, saving, syncing = false, error, onClos
   if (!group || !settings) return null;
 
   const currentSettings = settings;
-  const controlsDisabled = !currentSettings.auto_sync || saving || syncing;
+  const controlsDisabled = saving || syncing;
   const resumeDisabled = controlsDisabled || !currentSettings.sync_playstate;
+  const leader = group.users.find((user) => user.is_leader);
 
   function updateSetting<Key extends keyof GroupSyncSettings>(key: Key, value: GroupSyncSettings[Key]) {
     setSettings((current) => current ? { ...current, [key]: value } : current);
@@ -84,7 +86,7 @@ function GroupSyncSettingsDialog({ group, saving, syncing = false, error, onClos
           <input type="checkbox" checked={settings.auto_sync === true} onChange={(event) => updateSetting("auto_sync", event.target.checked)} disabled={saving || syncing} />
           <span>
             <strong>Sincronizzazione automatica</strong>
-            <small>Applica le opzioni scelte quando il servizio di sincronizzazione rileva cambiamenti.</small>
+            <small>Esegue periodicamente questa configurazione. Se disattivata, “Sincronizza ora” continua a usare le opzioni salvate.</small>
           </span>
         </label>
 
@@ -96,6 +98,23 @@ function GroupSyncSettingsDialog({ group, saving, syncing = false, error, onClos
               <option value="merge">Bidirezionale: unisce e applica l&apos;ultima modifica</option>
               <option value="one_way">Unidirezionale: dal leader agli altri utenti</option>
             </select>
+            {settings.sync_type === "one_way" ? (
+              <span className="users-sync-source-summary">
+                <span>Sorgente</span>
+                {leader ? (
+                  <strong>
+                    {leader.name}
+                    <ServerIdentity
+                      name={leader.server_alias || leader.server_name}
+                      icon={leader.server_icon}
+                      color={leader.server_icon_color}
+                      iconStyle={leader.server_icon_style}
+                      size={11}
+                    />
+                  </strong>
+                ) : <strong>Leader non configurato</strong>}
+              </span>
+            ) : null}
           </label>
         </fieldset>
 
@@ -124,7 +143,7 @@ function GroupSyncSettingsDialog({ group, saving, syncing = false, error, onClos
           </div>
         </fieldset>
 
-        <p className="users-sync-note">Visti, preferiti e playlist uniscono i dati alla prima sincronizzazione; dalle successive viene applicata la modalità scelta.</p>
+        <p className="users-sync-note">Queste opzioni valgono sia per “Sincronizza ora” sia per l&apos;esecuzione automatica. Visti, preferiti e playlist uniscono i dati alla prima sincronizzazione; dalle successive viene applicata la modalità scelta.</p>
 
         <footer>
           <Button type="button" variant="ghost" onClick={() => void requestClose()} disabled={saving}>Annulla</Button>

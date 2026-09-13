@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 from core.utils import _parse_date_value
 from emby_latest.templates import (
+    TemplateResourceLimitError,
     render_template,
     strip_image_tokens,
     extract_image_url,
@@ -411,7 +412,11 @@ def build_message(
     for key, value in context_raw.items():
         raw_value = "" if value is None else value
         context[key] = raw_value
-        context_escaped[key] = html.escape(str(raw_value), quote=True)
+        context_escaped[key] = (
+            html.escape(str(raw_value), quote=True)
+            if isinstance(raw_value, (str, int, float, bool))
+            else ""
+        )
 
     # Remove image tokens from template
     sanitized_template = strip_image_tokens(template)
@@ -424,7 +429,7 @@ def build_message(
         template_error = str(exc)
         if allow_fallback:
             # Fall back to simple string replacement
-            message = apply_template(sanitized_template, context_escaped)
+            message = _safe_fallback_message(sanitized_template, context_escaped)
         else:
             message = ""
 
@@ -435,6 +440,14 @@ def build_message(
     if return_error:
         return rendered, image_url, template_error
     return rendered, image_url
+
+
+def _safe_fallback_message(template: str, context: Dict[str, Any]) -> str:
+    """Keep fallback limits from replacing the original renderer failure."""
+    try:
+        return apply_template(template, context)
+    except TemplateResourceLimitError:
+        return ""
 
 
 def resolve_message_preset(latest_settings: Dict[str, Any]) -> Dict[str, Any]:

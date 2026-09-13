@@ -82,7 +82,8 @@ function GroupSyncControls({ group, saving, syncing, onSave, onSync }: GroupSync
   }
 
   const busy = saving || syncing || persisting;
-  const disabled = !settings.auto_sync || busy;
+  const disabled = busy;
+  const leader = group.users.find((user) => user.is_leader);
 
   return (
     <div className="users-group-sync-area">
@@ -91,7 +92,7 @@ function GroupSyncControls({ group, saving, syncing, onSave, onSync }: GroupSync
           Salvataggio non riuscito: {saveError}
         </p>
       ) : null}
-      <label className="users-group-sync-toggle" title="Attiva o disattiva la sincronizzazione automatica per questo gruppo.">
+      <label className="users-group-sync-toggle" title="Pianifica o interrompe le esecuzioni automatiche. La sincronizzazione manuale resta disponibile.">
         <input
           type="checkbox"
           checked={settings.auto_sync === true}
@@ -101,79 +102,80 @@ function GroupSyncControls({ group, saving, syncing, onSave, onSync }: GroupSync
         <span>Auto Sync</span>
       </label>
 
-      {settings.auto_sync ? (
-        <div className="users-group-sync-controls">
-          <label className="users-group-sync-mode">
-            <span>Direzione</span>
-            <select
-              value={settings.sync_type || "merge"}
-              disabled={disabled}
-              onChange={(event) => setField("sync_type", event.target.value as "merge" | "one_way")}
-            >
-              <option value="merge">Bidirezionale</option>
-              <option value="one_way">Monodirezionale</option>
-            </select>
-          </label>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            title="Sincronizza ora con le impostazioni del gruppo"
-            aria-label={`Sincronizza ora ${group.name}`}
-            onClick={onSync}
+      <div className="users-group-sync-controls">
+        <label className="users-group-sync-mode">
+          <span>Direzione</span>
+          <select
+            value={settings.sync_type || "merge"}
             disabled={disabled}
+            onChange={(event) => setField("sync_type", event.target.value as "merge" | "one_way")}
           >
-            <RefreshCw className={syncing ? "animate-spin" : ""} size={16} aria-hidden="true" />
-          </Button>
+            <option value="merge">Bidirezionale</option>
+            <option value="one_way">Dal leader agli altri</option>
+          </select>
+          {settings.sync_type === "one_way" ? (
+            <small>{leader ? `Sorgente: ${leader.name}` : "Leader non configurato"}</small>
+          ) : null}
+        </label>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          title="Sincronizza ora con le impostazioni del gruppo"
+          aria-label={`Sincronizza ora ${group.name}`}
+          onClick={onSync}
+          disabled={disabled}
+        >
+          <RefreshCw className={syncing ? "animate-spin" : ""} size={16} aria-hidden="true" />
+        </Button>
 
-          <details
-            ref={syncOptionsPopover.detailsRef}
-            className="users-group-sync-options"
+        <details
+          ref={syncOptionsPopover.detailsRef}
+          className="users-group-sync-options"
+          aria-disabled={disabled}
+          onToggle={syncOptionsPopover.onToggle}
+        >
+          <summary
+            ref={syncOptionsPopover.summaryRef}
+            aria-controls={syncOptionsPopover.contentId}
             aria-disabled={disabled}
-            onToggle={syncOptionsPopover.onToggle}
+            aria-expanded={syncOptionsPopover.open}
+            onClick={(event) => {
+              if (disabled) event.preventDefault();
+            }}
           >
-            <summary
-              ref={syncOptionsPopover.summaryRef}
-              aria-controls={syncOptionsPopover.contentId}
-              aria-disabled={disabled}
-              aria-expanded={syncOptionsPopover.open}
-              onClick={(event) => {
-                if (disabled) event.preventDefault();
-              }}
-            >
-              Elementi da sincronizzare
-            </summary>
-            <div id={syncOptionsPopover.contentId}>
-              {syncOptions.map(([key, label]) => (
-                <label key={key}>
-                  <input
-                    type="checkbox"
-                    checked={settings[key] === true || (key === "sync_playstate" && settings[key] !== false)}
-                    disabled={disabled || (key === "sync_resume" && settings.sync_playstate !== true)}
-                    onChange={(event) => setField(key, event.target.checked)}
-                  />
-                  <span>{label}</span>
-                </label>
-              ))}
-              <p>Visti, preferiti e playlist: la prima sincronizzazione unisce i dati, poi applica la direzione scelta.</p>
-              <strong>Categorie impostazioni</strong>
-              {userConfigurationCategories.map((category) => (
-                <label key={category.id}>
-                  <input
-                    type="checkbox"
-                    checked={settings.config_categories?.includes(category.id) || false}
-                    disabled={disabled || settings.sync_config !== true}
-                    onChange={() => toggleCategory(category.id)}
-                  />
-                  <span>{category.label}</span>
-                </label>
-              ))}
-            </div>
-          </details>
+            Elementi da sincronizzare
+          </summary>
+          <div id={syncOptionsPopover.contentId}>
+            {syncOptions.map(([key, label]) => (
+              <label key={key}>
+                <input
+                  type="checkbox"
+                  checked={settings[key] === true || (key === "sync_playstate" && settings[key] !== false)}
+                  disabled={disabled || (key === "sync_resume" && settings.sync_playstate !== true)}
+                  onChange={(event) => setField(key, event.target.checked)}
+                />
+                <span>{label}</span>
+              </label>
+            ))}
+            <p>Queste opzioni valgono sia per la sincronizzazione manuale sia per quella automatica. Visti, preferiti e playlist: la prima sincronizzazione unisce i dati, poi applica la direzione scelta.</p>
+            <strong>Categorie impostazioni</strong>
+            {userConfigurationCategories.map((category) => (
+              <label key={category.id}>
+                <input
+                  type="checkbox"
+                  checked={settings.config_categories?.includes(category.id) || false}
+                  disabled={disabled || settings.sync_config !== true}
+                  onChange={() => toggleCategory(category.id)}
+                />
+                <span>{category.label}</span>
+              </label>
+            ))}
+          </div>
+        </details>
 
-          <GroupSyncStatus group={group} />
-        </div>
-      ) : <GroupSyncStatus group={group} className="users-group-sync-status--idle" />}
+        <GroupSyncStatus group={group} />
+      </div>
     </div>
   );
 }

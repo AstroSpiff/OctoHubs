@@ -25,12 +25,17 @@ from core.thread_lifecycle import (
 )
 from core.utils import _normalize_scan_targets, _serialize_target_map
 from core.workflow_context import normalize_workflow_context
+from core.workflow_failures import (
+    WORKFLOW_FAILURE_MESSAGE,
+    WorkflowStepFailure,
+    workflow_scan_failure_message,
+)
 from core.workflow_lease_cleanup import release_workflow_lease_safely
 from services.scheduler_occurrences import SchedulerOccurrenceLease
 
 
 logger = logging.getLogger(__name__)
-_WORKFLOW_FAILURE_MESSAGE = "Errore durante l'esecuzione del workflow"
+_WORKFLOW_FAILURE_MESSAGE = WORKFLOW_FAILURE_MESSAGE
 _WORKFLOW_HEARTBEAT_INTERVAL_SECONDS = 2.0
 
 
@@ -1895,7 +1900,11 @@ class WorkflowManager:
                             step.get("id") or i,
                             format_exception_for_log(exc),
                         )
-                        workflow_error = _WORKFLOW_FAILURE_MESSAGE
+                        workflow_error = (
+                            str(exc)
+                            if isinstance(exc, WorkflowStepFailure)
+                            else _WORKFLOW_FAILURE_MESSAGE
+                        )
                         completion_message = workflow_error
                         self._update_step_status(
                             i,
@@ -1980,7 +1989,7 @@ class WorkflowManager:
         success = self._trigger_scan_func(context)
 
         if not success:
-            raise Exception("Impossibile avviare la scansione")
+            raise WorkflowStepFailure(workflow_scan_failure_message(context))
 
         # Espone eventuali job_id del workflow per la UI (SSE)
         if isinstance(context, dict):

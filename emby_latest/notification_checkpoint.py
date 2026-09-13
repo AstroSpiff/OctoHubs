@@ -5,6 +5,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, Tuple
 
+from emby_latest.publication_history import (
+    find_movie_identity_entry,
+    matching_movie_identity_entries,
+    mediainfo_snapshot,
+)
+
 
 class NotificationCheckpointMixin:
     """Persist successful destination deliveries into state and history."""
@@ -99,10 +105,12 @@ class NotificationCheckpointMixin:
         item_id = str(item.get("item_id") or "")
         signature = str(item.get("signature") or "")
         state_key = signature or item_id
-        entry = movie_items.get(state_key) if state_key else None
-        if entry is None and item_id:
-            entry = movie_items.get(item_id)
-            state_key = item_id if entry is not None else state_key
+        _matched_key, entry = find_movie_identity_entry(
+            movie_items,
+            state_key=state_key,
+            item_id=item_id,
+            signature=signature,
+        )
         if entry is None and state_key:
             entry = {
                 "item_id": item_id or None,
@@ -114,7 +122,22 @@ class NotificationCheckpointMixin:
                 "notified": False,
                 "notified_at": "",
             }
+        if isinstance(entry, dict) and state_key:
+            entry["item_id"] = item_id or entry.get("item_id")
+            entry["signature"] = signature or entry.get("signature")
+            if item.get("title"):
+                entry["title"] = item.get("title")
+            if item.get("year") is not None:
+                entry["year"] = item.get("year")
             movie_items[state_key] = entry
+            for alias_key, _candidate in matching_movie_identity_entries(
+                movie_items,
+                state_key=state_key,
+                item_id=item_id,
+                signature=signature,
+            ):
+                if alias_key != state_key:
+                    movie_items.pop(alias_key, None)
         return entry, state_key
 
     def _persist_movie(
@@ -130,7 +153,21 @@ class NotificationCheckpointMixin:
         entry, state_key = self._movie_entry(server_state, item)
         if not isinstance(entry, dict):
             return
+        history_items = history.setdefault("movies", {})
+        if not isinstance(history_items, dict):
+            history_items = {}
+            history["movies"] = history_items
+        _history_key, history_entry = find_movie_identity_entry(
+            history_items,
+            state_key=state_key,
+            item_id=item.get("item_id"),
+            signature=item.get("signature"),
+        )
+        if isinstance(history_entry, dict):
+            entry.update(mediainfo_snapshot(entry, history_entry))
+            entry.update(self.dep.notification_snapshot(entry, history_entry))
         self._apply_destination_state(entry, publication_key, delivered, required, notified_at)
+        notification_state = self.dep.notification_snapshot(entry, history_entry)
         self.dep.update_history_entry(history, "movies", state_key, {
             "item_id": str(item.get("item_id") or "") or None,
             "signature": str(item.get("signature") or "") or None,
@@ -138,8 +175,18 @@ class NotificationCheckpointMixin:
             "year": item.get("year"),
             "last_seen_at": item.get("added_at") or "",
             "media_source_keys": entry.get("media_source_keys") or [],
-            **self.dep.notification_snapshot(entry),
+            "mediainfo_source_keys": entry.get("mediainfo_source_keys") or [],
+            "mediainfo_complete": bool(entry.get("mediainfo_complete")),
+            **notification_state,
         })
+        for alias_key, _candidate in matching_movie_identity_entries(
+            history_items,
+            state_key=state_key,
+            item_id=item.get("item_id"),
+            signature=item.get("signature"),
+        ):
+            if alias_key != state_key:
+                history_items.pop(alias_key, None)
 
     @staticmethod
     def _series_entry(server_state: Dict[str, Any], item: Dict[str, Any]) -> Tuple[Any, str]:

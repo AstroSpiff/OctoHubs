@@ -93,11 +93,31 @@ function LibrariesPage() {
   ];
   const actionResult = libraries.action.data;
 
-  function runMaintenance(
+  async function confirmMetadataRefresh(target: string) {
+    return confirmation.confirm({
+      title: "Aggiornamento metadata completo",
+      description: `Stai per aggiornare i metadata per ${target}. Questa operazione cancella tutti i probe dei file coinvolti: al termine dovrai eseguire nuovamente Media Probe. Procedi soltanto se l'aggiornamento completo dei metadata e delle immagini è realmente necessario.`,
+      confirmLabel: "Aggiorna e cancella i probe",
+      tone: "danger",
+    });
+  }
+
+  async function runMaintenance(
     action: "refresh_libraries" | "refresh_metadata",
     serverId?: string,
   ) {
     if (!actionTargetsReady || !activeScansReady) return;
+    if (action === "refresh_metadata") {
+      const server = serverId
+        ? libraries.actionTargets.data?.servers.find(
+            (candidate) => candidate.id === serverId,
+          )
+        : undefined;
+      const target = serverId
+        ? `il server “${server?.name || serverId}”`
+        : "tutti i server Emby abilitati";
+      if (!(await confirmMetadataRefresh(target))) return;
+    }
     if (workflowMode && action === "refresh_libraries") {
       libraries.workflow.mutate(serverId ? { server_id: serverId } : {});
       return;
@@ -113,11 +133,16 @@ function LibrariesPage() {
     );
   }, [workflowMode]);
 
-  function startGroupScan(
+  async function startGroupScan(
     group: LibraryGroup,
     scanType: "content" | "metadata",
   ) {
     if (!activeJobsReady) return;
+    if (
+      scanType === "metadata" &&
+      !(await confirmMetadataRefresh(`il gruppo “${group.group_name}”`))
+    )
+      return;
     if (!workflowMode || scanType === "metadata") {
       libraries.scan.mutate({ group, scanType });
       return;
@@ -134,11 +159,21 @@ function LibrariesPage() {
     });
   }
 
-  function startSingleLibraryScan(
+  async function startSingleLibraryScan(
     library: LibraryEntry,
     scanType: "content" | "metadata",
   ) {
     if (!activeJobsReady) return;
+    const libraryName = library.library_name || "Libreria";
+    const serverName =
+      library.server_alias || library.server_name || library.server_id;
+    if (
+      scanType === "metadata" &&
+      !(await confirmMetadataRefresh(
+        `la libreria “${libraryName}” sul server “${serverName}”`,
+      ))
+    )
+      return;
     if (!workflowMode || scanType === "metadata") {
       libraries.libraryScan.mutate({ library, scanType });
       return;
