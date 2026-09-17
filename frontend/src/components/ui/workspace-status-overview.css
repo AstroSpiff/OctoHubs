@@ -77,6 +77,13 @@
   margin: 0;
 }
 
+.workspace-status-overview--columns-1 { --workspace-status-overview-columns: 1; }
+.workspace-status-overview--columns-2 { --workspace-status-overview-columns: 2; }
+.workspace-status-overview--columns-3 { --workspace-status-overview-columns: 3; }
+.workspace-status-overview--columns-4 { --workspace-status-overview-columns: 4; }
+.workspace-status-overview--columns-5 { --workspace-status-overview-columns: 5; }
+.workspace-status-overview--columns-6 { --workspace-status-overview-columns: 6; }
+
 .workspace-status-overview-metrics > div {
   min-width: 0;
   border-left: 1px solid var(--color-border);

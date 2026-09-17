@@ -39,7 +39,7 @@ describe("SearchResultTermMenu", () => {
     act(() => {
       root.render(
         <SearchResultTermMenu
-          menu={{ term: "1080p", x: 10, y: 10 }}
+          menu={{ term: "1080p" }}
           onAddTerm={vi.fn(async () => "Aggiornato")}
           onNotice={() => undefined}
           onClose={() => undefined}

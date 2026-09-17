@@ -11,7 +11,6 @@ const themeStorageKey = "octohubs.theme";
 type ThemeStorage = Pick<Storage, "getItem" | "setItem">;
 type ThemeRoot = {
   dataset: { theme?: string };
-  style: { colorScheme: string };
 };
 
 function isApplicationTheme(value: string | null): value is ApplicationTheme {
@@ -34,7 +33,6 @@ function resolveApplicationTheme(storage: ThemeStorage | null, prefersDark: bool
 
 function applyApplicationTheme(theme: ApplicationTheme, root: ThemeRoot): void {
   root.dataset.theme = theme;
-  root.style.colorScheme = theme;
 }
 
 function persistApplicationTheme(theme: ApplicationTheme, storage: ThemeStorage | null): void {

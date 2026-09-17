@@ -1,6 +1,7 @@
 import { CircleStop, Play, RefreshCw } from "@/components/ui/icons";
 
 import { Button } from "@/components/ui/button";
+import { ProgressFill } from "@/components/ui/progress-fill";
 import { formatResearchDate } from "@/features/research/presentation";
 import type { ResearchOverview, ResearchNotice } from "@/features/research/types";
 
@@ -40,7 +41,7 @@ function ScanSummaryControls({
     </header>
     <div className="research-scan-status">
       <div><span>Avanzamento</span><strong>{total ? `${completed} / ${total}` : "In attesa"}</strong></div>
-      <div className="research-progress"><span style={{ width: `${percentage}%` }} /></div>
+      <div className="research-progress"><ProgressFill value={percentage} /></div>
       {generatedAt ? <small>Ultimo riepilogo: {formatResearchDate(generatedAt)}</small> : null}
     </div>
     {notice ? <div className={`inline-alert inline-alert--${notice.tone}`} role={notice.tone === "error" ? "alert" : "status"}>{notice.message}</div> : null}

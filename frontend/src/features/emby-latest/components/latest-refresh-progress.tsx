@@ -1,4 +1,5 @@
 import { LoaderCircle } from "@/components/ui/icons";
+import { ProgressFill } from "@/components/ui/progress-fill";
 
 import { latestRefreshPresentation } from "@/features/emby-latest/latest-progress-presentation";
 import type { LatestProgress } from "@/features/emby-latest/types";
@@ -27,7 +28,7 @@ function LatestRefreshProgress({ progress }: { progress?: LatestProgress }) {
         aria-valuemax={100}
         aria-valuenow={view.percent}
       >
-        <span style={{ width: `${view.percent ?? 18}%` }} />
+        <ProgressFill fallback={18} value={view.percent ?? Number.NaN} />
       </div>
       <p>
         {view.message}

@@ -1,5 +1,5 @@
 import { X } from "@/components/ui/icons";
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
@@ -84,9 +84,8 @@ function MobilePrimaryNavigation({ accountId, pathname }: { accountId?: number |
   return (
     <>
       <nav
-        className="mobile-primary-navigation"
+        className={`mobile-primary-navigation mobile-primary-navigation--count-${Math.max(1, Math.min(8, orderedPrimaryNavigation.length))}`}
         aria-label="Navigazione principale mobile"
-        style={{ "--mobile-primary-navigation-count": orderedPrimaryNavigation.length } as CSSProperties}
       >
         {orderedPrimaryNavigation.map((item) => {
           const Icon = item.icon;

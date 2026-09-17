@@ -22,6 +22,7 @@ describe("Transcode Guard global settings layout", () => {
   it("uses the available desktop width without pushing the fields to the right", () => {
     const global = rule(".guard-settings-global");
     const fields = rule(".guard-settings-global-fields");
+    const field = rule(".guard-settings-global-fields label");
 
     expect(css).toMatch(
       /\.guard-settings-editable\s*\{[^}]*container-name:\s*guard-settings-editor;[^}]*container-type:\s*inline-size;/,
@@ -31,6 +32,9 @@ describe("Transcode Guard global settings layout", () => {
     );
     expect(fields).toContain("repeat(2, minmax(220px, 1fr))");
     expect(fields).not.toContain("justify-content: end");
+    expect(field).toContain("grid-template-columns: max-content 74px");
+    expect(field).toContain("justify-content: start");
+    expect(field).not.toContain("minmax(0, 1fr) 74px");
   });
 
   it("reflows from a full-width field row to one column from the actual panel width", () => {

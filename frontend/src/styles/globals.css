@@ -73,6 +73,18 @@
   --color-info-border: #b9ddec;
   --color-media-cover-start: #1b315e;
   --color-media-cover-end: #1d4aa8;
+  --color-preset-gray: #6b7280;
+  --color-preset-red: #ef4444;
+  --color-preset-orange: #f59e0b;
+  --color-preset-yellow: #eab308;
+  --color-preset-green: #22c55e;
+  --color-preset-emerald: #10b981;
+  --color-preset-teal: #14b8a6;
+  --color-preset-blue: #3b82f6;
+  --color-preset-indigo: #6366f1;
+  --color-preset-purple: #8b5cf6;
+  --color-preset-pink: #ec4899;
+  --color-preset-rose: #f43f5e;
   --radius-control: 7px;
   --radius-panel: 8px;
   --control-height: 36px;
@@ -139,6 +151,37 @@ html[data-theme="dark"] {
   --color-media-cover-start: #152447;
   --color-media-cover-end: #275ab6;
   color-scheme: dark;
+}
+
+.csp-progress-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border: 0;
+  border-radius: inherit;
+  appearance: none;
+  background: transparent;
+  color: var(--color-accent-strong);
+}
+
+.csp-progress-fill::-webkit-progress-bar {
+  border-radius: inherit;
+  background: transparent;
+}
+
+.csp-progress-fill::-webkit-progress-value {
+  border-radius: inherit;
+  background: currentColor;
+}
+
+.csp-progress-fill::-moz-progress-bar {
+  border-radius: inherit;
+  background: currentColor;
+}
+
+body.is-dialog-scroll-locked {
+  overflow: hidden;
 }
 
 * {

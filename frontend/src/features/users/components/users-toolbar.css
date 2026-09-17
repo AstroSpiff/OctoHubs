@@ -180,32 +180,10 @@
   border: 1px solid var(--color-border);
   border-radius: var(--radius-control);
   background: var(--color-surface-raised);
-  padding: 4px 15px 4px 4px;
+  padding: 4px;
   overflow-y: auto;
-  scrollbar-width: none;
-}
-
-.users-multi-select::-webkit-scrollbar {
-  display: none;
-}
-
-.users-multi-scrollbar {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  bottom: 4px;
-  width: 8px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: var(--color-border);
-  pointer-events: none;
-}
-
-.users-multi-scrollbar > span {
-  display: block;
-  width: 100%;
-  border-radius: inherit;
-  background: var(--color-muted);
+  scrollbar-color: var(--color-muted) var(--color-border);
+  scrollbar-width: thin;
 }
 
 .users-multi-select:focus-within {

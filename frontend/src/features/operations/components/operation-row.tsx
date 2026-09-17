@@ -1,6 +1,7 @@
 import { AlertTriangle, CheckCircle2, Clock3, LoaderCircle, MinusCircle, PauseCircle } from "@/components/ui/icons";
 
 import { StatusBadge, type Severity } from "@/components/ui/badge";
+import { ProgressFill } from "@/components/ui/progress-fill";
 import {
   formatOperationTimestamp,
   operationStatusLabel,
@@ -48,7 +49,7 @@ function OperationRow({ operation }: { operation: Operation }) {
       {isActive ? (
         <div className="operation-progress" aria-label={`Avanzamento ${progress}%`}>
           <div><span>Avanzamento</span><strong>{progress}%</strong></div>
-          <span className="operation-progress-track"><span style={{ width: `${progress}%` }} /></span>
+          <span className="operation-progress-track"><ProgressFill value={progress} /></span>
           {operation.total ? <small>{operation.current} di {operation.total}</small> : null}
         </div>
       ) : null}

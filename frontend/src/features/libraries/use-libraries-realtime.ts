@@ -5,7 +5,8 @@ import { configurationUpdateScope } from "@/lib/application-events";
 import type { ApplicationEvent } from "@/lib/use-application-event";
 
 const eventRefreshDelayMs = 350;
-const reconnectDelayMs = 2_000;
+const scanSocketReconnectBaseDelayMs = 2_000;
+const scanSocketReconnectLimit = 3;
 const librariesUpdatedMessage = "OctoHubsLibrariesUpdated";
 
 type ScanSocketMessage = {
@@ -63,6 +64,10 @@ function scanSocketUrl(clientId: string): string {
     `/ws/scan/${encodeURIComponent(clientId)}`,
     `${protocol}//${window.location.host}`,
   ).toString();
+}
+
+function scanSocketReconnectDelay(attempt: number): number {
+  return scanSocketReconnectBaseDelayMs * 2 ** Math.max(0, attempt);
 }
 
 function useLibrariesRealtime(
@@ -123,6 +128,7 @@ function useLibrariesRealtime(
     let disposed = false;
     let socket: WebSocket | undefined;
     let reconnectTimer: number | undefined;
+    let reconnectAttempts = 0;
     let refreshTimer: number | undefined;
     let socketGeneration = 0;
     const clientId = `libraries-${crypto.randomUUID()}`;
@@ -158,6 +164,7 @@ function useLibrariesRealtime(
       currentSocket.addEventListener("open", () => {
         if (disposed || generation !== socketGeneration || socket !== currentSocket)
           return;
+        reconnectAttempts = 0;
         subscriptions.forEach((jobId) =>
           currentSocket.send(
             JSON.stringify({ action: "subscribe", job_id: jobId }),
@@ -181,11 +188,14 @@ function useLibrariesRealtime(
         if (generation !== socketGeneration || socket !== currentSocket) return;
         socket = undefined;
         if (disposed || document.visibilityState === "hidden") return;
+        if (reconnectAttempts >= scanSocketReconnectLimit) return;
         cancelReconnect();
+        const delay = scanSocketReconnectDelay(reconnectAttempts);
+        reconnectAttempts += 1;
         reconnectTimer = window.setTimeout(() => {
           reconnectTimer = undefined;
           connect();
-        }, reconnectDelayMs);
+        }, delay);
       });
     };
 
@@ -194,6 +204,7 @@ function useLibrariesRealtime(
         cancelReconnect();
         socket?.close();
       } else if (!socket || socket.readyState === WebSocket.CLOSED) {
+        reconnectAttempts = 0;
         connect();
       }
     };
@@ -218,5 +229,7 @@ export {
   flushLibraryEventKinds,
   librariesUpdatedMessage,
   libraryEventKind,
+  scanSocketReconnectDelay,
+  scanSocketReconnectLimit,
   useLibrariesRealtime,
 };

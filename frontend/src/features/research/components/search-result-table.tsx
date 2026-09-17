@@ -100,6 +100,7 @@ function SearchResultTable({
   const closeTermMenu = useCallback((restoreFocus = false) => {
     setTermMenu(null);
     termMenuSourceRef.current?.setAttribute("aria-expanded", "false");
+    termMenuSourceRef.current?.classList.remove("research-term-menu-anchor");
     if (restoreFocus) {
       window.requestAnimationFrame(() => termMenuSourceRef.current?.focus());
     }
@@ -165,28 +166,25 @@ function SearchResultTable({
     const term = selectedResultTerm(event.currentTarget, event);
     if (!term) return;
     event.preventDefault();
-    showTermMenu(event.currentTarget, term, event.clientX, event.clientY);
+    showTermMenu(event.currentTarget, term);
   }
 
   const openTermMenuFromButton: OpenTermMenuAction = (source, title) => {
     if (!writableAddTerm) return;
     const term = title.trim();
     if (!term) return;
-    const bounds = source.getBoundingClientRect();
-    showTermMenu(source, term, bounds.left, bounds.bottom + 4);
+    showTermMenu(source, term);
   };
 
-  function showTermMenu(source: HTMLElement, term: string, x: number, y: number) {
+  function showTermMenu(source: HTMLElement, term: string) {
     if (termMenuSourceRef.current !== source) {
       termMenuSourceRef.current?.setAttribute("aria-expanded", "false");
+      termMenuSourceRef.current?.classList.remove("research-term-menu-anchor");
     }
     termMenuSourceRef.current = source;
     source.setAttribute("aria-expanded", "true");
-    setTermMenu({
-      term,
-      x: Math.max(8, Math.min(x, Math.max(8, window.innerWidth - 240))),
-      y: Math.max(8, Math.min(y, Math.max(8, window.innerHeight - 140))),
-    });
+    source.classList.add("research-term-menu-anchor");
+    setTermMenu({ term });
   }
 
   return (

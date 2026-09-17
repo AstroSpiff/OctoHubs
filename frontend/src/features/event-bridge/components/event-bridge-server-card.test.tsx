@@ -72,7 +72,8 @@ describe("EventBridgeServerCard", () => {
 
     expect(markup).toContain("Green");
     expect(markup).toContain("data-prefix=\"fas\"");
-    expect(markup).toContain("color:#8B5CF6");
+    expect(markup).toContain('color="#8B5CF6"');
+    expect(markup).not.toContain("style=");
     expect(markup).toContain("WebSocket connesso");
     expect(markup).toContain("Canale config");
     expect(markup).toContain("HTTP");

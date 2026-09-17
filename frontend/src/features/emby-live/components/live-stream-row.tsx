@@ -1,3 +1,4 @@
+import { ProgressFill } from "@/components/ui/progress-fill";
 import { LiveStreamStatus } from "@/features/emby-live/components/live-stream-status";
 import {
   streamDisplayTitle,
@@ -84,7 +85,7 @@ function LiveStreamRow({ stream }: { stream: StreamWithServer }) {
       {progress !== null ? (
         <div className="emby-live-stream-progress" aria-label={`Avanzamento riproduzione ${progress}%`}>
           <div><span>Riproduzione</span><small>{playback}</small></div>
-          <i><b style={{ width: `${progress}%` }} /></i>
+          <i><ProgressFill value={progress} /></i>
         </div>
       ) : <small className="emby-live-stream-progress-unavailable">Avanzamento non disponibile</small>}
       {detailGroups.length ? (

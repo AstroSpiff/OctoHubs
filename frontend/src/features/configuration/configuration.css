@@ -37,6 +37,18 @@
 .configuration-icon-colors { display: grid; grid-template-columns: repeat(6, 16px); gap: 4px; padding: 2px 0; }
 .configuration-icon-colors button { width: 16px; height: 16px; border: 1px solid transparent; border-radius: 3px; padding: 0; }
 .configuration-icon-colors button:hover, .configuration-icon-colors button.is-active { border-color: var(--color-ink-strong); outline: 1px solid var(--color-surface); outline-offset: -3px; }
+.configuration-icon-color-1 { background: var(--color-preset-gray); }
+.configuration-icon-color-2 { background: var(--color-preset-red); }
+.configuration-icon-color-3 { background: var(--color-preset-orange); }
+.configuration-icon-color-4 { background: var(--color-preset-yellow); }
+.configuration-icon-color-5 { background: var(--color-preset-green); }
+.configuration-icon-color-6 { background: var(--color-preset-emerald); }
+.configuration-icon-color-7 { background: var(--color-preset-teal); }
+.configuration-icon-color-8 { background: var(--color-preset-blue); }
+.configuration-icon-color-9 { background: var(--color-preset-indigo); }
+.configuration-icon-color-10 { background: var(--color-preset-purple); }
+.configuration-icon-color-11 { background: var(--color-preset-pink); }
+.configuration-icon-color-12 { background: var(--color-preset-rose); }
 .configuration-advanced { border-top: 1px solid var(--color-border); padding-top: 12px; }
 .configuration-advanced summary { cursor: pointer; color: var(--color-ink); font-size: 12px; font-weight: 720; }
 .configuration-advanced label { margin-top: 10px; }

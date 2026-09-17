@@ -1,6 +1,7 @@
 import { Square, Wrench } from "@/components/ui/icons";
 
 import { Button } from "@/components/ui/button";
+import { ProgressFill } from "@/components/ui/progress-fill";
 import { taskProgress } from "@/features/emby-live/presentation";
 import { embyTaskActionKey } from "@/features/emby-live/task-action";
 import type { EmbyLiveServer } from "@/features/emby-live/types";
@@ -35,7 +36,7 @@ function LiveServerTasks({
               <small>{task.state || "In esecuzione"} · {progress}%</small>
             </div>
             <div className="emby-live-task-progress">
-              <span><i style={{ width: `${progress}%` }} /></span>
+              <span><ProgressFill value={progress} /></span>
               <Button
                 type="button"
                 requiresWriteAccess

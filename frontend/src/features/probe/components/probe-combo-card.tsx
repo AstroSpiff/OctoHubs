@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { StatusBadge } from "@/components/ui/badge";
 import type { Severity } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ProgressFill } from "@/components/ui/progress-fill";
 import { comboTasksForServers } from "@/features/probe/probe-combo-presentation";
 import { formatProbeDate, probeProgress } from "@/features/probe/presentation";
 import { ProbeWorkerCard } from "@/features/probe/components/probe-worker-card";
@@ -165,7 +166,7 @@ function ProbeComboTaskCard({
             {progress.completed}/{progress.total} · {progressPercent}%
           </small>
           <i>
-            <b style={{ width: `${progressPercent}%` }} />
+            <ProgressFill value={progressPercent} />
           </i>
         </>
       ) : null}

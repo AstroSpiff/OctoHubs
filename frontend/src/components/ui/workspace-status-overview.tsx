@@ -1,4 +1,4 @@
-import type { CSSProperties, ComponentPropsWithoutRef, ReactNode } from "react";
+import type { ComponentPropsWithoutRef, ReactNode } from "react";
 
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -11,7 +11,7 @@ type WorkspaceStatusOverviewMetric = {
 
 type WorkspaceStatusOverviewProps = Omit<
   ComponentPropsWithoutRef<"section">,
-  "children"
+  "children" | "style"
 > & {
   columns?: number;
   description: ReactNode;
@@ -30,17 +30,16 @@ function WorkspaceStatusOverview({
   iconTone,
   metrics,
   status,
-  style,
   title,
   ...props
 }: WorkspaceStatusOverviewProps) {
   return (
     <Card
-      className={cn("workspace-status-overview", className)}
-      style={{
-        ...style,
-        "--workspace-status-overview-columns": columns || metrics.length,
-      } as CSSProperties}
+      className={cn(
+        "workspace-status-overview",
+        `workspace-status-overview--columns-${Math.max(1, Math.min(6, columns || metrics.length))}`,
+        className,
+      )}
       {...props}
     >
       <div className="workspace-status-overview-primary">

@@ -419,7 +419,7 @@
   border-radius: 999px;
   background: var(--color-surface-muted);
 }
-.libraries-scan-progress > span {
+.libraries-scan-progress > .csp-progress-fill {
   display: block;
   height: 100%;
   border-radius: inherit;
@@ -498,14 +498,14 @@
   border-radius: 999px;
   background: var(--color-surface-muted);
 }
-.library-history-progress > i > b {
+.library-history-progress > i > .csp-progress-fill {
   display: block;
   height: 100%;
   border-radius: inherit;
   background: var(--color-accent);
 }
-.library-history-item--error .library-history-progress > i > b {
-  background: var(--color-danger);
+.library-history-item--error .library-history-progress > i > .csp-progress-fill {
+  color: var(--color-danger);
 }
 .library-history-progress > strong {
   color: var(--color-muted);
@@ -919,11 +919,11 @@ fieldset.library-order-list {
   border-radius: 999px;
   background: var(--color-surface-muted);
 }
-.library-group-library-progress > span {
+.library-group-library-progress > .csp-progress-fill {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: var(--color-warning);
+  color: var(--color-warning);
   transition: width 0.2s ease;
 }
 .library-group-library-actions {

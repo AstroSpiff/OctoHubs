@@ -148,6 +148,8 @@
 }
 .research-term-menu {
   position: fixed;
+  inset: 50% auto auto 50%;
+  transform: translate(-50%, -50%);
   z-index: 30;
   display: grid;
   min-width: 220px;
@@ -157,6 +159,18 @@
   border-radius: var(--radius-panel);
   background: var(--color-surface-raised);
   box-shadow: var(--shadow-floating);
+}
+.research-term-menu-anchor {
+  anchor-name: --research-term-menu-anchor;
+}
+@supports (position-anchor: --research-term-menu-anchor) {
+  .research-term-menu {
+    position-anchor: --research-term-menu-anchor;
+    inset: auto;
+    position-area: bottom span-right;
+    margin-block-start: 4px;
+    transform: none;
+  }
 }
 .research-term-menu strong {
   padding: 8px 10px;

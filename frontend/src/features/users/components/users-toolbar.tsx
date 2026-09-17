@@ -1,5 +1,4 @@
 import { CheckCheck, ChevronDown, RefreshCw, Search, Star, UserPlus, X } from "@/components/ui/icons";
-import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { WriteAction } from "@/features/session/workspace-capabilities";
@@ -217,34 +216,9 @@ function MultiSelectOptions({ label, options, values, onToggle }: {
   values: string[];
   onToggle: (optionId: string) => void;
 }) {
-  const listRef = useRef<HTMLDivElement>(null);
-  const [scrollbar, setScrollbar] = useState({ visible: false, offset: 0, size: 0 });
-
-  function updateScrollbar() {
-    const list = listRef.current;
-    if (!list) return;
-    const maxScroll = list.scrollHeight - list.clientHeight;
-    if (maxScroll <= 1) {
-      setScrollbar((current) => current.visible ? { visible: false, offset: 0, size: 0 } : current);
-      return;
-    }
-    const size = Math.max(18, (list.clientHeight / list.scrollHeight) * list.clientHeight);
-    const offset = (list.scrollTop / maxScroll) * (list.clientHeight - size);
-    setScrollbar({ visible: true, offset, size });
-  }
-
-  useEffect(() => {
-    updateScrollbar();
-    const list = listRef.current;
-    if (!list || typeof ResizeObserver === "undefined") return undefined;
-    const observer = new ResizeObserver(updateScrollbar);
-    observer.observe(list);
-    return () => observer.disconnect();
-  }, [options]);
-
   return (
     <div className="users-multi-select-shell">
-      <div ref={listRef} className="users-multi-select" role="group" aria-label={label} onScroll={updateScrollbar}>
+      <div className="users-multi-select" role="group" aria-label={label}>
         {options.map((option) => (
           <label className="users-multi-option" key={option.id}>
             <input
@@ -256,11 +230,6 @@ function MultiSelectOptions({ label, options, values, onToggle }: {
           </label>
         ))}
       </div>
-      {scrollbar.visible ? (
-        <span className="users-multi-scrollbar" aria-hidden="true">
-          <span style={{ height: `${scrollbar.size}px`, transform: `translateY(${scrollbar.offset}px)` }} />
-        </span>
-      ) : null}
     </div>
   );
 }

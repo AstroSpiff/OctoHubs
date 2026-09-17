@@ -14,7 +14,7 @@ function EmbyServerIcon({
 }) {
   const Icon = iconOptions.find((option) => option.value === icon)?.Icon || Server;
 
-  return <Icon size={size} style={color ? { color } : undefined} aria-hidden="true" />;
+  return <Icon size={size} color={color} aria-hidden="true" />;
 }
 
 export { EmbyServerIcon };

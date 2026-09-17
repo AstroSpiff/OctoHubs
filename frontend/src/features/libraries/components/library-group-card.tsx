@@ -9,6 +9,7 @@ import { useEffect, useId, useState } from "react";
 
 import { StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ProgressFill } from "@/components/ui/progress-fill";
 import { EmbyServerIcon } from "@/features/emby-live/components/emby-server-icon";
 import {
   formatLibraryDate,
@@ -123,7 +124,7 @@ function LibraryGroupCard({
           aria-valuenow={groupActivity.progress}
         >
           <span className="library-group-scan-track">
-            <span style={{ width: `${groupActivity.progress}%` }} />
+            <ProgressFill value={groupActivity.progress} />
           </span>
           <small>
             {groupActivity.jobCount === 1
@@ -198,7 +199,7 @@ function LibraryGroupCard({
                         {`${libraryScanStatusLabel(libraryActivity.status)} ${libraryActivity.progress}%`}
                       </small>
                       <span className="library-group-library-progress">
-                        <span style={{ width: `${libraryActivity.progress}%` }} />
+                        <ProgressFill value={libraryActivity.progress} />
                       </span>
                     </span>
                   ) : null}

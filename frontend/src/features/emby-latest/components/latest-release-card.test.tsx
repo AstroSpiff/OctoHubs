@@ -18,7 +18,8 @@ describe("LatestReleaseCard", () => {
     );
 
     expect(markup).toContain('data-prefix="fas"');
-    expect(markup).toContain("color:#8B5CF6");
+    expect(markup).toContain('color="#8B5CF6"');
+    expect(markup).not.toContain("style=");
   });
 
   it("does not present internal existing state as an update", () => {

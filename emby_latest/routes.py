@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from core.utils import _coerce_request_bool, _coerce_request_int
-from core.log_sanitization import format_exception_for_log
+from core.log_sanitization import format_exception_for_log, sanitize_diagnostic_text
 from core.storage import StorageError
 from emby_latest.api_models import (
     LatestConfigurationResponse,
@@ -79,6 +79,18 @@ def _publish_latest_update(scope: str) -> None:
         LATEST_UPDATED_MESSAGE,
         {"scope": str(scope or "snapshot")},
     )
+
+
+def _notify_failure_diagnostics(payload: Any) -> tuple[str, int, str]:
+    if not isinstance(payload, dict):
+        return "Risposta notifica non valida", 0, ""
+    errors = payload.get("errors")
+    error_values = errors if isinstance(errors, list) else []
+    message = sanitize_diagnostic_text(
+        payload.get("message") or "Invio notifiche non riuscito",
+    )
+    first_error = sanitize_diagnostic_text(error_values[0]) if error_values else ""
+    return message, len(error_values), first_error
 
 
 def _publish_latest_update_on_success(
@@ -403,6 +415,15 @@ async def emby_latest_notify(request: Request):
         payload = {"success": False, "message": "Invio notifiche non riuscito"}
         status_code = 500
     _publish_latest_update_on_success(payload, status_code, "snapshot")
+    if status_code >= 400:
+        message, error_count, first_error = _notify_failure_diagnostics(payload)
+        logger.warning(
+            "[LATEST_NOTIFY] rejected status=%s reason=%s errors=%s first_error=%s",
+            status_code,
+            message,
+            error_count,
+            first_error or "none",
+        )
     logger.info(
         "[LATEST_NOTIFY] completed status=%s sent=%s failed=%s",
         status_code,

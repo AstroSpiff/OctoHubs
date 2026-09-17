@@ -35,9 +35,8 @@ describe("theme preference", () => {
 
   it("persists and applies the selected theme", () => {
     const storage = createStorage();
-    const root: { dataset: { theme?: string }; style: { colorScheme: string } } = {
+    const root: { dataset: { theme?: string } } = {
       dataset: {},
-      style: { colorScheme: "" },
     };
 
     persistApplicationTheme("dark", storage);
@@ -46,7 +45,6 @@ describe("theme preference", () => {
     expect(storage.value()).toBe("dark");
     expect(themeStorageKey).toBe("octohubs.theme");
     expect(root.dataset.theme).toBe("dark");
-    expect(root.style.colorScheme).toBe("dark");
   });
 
   it("falls back to the system theme when storage reads fail", () => {

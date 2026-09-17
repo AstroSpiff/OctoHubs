@@ -2,6 +2,7 @@ import { Clock3, RefreshCw, RotateCcw, Trash2 } from "@/components/ui/icons";
 
 import { StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ProgressFill } from "@/components/ui/progress-fill";
 import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
 import { WorkspaceHeading } from "@/components/ui/workspace-heading";
 import {
@@ -138,7 +139,7 @@ function LibraryScanHistoryItem({
         {deleteError ? <small className="configuration-form-error" role="alert">{deleteError}</small> : null}
         {progress !== undefined ? (
           <div className="library-history-progress" aria-label={`Avanzamento finale ${progress}%`}>
-            <i><b style={{ width: `${progress}%` }} /></i>
+            <i><ProgressFill value={progress} /></i>
             <strong>{progress}%</strong>
           </div>
         ) : null}

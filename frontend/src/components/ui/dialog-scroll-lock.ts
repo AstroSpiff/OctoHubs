@@ -1,43 +1,24 @@
-type ScrollLockTarget = {
-  style: {
-    overflow: string;
-    paddingRight: string;
-  };
-};
-
-type ScrollLockOptions = {
-  computedPaddingRight?: number;
-  scrollbarWidth?: number;
-};
+type ScrollLockTarget = Pick<HTMLElement, "classList">;
 
 type ScrollLockState = {
   count: number;
-  overflow: string;
-  paddingRight: string;
+  alreadyLocked: boolean;
 };
 
+const scrollLockClass = "is-dialog-scroll-locked";
 const scrollLocks = new WeakMap<ScrollLockTarget, ScrollLockState>();
 
-function lockDialogScroll(
-  target: ScrollLockTarget,
-  { computedPaddingRight = 0, scrollbarWidth = 0 }: ScrollLockOptions = {},
-): () => void {
+function lockDialogScroll(target: ScrollLockTarget): () => void {
   let state = scrollLocks.get(target);
   if (!state) {
     state = {
+      alreadyLocked: target.classList.contains(scrollLockClass),
       count: 0,
-      overflow: target.style.overflow,
-      paddingRight: target.style.paddingRight,
     };
     scrollLocks.set(target, state);
   }
 
-  if (state.count === 0) {
-    target.style.overflow = "hidden";
-    if (scrollbarWidth > 0) {
-      target.style.paddingRight = `${computedPaddingRight + scrollbarWidth}px`;
-    }
-  }
+  if (state.count === 0) target.classList.add(scrollLockClass);
   state.count += 1;
 
   let released = false;
@@ -47,29 +28,13 @@ function lockDialogScroll(
     state.count -= 1;
     if (state.count > 0) return;
 
-    target.style.overflow = state.overflow;
-    target.style.paddingRight = state.paddingRight;
+    if (!state.alreadyLocked) target.classList.remove(scrollLockClass);
     scrollLocks.delete(target);
   };
 }
 
 function lockDocumentScroll(body: HTMLElement): () => void {
-  const documentElement = body.ownerDocument.documentElement;
-  const viewport = body.ownerDocument.defaultView;
-  const computedPaddingRight = Number.parseFloat(
-    viewport?.getComputedStyle(body).paddingRight || "0",
-  );
-  const scrollbarWidth = Math.max(
-    0,
-    (viewport?.innerWidth || 0) - documentElement.clientWidth,
-  );
-
-  return lockDialogScroll(body, {
-    computedPaddingRight: Number.isFinite(computedPaddingRight)
-      ? computedPaddingRight
-      : 0,
-    scrollbarWidth,
-  });
+  return lockDialogScroll(body);
 }
 
-export { lockDialogScroll, lockDocumentScroll };
+export { lockDialogScroll, lockDocumentScroll, scrollLockClass };

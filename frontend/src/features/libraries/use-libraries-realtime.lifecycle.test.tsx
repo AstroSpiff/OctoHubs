@@ -5,7 +5,11 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ScanJob } from "@/features/libraries/types";
-import { useLibrariesRealtime } from "@/features/libraries/use-libraries-realtime";
+import {
+  scanSocketReconnectDelay,
+  scanSocketReconnectLimit,
+  useLibrariesRealtime,
+} from "@/features/libraries/use-libraries-realtime";
 
 type Listener = (event: { data?: unknown }) => void;
 
@@ -105,5 +109,19 @@ describe("libraries WebSocket lifecycle", () => {
     act(() => root.unmount());
     mounted = false;
     expect(FakeSocket.instances[1].closed).toBe(true);
+  });
+
+  it("stops reconnecting after bounded exponential retries and leaves polling active", () => {
+    act(() => root.render(<Harness />));
+
+    for (let attempt = 0; attempt < scanSocketReconnectLimit; attempt += 1) {
+      act(() => FakeSocket.instances.at(-1)?.emit("close"));
+      act(() => vi.advanceTimersByTime(scanSocketReconnectDelay(attempt)));
+      expect(FakeSocket.instances).toHaveLength(attempt + 2);
+    }
+
+    act(() => FakeSocket.instances.at(-1)?.emit("close"));
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(FakeSocket.instances).toHaveLength(scanSocketReconnectLimit + 1);
   });
 });

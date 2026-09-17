@@ -1,6 +1,8 @@
 import { useId } from "react";
 import type { ComponentProps, ComponentType, SVGProps } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { config } from "@fortawesome/fontawesome-svg-core";
+import "@fortawesome/fontawesome-svg-core/styles.css";
 import { faStar as faStarRegular } from "@fortawesome/free-regular-svg-icons";
 import {
   faArrowDown, faArrowDownWideShort, faArrowRight, faArrowUp, faArrowUpRightFromSquare, faArrowsRotate, faBan,
@@ -23,7 +25,9 @@ import {
 } from "@fortawesome/free-solid-svg-icons";
 import type { IconDefinition } from "@fortawesome/fontawesome-svg-core";
 
-type IconProps = Omit<SVGProps<SVGSVGElement>, "width" | "height"> & {
+config.autoAddCss = false;
+
+type IconProps = Omit<SVGProps<SVGSVGElement>, "width" | "height" | "style"> & {
   size?: number | string;
   strokeWidth?: number | string;
   absoluteStrokeWidth?: boolean;
@@ -37,17 +41,16 @@ function createIcon(definition: IconDefinition): IconComponent {
     size,
     strokeWidth: _strokeWidth,
     absoluteStrokeWidth: _absoluteStrokeWidth,
-    style,
     ...props
   }: IconProps) {
-    const dimensions = size === undefined ? undefined : { width: size, height: size };
     void _strokeWidth;
     void _absoluteStrokeWidth;
 
     return (
       <FontAwesomeIcon
         icon={definition}
-        style={{ ...dimensions, ...style }}
+        height={size}
+        width={size}
         {...(props as unknown as FontAwesomeProps)}
       />
     );
@@ -58,7 +61,6 @@ function WifiOffGlyph({
   size,
   strokeWidth: _strokeWidth,
   absoluteStrokeWidth: _absoluteStrokeWidth,
-  style,
   ...props
 }: IconProps) {
   const maskId = `wifi-off-${useId().replaceAll(":", "")}`;
@@ -77,7 +79,6 @@ function WifiOffGlyph({
       data-prefix="fas"
       data-icon="wifi-off"
       focusable="false"
-      style={style}
       {...props}
     >
       <mask id={maskId} maskUnits="userSpaceOnUse" x="0" y="0" width="640" height="512">

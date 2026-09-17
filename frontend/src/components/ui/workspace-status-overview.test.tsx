@@ -21,7 +21,8 @@ describe("WorkspaceStatusOverview", () => {
     );
 
     expect(markup).toContain("workspace-status-overview");
-    expect(markup).toContain("--workspace-status-overview-columns:3");
+    expect(markup).toContain("workspace-status-overview--columns-3");
+    expect(markup).not.toContain("style=");
     expect(markup).toContain("Connesso");
     expect(markup).toContain("Stream");
   });

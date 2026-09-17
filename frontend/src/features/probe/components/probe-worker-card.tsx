@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 
 import { StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ProgressFill } from "@/components/ui/progress-fill";
 import { probeStatusLabel } from "@/features/probe/presentation";
 import type { ProbeWorkerStatus } from "@/features/probe/types";
 
@@ -93,7 +94,7 @@ function ProbeWorkerCard({
             </strong>
           </div>
           <i>
-            <b style={{ width: `${progressPercent}%` }} />
+            <ProgressFill value={progressPercent} />
           </i>
         </div>
       ) : null}

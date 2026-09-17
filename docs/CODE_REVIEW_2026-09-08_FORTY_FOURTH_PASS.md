@@ -7,20 +7,22 @@
 - **Baseline immutabile:** `cef2a66cd8cdd72f21b41031860635e39b4ce0cd`
   (`fix: complete R43 review remediation cycle`, 2026-09-08T12:43:40+02:00).
 - **Worktree iniziale:** pulita.
-- **Esito:** **25 finding risolti, 0 aperti**, 0 decisioni accettate nuove e 0
+- **Esito:** **28 finding risolti, 0 aperti**, 0 decisioni accettate nuove e 0
   finding bloccati.
 - **Modifiche:** implementazione, migrazioni Alembic 22-25, regressori, canary,
   gate di classe e addendum della validazione sul deployment. Il ciclo iniziale
   è stato chiuso con un checkpoint locale. L'addendum è incluso nel checkpoint
   `b55dd0f` e nel tag `v0.5.3`; i follow-up notifiche, Pubblicazioni, UI e
   Transcode Guard sono consolidati nel checkpoint release `v0.5.4` richiesto
-  dall'operatore.
+  dall'operatore. L'affinamento dell'associazione label/input del riepilogo
+  Transcode Guard e la remediation CSP/realtime/diagnostica notifiche sono
+  completati e verificati localmente dopo il tag.
 
 | Severità | Aperti | Risolti |
 | --- | ---: | --- |
 | Alta | 0 | R44-H-01 … R44-H-11 |
-| Media | 0 | R44-M-01 … R44-M-07 |
-| Bassa | 0 | R44-L-01 … R44-L-07 |
+| Media | 0 | R44-M-01 … R44-M-09 |
+| Bassa | 0 | R44-L-01 … R44-L-08 |
 
 ## Metodo e perimetro
 
@@ -1159,10 +1161,15 @@ condivisi.
   disponibile, senza spingere il blocco dei campi a destra. Il componente è un
   container inline autonomo: sotto 1050 px reali i parametri passano su una
   seconda riga estesa, mentre sotto 620 px si impilano in una colonna. Testi,
-  icona e controlli possono restringersi senza sovrapporsi.
+  icona e controlli possono restringersi senza sovrapporsi. Una verifica visiva
+  successiva al tag `v0.5.4` ha riaperto il finding: le colonne elastiche
+  separavano eccessivamente ciascuna label dal proprio input. La griglia interna
+  usa ora una colonna label `max-content` seguita immediatamente dall'input e
+  mantiene lo spazio soltanto fra i due gruppi di campo.
 - **Regressore, superfici analoghe e rischio residuo:** un contratto CSS
-  verifica composizione desktop, distribuzione non allineata a destra e fallback
-  medium/mobile basati sulla larghezza del pannello. Il follow-up richiesto
+  verifica composizione desktop, associazione compatta label/input,
+  distribuzione non allineata a destra e fallback medium/mobile basati sulla
+  larghezza del pannello. Il follow-up richiesto
   dall'operatore ha inoltre sostituito la descrizione astratta con l'effetto
   reale: controllo delle riproduzioni Emby, registrazione, avviso o arresto dello
   stream e precedenza della prima regola valida. Riesaminati intestazione pagina,
@@ -1192,6 +1199,73 @@ breakpoint basati sulla finestra invece che sul contenitore.
   selettore server, limite DB, schede, configurazione e pannello laterale. Non
   cambiano dati, filtri o azioni; nessun rischio residuo noto.
 
+### R44-M-08 — Il runtime viola la CSP con CSS e stili inline — resolved
+
+**Classificazione:** superficie analoga della famiglia CSP/rendering sicuro;
+non è una regressione funzionale delle remediation precedenti.
+
+- **Riproduzione:** il browser bloccava `Applying inline style violates
+  style-src 'self'` nel bundle principale. Font Awesome tentava di inserire un
+  elemento `style` a runtime; barre di avanzamento, blocco scroll, icone server,
+  menu contestuale, navigazione mobile e scrollbar Utenti contenevano inoltre
+  stili React o mutazioni DOM inline che avrebbero prodotto lo stesso difetto.
+- **Soluzione canonica:** il CSS Font Awesome viene importato nella build e
+  `autoAddCss` è disabilitato prima del rendering. Le dimensioni e i colori SVG
+  usano attributi di presentazione; progressi dinamici usano un componente
+  `<progress>` condiviso; layout, scroll lock, palette, colonne e menu usano
+  classi e CSS statico. La scrollbar simulata è stata sostituita da quella
+  nativa accessibile. La CSP non è stata allentata e non è stato aggiunto
+  `unsafe-inline`.
+- **Regressori e superfici analoghe:** un gate AST inventaria tutti i sorgenti
+  TypeScript/TSX e rifiuta `style=`, proprietà DOM `.style` e
+  `setAttribute("style", ...)`. Il canary monta realmente un'icona in JSDOM e
+  verifica che non venga inserito alcun elemento `style`; markup SSR e tre
+  consumer delle icone verificano anche l'assenza dell'attributo inline. Sono
+  state riesaminate tutte le occorrenze applicative, non soltanto lo stack
+  indicato dalla console.
+- **Rischio residuo:** il runtime React contiene internamente supporto generico
+  alla prop `style`, ma il gate impedisce ai sorgenti OctoHubs di usarla. Le
+  dipendenze future devono continuare a essere verificate con il canary DOM.
+
+### R44-M-09 — Librerie riconnette il WebSocket senza limite — resolved
+
+**Classificazione:** superficie analoga della famiglia lifecycle/realtime e
+fallback dietro reverse proxy esterno.
+
+- **Riproduzione:** quando il proxy esterno non inoltra l'Upgrade WebSocket,
+  ogni chiusura pianificava una nuova connessione dopo due secondi senza limite,
+  riempiendo la console con richieste `wss://…/ws/scan/libraries-*` fallite.
+- **Soluzione:** la connessione esegue al massimo tre retry con backoff
+  deterministico di 2, 4 e 8 secondi. Un'apertura riuscita azzera il budget; il
+  ritorno della scheda in primo piano avvia un nuovo ciclo controllato. Dopo
+  l'esaurimento restano attivi EventSource e polling React Query, quindi lo
+  stato delle scansioni continua a convergere anche senza supporto WebSocket.
+- **Regressori e failure path:** il test lifecycle simula chiusure consecutive,
+  verifica esattamente il backoff e prova che nessun quarto timer riapra la
+  connessione. Restano coperti cambio visibilità, generazioni stale, unmount,
+  cancellazione dei timer e coalescenza degli eventi SSE.
+- **Rischio residuo:** senza Upgrade la progressione perde la latenza minima del
+  WebSocket e usa i fallback; è un degrado controllato, non un loop o un blocco.
+
+### R44-L-08 — Il log della notifica 400 omette il motivo — resolved
+
+**Classificazione:** causa nuova di osservabilità; il codice HTTP 400 resta un
+esito di dominio intenzionale.
+
+- **Riproduzione e causa:** `POST /api/v1/emby/latest/notify` restituisce 400
+  quando nessuna regola valida può inviare (preset, Telegram, bot, destinazioni
+  o server mancanti). L'interfaccia mostrava già il `message` della risposta,
+  ma il log server registrava soltanto status e contatori, rendendo impossibile
+  distinguere la configurazione mancante dai log operativi.
+- **Soluzione:** sui fallimenti il backend registra motivo, numero errori e
+  primo errore in forma sanitizzata; token Telegram e URL con credenziali sono
+  redatti. Il 400 non viene trasformato in successo e la risposta pubblica non
+  cambia.
+- **Regressore e rischio residuo:** il test usa un token Telegram canary e
+  verifica che il contesto diagnostico resti utile senza esporre il segreto.
+  Errori ulteriori oltre il primo restano disponibili nella risposta
+  autenticata e non vengono duplicati nel log.
+
 ### Verifica funzionale trasversale di recupero
 
 Lo smoke dell'immagine di produzione non controlla più soltanto readiness e
@@ -1210,40 +1284,41 @@ né gestisce PostgreSQL.
 
 | Gate | Esito | Evidenza finale |
 | --- | --- | --- |
-| Regressori del follow-up finale | **PASS** | 88 backend mirati per R44-H-10, 5 canary Event Bridge/Transcode Guard, 4 backend per la configurazione manuale dei gruppi, 24 frontend mirati su 5 file, 3 contratti layout/copy Transcode Guard e 2 contratti responsive Pubblicazioni, oltre ai regressori precedenti; deduplica transitive cache/fresh, vere nuove versioni, fallback, film/serie, drift metadata, state/history, notification delivery/MediaInfo, filtro `existing`, wake immediato playback/session con polling di recupero, stati rossi canonici Wi-Fi/Download senza overlay, centro operazioni Utenti canonico, separazione manuale/automatica della sincronizzazione gruppi, conferma distruttiva dei quattro aggiornamenti metadata e layout basati sulla larghezza reale del contenuto |
-| Backend completo | **PASS** | 2.303 passed, 84 skipped, 34 subtest; 51,18 s |
-| PostgreSQL 16 reale | **PASS** | release gate: 82 passed, 2 warning; 174,88 s |
+| Regressori del follow-up finale | **PASS** | regressori precedenti più 19 test mirati CSP/realtime/scroll/layout/notifiche; canary DOM Font Awesome senza style injection, gate AST repository-wide, retry WebSocket 2/4/8 s bounded e diagnostica token-redacted |
+| Backend completo | **PASS** | 2.311 passed, 77 skipped, 72 warning, 34 subtest; 46,13 s |
+| PostgreSQL 16 reale | **PASS** | release gate: 82 passed, 2 warning; 203,59 s |
 | Ruff | **PASS** | nessun errore |
 | Pyright | **PASS** | 0 errori, 0 warning, 0 informazioni |
 | Complessità | **PASS** | baseline C901 rispettata: 174 attive, 47 ridotte/rimosse |
 | Contratto API esterna | **PASS** | 203 operation v1; 0 violazioni |
-| Frontend Vitest | **PASS** | 277 file, 753 test |
+| Frontend Vitest | **PASS** | 278 file, 758 test |
 | ESLint | **PASS** | nessun errore |
-| Build frontend | **PASS** | 505 moduli; warning chunk noto da 548,56 kB |
+| Build frontend | **PASS** | 507 moduli; warning chunk noto da 548,40 kB |
 | Dipendenze | **PASS** | audit Python runtime/dev e npm runtime/completo senza vulnerabilità note |
 | Compose | **PASS** | base, secrets e admin-bootstrap; unico servizio `app` |
-| Docker | **PASS** | build completa dell'immagine `octohubs:r44-event-bridge-guard-wake`; base no-cache verificata nel passaggio immediatamente precedente |
-| Smoke immagine | **PASS** | readiness, login, SPA, UID/GID 1000 e 17 superfici funzionali read-only su PostgreSQL 16 temporaneo esterno; l'immagine finale è healthy sull'istanza locale, login amministratore, API Transcode Guard e asset aggiornato sono stati verificati, e `octohubs-local-pre-event-bridge-guard-wake` resta spento come rollback; l'incrementale è terminato `8/8`, `Completato`; Mompracem è una scheda con due versioni su Blue/Green/Purple/Red sia in batch sia nel feed; checkpoint Telegram invariati a 78 |
+| Docker | **PASS** | due build complete no-cache con inventari identici; immagine conservata `octohubs:r44-csp-realtime-remediation` |
+| Smoke immagine | **PASS** | readiness, login, SPA, UID/GID 1000 e 17 superfici funzionali read-only su PostgreSQL 16 temporaneo esterno |
 | `git diff --check` | **PASS** | nessun errore di whitespace o conflict marker |
 
 ### Audit di ricorrenza finale R44
 
-I follow-up R44-H-05 … R44-H-11, R44-M-05 … R44-M-07 e R44-L-03 … R44-L-07 portano il totale
-storico da 544 a **559 finding**, tutti risolti. Cinque sono riaperture esplicite: le remediation
+I follow-up R44-H-05 … R44-H-11, R44-M-05 … R44-M-09 e R44-L-03 … R44-L-08 portano il totale
+storico da 544 a **562 finding**, tutti risolti. Sei sono riaperture esplicite: le remediation
 precedenti avevano chiuso invarianti tecnici senza provare integralmente i
 contratti funzionali reali.
 
 | Categoria storica | Prima del follow-up | Follow-up | Totale | Stato corrente |
 | --- | ---: | ---: | ---: | --- |
-| Finding numerati | 544 | 15 | **559** | **559 risolti; 0 aperti** |
-| Riaperture esplicitamente incomplete | 74 | 5 | **79** | 79 risolte; 0 aperte |
-| Superfici analoghe/ricorrenze diverse | 74 | 2 | **76** | 76 risolte; 0 aperte |
-| Cause nuove | 396 | 8 | **404** | tutte risolte |
+| Finding numerati | 544 | 18 | **562** | **562 risolti; 0 aperti** |
+| Riaperture esplicitamente incomplete | 74 | 6 | **80** | 80 risolte; 0 aperte |
+| Superfici analoghe/ricorrenze diverse | 74 | 4 | **78** | 78 risolte; 0 aperte |
+| Cause nuove | 396 | 9 | **405** | tutte risolte |
 | Decisioni storiche accettate | 4 | 0 | **4** | non sono difetti aperti |
 | Finding bloccati da decisione utente | 0 | 0 | **0** | — |
 
-**Stato finale del follow-up:** R44 comprende **25 finding risolti e 0 aperti**.
-L'immagine verificata è stata distribuita nell'istanza Docker locale con
-rollback e il ciclo è pubblicato su `main` mediante il checkpoint release
-`v0.5.4`. Non è stato eseguito alcun deploy remoto e non sono stati modificati
-dati o configurazione del deployment Hetzner.
+**Stato finale del follow-up:** R44 comprende **28 finding risolti e 0 aperti**.
+Il ciclo è pubblicato su `main` mediante il checkpoint release `v0.5.4`; il
+successivo affinamento visivo di R44-L-06 e i finding R44-M-08, R44-M-09 e
+R44-L-08 sono successivi a `v0.5.4` e inclusi nel checkpoint seguente. Al
+momento della verifica non era stato eseguito alcun deploy remoto e non erano
+stati modificati dati o configurazione del deployment Hetzner.

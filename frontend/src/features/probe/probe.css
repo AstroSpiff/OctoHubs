@@ -505,12 +505,12 @@
   border-radius: 3px;
   background: var(--color-surface-muted);
 }
-.probe-worker-progress > i > b,
-.probe-combo-task > i > b {
+.probe-worker-progress > i > .csp-progress-fill,
+.probe-combo-task > i > .csp-progress-fill {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: var(--color-accent);
+  color: var(--color-accent);
 }
 
 .probe-combo-card {

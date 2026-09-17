@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ProgressFill } from "@/components/ui/progress-fill";
 import { useConfirmationDialog } from "@/components/ui/use-confirmation-dialog";
 import {
   formatOperationTimestamp,
@@ -288,7 +289,7 @@ function OperationItem({
           aria-label={`Avanzamento ${progress}%`}
         >
           <span>
-            <i style={{ width: `${progress}%` }} />
+            <ProgressFill value={progress} />
           </span>
           <strong>{progress}%</strong>
         </div>

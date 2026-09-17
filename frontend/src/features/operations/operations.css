@@ -171,10 +171,10 @@
   background: var(--color-border);
 }
 
-.operation-progress-track span {
+.operation-progress-track > .csp-progress-fill {
   display: block;
   height: 100%;
-  background: var(--color-accent);
+  color: var(--color-accent);
   transition: width 0.2s ease;
 }
 
@@ -421,11 +421,11 @@
   background: var(--color-border);
 }
 
-.operations-center-progress i {
+.operations-center-progress > span > .csp-progress-fill {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: var(--color-accent);
+  color: var(--color-accent);
   transition: width 0.2s ease;
 }
 

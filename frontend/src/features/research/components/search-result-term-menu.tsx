@@ -10,7 +10,7 @@ import type { SearchResultActionNotice } from "@/features/research/components/se
 import type { RequestRuleTermField } from "@/features/research/request-search-rules";
 import { WriteAction } from "@/features/session/workspace-capabilities";
 
-type SearchResultTermMenuPosition = { term: string; x: number; y: number };
+type SearchResultTermMenuPosition = { term: string };
 type AddTermAction = (
   term: string,
   field: RequestRuleTermField,
@@ -103,7 +103,6 @@ function SearchResultTermMenu({
         ref={menuRef}
         aria-label={`Azioni per ${menu.term}`}
         role="menu"
-        style={{ left: menu.x, top: menu.y }}
         onKeyDown={handleMenuKeyDown}
       >
         <strong>{menu.term}</strong>

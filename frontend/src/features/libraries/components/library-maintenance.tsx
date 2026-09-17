@@ -1,6 +1,7 @@
 import { Database, FileSearch, RefreshCw, Rocket } from "@/components/ui/icons";
 
 import { Button } from "@/components/ui/button";
+import { ProgressFill } from "@/components/ui/progress-fill";
 import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
 import { WorkspaceHeading } from "@/components/ui/workspace-heading";
 import { EmbyServerIcon } from "@/features/emby-live/components/emby-server-icon";
@@ -222,7 +223,7 @@ function ActiveLibraryScans({ scans }: { scans: ActiveLibraryScan[] }) {
                   <span>{scan.task_name}</span>
                 </div>
                 <div className="libraries-scan-progress">
-                  <span style={{ width: `${progress}%` }} />
+                  <ProgressFill value={progress} />
                   <small>{progress}%</small>
                 </div>
               </li>

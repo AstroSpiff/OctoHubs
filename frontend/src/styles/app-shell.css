@@ -942,6 +942,15 @@
   }
 }
 
+.mobile-primary-navigation--count-1 { --mobile-primary-navigation-count: 1; }
+.mobile-primary-navigation--count-2 { --mobile-primary-navigation-count: 2; }
+.mobile-primary-navigation--count-3 { --mobile-primary-navigation-count: 3; }
+.mobile-primary-navigation--count-4 { --mobile-primary-navigation-count: 4; }
+.mobile-primary-navigation--count-5 { --mobile-primary-navigation-count: 5; }
+.mobile-primary-navigation--count-6 { --mobile-primary-navigation-count: 6; }
+.mobile-primary-navigation--count-7 { --mobile-primary-navigation-count: 7; }
+.mobile-primary-navigation--count-8 { --mobile-primary-navigation-count: 8; }
+
 @media (max-width: 360px) {
   .mobile-navigation-link {
     font-size: 8px;
