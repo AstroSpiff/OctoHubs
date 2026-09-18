@@ -118,9 +118,19 @@ def test_probe_queue_discovery_replaces_an_expired_generic_claim(tmp_path):
 def test_probe_worker_pages_past_a_fully_claimed_batch():
     class Database:
         rows = [{"id": item_id, "item_id": f"item-{item_id}"} for item_id in range(1, 7)]
+        reads = []
 
-        def get_probe_queue(self, _server_id, *, limit, cursor_id, **_kwargs):
-            return [row for row in self.rows if row["id"] > cursor_id][:limit]
+        def get_probe_queue(
+            self,
+            _server_id,
+            *,
+            limit,
+            offset,
+            processing_order,
+            **_kwargs,
+        ):
+            self.reads.append((offset, processing_order))
+            return self.rows[offset : offset + limit]
 
         def claim_probe_queue_items(self, ids):
             return [row for row in self.rows if row["id"] in ids and row["id"] >= 5]
@@ -139,6 +149,7 @@ def test_probe_worker_pages_past_a_fully_claimed_batch():
     _page, claimed = worker._claim_next_processable(None)
 
     assert [item["id"] for item in claimed] == [5, 6]
+    assert worker.db.reads == [(0, True), (2, True), (4, True)]
 
 
 def test_probe_claim_renewal_fails_closed_when_ownership_is_lost():

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Protocol, cast
 from uuid import uuid4
 
-from sqlalchemy import and_, func, text
+from sqlalchemy import and_, case, func, text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -960,6 +960,7 @@ class StorageProbeMixin(_SessionProvider):
         limit: Optional[int] = None,
         offset: int = 0,
         cursor_id: int | None = None,
+        processing_order: bool = False,
     ) -> list[Dict[str, Any]]:
         session = self._get_session()
         try:
@@ -972,7 +973,7 @@ class StorageProbeMixin(_SessionProvider):
             if library_ids:
                 query = query.filter(EmbyProbeQueue.library_id.in_(library_ids))  # type: ignore[attr-defined]
 
-            if cursor_id is not None:
+            if cursor_id is not None and not processing_order:
                 query = query.filter(EmbyProbeQueue.id > cursor_id)  # type: ignore[attr-defined]
                 query = query.order_by(EmbyProbeQueue.id.asc())  # type: ignore[attr-defined]
             else:
@@ -984,10 +985,19 @@ class StorageProbeMixin(_SessionProvider):
                         EmbyProbeQueue.id.asc(),  # type: ignore[attr-defined]
                     )
                 else:
+                    series_name = func.nullif(func.trim(EmbyProbeQueue.series_name), "")
+                    title = func.lower(
+                        func.coalesce(
+                            series_name,
+                            func.nullif(func.trim(EmbyProbeQueue.name), ""),
+                            "",
+                        )
+                    )
                     query = query.order_by(
-                        EmbyProbeQueue.series_name,  # type: ignore[attr-defined]
-                        EmbyProbeQueue.season_number,  # type: ignore[attr-defined]
-                        EmbyProbeQueue.episode_number,  # type: ignore[attr-defined]
+                        case((series_name.is_not(None), 0), else_=1),
+                        title,
+                        func.coalesce(EmbyProbeQueue.season_number, 2_147_483_647),
+                        func.coalesce(EmbyProbeQueue.episode_number, 2_147_483_647),
                         EmbyProbeQueue.name,  # type: ignore[attr-defined]
                         EmbyProbeQueue.id,  # type: ignore[attr-defined]
                     )
@@ -1017,7 +1027,6 @@ class StorageProbeMixin(_SessionProvider):
                 EmbyProbeQueue.library_id,
                 func.max(EmbyProbeQueue.library_name),
                 series_name,
-                EmbyProbeQueue.year,
                 func.max(EmbyProbeQueue.media_type),
                 func.count(EmbyProbeQueue.id),
                 func.min(EmbyProbeQueue.added_at),
@@ -1029,7 +1038,6 @@ class StorageProbeMixin(_SessionProvider):
                 EmbyProbeQueue.server_id,
                 EmbyProbeQueue.library_id,
                 series_name,
-                EmbyProbeQueue.year,
             ).all()
 
             movie_query = session.query(
@@ -1060,10 +1068,12 @@ class StorageProbeMixin(_SessionProvider):
                     "group_type": "series",
                     "group_id": row[3],
                     "title": row[3],
-                    "year": row[4],
-                    "media_type": row[5],
-                    "file_count": int(row[6] or 0),
-                    "added_at": row[7].isoformat() if row[7] is not None else None,
+                    # Episode production years must not split one series into
+                    # one queue group per season.
+                    "year": None,
+                    "media_type": row[4],
+                    "file_count": int(row[5] or 0),
+                    "added_at": row[6].isoformat() if row[6] is not None else None,
                 }
                 for row in series_rows
             ]
@@ -1121,13 +1131,9 @@ class StorageProbeMixin(_SessionProvider):
 
             if group_type == "series":
                 query = query.filter(series_name == group_id)
-                if year is None:
-                    query = query.filter(EmbyProbeQueue.year.is_(None))
-                else:
-                    query = query.filter(EmbyProbeQueue.year == year)
                 query = query.order_by(
-                    EmbyProbeQueue.season_number,
-                    EmbyProbeQueue.episode_number,
+                    func.coalesce(EmbyProbeQueue.season_number, 2_147_483_647),
+                    func.coalesce(EmbyProbeQueue.episode_number, 2_147_483_647),
                     EmbyProbeQueue.name,
                     EmbyProbeQueue.id,
                 )

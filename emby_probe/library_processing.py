@@ -191,17 +191,26 @@ class LibraryProcessingWorker(LibraryProbeExecutionMixin):
         *,
         library_ids: list[str] | None = None,
         cursor_id: int = 0,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         try:
+            paging = (
+                {"processing_order": True, "offset": offset}
+                if self.scope == PROBE_SCOPE_LIBRARIES
+                else {"cursor_id": cursor_id}
+            )
             return self.db.get_probe_queue(
                 self.server_id,
                 library_ids=library_ids,
                 scope=self.scope,
                 limit=self.queue_batch_size,
-                cursor_id=cursor_id,
+                **paging,
             )
         except TypeError as exc:
-            if not any(keyword in str(exc) for keyword in ("limit", "cursor_id")):
+            if not any(
+                keyword in str(exc)
+                for keyword in ("limit", "cursor_id", "offset", "processing_order")
+            ):
                 raise
             return self.db.get_probe_queue(
                 self.server_id,
@@ -260,18 +269,23 @@ class LibraryProcessingWorker(LibraryProbeExecutionMixin):
         library_ids: list[str] | None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         cursor_id = 0
+        offset = 0
         while True:
             page = self._load_queue_batch(
                 library_ids=library_ids,
                 cursor_id=cursor_id,
+                offset=offset,
             )
             candidates = [item for item in page if self._retry_count(item) < 3]
             if candidates or len(page) < self.queue_batch_size:
                 return page, candidates
-            next_cursor = int(page[-1].get("id") or 0)
-            if next_cursor <= cursor_id:
-                return page, []
-            cursor_id = next_cursor
+            if self.scope == PROBE_SCOPE_LIBRARIES:
+                offset += len(page)
+            else:
+                next_cursor = int(page[-1].get("id") or 0)
+                if next_cursor <= cursor_id:
+                    return page, []
+                cursor_id = next_cursor
 
     def _retry_count(self, item: dict[str, Any]) -> int:
         key = f"{item.get('item_id')}:{item.get('media_source_id') or ''}"
@@ -301,11 +315,13 @@ class LibraryProcessingWorker(LibraryProbeExecutionMixin):
         library_ids: list[str] | None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         cursor_id = 0
+        offset = 0
         last_page: list[dict[str, Any]] = []
         while not self.stop_flag.is_set():
             page = self._load_queue_batch(
                 library_ids=library_ids,
                 cursor_id=cursor_id,
+                offset=offset,
             )
             last_page = page
             if not page:
@@ -316,10 +332,13 @@ class LibraryProcessingWorker(LibraryProbeExecutionMixin):
                 return page, claimed
             if len(page) < self.queue_batch_size:
                 return page, []
-            next_cursor = int(page[-1].get("id") or 0)
-            if next_cursor <= cursor_id:
-                return page, []
-            cursor_id = next_cursor
+            if self.scope == PROBE_SCOPE_LIBRARIES:
+                offset += len(page)
+            else:
+                next_cursor = int(page[-1].get("id") or 0)
+                if next_cursor <= cursor_id:
+                    return page, []
+                cursor_id = next_cursor
         return last_page, []
 
     def _announce_retries(self, processable: list[dict[str, Any]]) -> None:

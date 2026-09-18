@@ -81,7 +81,7 @@ def test_probe_queue_summaries_are_unbounded_and_details_are_title_scoped(tmp_pa
                     series_name="Serie completa",
                     season_number=1,
                     episode_number=1,
-                    year=2025,
+                    year=2026,
                     media_type="Episode",
                     path="/series/s01e01.mkv",
                 ),
@@ -101,6 +101,7 @@ def test_probe_queue_summaries_are_unbounded_and_details_are_title_scoped(tmp_pa
     assert movie["file_count"] == 2
     assert series["title"] == "Serie completa"
     assert series["file_count"] == 2
+    assert series["year"] is None
 
     movie_items = storage.get_probe_queue_group_items(
         "green",
@@ -124,6 +125,7 @@ def test_probe_queue_summaries_are_unbounded_and_details_are_title_scoped(tmp_pa
         "/movies/0-alt.mkv",
     }
     assert [item["episode_number"] for item in series_items] == [1, 2]
+    assert {item["year"] for item in series_items} == {2025, 2026}
     storage.close()
 
 
@@ -165,3 +167,98 @@ def test_probe_queue_group_snapshots_do_not_apply_the_row_page_limit(monkeypatch
     assert summary_status == details_status == 200
     assert len(summary["groups"]) == 275
     assert details["queue"][0]["display_name"] == "Movie 1"
+
+
+def test_probe_processing_order_keeps_series_and_files_contiguous(tmp_path):
+    storage = _storage(tmp_path)
+    session = storage._get_session()
+    try:
+        session.add_all(
+            [
+                EmbyProbeQueue(
+                    server_id="green",
+                    item_id="series-b-s2e2",
+                    scope="libraries",
+                    library_id="mixed",
+                    library_name="Mista",
+                    name="Serie B episodio 2",
+                    series_name="Serie B",
+                    season_number=2,
+                    episode_number=2,
+                    media_type="Episode",
+                ),
+                EmbyProbeQueue(
+                    server_id="green",
+                    item_id="movie-z",
+                    scope="libraries",
+                    library_id="mixed",
+                    library_name="Mista",
+                    name="Zeta Film",
+                    media_type="Movie",
+                ),
+                EmbyProbeQueue(
+                    server_id="green",
+                    item_id="series-a-s2e1",
+                    scope="libraries",
+                    library_id="mixed",
+                    library_name="Mista",
+                    name="Serie A episodio 3",
+                    series_name="Serie A",
+                    season_number=2,
+                    episode_number=1,
+                    media_type="Episode",
+                ),
+                EmbyProbeQueue(
+                    server_id="green",
+                    item_id="series-a-s1e2",
+                    scope="libraries",
+                    library_id="mixed",
+                    library_name="Mista",
+                    name="Serie A episodio 2",
+                    series_name="Serie A",
+                    season_number=1,
+                    episode_number=2,
+                    media_type="Episode",
+                ),
+                EmbyProbeQueue(
+                    server_id="green",
+                    item_id="movie-a",
+                    scope="libraries",
+                    library_id="mixed",
+                    library_name="Mista",
+                    name="Alfa Film",
+                    media_type="Movie",
+                ),
+                EmbyProbeQueue(
+                    server_id="green",
+                    item_id="series-a-s1e1",
+                    scope="libraries",
+                    library_id="mixed",
+                    library_name="Mista",
+                    name="Serie A episodio 1",
+                    series_name="Serie A",
+                    season_number=1,
+                    episode_number=1,
+                    media_type="Episode",
+                ),
+            ]
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    queue = storage.get_probe_queue(
+        "green",
+        scope="libraries",
+        processing_order=True,
+    )
+
+    assert [item["item_id"] for item in queue] == [
+        "series-a-s1e1",
+        "series-a-s1e2",
+        "series-a-s2e1",
+        "series-b-s2e2",
+        "movie-a",
+        "movie-z",
+    ]
+    storage.close()

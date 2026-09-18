@@ -703,6 +703,76 @@ def test_postgresql_probe_cursor_does_not_skip_after_concurrent_delete(
     storage.close()
 
 
+def test_postgresql_probe_groups_series_across_years_and_orders_processing(
+    postgresql_schema_url,
+):
+    from core.storage import DatabaseStorage
+
+    storage = DatabaseStorage({"URL": postgresql_schema_url})
+    storage.ensure_ready()
+    storage.add_to_probe_queue(
+        [
+            {
+                "server_id": "green",
+                "item_id": "episode-s2e1",
+                "scope": "libraries",
+                "library_id": "series",
+                "library_name": "Serie TV",
+                "name": "Serie unica episodio 3",
+                "series_name": "Serie unica",
+                "season_number": 2,
+                "episode_number": 1,
+                "year": 2026,
+                "media_type": "Episode",
+            },
+            {
+                "server_id": "green",
+                "item_id": "episode-s1e2",
+                "scope": "libraries",
+                "library_id": "series",
+                "library_name": "Serie TV",
+                "name": "Serie unica episodio 2",
+                "series_name": "Serie unica",
+                "season_number": 1,
+                "episode_number": 2,
+                "year": 2025,
+                "media_type": "Episode",
+            },
+            {
+                "server_id": "green",
+                "item_id": "episode-s1e1",
+                "scope": "libraries",
+                "library_id": "series",
+                "library_name": "Serie TV",
+                "name": "Serie unica episodio 1",
+                "series_name": "Serie unica",
+                "season_number": 1,
+                "episode_number": 1,
+                "year": 2025,
+                "media_type": "Episode",
+            },
+        ]
+    )
+
+    groups = storage.get_probe_queue_groups("green", scope="libraries")
+    processing = storage.get_probe_queue(
+        "green",
+        scope="libraries",
+        processing_order=True,
+    )
+
+    assert len(groups) == 1
+    assert groups[0]["title"] == "Serie unica"
+    assert groups[0]["year"] is None
+    assert groups[0]["file_count"] == 3
+    assert [item["item_id"] for item in processing] == [
+        "episode-s1e1",
+        "episode-s1e2",
+        "episode-s2e1",
+    ]
+    storage.close()
+
+
 def test_postgresql_latest_cache_publication_is_not_merged(postgresql_schema_url):
     from core.storage import DatabaseStorage
 
