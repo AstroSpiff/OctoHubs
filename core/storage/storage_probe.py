@@ -1001,6 +1001,148 @@ class StorageProbeMixin(_SessionProvider):
         finally:
             close_session_safely(session)
 
+    def get_probe_queue_groups(
+        self,
+        server_id: str,
+        scope: Optional[str] = None,
+    ) -> list[Dict[str, Any]]:
+        """Return every queued title without materializing its file rows."""
+        session = self._get_session()
+        try:
+            series_name = func.nullif(func.trim(EmbyProbeQueue.series_name), "")
+            base_filters = [EmbyProbeQueue.server_id == server_id]
+
+            series_query = session.query(
+                EmbyProbeQueue.server_id,
+                EmbyProbeQueue.library_id,
+                func.max(EmbyProbeQueue.library_name),
+                series_name,
+                EmbyProbeQueue.year,
+                func.max(EmbyProbeQueue.media_type),
+                func.count(EmbyProbeQueue.id),
+                func.min(EmbyProbeQueue.added_at),
+            ).filter(*base_filters, series_name.is_not(None))
+            series_query = self._apply_scope_filter(
+                series_query, EmbyProbeQueue, scope
+            )
+            series_rows = series_query.group_by(
+                EmbyProbeQueue.server_id,
+                EmbyProbeQueue.library_id,
+                series_name,
+                EmbyProbeQueue.year,
+            ).all()
+
+            movie_query = session.query(
+                EmbyProbeQueue.server_id,
+                EmbyProbeQueue.library_id,
+                func.max(EmbyProbeQueue.library_name),
+                EmbyProbeQueue.item_id,
+                func.max(EmbyProbeQueue.name),
+                func.max(EmbyProbeQueue.year),
+                func.max(EmbyProbeQueue.media_type),
+                func.count(EmbyProbeQueue.id),
+                func.min(EmbyProbeQueue.added_at),
+            ).filter(*base_filters, series_name.is_(None))
+            movie_query = self._apply_scope_filter(
+                movie_query, EmbyProbeQueue, scope
+            )
+            movie_rows = movie_query.group_by(
+                EmbyProbeQueue.server_id,
+                EmbyProbeQueue.library_id,
+                EmbyProbeQueue.item_id,
+            ).all()
+
+            groups = [
+                {
+                    "server_id": row[0],
+                    "library_id": row[1],
+                    "library_name": row[2],
+                    "group_type": "series",
+                    "group_id": row[3],
+                    "title": row[3],
+                    "year": row[4],
+                    "media_type": row[5],
+                    "file_count": int(row[6] or 0),
+                    "added_at": row[7].isoformat() if row[7] is not None else None,
+                }
+                for row in series_rows
+            ]
+            groups.extend(
+                {
+                    "server_id": row[0],
+                    "library_id": row[1],
+                    "library_name": row[2],
+                    "group_type": "movie",
+                    "group_id": row[3],
+                    "title": row[4] or "Sconosciuto",
+                    "year": row[5],
+                    "media_type": row[6],
+                    "file_count": int(row[7] or 0),
+                    "added_at": row[8].isoformat() if row[8] is not None else None,
+                }
+                for row in movie_rows
+            )
+            return sorted(
+                groups,
+                key=lambda group: (
+                    str(group.get("library_name") or "").casefold(),
+                    str(group.get("title") or "").casefold(),
+                    int(group.get("year") or 0),
+                    str(group.get("group_id") or ""),
+                ),
+            )
+        except SQLAlchemyError as exc:
+            raise StorageError(f"Errore riepilogo coda probe: {exc}") from exc
+        finally:
+            close_session_safely(session)
+
+    def get_probe_queue_group_items(
+        self,
+        server_id: str,
+        *,
+        scope: Optional[str],
+        group_type: str,
+        group_id: str,
+        library_id: Optional[str],
+        year: Optional[int],
+    ) -> list[Dict[str, Any]]:
+        """Materialize file rows for exactly one queue title group."""
+        session = self._get_session()
+        try:
+            series_name = func.nullif(func.trim(EmbyProbeQueue.series_name), "")
+            query = session.query(EmbyProbeQueue).filter(
+                EmbyProbeQueue.server_id == server_id
+            )
+            query = self._apply_scope_filter(query, EmbyProbeQueue, scope)
+            if library_id is None:
+                query = query.filter(EmbyProbeQueue.library_id.is_(None))
+            else:
+                query = query.filter(EmbyProbeQueue.library_id == library_id)
+
+            if group_type == "series":
+                query = query.filter(series_name == group_id)
+                if year is None:
+                    query = query.filter(EmbyProbeQueue.year.is_(None))
+                else:
+                    query = query.filter(EmbyProbeQueue.year == year)
+                query = query.order_by(
+                    EmbyProbeQueue.season_number,
+                    EmbyProbeQueue.episode_number,
+                    EmbyProbeQueue.name,
+                    EmbyProbeQueue.id,
+                )
+            else:
+                query = query.filter(
+                    series_name.is_(None),
+                    EmbyProbeQueue.item_id == group_id,
+                ).order_by(EmbyProbeQueue.name, EmbyProbeQueue.id)
+
+            return [self._probe_queue_payload(entry) for entry in query.all()]
+        except SQLAlchemyError as exc:
+            raise StorageError(f"Errore dettaglio coda probe: {exc}") from exc
+        finally:
+            close_session_safely(session)
+
     def get_probe_matching_titles(self, normalized_titles: set[str]) -> set[str]:
         """Find only requested normalized titles without materializing Probe tables."""
         candidates = {str(value) for value in normalized_titles if str(value)}

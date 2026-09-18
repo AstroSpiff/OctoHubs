@@ -23,6 +23,8 @@ def test_probe_configuration_and_stored_state_publish_typed_contracts():
     config_get = paths["/api/emby/probe/config"]["get"]
     config_save = paths["/api/emby/probe/config"]["post"]
     queue = paths["/api/emby/probe/queue"]["get"]
+    queue_groups = paths["/api/emby/probe/queue/groups"]["get"]
+    queue_group_items = paths["/api/emby/probe/queue/group-items"]["get"]
     history = paths["/api/emby/probe/history"]["get"]
     blacklist = paths["/api/emby/probe/blacklist"]["get"]
 
@@ -30,9 +32,20 @@ def test_probe_configuration_and_stored_state_publish_typed_contracts():
     assert _parameter_names(config_get) == {"server_id"}
     assert "config" in config_save["requestBody"]["content"]["application/json"]["schema"]["properties"]
     assert _response_schema(queue)["$ref"] == "#/components/schemas/ProbeQueueResponse"
+    assert _response_schema(queue_groups)["$ref"] == "#/components/schemas/ProbeQueueGroupsResponse"
+    assert _response_schema(queue_group_items)["$ref"] == "#/components/schemas/ProbeQueueGroupItemsResponse"
     assert _response_schema(history)["$ref"] == "#/components/schemas/ProbeHistoryResponse"
     assert _response_schema(blacklist)["$ref"] == "#/components/schemas/ProbeBlacklistResponse"
     assert _parameter_names(queue) == {"server_id", "limit", "offset", "cursor", "scope"}
+    assert _parameter_names(queue_groups) == {"server_id", "scope"}
+    assert _parameter_names(queue_group_items) == {
+        "server_id",
+        "scope",
+        "group_type",
+        "group_id",
+        "library_id",
+        "year",
+    }
     assert _parameter_names(history) == {"server_id", "limit", "offset", "cursor", "scope"}
     assert _parameter_names(blacklist) == {
         "server_id",

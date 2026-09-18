@@ -592,6 +592,57 @@ def _probe_queue_get_snapshot(
     }, 200
 
 
+def _probe_queue_groups_get_snapshot(server_id: Optional[str], scope: str):
+    if not server_id:
+        return json_error("server_id mancante", 422)
+    if scope not in ("libraries", "recent"):
+        return json_error("scope Probe non valido", 422)
+    try:
+        groups = _ensure_db_backend().get_probe_queue_groups(server_id, scope=scope)
+    except StorageError as exc:
+        return _probe_internal_error("Lettura riepilogo coda Probe non riuscita", exc)
+    return {"success": True, "groups": groups}, 200
+
+
+def _probe_queue_group_items_get_snapshot(
+    server_id: Optional[str],
+    scope: str,
+    group_type: Optional[str],
+    group_id: Optional[str],
+    library_id: Optional[str],
+    year: Any,
+):
+    if not server_id:
+        return json_error("server_id mancante", 422)
+    if scope not in ("libraries", "recent"):
+        return json_error("scope Probe non valido", 422)
+    if group_type not in ("movie", "series"):
+        return json_error("group_type deve essere 'movie' o 'series'", 422)
+    normalized_group_id = str(group_id or "").strip()
+    if not normalized_group_id or len(normalized_group_id) > 500:
+        return json_error("group_id non valido", 422)
+    parsed_year = None
+    if year not in (None, ""):
+        try:
+            parsed_year = int(year)
+        except (TypeError, ValueError):
+            return json_error("year deve essere un numero intero", 422)
+    try:
+        queue = _ensure_db_backend().get_probe_queue_group_items(
+            server_id,
+            scope=scope,
+            group_type=group_type,
+            group_id=normalized_group_id,
+            library_id=library_id or None,
+            year=parsed_year,
+        )
+        for item in queue:
+            item["display_name"] = _format_display_name_from_queue(item)
+    except StorageError as exc:
+        return _probe_internal_error("Lettura dettaglio coda Probe non riuscita", exc)
+    return {"success": True, "queue": queue}, 200
+
+
 def _probe_queue_delete_snapshot(server_id, item_id, media_source_id, scope):
     if not server_id:
         return json_error("server_id mancante")

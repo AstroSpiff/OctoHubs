@@ -19,13 +19,14 @@ import {
 import type {
   ProbeBlacklistItem,
   ProbeHistoryItem,
+  ProbeQueueGroup,
   ProbeQueueItem,
   ProbeScope,
 } from "@/features/probe/types";
 
 type DataPanelProps = {
   scope: ProbeScope;
-  queue: ProbeQueueItem[];
+  queue: ProbeQueueGroup[];
   queueLoaded: boolean;
   history: ProbeHistoryItem[];
   historyLoaded: boolean;
@@ -48,7 +49,7 @@ type DataPanelProps = {
   onClearQueue: () => void;
   onClearHistory: () => void;
   onClearBlacklist: (type: "error" | "incomplete") => void;
-  onRemoveQueue: (item: ProbeQueueItem) => void;
+  onRemoveQueue: (item: ProbeQueueItem) => Promise<void>;
   onRemoveBlacklist: (
     type: "error" | "incomplete",
     item: ProbeBlacklistItem,
@@ -114,7 +115,9 @@ function ProbeDataPanel({
   }, [onActiveTabChange, scope]);
 
   const tabs = probeDataTabOptions({
-    queueCount: queueLoaded ? queue.length : undefined,
+    queueCount: queueLoaded
+      ? queue.reduce((total, group) => total + group.file_count, 0)
+      : undefined,
     historyCount: historyLoaded ? history.length : undefined,
     errorCount: errorsLoaded ? errors.length : undefined,
     incompleteCount: incompleteLoaded ? incomplete.length : undefined,
@@ -189,7 +192,8 @@ function ProbeDataPanel({
       >
       {tab === "queue" ? (
         <ProbeQueuePanel
-          items={queue}
+          groups={queue}
+          scope={scope}
           serverNames={serverNames}
           busy={busy}
           onClear={onClearQueue}

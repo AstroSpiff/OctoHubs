@@ -1,5 +1,5 @@
 import { request } from "@/lib/http";
-import type { ProbeActionResponse, ProbeBlacklistItem, ProbeConfig, ProbeHistoryItem, ProbeLibrariesPayload, ProbeQueueItem, ProbeScope } from "@/features/probe/types";
+import type { ProbeActionResponse, ProbeBlacklistItem, ProbeConfig, ProbeHistoryItem, ProbeLibrariesPayload, ProbeQueueGroup, ProbeQueueItem, ProbeScope } from "@/features/probe/types";
 
 function query(path: string, values: Record<string, string | number | undefined>) {
   const parameters = new URLSearchParams();
@@ -44,6 +44,27 @@ export function runProbeAction(path: string, body: Record<string, unknown> = {})
 
 export function getProbeQueue(serverId: string, scope: ProbeScope, cursor = 0, signal?: AbortSignal): Promise<ProbePage<ProbeQueueItem, "queue">> {
   return getProbePage("/api/v1/emby/probe/queue", "queue", { server_id: serverId, scope }, cursor, signal);
+}
+
+export function getProbeQueueGroups(serverId: string, scope: ProbeScope, signal?: AbortSignal): Promise<{ success: boolean; groups: ProbeQueueGroup[] }> {
+  return request<{ success: boolean; groups: ProbeQueueGroup[] }>(
+    query("/api/v1/emby/probe/queue/groups", { server_id: serverId, scope }),
+    { signal },
+  );
+}
+
+export function getProbeQueueGroupItems(group: ProbeQueueGroup, scope: ProbeScope, signal?: AbortSignal): Promise<{ success: boolean; queue: ProbeQueueItem[] }> {
+  return request<{ success: boolean; queue: ProbeQueueItem[] }>(
+    query("/api/v1/emby/probe/queue/group-items", {
+      server_id: group.server_id,
+      scope,
+      group_type: group.group_type,
+      group_id: group.group_id,
+      library_id: group.library_id,
+      year: group.group_type === "series" ? group.year : undefined,
+    }),
+    { signal },
+  );
 }
 
 export function getProbeHistory(serverId: string, scope: ProbeScope, cursor = 0, signal?: AbortSignal): Promise<ProbePage<ProbeHistoryItem, "history">> {

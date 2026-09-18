@@ -22,6 +22,8 @@ from emby_probe.api_models import (
     ProbeModeAllRequest,
     ProbeModeRequest,
     ProbeQueueDeleteRequest,
+    ProbeQueueGroupItemsResponse,
+    ProbeQueueGroupsResponse,
     ProbeQueueResponse,
     ProbeRecentStartRequest,
     ProbeRetryRequest,
@@ -55,6 +57,8 @@ from emby_probe.snapshots import (
     _probe_processing_start_snapshot,
     _probe_processing_stop_snapshot,
     _probe_queue_get_snapshot,
+    _probe_queue_group_items_get_snapshot,
+    _probe_queue_groups_get_snapshot,
     _probe_queue_delete_snapshot,
     _probe_history_get_snapshot,
     _probe_history_delete_snapshot,
@@ -572,6 +576,50 @@ async def probe_queue_get(request: Request):
     cursor = request.query_params.get("cursor")
     payload, status_code = await run_in_threadpool(
         _probe_queue_get_snapshot, server_id, scope, limit, offset, cursor
+    )
+    return JSONResponse(payload, status_code=status_code)
+
+
+@router.get(
+    "/api/emby/probe/queue/groups",
+    response_model=ProbeQueueGroupsResponse,
+    openapi_extra=query_parameters(
+        ("server_id", True, "string"),
+        ("scope", False, "string"),
+    ),
+)
+async def probe_queue_groups_get(request: Request):
+    await run_in_threadpool(_require_auth_dep, request)
+    payload, status_code = await run_in_threadpool(
+        _probe_queue_groups_get_snapshot,
+        request.query_params.get("server_id"),
+        request.query_params.get("scope") or "libraries",
+    )
+    return JSONResponse(payload, status_code=status_code)
+
+
+@router.get(
+    "/api/emby/probe/queue/group-items",
+    response_model=ProbeQueueGroupItemsResponse,
+    openapi_extra=query_parameters(
+        ("server_id", True, "string"),
+        ("scope", False, "string"),
+        ("group_type", True, "string"),
+        ("group_id", True, "string"),
+        ("library_id", False, "string"),
+        ("year", False, "integer"),
+    ),
+)
+async def probe_queue_group_items_get(request: Request):
+    await run_in_threadpool(_require_auth_dep, request)
+    payload, status_code = await run_in_threadpool(
+        _probe_queue_group_items_get_snapshot,
+        request.query_params.get("server_id"),
+        request.query_params.get("scope") or "libraries",
+        request.query_params.get("group_type"),
+        request.query_params.get("group_id"),
+        request.query_params.get("library_id"),
+        request.query_params.get("year"),
     )
     return JSONResponse(payload, status_code=status_code)
 

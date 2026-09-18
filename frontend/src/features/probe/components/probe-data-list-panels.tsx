@@ -14,28 +14,32 @@ import { ProbeRecordList } from "@/features/probe/components/probe-record-list";
 import type {
   ProbeBlacklistItem,
   ProbeHistoryItem,
+  ProbeQueueGroup,
   ProbeQueueItem,
+  ProbeScope,
 } from "@/features/probe/types";
 
 function ProbeQueuePanel({
-  items,
+  groups,
+  scope,
   serverNames,
   busy,
   onClear,
   onRemove,
 }: {
-  items: ProbeQueueItem[];
+  groups: ProbeQueueGroup[];
+  scope: ProbeScope;
   serverNames: Record<string, string>;
   busy: boolean;
   onClear: () => void;
-  onRemove: (item: ProbeQueueItem) => void;
+  onRemove: (item: ProbeQueueItem) => Promise<void>;
 }) {
   return (
     <ProbeList
       icon={<ListTodo size={16} aria-hidden="true" />}
       title="Coda di analisi"
       empty="La coda è vuota."
-      isEmpty={!items.length}
+      isEmpty={!groups.length}
       actions={
         <Button
           type="button"
@@ -43,18 +47,20 @@ function ProbeQueuePanel({
           variant="ghost"
           size="compact"
           onClick={onClear}
-          disabled={busy || !items.length}
+          disabled={busy || !groups.length}
         >
           <Trash2 size={14} aria-hidden="true" />
           Svuota
         </Button>
       }
     >
-      <ProbeLibraryGroups items={items} serverNames={serverNames}>
-        {(groupItems) => (
-          <ProbeQueueGroups items={groupItems} busy={busy} onRemove={onRemove} />
-        )}
-      </ProbeLibraryGroups>
+      <ProbeQueueGroups
+        groups={groups}
+        scope={scope}
+        serverNames={serverNames}
+        busy={busy}
+        onRemove={onRemove}
+      />
     </ProbeList>
   );
 }

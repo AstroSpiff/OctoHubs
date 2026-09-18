@@ -7,9 +7,9 @@ import {
 } from "@tanstack/react-query";
 import { useMemo } from "react";
 
-import { deleteProbeBlacklist, deleteProbeHistory, deleteProbeQueue, getProbeBlacklist, getProbeConfig, getProbeHistory, getProbeLibraries, getProbeQueue, retryBlacklistedProbeItem, retryProbeItem, runProbeAction, saveProbeConfig } from "@/features/probe/api";
+import { deleteProbeBlacklist, deleteProbeHistory, deleteProbeQueue, getProbeBlacklist, getProbeConfig, getProbeHistory, getProbeLibraries, getProbeQueueGroups, retryBlacklistedProbeItem, retryProbeItem, runProbeAction, saveProbeConfig } from "@/features/probe/api";
 import type { ProbeDataTab } from "@/features/probe/probe-data-tab-options";
-import type { ProbeBlacklistItem, ProbeConfig, ProbeHistoryItem, ProbeQueueItem, ProbeScope } from "@/features/probe/types";
+import type { ProbeBlacklistItem, ProbeConfig, ProbeHistoryItem, ProbeQueueGroup, ProbeScope } from "@/features/probe/types";
 
 type ProbePagedItem = {
   id?: number;
@@ -31,6 +31,55 @@ function useProbeLibraries() {
 
 function useProbeConfig(serverId: string | null) {
   return useQuery({ queryKey: ["probe-config", serverId], queryFn: () => getProbeConfig(serverId || ""), enabled: Boolean(serverId) });
+}
+
+function useProbeQueueGroups({
+  active,
+  interval,
+  queryKey,
+  serverIds,
+  scope,
+}: {
+  active: boolean;
+  interval: number;
+  queryKey: readonly string[];
+  serverIds: string[];
+  scope: ProbeScope;
+}) {
+  const query = useQuery({
+    queryKey,
+    enabled: active && serverIds.length > 0,
+    queryFn: async ({ signal }) => {
+      const responses = await Promise.all(
+        serverIds.map((serverId) => getProbeQueueGroups(serverId, scope, signal)),
+      );
+      return responses.flatMap((response) => response.groups);
+    },
+    refetchInterval: interval,
+  });
+  const data = useMemo(() => {
+    const unique = new Map<string, ProbeQueueGroup>();
+    (query.data || []).forEach((group) => {
+      const key = [
+        group.server_id,
+        group.library_id || "",
+        group.group_type,
+        group.group_id,
+        group.year || "",
+      ].join(":");
+      unique.set(key, group);
+    });
+    return [...unique.values()];
+  }, [query.data]);
+  return {
+    ...query,
+    data,
+    hasData: query.data !== undefined,
+    queryKey,
+    hasNextPage: false,
+    isFetchingNextPage: false,
+    fetchNextPage: async () => undefined,
+  };
 }
 
 function useProbePagedDataset<Item extends ProbePagedItem>({
@@ -114,18 +163,12 @@ function useProbeScopeData(
 ) {
   const client = useQueryClient();
   const key = [scope, serverIds.join(",")];
-  const queue = useProbePagedDataset<ProbeQueueItem>({
+  const queue = useProbeQueueGroups({
     active: activeTab === "queue",
     interval: 5_000,
     queryKey: ["probe-queue", ...key],
     serverIds,
-    loadPage: async (serverId, cursor, signal) => {
-      const page = await getProbeQueue(serverId, scope, cursor, signal);
-      return {
-        items: page.queue.map((item) => ({ ...item, server_id: item.server_id || serverId })),
-        nextCursor: page.has_more ? validNextCursor(page.next_cursor, cursor) : null,
-      };
-    },
+    scope,
   });
   const history = useProbePagedDataset<ProbeHistoryItem>({
     active: activeTab === "history",

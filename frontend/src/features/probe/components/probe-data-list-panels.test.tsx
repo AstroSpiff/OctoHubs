@@ -7,7 +7,8 @@ describe("ProbeQueuePanel", () => {
   it("shows an explicit empty state instead of a blank list", () => {
     const markup = renderToStaticMarkup(
       <ProbeQueuePanel
-        items={[]}
+        groups={[]}
+        scope="libraries"
         serverNames={{}}
         busy={false}
         onClear={vi.fn()}
@@ -20,10 +21,19 @@ describe("ProbeQueuePanel", () => {
     expect(markup).not.toContain("probe-library-groups");
   });
 
-  it("locks per-item removal while another queue operation is active", () => {
+  it("renders title counts without materializing file rows", () => {
     const markup = renderToStaticMarkup(
       <ProbeQueuePanel
-        items={[{ item_id: "movie-1", display_name: "Film di prova", server_id: "green" }]}
+        groups={[{
+          server_id: "green",
+          library_id: "movies",
+          library_name: "Film",
+          group_type: "movie",
+          group_id: "movie-1",
+          title: "Film di prova",
+          file_count: 275,
+        }]}
+        scope="libraries"
         serverNames={{ green: "Green" }}
         busy
         onClear={vi.fn()}
@@ -31,6 +41,8 @@ describe("ProbeQueuePanel", () => {
       />,
     );
 
-    expect(markup).toMatch(/<button[^>]*disabled[^>]*>.*Rimuovi<\/button>/);
+    expect(markup).toContain("Film di prova");
+    expect(markup).toContain("275 file");
+    expect(markup).not.toContain("Rimuovi");
   });
 });

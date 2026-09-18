@@ -5,7 +5,11 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getProbeBlacklist, getProbeHistory, getProbeQueue } from "@/features/probe/api";
+import {
+  getProbeBlacklist,
+  getProbeHistory,
+  getProbeQueueGroups,
+} from "@/features/probe/api";
 import { useProbeScopeData } from "@/features/probe/use-probe";
 
 vi.mock("@/features/probe/api", () => ({
@@ -17,6 +21,8 @@ vi.mock("@/features/probe/api", () => ({
   getProbeHistory: vi.fn(),
   getProbeLibraries: vi.fn(),
   getProbeQueue: vi.fn(),
+  getProbeQueueGroupItems: vi.fn(),
+  getProbeQueueGroups: vi.fn(),
   retryBlacklistedProbeItem: vi.fn(),
   retryProbeItem: vi.fn(),
   runProbeAction: vi.fn(),
@@ -58,22 +64,20 @@ describe("useProbeScopeData", () => {
     vi.clearAllMocks();
   });
 
-  it("fetches only the active dataset and loads further cursor pages explicitly", async () => {
-    vi.mocked(getProbeQueue).mockImplementation(async (_serverId, _scope, cursor) =>
-      cursor === 0
-        ? {
-            success: true,
-            queue: [{ id: 1, item_id: "first" }],
-            has_more: true,
-            next_cursor: 1,
-          }
-        : {
-            success: true,
-            queue: [{ id: 2, item_id: "second" }],
-            has_more: false,
-            next_cursor: null,
-          },
-    );
+  it("fetches every queue title summary without paging file rows", async () => {
+    vi.mocked(getProbeQueueGroups).mockResolvedValue({
+      success: true,
+      groups: [
+        {
+          server_id: "green",
+          library_id: "movies",
+          group_type: "movie",
+          group_id: "first",
+          title: "First",
+          file_count: 275,
+        },
+      ],
+    });
 
     await act(async () => {
       root.render(
@@ -88,22 +92,16 @@ describe("useProbeScopeData", () => {
       });
     }
 
-    expect(getProbeQueue).toHaveBeenCalledTimes(1);
+    expect(getProbeQueueGroups).toHaveBeenCalledTimes(1);
+    expect(getProbeQueueGroups).toHaveBeenCalledWith(
+      "green",
+      "libraries",
+      expect.any(AbortSignal),
+    );
     expect(getProbeHistory).not.toHaveBeenCalled();
     expect(getProbeBlacklist).not.toHaveBeenCalled();
-    expect(latestData?.queue.data.map((item) => item.item_id)).toEqual(["first"]);
-    expect(latestData?.queue.hasNextPage).toBe(true);
-
-    await act(async () => {
-      await latestData?.queue.fetchNextPage();
-      await new Promise((resolve) => window.setTimeout(resolve, 0));
-    });
-
-    expect(getProbeQueue).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(getProbeQueue).mock.calls[1][2]).toBe(1);
-    expect(latestData?.queue.data.map((item) => item.item_id)).toEqual([
-      "first",
-      "second",
-    ]);
+    expect(latestData?.queue.data.map((item) => item.group_id)).toEqual(["first"]);
+    expect(latestData?.queue.data[0].file_count).toBe(275);
+    expect(latestData?.queue.hasNextPage).toBe(false);
   });
 });

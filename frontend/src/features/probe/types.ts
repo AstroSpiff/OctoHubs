@@ -62,6 +62,19 @@ export type ProbeQueueItem = {
   reason?: string;
 };
 
+export type ProbeQueueGroup = {
+  server_id: string;
+  library_id?: string;
+  library_name?: string;
+  group_type: "movie" | "series";
+  group_id: string;
+  title: string;
+  year?: number;
+  media_type?: string;
+  file_count: number;
+  added_at?: string;
+};
+
 export type ProbeHistoryItem = {
   id?: number;
   server_id?: string;

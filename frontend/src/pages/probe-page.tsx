@@ -439,7 +439,7 @@ function ProbePage() {
         onClearHistory={() => void dataActions.clearHistory()}
         onClearBlacklist={(type) => void dataActions.clearBlacklist(type)}
         retryProgress={dataActions.retryProgress}
-        onRemoveQueue={(item) => void dataActions.removeQueueItem(item)}
+        onRemoveQueue={dataActions.removeQueueItem}
         onRemoveBlacklist={(type, item) =>
           void dataActions.removeBlacklistItem(type, item)
         }

@@ -179,7 +179,7 @@ function useProbeDataActions({
       return;
     }
 
-    data.removeQueue.mutate({
+    await data.removeQueue.mutateAsync({
       serverId: item.server_id,
       scope,
       itemId: item.item_id,

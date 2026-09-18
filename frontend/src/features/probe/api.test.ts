@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { getProbeQueue, retryBlacklistedProbeItem } from "@/features/probe/api";
+import {
+  getProbeQueue,
+  getProbeQueueGroupItems,
+  getProbeQueueGroups,
+  retryBlacklistedProbeItem,
+} from "@/features/probe/api";
 import { setCsrfToken } from "@/lib/http";
 
 describe("Probe API", () => {
@@ -28,6 +33,49 @@ describe("Probe API", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(String(fetchMock.mock.calls[0][0])).toContain("limit=200");
     expect(String(fetchMock.mock.calls[0][0])).toContain("cursor=0");
+  });
+
+  it("loads every title summary separately from one selected title's files", async () => {
+    const group = {
+      server_id: "green",
+      library_id: "movies",
+      library_name: "Film",
+      group_type: "movie" as const,
+      group_id: "movie-1",
+      title: "Film di prova",
+      year: 2026,
+      file_count: 2,
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ success: true, groups: [group] }), {
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            success: true,
+            queue: [
+              { item_id: "movie-1", media_source_id: "source-a" },
+              { item_id: "movie-1", media_source_id: "source-b" },
+            ],
+          }),
+          { status: 200 },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const summaries = await getProbeQueueGroups("green", "libraries");
+    const details = await getProbeQueueGroupItems(group, "libraries");
+
+    expect(summaries.groups[0].file_count).toBe(2);
+    expect(details.queue).toHaveLength(2);
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/queue/groups?");
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain("limit=");
+    expect(String(fetchMock.mock.calls[1][0])).toContain("/queue/group-items?");
+    expect(String(fetchMock.mock.calls[1][0])).toContain("group_id=movie-1");
   });
 
   it("retries a blacklisted item with one atomic backend command", async () => {

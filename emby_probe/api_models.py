@@ -97,6 +97,29 @@ class ProbeQueueResponse(ProbeApiModel):
     next_cursor: int | None = None
 
 
+class ProbeQueueGroup(ProbeApiModel):
+    server_id: str
+    library_id: str | None = None
+    library_name: str | None = None
+    group_type: Literal["movie", "series"]
+    group_id: str
+    title: str
+    year: int | None = None
+    media_type: str | None = None
+    file_count: int = Field(ge=0)
+    added_at: str | None = None
+
+
+class ProbeQueueGroupsResponse(ProbeApiModel):
+    success: Literal[True]
+    groups: list[ProbeQueueGroup] = Field(default_factory=list)
+
+
+class ProbeQueueGroupItemsResponse(ProbeApiModel):
+    success: Literal[True]
+    queue: list[ProbeQueueItem] = Field(default_factory=list)
+
+
 class ProbeHistoryItem(ProbeQueueItem):
     item_name: str | None = None
     error_type: str | None = None
