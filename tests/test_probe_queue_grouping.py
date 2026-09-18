@@ -101,7 +101,7 @@ def test_probe_queue_summaries_are_unbounded_and_details_are_title_scoped(tmp_pa
     assert movie["file_count"] == 2
     assert series["title"] == "Serie completa"
     assert series["file_count"] == 2
-    assert series["year"] is None
+    assert series["year"] == 2025
 
     movie_items = storage.get_probe_queue_group_items(
         "green",
@@ -161,7 +161,7 @@ def test_probe_queue_group_snapshots_do_not_apply_the_row_page_limit(monkeypatch
         "green", "libraries"
     )
     details, details_status = snapshots._probe_queue_group_items_get_snapshot(
-        "green", "libraries", "movie", "movie-1", "movies", None
+        "green", "libraries", "movie", "movie-1", "movies", "null"
     )
 
     assert summary_status == details_status == 200

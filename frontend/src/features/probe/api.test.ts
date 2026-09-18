@@ -78,6 +78,32 @@ describe("Probe API", () => {
     expect(String(fetchMock.mock.calls[1][0])).toContain("group_id=movie-1");
   });
 
+  it("does not serialize a missing series year as the text null", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true, queue: [] }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getProbeQueueGroupItems(
+      {
+        server_id: "green",
+        library_id: "series",
+        library_name: "Serie TV",
+        group_type: "series",
+        group_id: "Serie completa",
+        title: "Serie completa",
+        year: null,
+        file_count: 12,
+      },
+      "libraries",
+    );
+
+    const requestUrl = String(fetchMock.mock.calls[0][0]);
+    expect(requestUrl).toContain("group_type=series");
+    expect(requestUrl).not.toContain("year=null");
+    expect(requestUrl).not.toContain("year=");
+  });
+
   it("retries a blacklisted item with one atomic backend command", async () => {
     setCsrfToken("csrf");
     const fetchMock = vi.fn().mockResolvedValue(new Response(

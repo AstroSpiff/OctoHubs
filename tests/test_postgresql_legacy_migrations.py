@@ -763,7 +763,7 @@ def test_postgresql_probe_groups_series_across_years_and_orders_processing(
 
     assert len(groups) == 1
     assert groups[0]["title"] == "Serie unica"
-    assert groups[0]["year"] is None
+    assert groups[0]["year"] == 2025
     assert groups[0]["file_count"] == 3
     assert [item["item_id"] for item in processing] == [
         "episode-s1e1",

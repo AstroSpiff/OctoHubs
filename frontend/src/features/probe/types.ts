@@ -69,7 +69,7 @@ export type ProbeQueueGroup = {
   group_type: "movie" | "series";
   group_id: string;
   title: string;
-  year?: number;
+  year?: number | null;
   media_type?: string;
   file_count: number;
   added_at?: string;

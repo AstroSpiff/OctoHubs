@@ -622,9 +622,10 @@ def _probe_queue_group_items_get_snapshot(
     if not normalized_group_id or len(normalized_group_id) > 500:
         return json_error("group_id non valido", 422)
     parsed_year = None
-    if year not in (None, ""):
+    normalized_year = str(year).strip().lower() if year is not None else ""
+    if normalized_year not in ("", "null"):
         try:
-            parsed_year = int(year)
+            parsed_year = int(normalized_year)
         except (TypeError, ValueError):
             return json_error("year deve essere un numero intero", 422)
     try:

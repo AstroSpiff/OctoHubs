@@ -1,9 +1,16 @@
 import { request } from "@/lib/http";
 import type { ProbeActionResponse, ProbeBlacklistItem, ProbeConfig, ProbeHistoryItem, ProbeLibrariesPayload, ProbeQueueGroup, ProbeQueueItem, ProbeScope } from "@/features/probe/types";
 
-function query(path: string, values: Record<string, string | number | undefined>) {
+function query(
+  path: string,
+  values: Record<string, string | number | null | undefined>,
+) {
   const parameters = new URLSearchParams();
-  Object.entries(values).forEach(([key, value]) => { if (value !== undefined && value !== "") parameters.set(key, String(value)); });
+  Object.entries(values).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") {
+      parameters.set(key, String(value));
+    }
+  });
   return `${path}?${parameters.toString()}`;
 }
 

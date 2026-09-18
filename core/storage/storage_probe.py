@@ -1027,6 +1027,7 @@ class StorageProbeMixin(_SessionProvider):
                 EmbyProbeQueue.library_id,
                 func.max(EmbyProbeQueue.library_name),
                 series_name,
+                func.min(EmbyProbeQueue.year),
                 func.max(EmbyProbeQueue.media_type),
                 func.count(EmbyProbeQueue.id),
                 func.min(EmbyProbeQueue.added_at),
@@ -1068,12 +1069,12 @@ class StorageProbeMixin(_SessionProvider):
                     "group_type": "series",
                     "group_id": row[3],
                     "title": row[3],
-                    # Episode production years must not split one series into
-                    # one queue group per season.
-                    "year": None,
-                    "media_type": row[4],
-                    "file_count": int(row[5] or 0),
-                    "added_at": row[6].isoformat() if row[6] is not None else None,
+                    # The earliest known year is presentation metadata only;
+                    # it must not split one series into seasonal groups.
+                    "year": row[4],
+                    "media_type": row[5],
+                    "file_count": int(row[6] or 0),
+                    "added_at": row[7].isoformat() if row[7] is not None else None,
                 }
                 for row in series_rows
             ]
