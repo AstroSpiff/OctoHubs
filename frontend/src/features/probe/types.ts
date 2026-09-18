@@ -45,6 +45,7 @@ export type ProbeQueueItem = {
   media_source_id?: string;
   display_name?: string;
   name?: string;
+  title?: string;
   library_name?: string;
   series_name?: string;
   season_number?: number;

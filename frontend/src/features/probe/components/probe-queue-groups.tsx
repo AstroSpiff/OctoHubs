@@ -268,7 +268,7 @@ function probeQueueGroupKey(group: ProbeQueueGroup) {
     group.library_id || "",
     group.group_type,
     group.group_id,
-    group.group_type === "series" ? group.year || null : null,
+    group.year || null,
   ]);
 }
 

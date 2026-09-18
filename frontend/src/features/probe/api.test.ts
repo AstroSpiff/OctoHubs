@@ -76,6 +76,7 @@ describe("Probe API", () => {
     expect(String(fetchMock.mock.calls[0][0])).not.toContain("limit=");
     expect(String(fetchMock.mock.calls[1][0])).toContain("/queue/group-items?");
     expect(String(fetchMock.mock.calls[1][0])).toContain("group_id=movie-1");
+    expect(String(fetchMock.mock.calls[1][0])).toContain("year=2026");
   });
 
   it("does not serialize a missing series year as the text null", async () => {

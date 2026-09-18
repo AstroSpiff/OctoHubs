@@ -14,6 +14,11 @@ from .media_policy import (
     load_probe_config,
     normalize_media_policy,
 )
+from .series_metadata import (
+    apply_series_metadata,
+    resolve_series_metadata,
+    series_metadata_updates,
+)
 
 
 class LibraryDiscoveryWorker:
@@ -144,6 +149,14 @@ class LibraryDiscoveryWorker:
             self.manager._set_library_total(self.server_id, library_id, total_count)
             if not items:
                 break
+            apply_series_metadata(
+                items,
+                resolve_series_metadata(
+                    self.server,
+                    items,
+                    call_emby_api=self.call_emby_api,
+                ),
+            )
             self._queue_page(items, library_id, library_name)
             self._publish_page_progress(
                 str(library_id), library_name, start_index, items, total_count
@@ -183,7 +196,7 @@ class LibraryDiscoveryWorker:
                 "Fields": (
                     "Path,MediaStreams,RunTimeTicks,MediaSources,ParentId,"
                     "SeriesName,IndexNumber,ParentIndexNumber,ProductionYear,"
-                    "SeriesProductionYear,Type"
+                    "SeriesId,SeriesProductionYear,Type"
                 ),
                 "StartIndex": start_index,
                 "Limit": self._PAGE_SIZE,
@@ -315,7 +328,10 @@ class LibraryDiscoveryWorker:
                 item_path,
                 source_name,
             ),
+            "title": item_name,
             "series_name": series_name,
+            "series_id": item.get("SeriesId"),
+            "series_year_resolved": bool(item.get("series_year_resolved")),
             "season_number": season_number,
             "episode_number": episode_number,
             "year": year,
@@ -329,6 +345,13 @@ class LibraryDiscoveryWorker:
         batch = self.items_batch
         self.items_batch = []
         self.db.add_to_probe_queue(batch)
+        updates = series_metadata_updates(batch)
+        if updates:
+            self.db.resolve_probe_series_metadata(
+                self.server_id,
+                scope=PROBE_SCOPE_LIBRARIES,
+                metadata=updates,
+            )
         return len(batch)
 
     def _publish_page_progress(

@@ -299,7 +299,10 @@ class LibraryProcessingWorker(LibraryProbeExecutionMixin):
         claim = getattr(self.db, "claim_probe_queue_items", None)
         if not callable(claim):
             return items
-        batch_size = max(1, self.probe_parallelism * 2)
+        # Claim enough already-sorted rows to amortize PostgreSQL's ordered
+        # queue lookup, while remaining far inside the five-minute lease even
+        # for one sequential worker.
+        batch_size = min(32, max(8, self.probe_parallelism * 4))
         for offset in range(0, len(items), batch_size):
             batch = items[offset : offset + batch_size]
             claimed = cast(

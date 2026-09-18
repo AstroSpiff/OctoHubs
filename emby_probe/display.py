@@ -187,6 +187,7 @@ def _format_probe_display_name(
 
 def _format_display_name_from_queue(queue_item: Dict[str, Any]) -> str:
     name = queue_item.get("name") or ""
+    title = queue_item.get("title") or ""
     media_type = queue_item.get("media_type")
     series_name = queue_item.get("series_name")
     season_number = queue_item.get("season_number")
@@ -194,6 +195,21 @@ def _format_display_name_from_queue(queue_item: Dict[str, Any]) -> str:
     year = queue_item.get("year")
     path = queue_item.get("path")
     media_kind = str(media_type or "").lower()
+
+    # Queue rows now preserve the raw Emby title separately. Formatting that
+    # title exactly once prevents the former title/path/title recursion. Older
+    # episode rows can still be rendered cleanly from their path.
+    if title or media_kind == "episode":
+        return _format_probe_display_name(
+            media_type,
+            str(title),
+            year,
+            series_name,
+            season_number,
+            episode_number,
+            path,
+            queue_item.get("source_name"),
+        )
 
     if media_kind == "movie":
         movie_from_path = _movie_label_from_path(path, year)
@@ -232,3 +248,34 @@ def _format_display_name_from_queue(queue_item: Dict[str, Any]) -> str:
         path,
         queue_item.get("source_name")
     )
+
+
+def normalize_probe_record_name(value: Any) -> str:
+    """Collapse display-name recursion already persisted in Probe history."""
+    name = str(value or "").strip()
+    if not name:
+        return ""
+    parts = [part.strip() for part in name.split(" - ") if part.strip()]
+    episode_indexes = [
+        index
+        for index, part in enumerate(parts)
+        if re.fullmatch(r"S\d{1,3}E\d{1,4}", part, re.IGNORECASE)
+    ]
+    if not episode_indexes:
+        return name
+    prefix_end = episode_indexes[0] + 1
+    tail = parts[prefix_end:]
+    repeated_suffix: list[str] | None = None
+    for width in range(1, len(tail) // 2 + 1):
+        if tail[-2 * width : -width] == tail[-width:]:
+            repeated_suffix = tail[-width:]
+    if repeated_suffix is not None:
+        code = parts[episode_indexes[0]].upper()
+        for index, part in enumerate(repeated_suffix):
+            if part.upper() == code:
+                repeated_suffix = repeated_suffix[index + 1 :]
+                break
+        return " - ".join(parts[:prefix_end] + repeated_suffix)
+    if len(episode_indexes) > 1:
+        return " - ".join(parts[:prefix_end] + parts[episode_indexes[-1] + 1 :])
+    return name

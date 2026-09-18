@@ -186,6 +186,7 @@ def test_postgresql_fastapi_password_upgrade_discards_only_unversioned_rows(
             "20260908_23",
             "20260908_24",
             "20260909_25",
+            "20260918_26",
         ]
 
         with engine.connect() as connection:
@@ -254,6 +255,7 @@ def test_postgresql_normalizes_fastapi_latest_timestamps_without_losing_instants
         assert upgrade_database(postgresql_schema_url)["applied"] == [
             "20260908_24",
             "20260909_25",
+            "20260918_26",
         ]
         columns = {
             (table_name, column["name"]): column["type"]
@@ -753,6 +755,18 @@ def test_postgresql_probe_groups_series_across_years_and_orders_processing(
             },
         ]
     )
+    assert storage.resolve_probe_series_metadata(
+        "green",
+        scope="libraries",
+        metadata=[
+            {
+                "library_id": "series",
+                "series_name": "Serie unica",
+                "series_id": "series-unica",
+                "year": 2025,
+            }
+        ],
+    ) == 3
 
     groups = storage.get_probe_queue_groups("green", scope="libraries")
     processing = storage.get_probe_queue(
@@ -1543,6 +1557,7 @@ def test_postgresql_legacy_upgrade_matches_runtime_contract(postgresql_schema_ur
         "20260908_23",
         "20260908_24",
         "20260909_25",
+        "20260918_26",
     ]
     assert validate_migrations(postgresql_schema_url)["ok"] is True
 
@@ -1765,7 +1780,8 @@ def test_postgresql_fastapi_cleanup_is_atomic_and_prefers_newest_json(
             )
 
         assert upgrade_database(postgresql_schema_url)["applied"] == [
-            "20260909_25"
+            "20260909_25",
+            "20260918_26",
         ]
         with engine.connect() as connection:
             assert connection.execute(
@@ -1864,7 +1880,10 @@ def test_postgresql_fastapi_cleanup_reconciles_renamed_text_binary_and_integer(
                 )
             )
 
-        assert upgrade_database(postgresql_schema_url)["applied"] == ["20260909_25"]
+        assert upgrade_database(postgresql_schema_url)["applied"] == [
+            "20260909_25",
+            "20260918_26",
+        ]
 
         with engine.connect() as connection:
             assert connection.execute(
@@ -1964,7 +1983,10 @@ def test_postgresql_fastapi_cleanup_removes_only_rss_settings_and_empty_storage(
                 )
             )
 
-        assert upgrade_database(postgresql_schema_url)["applied"] == ["20260909_25"]
+        assert upgrade_database(postgresql_schema_url)["applied"] == [
+            "20260909_25",
+            "20260918_26",
+        ]
 
         with engine.connect() as connection:
             tables = set(inspect(connection).get_table_names())
@@ -2022,7 +2044,10 @@ def test_postgresql_fastapi_recent_scan_merge_preserves_timestamp_ordering(
                 )
             )
 
-        assert upgrade_database(postgresql_schema_url)["applied"] == ["20260909_25"]
+        assert upgrade_database(postgresql_schema_url)["applied"] == [
+            "20260909_25",
+            "20260918_26",
+        ]
 
         with engine.connect() as connection:
             rows = connection.execute(
@@ -2274,6 +2299,7 @@ def test_postgresql_probe_blacklist_identity_migration_merges_existing_duplicate
             "20260908_23",
             "20260908_24",
             "20260909_25",
+            "20260918_26",
         ]
 
         with engine.connect() as connection:

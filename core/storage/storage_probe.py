@@ -102,7 +102,10 @@ class StorageProbeMixin(_SessionProvider):
             "library_id": entry.library_id,
             "library_name": entry.library_name,
             "name": entry.name,
+            "title": entry.title,
             "series_name": entry.series_name,
+            "series_id": entry.series_id,
+            "series_year_resolved": bool(entry.series_year_resolved),
             "season_number": entry.season_number,
             "episode_number": entry.episode_number,
             "year": entry.year,
@@ -166,8 +169,14 @@ class StorageProbeMixin(_SessionProvider):
             item["name"] = self._project_probe_text(
                 item.get("name") or "Sconosciuto", PROBE_DESCRIPTION_MAX_LENGTH
             )
+            item["title"] = self._project_probe_text(
+                item.get("title"), PROBE_DESCRIPTION_MAX_LENGTH
+            )
             item["series_name"] = self._project_probe_text(
                 item.get("series_name"), PROBE_DESCRIPTION_MAX_LENGTH
+            )
+            item["series_id"] = optional_emby_identifier(
+                item.get("series_id"), field="series_id"
             )
             item["media_type"] = self._project_probe_text(
                 item.get("media_type"), PROBE_TYPE_MAX_LENGTH
@@ -620,7 +629,12 @@ class StorageProbeMixin(_SessionProvider):
                 "library_id": item_data.get("library_id"),
                 "library_name": item_data.get("library_name"),
                 "name": item_data.get("name", "Sconosciuto"),
+                "title": item_data.get("title"),
                 "series_name": item_data.get("series_name"),
+                "series_id": item_data.get("series_id"),
+                "series_year_resolved": bool(
+                    item_data.get("series_year_resolved", False)
+                ),
                 "season_number": item_data.get("season_number"),
                 "episode_number": item_data.get("episode_number"),
                 "year": item_data.get("year"),
@@ -1027,7 +1041,15 @@ class StorageProbeMixin(_SessionProvider):
                 EmbyProbeQueue.library_id,
                 func.max(EmbyProbeQueue.library_name),
                 series_name,
-                func.min(EmbyProbeQueue.year),
+                func.max(
+                    case(
+                        (
+                            EmbyProbeQueue.series_year_resolved.is_(True),
+                            EmbyProbeQueue.year,
+                        ),
+                        else_=None,
+                    )
+                ),
                 func.max(EmbyProbeQueue.media_type),
                 func.count(EmbyProbeQueue.id),
                 func.min(EmbyProbeQueue.added_at),
@@ -1041,13 +1063,20 @@ class StorageProbeMixin(_SessionProvider):
                 series_name,
             ).all()
 
+            movie_title = func.nullif(
+                func.trim(
+                    func.coalesce(EmbyProbeQueue.title, EmbyProbeQueue.name)
+                ),
+                "",
+            )
+            movie_group_id = func.lower(movie_title)
             movie_query = session.query(
                 EmbyProbeQueue.server_id,
                 EmbyProbeQueue.library_id,
                 func.max(EmbyProbeQueue.library_name),
-                EmbyProbeQueue.item_id,
-                func.max(EmbyProbeQueue.name),
-                func.max(EmbyProbeQueue.year),
+                movie_group_id,
+                func.max(movie_title),
+                EmbyProbeQueue.year,
                 func.max(EmbyProbeQueue.media_type),
                 func.count(EmbyProbeQueue.id),
                 func.min(EmbyProbeQueue.added_at),
@@ -1058,7 +1087,8 @@ class StorageProbeMixin(_SessionProvider):
             movie_rows = movie_query.group_by(
                 EmbyProbeQueue.server_id,
                 EmbyProbeQueue.library_id,
-                EmbyProbeQueue.item_id,
+                movie_group_id,
+                EmbyProbeQueue.year,
             ).all()
 
             groups = [
@@ -1069,8 +1099,9 @@ class StorageProbeMixin(_SessionProvider):
                     "group_type": "series",
                     "group_id": row[3],
                     "title": row[3],
-                    # The earliest known year is presentation metadata only;
-                    # it must not split one series into seasonal groups.
+                    # Only a year resolved from the Emby Series object is
+                    # authoritative. Episode/season years must never drift the
+                    # title while queue rows are consumed.
                     "year": row[4],
                     "media_type": row[5],
                     "file_count": int(row[6] or 0),
@@ -1107,6 +1138,177 @@ class StorageProbeMixin(_SessionProvider):
         finally:
             close_session_safely(session)
 
+    def get_unresolved_probe_series_samples(
+        self,
+        server_id: str,
+        *,
+        scope: Optional[str],
+    ) -> list[Dict[str, Any]]:
+        """Return one queued episode for each series lacking stable metadata."""
+        session = self._get_session()
+        try:
+            series_name = func.nullif(func.trim(EmbyProbeQueue.series_name), "")
+            query = session.query(
+                EmbyProbeQueue.library_id,
+                series_name,
+                func.min(EmbyProbeQueue.item_id),
+            ).filter(
+                EmbyProbeQueue.server_id == server_id,
+                series_name.is_not(None),
+                EmbyProbeQueue.series_year_resolved.is_(False),
+            )
+            query = self._apply_scope_filter(query, EmbyProbeQueue, scope)
+            rows = query.group_by(EmbyProbeQueue.library_id, series_name).all()
+            return [
+                {
+                    "library_id": row[0],
+                    "series_name": row[1],
+                    "item_id": row[2],
+                }
+                for row in rows
+                if row[1] and row[2]
+            ]
+        except SQLAlchemyError as exc:
+            raise StorageError(
+                f"Errore lettura metadati serie Probe irrisolti: {exc}"
+            ) from exc
+        finally:
+            close_session_safely(session)
+
+    def resolve_probe_series_metadata(
+        self,
+        server_id: str,
+        *,
+        scope: Optional[str],
+        metadata: list[Dict[str, Any]],
+    ) -> int:
+        """Apply authoritative series identifiers and premiere years atomically."""
+        session = self._get_session()
+        updated = 0
+        try:
+            for entry in metadata:
+                series_name = str(entry.get("series_name") or "").strip()
+                series_id = optional_emby_identifier(
+                    entry.get("series_id"), field="series_id"
+                )
+                raw_year = entry.get("year")
+                if raw_year is None:
+                    continue
+                try:
+                    premiere_year = int(raw_year)
+                except (TypeError, ValueError):
+                    continue
+                if not series_name or not series_id or not 1800 <= premiere_year <= 9999:
+                    continue
+                query = session.query(EmbyProbeQueue).filter(
+                    EmbyProbeQueue.server_id == server_id,
+                    func.trim(EmbyProbeQueue.series_name) == series_name,
+                )
+                library_id = entry.get("library_id")
+                if library_id is None:
+                    query = query.filter(EmbyProbeQueue.library_id.is_(None))
+                else:
+                    query = query.filter(
+                        EmbyProbeQueue.library_id
+                        == optional_emby_identifier(library_id, field="library_id")
+                    )
+                query = self._apply_scope_filter(query, EmbyProbeQueue, scope)
+                updated += int(
+                    query.update(
+                        {
+                            EmbyProbeQueue.series_id: series_id,
+                            EmbyProbeQueue.year: premiere_year,
+                            EmbyProbeQueue.series_year_resolved: True,
+                        },
+                        synchronize_session=False,
+                    )
+                    or 0
+                )
+            session.commit()
+            return updated
+        except SQLAlchemyError as exc:
+            rollback_session_safely(session)
+            raise StorageError(
+                f"Errore salvataggio metadati serie Probe: {exc}"
+            ) from exc
+        finally:
+            close_session_safely(session)
+
+    def get_unresolved_probe_movie_samples(
+        self,
+        server_id: str,
+        *,
+        scope: Optional[str],
+    ) -> list[Dict[str, Any]]:
+        """Return one row for every movie lacking its canonical Emby title."""
+        session = self._get_session()
+        try:
+            series_name = func.nullif(func.trim(EmbyProbeQueue.series_name), "")
+            query = session.query(
+                EmbyProbeQueue.item_id,
+                func.max(EmbyProbeQueue.library_id),
+            ).filter(
+                EmbyProbeQueue.server_id == server_id,
+                series_name.is_(None),
+                EmbyProbeQueue.title.is_(None),
+            )
+            query = self._apply_scope_filter(query, EmbyProbeQueue, scope)
+            rows = query.group_by(EmbyProbeQueue.item_id).all()
+            return [
+                {"item_id": row[0], "library_id": row[1]}
+                for row in rows
+                if row[0]
+            ]
+        except SQLAlchemyError as exc:
+            raise StorageError(
+                f"Errore lettura titoli film Probe irrisolti: {exc}"
+            ) from exc
+        finally:
+            close_session_safely(session)
+
+    def resolve_probe_movie_titles(
+        self,
+        server_id: str,
+        *,
+        scope: Optional[str],
+        metadata: list[Dict[str, Any]],
+    ) -> int:
+        """Persist canonical movie titles for stable multi-version grouping."""
+        session = self._get_session()
+        updated = 0
+        try:
+            for entry in metadata:
+                item_id = require_emby_identifier(
+                    entry.get("item_id"), field="item_id"
+                )
+                title = self._project_probe_text(
+                    entry.get("title"), PROBE_DESCRIPTION_MAX_LENGTH
+                )
+                if not title:
+                    continue
+                query = session.query(EmbyProbeQueue).filter(
+                    EmbyProbeQueue.server_id == server_id,
+                    EmbyProbeQueue.item_id == item_id,
+                )
+                query = self._apply_scope_filter(query, EmbyProbeQueue, scope)
+                values: Dict[Any, Any] = {EmbyProbeQueue.title: title}
+                raw_year = entry.get("year")
+                if raw_year is not None:
+                    try:
+                        values[EmbyProbeQueue.year] = int(raw_year)
+                    except (TypeError, ValueError):
+                        pass
+                updated += int(
+                    query.update(values, synchronize_session=False) or 0
+                )
+            session.commit()
+            return updated
+        except SQLAlchemyError as exc:
+            rollback_session_safely(session)
+            raise StorageError(f"Errore salvataggio titoli film Probe: {exc}") from exc
+        finally:
+            close_session_safely(session)
+
     def get_probe_queue_group_items(
         self,
         server_id: str,
@@ -1139,10 +1341,27 @@ class StorageProbeMixin(_SessionProvider):
                     EmbyProbeQueue.id,
                 )
             else:
+                movie_title = func.lower(
+                    func.nullif(
+                        func.trim(
+                            func.coalesce(
+                                EmbyProbeQueue.title,
+                                EmbyProbeQueue.name,
+                            )
+                        ),
+                        "",
+                    )
+                )
                 query = query.filter(
                     series_name.is_(None),
-                    EmbyProbeQueue.item_id == group_id,
-                ).order_by(EmbyProbeQueue.name, EmbyProbeQueue.id)
+                    or_(
+                        movie_title == group_id,
+                        EmbyProbeQueue.item_id == group_id,
+                    ),
+                )
+                if year is not None:
+                    query = query.filter(EmbyProbeQueue.year == year)
+                query = query.order_by(EmbyProbeQueue.name, EmbyProbeQueue.id)
 
             return [self._probe_queue_payload(entry) for entry in query.all()]
         except SQLAlchemyError as exc:

@@ -1346,3 +1346,37 @@ stati modificati dati o configurazione del deployment Hetzner.
   e audit npm verdi; due build Docker pulite hanno inventari identici e
   l'immagine candidata ha superato readiness, login e smoke autenticato delle
   17 superfici read-only.
+
+### Follow-up operativo v0.5.10 — identità e presentazione coda Media Probe
+
+- **Anno serie stabile — resolved:** l'anno veniva ricavato dagli episodi
+  ancora in coda e poteva quindi avanzare dalla prima uscita alla stagione in
+  lavorazione. La discovery, i recenti e i retry risolvono ora in batch
+  `SeriesId` e `ProductionYear` dall'oggetto Serie di Emby; la revisione
+  `20260918_26` distingue i dati autorevoli e reidrata le code già esistenti
+  senza svuotarle. Un regressore conserva `12 Monkeys (2015)` dopo la rimozione
+  delle righe della prima stagione.
+- **Versioni dello stesso film — resolved:** il riepilogo raggruppava per
+  `item_id`, che è diverso per edizioni/file distinti. La chiave è ora titolo
+  canonico localizzato + anno + libreria; i file rimangono separati nel
+  dettaglio lazy, ma il film compare una volta con il conteggio complessivo.
+- **Titoli episodio ricorsivi — resolved:** un nome già formattato veniva
+  trattato nuovamente come titolo grezzo, duplicando serie, episodio, titolo e
+  qualità anche nello storico. La coda conserva il titolo Emby originale e lo
+  formatta una sola volta; i record storici già persistiti vengono normalizzati
+  soltanto in presentazione e non sono cancellati.
+- **Ordine e prestazioni — resolved:** serie e film restano alfabetici e gli
+  episodi ordinati per stagione/numero. Il claim ordinato preleva blocchi
+  bounded da 8–32 righe invece di due, riducendo le riordinazioni PostgreSQL
+  senza avvicinarsi alla lease di cinque minuti né cambiare il lavoro MediaInfo.
+- **Superfici analoghe riesaminate:** discovery librerie, discovery recenti,
+  retry, riepilogo/dettaglio lazy, storico, lease/claim e migrazioni SQLite e
+  PostgreSQL. Route, metodi e forma delle risposte restano invariati.
+- **Rischio residuo:** la prima apertura di una coda precedente alla revisione
+  26 esegue una sola reidratazione Emby in batch. Se un server è temporaneamente
+  irraggiungibile, l'anno non viene inventato e il tentativo viene ripetuto alla
+  lettura successiva.
+- **Gate finali:** 2.319 test backend e 83 test PostgreSQL 16 reale passati;
+  279 file/761 test frontend; Ruff, Pyright, ESLint, build, audit Python/npm,
+  Compose, Docker no-cache, smoke autenticato su PostgreSQL esterno e
+  `git diff --check` verdi.

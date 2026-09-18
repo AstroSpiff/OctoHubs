@@ -16,6 +16,11 @@ from .media_policy import (
     load_probe_config,
     normalize_media_policy,
 )
+from .series_metadata import (
+    apply_series_metadata,
+    persist_series_metadata,
+    resolve_series_metadata,
+)
 from .queue_leases import (
     ProbeClaimLost,
     commit_claimed_result,
@@ -933,7 +938,7 @@ class RecentProbeMixin(ProbeManagerProtocol):
                         "SortOrder": "Descending",
                         "Limit": page_size,
                         "StartIndex": start_index,
-                        "Fields": "Path,MediaStreams,RunTimeTicks,MediaSources,ParentId,SeriesName,IndexNumber,ParentIndexNumber,ProductionYear,SeriesProductionYear,Type,DateCreated,Container"
+                        "Fields": "Path,MediaStreams,RunTimeTicks,MediaSources,ParentId,SeriesId,SeriesName,IndexNumber,ParentIndexNumber,ProductionYear,SeriesProductionYear,Type,DateCreated,Container"
                     }
                 )
 
@@ -954,6 +959,14 @@ class RecentProbeMixin(ProbeManagerProtocol):
                             last_log=f"{server_name}: Nessun elemento recente trovato"
                         )
                     break
+                apply_series_metadata(
+                    items,
+                    resolve_series_metadata(
+                        server,
+                        items,
+                        call_emby_api=_call_emby_api,
+                    ),
+                )
 
                 for item in items:
                     if stop_flag.is_set():
@@ -1056,7 +1069,12 @@ class RecentProbeMixin(ProbeManagerProtocol):
                             "library_id": library_id,
                             "library_name": library_name,
                             "name": queue_name,
+                            "title": item_name,
                             "series_name": series_name,
+                            "series_id": item.get("SeriesId"),
+                            "series_year_resolved": bool(
+                                item.get("series_year_resolved")
+                            ),
                             "season_number": season_number,
                             "episode_number": episode_number,
                             "year": year,
@@ -1093,6 +1111,12 @@ class RecentProbeMixin(ProbeManagerProtocol):
                     # Flush batch periodically
                     if len(items_batch) >= batch_size:
                         db.add_to_probe_queue(items_batch)
+                        persist_series_metadata(
+                            db,
+                            server_id,
+                            PROBE_SCOPE_RECENT,
+                            items_batch,
+                        )
                         self._update_status(
                             server_id,
                             "recent_discovery",
@@ -1109,6 +1133,12 @@ class RecentProbeMixin(ProbeManagerProtocol):
             # Flush remaining items (always flush, even if stopped by sliding window)
             if items_batch:
                 db.add_to_probe_queue(items_batch)
+                persist_series_metadata(
+                    db,
+                    server_id,
+                    PROBE_SCOPE_RECENT,
+                    items_batch,
+                )
                 self._update_status(
                     server_id,
                     "recent_discovery",

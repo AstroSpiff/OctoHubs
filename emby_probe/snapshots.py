@@ -11,6 +11,7 @@ from core.log_sanitization import format_exception_for_log
 from core.storage import StorageError
 from core.utils import get_emby_servers, get_nested, json_error
 from emby_probe import get_probe_manager, _format_display_name_from_queue
+from emby_probe.display import normalize_probe_record_name
 
 
 logger = logging.getLogger(__name__)
@@ -598,10 +599,97 @@ def _probe_queue_groups_get_snapshot(server_id: Optional[str], scope: str):
     if scope not in ("libraries", "recent"):
         return json_error("scope Probe non valido", 422)
     try:
-        groups = _ensure_db_backend().get_probe_queue_groups(server_id, scope=scope)
+        backend = _ensure_db_backend()
+        _hydrate_queued_series_years(backend, server_id, scope)
+        groups = backend.get_probe_queue_groups(server_id, scope=scope)
     except StorageError as exc:
         return _probe_internal_error("Lettura riepilogo coda Probe non riuscita", exc)
     return {"success": True, "groups": groups}, 200
+
+
+def _hydrate_queued_series_years(backend: Any, server_id: str, scope: str) -> None:
+    """Repair canonical title metadata on queue rows created before revision 26."""
+    samples_loader = getattr(backend, "get_unresolved_probe_series_samples", None)
+    metadata_writer = getattr(backend, "resolve_probe_series_metadata", None)
+    movie_loader = getattr(backend, "get_unresolved_probe_movie_samples", None)
+    movie_writer = getattr(backend, "resolve_probe_movie_titles", None)
+    loaded_samples = (
+        samples_loader(server_id, scope=scope)
+        if callable(samples_loader) and callable(metadata_writer)
+        else []
+    )
+    loaded_movies = (
+        movie_loader(server_id, scope=scope)
+        if callable(movie_loader) and callable(movie_writer)
+        else []
+    )
+    samples = (
+        [sample for sample in loaded_samples if isinstance(sample, dict)]
+        if isinstance(loaded_samples, list)
+        else []
+    )
+    movies = (
+        [movie for movie in loaded_movies if isinstance(movie, dict)]
+        if isinstance(loaded_movies, list)
+        else []
+    )
+    if not samples and not movies:
+        return
+    _config, servers, config_error = _probe_load_config_servers()
+    if config_error or not isinstance(servers, list):
+        return
+    server, server_error = _probe_select_server(servers, server_id)
+    if server_error or not isinstance(server, dict):
+        return
+    try:
+        from emby_runtime.api_clients import _call_emby_api
+        from emby_probe.series_metadata import (
+            resolve_item_titles,
+            resolve_series_metadata,
+        )
+
+        resolved = resolve_series_metadata(
+            server,
+            samples,
+            call_emby_api=_call_emby_api,
+        )
+        metadata = []
+        for sample in samples:
+            item_id = str(sample.get("item_id") or "").strip()
+            series = resolved.get(item_id)
+            if series is None:
+                continue
+            series_id, year = series
+            metadata.append(
+                {
+                    "library_id": sample.get("library_id"),
+                    "series_name": sample.get("series_name"),
+                    "series_id": series_id,
+                    "year": year,
+                }
+            )
+        if metadata:
+            metadata_writer(server_id, scope=scope, metadata=metadata)
+        resolved_movies = resolve_item_titles(
+            server,
+            movies,
+            call_emby_api=_call_emby_api,
+        )
+        movie_metadata = [
+            {
+                "item_id": item_id,
+                "title": title,
+                "year": year,
+            }
+            for item_id, (title, year) in resolved_movies.items()
+        ]
+        if movie_metadata:
+            movie_writer(server_id, scope=scope, metadata=movie_metadata)
+    except Exception as exc:
+        logger.warning(
+            "Aggiornamento anni serie Probe non riuscito: %s",
+            type(exc).__name__,
+        )
 
 
 def _probe_queue_group_items_get_snapshot(
@@ -699,6 +787,8 @@ def _probe_history_get_snapshot(
         history, has_more, next_offset = _probe_page_payload(
             history, page_limit, page_offset
         )
+        for item in history:
+            item["display_name"] = normalize_probe_record_name(item.get("name"))
     except StorageError as exc:
         return _probe_internal_error("Rimozione coda Probe non riuscita", exc)
     return {

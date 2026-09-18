@@ -18,6 +18,11 @@ from emby_runtime.api_clients import _call_emby_api
 
 from .constants import PROBE_SCOPE_LIBRARIES
 from .display import _format_probe_display_name
+from .series_metadata import (
+    apply_series_metadata,
+    persist_series_metadata,
+    resolve_series_metadata,
+)
 from .utils import _coerce_int_range
 from .recent import RecentProbeMixin
 from .libraries import LibrariesProbeMixin
@@ -412,7 +417,7 @@ class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
             method="GET",
             params={
                 "Ids": item_id,
-                "Fields": "Path,ParentId,SeriesName,IndexNumber,ParentIndexNumber,ProductionYear,SeriesProductionYear,RunTimeTicks,MediaStreams,MediaSources,Type"
+                "Fields": "Path,ParentId,SeriesId,SeriesName,IndexNumber,ParentIndexNumber,ProductionYear,SeriesProductionYear,RunTimeTicks,MediaStreams,MediaSources,Type"
             }
         )
 
@@ -432,6 +437,14 @@ class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
             return False, "File non trovato su Emby (rimosso automaticamente dalla coda/blacklist)"
 
         payload = items[0]
+        apply_series_metadata(
+            [payload],
+            resolve_series_metadata(
+                server,
+                [payload],
+                call_emby_api=_call_emby_api,
+            ),
+        )
 
         # Extract metadata (same mapping as in _discovery_worker)
         item_type = payload.get("Type", "")
@@ -545,7 +558,12 @@ class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
                 "library_id": library_id,
                 "library_name": library_name,
                 "name": queue_name,
+                "title": item_name,
                 "series_name": series_name,
+                "series_id": payload.get("SeriesId"),
+                "series_year_resolved": bool(
+                    payload.get("series_year_resolved")
+                ),
                 "season_number": season_number,
                 "episode_number": episode_number,
                 "year": year,
@@ -569,6 +587,7 @@ class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
                 media_source_id=media_source_id,
                 scope=scope,
             )
+            persist_series_metadata(db, server_id, scope, queue_items)
             display_name = queue_items[0].get("name") or item_name
             return True, f"Item '{display_name}' aggiunto alla coda ({queued} sorgenti)"
         except Exception as exc:

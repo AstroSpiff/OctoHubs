@@ -31,7 +31,7 @@ storage|emby_latest_notification_deliveries|generated_internal|delivery_key:64,s
 storage|emby_latest_progress|generated_internal|state:50
 storage|emby_probe_blacklist|upstream_project|item_id:128,item_name:500,item_type:50,error_type:20,server_id:36,server_name:255,library_id:128,library_name:500,media_source_id:128,scope:20
 storage|emby_probe_history|upstream_project|item_id:128,server_id:36,media_source_id:128,scope:20,name:500,library_name:500,status:20
-storage|emby_probe_queue|upstream_project|item_id:128,server_id:36,media_source_id:128,scope:20,library_id:128,library_name:500,name:500,series_name:500,media_type:50,claim_token:32
+storage|emby_probe_queue|upstream_project|item_id:128,server_id:36,media_source_id:128,scope:20,library_id:128,library_name:500,name:500,title:500,series_name:500,series_id:128,media_type:50,claim_token:32
 storage|emby_probe_recent_scans|upstream_project|server_id:36,library_id:128,server_name:255,event_type:50,status:50
 storage|emby_user_backups|request_reject|server_id:128,user_id:128,username:255,backup_type:50
 storage|emby_user_creation_journal|request_reject|server_id:128,normalized_username:255,username:255,status:32
@@ -115,6 +115,7 @@ _POLICY_OVERRIDES = {
     "storage.emby_probe_queue.server_id": "request_reject",
     "storage.emby_probe_queue.media_source_id": "request_reject",
     "storage.emby_probe_queue.library_id": "request_reject",
+    "storage.emby_probe_queue.series_id": "request_reject",
     "storage.emby_probe_queue.scope": "generated_internal",
     "storage.emby_probe_queue.claim_token": "generated_internal",
     "storage.emby_probe_recent_scans.server_id": "request_reject",

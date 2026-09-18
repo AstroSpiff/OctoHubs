@@ -68,7 +68,7 @@ export function getProbeQueueGroupItems(group: ProbeQueueGroup, scope: ProbeScop
       group_type: group.group_type,
       group_id: group.group_id,
       library_id: group.library_id,
-      year: group.group_type === "series" ? group.year : undefined,
+      year: group.year,
     }),
     { signal },
   );
