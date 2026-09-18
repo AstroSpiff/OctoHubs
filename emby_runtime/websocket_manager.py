@@ -18,6 +18,9 @@ from core.thread_lifecycle import (
 
 logger = logging.getLogger(__name__)
 
+EMBY_WEBSOCKET_PING_INTERVAL_SECONDS = 20
+EMBY_WEBSOCKET_PING_TIMEOUT_SECONDS = 10
+
 
 class EmbyWebSocketLifecycleBusyError(RuntimeError):
     """A previous connection owner did not drain within the update budget."""
@@ -262,7 +265,10 @@ class EmbyWebSocketConnection:
         )
 
         # Run forever (blocking call)
-        self.ws.run_forever()
+        self.ws.run_forever(
+            ping_interval=EMBY_WEBSOCKET_PING_INTERVAL_SECONDS,
+            ping_timeout=EMBY_WEBSOCKET_PING_TIMEOUT_SECONDS,
+        )
 
     def _on_open(self, ws):
         """Called when WebSocket connection is established."""

@@ -17,6 +17,33 @@ class _FakeWebSocket:
         self.closed = True
 
 
+def test_emby_websocket_uses_protocol_heartbeat_for_idle_connections(monkeypatch):
+    run_options = []
+
+    class HeartbeatWebSocket:
+        def __init__(self, _url, **_callbacks):
+            return None
+
+        def run_forever(self, **options):
+            run_options.append(options)
+
+    monkeypatch.setattr(websocket_manager.websocket, "WebSocketApp", HeartbeatWebSocket)
+    connection = EmbyWebSocketConnection(
+        "server-a",
+        "https://example.test",
+        "token",
+        lambda *_args: None,
+    )
+
+    connection._connect()
+
+    assert run_options == [{
+        "ping_interval": websocket_manager.EMBY_WEBSOCKET_PING_INTERVAL_SECONDS,
+        "ping_timeout": websocket_manager.EMBY_WEBSOCKET_PING_TIMEOUT_SECONDS,
+    }]
+    assert run_options[0]["ping_interval"] > run_options[0]["ping_timeout"] > 0
+
+
 def test_global_callbacks_are_additive():
     manager = EmbyWebSocketManager()
     calls = []

@@ -117,7 +117,7 @@ def test_emby_websocket_log_redacts_key_but_connection_uses_original_url(monkeyp
         def __init__(self, url, **_kwargs):
             connected_urls.append(url)
 
-        def run_forever(self):
+        def run_forever(self, **_options):
             return None
 
     monkeypatch.setattr(websocket_manager.websocket, "WebSocketApp", _WebSocket)

@@ -1322,3 +1322,27 @@ successivo affinamento visivo di R44-L-06 e i finding R44-M-08, R44-M-09 e
 R44-L-08 sono successivi a `v0.5.4` e inclusi nel checkpoint seguente. Al
 momento della verifica non era stato eseguito alcun deploy remoto e non erano
 stati modificati dati o configurazione del deployment Hetzner.
+
+### Follow-up operativo v0.5.6 — heartbeat WebSocket Emby
+
+- **Causa:** il client realtime Emby apriva connessioni senza ping di protocollo.
+  Emby 4.9.5 le manteneva, mentre il server beta 4.10.0.13 le chiudeva dopo
+  circa 60 secondi di inattività, causando riconnessioni e possibili finestre
+  senza eventi.
+- **Soluzione:** ogni connessione Emby invia un ping WebSocket ogni 20 secondi
+  e considera scaduta la risposta dopo 10 secondi; la riconnessione esistente
+  resta il fallback e non sono cambiati route, payload o configurazioni server.
+- **Evidenza:** dal container di produzione l'API e l'handshake di Blue erano
+  validi; senza heartbeat la chiusura si ripeteva ogni minuto, mentre il canary
+  con heartbeat è rimasto connesso oltre 70 secondi senza errori. Un regressore
+  verifica i parametri e il loro vincolo temporale; sono state riesaminate tutte
+  le connessioni persistenti gestite dal manager, che condividono `_connect`.
+- **Rischio residuo:** una mancata risposta al ping provoca intenzionalmente il
+  reconnect già esistente. Il traffico aggiunto è un frame leggero ogni 20
+  secondi per server.
+- **Gate finali:** 54 regressori mirati, 2.312 test backend e 82 test PostgreSQL
+  reale passati; Ruff, Pyright, complessità, contratto API, audit Python,
+  Compose e `git diff --check` verdi; 278 file/758 test frontend, ESLint, build
+  e audit npm verdi; due build Docker pulite hanno inventari identici e
+  l'immagine candidata ha superato readiness, login e smoke autenticato delle
+  17 superfici read-only.
