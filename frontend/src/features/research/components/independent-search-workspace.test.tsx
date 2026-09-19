@@ -13,11 +13,17 @@ import { StreamingSearchPartialError } from "@/features/research/use-streaming-s
 const mocks = vi.hoisted(() => ({
   onRepeat: null as null | ((input: Record<string, unknown>) => Promise<void>),
   start: vi.fn(),
+  error: "",
   warning: "",
 }));
 
 vi.mock("@/features/research/components/independent-search-form", () => ({
-  IndependentSearchForm: () => <div>CANARY_SEARCH_FORM</div>,
+  IndependentSearchForm: (props: { searchNotice?: { message: string } | null }) => (
+    <div>
+      CANARY_SEARCH_FORM
+      {props.searchNotice?.message ? <span>{props.searchNotice.message}</span> : null}
+    </div>
+  ),
 }));
 vi.mock("@/features/research/components/manual-search-history", () => ({
   ManualSearchHistory: (props: {
@@ -34,7 +40,7 @@ vi.mock("@/features/research/components/search-results", () => ({
 vi.mock("@/features/research/use-streaming-search", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/features/research/use-streaming-search")>()),
   useStreamingSearch: () => ({
-    error: null,
+    error: mocks.error,
     progress: null,
     results: [],
     running: false,
@@ -51,6 +57,7 @@ describe("IndependentSearchWorkspace capabilities", () => {
   afterEach(() => {
     mocks.onRepeat = null;
     mocks.start.mockReset();
+    mocks.error = "";
     mocks.warning = "";
     document.body.replaceChildren();
     globalThis.IS_REACT_ACT_ENVIRONMENT = undefined;
@@ -100,5 +107,16 @@ describe("IndependentSearchWorkspace capabilities", () => {
     expect(container.textContent).toContain("Ricerca completata parzialmente");
     expect(container.querySelector("[data-refresh-token='1']")).not.toBeNull();
     act(() => root.unmount());
+  });
+
+  it("renders a streaming failure exactly once in the form feedback slot", () => {
+    mocks.error = "Nessun indexer ha completato la ricerca";
+    const markup = renderToStaticMarkup(
+      <WorkspaceCapabilitiesProvider canMutate>
+        <IndependentSearchWorkspace overview={overview} />
+      </WorkspaceCapabilitiesProvider>,
+    );
+
+    expect(markup.match(/Nessun indexer ha completato la ricerca/g)).toHaveLength(1);
   });
 });

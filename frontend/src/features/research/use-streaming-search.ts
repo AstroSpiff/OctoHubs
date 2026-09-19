@@ -19,10 +19,7 @@ type ActiveSearchRun = {
   controller: AbortController;
   socket: WebSocket | null;
   settled: boolean;
-  timedOut: boolean;
   cancellationReason: SearchCancellationReason | null;
-  timeoutId?: number;
-  onTimeout?: () => void;
   resolve?: () => void;
   reject?: (reason: Error) => void;
 };
@@ -52,8 +49,6 @@ const initialState: StreamingSearchState = {
   warning: "",
   completedAt: null,
 };
-
-const streamingSearchClientTimeoutMs = 195_000;
 
 function useStreamingSearch() {
   const generationRef = useRef(0);
@@ -85,16 +80,10 @@ function useStreamingSearch() {
       controller: new AbortController(),
       socket: null,
       settled: false,
-      timedOut: false,
       cancellationReason: null,
     };
     generationRef.current = run.generation;
     activeRunRef.current = run;
-    run.timeoutId = window.setTimeout(() => {
-      run.timedOut = true;
-      run.controller.abort();
-      run.onTimeout?.();
-    }, streamingSearchClientTimeoutMs);
     setState({ ...initialState, running: true });
 
     const isCurrentRun = () => activeRunRef.current === run && generationRef.current === run.generation;
@@ -111,13 +100,10 @@ function useStreamingSearch() {
       if (run.cancellationReason === "superseded" || !isCurrentRun()) {
         throw new StreamingSearchSupersededError();
       }
-      const message = run.timedOut
-        ? "La ricerca streaming ha superato il tempo massimo"
-        : reason instanceof Error
-          ? reason.message
-          : "Impossibile preparare la ricerca streaming";
+      const message = reason instanceof Error
+        ? reason.message
+        : "Impossibile preparare la ricerca streaming";
       run.settled = true;
-      clearRunTimeout(run);
       activeRunRef.current = null;
       setState((current) => (
         isLatestGeneration() ? { ...current, running: false, error: message } : current
@@ -140,7 +126,6 @@ function useStreamingSearch() {
       function fail(message: string) {
         if (run.settled || !isCurrentRun()) return;
         run.settled = true;
-        clearRunTimeout(run);
         activeRunRef.current = null;
         socket.close();
         setState((current) => (
@@ -148,8 +133,6 @@ function useStreamingSearch() {
         ));
         reject(new Error(message));
       }
-
-      run.onTimeout = () => fail("La ricerca streaming ha superato il tempo massimo");
 
       socket.addEventListener("open", () => {
         if (run.settled || !isCurrentRun()) return;
@@ -214,7 +197,6 @@ function useStreamingSearch() {
           }
           if (run.settled || !isCurrentRun()) return;
           run.settled = true;
-          clearRunTimeout(run);
           activeRunRef.current = null;
           const filtered = Array.isArray(message.filtered_results) ? message.filtered_results as SearchResult[] : null;
           setState((current) => (
@@ -261,19 +243,11 @@ function useStreamingSearch() {
 function cancelRun(run: ActiveSearchRun | null, reason: SearchCancellationReason) {
   if (!run || run.settled) return;
   run.settled = true;
-  clearRunTimeout(run);
   run.cancellationReason = reason;
   run.controller.abort();
   run.socket?.close();
   if (reason === "superseded") run.reject?.(new StreamingSearchSupersededError());
   else run.resolve?.();
-}
-
-function clearRunTimeout(run: ActiveSearchRun) {
-  if (run.timeoutId !== undefined) {
-    window.clearTimeout(run.timeoutId);
-    run.timeoutId = undefined;
-  }
 }
 
 function toWebSocketUrl(path: string) {
@@ -284,6 +258,5 @@ function toWebSocketUrl(path: string) {
 export {
   StreamingSearchPartialError,
   StreamingSearchSupersededError,
-  streamingSearchClientTimeoutMs,
   useStreamingSearch,
 };

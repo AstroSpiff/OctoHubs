@@ -14,7 +14,6 @@ from pydantic import ValidationError
 from starlette.websockets import WebSocketState
 
 from realtime.routes import init_realtime_routes, websocket_search_endpoint
-from search import outbound_execution, websocket as search_websocket
 from search.outbound_execution import create_search_semaphore, run_outbound_search
 from search.routes import init_search_routes, start_search_stream
 from search.state import (
@@ -251,22 +250,26 @@ async def test_valid_socket_search_is_parsed_and_session_is_cleaned_up():
 
 
 @pytest.mark.anyio
-async def test_whole_stream_timeout_returns_error_and_cleans_up(monkeypatch):
+async def test_whole_stream_waits_for_terminal_provider_outcome(monkeypatch):
     session_id = create_search_session(10)
     init_realtime_routes(lambda _connection: 10)
     websocket = _WebSocket([_start_frame()])
+    release = asyncio.Event()
 
-    async def never_finishes(**_kwargs):
-        await asyncio.sleep(1)
+    async def delayed_search(**_kwargs):
+        await release.wait()
+        return {"status": "complete"}
 
-    monkeypatch.setattr(search_websocket, "SEARCH_STREAM_TIMEOUT_SECONDS", 0.01)
     with patch("core.config_manager.load_config", return_value=({"configured": True}, True)), patch(
         "search.streaming.search_streaming_parallel",
-        side_effect=never_finishes,
+        side_effect=delayed_search,
     ):
-        await websocket_search_endpoint(websocket, session_id)
+        handler = asyncio.create_task(websocket_search_endpoint(websocket, session_id))
+        await asyncio.sleep(0.02)
+        assert handler.done() is False
+        release.set()
+        await asyncio.wait_for(handler, 0.5)
 
-    assert websocket.sent[-1] == {"type": "error", "message": "Tempo massimo della ricerca superato"}
     assert search_session_registry.snapshot() == {}
 
 
@@ -326,21 +329,29 @@ async def test_outbound_search_concurrency_is_bounded_per_stream():
 
 
 @pytest.mark.anyio
-async def test_each_outbound_search_has_a_timeout(monkeypatch):
-    monkeypatch.setattr(outbound_execution, "SEARCH_OUTBOUND_TIMEOUT_SECONDS", 0.01)
+async def test_outbound_search_waits_for_provider_completion():
+    started = threading.Event()
+    release = threading.Event()
 
-    def slow_provider(_query, _media_type, _config):
-        time.sleep(0.05)
-        return []
+    def delayed_provider(_query, _media_type, _config):
+        started.set()
+        release.wait(1)
+        return ["completed"]
 
-    with pytest.raises(TimeoutError):
-        await run_outbound_search(
+    task = asyncio.create_task(
+        run_outbound_search(
             create_search_semaphore(),
-            slow_provider,
+            delayed_provider,
             "query",
             "movie",
             {},
         )
+    )
+    assert await asyncio.to_thread(started.wait, 0.5)
+    await asyncio.sleep(0.02)
+    assert task.done() is False
+    release.set()
+    assert await asyncio.wait_for(task, 0.5) == ["completed"]
 
 
 @pytest.mark.anyio

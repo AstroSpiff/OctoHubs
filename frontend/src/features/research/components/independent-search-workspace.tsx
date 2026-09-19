@@ -53,21 +53,18 @@ function IndependentSearchWorkspace({
           overview={overview}
           initialSearch={restoredSearch || initialSearch}
           searching={streaming.running}
+          searchNotice={
+            streaming.error
+              ? { message: streaming.error, tone: "error" }
+              : streaming.warning
+                ? { message: streaming.warning, tone: "warning" }
+                : null
+          }
           onCancel={streaming.cancel}
           onSearchStart={() => setHistoryResults(null)}
           onSearch={runSearch}
         />
       </WriteAction>
-      {streaming.error ? (
-        <div className="inline-alert inline-alert--error" role="alert">
-          {streaming.error}
-        </div>
-      ) : null}
-      {streaming.warning ? (
-        <div className="inline-alert inline-alert--warning" role="status">
-          {streaming.warning}
-        </div>
-      ) : null}
       <SearchResults
         results={results}
         searching={streaming.running}

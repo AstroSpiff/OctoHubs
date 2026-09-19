@@ -185,6 +185,28 @@ def read_bounded_json_response(
     return _decode_json_bytes(raw, allow_empty=allow_empty)
 
 
+def read_complete_json_response(
+    response: Any,
+    *,
+    require_success: bool = True,
+) -> Any:
+    """Decode a complete JSON response when provider cardinality is authoritative."""
+    try:
+        _raise_for_status(response, required=require_success)
+        _validate_content_type(response)
+        json_reader = getattr(response, "json", None)
+        if not callable(json_reader):
+            raise UpstreamResponseError("Risposta JSON upstream non valida")
+        try:
+            return json_reader()
+        except requests.RequestException:
+            raise
+        except (RecursionError, TypeError, ValueError) as exc:
+            raise UpstreamResponseError("Risposta JSON upstream non valida") from exc
+    finally:
+        close_response_safely(response)
+
+
 def _decode_json_bytes(raw: bytes, *, allow_empty: bool) -> Any:
     if not raw and allow_empty:
         return {}

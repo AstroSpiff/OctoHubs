@@ -8,11 +8,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from functools import partial
 from typing import Any, Callable
 
-from search.stream_limits import (
-    MAX_CONCURRENT_OUTBOUND_SEARCHES,
-    MAX_GLOBAL_OUTBOUND_SEARCHES,
-    SEARCH_OUTBOUND_TIMEOUT_SECONDS,
-)
+from search.stream_limits import MAX_CONCURRENT_OUTBOUND_SEARCHES, MAX_GLOBAL_OUTBOUND_SEARCHES
 
 
 _SEARCH_EXECUTOR_LOCK = threading.Lock()
@@ -104,4 +100,4 @@ async def run_outbound_search(
             partial(search_func, query, media_type, config),
         )
         future = asyncio.wrap_future(concurrent_future)
-        return await asyncio.wait_for(future, timeout=SEARCH_OUTBOUND_TIMEOUT_SECONDS)
+        return await future

@@ -13,13 +13,10 @@ from search.provider_outcomes import (
     ProviderSearchError,
     ProviderSearchResults,
     bounded_number,
-    bounded_provider_rows,
+    provider_rows,
     bounded_text,
-    load_bounded_json,
+    load_provider_json,
 )
-
-
-INDEXER_REQUEST_TIMEOUT_SECONDS = 25
 
 
 def _download_log_value(value):
@@ -45,7 +42,6 @@ def search_prowlarr(query, media_type, config):
             headers=headers,
             params=params,
             allow_redirects=False,
-            timeout=INDEXER_REQUEST_TIMEOUT_SECONDS,
             stream=True,
         )
         if response_is_redirect(response):
@@ -53,10 +49,10 @@ def search_prowlarr(query, media_type, config):
         response.raise_for_status()
         elapsed = time.perf_counter() - start_time
         print(f"      -> Risposta Prowlarr in {elapsed:.1f}s (status {response.status_code})")
-        data = load_bounded_json(response, provider="Prowlarr")
+        data = load_provider_json(response, provider="Prowlarr")
         if not isinstance(data, list):
             raise ProviderSearchError("Risposta inattesa da Prowlarr")
-        rows, truncated = bounded_provider_rows(data, provider="Prowlarr")
+        rows = provider_rows(data, provider="Prowlarr")
 
         # Normalizza i risultati per assicurare mapping corretto dei campi
         normalized = []
@@ -162,7 +158,7 @@ def search_prowlarr(query, media_type, config):
                 print(f"         web: {_info_log_value(result_dict['web'])}")
 
             normalized.append(result_dict)
-        return ProviderSearchResults(normalized, provider="prowlarr", truncated=truncated)
+        return ProviderSearchResults(normalized, provider="prowlarr")
     except requests.exceptions.RequestException as exc:
         print(f"   -> Impossibile contattare Prowlarr: {sanitize_diagnostic_text(exc)}")
         raise ProviderSearchError("Prowlarr non disponibile") from exc
@@ -186,8 +182,6 @@ def search_jackett(query, media_type, config):
     params = [
         ("apikey", config["JACKETT_API_KEY"]),
         ("Query", query),
-        ("Limit", 100),
-        ("Offset", 0)
     ]
     for cat in categories:
         params.append(("Category[]", cat))
@@ -198,7 +192,6 @@ def search_jackett(query, media_type, config):
             endpoint,
             params=params,
             allow_redirects=False,
-            timeout=INDEXER_REQUEST_TIMEOUT_SECONDS,
             stream=True,
         )
         if response_is_redirect(response):
@@ -206,11 +199,11 @@ def search_jackett(query, media_type, config):
         response.raise_for_status()
         elapsed = time.perf_counter() - start_time
         print(f"      -> Risposta Jackett in {elapsed:.1f}s (status {response.status_code})")
-        payload = load_bounded_json(response, provider="Jackett")
+        payload = load_provider_json(response, provider="Jackett")
         results = payload.get("Results") if isinstance(payload, dict) else None
         if not isinstance(results, list):
             raise ProviderSearchError("Risposta inattesa da Jackett")
-        rows, truncated = bounded_provider_rows(results, provider="Jackett")
+        rows = provider_rows(results, provider="Jackett")
         normalized = []
         for idx, item in enumerate(rows):
             title = bounded_text(
@@ -304,7 +297,7 @@ def search_jackett(query, media_type, config):
                 print(f"         web: {_info_log_value(result_dict['web'])}")
 
             normalized.append(result_dict)
-        return ProviderSearchResults(normalized, provider="jackett", truncated=truncated)
+        return ProviderSearchResults(normalized, provider="jackett")
     except requests.exceptions.RequestException as exc:
         print(f"   -> Impossibile contattare Jackett: {sanitize_diagnostic_text(exc)}")
         raise ProviderSearchError("Jackett non disponibile") from exc

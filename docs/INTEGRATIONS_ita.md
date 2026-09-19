@@ -42,6 +42,10 @@ Passi manuali:
 - Aggiungi almeno un indexer in Prowlarr.
 - Verifica API key e base URL.
 
+Le ricerche restano in ascolto finché Prowlarr restituisce risultati o un
+errore. OctoHubs non applica una scadenza propria e non tronca il numero di
+risultati ricevuti; l'utente può comunque annullare esplicitamente la ricerca.
+
 ## Jackett
 Provider di ricerca alternativo.
 

@@ -34,6 +34,7 @@ type IndependentSearchFormProps = {
   overview: ResearchOverview;
   initialSearch?: ManualSearchQuery | StreamingSearchInput | null;
   searching: boolean;
+  searchNotice?: ResearchNotice | null;
   onSearch: (input: {
     query: string;
     mediaType: ResearchMediaType;
@@ -50,6 +51,7 @@ function IndependentSearchForm({
   overview,
   initialSearch,
   searching,
+  searchNotice,
   onSearch,
   onSearchStart,
   onCancel,
@@ -151,6 +153,10 @@ function IndependentSearchForm({
     }
     setNotice(null);
   }, [initialSearch]);
+
+  useEffect(() => {
+    if (searching) setNotice(null);
+  }, [searching]);
 
   function selectTitle(title: TmdbSearchResult) {
     jellyseerrRequestGenerationRef.current += 1;
@@ -276,6 +282,7 @@ function IndependentSearchForm({
       tvDetails.isError ||
       availableSeasons.length === 0 ||
       seasons.length === 0);
+  const visibleNotice = searchNotice || notice;
   return (
     <section
       className="research-card"
@@ -407,12 +414,12 @@ function IndependentSearchForm({
             tvOptions={overview.tv_sort_options}
           />
         ) : null}
-        {notice ? (
+        {visibleNotice ? (
           <div
-            className={`inline-alert inline-alert--${notice.tone}`}
-            role={notice.tone === "error" ? "alert" : "status"}
+            className={`inline-alert inline-alert--${visibleNotice.tone}`}
+            role={visibleNotice.tone === "error" ? "alert" : "status"}
           >
-            {notice.message}
+            {visibleNotice.message}
           </div>
         ) : null}
         <footer className="research-card-actions">

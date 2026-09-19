@@ -1842,3 +1842,47 @@ stati modificati dati o configurazione del deployment Hetzner.
   Ruff, baseline complessità, Pyright, contratto API strict, ESLint, build
   TypeScript/Vite, audit Python/npm, Compose base/secrets/admin-bootstrap,
   build Docker e canary origine nell'immagine, `git diff --check` verdi.
+
+### Follow-up operativo post-v0.5.23 — SEARCH-UPSTREAM-AUTHORITY-01
+
+- **Baseline:** `9195eaee0b6f3e00dbe0d9db059130b5935d39c3` (`v0.5.23`),
+  worktree pulito prima dell'intervento.
+- **Causa — resolved (famiglia: autorità terminale dell'indexer):** la ricerca
+  Prowlarr era soggetta a quattro scadenze indipendenti — trasporto provider,
+  esecutore, handler WebSocket e client browser — per cui OctoHubs poteva
+  dichiarare Prowlarr non disponibile prima che l'API restituisse il proprio
+  esito. Tre ulteriori cap limitavano risposta provider, aggregazione manuale e
+  aggregazione automatica a 500 risultati; Jackett riceveva inoltre `Limit=100`.
+  Lo stesso errore terminale veniva infine renderizzato sia dal form sia dal
+  workspace React.
+- **Soluzione:** il percorso di ricerca non applica più scadenze proprie:
+  attende l'esito dell'indexer e conserva l'annullamento esplicito del client.
+  Le risposte indexer usano un solo lettore JSON completo canonico, tutti i
+  record vengono ancora validati e deduplicati, ma nessuna superficie tronca
+  la cardinalità. Jackett non riceve più un limite artificiale. Il feedback
+  streaming viene proiettato nell'unico slot del form, incluso quando una
+  ricerca viene ripetuta dallo storico, eliminando il doppio avviso.
+- **Regressori, canary e superfici analoghe:** coperti provider lento che resta
+  pendente fino all'esito, richiesta streaming senza deadline, 601 risultati
+  Prowlarr conservati, aggregazioni manuale/automatica complete, dieci risultati
+  streaming attraverso due varianti, singolo rendering dell'errore e
+  cancellazione esplicita. Riesaminati ricerca indipendente, ricerca HTTP
+  manuale, scansioni automatiche, Prowlarr, Jackett, storico e terminale
+  WebSocket. I limiti sulle query generate, sui singoli campi non validi e sulla
+  concorrenza interna restano invariati perché non riducono i risultati.
+- **Rischio residuo:** per decisione operativa esplicita, un indexer che non
+  restituisce né risposta né errore mantiene la propria ricerca in ascolto;
+  l'operatore può annullarla dal client. Una risposta indexer eccezionalmente
+  grande viene conservata integralmente e consuma memoria in proporzione alla
+  cardinalità, coerentemente con la decisione di non troncare i risultati. I
+  limiti interni di concorrenza impediscono invece che una singola ricerca
+  generi fan-out illimitato.
+- **Gate finali:** regressori mirati backend 65/65 e frontend 3 file/21 test;
+  backend 2350 passed, 78 skipped e 34 subtests passed; PostgreSQL 16 reale
+  83 passed; frontend 284 file/799 test; Ruff, baseline complessità, Pyright,
+  contratto API strict, ESLint, build TypeScript/Vite, audit Python/npm,
+  Compose base/secrets/admin-bootstrap, build Docker riproducibile, smoke
+  autenticato con PostgreSQL effimero, verifica utente non-root e
+  `git diff --check` verdi. Il primo tentativo di smoke senza PostgreSQL locale
+  attivo è stato correttamente rifiutato dalla readiness; il rerun con il
+  database previsto dal gate è passato.

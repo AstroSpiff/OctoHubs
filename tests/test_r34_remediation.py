@@ -6,6 +6,7 @@ from concurrent.futures import Future
 import importlib.util
 from pathlib import Path
 import threading
+import time
 
 import pytest
 from pydantic import ValidationError
@@ -82,6 +83,8 @@ def test_automatic_search_respects_global_outbound_concurrency(monkeypatch):
     from search.stream_limits import MAX_GLOBAL_OUTBOUND_SEARCHES
     from services import requests_processor
 
+    monkeypatch.setattr(requests_processor, "search_prowlarr", lambda *_args: [])
+
     release = threading.Event()
     all_started = threading.Event()
     lock = threading.Lock()
@@ -106,27 +109,40 @@ def test_automatic_search_respects_global_outbound_concurrency(monkeypatch):
         for _ in range(MAX_GLOBAL_OUTBOUND_SEARCHES)
     ]
     assert all_started.wait(1)
-    monkeypatch.setattr(requests_processor, "SEARCH_OUTBOUND_TIMEOUT_SECONDS", 0.02)
-    try:
-        with pytest.raises(
-            requests_processor.ProviderSearchError,
-            match="Nessun indexer",
-        ):
-            requests_processor.search_indexers(
-                "query",
-                "movie",
-                {
-                    "PROWLARR_URL": "https://indexer.test",
-                    "PROWLARR_API_KEY": "configured",
-                },
+    result: list[object] = []
+    failure: list[BaseException] = []
+
+    def run_queued_search():
+        try:
+            result.extend(
+                requests_processor.search_indexers(
+                    "query",
+                    "movie",
+                    {
+                        "PROWLARR_URL": "https://indexer.test",
+                        "PROWLARR_API_KEY": "configured",
+                    },
+                )
             )
+        except BaseException as exc:
+            failure.append(exc)
+
+    queued_search = threading.Thread(target=run_queued_search)
+    try:
+        queued_search.start()
+        time.sleep(0.03)
+        assert queued_search.is_alive() is True
         assert peak == MAX_GLOBAL_OUTBOUND_SEARCHES
     finally:
         release.set()
         for future in blockers:
             future.result(timeout=1)
+        queued_search.join(timeout=1)
         outbound_execution.shutdown_search_executor(timeout_seconds=1)
         outbound_execution.initialize_search_executor()
+    assert queued_search.is_alive() is False
+    assert failure == []
+    assert result == []
 
 
 @pytest.mark.parametrize("invalid", [{"nested": "title"}, ["title"], 42, True])
@@ -227,20 +243,19 @@ def test_canonical_provider_contract_rejects_every_malformed_field(field, invali
         validate_provider_results([row], provider="provider")
 
 
-def test_canonical_provider_contract_bounds_rows_and_text():
+def test_canonical_provider_contract_preserves_all_rows_and_bounds_text():
     from search.provider_outcomes import (
         MAX_INDEXER_FIELD_CHARS,
-        MAX_INDEXER_RESULTS,
         validate_provider_results,
     )
 
     rows = [
         {"title": "x" * 800, "indexer": "p", "guid": "g" * 8_000}
-        for _index in range(MAX_INDEXER_RESULTS + 1)
+        for _index in range(601)
     ]
     validated = validate_provider_results(rows, provider="provider")
-    assert len(validated) == MAX_INDEXER_RESULTS
-    assert validated.truncated is True
+    assert len(validated) == 601
+    assert validated.truncated is False
     assert len(validated[0]["title"]) == 500
     assert len(validated[0]["guid"]) == MAX_INDEXER_FIELD_CHARS
 

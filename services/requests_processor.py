@@ -19,11 +19,9 @@ from emby_runtime.api_clients import (
 )
 from search.indexers import _should_use_jackett, _should_use_prowlarr
 from search.outbound_execution import submit_outbound_search
-from search.stream_limits import SEARCH_OUTBOUND_TIMEOUT_SECONDS
 from services.request_scan_pipeline import run_request_scan
 from search.provider_outcomes import (
     AggregatedSearchResults,
-    MAX_AGGREGATED_SEARCH_RESULTS,
     ProviderSearchError,
     provider_results_truncated,
     validate_provider_results,
@@ -71,15 +69,7 @@ def _collect_automatic_searches(
     aggregated: list[dict[str, Any]] = []
     completed = 0
     truncated = False
-    done, pending = wait(
-        tuple(future_to_provider),
-        timeout=SEARCH_OUTBOUND_TIMEOUT_SECONDS,
-    )
-    for future in pending:
-        future.cancel()
-        provider_name = future_to_provider[future]
-        warnings.append(f"Timeout ricerca {provider_name}")
-        logger.warning("Timeout ricerca automatica %s", provider_name)
+    done, _pending = wait(tuple(future_to_provider))
     for future in done:
         provider_name = future_to_provider[future]
         try:
@@ -87,9 +77,7 @@ def _collect_automatic_searches(
                 future.result(), provider=provider_name
             )
             truncated = truncated or provider_results_truncated(results)
-            remaining = MAX_AGGREGATED_SEARCH_RESULTS - len(aggregated)
-            aggregated.extend(results[:remaining])
-            truncated = truncated or len(results) > remaining
+            aggregated.extend(results)
             completed += 1
         except Exception as exc:
             warnings.append(f"{provider_name} non disponibile")
@@ -168,10 +156,6 @@ def execute_search_with_variants(
             key = _result_key(result)
             if key in seen_keys:
                 continue
-            if len(collected) >= MAX_AGGREGATED_SEARCH_RESULTS:
-                aggregate_truncated = True
-                attempts[-1]["truncated"] = True
-                break
             collected.append(result)
             seen_keys.add(key)
 

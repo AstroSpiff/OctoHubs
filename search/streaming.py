@@ -125,10 +125,9 @@ async def search_streaming_parallel(
     )
     from search.library_index import _load_emby_library_title_index
     from search.provider_outcomes import (
-        MAX_AGGREGATED_SEARCH_RESULTS,
-    provider_results_truncated,
-    validate_provider_results,
-)
+        provider_results_truncated,
+        validate_provider_results,
+    )
     from search.rules import _compose_request_search_rules, _get_request_rule
     from search.outbound_execution import create_search_semaphore, run_outbound_search
     from search.stream_limits import (
@@ -419,9 +418,6 @@ async def search_streaming_parallel(
                     result["normalized_title"] = normalized_title
 
                     result_key = build_dedupe_key(result)
-                    if len(all_results) >= MAX_AGGREGATED_SEARCH_RESULTS:
-                        global_truncated = True
-                        continue
                     all_results.append(result)
                     if result_key not in seen_results:
                         seen_results.add(result_key)
@@ -559,7 +555,6 @@ async def search_streaming_parallel(
         return merge_duplicate_results(sorted_results)
 
     all_results = await asyncio.to_thread(sort_and_merge_results)
-    all_results = all_results[:MAX_AGGREGATED_SEARCH_RESULTS]
     print(f"[STREAM] Dopo merge duplicati: {len(all_results)} risultati unici")
 
     # Debug: stampa il primo risultato dopo merge
@@ -687,10 +682,10 @@ async def search_streaming_parallel(
     }
     if final_message["status"] == "partial":
         final_message["message"] = (
-            "Ricerca completata parzialmente; verifica indexer, limiti e storico"
+            "Ricerca completata parzialmente; verifica indexer e storico"
         )
-    # Preserve the established terminal contract; hard caps make this
-    # compatibility copy deterministic and bounded.
+    # Preserve the established terminal contract with the complete deduplicated
+    # result set returned by the selected indexers.
     final_message["filtered_results"] = protect_download_references(
         all_results,
         int(owner_id),

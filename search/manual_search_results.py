@@ -17,10 +17,8 @@ from search.library_index import _load_emby_library_title_index
 from search.parsing import _extract_season_hint_from_title, _extract_year_from_title
 from search.outbound_execution import submit_outbound_search
 from search.query_safety import normalize_bounded_search_query
-from search.stream_limits import SEARCH_OUTBOUND_TIMEOUT_SECONDS
 from search.provider_outcomes import (
     AggregatedSearchResults,
-    MAX_AGGREGATED_SEARCH_RESULTS,
     ProviderSearchError,
     provider_results_truncated,
     validate_provider_results,
@@ -55,10 +53,9 @@ def run_manual_searches(query_variants, media_type, selected_indexers, config):
             )
             attempted += len(tasks)
             collected, completed, was_truncated = _collect_provider_results(tasks, warnings)
-            remaining = MAX_AGGREGATED_SEARCH_RESULTS - len(raw_results)
-            raw_results.extend(collected[:remaining])
+            raw_results.extend(collected)
             succeeded += completed
-            truncated = truncated or was_truncated or len(collected) > remaining
+            truncated = truncated or was_truncated
     if attempted and succeeded == 0:
         raise ProviderSearchError("Nessun indexer ha completato la ricerca")
     if truncated:
@@ -107,17 +104,7 @@ def _collect_provider_results(tasks, warnings):
             )
     if not future_to_provider:
         return collected, completed, truncated
-    done, pending = wait(
-        tuple(future_to_provider),
-        timeout=SEARCH_OUTBOUND_TIMEOUT_SECONDS,
-    )
-    for future in pending:
-        future.cancel()
-        _append_unique(warnings, f"Timeout ricerca {future_to_provider[future]}")
-        logger.warning(
-            "Timeout ricerca manuale %s",
-            future_to_provider[future],
-        )
+    done, _pending = wait(tuple(future_to_provider))
     for future in done:
         provider_name = future_to_provider[future]
         try:

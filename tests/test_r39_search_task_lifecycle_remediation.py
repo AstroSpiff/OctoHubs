@@ -319,7 +319,7 @@ async def test_search_authorization_error_drains_blocked_search(monkeypatch) -> 
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("outcome", ["complete", "timeout", "disconnect"])
+@pytest.mark.parametrize("outcome", ["complete", "disconnect"])
 async def test_search_terminal_paths_leave_no_child_tasks(monkeypatch, outcome: str) -> None:
     from search import streaming, websocket as search_websocket
     from search.stream_limits import SearchClientDisconnected
@@ -329,8 +329,6 @@ async def test_search_terminal_paths_leave_no_child_tasks(monkeypatch, outcome: 
     _prepare_search_handler(monkeypatch, finished=finished)
 
     async def search(**_kwargs):
-        if outcome == "timeout":
-            await asyncio.Event().wait()
         if outcome == "disconnect":
             raise SearchClientDisconnected
         return {"status": "complete"}
@@ -339,9 +337,6 @@ async def test_search_terminal_paths_leave_no_child_tasks(monkeypatch, outcome: 
         return 42
 
     monkeypatch.setattr(streaming, "search_streaming_parallel", search)
-    if outcome == "timeout":
-        monkeypatch.setattr(search_websocket, "SEARCH_STREAM_TIMEOUT_SECONDS", 0.01)
-
     await asyncio.wait_for(
         search_websocket.handle_search_websocket(_SearchWebSocket(), session_id, authorize),
         0.5,

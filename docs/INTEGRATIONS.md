@@ -40,6 +40,10 @@ Manual steps:
 - Add at least one indexer in Prowlarr.
 - Verify the API key and base URL.
 
+Searches keep listening until Prowlarr returns results or an error. OctoHubs
+does not impose its own deadline or truncate the number of received results;
+the user can still cancel a search explicitly.
+
 ## Jackett
 Alternative search provider.
 

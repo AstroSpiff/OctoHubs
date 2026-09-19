@@ -8,7 +8,6 @@ import { createStreamingSearch } from "@/features/research/api";
 import { SearchResultTable } from "@/features/research/components/search-result-table";
 import { WorkspaceCapabilitiesProvider } from "@/features/session/workspace-capabilities";
 import {
-  streamingSearchClientTimeoutMs,
   useStreamingSearch,
 } from "@/features/research/use-streaming-search";
 
@@ -241,48 +240,45 @@ describe("useStreamingSearch", () => {
     expect(latest?.error).toBe("");
   });
 
-  it("terminates an open socket that never sends a terminal frame", async () => {
-    vi.useFakeTimers();
+  it("keeps listening until the provider sends a terminal frame", async () => {
     vi.mocked(createStreamingSearch).mockResolvedValue({
       success: true,
-      session_id: "timeout",
-      websocket_url: "/ws/search/timeout",
+      session_id: "slow-provider",
+      websocket_url: "/ws/search/slow-provider",
     });
     let run!: Promise<void>;
+    let settled = false;
     await act(async () => {
       run = latest!.start(alienSearch);
       await Promise.resolve();
     });
-    const timedOut = expect(run).rejects.toThrow("tempo massimo");
+    run.finally(() => { settled = true; });
+    const socket = FakeWebSocket.instances[0];
+    act(() => socket.emit("open"));
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(streamingSearchClientTimeoutMs);
+      await Promise.resolve();
+      await Promise.resolve();
     });
 
-    await timedOut;
-    expect(FakeWebSocket.instances[0].closed).toBe(true);
-    expect(latest?.running).toBe(false);
-    vi.useRealTimers();
-  });
+    expect(settled).toBe(false);
+    expect(socket.closed).toBe(false);
+    expect(latest?.running).toBe(true);
 
-  it("applies the same deadline while the streaming session request is pending", async () => {
-    vi.useFakeTimers();
-    vi.mocked(createStreamingSearch).mockImplementation((signal) => new Promise(
-      (_resolve, reject) => signal?.addEventListener("abort", () => reject(new Error("aborted"))),
-    ));
-    let run!: Promise<void>;
     act(() => {
-      run = latest!.start(alienSearch);
+      socket.emit("message", {
+        data: JSON.stringify({
+          type: "all_completed",
+          status: "success",
+          filtered_results: [],
+        }),
+      });
     });
-    const timedOut = expect(run).rejects.toThrow("tempo massimo");
+    await act(async () => run);
 
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(streamingSearchClientTimeoutMs);
-    });
-
-    await timedOut;
+    expect(settled).toBe(true);
+    expect(socket.closed).toBe(true);
     expect(latest?.running).toBe(false);
-    vi.useRealTimers();
   });
 
   it("supports explicit cancellation and clears the active socket", async () => {

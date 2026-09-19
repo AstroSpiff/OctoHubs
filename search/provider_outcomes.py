@@ -1,4 +1,4 @@
-"""Typed, bounded outcomes for configured search indexers."""
+"""Typed outcomes for configured search indexers."""
 
 from __future__ import annotations
 
@@ -6,12 +6,8 @@ from typing import Any, Iterable
 
 import requests
 
-from core.http_response_limits import read_bounded_json_response
+from core.http_response_limits import read_complete_json_response
 
-
-MAX_INDEXER_RESPONSE_BYTES = 2 * 1024 * 1024
-MAX_INDEXER_RESULTS = 500
-MAX_AGGREGATED_SEARCH_RESULTS = 500
 MAX_INDEXER_FIELD_CHARS = 4096
 
 
@@ -49,19 +45,13 @@ class AggregatedSearchResults(list[dict[str, Any]]):
         self.truncated = bool(truncated)
 
 
-def load_bounded_json(response: Any, *, provider: str) -> Any:
-    """Decode a response only after enforcing a hard byte budget."""
+def load_provider_json(response: Any, *, provider: str) -> Any:
+    """Decode the complete provider response without truncating result rows."""
     try:
-        return read_bounded_json_response(
-            response,
-            max_bytes=MAX_INDEXER_RESPONSE_BYTES,
-            require_success=False,
-        )
+        return read_complete_json_response(response, require_success=False)
     except requests.RequestException as exc:
-        if "troppo grande" in str(exc):
-            raise ProviderSearchError(
-                f"Risposta {provider} oltre il limite consentito"
-            ) from exc
+        raise ProviderSearchError(f"Risposta JSON {provider} non valida") from exc
+    except (RecursionError, TypeError, ValueError) as exc:
         raise ProviderSearchError(f"Risposta JSON {provider} non valida") from exc
 
 
@@ -103,13 +93,11 @@ def bounded_number(
     return value
 
 
-def bounded_provider_rows(rows: list[Any], *, provider: str) -> tuple[list[dict[str, Any]], bool]:
-    """Return mapping rows within the provider cardinality budget."""
-    truncated = len(rows) > MAX_INDEXER_RESULTS
-    bounded = rows[:MAX_INDEXER_RESULTS]
-    if any(not isinstance(row, dict) for row in bounded):
+def provider_rows(rows: list[Any], *, provider: str) -> list[dict[str, Any]]:
+    """Validate every provider row without applying a cardinality limit."""
+    if any(not isinstance(row, dict) for row in rows):
         raise ProviderSearchError(f"Record non valido nella risposta {provider}")
-    return list(bounded), truncated
+    return list(rows)
 
 
 def validate_provider_results(
@@ -117,10 +105,10 @@ def validate_provider_results(
     *,
     provider: str,
 ) -> ProviderSearchResults:
-    """Return a bounded canonical provider result before declaring success."""
+    """Return the complete canonical provider result before declaring success."""
     if not isinstance(results, list):
         raise ProviderSearchError(f"Risultati {provider} non validi")
-    rows, cardinality_truncated = bounded_provider_rows(results, provider=provider)
+    rows = provider_rows(results, provider=provider)
     validated: list[dict[str, Any]] = []
     for row in rows:
         canonical = dict(row)
@@ -152,7 +140,7 @@ def validate_provider_results(
     return ProviderSearchResults(
         validated,
         provider=provider,
-        truncated=cardinality_truncated or provider_results_truncated(results),
+        truncated=provider_results_truncated(results),
     )
 
 
@@ -163,15 +151,12 @@ def provider_results_truncated(results: Any) -> bool:
 __all__ = [
     "AggregatedSearchResults",
     "MAX_INDEXER_FIELD_CHARS",
-    "MAX_INDEXER_RESPONSE_BYTES",
-    "MAX_INDEXER_RESULTS",
-    "MAX_AGGREGATED_SEARCH_RESULTS",
     "ProviderSearchError",
     "ProviderSearchResults",
     "bounded_number",
-    "bounded_provider_rows",
+    "provider_rows",
     "bounded_text",
-    "load_bounded_json",
+    "load_provider_json",
     "provider_results_truncated",
     "validate_provider_results",
 ]

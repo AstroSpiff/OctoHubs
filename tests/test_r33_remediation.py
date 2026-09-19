@@ -96,10 +96,8 @@ def test_readiness_follower_has_a_local_deadline(monkeypatch):
         health.mark_runtime_starting()
 
 
-def test_indexer_response_is_rejected_before_unbounded_json_decode(monkeypatch):
+def test_indexer_response_has_no_deadline_or_result_cardinality_cap(monkeypatch):
     from emby_runtime.api_clients_indexers import search_prowlarr
-    from search import provider_outcomes
-    from search.provider_outcomes import ProviderSearchError
 
     class Response:
         status_code = 200
@@ -109,33 +107,76 @@ def test_indexer_response_is_rejected_before_unbounded_json_decode(monkeypatch):
         def raise_for_status(self):
             return None
 
-        def iter_content(self, chunk_size):
-            del chunk_size
-            yield b"["
-            yield b"x" * 32
+        def json(self):
+            return [{"title": f"result-{index}"} for index in range(601)]
 
         def close(self):
             self.closed = True
 
     response = Response()
-    monkeypatch.setattr(provider_outcomes, "MAX_INDEXER_RESPONSE_BYTES", 16)
-    monkeypatch.setattr(requests, "get", lambda *_args, **_kwargs: response)
+    request_kwargs = {}
 
-    with pytest.raises(ProviderSearchError, match="limite"):
-        search_prowlarr(
-            "query",
-            "movie",
-            {"PROWLARR_URL": "https://indexer.test", "PROWLARR_API_KEY": "key"},
-        )
+    def get(*_args, **kwargs):
+        request_kwargs.update(kwargs)
+        return response
+
+    monkeypatch.setattr(requests, "get", get)
+
+    results = search_prowlarr(
+        "query",
+        "movie",
+        {"PROWLARR_URL": "https://indexer.test", "PROWLARR_API_KEY": "key"},
+    )
+    assert len(results) == 601
+    assert "timeout" not in request_kwargs
     assert response.closed is True
 
 
-def test_manual_and_automatic_searches_share_the_global_result_budget(monkeypatch):
-    from search import manual_search_results
-    from search.provider_outcomes import (
-        MAX_AGGREGATED_SEARCH_RESULTS,
-        AggregatedSearchResults,
+def test_jackett_response_has_no_deadline_or_result_cardinality_cap(monkeypatch):
+    from emby_runtime.api_clients_indexers import search_jackett
+
+    class Response:
+        status_code = 200
+        headers = {}
+        closed = False
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "Results": [
+                    {"Title": f"result-{index}"}
+                    for index in range(601)
+                ]
+            }
+
+        def close(self):
+            self.closed = True
+
+    response = Response()
+    request_kwargs = {}
+
+    def get(*_args, **kwargs):
+        request_kwargs.update(kwargs)
+        return response
+
+    monkeypatch.setattr(requests, "get", get)
+
+    results = search_jackett(
+        "query",
+        "movie",
+        {"JACKETT_URL": "https://indexer.test", "JACKETT_API_KEY": "key"},
     )
+    assert len(results) == 601
+    assert "timeout" not in request_kwargs
+    assert not any(name == "Limit" for name, _value in request_kwargs["params"])
+    assert response.closed is True
+
+
+def test_manual_and_automatic_searches_preserve_all_provider_results(monkeypatch):
+    from search import manual_search_results
+    from search.provider_outcomes import AggregatedSearchResults
     from services import requests_processor
 
     oversized = [{"title": f"item-{index}"} for index in range(600)]
@@ -152,8 +193,8 @@ def test_manual_and_automatic_searches_share_the_global_result_budget(monkeypatc
     manual, _warnings, _queries = manual_search_results.run_manual_searches(
         ["query"], "movie", {"provider"}, {}
     )
-    assert len(manual) == MAX_AGGREGATED_SEARCH_RESULTS
-    assert manual.truncated is True
+    assert len(manual) == 600
+    assert manual.truncated is False
 
     monkeypatch.setattr(
         requests_processor,
@@ -164,9 +205,9 @@ def test_manual_and_automatic_searches_share_the_global_result_budget(monkeypatc
     automatic, attempts = requests_processor.execute_search_with_variants(
         ["one", "two"], "movie", {}
     )
-    assert len(automatic) == MAX_AGGREGATED_SEARCH_RESULTS
-    assert automatic.truncated is True
-    assert attempts[0]["truncated"] is True
+    assert len(automatic) == 600
+    assert automatic.truncated is False
+    assert attempts[0]["truncated"] is False
 
 
 def test_library_membership_failure_is_not_reported_as_absent(monkeypatch):
@@ -259,9 +300,8 @@ def test_latest_console_diagnostics_are_single_line(capsys):
 
 
 @pytest.mark.anyio
-async def test_streaming_search_uses_one_library_lookup_and_marks_truncation(monkeypatch):
+async def test_streaming_search_uses_one_library_lookup_without_truncation(monkeypatch):
     from core.config import DEFAULT_CONFIG
-    from search import provider_outcomes
     from search.streaming import search_streaming_parallel
 
     calls = 0
@@ -292,7 +332,6 @@ async def test_streaming_search_uses_one_library_lookup_and_marks_truncation(mon
 
     websocket = WebSocket()
     config = {**DEFAULT_CONFIG, "PROWLARR_URL": "https://indexer", "PROWLARR_API_KEY": "key"}
-    monkeypatch.setattr(provider_outcomes, "MAX_AGGREGATED_SEARCH_RESULTS", 3)
     monkeypatch.setattr("search.indexers._prowlarr_configured", lambda _config: True)
     monkeypatch.setattr("emby_runtime.api_clients.search_prowlarr", search)
     monkeypatch.setattr("core.scanner.filter_results", lambda results, *_args, **_kwargs: results)
@@ -311,9 +350,9 @@ async def test_streaming_search_uses_one_library_lookup_and_marks_truncation(mon
 
     terminal = [message for message in websocket.messages if message.get("type") == "all_completed"][-1]
     assert calls == 1
-    assert terminal["status"] == "partial"
-    assert terminal["truncated"] is True
-    assert len(terminal["filtered_results"]) == 3
+    assert terminal["status"] == "success"
+    assert terminal["truncated"] is False
+    assert len(terminal["filtered_results"]) == 10
 
 
 @pytest.mark.anyio
