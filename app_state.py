@@ -148,7 +148,12 @@ def get_operation_tracker():
             _OPERATION_TRACKER = OperationTracker(_ensure_db_backend())
         if not _OPERATION_TRACKER_RECOVERED:
             try:
-                interrupted = _OPERATION_TRACKER.interrupt_stale()
+                recover_orphaned = getattr(
+                    _OPERATION_TRACKER,
+                    "interrupt_orphaned",
+                    _OPERATION_TRACKER.interrupt_stale,
+                )
+                interrupted = recover_orphaned()
                 _OPERATION_TRACKER_RECOVERED = True
                 if interrupted:
                     print(f"[OPERATIONS] {interrupted} operazioni attive marcate come interrotte dopo riavvio.")

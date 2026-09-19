@@ -39,6 +39,14 @@ class _Manager:
         return self.running.pop(0) if self.running else False
 
 
+class _WorkerHandle:
+    def __init__(self, alive):
+        self.alive = list(alive)
+
+    def is_alive(self):
+        return self.alive.pop(0) if self.alive else False
+
+
 def test_probe_worker_monitor_finishes_after_live_worker_ends(monkeypatch):
     tracker = _Tracker()
     manager = _Manager(
@@ -84,6 +92,40 @@ def test_probe_worker_monitor_marks_user_stop_as_skipped(monkeypatch):
         ("operation-1", "Discovery interrotta dall'utente", {"servers": {"green": {"last_log": "Discovery interrotta dall'utente"}}}),
     ]
     assert not tracker.finished
+
+
+def test_probe_worker_monitor_is_bound_to_the_original_worker_and_reports_progress():
+    tracker = _Tracker()
+    manager = _Manager(
+        {
+            "black": {
+                "processing": {
+                    "last_log": "Processing completato",
+                    "processed": 6,
+                    "incomplete": 1,
+                    "errors": 1,
+                    "total": 10,
+                }
+            }
+        },
+        [True, True],
+    )
+    original_worker = _WorkerHandle([True, False])
+
+    _monitor_probe_worker(
+        tracker,
+        "operation-1",
+        manager,
+        ProbeWorkerOperation("processing", "Media Probe: Processing", "libraries"),
+        ["black"],
+        threading.Event(),
+        worker_handles=(original_worker,),  # type: ignore[arg-type]
+    )
+
+    assert tracker.updates[0][1]["current"] == 8
+    assert tracker.updates[0][1]["total"] == 10
+    assert tracker.finished
+    assert manager.running == [True, True]
 
 
 @pytest.mark.anyio

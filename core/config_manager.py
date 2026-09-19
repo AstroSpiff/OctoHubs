@@ -69,6 +69,15 @@ def publish_active_config_updates(updates: Dict[str, Any]) -> Dict[str, Any]:
         return snapshot
 
 
+def get_active_config_snapshot() -> Dict[str, Any]:
+    """Return an isolated copy of the currently published runtime config."""
+
+    with _CONFIG_LOAD_LOCK:
+        return copy.deepcopy(
+            _ACTIVE_CONFIG if _ACTIVE_CONFIG is not None else DEFAULT_CONFIG
+        )
+
+
 def set_sync_auto_scheduler(callback: Callable[[bool], None]) -> None:
     """Register a callback to sync the AutoScheduler after config load."""
     global _SYNC_AUTO_SCHEDULER

@@ -364,6 +364,28 @@ def test_operation_startup_recovery_retries_after_transient_failure(monkeypatch)
     assert app_state._OPERATION_TRACKER_RECOVERED is True
 
 
+def test_single_worker_startup_immediately_interrupts_orphaned_operations(monkeypatch):
+    import app_state
+
+    class Tracker:
+        orphaned_calls = 0
+
+        def interrupt_orphaned(self):
+            self.orphaned_calls += 1
+            return 1
+
+        def interrupt_stale(self):
+            raise AssertionError("single-worker startup must not wait for the stale lease")
+
+    tracker = Tracker()
+    monkeypatch.setattr(app_state, "_OPERATION_TRACKER", tracker)
+    monkeypatch.setattr(app_state, "_OPERATION_TRACKER_RECOVERED", False)
+
+    assert app_state.get_operation_tracker() is tracker
+    assert tracker.orphaned_calls == 1
+    assert app_state._OPERATION_TRACKER_RECOVERED is True
+
+
 def test_generic_job_thread_start_failure_terminalizes_operation(monkeypatch):
     import app_state
     from services.background_job_registry import background_job_registry

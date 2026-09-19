@@ -291,6 +291,36 @@ class OperationTracker:
         self._untrack_heartbeats(interrupted_ids)
         return interrupted
 
+    def interrupt_orphaned(
+        self,
+        message: str = "Operazione interrotta durante il riavvio dell'applicazione",
+    ) -> int:
+        """Interrupt active records owned by an earlier application process."""
+
+        interrupted_ids: list[str] = []
+
+        def interrupt(registry: Dict[str, Dict[str, Any]]) -> int:
+            now = self._timestamp()
+            interrupted = 0
+            for operation in registry.values():
+                if (
+                    operation.get("status") not in ACTIVE_STATUSES
+                    or self._owns(operation)
+                ):
+                    continue
+                operation["status"] = "interrupted"
+                operation["message"] = str(message)
+                operation["error"] = None
+                operation["updated_at"] = now
+                operation["finished_at"] = now
+                interrupted_ids.append(str(operation.get("id") or ""))
+                interrupted += 1
+            return interrupted
+
+        interrupted = self._mutate_registry(interrupt)
+        self._untrack_heartbeats(interrupted_ids)
+        return interrupted
+
     def _complete(
         self,
         operation_id: str,

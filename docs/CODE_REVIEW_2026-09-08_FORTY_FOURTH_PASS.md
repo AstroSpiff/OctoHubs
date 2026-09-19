@@ -1513,3 +1513,39 @@ stati modificati dati o configurazione del deployment Hetzner.
   Python/npm, complessità, contratto API strict, Compose base/secrets/bootstrap,
   doppia build Docker riproducibile, identità runtime non-root, smoke
   autenticato su PostgreSQL esterno e `git diff --check` verdi.
+
+### Follow-up operativo v0.5.15 — operazioni Probe orfane e identità server
+
+- **Baseline:** `5fc7ed500fe84f1353cd638db759a4603d966faa` (`v0.5.14`),
+  worktree pulito prima dell'intervento.
+- **Causa — resolved (famiglia: lifecycle e proiezione operazioni):** dopo il
+  riavvio del container, un record `running` del processo precedente restava
+  visibile fino alla scadenza della lease di quindici minuti, benché il worker
+  non esistesse più nel nuovo processo. Inoltre il monitor seguiva soltanto la
+  coppia server/tipo: un nuovo worker sulla stessa coppia poteva essere
+  scambiato per la prosecuzione di quello precedente. Il riepilogo persistito
+  usava infine l'UUID interno del server e il monitor non trasmetteva i contatori
+  al centro operazioni, che rimaneva a 0%.
+- **Soluzione:** nel deployment supportato a singolo worker, l'avvio interrompe
+  immediatamente le operazioni appartenenti a un processo precedente. Ogni
+  monitor Probe cattura ora gli esatti thread del run avviato e termina quando
+  termina quella generazione, anche se parte un run successivo. I contatori
+  discovery/processing alimentano il progresso dell'operazione. La proiezione
+  API sostituisce, anche per record già esistenti, gli ID server con i nomi
+  correnti della configurazione senza ricaricarla dal database a ogni poll.
+- **Regressori e superfici analoghe:** coperti record straniero ancora fresco al
+  riavvio, preservazione delle operazioni del processo corrente, worker
+  successivo sulla stessa chiave, avanzamento numerico e traduzione
+  `db53… -> Black`. Riesaminati worker singoli, sequenze globali, workflow combo,
+  shutdown ordinato, heartbeat, elenco e pulizia operazioni. Route, metodi,
+  coda Probe e risultati già acquisiti non cambiano.
+- **Rischio residuo:** il recupero immediato presuppone il modello supportato a
+  singolo worker applicativo. Un riavvio interrompe il worker in corso, ma gli
+  elementi già completati e la coda residua restano persistiti e possono essere
+  ripresi.
+- **Gate finali:** regressori mirati 36/36; backend 2325 passed, 78 skipped e 34
+  subtests passed; PostgreSQL 16 reale 83 passed; frontend 280 file/773 test;
+  Ruff, Pyright, ESLint, build Vite, audit Python/npm, complessità, contratto
+  API strict, Compose base/secrets/bootstrap, doppia build Docker riproducibile,
+  identità runtime non-root, smoke autenticato su PostgreSQL esterno e
+  `git diff --check` verdi.

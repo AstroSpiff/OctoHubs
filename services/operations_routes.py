@@ -10,12 +10,15 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from core.storage import StorageError
+from core.config_manager import get_active_config_snapshot
 from core.log_sanitization import format_exception_for_log
+from core.utils import get_emby_servers
 from services.operations_api_models import (
     ClearCompletedOperationsResponse,
     OperationsSnapshotResponse,
     OperationsUnavailableResponse,
 )
+from services.operations_presentation import present_operation_server_names
 from web.openapi_requests import no_request_body
 
 router = APIRouter()
@@ -64,6 +67,20 @@ def _operations_error(exc: BaseException, status_code: int) -> JSONResponse:
     )
 
 
+def _configured_server_names() -> dict[str, str]:
+    try:
+        config = get_active_config_snapshot()
+    except Exception:
+        return {}
+    if not isinstance(config, dict):
+        return {}
+    return {
+        str(server.get("id")): str(server.get("name") or server.get("id"))
+        for server in get_emby_servers(config)
+        if server.get("id")
+    }
+
+
 @router.get(
     "/api/operations",
     responses={
@@ -88,6 +105,10 @@ async def api_operations(request: Request):
         return _operations_error(exc, 503)
     except Exception as exc:
         return _operations_error(exc, 500)
+    operations = present_operation_server_names(
+        operations,
+        await run_in_threadpool(_configured_server_names),
+    )
     active_count = sum(1 for item in operations if item.get("status") in ("queued", "running"))
     return {"ok": True, "operations": operations, "active_count": active_count}
 

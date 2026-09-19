@@ -122,6 +122,27 @@ class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
     def owns_operation_monitor(self, owner_token: str) -> bool:
         return self._operation_monitors.owns(owner_token)
 
+    def capture_worker_handles(
+        self,
+        worker_key: str,
+        server_ids: list[str],
+        *,
+        global_key: str | None = None,
+    ) -> tuple[threading.Thread, ...]:
+        """Capture the exact worker generation represented by an operation."""
+
+        with self._lock:
+            handles: list[threading.Thread] = []
+            if global_key:
+                global_worker = self._global_workers.get(global_key)
+                if global_worker is not None:
+                    handles.append(global_worker)
+            for server_id in server_ids:
+                worker = self._workers.get(server_id, {}).get(worker_key)
+                if worker is not None and worker not in handles:
+                    handles.append(worker)
+            return tuple(handles)
+
     def _start_local_worker_locked(
         self,
         server_id: str,

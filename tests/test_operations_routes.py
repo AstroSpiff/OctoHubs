@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from core.storage import StorageError
 from services.operations_routes import (
@@ -16,6 +17,7 @@ from services.operations_api_models import (
     OperationsSnapshotResponse,
     OperationsUnavailableResponse,
 )
+from services.operations_presentation import present_operation_server_names
 
 
 class _Tracker:
@@ -34,6 +36,58 @@ class _Tracker:
 
 
 class OperationRouteTests(unittest.IsolatedAsyncioTestCase):
+    def test_probe_operation_summaries_use_configured_server_names(self):
+        operations = [
+            {
+                "id": "operation-1",
+                "kind": "probe_processing",
+                "summary": "db53a209-4328-4e2a-a8e6-4289f15b9379",
+                "details": {
+                    "server_ids": ["db53a209-4328-4e2a-a8e6-4289f15b9379"]
+                },
+            }
+        ]
+
+        presented = present_operation_server_names(
+            operations,
+            {"db53a209-4328-4e2a-a8e6-4289f15b9379": "Black"},
+        )
+
+        self.assertEqual(presented[0]["summary"], "Black")
+        self.assertEqual(
+            operations[0]["summary"],
+            "db53a209-4328-4e2a-a8e6-4289f15b9379",
+        )
+
+    async def test_operations_route_enriches_existing_probe_records(self):
+        server_id = "db53a209-4328-4e2a-a8e6-4289f15b9379"
+
+        class Tracker:
+            def list_operations(self):
+                return [{
+                    "id": "operation-1",
+                    "kind": "probe_processing",
+                    "summary": server_id,
+                    "status": "running",
+                    "details": {"server_ids": [server_id]},
+                }]
+
+        init_operations_routes(
+            require_auth=lambda _request: {"id": "admin"},
+            validate_csrf=lambda _request, _token: True,
+            get_operation_tracker=Tracker,
+        )
+
+        with patch(
+            "services.operations_routes.get_active_config_snapshot",
+            return_value={
+                "EMBY": {"SERVERS": [{"id": server_id, "name": "Black"}]}
+            },
+        ):
+            payload = await api_operations(object())
+
+        self.assertEqual(payload["operations"][0]["summary"], "Black")
+
     def test_operations_routes_publish_their_response_contracts(self):
         routes = {route.path: route for route in router.routes}
 

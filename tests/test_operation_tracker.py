@@ -232,6 +232,38 @@ class OperationTrackerTests(unittest.TestCase):
         current = {item["id"]: item for item in second_tracker.list_operations()}[operation["id"]]
         self.assertEqual(current["status"], "interrupted")
 
+    def test_single_worker_restart_interrupts_fresh_foreign_operations(self):
+        storage = _AtomicStorage()
+
+        def now():
+            return datetime(2026, 9, 19, 7, 45, tzinfo=timezone.utc)
+
+        previous_process = OperationTracker(
+            storage,
+            now=now,
+            owner_id="previous-process",
+            heartbeat_interval_seconds=0,
+        )
+        stale_ui_record = previous_process.start(
+            "probe_processing",
+            "Media Probe: Processing",
+        )
+        current_process = OperationTracker(
+            storage,
+            now=now,
+            owner_id="current-process",
+            heartbeat_interval_seconds=0,
+        )
+        current_operation = current_process.start("workflow", "Workflow corrente")
+
+        self.assertEqual(current_process.interrupt_orphaned(), 1)
+
+        operations = {
+            item["id"]: item for item in current_process.list_operations()
+        }
+        self.assertEqual(operations[stale_ui_record["id"]]["status"], "interrupted")
+        self.assertEqual(operations[current_operation["id"]]["status"], "running")
+
     def test_periodic_heartbeat_renews_a_blocked_operation_without_progress(self):
         storage = _AtomicStorage()
         clock_lock = threading.Lock()

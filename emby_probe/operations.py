@@ -6,7 +6,7 @@ import threading
 import time
 import logging
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, cast
 
 from core.thread_lifecycle import log_lifecycle_exception_safely
 
@@ -65,6 +65,19 @@ def start_probe_worker_operation(
         raise RuntimeError("Impossibile creare l'operazione Media Probe")
 
     manager = get_probe_manager()
+    capture_handles = getattr(manager, "capture_worker_handles", None)
+    worker_handles = (
+        cast(
+            tuple[threading.Thread, ...],
+            capture_handles(
+                worker.key,
+                normalized_server_ids,
+                global_key=worker.global_key,
+            ),
+        )
+        if callable(capture_handles)
+        else None
+    )
     try:
         manager.start_operation_monitor(
             lambda stop_event: _monitor_probe_worker(
@@ -74,6 +87,7 @@ def start_probe_worker_operation(
                 worker,
                 normalized_server_ids,
                 stop_event,
+                worker_handles=worker_handles,
             ),
             owner_token=operation_id,
         )
@@ -127,6 +141,8 @@ def _monitor_probe_worker(
     worker: ProbeWorkerOperation,
     server_ids: list[str],
     stop_event: threading.Event,
+    *,
+    worker_handles: tuple[threading.Thread, ...] | None = None,
 ) -> None:
     """Mirror the live worker until its own thread ends."""
 
@@ -134,18 +150,25 @@ def _monitor_probe_worker(
     startup_deadline = time.monotonic() + 5
     while not stop_event.is_set():
         try:
-            running = manager.is_worker_running(
-                worker.key,
-                server_ids,
-                global_key=worker.global_key,
+            running = (
+                any(handle.is_alive() for handle in worker_handles)
+                if worker_handles is not None
+                else manager.is_worker_running(
+                    worker.key,
+                    server_ids,
+                    global_key=worker.global_key,
+                )
             )
             states = _worker_states(manager, worker.key, server_ids)
             message = _latest_message(states) or "Worker Media Probe in esecuzione"
             if running:
                 seen_running = True
+                current, total = _worker_progress(worker.key, states)
                 tracker.update(
                     operation_id,
                     message=message,
+                    current=current,
+                    total=total,
                     details={"current_step_label": message, "servers": states},
                 )
             elif seen_running or any(states.values()):
@@ -181,6 +204,31 @@ def _latest_message(states: Mapping[str, Mapping[str, Any]]) -> str:
         if message:
             return message
     return ""
+
+
+def _worker_progress(
+    worker_key: str,
+    states: Mapping[str, Mapping[str, Any]],
+) -> tuple[int, int | None]:
+    current = 0
+    total = 0
+    for state in states.values():
+        if "discovery" in worker_key:
+            current += int(state.get("total_scanned") or 0)
+            library_totals = state.get("library_totals")
+            if isinstance(library_totals, Mapping):
+                total += sum(int(value or 0) for value in library_totals.values())
+            else:
+                total += int(state.get("limit") or 0)
+            continue
+        current += sum(
+            int(state.get(key) or 0)
+            for key in ("processed", "incomplete", "errors")
+        )
+        total += int(state.get("total") or 0)
+    if total <= 0:
+        return current, None
+    return min(current, total), total
 
 
 def _complete_probe_operation(
