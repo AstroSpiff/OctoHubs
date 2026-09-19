@@ -24,19 +24,121 @@ describe("comboTasksForServers", () => {
     ]);
   });
 
-  it("preferisce e deduplica la coda pubblicata dal worker", () => {
+  it("preferisce la coda pubblicata e completa i server non ancora avviati", () => {
     const tasks = comboTasksForServers("recent", [
       {
         ...servers[0],
-        status: { queue: [{ id: "task-1", type: "discovery" }] },
+        status: {
+          running: true,
+          board_mode: "combo",
+          phase: "discovery",
+          queue: [
+            {
+              id: "reported-discovery-green",
+              type: "discovery",
+              server_id: "green",
+            },
+            {
+              id: "reported-processing-green",
+              type: "processing",
+              server_id: "green",
+            },
+          ],
+        },
+      },
+      servers[1],
+    ]);
+
+    expect(tasks).toHaveLength(4);
+    expect(tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "reported-discovery-green" }),
+      expect.objectContaining({ id: "reported-processing-green" }),
+      expect.objectContaining({
+        id: "recent:discovery:purple",
+        server_id: "purple",
+      }),
+      expect.objectContaining({
+        id: "recent:processing:purple",
+        server_id: "purple",
+      }),
+    ]));
+    expect(tasks.map((task) => comboTaskState(task, [
+      {
+        ...servers[0],
+        status: {
+          running: true,
+          board_mode: "combo",
+          phase: "discovery",
+        },
+      },
+      servers[1],
+    ]))).toEqual(["running", "todo", "todo", "todo"]);
+  });
+
+  it("mostra subito tutti i server di una discovery recente sequenziale", () => {
+    const statuses = [
+      {
+        ...servers[0],
+        discoveryStatus: {
+          running: true,
+          started_at: "2026-09-19T08:00:00Z",
+          run_id: "current-run",
+        },
       },
       {
         ...servers[1],
-        status: { queue: [{ id: "task-1", type: "discovery" }] },
+        discoveryStatus: {
+          running: false,
+          started_at: "2026-09-18T08:00:00Z",
+          run_id: "previous-run",
+          last_log: "Discovery completata",
+        },
       },
-    ]);
+      { serverId: "red", serverName: "Red" },
+    ];
 
-    expect(tasks).toEqual([{ id: "task-1", type: "discovery" }]);
+    const tasks = comboTasksForServers("recent", statuses);
+
+    expect(tasks).toHaveLength(3);
+    expect(tasks.map((task) => [task.server_id, task.type])).toEqual([
+      ["green", "discovery"],
+      ["purple", "discovery"],
+      ["red", "discovery"],
+    ]);
+    expect(tasks.map((task) => comboTaskState(task, statuses))).toEqual([
+      "running",
+      "todo",
+      "todo",
+    ]);
+  });
+
+  it("mantiene terminali i server già conclusi nello stesso run sequenziale", () => {
+    const statuses = [
+      {
+        ...servers[0],
+        discoveryStatus: {
+          running: false,
+          started_at: "2026-09-19T08:00:00Z",
+          run_id: "current-run",
+          last_log: "Discovery completata",
+        },
+      },
+      {
+        ...servers[1],
+        discoveryStatus: {
+          running: true,
+          started_at: "2026-09-19T08:01:00Z",
+          run_id: "current-run",
+        },
+      },
+    ];
+
+    const tasks = comboTasksForServers("recent", statuses);
+
+    expect(tasks.map((task) => comboTaskState(task, statuses))).toEqual([
+      "terminal",
+      "running",
+    ]);
   });
 
   it("non inventa una coda per il workflow librerie", () => {

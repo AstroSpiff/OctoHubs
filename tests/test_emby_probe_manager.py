@@ -116,6 +116,48 @@ class _ContinuousProbeManager(_ParallelProbeManager):
 
 
 class EmbyProbeManagerStopTests(unittest.TestCase):
+    def test_recent_all_sequences_share_one_run_id_across_target_servers(self):
+        manager = EmbyProbeManager()
+        servers = [
+            {"id": "green", "enabled": True},
+            {"id": "purple", "enabled": True},
+        ]
+
+        with (
+            patch.object(manager, "start_recent_discovery", return_value=True) as discovery,
+            patch.object(manager, "_wait_for_worker"),
+        ):
+            manager._recent_discovery_sequence_worker(
+                servers,
+                threading.Event(),
+                200,
+                "discovery-run",
+            )
+
+        self.assertEqual(2, discovery.call_count)
+        self.assertEqual(
+            ["discovery-run", "discovery-run"],
+            [call.kwargs["run_id"] for call in discovery.call_args_list],
+        )
+
+        with patch.object(
+            manager,
+            "start_recent_processing",
+            return_value=True,
+        ) as processing:
+            manager._recent_processing_sequence_worker(
+                servers,
+                threading.Event(),
+                "smart",
+                "processing-run",
+            )
+
+        self.assertEqual(2, processing.call_count)
+        self.assertEqual(
+            ["processing-run", "processing-run"],
+            [call.kwargs["run_id"] for call in processing.call_args_list],
+        )
+
     def test_last_run_preserves_library_names_timing_and_per_phase_metrics(self):
         manager = EmbyProbeManager()
         manager._status["server-a"] = {

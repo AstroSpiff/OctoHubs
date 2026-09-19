@@ -6,7 +6,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { ProbeComboCard } from "@/features/probe/components/probe-combo-card";
+import { LibraryProbeControls } from "@/features/probe/components/library-probe-controls";
+import { RecentProbeControls } from "@/features/probe/components/recent-probe-controls";
 import { ProbeTaskBoard } from "@/features/probe/components/probe-task-board";
+
+const noop = () => undefined;
 
 describe("ProbeComboCard", () => {
   it("resta separata dalla bacheca e dall'ultimo run condivisi", () => {
@@ -168,5 +172,52 @@ describe("ProbeTaskBoard", () => {
     act(() => root.unmount());
     container.remove();
     globalThis.IS_REACT_ACT_ENVIRONMENT = undefined;
+  });
+});
+
+describe("Probe controls hierarchy", () => {
+  it("mette lo stato attività prima del workflow completo nei recenti", () => {
+    const markup = renderToStaticMarkup(
+      <RecentProbeControls
+        allServersSelected
+        serverCount={2}
+        comboServerStatuses={[]}
+        disabled={false}
+        onRunCombo={noop}
+        onStopCombo={noop}
+        onRunDiscovery={noop}
+        onStopDiscovery={noop}
+        onRunProcessing={noop}
+        onStopProcessing={noop}
+      />,
+    );
+
+    expect(markup.indexOf("Stato attività")).toBeLessThan(
+      markup.indexOf("Individuazione + analisi"),
+    );
+  });
+
+  it("mette lo stato attività prima del workflow completo nelle librerie", () => {
+    const markup = renderToStaticMarkup(
+      <LibraryProbeControls
+        libraries={[]}
+        discoverySelected={[]}
+        processingSelected={[]}
+        comboServerStatuses={[]}
+        disabled={false}
+        onDiscoverySelectionChange={noop}
+        onProcessingSelectionChange={noop}
+        onRunCombo={noop}
+        onStopCombo={noop}
+        onRunDiscovery={noop}
+        onStopDiscovery={noop}
+        onRunProcessing={noop}
+        onStopProcessing={noop}
+      />,
+    );
+
+    expect(markup.indexOf("Stato attività")).toBeLessThan(
+      markup.indexOf("Individuazione + analisi"),
+    );
   });
 });

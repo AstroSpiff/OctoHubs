@@ -48,6 +48,10 @@ function RecentProbeControls({
   return (
     <>
       <div className="probe-workers-grid">
+        <ProbeTaskBoard
+          scope="recent"
+          serverStatuses={comboServerStatuses}
+        />
         <ProbeComboCard
           scope="recent"
           status={comboStatus}
@@ -159,10 +163,6 @@ function RecentProbeControls({
             },
           ]}
           canMutate={canMutate}
-        />
-        <ProbeTaskBoard
-          scope="recent"
-          serverStatuses={comboServerStatuses}
         />
       </div>
     </>

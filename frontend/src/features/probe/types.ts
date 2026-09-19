@@ -109,6 +109,7 @@ export type ProbeBlacklistItem = ProbeHistoryItem & {
 
 export type ProbeWorkerStatus = {
   running?: boolean;
+  run_id?: string | null;
   phase?: "discovery" | "processing" | string;
   started_at?: string;
   found?: number;

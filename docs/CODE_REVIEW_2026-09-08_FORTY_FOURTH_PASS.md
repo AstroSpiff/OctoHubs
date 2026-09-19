@@ -1666,3 +1666,42 @@ stati modificati dati o configurazione del deployment Hetzner.
   ESLint senza avvisi, TypeScript/Vite production build, audit npm
   completo/runtime e `git diff --check` verdi. Nessun backend, schema,
   dipendenza o contratto HTTP è stato modificato.
+
+### Follow-up operativo v0.5.20 — coda multiservizio e gerarchia attività Probe
+
+- **Baseline:** `6001656dec89a47174571ea84444bb8644dde348` (`v0.5.19`),
+  worktree pulito prima dell'intervento.
+- **Causa — resolved (famiglia: proiezione concorrente di una sequenza
+  multiservizio):** in “Ultimi aggiunti”, la prima coda parziale pubblicata da
+  un worker sostituiva l'elenco completo dei server selezionati. I server
+  successivi di una sequenza non avevano quindi ancora una scheda “Da fare” e
+  comparivano soltanto quando iniziavano. Uno stato terminale appartenente a
+  un'esecuzione precedente poteva inoltre essere confuso con lo stato del
+  batch corrente. Il pannello condiviso era infine collocato dopo le schede
+  operative, benché rappresentasse il riepilogo generale delle attività.
+- **Soluzione:** il modello del Kanban completa sempre la coda recente per ogni
+  server target e per le sole fasi realmente avviate, preservando le attività
+  autorevoli già pubblicate senza duplicarle. Le sequenze globali di discovery
+  e processing assegnano un unico `run_id` a tutti i worker del batch: i server
+  futuri restano “Da fare”, quello corrente passa a “In esecuzione” e quelli
+  conclusi nello stesso batch rimangono “Terminato”, senza riutilizzare esiti
+  obsoleti. “Stato attività”, incluso “Ultimo run”, precede ora
+  “Individuazione + analisi” sia in Ultimi aggiunti sia in Librerie. Ordine e
+  parallelismo effettivi dei worker non sono stati modificati.
+- **Regressori, canary e superfici analoghe:** coperti workflow completo con
+  snapshot parziale, discovery sequenziale su tre server, stato terminale
+  obsoleto, avanzamento fra due server dello stesso run, propagazione del
+  `run_id` alle sequenze discovery e processing e ordine DOM del pannello in
+  entrambe le tab. Riesaminati processing smart concorrente, processing
+  forzato sequenziale, workflow combinato, avvii su singolo server e workflow
+  Librerie. La review indipendente non ha rilevato cambiamenti a code
+  persistite, risultati Probe, route, metodi o payload di richiesta.
+- **Rischio residuo:** nessuno noto. I run avviati prima dell'aggiornamento non
+  possiedono il nuovo identificatore condiviso; dal primo nuovo avvio
+  multiservizio la rappresentazione è completa e non ambigua.
+- **Gate finali:** regressori mirati backend 10/10 e frontend 24/24; backend
+  2326 passed, 78 skipped e 34 subtests passed; PostgreSQL 16 reale 83 passed;
+  frontend 281 file/789 test; Ruff, complessità, Pyright, contratto API strict,
+  ESLint, build TypeScript/Vite, audit Python/npm completo e runtime, Compose
+  base/secrets/bootstrap, doppia build Docker riproducibile, identità runtime
+  non-root, smoke autenticato su PostgreSQL esterno e `git diff --check` verdi.

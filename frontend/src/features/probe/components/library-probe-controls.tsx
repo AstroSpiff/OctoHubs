@@ -51,6 +51,10 @@ function LibraryProbeControls({
 
   return (
     <div className="probe-workers-grid">
+      <ProbeTaskBoard
+        scope="libraries"
+        serverStatuses={comboServerStatuses}
+      />
       <ProbeComboCard
         scope="libraries"
         status={comboStatus}
@@ -180,10 +184,6 @@ function LibraryProbeControls({
           onChange={onProcessingSelectionChange}
         />
       </ProbeWorkerCard>
-      <ProbeTaskBoard
-        scope="libraries"
-        serverStatuses={comboServerStatuses}
-      />
     </div>
   );
 }

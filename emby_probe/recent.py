@@ -4,6 +4,7 @@ from typing import Any, Dict, cast
 from datetime import datetime, timezone, timedelta
 import threading
 import time
+import uuid
 
 from emby_runtime.api_clients import _call_emby_api, _fetch_emby_active_sessions
 
@@ -102,9 +103,10 @@ class RecentProbeMixin(ProbeManagerProtocol):
                 return False
             stop_flag = threading.Event()
             self._global_stop_flags["recent_discovery_all"] = stop_flag
+            run_id = uuid.uuid4().hex
             sequence = threading.Thread(
                 target=self._recent_discovery_sequence_worker,
-                args=(servers, stop_flag, limit),
+                args=(servers, stop_flag, limit, run_id),
                 daemon=True
             )
             self._start_global_worker_locked(
@@ -182,9 +184,10 @@ class RecentProbeMixin(ProbeManagerProtocol):
                 return False
             stop_flag = threading.Event()
             self._global_stop_flags["recent_processing_all"] = stop_flag
+            run_id = uuid.uuid4().hex
             sequence = threading.Thread(
                 target=self._recent_processing_sequence_worker,
-                args=(servers, stop_flag, mode),
+                args=(servers, stop_flag, mode, run_id),
                 daemon=True
             )
             self._start_global_worker_locked(
@@ -230,7 +233,8 @@ class RecentProbeMixin(ProbeManagerProtocol):
         self,
         servers: list[Dict[str, Any]],
         stop_flag: threading.Event,
-        limit: int
+        limit: int,
+        run_id: str,
     ) -> None:
         enabled_servers = [s for s in servers if s and s.get("enabled") and s.get("id")]
         total_servers = len(enabled_servers)
@@ -253,7 +257,7 @@ class RecentProbeMixin(ProbeManagerProtocol):
                                 f"[{index}/{total_servers}] Discovery su: {server_name}"
                             )
 
-            self.start_recent_discovery(server, server_id, limit)
+            self.start_recent_discovery(server, server_id, limit, run_id=run_id)
             worker = self._workers.get(server_id, {}).get("recent_discovery")
             self._wait_for_worker(worker, stop_flag)
             if stop_flag.is_set():
@@ -264,7 +268,8 @@ class RecentProbeMixin(ProbeManagerProtocol):
         self,
         servers: list[Dict[str, Any]],
         stop_flag: threading.Event,
-        mode: str
+        mode: str,
+        run_id: str,
     ) -> None:
         if mode == "smart":
             enabled_servers = [s for s in servers if s and s.get("enabled") and s.get("id")]
@@ -273,7 +278,12 @@ class RecentProbeMixin(ProbeManagerProtocol):
                     break
                 server_id = server.get("id")
                 if server_id:
-                    self.start_recent_processing(server, server_id, mode)
+                    self.start_recent_processing(
+                        server,
+                        server_id,
+                        mode,
+                        run_id=run_id,
+                    )
 
             while not stop_flag.is_set():
                 active_workers = []
@@ -317,7 +327,12 @@ class RecentProbeMixin(ProbeManagerProtocol):
                                     f"[{index}/{total_servers}] Processing su: {server_name}"
                                 )
 
-                self.start_recent_processing(server, server_id, mode)
+                self.start_recent_processing(
+                    server,
+                    server_id,
+                    mode,
+                    run_id=run_id,
+                )
                 worker = self._workers.get(server_id, {}).get("recent_processing")
                 self._wait_for_worker(worker, stop_flag)
                 if stop_flag.is_set():
