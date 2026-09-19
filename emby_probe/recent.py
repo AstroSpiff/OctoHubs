@@ -50,7 +50,8 @@ class RecentProbeMixin(ProbeManagerProtocol):
         Args:
             server: Server configuration dict with url, api_key, etc.
             server_id: Unique server identifier
-            limit: Max number of recent items to scan
+            limit: Preferred Emby page size. The configured ``max_items``
+                remains the authoritative discovery budget.
         """
         with self._lock:
             if not self._can_start_worker_locked(server_id):
@@ -70,6 +71,9 @@ class RecentProbeMixin(ProbeManagerProtocol):
                 "running": True,
                 "found": 0,
                 "total_scanned": 0,
+                "current_item": None,
+                "current_library_id": None,
+                "current_library_name": None,
                 "last_log": "Avvio discovery ultimi aggiunti...",
                 "started_at": datetime.now(timezone.utc).isoformat(),
                 "limit": limit,
@@ -394,7 +398,7 @@ class RecentProbeMixin(ProbeManagerProtocol):
             return
 
         # Calculate initial total and filter servers with work
-        initial_total = 0
+        server_queue_totals: dict[str, int] = {}
         servers_with_work = []
         for server in enabled_servers:
             server_id = server.get("id")
@@ -404,7 +408,7 @@ class RecentProbeMixin(ProbeManagerProtocol):
             if len(processable) > 0:
                 servers_with_work.append(server)
                 count_queue = getattr(db, "count_probe_queue", None)
-                initial_total += (
+                server_queue_totals[str(server_id)] = (
                     int(cast(int | str, count_queue(server_id, scope=scope)))
                     if callable(count_queue)
                     else len(processable)
@@ -437,8 +441,10 @@ class RecentProbeMixin(ProbeManagerProtocol):
                         "processed_retry": 0,
                         "errors_retry": 0,
                         "incomplete_retry": 0,
-                        "total": initial_total,  # Set to global total
+                        "total": server_queue_totals.get(str(server_id), 0),
                         "current_item": None,
+                        "current_library_id": None,
+                        "current_library_name": None,
                         "last_log": "Modalità Smart multi-server: in attesa...",
                         "mode": "smart",
                         "started_at": datetime.now(timezone.utc).isoformat()
@@ -540,6 +546,8 @@ class RecentProbeMixin(ProbeManagerProtocol):
                     server_id,
                     status_key,
                     current_item=item_display_name,
+                    current_library_id=queue_item.get("library_id"),
+                    current_library_name=queue_item.get("library_name"),
                     last_log=f"[{server_index + 1}/{len(enabled_servers)}] {server_name} - Analisi{retry_suffix}: {item_display_name}"
                 )
     
@@ -599,6 +607,8 @@ class RecentProbeMixin(ProbeManagerProtocol):
                         else:
                             self._status[srv_id][status_key]["last_log"] = "Processing completato"
                         self._status[srv_id][status_key]["current_item"] = None
+                        self._status[srv_id][status_key]["current_library_id"] = None
+                        self._status[srv_id][status_key]["current_library_name"] = None
     
         finally:
             if paused_server_ids:
@@ -829,6 +839,11 @@ class RecentProbeMixin(ProbeManagerProtocol):
             MAX_ITEMS = _coerce_int_range(config.get("max_items"), 2000, 500, 10000)
             SAFETY_MARGIN_DAYS = _coerce_int_range(config.get("safety_margin_days"), 7, 1, 30)
             media_policy = normalize_media_policy(config.get("media_policy"))
+            self._update_status(
+                server_id,
+                "recent_discovery",
+                limit=MAX_ITEMS,
+            )
 
             now = datetime.now(timezone.utc)
             max_days_cutoff = now - timedelta(days=MAX_DAYS)
@@ -931,7 +946,7 @@ class RecentProbeMixin(ProbeManagerProtocol):
             items_batch = []
             batch_size = 20
 
-            # Get recently added items - scan last 500 items sorted by DateCreated
+            # Scan the configured recent-item budget, ordered by DateCreated.
             self._update_status(
                 server_id,
                 "recent_discovery",
@@ -939,6 +954,7 @@ class RecentProbeMixin(ProbeManagerProtocol):
             )
 
             max_items_to_scan = MAX_ITEMS  # Scan last items by DateCreated
+            completion_reason: str | None = None
 
             while not stop_flag.is_set():
                 # Simple approach: get items sorted by DateCreated, process up to 500
@@ -996,12 +1012,9 @@ class RecentProbeMixin(ProbeManagerProtocol):
                     item_date = _parse_emby_date(item.get("DateCreated"))
 
                     if item_date and item_date < cutoff_date:
-                        self._update_status(
-                            server_id,
-                            "recent_discovery",
-                            last_log=f"{server_name}: Fermato - oltre {MAX_DAYS} giorni"
+                        completion_reason = (
+                            f"raggiunta la finestra di {MAX_DAYS} giorni"
                         )
-                        stop_flag.set()
                         break
                     # Track oldest item date for timestamp saving
                     if item_date and (oldest_item_date is None or item_date < oldest_item_date):
@@ -1011,12 +1024,9 @@ class RecentProbeMixin(ProbeManagerProtocol):
                     # This ensures we check recently added content without processing the entire library
                     total_items_checked += 1
                     if total_items_checked > max_items_to_scan:
-                        self._update_status(
-                            server_id,
-                            "recent_discovery",
-                            last_log=f"{server_name}: Scansionati {max_items_to_scan} elementi - discovery completata"
+                        completion_reason = (
+                            f"raggiunto il limite di {max_items_to_scan} elementi"
                         )
-                        stop_flag.set()
                         break
 
                     item_path = item.get("Path", "")
@@ -1031,6 +1041,30 @@ class RecentProbeMixin(ProbeManagerProtocol):
                     season_number = item.get("ParentIndexNumber")
                     episode_number = item.get("IndexNumber")
                     year = item.get("SeriesProductionYear") or item.get("ProductionYear")
+
+                    current_name = _format_probe_display_name(
+                        item_type,
+                        item_name,
+                        year,
+                        series_name,
+                        season_number,
+                        episode_number,
+                        item_path,
+                        None,
+                    )
+                    path_library_id, path_library_name = resolve_library(
+                        item_path,
+                        None,
+                    )
+                    self._update_status(
+                        server_id,
+                        "recent_discovery",
+                        current_item=current_name,
+                        current_library_id=path_library_id,
+                        current_library_name=(
+                            path_library_name if path_library_id else None
+                        ),
+                    )
 
                     media_sources = item.get("MediaSources")
                     if not isinstance(media_sources, list) or not media_sources:
@@ -1055,6 +1089,13 @@ class RecentProbeMixin(ProbeManagerProtocol):
 
                         parent_id = item.get("ParentId")
                         library_id, library_name = resolve_library(item_path, parent_id)
+                        if library_id:
+                            self._update_status(
+                                server_id,
+                                "recent_discovery",
+                                current_library_id=library_id,
+                                current_library_name=library_name,
+                            )
 
                         # Check if this source has mediainfo
                         if source_runtime and source_streams:
@@ -1115,12 +1156,10 @@ class RecentProbeMixin(ProbeManagerProtocol):
                     if len(sliding_window) >= WINDOW_SIZE:
                         completion_rate = sum(sliding_window) / len(sliding_window)
                         if completion_rate >= WINDOW_THRESHOLD:
-                            self._update_status(
-                                server_id,
-                                "recent_discovery",
-                                last_log=f"{server_name}: Fermato - finestra {WINDOW_SIZE} elementi con {int(completion_rate*100)}% completi"
+                            completion_reason = (
+                                f"finestra di {WINDOW_SIZE} elementi già completa "
+                                f"al {int(completion_rate * 100)}%"
                             )
-                            stop_flag.set()
                             break
 
                     # Flush batch periodically
@@ -1140,7 +1179,7 @@ class RecentProbeMixin(ProbeManagerProtocol):
                         )
                         items_batch = []
 
-                if stop_flag.is_set():
+                if stop_flag.is_set() or completion_reason:
                     break
 
                 start_index += page_size
@@ -1168,15 +1207,26 @@ class RecentProbeMixin(ProbeManagerProtocol):
                 self._update_status(
                     server_id,
                     "recent_discovery",
-                    last_log=f"{server_name}: Discovery interrotta dall'utente"
+                    last_log=f"{server_name}: Discovery interrotta dall'utente",
+                    current_item=None,
+                    current_library_id=None,
+                    current_library_name=None,
                 )
             else:
                 found_count = self._status.get(server_id, {}).get("recent_discovery", {}).get("found", 0)
                 scanned_count = self._status.get(server_id, {}).get("recent_discovery", {}).get("total_scanned", 0)
+                reason = f" ({completion_reason})" if completion_reason else ""
                 self._update_status(
                     server_id,
                     "recent_discovery",
-                    last_log=f"{server_name}: Discovery completata - Trovati {found_count} file da analizzare su {scanned_count} elementi scansionati"
+                    last_log=(
+                        f"{server_name}: Discovery completata{reason} - "
+                        f"Trovati {found_count} file da analizzare su "
+                        f"{scanned_count} elementi scansionati"
+                    ),
+                    current_item=None,
+                    current_library_id=None,
+                    current_library_name=None,
                 )
 
         except Exception as exc:
@@ -1188,4 +1238,8 @@ class RecentProbeMixin(ProbeManagerProtocol):
         finally:
             with self._lock:
                 if server_id in self._status and "recent_discovery" in self._status[server_id]:
-                    self._status[server_id]["recent_discovery"]["running"] = False
+                    status = self._status[server_id]["recent_discovery"]
+                    status["running"] = False
+                    status["current_item"] = None
+                    status["current_library_id"] = None
+                    status["current_library_name"] = None

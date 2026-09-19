@@ -5,6 +5,8 @@ import {
   comboTaskOutcome,
   comboTaskState,
   currentItemForComboTask,
+  currentLibraryForComboTask,
+  discoveryMetricsForComboTask,
   progressForComboTask,
   statusForComboTask,
 } from "@/features/probe/probe-combo-presentation";
@@ -399,6 +401,33 @@ describe("comboTasksForServers", () => {
     expect(comboTaskOutcome(task, statuses)).toBe("interrupted");
   });
 
+  it("non interpreta un limite normale della discovery come interruzione", () => {
+    const task = {
+      id: "bounded",
+      type: "discovery",
+      server_id: "black",
+    };
+    const statuses = [{
+      serverId: "black",
+      serverName: "Black",
+      status: {
+        running: false,
+        board_reset: true,
+        queue: [task],
+        last_run: {
+          status: "completed",
+          tasks: [{
+            ...task,
+            result: "success",
+            note: "Fermato - raggiunto il limite configurato",
+          }],
+        },
+      },
+    }];
+
+    expect(comboTaskOutcome(task, statuses)).toBe("completed");
+  });
+
   it("mantiene distinti gli esiti di errore e parziale", () => {
     const errorTask = { id: "error", type: "processing", server_id: "black" };
     const partialTask = { id: "partial", type: "processing", server_id: "black" };
@@ -463,5 +492,30 @@ describe("comboTasksForServers", () => {
       status: { running: true, phase: "processing" },
       processingStatus,
     }])).toBe(processingStatus);
+  });
+
+  it("espone libreria corrente e contatori della discovery recente", () => {
+    const task = { type: "discovery", server_id: "purple" };
+    const statuses = [{
+      serverId: "purple",
+      serverName: "Purple",
+      discoveryStatus: {
+        running: true,
+        started_at: "2026-09-19T09:00:00Z",
+        current_library_name: "Serie TV",
+        current_item: "Alphas (2011) - S01E01 - Pilot",
+        total_scanned: 75,
+        found: 4,
+      },
+    }];
+
+    expect(currentLibraryForComboTask(task, statuses)).toBe("Serie TV");
+    expect(currentItemForComboTask(task, statuses)).toBe(
+      "Alphas (2011) - S01E01 - Pilot",
+    );
+    expect(discoveryMetricsForComboTask(task, statuses)).toEqual({
+      scanned: 75,
+      found: 4,
+    });
   });
 });

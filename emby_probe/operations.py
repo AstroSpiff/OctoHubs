@@ -261,7 +261,7 @@ def _complete_probe_operation(
     result = {"servers": dict(states)}
     if "errore" in normalized_message:
         tracker.fail(operation_id, final_message, result=result)
-    elif "interrot" in normalized_message or "fermat" in normalized_message:
+    elif "interrot" in normalized_message:
         tracker.skip(operation_id, final_message, result=result)
     else:
         tracker.finish(operation_id, final_message, result=result)

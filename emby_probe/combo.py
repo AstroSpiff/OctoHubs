@@ -508,8 +508,6 @@ class ComboProbeMixin(ProbeManagerProtocol):
                 return "warning", last_log or "Interrotto"
             return "warning", "Interrotto"
 
-        if "fermato" in lower_log:
-            return "warning", last_log or "Fermato in anticipo"
         if "completata" in lower_log or "completato" in lower_log or "scansionati" in lower_log:
             return "success", last_log or "Completato"
         return "success", last_log or "Completato"

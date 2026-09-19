@@ -223,6 +223,116 @@ class EmbyProbeManagerStopTests(unittest.TestCase):
             },
         )
 
+    def test_recent_bounded_discovery_is_recorded_as_success(self):
+        manager = EmbyProbeManager()
+        manager._status["server-a"] = {
+            "recent_discovery": {
+                "last_log": (
+                    "Black: Discovery completata "
+                    "(raggiunta la finestra di 60 giorni) - "
+                    "Trovati 3 file da analizzare su 140 elementi scansionati"
+                ),
+                "total_scanned": 140,
+                "found": 3,
+            }
+        }
+
+        result, note = manager._evaluate_combo_task_result(
+            "server-a",
+            PROBE_SCOPE_RECENT,
+            "discovery",
+        )
+
+        self.assertEqual("success", result)
+        self.assertIn("Discovery completata", note)
+
+    def test_recent_smart_processing_uses_per_server_totals(self):
+        class Storage:
+            def __init__(self):
+                self.queue = {
+                    "green": [
+                        {
+                            "id": 1,
+                            "item_id": "green-1",
+                            "name": "Green 1",
+                            "library_id": "movies",
+                            "library_name": "Film",
+                        }
+                    ],
+                    "purple": [
+                        {
+                            "id": 2,
+                            "item_id": "purple-1",
+                            "name": "Purple 1",
+                            "library_id": "series",
+                            "library_name": "Serie TV",
+                        },
+                        {
+                            "id": 3,
+                            "item_id": "purple-2",
+                            "name": "Purple 2",
+                            "library_id": "series",
+                            "library_name": "Serie TV",
+                        },
+                    ],
+                }
+
+            def get_probe_queue(
+                self,
+                server_id,
+                *,
+                scope="recent",
+                limit=None,
+                cursor_id=0,
+            ):
+                return list(self.queue[server_id])
+
+            def count_probe_queue(self, server_id, *, scope="recent"):
+                return len(self.queue[server_id])
+
+            def load_probe_blacklist(self, server_id, *, scope="recent"):
+                return {}
+
+            def claim_probe_queue_items(self, ids):
+                claimed = []
+                for queue in self.queue.values():
+                    for item in list(queue):
+                        if item["id"] in ids:
+                            queue.remove(item)
+                            claimed.append(item)
+                return claimed
+
+        manager = EmbyProbeManager()
+        storage = Storage()
+        manager.configure(lambda: storage)
+        servers = [
+            {"id": "green", "name": "Green", "enabled": True},
+            {"id": "purple", "name": "Purple", "enabled": True},
+        ]
+
+        with (
+            patch(
+                "emby_probe.recent._fetch_emby_active_sessions",
+                return_value=([], None),
+            ),
+            patch.object(
+                manager,
+                "_probe_claimed_recent_item",
+                return_value=("SUCCESS", None, 10),
+            ),
+        ):
+            manager._smart_processing_all_servers(
+                servers,
+                _NoWaitStopFlag(),
+                PROBE_SCOPE_RECENT,
+            )
+
+        self.assertEqual(1, manager._status["green"]["recent_processing"]["total"])
+        self.assertEqual(2, manager._status["purple"]["recent_processing"]["total"])
+        self.assertIsNone(
+            manager._status["purple"]["recent_processing"]["current_library_name"]
+        )
+
     def test_status_returns_a_deep_snapshot_not_live_worker_state(self):
         manager = EmbyProbeManager()
         manager._status["server-a"] = {

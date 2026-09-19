@@ -94,6 +94,31 @@ def test_probe_worker_monitor_marks_user_stop_as_skipped(monkeypatch):
     assert not tracker.finished
 
 
+def test_probe_worker_monitor_treats_a_bounded_discovery_stop_as_success(monkeypatch):
+    tracker = _Tracker()
+    manager = _Manager(
+        {"green": {"recent_discovery": {"last_log": "Fermato - oltre 60 giorni"}}},
+        [True, False],
+    )
+    monkeypatch.setattr("emby_probe.operations.time.sleep", lambda _seconds: None)
+
+    _monitor_probe_worker(
+        tracker,
+        "operation-1",
+        manager,
+        ProbeWorkerOperation(
+            "recent_discovery",
+            "Media Probe: Discovery recenti",
+            "recent",
+        ),
+        ["green"],
+        threading.Event(),
+    )
+
+    assert tracker.finished
+    assert not tracker.skipped
+
+
 def test_probe_worker_monitor_is_bound_to_the_original_worker_and_reports_progress():
     tracker = _Tracker()
     manager = _Manager(

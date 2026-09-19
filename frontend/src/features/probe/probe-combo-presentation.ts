@@ -307,7 +307,7 @@ export function comboTaskOutcome(
 
   const lastLog = String(phaseStatus?.last_log || comboStatus?.last_log || "")
     .toLowerCase();
-  if (lastLog.includes("interrott") || lastLog.includes("fermat")) {
+  if (lastLog.includes("interrott")) {
     return "interrupted";
   }
   if (lastLog.includes("errore") || lastLog.includes("fallit")) return "error";
@@ -384,6 +384,30 @@ export function currentItemForComboTask(
   return status.current_item;
 }
 
+export function currentLibraryForComboTask(
+  task: ProbeComboTask,
+  statuses: ProbeComboServerStatusLike[],
+): string | undefined {
+  if (task.library_name) return task.library_name;
+  const status = statusForComboTask(task, statuses);
+  return status?.current_library_name || undefined;
+}
+
+export function discoveryMetricsForComboTask(
+  task: ProbeComboTask,
+  statuses: ProbeComboServerStatusLike[],
+): { scanned: number; found: number } | undefined {
+  if (task.type !== "discovery" || task.library_id) return undefined;
+  const status = statusForComboTask(task, statuses);
+  if (!status || (!status.started_at && status.total_scanned === undefined)) {
+    return undefined;
+  }
+  return {
+    scanned: Number(status.total_scanned || 0),
+    found: Number(status.found || 0),
+  };
+}
+
 function standalonePhaseTaskState(
   task: ProbeComboTask,
   phaseStatus?: ProbeWorkerStatus,
@@ -447,7 +471,8 @@ function recordedTaskOutcome(task: ProbeComboTask): ProbeComboOutcome {
   const note = String(task.note || "").toLowerCase();
   if (task.result === "error") return "error";
   if (task.result === "skipped") return "skipped";
-  if (note.includes("interrott") || note.includes("fermat")) {
+  if (task.result === "success") return "completed";
+  if (note.includes("interrott")) {
     return "interrupted";
   }
   if (task.result === "warning") return "partial";

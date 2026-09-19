@@ -93,9 +93,7 @@ function ProbeLastRuns({
                           : "Individuazione"}
                       </span>
                       <strong>
-                        {task.library_name ||
-                          task.server_name ||
-                          "Tutte le librerie"}
+                        {task.library_name || "Tutte le librerie"}
                       </strong>
                     </div>
                     <StatusBadge severity={lastRunSeverity(task.result)}>

@@ -11,6 +11,8 @@ import {
   comboTasksForServers,
   comboTaskState,
   currentItemForComboTask,
+  currentLibraryForComboTask,
+  discoveryMetricsForComboTask,
   progressForComboTask,
 } from "@/features/probe/probe-combo-presentation";
 import type {
@@ -106,6 +108,8 @@ function ProbeTaskCard({
 }) {
   const progress = progressForComboTask(task, serverStatuses);
   const currentItem = currentItemForComboTask(task, serverStatuses);
+  const currentLibrary = currentLibraryForComboTask(task, serverStatuses);
+  const discoveryMetrics = discoveryMetricsForComboTask(task, serverStatuses);
   const serverName =
     task.server_name ||
     serverStatuses.find((entry) => entry.serverId === task.server_id)
@@ -129,7 +133,12 @@ function ProbeTaskCard({
           </StatusBadge>
         ) : null}
       </header>
-      <span>{[serverName, task.library_name].filter(Boolean).join(" · ")}</span>
+      <span>{[serverName, currentLibrary].filter(Boolean).join(" · ")}</span>
+      {discoveryMetrics ? (
+        <small>
+          Ispezionati: {discoveryMetrics.scanned} · Individuati: {discoveryMetrics.found}
+        </small>
+      ) : null}
       {progress ? (
         <>
           <small>

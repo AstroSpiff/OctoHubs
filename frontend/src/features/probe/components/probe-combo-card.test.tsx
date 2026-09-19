@@ -124,6 +124,30 @@ describe("ProbeTaskBoard", () => {
     expect(markup.match(/Film corrente/g)).toHaveLength(1);
   });
 
+  it("mostra contesto e contatori live degli ultimi aggiunti", () => {
+    const markup = renderToStaticMarkup(
+      <ProbeTaskBoard
+        scope="recent"
+        serverStatuses={[{
+          serverId: "blue",
+          serverName: "Blue",
+          discoveryStatus: {
+            running: true,
+            started_at: "2026-09-19T08:01:00Z",
+            current_library_name: "Film",
+            current_item: "Le tigri di Mompracem (2025)",
+            total_scanned: 41,
+            found: 2,
+          },
+        }]}
+      />,
+    );
+
+    expect(markup).toContain("Blue · Film");
+    expect(markup).toContain("Ispezionati: 41 · Individuati: 2");
+    expect(markup).toContain("Le tigri di Mompracem (2025)");
+  });
+
   it("mostra nell'ultimo run libreria, tempi, contatori ed esito reale", () => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true;
     const container = document.createElement("div");

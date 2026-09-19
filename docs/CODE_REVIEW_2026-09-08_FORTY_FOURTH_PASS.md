@@ -1705,3 +1705,48 @@ stati modificati dati o configurazione del deployment Hetzner.
   ESLint, build TypeScript/Vite, audit Python/npm completo e runtime, Compose
   base/secrets/bootstrap, doppia build Docker riproducibile, identità runtime
   non-root, smoke autenticato su PostgreSQL esterno e `git diff --check` verdi.
+
+### Follow-up operativo v0.5.21 — esito e telemetria Ultimi aggiunti
+
+- **Baseline:** `7d51953002a1817ee407f8baeb8b80402827a9b2` (`v0.5.20`),
+  worktree pulito prima dell'intervento.
+- **Causa — resolved (famiglia: semantica di arresto e proiezione stato
+  Probe):** la discovery di “Ultimi aggiunti” riutilizzava lo stesso
+  `stop_flag` sia per una cancellazione esterna sia per tre conclusioni normali:
+  limite temporale, budget massimo di elementi e finestra già completa. Il log
+  finale vedeva il flag e sovrascriveva quindi un successo previsto con
+  “interrotta dall'utente”; backend operazioni, snapshot combo e frontend
+  propagavano l'esito errato. Il task recente non pubblicava inoltre elemento e
+  libreria correnti durante la discovery; il Kanban ignorava il contesto già
+  disponibile durante il processing. Nel processing smart multiservizio ogni
+  server riceveva infine come `total` la somma delle code di tutti i server.
+- **Soluzione:** le tre condizioni di budget terminano ora il ciclo con una
+  motivazione di completamento locale senza impostare il segnale di
+  cancellazione. Soltanto uno stop esterno produce “Interrotto”; il risultato
+  strutturato registrato è autorevole rispetto al testo e la parola generica
+  “Fermato” non viene più interpretata come cancellazione. La discovery recente
+  pubblica elemento e libreria correnti ricavando quest'ultima dai percorsi già
+  caricati, senza nuove chiamate Emby, e azzera il contesto alla fine anche in
+  errore. Le schede mostrano server, libreria corrente, elemento,
+  `Ispezionati` e `Individuati`; l'ultimo run usa “Tutte le librerie” per il task
+  trasversale. Il processing smart assegna e visualizza il totale proprio di
+  ciascun server.
+- **Regressori, canary e superfici analoghe:** coperti deterministicamente i tre
+  arresti normali e la cancellazione distinta, la classificazione nel monitor
+  operazioni, lo snapshot combo, la priorità dell'esito strutturato, la
+  pubblicazione live senza fetch aggiuntivi, il rendering del Kanban e i totali
+  per-server in round-robin. Riesaminati worker recenti singoli e globali,
+  workflow completo, processing smart e forzato, centro operazioni, Kanban e
+  ultimo run. Ordine, contenuto e persistenza della coda, route, metodi e payload
+  di richiesta non cambiano.
+- **Rischio residuo:** un run già memorizzato da una versione precedente può
+  conservare il vecchio testo “Fermato”; il risultato strutturato prevale e lo
+  presenta correttamente come completato. Non sono noti rischi residui per i
+  nuovi run.
+- **Gate finali:** regressori mirati backend 22/22 e frontend 27/27; backend
+  2333 passed, 78 skipped e 34 subtests passed; PostgreSQL 16 reale 83 passed;
+  frontend 281 file/792 test; Ruff, baseline complessità, Pyright, contratto API
+  strict, ESLint, build TypeScript/Vite, audit Python/npm completo e runtime,
+  Compose base/secrets/bootstrap, doppia build Docker riproducibile, identità
+  runtime non-root, smoke autenticato con PostgreSQL 16 esterno temporaneo e
+  `git diff --check` verdi.
