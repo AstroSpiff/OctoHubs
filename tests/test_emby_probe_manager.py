@@ -116,6 +116,71 @@ class _ContinuousProbeManager(_ParallelProbeManager):
 
 
 class EmbyProbeManagerStopTests(unittest.TestCase):
+    def test_last_run_preserves_library_names_timing_and_per_phase_metrics(self):
+        manager = EmbyProbeManager()
+        manager._status["server-a"] = {
+            "combo_libraries": {"started_at": "2026-09-19T07:00:00+00:00"},
+            "discovery": {
+                "started_at": "2026-09-19T07:00:01+00:00",
+                "last_log": "Discovery completata",
+                "library_names": {"movies": "Film"},
+                "library_totals": {"movies": 120},
+                "library_scanned": {"movies": 120},
+                "library_found": {"movies": 14},
+                "completed_library_ids": ["movies"],
+            },
+            "processing": {
+                "started_at": "2026-09-19T07:01:00+00:00",
+                "last_log": "Processing completato",
+                "library_names": {"movies": "Film"},
+                "library_queue_totals": {"movies": 14},
+                "library_queue_results": {
+                    "movies": {"processed": 12, "incomplete": 1, "errors": 1}
+                },
+            },
+        }
+
+        last_run = manager._build_combo_last_run(
+            [{"id": "server-a", "name": "Black"}],
+            PROBE_SCOPE_LIBRARIES,
+            False,
+            library_ids=["movies"],
+        )
+
+        self.assertEqual("2026-09-19T07:00:00+00:00", last_run["started_at"])
+        self.assertEqual("error", last_run["status"])
+        self.assertEqual(
+            {
+                "library_name": "Film",
+                "total": 120,
+                "scanned": 120,
+                "found": 14,
+            },
+            {
+                key: last_run["tasks"][0][key]
+                for key in ("library_name", "total", "scanned", "found")
+            },
+        )
+        self.assertEqual(
+            {
+                "library_name": "Film",
+                "total": 14,
+                "processed": 12,
+                "incomplete": 1,
+                "errors": 1,
+            },
+            {
+                key: last_run["tasks"][1][key]
+                for key in (
+                    "library_name",
+                    "total",
+                    "processed",
+                    "incomplete",
+                    "errors",
+                )
+            },
+        )
+
     def test_status_returns_a_deep_snapshot_not_live_worker_state(self):
         manager = EmbyProbeManager()
         manager._status["server-a"] = {

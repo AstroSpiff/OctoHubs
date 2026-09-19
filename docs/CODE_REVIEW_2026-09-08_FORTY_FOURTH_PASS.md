@@ -1478,3 +1478,38 @@ stati modificati dati o configurazione del deployment Hetzner.
   `git diff --check` verdi. Il primo tentativo di smoke, eseguito senza alcun
   PostgreSQL in ascolto su `host.docker.internal:5432`, è fallito come previsto;
   il gate finale è stato ripetuto e superato contro un PostgreSQL 16 effimero.
+
+### Follow-up operativo v0.5.14 — dettaglio ultimo run Media Probe
+
+- **Baseline:** `40882c5624bdfe9906c592fe8fe16abb93b404b7` (`v0.5.13`),
+  worktree pulito prima dell'intervento.
+- **Causa — resolved (famiglia: snapshot operativo incompleto):** il riepilogo
+  finale conservava soltanto fase, esito e una nota generica. Gli stati dei
+  worker non registravano stabilmente i nomi delle librerie né i conteggi per
+  libreria e la UI mostrava qualsiasi esito diverso da “interrotto” come
+  completato. Il risultato era formalmente corretto ma non consentiva di capire
+  quale libreria fosse stata elaborata, quanto lavoro fosse stato svolto o dove
+  fosse avvenuto un errore.
+- **Soluzione:** discovery e processing mantengono ora la mappa ID/nome e i
+  contatori per libreria. Lo snapshot finale registra inizio/fine del run,
+  durata implicita, nome del target e metriche specifiche: trovati/scansionati
+  per l'individuazione; elaborati, incompleti ed errori per l'analisi. Il
+  pannello mostra stato reale, orari, durata, numero di fasi e un riepilogo
+  leggibile per ciascuna libreria senza duplicare la nota generica
+  “Completato”. Route, metodi e avvio dei worker restano invariati.
+- **Regressori e superfici analoghe:** un regressore backend verifica nomi,
+  tempi e metriche delle due fasi; il canary DOM apre “Ultimo run” e verifica
+  libreria, durata, conteggi ed errore. Riesaminati workflow Librerie e Ultimi
+  aggiunti, esiti completed/partial/interrupted/error e snapshot precedenti.
+  La review indipendente non ha rilevato variazioni all'ordine, al parallelismo,
+  alla persistenza della coda o ai contratti pubblici.
+- **Rischio residuo:** “Ultimo run” resta intenzionalmente memoria del processo
+  e si azzera al riavvio. Uno snapshot creato prima di v0.5.14 può essere
+  arricchito con i nomi dall'inventario corrente, ma tempi e conteggi completi
+  saranno disponibili dal primo nuovo run.
+- **Gate finali:** regressori mirati backend 9/9 e frontend 15/15; backend 2320
+  passed, 78 skipped e 34 subtests passed; PostgreSQL 16 reale 83 passed;
+  frontend 280 file/773 test; Ruff, Pyright, ESLint, build Vite, audit
+  Python/npm, complessità, contratto API strict, Compose base/secrets/bootstrap,
+  doppia build Docker riproducibile, identità runtime non-root, smoke
+  autenticato su PostgreSQL esterno e `git diff --check` verdi.

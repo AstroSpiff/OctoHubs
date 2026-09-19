@@ -627,6 +627,7 @@
   overflow-wrap: anywhere;
 }
 .probe-combo-last-runs article time,
+.probe-combo-last-runs article header small,
 .probe-combo-last-runs article > p {
   color: var(--color-muted);
   font-size: 10px;
@@ -647,9 +648,21 @@
   gap: 5px 8px;
   align-items: center;
 }
-.probe-combo-last-runs li > span {
+.probe-combo-last-runs li > div {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+.probe-combo-last-runs li > div > span {
+  color: var(--color-muted);
+  font-size: 9px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+.probe-combo-last-runs li > div > strong {
   color: var(--color-ink);
   font-size: 10px;
+  overflow-wrap: anywhere;
 }
 .probe-combo-last-runs li > small {
   grid-column: 1 / -1;

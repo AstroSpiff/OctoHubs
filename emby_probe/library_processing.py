@@ -412,6 +412,13 @@ class LibraryProcessingWorker(LibraryProbeExecutionMixin):
         claimed: list[dict[str, Any]],
     ) -> None:
         library_name = claimed[0].get("library_name") or queue[0].get("library_name")
+        if library_name:
+            self.manager._set_status_library_name(
+                self.server_id,
+                self.status_key,
+                library_id,
+                str(library_name),
+            )
         self.manager._update_status(
             self.server_id,
             self.status_key,

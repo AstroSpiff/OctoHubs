@@ -315,6 +315,35 @@ class EmbyProbeManager(RecentProbeMixin, LibrariesProbeMixin, ComboProbeMixin):
             totals[str(library_id)] = total_count
             discovery["library_totals"] = totals
 
+    def _set_status_library_name(
+        self,
+        server_id: str,
+        status_key: str,
+        library_id: str,
+        library_name: str,
+    ) -> None:
+        with self._lock:
+            status = self._status.setdefault(server_id, {}).setdefault(status_key, {})
+            names = status.get("library_names") or {}
+            names[str(library_id)] = str(library_name)
+            status["library_names"] = names
+
+    def _increment_library_found(
+        self,
+        server_id: str,
+        library_id: str,
+        count: int,
+    ) -> None:
+        with self._lock:
+            discovery = self._status.setdefault(server_id, {}).setdefault(
+                "discovery",
+                {},
+            )
+            found = discovery.get("library_found") or {}
+            key = str(library_id)
+            found[key] = int(found.get(key) or 0) + int(count or 0)
+            discovery["library_found"] = found
+
     def _increment_library_scanned(self, server_id: str, library_id: str, count: int) -> None:
         with self._lock:
             if server_id not in self._status:

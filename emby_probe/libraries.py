@@ -60,8 +60,10 @@ class LibrariesProbeMixin(ProbeManagerProtocol):
                 "total_scanned": 0,
                 "current_library_id": None,
                 "current_library_name": None,
+                "library_names": {},
                 "library_totals": {},
                 "library_scanned": {},
+                "library_found": {},
                 "completed_library_ids": [],
                 "error_library_ids": [],
                 "target_library_ids": [
@@ -159,6 +161,7 @@ class LibrariesProbeMixin(ProbeManagerProtocol):
                 "current_item": None,
                 "current_library_id": None,
                 "current_library_name": None,
+                "library_names": {},
                 "library_queue_totals": {},
                 "library_queue_results": {},
                 "target_library_ids": [

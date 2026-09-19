@@ -147,9 +147,17 @@ export type ProbeComboTask = {
   library_name?: string;
   result?: "success" | "warning" | "error" | "skipped" | string;
   note?: string;
+  started_at?: string;
+  total?: number;
+  scanned?: number;
+  found?: number;
+  processed?: number;
+  incomplete?: number;
+  errors?: number;
 };
 
 export type ProbeComboLastRun = {
+  started_at?: string | null;
   finished_at?: string;
   status?: "completed" | "interrupted" | string;
   tasks?: ProbeComboTask[];

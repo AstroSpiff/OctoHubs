@@ -27,6 +27,82 @@ def _combo_terminal_message(
     return "Combo workflow completato"
 
 
+def _status_key_for_task(scope: str, task_type: str) -> str:
+    if scope == PROBE_SCOPE_RECENT:
+        return "recent_discovery" if task_type == "discovery" else "recent_processing"
+    return "discovery" if task_type == "discovery" else "processing"
+
+
+def _status_mapping(status: dict[str, Any], key: str) -> dict[str, Any]:
+    value = status.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _status_count(status: dict[str, Any], key: str) -> int:
+    return int(status.get(key) or 0)
+
+
+def _combo_task_metrics(
+    status: dict[str, Any],
+    task_type: str,
+    library_id: str | None,
+) -> dict[str, Any]:
+    details: dict[str, Any] = {}
+    if status.get("started_at"):
+        details["started_at"] = status["started_at"]
+
+    if library_id:
+        key = str(library_id)
+        library_name = _status_mapping(status, "library_names").get(key)
+        if library_name:
+            details["library_name"] = str(library_name)
+        if task_type == "discovery":
+            totals = _status_mapping(status, "library_totals")
+            scanned = _status_mapping(status, "library_scanned")
+            found = _status_mapping(status, "library_found")
+            if key in totals:
+                details["total"] = int(totals[key] or 0)
+            details["scanned"] = int(scanned.get(key) or 0)
+            details["found"] = int(found.get(key) or 0)
+            return details
+
+        totals = _status_mapping(status, "library_queue_totals")
+        results = _status_mapping(status, "library_queue_results")
+        result = results.get(key) if isinstance(results.get(key), dict) else {}
+        if key in totals:
+            details["total"] = int(totals[key] or 0)
+        details.update(
+            processed=int(result.get("processed") or 0),
+            incomplete=int(result.get("incomplete") or 0),
+            errors=int(result.get("errors") or 0),
+        )
+        return details
+
+    if task_type == "discovery":
+        details.update(
+            scanned=_status_count(status, "total_scanned"),
+            found=_status_count(status, "found"),
+        )
+        return details
+
+    details.update(
+        total=_status_count(status, "total"),
+        processed=(
+            _status_count(status, "processed")
+            + _status_count(status, "processed_retry")
+        ),
+        incomplete=(
+            _status_count(status, "incomplete")
+            + _status_count(status, "incomplete_retry")
+        ),
+        errors=(
+            _status_count(status, "errors")
+            + _status_count(status, "errors_retry")
+        ),
+    )
+    return details
+
+
 class ComboProbeMixin(ProbeManagerProtocol):
     """Mixin for probe workflows."""
 
@@ -369,11 +445,7 @@ class ComboProbeMixin(ProbeManagerProtocol):
         task_type: str,
         library_id: Optional[str] = None
     ) -> tuple[str, str]:
-        status_key = task_type
-        if scope == PROBE_SCOPE_RECENT:
-            status_key = "recent_discovery" if task_type == "discovery" else "recent_processing"
-        else:
-            status_key = "discovery" if task_type == "discovery" else "processing"
+        status_key = _status_key_for_task(scope, task_type)
         status = self._status.get(server_id, {}).get(status_key, {}) if server_id else {}
         last_log = str(status.get("last_log") or "")
         lower_log = last_log.lower()
@@ -451,6 +523,13 @@ class ComboProbeMixin(ProbeManagerProtocol):
         task_types: Optional[list[str]] = None
     ) -> Dict[str, Any]:
         tasks = []
+        finished_at = datetime.now(timezone.utc).isoformat()
+        combo_key = f"combo_{scope}"
+        started_values = [
+            str(self._status.get(str(server.get("id") or ""), {}).get(combo_key, {}).get("started_at"))
+            for server in servers
+            if self._status.get(str(server.get("id") or ""), {}).get(combo_key, {}).get("started_at")
+        ]
         queue = self._build_combo_queue(servers, scope, library_ids=library_ids, task_types=task_types)
         for entry in queue:
             server_id = entry.get("server_id")
@@ -466,6 +545,15 @@ class ComboProbeMixin(ProbeManagerProtocol):
             task_entry = dict(entry)
             task_entry["result"] = result
             task_entry["note"] = note
+            status_key = _status_key_for_task(scope, task_type)
+            status = self._status.get(server_id, {}).get(status_key, {})
+            task_entry.update(
+                _combo_task_metrics(
+                    status if isinstance(status, dict) else {},
+                    task_type,
+                    str(entry["library_id"]) if entry.get("library_id") else None,
+                )
+            )
             tasks.append(task_entry)
         task_results = {str(task.get("result") or "") for task in tasks}
         terminal_status = "interrupted" if interrupted else (
@@ -474,7 +562,8 @@ class ComboProbeMixin(ProbeManagerProtocol):
             "completed"
         )
         return {
-            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "started_at": min(started_values) if started_values else None,
+            "finished_at": finished_at,
             "status": terminal_status,
             "tasks": tasks
         }

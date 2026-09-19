@@ -168,6 +168,12 @@ class LibraryDiscoveryWorker:
             self.manager._mark_library_completed(self.server_id, str(library_id))
 
     def _publish_library_start(self, library_id: str, library_name: str) -> None:
+        self.manager._set_status_library_name(
+            self.server_id,
+            "discovery",
+            library_id,
+            library_name,
+        )
         self.manager._update_status(
             self.server_id,
             "discovery",
@@ -345,6 +351,17 @@ class LibraryDiscoveryWorker:
         batch = self.items_batch
         self.items_batch = []
         self.db.add_to_probe_queue(batch)
+        found_by_library: dict[str, int] = {}
+        for item in batch:
+            library_id = str(item.get("library_id") or "")
+            if library_id:
+                found_by_library[library_id] = found_by_library.get(library_id, 0) + 1
+        for library_id, count in found_by_library.items():
+            self.manager._increment_library_found(
+                self.server_id,
+                library_id,
+                count,
+            )
         updates = series_metadata_updates(batch)
         if updates:
             self.db.resolve_probe_series_metadata(
