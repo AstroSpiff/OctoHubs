@@ -1931,4 +1931,6 @@ stati modificati dati o configurazione del deployment Hetzner.
   effimero, SPA/API e utente non-root verdi; `git diff --check` verde. Il primo
   smoke locale senza PostgreSQL sulla porta predefinita è stato correttamente
   rifiutato dalla readiness; il rerun con il database esterno previsto dal gate
-  è passato.
+  è passato. Il primo workflow GitHub ha inoltre individuato un'aspettativa
+  frontend dipendente dal fuso orario locale: il regressore ora verifica data e
+  precisione ai secondi senza imporre l'ora di Europe/Zurich al runner UTC.

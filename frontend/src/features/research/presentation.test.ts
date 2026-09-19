@@ -20,8 +20,8 @@ describe("research presentation", () => {
   });
 
   it("keeps diagnostic timestamps readable through seconds", () => {
-    expect(formatResearchDate("2026-08-12T14:43:05+02:00")).toMatch(
-      /12\/08\/2026, 14:43:05/,
-    );
+    const formatted = formatResearchDate("2026-08-12T14:43:05+02:00");
+
+    expect(formatted).toMatch(/^12\/08\/2026, \d{2}:\d{2}:05$/);
   });
 });
