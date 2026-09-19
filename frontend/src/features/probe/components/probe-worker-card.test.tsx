@@ -22,7 +22,8 @@ describe("ProbeWorkerCard", () => {
     );
 
     expect(markup).toContain("probe-worker-progress");
-    expect(markup).toContain("5/10");
+    expect(markup).toContain("50%");
+    expect(markup).not.toContain("5/10");
   });
 
   it("nasconde un avanzamento residuo dopo lo stop", () => {

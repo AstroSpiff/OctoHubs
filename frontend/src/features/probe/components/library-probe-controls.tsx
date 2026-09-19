@@ -1,6 +1,7 @@
 import { ProbeComboCard } from "@/features/probe/components/probe-combo-card";
 import type { ProbeComboServerStatusLike as ProbeComboServerStatus } from "@/features/probe/probe-combo-presentation";
 import { ProbeLibrarySelector } from "@/features/probe/components/probe-library-selector";
+import { ProbeTaskBoard } from "@/features/probe/components/probe-task-board";
 import { ProbeWorkerCard } from "@/features/probe/components/probe-worker-card";
 import { probeProgress } from "@/features/probe/presentation";
 import type { ProbeLibrary, ProbeWorkerStatus } from "@/features/probe/types";
@@ -53,7 +54,6 @@ function LibraryProbeControls({
       <ProbeComboCard
         scope="libraries"
         status={comboStatus}
-        serverStatuses={comboServerStatuses}
         actions={[
           {
             label: "Smart",
@@ -180,6 +180,10 @@ function LibraryProbeControls({
           onChange={onProcessingSelectionChange}
         />
       </ProbeWorkerCard>
+      <ProbeTaskBoard
+        scope="libraries"
+        serverStatuses={comboServerStatuses}
+      />
     </div>
   );
 }

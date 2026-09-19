@@ -6,23 +6,24 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { ProbeComboCard } from "@/features/probe/components/probe-combo-card";
+import { ProbeTaskBoard } from "@/features/probe/components/probe-task-board";
 
 describe("ProbeComboCard", () => {
-  it("mostra ogni contatore del workflow una sola volta nella bacheca operativa", () => {
+  it("resta separata dalla bacheca e dall'ultimo run condivisi", () => {
     const markup = renderToStaticMarkup(
       <ProbeComboCard
         scope="libraries"
-        serverStatuses={[]}
         actions={[]}
       />,
     );
 
-    expect(markup.match(/Da fare/g)).toHaveLength(1);
-    expect(markup.match(/In esecuzione/g)).toHaveLength(1);
-    expect(markup.match(/Terminato/g)).toHaveLength(1);
-    expect(markup).not.toContain("probe-worker-stats");
+    expect(markup).toContain("Individuazione + analisi");
+    expect(markup).not.toContain("probe-task-board-panel");
+    expect(markup).not.toContain("Ultimo run");
   });
+});
 
+describe("ProbeTaskBoard", () => {
   it("mostra un'interruzione nella colonna terminata con esito esplicito", () => {
     const task = {
       id: "stopped",
@@ -31,7 +32,7 @@ describe("ProbeComboCard", () => {
       library_id: "series",
     };
     const markup = renderToStaticMarkup(
-      <ProbeComboCard
+      <ProbeTaskBoard
         scope="libraries"
         serverStatuses={[{
           serverId: "black",
@@ -47,7 +48,6 @@ describe("ProbeComboCard", () => {
             },
           },
         }]}
-        actions={[]}
       />,
     );
 
@@ -63,7 +63,7 @@ describe("ProbeComboCard", () => {
       { id: "error", type: "processing", server_id: "black" },
     ];
     const markup = renderToStaticMarkup(
-      <ProbeComboCard
+      <ProbeTaskBoard
         scope="libraries"
         serverStatuses={[{
           serverId: "black",
@@ -81,7 +81,6 @@ describe("ProbeComboCard", () => {
             },
           },
         }]}
-        actions={[]}
       />,
     );
 
@@ -92,7 +91,7 @@ describe("ProbeComboCard", () => {
 
   it("mostra nome e progresso propri per ogni libreria", () => {
     const markup = renderToStaticMarkup(
-      <ProbeComboCard
+      <ProbeTaskBoard
         scope="libraries"
         serverStatuses={[{
           serverId: "black",
@@ -111,7 +110,6 @@ describe("ProbeComboCard", () => {
             },
           },
         }]}
-        actions={[]}
       />,
     );
 
@@ -129,7 +127,7 @@ describe("ProbeComboCard", () => {
     const root = createRoot(container);
 
     act(() => root.render(
-      <ProbeComboCard
+      <ProbeTaskBoard
         scope="libraries"
         serverStatuses={[{
           serverId: "black",
@@ -154,7 +152,6 @@ describe("ProbeComboCard", () => {
             },
           },
         }]}
-        actions={[]}
       />,
     ));
     const toggle = Array.from(container.querySelectorAll("button"))

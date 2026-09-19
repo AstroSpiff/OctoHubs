@@ -89,9 +89,7 @@ function ProbeWorkerCard({
         >
           <div>
             <span>Avanzamento</span>
-            <strong>
-              {progress.completed}/{progress.total}
-            </strong>
+            <strong>{progressPercent}%</strong>
           </div>
           <i>
             <ProgressFill value={progressPercent} />

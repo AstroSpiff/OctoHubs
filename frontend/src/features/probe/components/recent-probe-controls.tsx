@@ -1,6 +1,7 @@
 import { ProbeComboCard } from "@/features/probe/components/probe-combo-card";
 import type { ProbeComboServerStatusLike as ProbeComboServerStatus } from "@/features/probe/probe-combo-presentation";
 import { EmbyServerIcon } from "@/features/emby-live/components/emby-server-icon";
+import { ProbeTaskBoard } from "@/features/probe/components/probe-task-board";
 import { ProbeWorkerCard } from "@/features/probe/components/probe-worker-card";
 import { probeProgress } from "@/features/probe/presentation";
 import type { ProbeServer, ProbeWorkerStatus } from "@/features/probe/types";
@@ -50,7 +51,6 @@ function RecentProbeControls({
         <ProbeComboCard
           scope="recent"
           status={comboStatus}
-          serverStatuses={comboServerStatuses}
           actions={[
             {
               label: "Smart",
@@ -159,6 +159,10 @@ function RecentProbeControls({
             },
           ]}
           canMutate={canMutate}
+        />
+        <ProbeTaskBoard
+          scope="recent"
+          serverStatuses={comboServerStatuses}
         />
       </div>
     </>

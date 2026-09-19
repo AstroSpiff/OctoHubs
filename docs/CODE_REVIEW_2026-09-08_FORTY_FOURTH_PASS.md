@@ -1635,3 +1635,34 @@ stati modificati dati o configurazione del deployment Hetzner.
   ESLint, TypeScript/Vite production build, audit npm completo/runtime e
   `git diff --check` verdi. Nessun backend, schema o dipendenza è stato
   modificato.
+
+### Follow-up operativo v0.5.19 — pannello attività condiviso Media Probe
+
+- **Baseline:** `1e3f15cb33a2c1448adc3970244aa144010a043a` (`v0.5.18`),
+  worktree pulito prima dell'intervento.
+- **Causa — resolved (famiglia: gerarchia informativa frontend):** Kanban e
+  “Ultimo run” erano figli della scheda “Individuazione + analisi”, benché
+  rappresentassero anche le esecuzioni avviate separatamente. La scheda
+  combinata ereditava inoltre lo stato dei worker indipendenti e poteva quindi
+  apparire in esecuzione senza che fosse stato avviato il workflow completo.
+  Nella scheda Analisi, i conteggi già presenti nelle metriche venivano ripetuti
+  sopra la barra come coppia elaborati/totale.
+- **Soluzione:** “Stato attività” è ora un pannello autonomo, fratello delle tre
+  schede operative, e raccoglie Kanban e “Ultimo run” per workflow completo e
+  comandi indipendenti. La scheda combinata mostra esclusivamente il proprio
+  stato. Sopra la barra dei worker viene visualizzata soltanto la percentuale;
+  i valori assoluti restano una sola volta nelle metriche dettagliate. Il
+  pannello mantiene tre colonne su viewport ampi e passa a una colonna su quelli
+  stretti.
+- **Regressori e superfici analoghe:** coperti separazione del workflow
+  combinato, stato standalone per libreria, esiti terminali e apertura
+  dell'ultimo run nel pannello comune. Verificata la percentuale senza coppia
+  numerica duplicata in Librerie, Ultimi aggiunti e workflow combinato. La
+  review indipendente non ha rilevato modifiche a worker, coda, ordine,
+  persistenza, route o contratti HTTP.
+- **Rischio residuo:** nessuno noto nella proiezione; il contenuto storico
+  disponibile resta quello registrato dal backend per l'ultimo run.
+- **Gate finali:** regressori mirati 4 file/28 test; frontend 281 file/785 test;
+  ESLint senza avvisi, TypeScript/Vite production build, audit npm
+  completo/runtime e `git diff --check` verdi. Nessun backend, schema,
+  dipendenza o contratto HTTP è stato modificato.

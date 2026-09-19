@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
 import { useEmbyLive } from "@/features/emby-live/use-emby-live";
 import { LibraryProbeControls } from "@/features/probe/components/library-probe-controls";
-import type { ProbeComboServerStatus } from "@/features/probe/components/probe-combo-card";
+import type { ProbeComboServerStatusLike as ProbeComboServerStatus } from "@/features/probe/probe-combo-presentation";
 import { ProbeWorkspace } from "@/features/probe/components/probe-workspace";
 import { RecentProbeControls } from "@/features/probe/components/recent-probe-controls";
 import { mergeProbeWorkerStatuses } from "@/features/probe/presentation";
