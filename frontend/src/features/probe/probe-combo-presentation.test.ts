@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   comboTasksForServers,
   comboTaskState,
+  currentItemForComboTask,
+  progressForComboTask,
   statusForComboTask,
 } from "@/features/probe/probe-combo-presentation";
 
@@ -146,6 +148,110 @@ describe("comboTasksForServers", () => {
     expect(tasks.map((task) => comboTaskState(task, statuses))).toEqual([
       "running",
       "running",
+    ]);
+  });
+
+  it("mostra nome e task distinti per tutte le librerie selezionate", () => {
+    const statuses = [{
+      serverId: "black",
+      serverName: "BlackPrimrose",
+      libraryNames: { films: "Film", series: "Serie TV" },
+      processingStatus: {
+        running: true,
+        started_at: "2026-09-19T08:01:00Z",
+        target_library_ids: ["films", "series"],
+        current_library_id: "films",
+      },
+    }];
+
+    const tasks = comboTasksForServers("libraries", statuses);
+
+    expect(tasks).toEqual([
+      expect.objectContaining({ library_id: "films", library_name: "Film" }),
+      expect.objectContaining({ library_id: "series", library_name: "Serie TV" }),
+    ]);
+    expect(tasks.map((task) => comboTaskState(task, statuses))).toEqual([
+      "running",
+      "todo",
+    ]);
+  });
+
+  it("calcola progresso e dettaglio sul task della singola libreria", () => {
+    const statuses = [{
+      serverId: "black",
+      serverName: "BlackPrimrose",
+      processingStatus: {
+        running: true,
+        started_at: "2026-09-19T08:01:00Z",
+        processed: 177,
+        total: 30081,
+        current_library_id: "films",
+        current_item: "Film corrente",
+        target_library_ids: ["films", "series"],
+        library_queue_totals: { films: 200, series: 400 },
+        library_queue_results: {
+          films: { processed: 10, incomplete: 2, errors: 1 },
+          series: { processed: 0, incomplete: 0, errors: 0 },
+        },
+      },
+    }];
+    const [films, series] = comboTasksForServers("libraries", statuses);
+
+    expect(progressForComboTask(films, statuses)).toEqual({ completed: 13, total: 200 });
+    expect(progressForComboTask(series, statuses)).toEqual({ completed: 0, total: 400 });
+    expect(currentItemForComboTask(films, statuses)).toBe("Film corrente");
+    expect(currentItemForComboTask(series, statuses)).toBeUndefined();
+  });
+
+  it("mantiene un solo task corrente prima che il worker pubblichi la libreria", () => {
+    const statuses = [{
+      serverId: "black",
+      serverName: "BlackPrimrose",
+      processingStatus: {
+        running: true,
+        started_at: "2026-09-19T08:01:00Z",
+        target_library_ids: ["films", "series"],
+      },
+    }];
+    const tasks = comboTasksForServers("libraries", statuses);
+
+    expect(tasks.map((task) => comboTaskState(task, statuses))).toEqual([
+      "running",
+      "todo",
+    ]);
+  });
+
+  it("mantiene un solo task corrente anche durante l'avvio del workflow combo", () => {
+    const statuses = [{
+      serverId: "black",
+      serverName: "BlackPrimrose",
+      libraryNames: { films: "Film", series: "Serie TV" },
+      status: {
+        running: true,
+        phase: "processing",
+        board_library_ids: ["films", "series"],
+        queue: [
+          {
+            id: "libraries:processing:black:films",
+            type: "processing",
+            server_id: "black",
+            library_id: "films",
+          },
+          {
+            id: "libraries:processing:black:series",
+            type: "processing",
+            server_id: "black",
+            library_id: "series",
+          },
+        ],
+      },
+    }];
+    const tasks = comboTasksForServers("libraries", statuses);
+
+    expect(tasks.map((task) => task.library_name)).toEqual(["Film", "Serie TV"]);
+    expect(tasks.map((task) => comboTaskState(task, statuses))).toEqual([
+      "running",
+      "todo",
     ]);
   });
 

@@ -8,7 +8,8 @@ import { ProgressFill } from "@/components/ui/progress-fill";
 import {
   comboTasksForServers,
   comboTaskState,
-  statusForComboTask,
+  currentItemForComboTask,
+  progressForComboTask,
 } from "@/features/probe/probe-combo-presentation";
 import type { ProbeComboServerStatusLike } from "@/features/probe/probe-combo-presentation";
 import {
@@ -155,9 +156,8 @@ function ProbeComboTaskCard({
   task: ProbeComboTask;
   serverStatuses: ProbeComboServerStatus[];
 }) {
-  const status = statusForComboTask(task, serverStatuses);
-  const progress =
-    task.type === "processing" ? probeProgress(status) : undefined;
+  const progress = progressForComboTask(task, serverStatuses);
+  const currentItem = currentItemForComboTask(task, serverStatuses);
   const serverName =
     task.server_name ||
     serverStatuses.find((entry) => entry.serverId === task.server_id)
@@ -182,7 +182,7 @@ function ProbeComboTaskCard({
           </i>
         </>
       ) : null}
-      {status?.current_item ? <small>{status.current_item}</small> : null}
+      {currentItem ? <small>{currentItem}</small> : null}
     </article>
   );
 }

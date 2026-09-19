@@ -86,6 +86,10 @@ function ProbeRealtimeWorkspace({
       server.icon_color || "",
     ].join("\u0000"))
     .join("\u0001");
+  const libraryNames = useMemo(
+    () => Object.fromEntries(libraries.map((library) => [library.id, library.name])),
+    [libraries],
+  );
 
   useEffect(() => {
     if (reportedServerIdentity.current === serverIdentity) return;
@@ -108,6 +112,7 @@ function ProbeRealtimeWorkspace({
           server?.server.name ||
           servers.find((candidate) => candidate.id === targetServerId)?.name ||
           "Server Emby",
+        libraryNames: targetServerId === serverId ? libraryNames : undefined,
         status: server?.probe_status?.[workerKey] as
           | ProbeWorkerStatus
           | undefined,

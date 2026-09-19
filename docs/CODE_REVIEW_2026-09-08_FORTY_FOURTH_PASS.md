@@ -1441,3 +1441,40 @@ stati modificati dati o configurazione del deployment Hetzner.
   Ruff, Pyright, ESLint, build Vite, audit Python/npm, complessità, contratto API
   strict, Compose base/secrets/bootstrap, doppia build Docker riproducibile,
   smoke autenticato su PostgreSQL 16 esterno e `git diff --check` verdi.
+
+### Follow-up operativo v0.5.13 — Kanban Media Probe per libreria
+
+- **Baseline:** `9b6ba8a8e5d2e575e484f112eb7489bae39c91ab` (`v0.5.12`),
+  worktree pulito prima dell'intervento.
+- **Causa — resolved (famiglia: proiezione stato frontend):** la coda realtime
+  conservava gli ID delle librerie selezionate, ma le schede Kanban non li
+  ricongiungevano all'inventario nomi già caricato dalla pagina. Inoltre ogni
+  scheda leggeva progresso ed elemento corrente globali del worker; più
+  librerie risultavano quindi indistinguibili e potevano apparire tutte in
+  esecuzione durante il breve intervallo precedente alla pubblicazione della
+  libreria corrente.
+- **Soluzione:** la proiezione canonica associa ora ogni ID al nome della
+  libreria e mantiene una scheda distinta per ciascun target. Stato, progresso
+  e dettaglio corrente sono calcolati per libreria usando i contatori realtime
+  già pubblicati dal backend. Prima che il worker esponga la libreria corrente,
+  soltanto il primo target non concluso è mostrato in esecuzione; gli altri
+  restano in attesa. Discovery, processing e workflow combinato condividono la
+  stessa logica. Esecuzione, ordine, persistenza, API e carico del Probe non
+  cambiano.
+- **Regressori e superfici analoghe:** coperti selezione singola e multipla,
+  nomi da inventario, task distinti, contatori per libreria, isolamento
+  dell'elemento corrente, transitorio di avvio standalone e combo, avanzamento
+  discovery e processing. La review indipendente ha verificato anche
+  deduplicazione della coda pubblicata, completamento per contatori o ID e
+  assenza di nuovi aggiornamenti nella radice della pagina.
+- **Rischio residuo:** il nome dipende dall'inventario librerie già disponibile
+  nella pagina; durante un errore dell'inventario resta visibile l'identificatore
+  implicito nello stato operativo, senza alterare o fermare il worker.
+- **Gate finali:** regressori mirati 15/15; backend 2319 passed, 78 skipped,
+  34 subtests passed; PostgreSQL reale 83 passed; frontend 280 file/772 test;
+  Ruff, Pyright, ESLint, build Vite, audit Python/npm, complessità, contratto API
+  strict, Compose base/secrets/bootstrap, doppia build Docker riproducibile,
+  identità runtime non-root, smoke autenticato su PostgreSQL 16 esterno e
+  `git diff --check` verdi. Il primo tentativo di smoke, eseguito senza alcun
+  PostgreSQL in ascolto su `host.docker.internal:5432`, è fallito come previsto;
+  il gate finale è stato ripetuto e superato contro un PostgreSQL 16 effimero.

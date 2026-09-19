@@ -123,10 +123,14 @@ export type ProbeWorkerStatus = {
   last_run?: ProbeComboLastRun;
   board_reset?: boolean;
   board_mode?: "combo" | "discovery" | "processing" | string;
+  board_library_ids?: string[];
   current_library_id?: string | null;
+  current_library_name?: string | null;
   target_library_ids?: string[];
   completed_library_ids?: string[];
   error_library_ids?: string[];
+  library_totals?: Record<string, number>;
+  library_scanned?: Record<string, number>;
   library_queue_totals?: Record<string, number>;
   library_queue_results?: Record<
     string,
