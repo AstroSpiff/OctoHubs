@@ -1934,3 +1934,12 @@ stati modificati dati o configurazione del deployment Hetzner.
   è passato. Il primo workflow GitHub ha inoltre individuato un'aspettativa
   frontend dipendente dal fuso orario locale: il regressore ora verifica data e
   precisione ai secondi senza imporre l'ora di Europe/Zurich al runner UTC.
+  Il gate backend GitHub successivo ha inoltre rilevato un canary R40 legato
+  al percorso locale `venv/bin/python`: il test dell'entrypoint documentato ora
+  usa l'interprete corrente (`sys.executable`), preservando la stessa verifica
+  sia negli ambienti locali sia nei runner CI che non creano quella directory.
+  Il regressore mirato, Ruff e `git diff --check` sono verdi; dopo l'ultima
+  modifica sono stati ripetuti anche il backend completo (2357 passed, 78
+  skipped e 34 subtests passed) e PostgreSQL 16 reale (83 passed). Il frontend
+  applicativo è invariato rispetto allo snapshot v0.5.26, sul quale Vitest (284
+  file/799 test), ESLint e build TypeScript/Vite risultano verdi.

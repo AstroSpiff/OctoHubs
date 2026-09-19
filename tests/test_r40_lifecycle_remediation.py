@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 import subprocess
+import sys
 import threading
 from typing import Any
 
@@ -246,7 +247,7 @@ async def test_event_bridge_reinit_refuses_a_live_previous_owner(monkeypatch):
 
 def test_documented_manage_users_direct_entrypoint_is_importable():
     result = subprocess.run(
-        [str(PROJECT_ROOT / "venv/bin/python"), "scripts/manage_users.py", "--help"],
+        [sys.executable, "scripts/manage_users.py", "--help"],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
