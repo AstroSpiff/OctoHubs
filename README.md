@@ -6,7 +6,7 @@ Docs: [Docker Deploy](docs/DOCKER_DEPLOY.md) | [Deployment](docs/DEPLOYMENT.md) 
 
 [![Docker](https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 
-OctoHubs is a FastAPI web app to orchestrate Emby servers and related services (Jellyseerr, Prowlarr, Jackett, qBittorrent, Trakt). It provides a dashboard, library scans, automation, realtime webhooks, and role-based user management.
+OctoHubs is a FastAPI web app to orchestrate Emby servers and related services (Jellyseerr, Prowlarr, Jackett, qBittorrent, Deluge, Transmission, Trakt). It provides a dashboard, library scans, automation, realtime webhooks, and role-based user management.
 
 ## Key features
 - Dashboard with scan status, results, and main metrics.
@@ -16,7 +16,7 @@ OctoHubs is a FastAPI web app to orchestrate Emby servers and related services (
 - STRM Extract and STRM Guard workflows for Emby.
 - Emby webhooks for realtime updates.
 - User management with roles (admin, user, viewer); viewer sessions are enforced as read-only by the backend.
-- Optional integrations with Jellyseerr, Prowlarr, Jackett, qBittorrent, Trakt.
+- Optional integrations with Jellyseerr, Prowlarr, Jackett, qBittorrent, Deluge, Transmission, and Trakt.
 
 ## Requirements
 - Docker + Docker Compose

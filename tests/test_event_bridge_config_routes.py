@@ -130,6 +130,51 @@ def test_system_services_reuse_the_last_native_connection_check():
     assert section["checked_at"] == "2026-08-11 11:30:45 UTC"
 
 
+def test_system_services_use_aggregate_torrent_client_status():
+    from app_state import set_connection_check_state
+    from web.config_routes import _system_services_section
+
+    config = {
+        "TORRENT_CLIENTS": [
+            {
+                "id": "deluge",
+                "name": "Deluge",
+                "kind": "deluge",
+                "url": "http://deluge:8112",
+                "password": "secret",
+                "enabled": True,
+                "is_default": True,
+            }
+        ]
+    }
+    set_connection_check_state(
+        {
+            "qbittorrent": {
+                "ok": False,
+                "message": "Non configurato",
+                "configured": False,
+            },
+            "torrent_clients": {
+                "ok": True,
+                "message": "Deluge: Connessione OK",
+                "configured": True,
+            },
+        },
+        "2026-09-19T08:00:00+00:00",
+    )
+    try:
+        section = _system_services_section(config, check_services=False)
+    finally:
+        set_connection_check_state({}, None)
+
+    torrent = next(
+        item for item in section["items"] if item["id"] == "service-qbittorrent"
+    )
+    assert torrent["label"] == "Client torrent"
+    assert torrent["status_code"] == "online"
+    assert torrent["detail"] == "Deluge: Connessione OK"
+
+
 def test_system_database_reports_a_connection_failure_without_claiming_it_is_connected(monkeypatch):
     from web import config_routes
 

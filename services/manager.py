@@ -147,7 +147,6 @@ def _build_test_connections_snapshot():
     from services.health import (
         _ping_jellyseerr,
         _ping_prowlarr,
-        _ping_qbittorrent,
         _ping_database,
         _ping_trakt,
         _ping_jackett,
@@ -155,6 +154,8 @@ def _build_test_connections_snapshot():
         _ping_mdblist,
         _ping_omdb,
     )
+    from services.torrent_clients import enabled_torrent_clients, torrent_client_profiles
+    from services.torrent_dispatch import ping_torrent_client
 
     config, is_valid = load_config()
     if not config:
@@ -163,11 +164,31 @@ def _build_test_connections_snapshot():
     jelly_ok, jelly_msg = _ping_jellyseerr(config)
     prowlarr_ok, prowlarr_msg = _ping_prowlarr(config)
 
-    qb_configured = all(config.get(k) for k in ["QBITTORRENT_URL", "QBITTORRENT_USERNAME", "QBITTORRENT_PASSWORD"])
-    if qb_configured:
-        qb_ok, qb_msg = _ping_qbittorrent(config)
+    profiles = torrent_client_profiles(config)
+    enabled_profiles = enabled_torrent_clients(config)
+    torrent_results = [
+        (profile, *ping_torrent_client(profile))
+        for profile in enabled_profiles
+    ]
+    torrent_configured = bool(enabled_profiles)
+    torrent_ok = bool(torrent_results) and all(result[1] for result in torrent_results)
+    torrent_msg = (
+        ", ".join(
+            f"{profile['name']}: {message}"
+            for profile, _ok, message in torrent_results
+        )
+        if torrent_results
+        else ("Profili presenti ma non abilitati o incompleti" if profiles else "Non configurato")
+    )
+    qb_result = next(
+        (result for result in torrent_results if result[0]["kind"] == "qbittorrent"),
+        None,
+    )
+    if qb_result:
+        _qb_profile, qb_ok, qb_msg = qb_result
+        qb_configured = True
     else:
-        qb_ok, qb_msg = False, "Non configurato"
+        qb_ok, qb_msg, qb_configured = False, "Non configurato", False
     db_ok, db_msg, _ = _ping_database(config)
     trakt_ok, trakt_msg, trakt_configured = _ping_trakt(config)
     jack_ok, jack_msg, jack_configured = _ping_jackett(config)
@@ -181,6 +202,11 @@ def _build_test_connections_snapshot():
             "jellyseerr": {"ok": jelly_ok, "message": jelly_msg},
             "prowlarr": {"ok": prowlarr_ok, "message": prowlarr_msg},
             "qbittorrent": {"ok": qb_ok, "message": qb_msg, "configured": qb_configured},
+            "torrent_clients": {
+                "ok": torrent_ok,
+                "message": torrent_msg,
+                "configured": torrent_configured,
+            },
             "jackett": {"ok": jack_ok, "message": jack_msg, "configured": jack_configured},
             "mdblist": {"ok": mdblist_ok, "message": mdblist_msg, "configured": mdblist_configured},
             "omdb": {"ok": omdb_ok, "message": omdb_msg, "configured": omdb_configured},

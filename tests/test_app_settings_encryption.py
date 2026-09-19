@@ -42,6 +42,13 @@ def test_every_app_settings_credential_family_is_encrypted_at_rest(tmp_path):
         "JELLYSEERR_API_KEY": "jellyseerr-canary",
         "OMDB_API_KEYS": ["omdb-one-canary", "omdb-two-canary"],
         "QBITTORRENT_PASSWORD": "qb-password-canary",
+        "TORRENT_CLIENTS": [
+            {
+                "id": "deluge-home",
+                "kind": "deluge",
+                "password": "deluge-password-canary",
+            }
+        ],
         "TRAKT": {
             "CLIENT_SECRET": "trakt-client-canary",
             "ACCESS_TOKEN": "trakt-access-canary",
@@ -69,6 +76,7 @@ def test_every_app_settings_credential_family_is_encrypted_at_rest(tmp_path):
         "omdb-one-canary",
         "omdb-two-canary",
         "qb-password-canary",
+        "deluge-password-canary",
         "trakt-client-canary",
         "trakt-access-canary",
         "trakt-refresh-canary",

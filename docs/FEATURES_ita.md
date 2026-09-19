@@ -22,13 +22,13 @@ Questa guida riassume i principali workflow disponibili nella UI e il loro legam
 - Le richieste arrivano da Jellyseerr (se configurato).
 - Le query vengono inviate a Prowlarr o Jackett in base a `SEARCH_RULES`.
 - I risultati sono filtrati per lingua, tag, seeders e regole.
-- Opzionale: invio risultati a qBittorrent.
+- Opzionale: invio risultati a uno o più client qBittorrent, Deluge o Transmission.
 
 Passi manuali:
 - Crea una API key in Jellyseerr e imposta `JELLYSEERR_URL` e `JELLYSEERR_API_KEY`.
 - Configura almeno un indexer in Prowlarr o Jackett e abilita `use_prowlarr` o `use_jackett`.
 - Regola `SEARCH_RULES` (lingue, termini, `min_seeders`) in base alle tue esigenze.
-- Abilita la Web UI di qBittorrent e imposta `QBITTORRENT_*` se vuoi l'invio automatico.
+- Configura almeno un profilo client torrent abilitato e scegline la destinazione predefinita.
 
 ## Search rules
 Le regole di ricerca sono salvate in PostgreSQL e aggiornate dalla UI. Vedi

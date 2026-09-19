@@ -20,6 +20,8 @@ from core.integrations import (
 from core.storage import StorageError
 from emby_runtime.api_clients import _ping_api_service, _ping_jellyseerr, _ping_prowlarr, _ping_qbittorrent
 from search.indexers import _jackett_configured, _prowlarr_configured, _search_rules
+from services.torrent_clients import enabled_torrent_clients
+from services.torrent_dispatch import ping_torrent_client
 
 
 SERVICE_HEALTH_MAX_API_KEYS = 20
@@ -65,9 +67,12 @@ def validate_connections(config):
         print("   -> Nessun indexer attivo: abilita almeno Prowlarr o Jackett.")
         provider_available = False
     db_ok = _check_database_connection(config)
-    qb_configured = all(config.get(k) for k in ["QBITTORRENT_URL", "QBITTORRENT_USERNAME", "QBITTORRENT_PASSWORD"])
-    if qb_configured:
-        _check_qbittorrent_connection(config)
+    for torrent_client in enabled_torrent_clients(config):
+        ok, message = ping_torrent_client(torrent_client)
+        print(
+            f"   -> {torrent_client['name']}: "
+            f"{'connessione OK' if ok else message}"
+        )
 
     if jelly_ok and prowlarr_ok and jackett_ok and db_ok and provider_available:
         print("   -> Connessioni a Jellyseerr, indexer e database verificate. Procedo.\n")

@@ -20,7 +20,8 @@ import {
 } from "@/features/session/use-owner-bound-browser-action";
 import { navigateBrowser, writeBrowserClipboard } from "@/lib/browser-download";
 import { safeExternalHttpUrl } from "@/lib/external-url";
-import type { SearchResult } from "@/features/research/types";
+import { TorrentClientPickerDialog } from "@/features/research/components/torrent-client-picker-dialog";
+import type { SearchResult, TorrentClientOption } from "@/features/research/types";
 
 type SearchResultActionNotice = { message: string; tone: "success" | "error" | "warning" };
 type OpenTermMenuAction = (source: HTMLElement, term: string) => void;
@@ -28,6 +29,7 @@ type OpenTermMenuAction = (source: HTMLElement, term: string) => void;
 type SearchResultActionsProps = {
   result: SearchResult;
   canSend: boolean;
+  torrentClients?: TorrentClientOption[];
   onNotice: (notice: SearchResultActionNotice) => void;
   onOpenTermMenu?: OpenTermMenuAction;
   onLookupEmby?: (target: { title: string; year?: string | number }) => void;
@@ -36,24 +38,26 @@ type SearchResultActionsProps = {
 function SearchResultActions({
   result,
   canSend,
+  torrentClients = [],
   onNotice,
   onOpenTermMenu,
   onLookupEmby,
 }: SearchResultActionsProps) {
   const [sending, setSending] = useState(false);
   const [resolvingMagnet, setResolvingMagnet] = useState(false);
+  const [choosingClient, setChoosingClient] = useState(false);
   const link = resultLink(result);
   const magnet = magnetExportLink(result);
   const webUrl = safeExternalHttpUrl(result.web);
   const beginBrowserAction = useOwnerBoundBrowserAction();
 
-  async function send() {
+  async function send(clientId?: string) {
     if (!link) return;
     setSending(true);
     try {
-      const response = await sendToQbittorrent(link);
+      const response = await sendToQbittorrent(link, clientId);
       onNotice({
-        message: response.message || "Inviato a qBittorrent.",
+        message: response.message || "Inviato al client torrent.",
         tone: "success",
       });
     } catch (reason) {
@@ -61,12 +65,20 @@ function SearchResultActions({
         message:
           reason instanceof Error
             ? reason.message
-            : "Invio a qBittorrent non riuscito.",
+            : "Invio al client torrent non riuscito.",
         tone: "error",
       });
     } finally {
       setSending(false);
     }
+  }
+
+  function requestSend() {
+    if (torrentClients.length > 1) {
+      setChoosingClient(true);
+      return;
+    }
+    void send(torrentClients[0]?.id);
   }
 
   async function copyMagnet() {
@@ -147,10 +159,10 @@ function SearchResultActions({
           requiresWriteAccess
           variant="ghost"
           size="icon"
-          title="Invia a qBittorrent"
-          aria-label="Invia a qBittorrent"
+          title="Invia al client torrent"
+          aria-label="Invia al client torrent"
           disabled={sending}
-          onClick={() => void send()}
+          onClick={requestSend}
         >
           {sending ? (
             <LoaderCircle className="animate-spin" size={15} aria-hidden="true" />
@@ -181,6 +193,7 @@ function SearchResultActions({
           <ExternalLink size={15} aria-hidden="true" />
         </a>
       ) : null}
+      {choosingClient ? <TorrentClientPickerDialog clients={torrentClients} onClose={() => setChoosingClient(false)} onSelect={(client) => { setChoosingClient(false); void send(client.id); }} /> : null}
     </div>
   );
 }

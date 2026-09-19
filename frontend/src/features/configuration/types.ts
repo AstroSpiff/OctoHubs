@@ -77,6 +77,7 @@ export type ConfigurationServices = {
     prowlarr: ServiceConnection;
     jackett: ServiceConnection;
     qbittorrent: ServiceConnection & { username: string; password_configured: boolean };
+    torrent_clients?: TorrentClientSettings[];
     tmdb: { language: string; api_key_configured: boolean };
     mdblist: { api_keys_configured: number };
     omdb: { api_keys_configured: number };
@@ -92,6 +93,32 @@ export type ConfigurationServices = {
   justwatch: { enabled: boolean; locale: string };
 };
 
+export type TorrentClientKind = "qbittorrent" | "deluge" | "transmission";
+
+export type TorrentClientSettings = {
+  id: string;
+  name: string;
+  kind: TorrentClientKind;
+  url: string;
+  username: string;
+  password_configured: boolean;
+  enabled: boolean;
+  is_default: boolean;
+  configured: boolean;
+};
+
+export type TorrentClientInput = {
+  id: string;
+  name: string;
+  kind: TorrentClientKind;
+  url: string;
+  username: string;
+  password?: string;
+  clear_password?: boolean;
+  enabled: boolean;
+  is_default: boolean;
+};
+
 export type ServiceConnection = { url: string; api_key_configured: boolean };
 
 export type ServiceSettingsInput = {
@@ -100,6 +127,7 @@ export type ServiceSettingsInput = {
     prowlarr: { url: string; api_key?: string; clear_api_key?: boolean };
     jackett: { url: string; api_key?: string; clear_api_key?: boolean };
     qbittorrent: { url: string; username: string; password?: string; clear_password?: boolean };
+    torrent_clients: TorrentClientInput[];
     tmdb: { language: string; api_key?: string; clear_api_key?: boolean };
     mdblist: { api_keys?: string[]; clear_api_keys?: boolean };
     omdb: { api_keys?: string[]; clear_api_keys?: boolean };

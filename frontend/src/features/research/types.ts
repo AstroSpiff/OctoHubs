@@ -105,6 +105,7 @@ export type ResearchOverview = {
   success: boolean;
   has_config: boolean;
   qbittorrent_available: boolean;
+  torrent_clients?: TorrentClientOption[];
   scan: Record<string, unknown>;
   results: {
     generated_at?: string;
@@ -127,6 +128,13 @@ export type ResearchOverview = {
   requests_refresh_warning?: string | null;
   requests_refresh_warning_at?: string | null;
   probe_counts: { blacklist: number; incomplete: number };
+};
+
+export type TorrentClientOption = {
+  id: string;
+  name: string;
+  kind: "qbittorrent" | "deluge" | "transmission";
+  is_default: boolean;
 };
 
 export type SortOption = { value: string; label: string; group: string };

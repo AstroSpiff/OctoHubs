@@ -8,7 +8,8 @@ Note avanzate per il deployment in produzione.
 
 ## Panoramica
 OctoHubs e una web app FastAPI per orchestrare Emby e servizi collegati. Le
-integrazioni con Jellyseerr, Prowlarr, Jackett, qBittorrent e Trakt sono opzionali
+integrazioni con Jellyseerr, Prowlarr, Jackett, qBittorrent, Deluge,
+Transmission e Trakt sono opzionali
 e si gestiscono dalla UI autenticata.
 
 ## Requisiti e sizing

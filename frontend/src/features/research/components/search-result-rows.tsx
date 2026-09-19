@@ -7,7 +7,7 @@ import {
 } from "@/features/research/components/search-result-actions";
 import type { SearchResultEntry } from "@/features/research/search-result-groups";
 import { displayFileSize } from "@/features/research/presentation";
-import type { SearchResult } from "@/features/research/types";
+import type { SearchResult, TorrentClientOption } from "@/features/research/types";
 
 type SearchResultRowProps = {
   result: SearchResult;
@@ -15,6 +15,7 @@ type SearchResultRowProps = {
   selected: boolean;
   selectedKeys: Set<string>;
   canSend: boolean;
+  torrentClients?: TorrentClientOption[];
   hasEpisodes: boolean;
   duplicates: SearchResultEntry[];
   onToggle: () => void;
@@ -31,6 +32,7 @@ function SearchResultRow({
   selected,
   selectedKeys,
   canSend,
+  torrentClients = [],
   hasEpisodes,
   duplicates,
   onToggle,
@@ -66,6 +68,7 @@ function SearchResultRow({
           <DuplicateSources
             duplicates={duplicates}
             canSend={canSend}
+            torrentClients={torrentClients}
             onNotice={onNotice}
             onTitleContextMenu={onTitleContextMenu}
             onOpenTermMenu={onOpenTermMenu}
@@ -88,6 +91,7 @@ function SearchResultRow({
         <SearchResultActions
           result={result}
           canSend={canSend}
+          torrentClients={torrentClients}
           onNotice={onNotice}
           onOpenTermMenu={onOpenTermMenu}
           onLookupEmby={onLookupEmby}
@@ -100,6 +104,7 @@ function SearchResultRow({
 type DuplicateSourcesProps = {
   duplicates: SearchResultEntry[];
   canSend: boolean;
+  torrentClients?: TorrentClientOption[];
   selectedKeys: Set<string>;
   selectable: boolean;
   onToggle: (key: string) => void;
@@ -112,6 +117,7 @@ type DuplicateSourcesProps = {
 function DuplicateSources({
   duplicates,
   canSend,
+  torrentClients = [],
   selectedKeys,
   selectable,
   onToggle,
@@ -144,6 +150,7 @@ function DuplicateSources({
             <SearchResultActions
               result={result}
               canSend={canSend}
+              torrentClients={torrentClients}
               onNotice={onNotice}
               onOpenTermMenu={onOpenTermMenu}
               onLookupEmby={onLookupEmby}

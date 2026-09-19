@@ -23,6 +23,7 @@ from emby_runtime.event_bridge_configuration import (
 )
 from emby_runtime.event_bridge_manager import get_event_bridge_manager
 from emby_runtime.event_bridge_settings import normalize_event_bridge_config
+from services.torrent_clients import enabled_torrent_clients
 from web.system_status_api_models import SystemStatusResponse
 
 router = APIRouter()
@@ -170,7 +171,7 @@ SYSTEM_SERVICE_LABELS = {
     "jellyseerr": "Jellyseerr",
     "prowlarr": "Prowlarr",
     "jackett": "Jackett",
-    "qbittorrent": "qBittorrent",
+    "qbittorrent": "Client torrent",
     "mdblist": "MDBList",
     "omdb": "OMDb",
     "trakt": "Trakt",
@@ -398,6 +399,11 @@ def _system_services_section(config: dict[str, Any] | None, *, check_services: b
     for key, label in SYSTEM_SERVICE_LABELS.items():
         configured = _system_service_configured(config, key)
         service_href = SYSTEM_SERVICE_HREFS[key]
+        status_key = (
+            "torrent_clients"
+            if key == "qbittorrent" and "torrent_clients" in statuses
+            else key
+        )
         if check_error:
             items.append(
                 _system_item(
@@ -411,8 +417,12 @@ def _system_services_section(config: dict[str, Any] | None, *, check_services: b
                 )
             )
             continue
-        if key in statuses:
-            status = statuses.get(key) if isinstance(statuses.get(key), dict) else {}
+        if status_key in statuses:
+            status = (
+                statuses.get(status_key)
+                if isinstance(statuses.get(status_key), dict)
+                else {}
+            )
             status_configured = status.get("configured")
             if status_configured is False:
                 configured = False
@@ -788,7 +798,7 @@ def _system_service_configured(config: dict[str, Any] | None, key: str) -> bool:
     if key == "jackett":
         return bool(config.get("JACKETT_URL") and config.get("JACKETT_API_KEY"))
     if key == "qbittorrent":
-        return bool(config.get("QBITTORRENT_URL") and config.get("QBITTORRENT_USERNAME") and config.get("QBITTORRENT_PASSWORD"))
+        return bool(enabled_torrent_clients(config))
     if key == "mdblist":
         return bool(config.get("MDBLIST_API_KEYS"))
     if key == "omdb":

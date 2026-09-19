@@ -18,8 +18,11 @@ from emby_runtime.api_clients import (
     check_jellyseerr_availability,
     get_tmdb_tv_details,
     search_tmdb,
-    send_to_qbittorrent,
-    send_to_qbittorrent_batch,
+)
+from services.torrent_clients import select_torrent_client
+from services.torrent_dispatch import (
+    send_to_torrent_client,
+    send_to_torrent_client_batch,
 )
 
 from core.config_manager import load_config
@@ -171,7 +174,7 @@ def _build_manual_search_snapshot(payload, form_payload=None) -> JsonResult:
 
 def _build_send_torrent_snapshot(payload) -> JsonResult:
     config, is_valid = load_config()
-    if not is_valid:
+    if not config or not is_valid:
         return json_error("Config non valida")
     payload = payload or {}
     if not isinstance(payload, dict):
@@ -179,14 +182,17 @@ def _build_send_torrent_snapshot(payload) -> JsonResult:
     link = payload.get("link")
     if not link:
         return json_error("Link mancante")
-    success, message = send_to_qbittorrent(link, config)
+    client_id = payload.get("client_id")
+    if not select_torrent_client(config, client_id):
+        return json_error("Client torrent non disponibile o non abilitato")
+    success, message = send_to_torrent_client(link, config, client_id)
     status_code = 200 if success else 500
     return {"success": success, "message": message}, status_code
 
 
 def _build_send_torrent_batch_snapshot(payload) -> JsonResult:
     config, is_valid = load_config()
-    if not is_valid:
+    if not config or not is_valid:
         return json_error("Config non valida")
     payload = payload or {}
     if not isinstance(payload, dict):
@@ -194,7 +200,10 @@ def _build_send_torrent_batch_snapshot(payload) -> JsonResult:
     links = payload.get("links")
     if not isinstance(links, list):
         return json_error("Lista link mancante")
-    success, message, details = send_to_qbittorrent_batch(links, config)
+    client_id = payload.get("client_id")
+    if not select_torrent_client(config, client_id):
+        return json_error("Client torrent non disponibile o non abilitato")
+    success, message, details = send_to_torrent_client_batch(links, config, client_id)
     status_code = 200 if success else 500
     response = {"success": success, "message": message}
     if isinstance(details, dict):

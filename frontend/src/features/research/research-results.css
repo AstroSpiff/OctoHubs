@@ -230,6 +230,12 @@
   color: var(--color-ink-strong);
   font-size: 17px;
 }
+.torrent-client-picker > header p { margin: 4px 0 0; color: var(--color-muted); font-size: 12px; }
+.torrent-client-picker__list { display: grid; gap: 8px; padding: 16px 18px; }
+.torrent-client-picker__list .button { justify-content: flex-start; height: auto; min-height: var(--control-height); text-align: left; }
+.torrent-client-picker__list .button span { display: grid; gap: 2px; }
+.torrent-client-picker__list .button small { color: currentColor; font-size: 10px; font-weight: 550; opacity: .78; }
+.torrent-client-picker > footer { display: flex; justify-content: flex-end; border-top: 1px solid var(--color-border); padding: 11px 18px; }
 .research-dialog-message {
   margin: 0;
   padding: 20px;

@@ -22,6 +22,10 @@ from core.config import (
 from core.utils import _coerce_request_int
 from services.app_settings import _update_app_settings_overrides
 from services.scheduler_manager import sync_auto_scheduler
+from services.torrent_clients import (
+    normalize_submitted_torrent_clients,
+    public_torrent_client_profiles,
+)
 
 
 AUTOMATION_TASK_IDS = ("scan", "refresh", "workflow", "sync")
@@ -82,6 +86,7 @@ def configuration_services_snapshot(config: dict[str, Any] | None) -> dict[str, 
                 "username": _string(source.get("QBITTORRENT_USERNAME")),
                 "password_configured": bool(source.get("QBITTORRENT_PASSWORD")),
             },
+            "torrent_clients": public_torrent_client_profiles(source),
             "tmdb": {
                 "language": _string(source.get("TMDB_LANGUAGE")) or "it-IT",
                 "api_key_configured": bool(source.get("TMDB_API_KEY")),
@@ -150,14 +155,33 @@ def update_service_settings(payload: dict[str, Any], config: dict[str, Any]) -> 
     _update_connection(app_settings, source, connections, "prowlarr", "PROWLARR")
     _update_connection(app_settings, source, connections, "jackett", "JACKETT")
 
-    qbittorrent = _mapping(connections.get("qbittorrent"))
-    app_settings["QBITTORRENT_URL"] = _submitted_connection_url(
-        qbittorrent,
-        "url",
-        source.get("QBITTORRENT_URL"),
-    )
-    app_settings["QBITTORRENT_USERNAME"] = _submitted_text(qbittorrent, "username", source.get("QBITTORRENT_USERNAME"))
-    app_settings["QBITTORRENT_PASSWORD"] = _submitted_secret(qbittorrent, "password", source.get("QBITTORRENT_PASSWORD"))
+    if "torrent_clients" in connections and connections.get("torrent_clients") is not None:
+        app_settings["TORRENT_CLIENTS"] = normalize_submitted_torrent_clients(
+            connections.get("torrent_clients"),
+            source,
+        )
+        # The profile list is canonical after the first save. Clearing these
+        # fields prevents a deleted legacy profile from being synthesized again.
+        app_settings["QBITTORRENT_URL"] = ""
+        app_settings["QBITTORRENT_USERNAME"] = ""
+        app_settings["QBITTORRENT_PASSWORD"] = ""
+    else:
+        qbittorrent = _mapping(connections.get("qbittorrent"))
+        app_settings["QBITTORRENT_URL"] = _submitted_connection_url(
+            qbittorrent,
+            "url",
+            source.get("QBITTORRENT_URL"),
+        )
+        app_settings["QBITTORRENT_USERNAME"] = _submitted_text(
+            qbittorrent,
+            "username",
+            source.get("QBITTORRENT_USERNAME"),
+        )
+        app_settings["QBITTORRENT_PASSWORD"] = _submitted_secret(
+            qbittorrent,
+            "password",
+            source.get("QBITTORRENT_PASSWORD"),
+        )
 
     tmdb = _mapping(connections.get("tmdb"))
     app_settings["TMDB_LANGUAGE"] = _submitted_text(tmdb, "language", source.get("TMDB_LANGUAGE") or "it-IT")

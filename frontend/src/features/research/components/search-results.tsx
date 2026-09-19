@@ -5,17 +5,20 @@ import { searchProgressMessage } from "@/features/research/search-progress";
 import type {
   SearchResult,
   StreamingSearchProgress,
+  TorrentClientOption,
 } from "@/features/research/types";
 
 function SearchResults({
   results,
   qbittorrentAvailable,
+  torrentClients = [],
   searching,
   progress,
   resultSetId,
 }: {
   results: SearchResult[];
   qbittorrentAvailable: boolean;
+  torrentClients?: TorrentClientOption[];
   searching: boolean;
   progress: StreamingSearchProgress;
   resultSetId: string | number;
@@ -50,6 +53,7 @@ function SearchResults({
           key={resultSetId}
           results={results}
           qbittorrentAvailable={qbittorrentAvailable}
+          torrentClients={torrentClients}
           resultSetId={resultSetId}
         />
       ) : null}

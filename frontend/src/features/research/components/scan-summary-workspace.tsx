@@ -367,6 +367,7 @@ function ScanSummaryWorkspace({
                   checked={selectedItems.has(scanSummaryItemKey(item))}
                   selectable={canMutate}
                   qbittorrentAvailable={overview.qbittorrent_available}
+                  torrentClients={overview.torrent_clients}
                   disabled={interactionBusy || Boolean(scan.running)}
                   onToggle={() => toggle(item)}
                   onQuickSearch={() => void startScan([scanTargetForItem(item)])}

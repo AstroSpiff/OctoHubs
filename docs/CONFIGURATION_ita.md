@@ -31,7 +31,9 @@ Usali per abilitare le integrazioni:
 - `JELLYSEERR_URL`, `JELLYSEERR_API_KEY`
 - `PROWLARR_URL`, `PROWLARR_API_KEY`
 - `JACKETT_URL`, `JACKETT_API_KEY`
-- `QBITTORRENT_URL`, `QBITTORRENT_USERNAME`, `QBITTORRENT_PASSWORD`
+- `TORRENT_CLIENTS`: elenco multiprofilo cifrato gestito dalla UI autenticata
+  (qBittorrent, Deluge e Transmission). I valori legacy `QBITTORRENT_*` vengono
+  importati nel primo profilo finché l'elenco non viene salvato.
 - `TMDB_API_KEY`, `TMDB_LANGUAGE`
 
 ## Impostazioni base di ricerca
@@ -209,9 +211,9 @@ Campi per server:
   "JELLYSEERR_API_KEY": "YOUR_KEY",
   "PROWLARR_URL": "http://prowlarr:9696",
   "PROWLARR_API_KEY": "YOUR_KEY",
-  "QBITTORRENT_URL": "http://qbittorrent:8080",
-  "QBITTORRENT_USERNAME": "admin",
-  "QBITTORRENT_PASSWORD": "secret",
+  "TORRENT_CLIENTS": [
+    {"id": "downloads", "name": "Downloads", "kind": "qbittorrent", "url": "http://qbittorrent:8080", "username": "admin", "password": "secret", "enabled": true, "is_default": true}
+  ],
   "TMDB_API_KEY": "YOUR_KEY",
   "TMDB_LANGUAGE": "it-IT",
   "JUSTWATCH": {

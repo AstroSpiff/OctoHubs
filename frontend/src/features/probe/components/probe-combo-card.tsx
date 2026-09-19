@@ -16,13 +16,15 @@ function ProbeComboCard({
   actions,
   canMutate = true,
 }: ProbeComboCardProps) {
-  const scopeLabel = scope === "recent" ? "ultimi aggiunti" : "librerie";
+  const description = scope === "recent"
+    ? "Individua i file tra gli ultimi aggiunti e analizza in sequenza quelli trovati."
+    : "Individua i file nelle librerie selezionate e analizza in sequenza quelli trovati.";
 
   return (
     <ProbeWorkerCard
       className="probe-combo-card"
       title="Individuazione + analisi"
-      description={`Esegue in sequenza individuazione e analisi per ${scopeLabel}.`}
+      description={description}
       status={status}
       progress={probeProgress(status)}
       actions={actions}

@@ -142,6 +142,24 @@
 .service-connection-card input, .service-form-grid input, .service-form-grid select, .service-form-grid textarea, .database-settings input { width: 100%; min-width: 0; border: 1px solid var(--color-border); border-radius: var(--radius-control); background: var(--color-surface-raised); padding: 8px 9px; color: var(--color-ink-strong); outline: none; }
 .service-connection-card input, .service-form-grid input, .service-form-grid select, .database-settings input { height: var(--control-height); }
 .service-connection-card input:focus, .service-form-grid input:focus, .service-form-grid select:focus, .service-form-grid textarea:focus, .database-settings input:focus { border-color: var(--color-accent); box-shadow: 0 0 0 3px var(--color-focus); }
+.torrent-client-settings { display: grid; gap: 13px; border-top: 1px solid var(--color-border); padding: 14px; }
+.torrent-client-settings__header { display: flex; align-items: start; justify-content: space-between; gap: 16px; }
+.torrent-client-settings__header h3 { margin: 0; font-size: 14px; }
+.torrent-client-settings__header p, .torrent-client-settings__empty { margin: 4px 0 0; color: var(--color-muted); font-size: 11px; line-height: 1.45; }
+.torrent-client-settings__add { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.torrent-client-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.torrent-client-card { display: grid; align-content: start; gap: 12px; min-width: 0; border: 1px solid var(--color-border); border-radius: var(--radius-panel); background: var(--color-surface-raised); padding: 13px; }
+.torrent-client-card > header { display: flex; align-items: start; justify-content: space-between; gap: 10px; }
+.torrent-client-card > header > div { display: grid; gap: 2px; }
+.torrent-client-card > header strong { color: var(--color-ink-strong); font-size: 13px; }
+.torrent-client-card > header span:not(.configuration-state) { color: var(--color-muted); font-size: 10px; }
+.torrent-client-card__flags { display: flex; flex-wrap: wrap; gap: 16px; }
+.torrent-client-card__flags label { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 720; }
+.torrent-client-card__fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.torrent-client-card__fields > label, .torrent-client-card__fields .service-credential-field > label { display: grid; min-width: 0; gap: 6px; font-size: 11px; font-weight: 720; }
+.torrent-client-card__fields input, .torrent-client-card__fields select { width: 100%; min-width: 0; height: var(--control-height); border: 1px solid var(--color-border); border-radius: var(--radius-control); background: var(--color-surface); padding: 8px 9px; color: var(--color-ink-strong); outline: none; }
+.torrent-client-card__fields input:focus, .torrent-client-card__fields select:focus { border-color: var(--color-accent); box-shadow: 0 0 0 3px var(--color-focus); }
+.torrent-client-card > footer { display: flex; justify-content: flex-end; }
 .saved-credential-control { display: inline-flex; align-items: center; gap: 6px; margin-top: 1px; color: var(--color-muted); font-size: 10px; font-weight: 650; line-height: 1.35; }
 .saved-credential-control input { width: 14px !important; min-width: 14px !important; height: 14px !important; margin: 0; border: 0; padding: 0; accent-color: var(--color-accent); box-shadow: none !important; }
 .service-credential-field { display: grid; min-width: 0; align-content: start; gap: 6px; }
@@ -194,6 +212,7 @@
   .service-connection-card:nth-child(even), .connection-check:nth-child(3n) { border-right: 0; }
   .service-form-grid, .service-form-grid--integrations { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .database-settings > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .torrent-client-list { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 720px) {
@@ -213,6 +232,9 @@
   .service-connection-grid, .connection-checks > div, .service-form-grid, .service-form-grid--integrations, .database-settings > div { grid-template-columns: 1fr; }
   .service-connection-card, .service-connection-card:nth-child(even), .connection-check, .connection-check:nth-child(3n) { border-right: 0; border-bottom: 1px solid var(--color-border); }
   .service-connection-card:last-child, .connection-check:last-child { border-bottom: 0; }
+  .torrent-client-settings__header { align-items: stretch; flex-direction: column; }
+  .torrent-client-settings__add { justify-content: flex-start; }
+  .torrent-client-card__fields { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 520px) {

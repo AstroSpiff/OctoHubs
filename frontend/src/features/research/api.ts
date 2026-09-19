@@ -108,12 +108,12 @@ function cleanupScanResults(input: { mode: "single" | "resolved" | "all"; reques
   return request("/api/v1/research/results/cleanup", { method: "POST", body: JSON.stringify(input) });
 }
 
-function sendToQbittorrent(link: string): Promise<ActionResult> {
-  return request("/api/v1/research/torrents/send", { method: "POST", body: JSON.stringify({ link }) });
+function sendToQbittorrent(link: string, clientId?: string): Promise<ActionResult> {
+  return request("/api/v1/research/torrents/send", { method: "POST", body: JSON.stringify({ link, ...(clientId ? { client_id: clientId } : {}) }) });
 }
 
-function sendBatchToQbittorrent(links: string[]): Promise<ActionResult> {
-  return request("/api/v1/research/torrents/send-batch", { method: "POST", body: JSON.stringify({ links }) });
+function sendBatchToQbittorrent(links: string[], clientId?: string): Promise<ActionResult> {
+  return request("/api/v1/research/torrents/send-batch", { method: "POST", body: JSON.stringify({ links, ...(clientId ? { client_id: clientId } : {}) }) });
 }
 
 function downloadTorrentArchive(links: string[], signal?: AbortSignal): Promise<Blob> {

@@ -4,12 +4,13 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { SearchResultTable } from "@/features/research/components/search-result-table";
 import type { RequestRuleTermField } from "@/features/research/request-search-rules";
-import type { ScanSummaryItem } from "@/features/research/types";
+import type { ScanSummaryItem, TorrentClientOption } from "@/features/research/types";
 
 function ScanSummaryItemRow({
   item,
   checked,
   qbittorrentAvailable,
+  torrentClients = [],
   disabled,
   selectable = true,
   onToggle,
@@ -20,6 +21,7 @@ function ScanSummaryItemRow({
   item: ScanSummaryItem;
   checked: boolean;
   qbittorrentAvailable: boolean;
+  torrentClients?: TorrentClientOption[];
   disabled: boolean;
   selectable?: boolean;
   onToggle: () => void;
@@ -47,7 +49,7 @@ function ScanSummaryItemRow({
     </header>
     {open ? <div className="scan-summary-item-details">
       {item.queries?.length ? <details><summary>Query provate ({item.queries.length})</summary><ul>{item.queries.map((query, index) => <li key={`${query.query || "query"}-${index}`}>{query.query || "Query"} <span>{query.results_found || 0}</span></li>)}</ul></details> : null}
-      {results.length ? <SearchResultTable results={results} qbittorrentAvailable={qbittorrentAvailable} onAddTerm={disabled ? undefined : onAddTerm} /> : <p>Nessun risultato accettato per questa richiesta.</p>}
+      {results.length ? <SearchResultTable results={results} qbittorrentAvailable={qbittorrentAvailable} torrentClients={torrentClients} onAddTerm={disabled ? undefined : onAddTerm} /> : <p>Nessun risultato accettato per questa richiesta.</p>}
       {item.excluded?.length ? <details><summary>Risultati esclusi ({item.excluded.length})</summary><ul>{item.excluded.map((excluded, index) => <li key={`${excluded.title || "result"}-${index}`}>{excluded.title || "Titolo"} · {excluded.reason || "escluso"}{excluded.indexer ? ` (${excluded.indexer})` : ""}</li>)}</ul></details> : null}
     </div> : null}
   </article>;

@@ -34,16 +34,18 @@ import {
   torrentDownloadLink,
 } from "@/features/research/presentation";
 import { useWorkspaceCapabilities } from "@/features/session/workspace-capabilities-context";
-import type { SearchResult } from "@/features/research/types";
+import type { SearchResult, TorrentClientOption } from "@/features/research/types";
 
 function SearchResultTable({
   results,
   qbittorrentAvailable,
+  torrentClients = [],
   onAddTerm,
   resultSetId = "static",
 }: {
   results: SearchResult[];
   qbittorrentAvailable: boolean;
+  torrentClients?: TorrentClientOption[];
   onAddTerm?: AddTermAction;
   resultSetId?: string | number;
 }) {
@@ -201,6 +203,7 @@ function SearchResultTable({
         <SearchResultBatchActions
           selectedCount={selected.size}
           canSend={qbittorrentAvailable}
+          torrentClients={torrentClients}
           resultLinks={selectedLinks}
           torrentLinks={selectedTorrentLinks}
           magnets={selectedMagnets}
@@ -233,6 +236,7 @@ function SearchResultTable({
                   bucket={bucket}
                   selectable={canMutate}
                   canSend={qbittorrentAvailable}
+                  torrentClients={torrentClients}
                   selected={selected}
                   onToggle={toggle}
                   onToggleItems={toggleItems}

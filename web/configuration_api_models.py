@@ -62,6 +62,18 @@ class QbittorrentConnection(ServiceConnection):
     password_configured: bool = False
 
 
+class TorrentClientConnection(ConfigurationApiModel):
+    id: str
+    name: str
+    kind: Literal["qbittorrent", "deluge", "transmission"]
+    url: str = ""
+    username: str = ""
+    password_configured: bool = False
+    enabled: bool = False
+    is_default: bool = False
+    configured: bool = False
+
+
 class TmdbConnection(ConfigurationApiModel):
     language: str = "it-IT"
     api_key_configured: bool = False
@@ -76,6 +88,7 @@ class ConfigurationConnections(ConfigurationApiModel):
     prowlarr: ServiceConnection = Field(default_factory=ServiceConnection)
     jackett: ServiceConnection = Field(default_factory=ServiceConnection)
     qbittorrent: QbittorrentConnection = Field(default_factory=QbittorrentConnection)
+    torrent_clients: list[TorrentClientConnection] = Field(default_factory=list)
     tmdb: TmdbConnection = Field(default_factory=TmdbConnection)
     mdblist: ApiKeyCollection = Field(default_factory=ApiKeyCollection)
     omdb: ApiKeyCollection = Field(default_factory=ApiKeyCollection)
@@ -124,6 +137,18 @@ class QbittorrentConnectionInput(ConfigurationInputModel):
     clear_password: StrictBool = False
 
 
+class TorrentClientConnectionInput(ConfigurationInputModel):
+    id: StrictStr | None = None
+    name: StrictStr
+    kind: Literal["qbittorrent", "deluge", "transmission"]
+    url: StrictStr = ""
+    username: StrictStr = ""
+    password: StrictStr = ""
+    clear_password: StrictBool = False
+    enabled: StrictBool = False
+    is_default: StrictBool = False
+
+
 class TmdbConnectionInput(ConfigurationInputModel):
     language: StrictStr = "it-IT"
     api_key: StrictStr = ""
@@ -140,6 +165,7 @@ class ConfigurationConnectionsInput(ConfigurationInputModel):
     prowlarr: ServiceConnectionInput = Field(default_factory=ServiceConnectionInput)
     jackett: ServiceConnectionInput = Field(default_factory=ServiceConnectionInput)
     qbittorrent: QbittorrentConnectionInput = Field(default_factory=QbittorrentConnectionInput)
+    torrent_clients: list[TorrentClientConnectionInput] | None = Field(default=None, max_length=10)
     tmdb: TmdbConnectionInput = Field(default_factory=TmdbConnectionInput)
     mdblist: ApiKeyCollectionInput = Field(default_factory=ApiKeyCollectionInput)
     omdb: ApiKeyCollectionInput = Field(default_factory=ApiKeyCollectionInput)

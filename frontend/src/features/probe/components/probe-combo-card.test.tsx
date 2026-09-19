@@ -25,6 +25,22 @@ describe("ProbeComboCard", () => {
     expect(markup).not.toContain("probe-task-board-panel");
     expect(markup).not.toContain("Ultimo run");
   });
+
+  it("descrive il workflow in base all'ambito effettivo", () => {
+    const librariesMarkup = renderToStaticMarkup(
+      <ProbeComboCard scope="libraries" actions={[]} />,
+    );
+    const recentMarkup = renderToStaticMarkup(
+      <ProbeComboCard scope="recent" actions={[]} />,
+    );
+
+    expect(librariesMarkup).toContain(
+      "Individua i file nelle librerie selezionate e analizza in sequenza quelli trovati.",
+    );
+    expect(recentMarkup).toContain(
+      "Individua i file tra gli ultimi aggiunti e analizza in sequenza quelli trovati.",
+    );
+  });
 });
 
 describe("ProbeTaskBoard", () => {

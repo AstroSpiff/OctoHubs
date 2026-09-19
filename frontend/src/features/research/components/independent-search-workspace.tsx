@@ -73,6 +73,7 @@ function IndependentSearchWorkspace({
         searching={streaming.running}
         progress={streaming.progress}
         qbittorrentAvailable={overview.qbittorrent_available}
+        torrentClients={overview.torrent_clients}
         resultSetId={resultSetId}
       />
       <ManualSearchHistory

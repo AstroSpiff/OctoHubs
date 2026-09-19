@@ -13,11 +13,13 @@ import { filterBucketResults } from "@/features/research/search-result-groups";
 import type {
   SearchResultBucket,
 } from "@/features/research/search-result-groups";
+import type { TorrentClientOption } from "@/features/research/types";
 
 type SearchResultBucketProps = {
   bucket: SearchResultBucket;
   selectable?: boolean;
   canSend: boolean;
+  torrentClients?: TorrentClientOption[];
   selected: Set<string>;
   onNotice: (notice: SearchResultActionNotice) => void;
   onToggle: (key: string) => void;
@@ -31,6 +33,7 @@ function SearchResultBucket({
   bucket,
   selectable = true,
   canSend,
+  torrentClients = [],
   selected,
   onNotice,
   onToggle,
@@ -131,6 +134,7 @@ function SearchResultBucket({
                 selected={selected.has(key)}
                 selectedKeys={selected}
                 canSend={canSend}
+                torrentClients={torrentClients}
                 hasEpisodes={hasEpisodes}
                 duplicates={duplicates}
                 onToggle={() => onToggle(key)}

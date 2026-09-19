@@ -54,17 +54,23 @@ Manual steps:
 - Add at least one indexer in Jackett.
 - Verify the API key and base URL.
 
-## qBittorrent
-Optional download client.
+## Torrent clients
+Optional download destinations. OctoHubs supports multiple qBittorrent,
+Deluge, and Transmission profiles. Exactly one enabled profile is the default:
+automatic/default sends use it, while manual sends ask for a destination when
+more than one profile is enabled.
 
-Config fields:
-- `QBITTORRENT_URL`
-- `QBITTORRENT_USERNAME`
-- `QBITTORRENT_PASSWORD`
+Configure profiles in **Configuration > Services > Torrent clients**. Stored
+passwords are encrypted and are never returned to the browser. Existing
+`QBITTORRENT_URL`, `QBITTORRENT_USERNAME`, and `QBITTORRENT_PASSWORD` values are
+projected as the initial default profile and migrated on the first save.
 
 Manual steps:
-- Enable the Web UI in qBittorrent.
-- Use a user with permission to add torrents.
+- qBittorrent: enable its Web UI and use an account allowed to add torrents.
+- Deluge: enable Deluge Web, set its Web password, and connect the Web UI to a
+  Deluge daemon before running the OctoHubs connection check.
+- Transmission: enable RPC and enter its base URL (default port `9091`);
+  username and password are optional when RPC authentication is disabled.
 
 ## Trakt
 Optional metadata and release checks.

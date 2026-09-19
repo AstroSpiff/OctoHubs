@@ -1750,3 +1750,59 @@ stati modificati dati o configurazione del deployment Hetzner.
   Compose base/secrets/bootstrap, doppia build Docker riproducibile, identità
   runtime non-root, smoke autenticato con PostgreSQL 16 esterno temporaneo e
   `git diff --check` verdi.
+
+### Follow-up operativo v0.5.22 — client torrent multipli e testo workflow Probe
+
+- **Baseline:** `0ecc81e0067618ef4f02d457d83d0bfb3a127ba5`
+  (`v0.5.21`). La worktree conteneva già la modifica testuale richiesta alla
+  scheda Probe combinata e il relativo regressore; entrambi sono inclusi in
+  questo checkpoint senza ulteriori cambiamenti al comportamento del worker.
+- **Causa e obiettivo — resolved (famiglia: configurazione integrazioni e
+  selezione destinazione):** la ricerca poteva inviare torrent soltanto al
+  singolo blocco legacy `QBITTORRENT_*`. Non esistevano un modello
+  multiprofilo, una destinazione predefinita, adapter Deluge/Transmission o una
+  scelta per l'invio manuale. La proiezione dello stato dipendeva inoltre dal
+  nome storico qBittorrent.
+- **Soluzione:** `TORRENT_CLIENTS` è ora la configurazione canonica cifrata con
+  un massimo di dieci profili qBittorrent, Deluge e Transmission. Tra i profili
+  abilitati e completi esiste un solo predefinito; gli invii senza scelta
+  esplicita usano quello, mentre la UI chiede la destinazione solo quando ne
+  sono disponibili più di una. Gli identificatori inviati dal browser vengono
+  risolti esclusivamente contro i profili abilitati prima di effettuare rete.
+  Le credenziali qBittorrent legacy vengono proiettate come primo profilo e
+  conservate al primo salvataggio, quindi i campi legacy vengono neutralizzati
+  per evitare una ricreazione dopo la rimozione. Password e URL sensibili non
+  sono restituiti al browser e le password annidate restano cifrate a riposo.
+- **Adapter e failure path:** Deluge usa la Web JSON-RPC con login e verifica
+  fail-closed della connessione al daemon; Transmission gestisce la negoziazione
+  `X-Transmission-Session-Id` dopo HTTP 409 e l'autenticazione Basic
+  facoltativa. Tutte le risposte sono materializzate con limiti, redirect
+  disabilitati e sessioni chiuse anche in errore. Batch e invio singolo
+  conservano il contratto HTTP esistente aggiungendo soltanto `client_id`
+  facoltativo.
+- **Review indipendente:** l'inventario dei caller non ha trovato invii diretti
+  residui fuori dal dispatcher canonico. La review ha individuato una variante
+  nella diagnostica: con solo Deluge o Transmission la UI poteva mostrare sia
+  lo stato legacy sia quello aggregato e la pagina Sistema poteva leggere il
+  falso negativo qBittorrent. La proiezione usa ora un'unica scheda “Client
+  torrent”, con fallback al vecchio stato soltanto per snapshot precedenti.
+  Non sono state modificate route, metodi, formati di risposta preesistenti,
+  schema PostgreSQL o integrazioni diverse dai client torrent.
+- **Regressori e canary:** coperti migrazione senza perdita del secret,
+  cifratura annidata, default unico, profili disabilitati/incompleti, nomi e ID
+  duplicati, selezione esplicita, mancato invio verso un ID sconosciuto,
+  dispatch senza invii incrociati, login/daemon Deluge, retry 409 Transmission,
+  chiusura sessioni, scelta UI con uno o più client e deduplicazione dello stato
+  aggregato. La descrizione Probe distingue ora Librerie da Ultimi aggiunti.
+- **Rischio residuo:** qBittorrent reale non è stato contattato perché il client
+  dell'operatore è intenzionalmente disabilitato; l'eventuale errore del suo
+  controllo live è quindi atteso e non rappresenta un fallimento della release.
+  Deluge e Transmission sono verificati con canary deterministici di protocollo
+  ma richiedono le credenziali e la raggiungibilità reali dell'installazione.
+- **Gate finali:** mirati backend 95/95 e frontend 5/5; backend 2345 passed,
+  78 skipped e 34 subtests passed; PostgreSQL 16 reale 83 passed; frontend 284
+  file/798 test; Ruff, baseline complessità, Pyright, contratto API strict,
+  compile dei moduli principali, ESLint, build TypeScript/Vite, audit Python e
+  npm completi/runtime, Compose base/secrets/admin-bootstrap, doppia build
+  Docker riproducibile, identità runtime non-root, smoke autenticato con
+  PostgreSQL 16 esterno temporaneo e `git diff --check` verdi.

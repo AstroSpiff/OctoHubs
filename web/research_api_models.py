@@ -41,10 +41,12 @@ class ManualSearchPayload(ResearchPayload):
 
 class LinkBatchPayload(ResearchPayload):
     links: list[str] = Field(default_factory=list, max_length=25)
+    client_id: str | None = Field(default=None, max_length=64)
 
 
 class TorrentLinkPayload(ResearchPayload):
     link: str = ""
+    client_id: str | None = Field(default=None, max_length=64)
 
 
 class TorrentProxyPayload(ResearchPayload):
@@ -127,6 +129,7 @@ class ResearchOverviewResponse(ResearchPayload):
     success: Literal[True]
     has_config: bool
     qbittorrent_available: bool
+    torrent_clients: list[dict[str, Any]] = Field(default_factory=list)
     scan: dict[str, Any] = Field(default_factory=dict)
     results: ResearchResults = Field(default_factory=ResearchResults)
     requests: list[dict[str, Any]] = Field(default_factory=list)

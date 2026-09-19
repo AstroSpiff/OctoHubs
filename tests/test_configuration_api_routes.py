@@ -85,6 +85,47 @@ def test_service_settings_reject_new_url_credentials_but_keep_existing_redacted_
         )
 
 
+def test_service_settings_migrate_legacy_qbittorrent_to_canonical_profile_list(monkeypatch):
+    from services import configuration_settings, manager
+
+    saved = {}
+    monkeypatch.setattr(manager, "_load_app_settings_snapshot", lambda: {})
+    monkeypatch.setattr(
+        manager,
+        "_save_app_settings_snapshot",
+        lambda settings: saved.update(settings) or True,
+    )
+
+    configuration_settings.update_service_settings(
+        {
+            "connections": {
+                "torrent_clients": [
+                    {
+                        "id": "qbittorrent-legacy",
+                        "name": "Casa",
+                        "kind": "qbittorrent",
+                        "url": "http://qb.invalid",
+                        "username": "admin",
+                        "enabled": True,
+                        "is_default": True,
+                    }
+                ]
+            }
+        },
+        {
+            "QBITTORRENT_URL": "http://qb.invalid",
+            "QBITTORRENT_USERNAME": "admin",
+            "QBITTORRENT_PASSWORD": "legacy-password-canary",
+        },
+    )
+
+    assert saved["TORRENT_CLIENTS"][0]["password"] == "legacy-password-canary"
+    assert saved["TORRENT_CLIENTS"][0]["name"] == "Casa"
+    assert saved["QBITTORRENT_URL"] == ""
+    assert saved["QBITTORRENT_USERNAME"] == ""
+    assert saved["QBITTORRENT_PASSWORD"] == ""
+
+
 @pytest.mark.parametrize(
     "parameter_name",
     [

@@ -8,7 +8,8 @@ Advanced deployment notes for production.
 
 ## Overview
 OctoHubs is a FastAPI web app to orchestrate Emby and related services.
-Integrations with Jellyseerr, Prowlarr, Jackett, qBittorrent, and Trakt are
+Integrations with Jellyseerr, Prowlarr, Jackett, qBittorrent, Deluge,
+Transmission, and Trakt are
 optional and are maintained in the authenticated UI.
 
 ## Requirements and sizing
