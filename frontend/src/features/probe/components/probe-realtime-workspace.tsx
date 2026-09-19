@@ -135,6 +135,15 @@ function ProbeRealtimeWorkspace({
     processing: workerStatus(workerKeys.processing),
   };
   const comboServerStatuses = statusesFor(workerKeys.combo);
+  comboServerStatuses.forEach((serverStatus) => {
+    const probeStatus = snapshot?.servers[serverStatus.serverId]?.probe_status;
+    serverStatus.discoveryStatus = probeStatus?.[workerKeys.discovery] as
+      | ProbeWorkerStatus
+      | undefined;
+    serverStatus.processingStatus = probeStatus?.[workerKeys.processing] as
+      | ProbeWorkerStatus
+      | undefined;
+  });
 
   return (
     <QueryStateBoundary

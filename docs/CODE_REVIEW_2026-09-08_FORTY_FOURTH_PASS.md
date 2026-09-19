@@ -1412,3 +1412,32 @@ stati modificati dati o configurazione del deployment Hetzner.
   autenticato su PostgreSQL 16 esterno e `git diff --check` verdi. La review
   indipendente conclusiva non ha rilevato altri proprietari del feed realtime,
   aggiornamenti parentali dipendenti dal progresso o variazioni dei contratti.
+
+### Follow-up operativo v0.5.12 — sincronizzazione Kanban Media Probe
+
+- **Baseline:** `9b68ab3b2778cc0fef9dcd315996d65ae7da963a` (`v0.5.11`),
+  worktree pulito prima dell'intervento.
+- **Causa — resolved (famiglia: proiezione stato frontend):** la bacheca leggeva
+  soltanto `combo_libraries`/`combo_recent`. I worker avviati separatamente
+  pubblicavano invece `discovery`, `processing`, `recent_discovery` e
+  `recent_processing`; inoltre il frontend ignorava `board_reset`. Per questo
+  i task rimanevano in “Da fare” anche mentre le schede operative avanzavano.
+- **Soluzione:** la proiezione canonica del Kanban combina ora lo stato combo
+  con gli stati delle singole fasi per ogni server. Segue la libreria corrente,
+  conserva le fasi simultanee, riconosce librerie concluse o con esito terminale,
+  usa il worker effettivo per progresso/elemento corrente e sposta a
+  “Completato” il workflow terminato. L'esecuzione, l'ordine, le API e i dati del
+  Probe non cambiano.
+- **Regressori e superfici analoghe:** coperti workflow recenti separati,
+  discovery/processing Librerie simultanei, avanzamento per libreria, chiusura
+  `board_reset`, progresso del task e percorso combo. La review indipendente ha
+  verificato selezione singolo/tutti i server, fasi lanciate separatamente e
+  combinate e assenza di commistione tra gli ambiti.
+- **Rischio residuo:** gli stati sono in memoria e descrivono il run corrente o
+  più recente del processo applicativo; dopo un riavvio senza worker attivi la
+  bacheca torna coerentemente allo stato disponibile dal nuovo processo.
+- **Gate finali:** regressori mirati 10/10; backend 2319 passed, 78 skipped,
+  34 subtests passed; PostgreSQL reale 83 passed; frontend 280 file/767 test;
+  Ruff, Pyright, ESLint, build Vite, audit Python/npm, complessità, contratto API
+  strict, Compose base/secrets/bootstrap, doppia build Docker riproducibile,
+  smoke autenticato su PostgreSQL 16 esterno e `git diff --check` verdi.

@@ -110,6 +110,7 @@ export type ProbeBlacklistItem = ProbeHistoryItem & {
 export type ProbeWorkerStatus = {
   running?: boolean;
   phase?: "discovery" | "processing" | string;
+  started_at?: string;
   found?: number;
   total_scanned?: number;
   processed?: number;
@@ -121,6 +122,16 @@ export type ProbeWorkerStatus = {
   queue?: ProbeComboTask[];
   last_run?: ProbeComboLastRun;
   board_reset?: boolean;
+  board_mode?: "combo" | "discovery" | "processing" | string;
+  current_library_id?: string | null;
+  target_library_ids?: string[];
+  completed_library_ids?: string[];
+  error_library_ids?: string[];
+  library_queue_totals?: Record<string, number>;
+  library_queue_results?: Record<
+    string,
+    { processed?: number; incomplete?: number; errors?: number }
+  >;
 };
 
 export type ProbeComboTask = {

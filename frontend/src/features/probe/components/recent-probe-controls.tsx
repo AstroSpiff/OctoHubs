@@ -1,5 +1,5 @@
 import { ProbeComboCard } from "@/features/probe/components/probe-combo-card";
-import type { ProbeComboServerStatus } from "@/features/probe/components/probe-combo-card";
+import type { ProbeComboServerStatusLike as ProbeComboServerStatus } from "@/features/probe/probe-combo-presentation";
 import { EmbyServerIcon } from "@/features/emby-live/components/emby-server-icon";
 import { ProbeWorkerCard } from "@/features/probe/components/probe-worker-card";
 import { probeProgress } from "@/features/probe/presentation";

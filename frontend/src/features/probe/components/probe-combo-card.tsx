@@ -5,8 +5,17 @@ import { StatusBadge } from "@/components/ui/badge";
 import type { Severity } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ProgressFill } from "@/components/ui/progress-fill";
-import { comboTasksForServers } from "@/features/probe/probe-combo-presentation";
-import { formatProbeDate, probeProgress } from "@/features/probe/presentation";
+import {
+  comboTasksForServers,
+  comboTaskState,
+  statusForComboTask,
+} from "@/features/probe/probe-combo-presentation";
+import type { ProbeComboServerStatusLike } from "@/features/probe/probe-combo-presentation";
+import {
+  formatProbeDate,
+  mergeProbeWorkerStatuses,
+  probeProgress,
+} from "@/features/probe/presentation";
 import { ProbeWorkerCard } from "@/features/probe/components/probe-worker-card";
 import type { WorkerAction } from "@/features/probe/components/probe-worker-card";
 import type {
@@ -15,11 +24,7 @@ import type {
   ProbeWorkerStatus,
 } from "@/features/probe/types";
 
-type ProbeComboServerStatus = {
-  serverId: string;
-  serverName: string;
-  status?: ProbeWorkerStatus;
-};
+type ProbeComboServerStatus = ProbeComboServerStatusLike;
 
 type ProbeComboCardProps = {
   scope: ProbeScope;
@@ -52,14 +57,23 @@ function ProbeComboCard({
     [serverStatuses],
   );
   const scopeLabel = scope === "recent" ? "ultimi aggiunti" : "librerie";
+  const activeStandaloneStatuses = serverStatuses.flatMap((serverStatus) =>
+    [serverStatus.discoveryStatus, serverStatus.processingStatus].filter(
+      (workerStatus): workerStatus is ProbeWorkerStatus =>
+        Boolean(workerStatus?.running),
+    ),
+  );
+  const displayedStatus = status?.running
+    ? status
+    : mergeProbeWorkerStatuses(activeStandaloneStatuses) || status;
 
   return (
     <ProbeWorkerCard
       className="probe-combo-card"
       title="Individuazione + analisi"
       description={`Workflow completo per ${scopeLabel}, con avanzamento distinto per ogni fase.`}
-      status={status}
-      progress={probeProgress(status)}
+      status={displayedStatus}
+      progress={probeProgress(displayedStatus)}
       headerActions={
         <Button
           type="button"
@@ -141,9 +155,7 @@ function ProbeComboTaskCard({
   task: ProbeComboTask;
   serverStatuses: ProbeComboServerStatus[];
 }) {
-  const status = serverStatuses.find(
-    (entry) => entry.serverId === task.server_id,
-  )?.status;
+  const status = statusForComboTask(task, serverStatuses);
   const progress =
     task.type === "processing" ? probeProgress(status) : undefined;
   const serverName =
@@ -245,19 +257,6 @@ function ProbeComboLastRuns({
       </div>
     </section>
   );
-}
-
-function comboTaskState(
-  task: ProbeComboTask,
-  statuses: ProbeComboServerStatus[],
-): "todo" | "running" | "done" {
-  const status = statuses.find(
-    (entry) => entry.serverId === task.server_id,
-  )?.status;
-  if (!status?.running) return "todo";
-  if (status.phase === task.type) return "running";
-  if (status.phase === "processing" && task.type === "discovery") return "done";
-  return "todo";
 }
 
 function lastRunSeverity(result?: string): Severity {
