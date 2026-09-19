@@ -130,9 +130,10 @@ risultato per `SERVICE_CONNECTION_CHECK_COOLDOWN_SECONDS` (default 10, intervall
 
 `SECRET_KEY` firma le sessioni browser. Docker la genera e persiste se assente o
 uguale a un placeholder noto. Se viene fornita esplicitamente deve contenere
-almeno 32 byte UTF-8 non banali; un valore debole blocca l'avvio. Per un endpoint
-TLS esterno imposta `OCTOHUBS_PUBLIC_ORIGIN` sull'origine browser esatta, così il
-controllo WebSocket comprende schema, hostname e porta effettiva.
+almeno 32 byte UTF-8 non banali; un valore debole blocca l'avvio. I WebSocket
+funzionano dietro un proxy TLS same-host quando conserva l'header pubblico
+`Host`. Imposta `OCTOHUBS_PUBLIC_ORIGIN` solo per vincolare il controllo a una
+singola origine browser esatta o se il proxy non può conservare quell'header.
 
 `PASSWORD_SECRET` cifra ogni credenziale riutilizzabile salvata nelle impostazioni
 PostgreSQL, incluse API key delle integrazioni, token OAuth, token bot Telegram e

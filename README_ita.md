@@ -117,7 +117,7 @@ OCTOHUBS_DB_PASSWORD=PasswordDatabaseForte
 
 # Sessioni e CSRF (opzionale)
 # SESSION_TIMEOUT_MINUTES=60
-# Obbligatoria quando un endpoint TLS esterno espone un'origine browser diversa.
+# Override rigoroso opzionale; i proxy TLS same-host sono rilevati da Host.
 # OCTOHUBS_PUBLIC_ORIGIN=https://octohubs.example.com
 # LOGIN_TRUST_PROXY_HEADERS=true
 # LOGIN_TRUSTED_PROXY_CIDRS=172.18.0.0/16

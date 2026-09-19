@@ -73,7 +73,7 @@ function TorrentClientsSettings({
   return <section className="torrent-client-settings" aria-labelledby="torrent-client-settings-title">
     <header className="torrent-client-settings__header">
       <div>
-        <h3 id="torrent-client-settings-title">Client torrent</h3>
+        <h3 id="torrent-client-settings-title">Client Torrent</h3>
         <p>Puoi configurarne più di uno. Le automazioni usano il predefinito; negli invii manuali scegli la destinazione.</p>
       </div>
       <div className="torrent-client-settings__add" aria-label="Aggiungi client torrent">

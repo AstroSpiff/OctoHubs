@@ -127,9 +127,10 @@ request-triggered outbound bursts.
 
 `SECRET_KEY` signs browser sessions. Docker generates and persists it when it is
 absent or a known placeholder. If supplied explicitly, it must contain at least
-32 non-trivial UTF-8 bytes; weak explicit values fail startup. For an external
-TLS endpoint, set `OCTOHUBS_PUBLIC_ORIGIN` to the exact browser origin so
-WebSocket checks include scheme, hostname and effective port.
+32 non-trivial UTF-8 bytes; weak explicit values fail startup. WebSockets work
+behind a same-host TLS proxy when it preserves the public `Host` header. Set
+`OCTOHUBS_PUBLIC_ORIGIN` only to pin the check to one exact browser origin or
+when the proxy cannot preserve that header.
 
 `PASSWORD_SECRET` encrypts every reusable credential saved inside PostgreSQL
 application settings, including integration API keys, OAuth tokens, Telegram bot

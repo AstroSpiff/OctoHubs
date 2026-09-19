@@ -19,7 +19,7 @@ function QbittorrentConnectionCard({
       : { label: "Non configurato", severity: "neutral" };
 
   return <section className="service-connection-card">
-    <header><h3>qBittorrent</h3><span className={`configuration-state configuration-state--${state.severity}`}>{state.label}</span></header>
+    <header><h3>Client Torrent</h3><span className={`configuration-state configuration-state--${state.severity}`}>{state.label}</span></header>
     <p>Destinazione dei torrent inviati dalle ricerche manuali e automatiche.</p>
     <label>Indirizzo<input type="url" value={value.url} placeholder="http://host:8080" onChange={(event) => onChange({ ...value, url: event.target.value })} /></label>
     <label>Username<input type="text" autoComplete="username" value={value.username} onChange={(event) => onChange({ ...value, username: event.target.value })} /></label>

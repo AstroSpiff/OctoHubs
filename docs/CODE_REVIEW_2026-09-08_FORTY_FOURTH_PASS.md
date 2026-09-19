@@ -1806,3 +1806,39 @@ stati modificati dati o configurazione del deployment Hetzner.
   npm completi/runtime, Compose base/secrets/admin-bootstrap, doppia build
   Docker riproducibile, identità runtime non-root, smoke autenticato con
   PostgreSQL 16 esterno temporaneo e `git diff --check` verdi.
+
+### Follow-up operativo v0.5.23 — OPS-WS-ORIGIN-01
+
+- **Baseline:** `c41bbf259e791a06297aca40d2f0357c8bc47392` (`v0.5.22`). La
+  worktree conteneva già esclusivamente la rinomina locale della scheda
+  configurazione da “qBittorrent” a “Client Torrent” e il relativo regressore.
+- **Causa — resolved (famiglia: WebSocket same-origin dietro TLS terminato):**
+  con `--no-proxy-headers`, scelta di sicurezza intenzionale, Uvicorn vedeva
+  `ws` anche quando il browser usava `wss` e il proxy terminava TLS. Senza
+  `OCTOHUBS_PUBLIC_ORIGIN` il controllo confrontava quindi l'origine browser
+  HTTPS con uno schema HTTP derivato dal trasporto interno e respingeva tutti i
+  WebSocket con 403. Le sessioni ricerca create via HTTP restavano pending fino
+  al TTL e, dopo tre tentativi, producevano il 429 “Troppe sessioni di ricerca
+  in attesa”.
+- **Soluzione:** in assenza dell'override esplicito il controllo usa come
+  invariante same-origin l'autorità pubblica `Host` (hostname e porta effettiva)
+  e accetta HTTPS quando un proxy TLS same-host inoltra `ws`. Una connessione
+  TLS nativa continua a richiedere un'origine HTTPS; un host o una porta diversi
+  sono respinti. `OCTOHUBS_PUBLIC_ORIGIN` resta un override rigoroso e continua
+  a richiedere corrispondenza esatta di schema, hostname e porta. Le guide EN/IT
+  ora rendono l'override facoltativo, richiedono al proxy di conservare `Host` e
+  includono la direttiva Nginx corrispondente.
+- **Regressori, canary e superfici analoghe:** i test condivisi coprono i tre
+  endpoint browser realtime, HTTP diretto, TLS terminato su `ws`/`http`, TLS
+  nativo con schema errato, origine estranea, porta pubblica diversa e override
+  configurato. Tutti gli endpoint browser usano lo stesso autorizzatore
+  canonico. Il canary eseguito nell'immagine Docker costruita accetta l'origine
+  HTTPS same-host e respinge quella estranea.
+- **Rischio residuo:** un proxy che sostituisce `Host` con l'upstream interno
+  deve configurare `OCTOHUBS_PUBLIC_ORIGIN`; i proxy same-host che preservano
+  `Host` non richiedono configurazione aggiuntiva.
+- **Gate finali:** regressori mirati 37/37; backend 2350 passed, 78 skipped e 34
+  subtests passed; PostgreSQL 16 reale 83 passed; frontend 284 file/799 test;
+  Ruff, baseline complessità, Pyright, contratto API strict, ESLint, build
+  TypeScript/Vite, audit Python/npm, Compose base/secrets/admin-bootstrap,
+  build Docker e canary origine nell'immagine, `git diff --check` verdi.

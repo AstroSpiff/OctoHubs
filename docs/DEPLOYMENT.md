@@ -45,8 +45,8 @@ secret examples are in [Docker Deploy](DOCKER_DEPLOY.md#deployment-variables-and
 - `WEBHOOK_IP_WHITELIST` and `WEBHOOK_TRUST_PROXY_HEADERS`; Event Bridge credentials
   are generated per server and are not Portainer variables
 - `SESSION_TIMEOUT_MINUTES`, `CSRF_TIME_LIMIT_SECONDS`, `SESSION_COOKIE_SECURE`;
-  set `OCTOHUBS_PUBLIC_ORIGIN` to the exact browser origin when external TLS
-  changes the public scheme (for example `https://octohubs.example.com`)
+  `OCTOHUBS_PUBLIC_ORIGIN` optionally pins WebSocket checks to one exact browser
+  origin (same-host TLS proxies work automatically when they preserve `Host`)
 - `LOGIN_RATE_LIMIT_WINDOW_SECONDS`, `LOGIN_RATE_LIMIT_IP_ATTEMPTS`, `LOGIN_RATE_LIMIT_USERNAME_ATTEMPTS` (optional login-throttling overrides)
 
 ## Application settings

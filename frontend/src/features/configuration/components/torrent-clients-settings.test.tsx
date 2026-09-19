@@ -24,6 +24,12 @@ describe("TorrentClientsSettings", () => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = undefined;
   });
 
+  it("uses the generic Client Torrent title for the configuration section", () => {
+    act(() => root.render(<TorrentClientsSettings value={[]} snapshot={[]} onChange={vi.fn()} />));
+
+    expect(container.querySelector("h3")?.textContent).toBe("Client Torrent");
+  });
+
   it("moves the default to another enabled client when the current default is disabled", () => {
     const onChange = vi.fn();
     const value: TorrentClientInput[] = [

@@ -29,7 +29,7 @@ describe("ServiceConnectionChecks", () => {
       torrent_clients: { ok: true, message: "Deluge: Connessione OK", configured: true },
     }} />));
 
-    expect(container.textContent).toContain("Client torrent");
+    expect(container.textContent).toContain("Client Torrent");
     expect(container.textContent).toContain("Deluge: Connessione OK");
     expect(container.textContent).not.toContain("qBittorrent");
   });

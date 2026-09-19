@@ -82,7 +82,7 @@ per file di log. Dopo il primo avvio usa la UI autenticata.
 | `SECRET_KEY` | Obbligatoria e persistente | Docker la genera in `/config/.env` se assente o placeholder; un valore esplicito deve contenere almeno 32 byte UTF-8 non banali |
 | `PASSWORD_SECRET` | Obbligatoria e persistente | Docker la genera in `/config/.env`; ruotala solo con la procedura documentata |
 | `OCTOHUBS_BIND_ADDRESS`, `OCTOHUBS_PORT` | Opzionali | Bind HTTP; default `127.0.0.1:5050` |
-| `OCTOHUBS_PUBLIC_ORIGIN` | Deploy con TLS/proxy esterno | Origine browser esatta usata per il controllo Origin WebSocket, per esempio `https://octohubs.example.com` |
+| `OCTOHUBS_PUBLIC_ORIGIN` | Override rigoroso opzionale | Vincola i WebSocket a una singola origine browser esatta; i proxy TLS same-host funzionano automaticamente quando conservano `Host` |
 | `*_TRUST_PROXY_HEADERS`, `*_TRUSTED_PROXY_CIDRS` | Dipende dal deployment | Abilita la fiducia solo indicando esplicitamente la rete del proxy diretto |
 
 Puoi impostarle in Portainer o nella shell:
@@ -267,8 +267,10 @@ sistemista questi requisiti:
   `/api/emby/status-stream`;
 - sovrascrivere `X-Real-IP`, `X-Forwarded-For` e `X-Forwarded-Proto` con valori
   determinati dal proxy fidato, senza inoltrare invariati quelli forniti dal client;
-- impostare `OCTOHUBS_PUBLIC_ORIGIN` sull'origine HTTPS esatta esposta ai browser,
-  così il controllo Origin WebSocket confronta schema, hostname e porta effettiva;
+- conservare l'header pubblico `Host`. OctoHubs accetta così l'origine HTTPS
+  corrispondente anche se il proxy inoltra traffico WebSocket non cifrato;
+- impostare facoltativamente `OCTOHUBS_PUBLIC_ORIGIN` per vincolare i WebSocket a
+  una singola origine HTTPS esatta o se il proxy non può conservare `Host`;
 - quando abiliti gli indirizzi client inoltrati, imposta
   `LOGIN_TRUSTED_PROXY_CIDRS`, `WEBHOOK_TRUSTED_PROXY_CIDRS` e
   `API_TOKEN_TRUSTED_PROXY_CIDRS` sulla rete del proxy che si collega direttamente
@@ -284,6 +286,7 @@ Esempio di direttive per una route WebSocket Nginx gestita esternamente:
 ```nginx
 location /ws/ {
     proxy_http_version 1.1;
+    proxy_set_header Host $host;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
     proxy_read_timeout 3600s;

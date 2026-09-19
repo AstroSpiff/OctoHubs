@@ -3,6 +3,7 @@ import json
 import pytest
 
 from realtime.routes import (
+    _authorize_websocket,
     init_realtime_routes,
     websocket_scan_endpoint,
     websocket_search_endpoint,
@@ -104,12 +105,71 @@ async def test_realtime_websockets_reject_cross_origin_connections_before_authen
 
 @pytest.mark.anyio
 async def test_realtime_websockets_reject_same_host_cross_scheme_origin():
-    from realtime.routes import _authorize_websocket
-
     init_realtime_routes(lambda _connection: True)
     websocket = _FakeWebSocket(
         headers={"origin": "http://octohubs.example", "host": "octohubs.example"},
         scheme="wss",
+    )
+
+    subject = await _authorize_websocket(websocket)
+
+    assert subject is None
+    assert websocket.close_code == 1008
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("scheme", ["ws", "http"])
+async def test_realtime_websockets_accept_public_https_origin_behind_tls_proxy(scheme, monkeypatch):
+    monkeypatch.delenv("OCTOHUBS_PUBLIC_ORIGIN", raising=False)
+    init_realtime_routes(lambda _connection: 7)
+    websocket = _FakeWebSocket(
+        headers={"origin": "https://octohubs.example", "host": "octohubs.example"},
+        scheme=scheme,
+    )
+
+    subject = await _authorize_websocket(websocket)
+
+    assert subject == 7
+    assert websocket.closed is False
+
+
+@pytest.mark.anyio
+async def test_realtime_websockets_accept_same_origin_direct_http(monkeypatch):
+    monkeypatch.delenv("OCTOHUBS_PUBLIC_ORIGIN", raising=False)
+    init_realtime_routes(lambda _connection: 7)
+    websocket = _FakeWebSocket(
+        headers={"origin": "http://octohubs.example:5050", "host": "octohubs.example:5050"},
+        scheme="ws",
+    )
+
+    subject = await _authorize_websocket(websocket)
+
+    assert subject == 7
+    assert websocket.closed is False
+
+
+@pytest.mark.anyio
+async def test_realtime_websockets_reject_same_host_with_different_public_port(monkeypatch):
+    monkeypatch.delenv("OCTOHUBS_PUBLIC_ORIGIN", raising=False)
+    init_realtime_routes(lambda _connection: 7)
+    websocket = _FakeWebSocket(
+        headers={"origin": "https://octohubs.example:8443", "host": "octohubs.example"},
+        scheme="ws",
+    )
+
+    subject = await _authorize_websocket(websocket)
+
+    assert subject is None
+    assert websocket.close_code == 1008
+
+
+@pytest.mark.anyio
+async def test_configured_public_origin_remains_an_exact_override(monkeypatch):
+    monkeypatch.setenv("OCTOHUBS_PUBLIC_ORIGIN", "https://public.example")
+    init_realtime_routes(lambda _connection: 7)
+    websocket = _FakeWebSocket(
+        headers={"origin": "https://internal.example", "host": "internal.example"},
+        scheme="ws",
     )
 
     subject = await _authorize_websocket(websocket)

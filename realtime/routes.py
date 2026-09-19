@@ -87,15 +87,24 @@ def _websocket_origin_matches(websocket: WebSocket, origin: str, host: str | Non
     if configured:
         return actual == _normalized_http_origin(configured)
 
+    # Reverse proxies normally preserve the public Host header while terminating
+    # TLS before forwarding a plain ``ws`` connection to Uvicorn.  In that
+    # common deployment the ASGI scheme cannot describe the browser-facing
+    # scheme, but the Origin authority must still exactly match Host.  An
+    # explicit public origin above remains the stricter deployment override.
+    if actual != _normalized_http_origin(f"{actual[0]}://{host or ''}"):
+        return False
+
     scope = getattr(websocket, "scope", {}) or {}
     websocket_scheme = str(scope.get("scheme") or getattr(getattr(websocket, "url", None), "scheme", "")).lower()
-    expected_scheme = {"ws": "http", "wss": "https", "http": "http", "https": "https"}.get(websocket_scheme)
-    if expected_scheme:
-        return actual == _normalized_http_origin(f"{expected_scheme}://{host or ''}")
+    if websocket_scheme in {"wss", "https"}:
+        return actual[0] == "https"
+    if websocket_scheme in {"ws", "http"}:
+        return actual[0] in {"http", "https"}
 
     # Compatibility for lightweight ASGI test doubles; real WebSockets always
     # provide a scheme in their scope.
-    return urlparse(origin).netloc.lower() == str(host or "").lower()
+    return True
 
 
 def _normalized_http_origin(value: str) -> tuple[str, str, int] | None:

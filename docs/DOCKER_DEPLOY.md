@@ -86,7 +86,7 @@ initial setup, use the authenticated UI.
 | `SECRET_KEY` | Required and persistent | Docker generates it in `/config/.env` when absent or placeholder; an explicit value must contain at least 32 non-trivial UTF-8 bytes |
 | `PASSWORD_SECRET` | Required and persistent | Docker generates it in `/config/.env`; rotate only with the documented procedure |
 | `OCTOHUBS_BIND_ADDRESS`, `OCTOHUBS_PORT` | Optional | HTTP bind; defaults to `127.0.0.1:5050` |
-| `OCTOHUBS_PUBLIC_ORIGIN` | External TLS/proxy deployments | Exact browser origin used for WebSocket Origin checks, for example `https://octohubs.example.com` |
+| `OCTOHUBS_PUBLIC_ORIGIN` | Optional strict override | Pins WebSocket checks to one exact browser origin; same-host TLS proxies work automatically when they preserve `Host` |
 | `*_TRUST_PROXY_HEADERS`, `*_TRUSTED_PROXY_CIDRS` | Deployment-specific | Enable trust only with the direct proxy network explicitly listed |
 
 Set them in Portainer or your shell:
@@ -265,8 +265,10 @@ administrator these requirements:
   `/api/emby/status-stream`;
 - overwrite `X-Real-IP`, `X-Forwarded-For`, and `X-Forwarded-Proto` with values
   derived by the trusted proxy. Do not forward client-supplied versions unchanged;
-- set `OCTOHUBS_PUBLIC_ORIGIN` to the exact HTTPS origin exposed to browsers so
-  WebSocket Origin checks compare scheme, hostname and effective port;
+- preserve the public `Host` header. OctoHubs then accepts the matching HTTPS
+  browser origin even though the proxy forwards plain WebSocket traffic;
+- optionally set `OCTOHUBS_PUBLIC_ORIGIN` to pin WebSocket checks to one exact
+  HTTPS origin or when the proxy cannot preserve the public `Host` header;
 - when enabling forwarded client addresses, set `LOGIN_TRUSTED_PROXY_CIDRS`,
   `WEBHOOK_TRUSTED_PROXY_CIDRS`, and `API_TOKEN_TRUSTED_PROXY_CIDRS` to the
   network of the proxy that connects directly to OctoHubs. The corresponding
@@ -285,6 +287,7 @@ Example directives for an independently managed Nginx WebSocket route are:
 ```nginx
 location /ws/ {
     proxy_http_version 1.1;
+    proxy_set_header Host $host;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
     proxy_read_timeout 3600s;
