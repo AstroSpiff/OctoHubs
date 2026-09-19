@@ -1380,3 +1380,35 @@ stati modificati dati o configurazione del deployment Hetzner.
   279 file/761 test frontend; Ruff, Pyright, ESLint, build, audit Python/npm,
   Compose, Docker no-cache, smoke autenticato su PostgreSQL esterno e
   `git diff --check` verdi.
+
+### Follow-up operativo v0.5.11 — isolamento rendering realtime Media Probe
+
+- **Baseline:** `7e2fd33dc49601ec8dd89c83c2c9660ec698589a` (`v0.5.10`),
+  worktree pulito prima dell'intervento.
+- **Causa — resolved:** lo snapshot SSE Emby, ricevuto ogni due secondi durante
+  una lavorazione, era posseduto dalla radice `ProbePage`. Ogni progresso del
+  worker rivalutava quindi anche Coda e Storico; con 400 record visibili Chrome
+  registrava ripetutamente long task `message handler took <N>ms`, pur senza
+  errori o warning applicativi.
+- **Soluzione:** il feed e lo stato volatile dei worker sono ora confinati nel
+  componente feature-local `ProbeRealtimeWorkspace`. La radice riceve soltanto
+  l'identita stabile dei server quando cambia davvero; Coda, Storico, anomalie
+  e impostazioni continuano a usare i propri refresh React Query e non vengono
+  più ridisegnati per ogni avanzamento realtime. Refresh manuale, cambio server,
+  selezioni, bozze e frequenze 2/5/10 secondi restano invariati.
+- **Regressore e superfici analoghe:** un canary DOM invia due snapshot con la
+  stessa identita server e progresso differente: i worker passano da 1 a 2,
+  mentre la regione dati adiacente resta a un solo rendering e l'identita viene
+  pubblicata una sola volta. Riesaminati fallback HTTP, refresh manuale,
+  riconnessione SSE, cambio server e tab Configurazione.
+- **Rischio residuo:** il caricamento o refresh effettivo di 400 record può
+  ancora produrre un singolo long task; non viene introdotta virtualizzazione,
+  così markup, accessibilità e interazioni restano invariati. Non cambiano
+  backend, database, API, ordine o parallelismo del Probe.
+- **Gate finali:** regressore dedicato 1/1; backend 2319 passed, 78 skipped,
+  34 subtests passed; PostgreSQL reale 83 passed; frontend 280 file/762 test;
+  Ruff, Pyright, ESLint, build Vite, audit Python/npm, complessità, contratto API,
+  Compose base/secrets/bootstrap, doppia build Docker riproducibile, smoke
+  autenticato su PostgreSQL 16 esterno e `git diff --check` verdi. La review
+  indipendente conclusiva non ha rilevato altri proprietari del feed realtime,
+  aggiornamenti parentali dipendenti dal progresso o variazioni dei contratti.

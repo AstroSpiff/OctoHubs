@@ -3,27 +3,20 @@ import { useCallback, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
-import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
 import { useConfirmationDialog } from "@/components/ui/use-confirmation-dialog";
 import { WorkspaceHeading } from "@/components/ui/workspace-heading";
 import { WorkspacePage } from "@/components/ui/workspace-layout";
 import { ProbeDataPanel } from "@/features/probe/components/probe-data-panel";
 import type { ProbeDataTab } from "@/features/probe/probe-data-tab-options";
-import { LibraryProbeControls } from "@/features/probe/components/library-probe-controls";
-import { RecentProbeControls } from "@/features/probe/components/recent-probe-controls";
+import { ProbeRealtimeWorkspace } from "@/features/probe/components/probe-realtime-workspace";
 import { ProbeSettings } from "@/features/probe/components/probe-settings";
-import type { ProbeComboServerStatus } from "@/features/probe/components/probe-combo-card";
 import { ProbeScopeTabs } from "@/features/probe/components/probe-scope-tabs";
-import { ProbeWorkspace } from "@/features/probe/components/probe-workspace";
-import {
-  mergeProbeWorkerStatuses,
-} from "@/features/probe/presentation";
 import { useNavigationPreferencesContext } from "@/features/navigation/use-navigation-preferences-context";
 import {
   probeScopeFromRoute,
 } from "@/features/probe/probe-navigation";
 import { selectedAvailableProbeServerId } from "@/features/probe/probe-server-selection";
-import type { ProbeServer, ProbeWorkerStatus } from "@/features/probe/types";
+import type { ProbeServer } from "@/features/probe/types";
 import {
   useProbeLibraries,
   useProbeScopeData,
@@ -31,7 +24,6 @@ import {
 } from "@/features/probe/use-probe";
 import { useProbeDataActions } from "@/features/probe/use-probe-data-actions";
 import { useProbeContextSelection } from "@/features/probe/use-probe-context-selection";
-import { useEmbyLive } from "@/features/emby-live/use-emby-live";
 import { useBeforeUnloadWarning } from "@/lib/use-before-unload-warning";
 import { useUnsavedChangesNavigationGuard } from "@/lib/use-unsaved-changes-navigation-guard";
 import { useWorkspaceCapabilities } from "@/features/session/workspace-capabilities-context";
@@ -44,30 +36,25 @@ function ProbePage() {
   const scope = probeScopeFromRoute(routeScope);
   const confirmation = useConfirmationDialog();
   const navigationPreferences = useNavigationPreferencesContext();
-  const live = useEmbyLive();
   const libraries = useProbeLibraries();
+  const [servers, setServers] = useState<ProbeServer[]>([]);
+  const [liveRefreshRequest, setLiveRefreshRequest] = useState(0);
   const [probeConfigDirty, setProbeConfigDirty] = useState(false);
   const [recentConfigServerId, setRecentConfigServerId] = useState("");
   const [dataTab, setDataTab] = useState<ProbeDataTab>("queue");
   useBeforeUnloadWarning(probeConfigDirty);
   useUnsavedChangesNavigationGuard(probeConfigDirty, confirmation.confirm);
-  const servers = useMemo<ProbeServer[]>(
-    () =>
-      Object.values(live.snapshot?.servers || {})
-        .filter((server) => server.server.enabled)
-        .map((server) => ({
-          id: server.server.id,
-          name: server.server.name,
-          icon: server.server.icon,
-          icon_style: server.server.icon_style,
-          icon_color: server.server.icon_color,
-        })),
-    [live.snapshot],
-  );
   const serverNames = useMemo(
     () => Object.fromEntries(servers.map((server) => [server.id, server.name])),
     [servers],
   );
+  const updateServers = useCallback((nextServers: ProbeServer[]) => {
+    setServers((currentServers) =>
+      sameProbeServers(currentServers, nextServers)
+        ? currentServers
+        : nextServers,
+    );
+  }, []);
 
   const confirmDiscardProbeConfigDraft = useCallback(async () => {
     if (!probeConfigDirty) return true;
@@ -144,46 +131,6 @@ function ProbePage() {
     data.retry.error ||
     data.retryBlacklisted.error;
 
-  function statusesFor(workerKey: string): ProbeComboServerStatus[] {
-    return targetIds.map((serverId) => {
-      const server = live.snapshot?.servers[serverId];
-      return {
-        serverId,
-        serverName:
-          server?.server.name ||
-          servers.find((candidate) => candidate.id === serverId)?.name ||
-          "Server Emby",
-        status: server?.probe_status?.[workerKey] as
-          ProbeWorkerStatus | undefined,
-      };
-    });
-  }
-
-  function workerStatus(workerKey: string): ProbeWorkerStatus | undefined {
-    return mergeProbeWorkerStatuses(
-      statusesFor(workerKey).flatMap(({ status }) => (status ? [status] : [])),
-    );
-  }
-
-  const workerKeys =
-    scope === "libraries"
-      ? {
-          combo: "combo_libraries",
-          discovery: "discovery",
-          processing: "processing",
-        }
-      : {
-          combo: "combo_recent",
-          discovery: "recent_discovery",
-          processing: "recent_processing",
-        };
-  const selectedScopeStatus = {
-    combo: workerStatus(workerKeys.combo),
-    discovery: workerStatus(workerKeys.discovery),
-    processing: workerStatus(workerKeys.processing),
-  };
-  const comboServerStatuses = statusesFor(workerKeys.combo);
-
   function run(path: string, body: Record<string, unknown> = {}) {
     data.action.mutate({ path, body });
   }
@@ -257,7 +204,7 @@ function ProbePage() {
             void libraries.refetch();
             void data.refresh();
             if (!probeConfigDirty) void probeConfig.refetch();
-            live.refresh();
+            setLiveRefreshRequest((value) => value + 1);
           }}
           disabled={libraries.isFetching}
         >
@@ -310,63 +257,56 @@ function ProbePage() {
         </div>
       ) : null}
 
-      <QueryStateBoundary
-        error={live.error ? new Error(live.error) : null}
-        hasData={Boolean(live.snapshot)}
-        loadingLabel="Caricamento server Emby..."
-        retrying={live.connection === "loading"}
-        onRetry={live.refresh}
-      >
-      <ProbeWorkspace
+      <ProbeRealtimeWorkspace
         scope={scope}
-        servers={servers}
         serverId={scope === "recent" ? recentServerId : libraryServerId}
+        targetIds={targetIds}
+        libraries={selectedLibraryData}
+        discoverySelected={selectedDiscoveryLibraryIds}
+        processingSelected={selectedProcessingLibraryIds}
+        busy={busy}
+        librariesFetching={libraries.isFetching}
+        canMutate={canMutate}
+        refreshRequest={liveRefreshRequest}
+        onServersChange={updateServers}
         onServerChange={
           scope === "recent"
             ? selectRecentServer
             : selectLibraryServer
         }
-      >
-        {scope === "libraries" ? (
-          <LibraryProbeControls
-            libraries={selectedLibraryData}
-            discoverySelected={selectedDiscoveryLibraryIds}
-            processingSelected={selectedProcessingLibraryIds}
-            discoveryStatus={selectedScopeStatus.discovery}
-            processingStatus={selectedScopeStatus.processing}
-            comboStatus={selectedScopeStatus.combo}
-            comboServerStatuses={comboServerStatuses}
-            disabled={busy || libraries.isFetching}
-            canMutate={canMutate}
-            onDiscoverySelectionChange={setDiscoveryLibraries}
-            onProcessingSelectionChange={setProcessingLibraries}
-            onRunCombo={(mode) => runLibraries("combo", mode)}
-            onStopCombo={() => stopLibraries("combo")}
-            onRunDiscovery={() => runLibraries("discovery")}
-            onStopDiscovery={() => stopLibraries("discovery")}
-            onRunProcessing={(mode) => runLibraries("processing", mode)}
-            onStopProcessing={() => stopLibraries("processing")}
-          />
-        ) : (
-          <RecentProbeControls
-            allServersSelected={recentServerId === "all"}
-            serverCount={servers.length}
-            selectedServer={servers.find((server) => server.id === recentServerId)}
-            comboStatus={selectedScopeStatus.combo}
-            discoveryStatus={selectedScopeStatus.discovery}
-            processingStatus={selectedScopeStatus.processing}
-            comboServerStatuses={comboServerStatuses}
-            disabled={busy || !targetIds.length}
-            canMutate={canMutate}
-            onRunCombo={(mode) => runRecent("combo", mode)}
-            onStopCombo={() => stopRecent("combo")}
-            onRunDiscovery={() => runRecent("discovery")}
-            onStopDiscovery={() => stopRecent("discovery")}
-            onRunProcessing={(mode) => runRecent("processing", mode)}
-            onStopProcessing={() => stopRecent("processing")}
-          />
-        )}
-      </ProbeWorkspace>
+        onDiscoverySelectionChange={setDiscoveryLibraries}
+        onProcessingSelectionChange={setProcessingLibraries}
+        onRunCombo={(mode) =>
+          scope === "libraries"
+            ? runLibraries("combo", mode)
+            : runRecent("combo", mode)
+        }
+        onStopCombo={() =>
+          scope === "libraries"
+            ? stopLibraries("combo")
+            : stopRecent("combo")
+        }
+        onRunDiscovery={() =>
+          scope === "libraries"
+            ? runLibraries("discovery")
+            : runRecent("discovery")
+        }
+        onStopDiscovery={() =>
+          scope === "libraries"
+            ? stopLibraries("discovery")
+            : stopRecent("discovery")
+        }
+        onRunProcessing={(mode) =>
+          scope === "libraries"
+            ? runLibraries("processing", mode)
+            : runRecent("processing", mode)
+        }
+        onStopProcessing={() =>
+          scope === "libraries"
+            ? stopLibraries("processing")
+            : stopRecent("processing")
+        }
+      />
 
       <ProbeDataPanel
         scope={scope}
@@ -448,7 +388,6 @@ function ProbePage() {
         onRetryMany={(items) => void dataActions.retryMany(items)}
         onBeforeTabChange={confirmDiscardProbeConfigDraft}
       />
-      </QueryStateBoundary>
       </ProbeScopeTabs>
       {confirmation.dialog}
     </WorkspacePage>
@@ -471,6 +410,18 @@ function recentActionPath(
 
 function probeErrorMessage(error: Error | string): string {
   return typeof error === "string" ? error : error.message;
+}
+
+function sameProbeServers(left: ProbeServer[], right: ProbeServer[]): boolean {
+  return left.length === right.length && left.every((server, index) => {
+    const candidate = right[index];
+    return candidate !== undefined
+      && server.id === candidate.id
+      && server.name === candidate.name
+      && server.icon === candidate.icon
+      && server.icon_style === candidate.icon_style
+      && server.icon_color === candidate.icon_color;
+  });
 }
 
 export { ProbePage };
