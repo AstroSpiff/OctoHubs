@@ -7,9 +7,14 @@ import pytest
 from search.download_references import (
     DownloadReferenceCodec,
     DownloadReferenceError,
+    configure_download_reference_secret,
     protect_download_references,
     resolve_download_reference,
-    configure_download_reference_secret,
+)
+from search.prowlarr_grab_references import (
+    ProwlarrGrabReferenceCodec,
+    ProwlarrGrabReferenceError,
+    resolve_prowlarr_grab_reference,
 )
 
 
@@ -53,6 +58,74 @@ def test_source_id_is_stable_non_reversible_and_bound_to_the_subject():
     assert first["source_id"] != other_owner["source_id"]
     assert raw_torrent not in json.dumps(first)
     assert "private-canary" not in first["source_id"]
+
+
+def test_prowlarr_grab_metadata_is_opaque_short_lived_and_subject_bound():
+    configure_download_reference_secret("prowlarr-grab-test-secret")
+    payload = {
+        "title": "Visible title",
+        "_prowlarr_grab": {
+            "indexerId": 17,
+            "guid": "https://indexer.example/grab?apikey=private-canary",
+        },
+    }
+
+    protected = protect_download_references(payload, owner_id=41)
+    serialized = json.dumps(protected)
+
+    assert "_prowlarr_grab" not in protected
+    assert protected["prowlarr_grab_ref"].startswith("ohsgrab_")
+    assert "private-canary" not in serialized
+    assert resolve_prowlarr_grab_reference(
+        41, protected["prowlarr_grab_ref"]
+    ) == {
+        "indexerId": 17,
+        "guid": "https://indexer.example/grab?apikey=private-canary",
+    }
+    with pytest.raises(ProwlarrGrabReferenceError):
+        resolve_prowlarr_grab_reference(42, protected["prowlarr_grab_ref"])
+
+
+def test_persisted_search_history_keeps_only_rebindable_ephemeral_grab_reference():
+    configure_download_reference_secret("prowlarr-history-test-secret")
+
+    persisted = protect_download_references(
+        {
+            "title": "History result",
+            "_prowlarr_grab": {"indexerId": 17, "guid": "private-guid"},
+        },
+        persisted=True,
+    )
+
+    restored = protect_download_references(persisted, owner_id=41)
+
+    assert "_prowlarr_grab" not in persisted
+    assert persisted["prowlarr_grab_ref"].startswith("ohsgrab_")
+    assert restored["prowlarr_grab_ref"].startswith("ohsgrab_")
+    assert restored["prowlarr_grab_ref"] != persisted["prowlarr_grab_ref"]
+    assert "private-guid" not in json.dumps(persisted)
+    assert "private-guid" not in json.dumps(restored)
+    assert resolve_prowlarr_grab_reference(
+        41, restored["prowlarr_grab_ref"]
+    ) == {"indexerId": 17, "guid": "private-guid"}
+
+
+def test_prowlarr_grab_reference_cannot_be_extended_after_absolute_expiry(monkeypatch):
+    from search import prowlarr_grab_references
+
+    monkeypatch.setattr(prowlarr_grab_references.time, "time", lambda: 1_000)
+    codec = ProwlarrGrabReferenceCodec("prowlarr-expiry-test-secret")
+    reference = codec.issue(
+        41,
+        {"indexerId": 17, "guid": "expiring-guid"},
+    )
+
+    monkeypatch.setattr(prowlarr_grab_references.time, "time", lambda: 2_801)
+
+    with pytest.raises(ProwlarrGrabReferenceError, match="scaduto"):
+        codec.resolve(41, reference)
+    with pytest.raises(ProwlarrGrabReferenceError, match="scaduto"):
+        codec.reissue(reference, 41, persisted=False)
 
 
 def test_persisted_source_id_is_rebound_when_history_is_read_by_a_subject():

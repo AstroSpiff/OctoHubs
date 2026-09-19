@@ -498,6 +498,13 @@ def _detect_resolution_bucket(title_lower, resolution_rules=None):
     return "other"
 
 
+def _prowlarr_grab_identity(result):
+    prowlarr_grab = result.get("_prowlarr_grab")
+    if isinstance(prowlarr_grab, dict):
+        return {"_prowlarr_grab": prowlarr_grab}
+    return {}
+
+
 # --- RESULT FILTERING ---
 
 def filter_results(
@@ -590,6 +597,7 @@ def filter_results(
                 "episode_number": episode_num,
                 "normalized_title": sanitize_title(result.get("title", "").lower())
             }
+            clean_result.update(_prowlarr_grab_identity(result))
             filtered_list.append(clean_result)
         else:
             reason = "Lingua non trovata" if not lang_found else "Tag escluso"

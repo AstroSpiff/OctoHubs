@@ -11,7 +11,7 @@ import {
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { resolveMagnetReferences, resultLink, sendToQbittorrent } from "@/features/research/api";
+import { resolveMagnetReferences, resultLink, sendToProwlarr } from "@/features/research/api";
 import { magnetExportLink } from "@/features/research/presentation";
 import { WriteAction } from "@/features/session/workspace-capabilities";
 import {
@@ -20,7 +20,6 @@ import {
 } from "@/features/session/use-owner-bound-browser-action";
 import { navigateBrowser, writeBrowserClipboard } from "@/lib/browser-download";
 import { safeExternalHttpUrl } from "@/lib/external-url";
-import { TorrentClientPickerDialog } from "@/features/research/components/torrent-client-picker-dialog";
 import type { SearchResult, TorrentClientOption } from "@/features/research/types";
 
 type SearchResultActionNotice = { message: string; tone: "success" | "error" | "warning" };
@@ -38,26 +37,24 @@ type SearchResultActionsProps = {
 function SearchResultActions({
   result,
   canSend,
-  torrentClients = [],
   onNotice,
   onOpenTermMenu,
   onLookupEmby,
 }: SearchResultActionsProps) {
   const [sending, setSending] = useState(false);
   const [resolvingMagnet, setResolvingMagnet] = useState(false);
-  const [choosingClient, setChoosingClient] = useState(false);
   const link = resultLink(result);
   const magnet = magnetExportLink(result);
   const webUrl = safeExternalHttpUrl(result.web);
   const beginBrowserAction = useOwnerBoundBrowserAction();
 
-  async function send(clientId?: string) {
+  async function send() {
     if (!link) return;
     setSending(true);
     try {
-      const response = await sendToQbittorrent(link, clientId);
+      const response = await sendToProwlarr(link);
       onNotice({
-        message: response.message || "Inviato al client torrent.",
+        message: response.message || "Inviato al client torrent tramite Prowlarr.",
         tone: "success",
       });
     } catch (reason) {
@@ -74,11 +71,7 @@ function SearchResultActions({
   }
 
   function requestSend() {
-    if (torrentClients.length > 1) {
-      setChoosingClient(true);
-      return;
-    }
-    void send(torrentClients[0]?.id);
+    void send();
   }
 
   async function copyMagnet() {
@@ -159,8 +152,8 @@ function SearchResultActions({
           requiresWriteAccess
           variant="ghost"
           size="icon"
-          title="Invia al client torrent"
-          aria-label="Invia al client torrent"
+          title="Invia tramite Prowlarr"
+          aria-label="Invia tramite Prowlarr"
           disabled={sending}
           onClick={requestSend}
         >
@@ -193,7 +186,6 @@ function SearchResultActions({
           <ExternalLink size={15} aria-hidden="true" />
         </a>
       ) : null}
-      {choosingClient ? <TorrentClientPickerDialog clients={torrentClients} onClose={() => setChoosingClient(false)} onSelect={(client) => { setChoosingClient(false); void send(client.id); }} /> : null}
     </div>
   );
 }

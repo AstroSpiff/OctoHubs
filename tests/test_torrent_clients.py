@@ -257,50 +257,46 @@ def test_dispatch_uses_default_or_explicit_profile_without_cross_sending(monkeyp
     assert calls == [("qbittorrent", "magnet:?xt=one"), ("deluge", "magnet:?xt=two")]
 
 
-def test_search_send_contract_forwards_optional_client_selection(monkeypatch):
+def test_search_send_delegates_cached_release_to_prowlarr(monkeypatch):
     from search import manager
 
-    config = {
-        "TORRENT_CLIENTS": [
-            _profile("qb", "qbittorrent", default=True),
-            _profile("de", "deluge"),
-        ]
-    }
+    config = {"PROWLARR_URL": "https://prowlarr.invalid", "PROWLARR_API_KEY": "key"}
     observed = {}
     monkeypatch.setattr(manager, "load_config", lambda: (config, True))
     monkeypatch.setattr(
         manager,
-        "send_to_torrent_client",
-        lambda link, _config, client_id: observed.update(
-            {"link": link, "client_id": client_id}
+        "grab_prowlarr_release",
+        lambda release, received_config: observed.update(
+            {"release": release, "config": received_config}
         )
         or (True, "Inviato"),
     )
 
     payload, status = manager._build_send_torrent_snapshot(
-        {"link": "magnet:?xt=selected", "client_id": "de"}
+        {"prowlarr_release": {"indexerId": 7, "guid": "opaque-guid"}}
     )
 
     assert status == 200
     assert payload == {"success": True, "message": "Inviato"}
-    assert observed == {"link": "magnet:?xt=selected", "client_id": "de"}
+    assert observed == {
+        "release": {"indexerId": 7, "guid": "opaque-guid"},
+        "config": config,
+    }
 
 
-def test_search_send_rejects_unknown_or_disabled_client_before_network(monkeypatch):
+def test_search_send_rejects_missing_prowlarr_reference_before_network(monkeypatch):
     from search import manager
 
-    config = {"TORRENT_CLIENTS": [_profile("qb", "qbittorrent", default=True)]}
+    config = {"PROWLARR_URL": "https://prowlarr.invalid", "PROWLARR_API_KEY": "key"}
 
     def send(*_args, **_kwargs):
         pytest.fail("network dispatch must not run")
 
     monkeypatch.setattr(manager, "load_config", lambda: (config, True))
-    monkeypatch.setattr(manager, "send_to_torrent_client", send)
+    monkeypatch.setattr(manager, "grab_prowlarr_release", send)
 
-    payload, status = manager._build_send_torrent_snapshot(
-        {"link": "magnet:?xt=selected", "client_id": "missing"}
-    )
+    payload, status = manager._build_send_torrent_snapshot({})
 
     assert status == 400
     assert payload["success"] is False
-    assert payload["message"] == "Client torrent non disponibile o non abilitato"
+    assert payload["message"] == "Risultato Prowlarr mancante o scaduto"

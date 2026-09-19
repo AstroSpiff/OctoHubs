@@ -27,7 +27,8 @@ Manual steps:
 - Verify the base URL from inside Docker.
 
 ## Prowlarr
-Used for indexer searches.
+Used for indexer searches and for dispatching selected releases to the download
+client configured in Prowlarr.
 
 Config fields:
 - `PROWLARR_URL`
@@ -38,6 +39,9 @@ Enable in `SEARCH_RULES`:
 
 Manual steps:
 - Add at least one indexer in Prowlarr.
+- Configure and test the intended client under **Settings > Download Clients**.
+- When the Deluge client has a non-empty category, enable Deluge's `Label`
+  plugin. Otherwise leave the Prowlarr category empty.
 - Verify the API key and base URL.
 
 Searches keep listening until Prowlarr returns results or an error. OctoHubs
@@ -58,18 +62,22 @@ Manual steps:
 - Add at least one indexer in Jackett.
 - Verify the API key and base URL.
 
+Direct Jackett results can still be inspected and downloaded, but the search
+action delegates grabs only for results returned by Prowlarr. Add the required
+Jackett indexers to Prowlarr when they must support one-click dispatch.
+
 ## Torrent clients
-Optional download destinations. OctoHubs supports multiple qBittorrent,
-Deluge, and Transmission profiles. Exactly one enabled profile is the default:
-automatic/default sends use it, while manual sends ask for a destination when
-more than one profile is enabled.
+Optional local profiles for download monitoring and future client-specific
+features. OctoHubs keeps multiple qBittorrent, Deluge, and Transmission profiles
+encrypted, but research-result dispatch is owned by Prowlarr and does not use
+these credentials.
 
 Configure profiles in **Configuration > Services > Torrent clients**. Stored
 passwords are encrypted and are never returned to the browser. Existing
 `QBITTORRENT_URL`, `QBITTORRENT_USERNAME`, and `QBITTORRENT_PASSWORD` values are
 projected as the initial default profile and migrated on the first save.
 
-Manual steps:
+Manual steps for local profile checks:
 - qBittorrent: enable its Web UI and use an account allowed to add torrents.
 - Deluge: enable Deluge Web, set its Web password, and connect the Web UI to a
   Deluge daemon before running the OctoHubs connection check.

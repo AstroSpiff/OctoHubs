@@ -221,6 +221,7 @@ export type SearchResult = {
   torrent?: string;
   magnet_ref?: string;
   torrent_ref?: string;
+  prowlarr_grab_ref?: string;
   source_id?: string;
   has_magnet?: boolean;
   has_torrent?: boolean;

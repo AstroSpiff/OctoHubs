@@ -74,7 +74,7 @@ function TorrentClientsSettings({
     <header className="torrent-client-settings__header">
       <div>
         <h3 id="torrent-client-settings-title">Client Torrent</h3>
-        <p>Puoi configurarne più di uno. Le automazioni usano il predefinito; negli invii manuali scegli la destinazione.</p>
+        <p>Profili conservati per il monitoraggio download e le funzioni future. Gli invii dalla ricerca usano i client configurati in Prowlarr.</p>
       </div>
       <div className="torrent-client-settings__add" aria-label="Aggiungi client torrent">
         {(Object.keys(CLIENT_LABELS) as TorrentClientKind[]).map((kind) => <Button key={kind} type="button" variant="secondary" size="compact" onClick={() => addClient(kind)}><Plus size={14} aria-hidden="true" />{CLIENT_LABELS[kind]}</Button>)}
@@ -107,7 +107,7 @@ function TorrentClientsSettings({
           <footer><Button type="button" variant="ghost" size="compact" onClick={() => removeClient(client.id)}><Trash2 size={15} aria-hidden="true" />Rimuovi client</Button></footer>
         </article>;
       })}
-    </div> : <p className="torrent-client-settings__empty">Nessun client torrent configurato. La ricerca resta disponibile, ma l’invio diretto è disabilitato.</p>}
+    </div> : <p className="torrent-client-settings__empty">Nessun profilo locale configurato. Gli invii dalla ricerca continuano a essere gestiti da Prowlarr.</p>}
   </section>;
 }
 

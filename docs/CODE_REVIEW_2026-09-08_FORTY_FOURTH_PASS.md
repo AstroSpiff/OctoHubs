@@ -1886,3 +1886,49 @@ stati modificati dati o configurazione del deployment Hetzner.
   `git diff --check` verdi. Il primo tentativo di smoke senza PostgreSQL locale
   attivo è stato correttamente rifiutato dalla readiness; il rerun con il
   database previsto dal gate è passato.
+
+### Follow-up operativo post-v0.5.24 — PROWLARR-DISPATCH-01
+
+- **Baseline:** `3c8ef3917ac172e0a27111a74cad318ce245ac36` (`v0.5.24`),
+  worktree pulito prima dell'intervento.
+- **Causa — resolved (famiglia: ownership del dispatch torrent):** OctoHubs
+  duplicava la responsabilità già propria di Prowlarr, selezionando e
+  contattando direttamente un client torrent. La verifica operativa ha
+  confermato che autenticazione e collegamento Prowlarr-Deluge funzionavano:
+  il fallimento era causato dalla categoria `prowlarr` mentre il plugin Label
+  di Deluge era disabilitato. Il torrent era stato aggiunto prima del tentativo
+  di assegnazione della label e il tentativo successivo risultava già presente
+  nella sessione.
+- **Soluzione:** l'invio singolo e batch dalla Ricerca usa l'identità della
+  release conservata nella cache Prowlarr e delega il grab con `POST
+  /api/v1/search`; Prowlarr resta l'unico proprietario delle credenziali e della
+  scelta del client di download. Browser, storico e storage ricevono solo un
+  riferimento opaco legato all'utente e con scadenza assoluta di 30 minuti.
+  Le configurazioni locali qBittorrent, Deluge e Transmission non sono state
+  rimosse né mutate: restano disponibili per monitoraggio download e funzioni
+  future, ma non partecipano al dispatch della Ricerca.
+- **Regressori, canary e superfici analoghe:** coperti invio singolo e batch,
+  esiti parziali, scadenza cache, autenticazione, indisponibilità di rete,
+  chiusura deterministica di risposta e sessione, validazione dell'identità
+  release, isolamento tra utenti, persistenza e rebind senza estendere la
+  scadenza, mancata esposizione di GUID o credenziali e attraversamento
+  completo Prowlarr -> filtro -> riferimento opaco. Riesaminati risultati
+  annidati, storico, Jackett diretto, download browser e profili locali dei tre
+  client: solo risultati originati da Prowlarr sono inviabili tramite Prowlarr;
+  gli altri flussi restano invariati.
+- **Rischio residuo:** una release resta inviabile finché è valida nella cache
+  Prowlarr e per non oltre 30 minuti; dopo la scadenza occorre ripetere la
+  ricerca. Il client e l'eventuale categoria/label devono essere configurati
+  coerentemente in Prowlarr. Un risultato ottenuto direttamente da Jackett non
+  possiede un'identità cache Prowlarr e non espone l'azione di invio.
+- **Gate finali:** regressori mirati backend 277/277 e frontend 2 file/3
+  test; backend 2357 passed, 78 skipped e 34 subtests passed; PostgreSQL 16
+  reale 83 passed; frontend 284 file/799 test; Ruff, baseline complessità,
+  Pyright e contratto API strict verdi; ESLint e build TypeScript/Vite verdi;
+  `pip check`, audit Python runtime/dev, audit npm runtime/completo e albero npm
+  verdi; Compose base, secrets e admin-bootstrap validi; doppio build Docker
+  riproducibile con inventari identici; smoke autenticato con PostgreSQL 16
+  effimero, SPA/API e utente non-root verdi; `git diff --check` verde. Il primo
+  smoke locale senza PostgreSQL sulla porta predefinita è stato correttamente
+  rifiutato dalla readiness; il rerun con il database esterno previsto dal gate
+  è passato.

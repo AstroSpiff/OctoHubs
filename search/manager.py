@@ -19,10 +19,9 @@ from emby_runtime.api_clients import (
     get_tmdb_tv_details,
     search_tmdb,
 )
-from services.torrent_clients import select_torrent_client
-from services.torrent_dispatch import (
-    send_to_torrent_client,
-    send_to_torrent_client_batch,
+from services.prowlarr_downloads import (
+    grab_prowlarr_release,
+    grab_prowlarr_releases,
 )
 
 from core.config_manager import load_config
@@ -179,13 +178,10 @@ def _build_send_torrent_snapshot(payload) -> JsonResult:
     payload = payload or {}
     if not isinstance(payload, dict):
         payload = {}
-    link = payload.get("link")
-    if not link:
-        return json_error("Link mancante")
-    client_id = payload.get("client_id")
-    if not select_torrent_client(config, client_id):
-        return json_error("Client torrent non disponibile o non abilitato")
-    success, message = send_to_torrent_client(link, config, client_id)
+    release = payload.get("prowlarr_release")
+    if not isinstance(release, dict):
+        return json_error("Risultato Prowlarr mancante o scaduto")
+    success, message = grab_prowlarr_release(release, config)
     status_code = 200 if success else 500
     return {"success": success, "message": message}, status_code
 
@@ -197,13 +193,10 @@ def _build_send_torrent_batch_snapshot(payload) -> JsonResult:
     payload = payload or {}
     if not isinstance(payload, dict):
         payload = {}
-    links = payload.get("links")
-    if not isinstance(links, list):
-        return json_error("Lista link mancante")
-    client_id = payload.get("client_id")
-    if not select_torrent_client(config, client_id):
-        return json_error("Client torrent non disponibile o non abilitato")
-    success, message, details = send_to_torrent_client_batch(links, config, client_id)
+    releases = payload.get("prowlarr_releases")
+    if not isinstance(releases, list) or not releases:
+        return json_error("Risultati Prowlarr mancanti o scaduti")
+    success, message, details = grab_prowlarr_releases(releases, config)
     status_code = 200 if success else 500
     response = {"success": success, "message": message}
     if isinstance(details, dict):

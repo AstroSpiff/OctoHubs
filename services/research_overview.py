@@ -9,11 +9,11 @@ from app_helpers import _get_total_blacklist_counts
 from app_state import _JELLYSEERR_REFRESH_STATE
 from core.config import DEFAULT_CONFIG, MOVIE_SORT_OPTIONS, TV_SORT_OPTIONS, _default_auto_tasks
 from search.availability import is_request_available, normalize_request_availability
+from search.indexers import _prowlarr_configured
 from services.requests_cache import _load_cached_requests_overview
 from services.requests_summary import _estimate_variant_summary
 from services.scan_results import load_results_file
 from services.scheduler_manager import scan_manager
-from services.torrent_clients import enabled_torrent_clients
 
 
 def build_research_overview_snapshot(
@@ -75,23 +75,15 @@ def build_research_overview_snapshot(
     ]
     total_blacklist_count, total_incomplete_count = probe_counts or _get_total_blacklist_counts()
     rules = copy.deepcopy(source.get("SEARCH_RULES") or DEFAULT_CONFIG["SEARCH_RULES"])
-    torrent_clients = enabled_torrent_clients(source)
+    prowlarr_dispatch_available = _prowlarr_configured(source)
 
     return {
         "success": True,
         "has_config": bool(is_valid),
-        # Kept for existing API consumers; it now means that at least one
-        # supported torrent destination is available.
-        "qbittorrent_available": bool(torrent_clients),
-        "torrent_clients": [
-            {
-                "id": client["id"],
-                "name": client["name"],
-                "kind": client["kind"],
-                "is_default": bool(client.get("is_default")),
-            }
-            for client in torrent_clients
-        ],
+        # Stable response fields: manual grabs now use Prowlarr's configured
+        # destination, while OctoHubs-owned profiles remain stored separately.
+        "qbittorrent_available": prowlarr_dispatch_available,
+        "torrent_clients": [],
         "scan": status,
         "results": results,
         "requests": pending_requests,

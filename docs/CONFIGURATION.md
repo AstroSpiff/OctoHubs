@@ -32,7 +32,9 @@ Use these to enable integrations:
 - `JACKETT_URL`, `JACKETT_API_KEY`
 - `TORRENT_CLIENTS`: encrypted multi-profile list managed by the authenticated UI
   (qBittorrent, Deluge, and Transmission). Legacy `QBITTORRENT_*` values are
-  imported into the first profile when the list has not been saved yet.
+  imported into the first profile when the list has not been saved yet. These
+  profiles are retained for monitoring and future features; research-result
+  grabs use Prowlarr's configured download client.
 - `TMDB_API_KEY`, `TMDB_LANGUAGE`
 
 ## Base search settings

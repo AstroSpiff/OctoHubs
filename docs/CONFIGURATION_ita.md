@@ -33,7 +33,9 @@ Usali per abilitare le integrazioni:
 - `JACKETT_URL`, `JACKETT_API_KEY`
 - `TORRENT_CLIENTS`: elenco multiprofilo cifrato gestito dalla UI autenticata
   (qBittorrent, Deluge e Transmission). I valori legacy `QBITTORRENT_*` vengono
-  importati nel primo profilo finché l'elenco non viene salvato.
+  importati nel primo profilo finché l'elenco non viene salvato. Questi profili
+  restano disponibili per monitoraggio e funzioni future; gli invii dei
+  risultati di ricerca usano il client configurato in Prowlarr.
 - `TMDB_API_KEY`, `TMDB_LANGUAGE`
 
 ## Impostazioni base di ricerca

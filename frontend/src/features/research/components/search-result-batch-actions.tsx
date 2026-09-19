@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import {
   downloadTorrentArchive,
   resolveMagnetReferences,
-  sendBatchToQbittorrent,
+  sendBatchToProwlarr,
 } from "@/features/research/api";
 import type { SearchResultActionNotice } from "@/features/research/components/search-result-actions";
 import { batchSendNotice } from "@/features/research/batch-send-outcome";
@@ -17,7 +17,6 @@ import {
   downloadBrowserFile,
   writeBrowserClipboardIfAvailable,
 } from "@/lib/browser-download";
-import { TorrentClientPickerDialog } from "@/features/research/components/torrent-client-picker-dialog";
 import type { TorrentClientOption } from "@/features/research/types";
 
 type SearchResultBatchActionsProps = {
@@ -33,7 +32,6 @@ type SearchResultBatchActionsProps = {
 function SearchResultBatchActions({
   selectedCount,
   canSend,
-  torrentClients = [],
   resultLinks,
   torrentLinks,
   magnets,
@@ -41,11 +39,10 @@ function SearchResultBatchActions({
 }: SearchResultBatchActionsProps) {
   const [sending, setSending] = useState(false);
   const [downloading, setDownloading] = useState(false);
-  const [choosingClient, setChoosingClient] = useState(false);
   const actionPending = sending || downloading;
   const beginBrowserAction = useOwnerBoundBrowserAction();
 
-  async function sendSelected(clientId?: string) {
+  async function sendSelected() {
     if (!resultLinks.length) {
       onNotice({
         message: "I risultati selezionati non hanno un link inviabile.",
@@ -55,7 +52,7 @@ function SearchResultBatchActions({
     }
     setSending(true);
     try {
-      const response = await sendBatchToQbittorrent(resultLinks, clientId);
+      const response = await sendBatchToProwlarr(resultLinks);
       onNotice(batchSendNotice(response, resultLinks.length));
     } catch (reason) {
       onNotice({
@@ -71,11 +68,7 @@ function SearchResultBatchActions({
   }
 
   function requestSendSelected() {
-    if (torrentClients.length > 1) {
-      setChoosingClient(true);
-      return;
-    }
-    void sendSelected(torrentClients[0]?.id);
+    void sendSelected();
   }
 
   async function downloadSelected() {
@@ -153,7 +146,7 @@ function SearchResultBatchActions({
         requiresWriteAccess
         variant="secondary"
         size="compact"
-        disabled={!canSend || actionPending}
+        disabled={!canSend || !resultLinks.length || actionPending}
         onClick={requestSendSelected}
       >
         {sending ? (
@@ -161,9 +154,8 @@ function SearchResultBatchActions({
         ) : (
           <Send size={15} aria-hidden="true" />
         )}
-        Invia selezionati ({selectedCount})
+        Invia tramite Prowlarr ({resultLinks.length})
       </Button>
-      {choosingClient ? <TorrentClientPickerDialog clients={torrentClients} onClose={() => setChoosingClient(false)} onSelect={(client) => { setChoosingClient(false); void sendSelected(client.id); }} /> : null}
       <Button
         type="button"
         requiresWriteAccess

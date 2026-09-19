@@ -27,6 +27,24 @@ def _info_log_value(value):
     return sanitize_diagnostic_text(sanitize_url_for_log(value)) if value else value
 
 
+def _prowlarr_grab_identity(item, guid_value):
+    indexer_id = item.get("indexerId")
+    if (
+        isinstance(indexer_id, int)
+        and not isinstance(indexer_id, bool)
+        and indexer_id > 0
+        and isinstance(guid_value, str)
+        and guid_value.strip()
+    ):
+        return {
+            "_prowlarr_grab": {
+                "indexerId": indexer_id,
+                "guid": guid_value,
+            }
+        }
+    return {}
+
+
 def search_prowlarr(query, media_type, config):
     """Cerca un titolo su Prowlarr usando la sua API."""
     print(f"   -> Cercando su Prowlarr: {search_query_for_log(query)!r}")
@@ -149,6 +167,7 @@ def search_prowlarr(query, media_type, config):
                     item.get("size"), provider="Prowlarr", field="size"
                 ),
             }
+            result_dict.update(_prowlarr_grab_identity(item, guid_value))
 
             # Debug: stampa il primo risultato normalizzato
             if idx == 0:

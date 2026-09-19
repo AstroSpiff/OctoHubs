@@ -15,6 +15,12 @@ from urllib.parse import urlsplit
 from cryptography.fernet import Fernet, InvalidToken
 
 from core.configuration_redaction import connection_url_has_credentials
+from search.prowlarr_grab_references import (
+    ProwlarrGrabReferenceError,
+    configure_prowlarr_grab_reference_secret,
+    issue_prowlarr_grab_reference,
+    reissue_prowlarr_grab_reference,
+)
 
 
 REFERENCE_PREFIX = "ohsdl_"
@@ -158,6 +164,7 @@ def configure_download_reference_secret(secret: str) -> None:
     global _codec
     with _codec_lock:
         _codec = DownloadReferenceCodec(secret)
+    configure_prowlarr_grab_reference_secret(secret)
 
 
 def resolve_download_reference(
@@ -187,10 +194,21 @@ def _protect_value(value: Any, owner_id: int, *, persisted: bool) -> Any:
     if not isinstance(value, dict):
         return value
 
+    raw_prowlarr_grab = value.get("_prowlarr_grab")
+    existing_prowlarr_grab = value.get("prowlarr_grab_ref")
     protected = {
         key: _protect_value(item, owner_id, persisted=persisted)
         for key, item in value.items()
+        if key not in {"_prowlarr_grab", "prowlarr_grab_ref"}
     }
+    reference = _protect_prowlarr_grab_reference(
+        raw_prowlarr_grab,
+        existing_prowlarr_grab,
+        owner_id,
+        persisted=persisted,
+    )
+    if reference:
+        protected["prowlarr_grab_ref"] = reference
     raw_by_kind, existing_by_kind = _extract_download_values(protected)
     source_values = _resolve_source_values(
         raw_by_kind,
@@ -207,6 +225,31 @@ def _protect_value(value: Any, owner_id: int, *, persisted: bool) -> Any:
         persisted=persisted,
     )
     return protected
+
+
+def _protect_prowlarr_grab_reference(
+    raw_release: Any,
+    existing_reference: Any,
+    owner_id: int,
+    *,
+    persisted: bool,
+) -> str | None:
+    try:
+        if isinstance(existing_reference, str):
+            return reissue_prowlarr_grab_reference(
+                existing_reference,
+                owner_id,
+                persisted=persisted,
+            )
+        if raw_release is not None:
+            return issue_prowlarr_grab_reference(
+                _PERSISTED_OWNER_ID if persisted else owner_id,
+                raw_release,
+                persisted=persisted,
+            )
+    except ProwlarrGrabReferenceError:
+        return None
+    return None
 
 
 def _resolve_source_values(

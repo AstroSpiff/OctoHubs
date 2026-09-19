@@ -21,6 +21,11 @@ from search.download_references import (
     protect_download_references,
     resolve_download_reference,
 )
+from search.prowlarr_grab_references import (
+    PROWLARR_GRAB_REFERENCE_PREFIX,
+    ProwlarrGrabReferenceError,
+    resolve_prowlarr_grab_reference,
+)
 from search.manager import (
     _download_torrent_file,
     _build_manual_search_snapshot,
@@ -102,6 +107,13 @@ def _resolved_download(owner_id: int, value: str, *, expected_kind: str | None =
     if normalized.startswith(REFERENCE_PREFIX):
         return resolve_download_reference(owner_id, normalized, expected_kind=expected_kind)
     return normalized
+
+
+def _resolved_prowlarr_grab(owner_id: int, value: str) -> dict[str, Any]:
+    normalized = str(value or "").strip()
+    if not normalized.startswith(PROWLARR_GRAB_REFERENCE_PREFIX):
+        raise ProwlarrGrabReferenceError("Riferimento Prowlarr non disponibile")
+    return resolve_prowlarr_grab_reference(owner_id, normalized)
 
 
 def _available_request_ids_from_overview(backend: Any) -> set[str]:
@@ -491,8 +503,8 @@ async def send_torrent_api(request: Request, payload: TorrentLinkPayload):
     await run_in_threadpool(_validate_csrf_dep, request)
     try:
         submitted = payload.model_dump()
-        submitted["link"] = await run_in_threadpool(
-            _resolved_download,
+        submitted["prowlarr_release"] = await run_in_threadpool(
+            _resolved_prowlarr_grab,
             int(owner_id),
             payload.link,
         )
@@ -501,6 +513,8 @@ async def send_torrent_api(request: Request, payload: TorrentLinkPayload):
             submitted,
         )
         return JSONResponse(data, status_code=status_code)
+    except ProwlarrGrabReferenceError:
+        return _error_response("Risultato Prowlarr non disponibile o scaduto", 404)
     except Exception as exc:
         logger.error("Errore send-torrent:\n%s", format_exception_for_log(exc))
         return JSONResponse(
@@ -515,8 +529,8 @@ async def send_torrent_batch_api(request: Request, payload: LinkBatchPayload):
     await run_in_threadpool(_validate_csrf_dep, request)
     try:
         submitted = payload.model_dump()
-        submitted["links"] = [
-            await run_in_threadpool(_resolved_download, int(owner_id), link)
+        submitted["prowlarr_releases"] = [
+            await run_in_threadpool(_resolved_prowlarr_grab, int(owner_id), link)
             for link in payload.links
         ]
         data, status_code = await run_in_threadpool(
@@ -524,6 +538,8 @@ async def send_torrent_batch_api(request: Request, payload: LinkBatchPayload):
             submitted,
         )
         return JSONResponse(data, status_code=status_code)
+    except ProwlarrGrabReferenceError:
+        return _error_response("Risultato Prowlarr non disponibile o scaduto", 404)
     except Exception as exc:
         logger.error("Errore send-torrent batch:\n%s", format_exception_for_log(exc))
         return JSONResponse(

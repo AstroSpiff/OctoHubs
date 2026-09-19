@@ -29,7 +29,8 @@ Passi manuali:
 - Verifica il base URL dal container Docker.
 
 ## Prowlarr
-Usato per le ricerche sugli indexer.
+Usato per le ricerche sugli indexer e per inviare i risultati selezionati al
+client di download configurato in Prowlarr.
 
 Campi config:
 - `PROWLARR_URL`
@@ -40,6 +41,9 @@ Abilita in `SEARCH_RULES`:
 
 Passi manuali:
 - Aggiungi almeno un indexer in Prowlarr.
+- Configura e verifica il client desiderato in **Settings > Download Clients**.
+- Se il client Deluge usa una categoria non vuota, abilita il plugin `Label` in
+  Deluge; altrimenti lascia vuota la categoria in Prowlarr.
 - Verifica API key e base URL.
 
 Le ricerche restano in ascolto finché Prowlarr restituisce risultati o un
@@ -60,18 +64,22 @@ Passi manuali:
 - Aggiungi almeno un indexer in Jackett.
 - Verifica API key e base URL.
 
+I risultati Jackett diretti restano consultabili e scaricabili, ma l'invio dalla
+ricerca viene delegato soltanto per risultati restituiti da Prowlarr. Aggiungi a
+Prowlarr gli indexer Jackett che devono supportare l'invio con un clic.
+
 ## Client torrent
-Destinazioni di download opzionali. OctoHubs supporta più profili qBittorrent,
-Deluge e Transmission. Un solo profilo abilitato è predefinito: gli invii
-automatici o senza scelta esplicita usano quello, mentre gli invii manuali
-chiedono la destinazione quando i profili abilitati sono più di uno.
+Profili locali opzionali per il monitoraggio download e future funzioni
+specifiche dei client. OctoHubs conserva cifrati più profili qBittorrent, Deluge
+e Transmission, ma l'invio dei risultati di ricerca è gestito da Prowlarr e non
+usa queste credenziali.
 
 Configura i profili in **Configurazione > Servizi > Client torrent**. Le
 password salvate sono cifrate e non vengono mai restituite al browser. I valori
 esistenti `QBITTORRENT_URL`, `QBITTORRENT_USERNAME` e `QBITTORRENT_PASSWORD`
 diventano il profilo predefinito iniziale e vengono migrati al primo salvataggio.
 
-Passi manuali:
+Passi manuali per la verifica dei profili locali:
 - qBittorrent: abilita la Web UI e usa un account autorizzato ad aggiungere torrent.
 - Deluge: abilita Deluge Web, imposta la relativa password e collega la Web UI
   a un daemon Deluge prima della verifica da OctoHubs.

@@ -108,12 +108,12 @@ function cleanupScanResults(input: { mode: "single" | "resolved" | "all"; reques
   return request("/api/v1/research/results/cleanup", { method: "POST", body: JSON.stringify(input) });
 }
 
-function sendToQbittorrent(link: string, clientId?: string): Promise<ActionResult> {
-  return request("/api/v1/research/torrents/send", { method: "POST", body: JSON.stringify({ link, ...(clientId ? { client_id: clientId } : {}) }) });
+function sendToProwlarr(reference: string): Promise<ActionResult> {
+  return request("/api/v1/research/torrents/send", { method: "POST", body: JSON.stringify({ link: reference }) });
 }
 
-function sendBatchToQbittorrent(links: string[], clientId?: string): Promise<ActionResult> {
-  return request("/api/v1/research/torrents/send-batch", { method: "POST", body: JSON.stringify({ links, ...(clientId ? { client_id: clientId } : {}) }) });
+function sendBatchToProwlarr(references: string[]): Promise<ActionResult> {
+  return request("/api/v1/research/torrents/send-batch", { method: "POST", body: JSON.stringify({ links: references }) });
 }
 
 function downloadTorrentArchive(links: string[], signal?: AbortSignal): Promise<Blob> {
@@ -144,8 +144,8 @@ function deleteManualSearch(searchId: number): Promise<ActionResult> {
 }
 
 function resultLink(result: SearchResult): string | null {
-  const candidate = result.magnet_ref || result.torrent_ref;
-  return typeof candidate === "string" && candidate.trim() ? candidate : null;
+  const reference = result.prowlarr_grab_ref;
+  return typeof reference === "string" && reference.startsWith("ohsgrab_") ? reference : null;
 }
 
 export {
@@ -170,8 +170,8 @@ export {
   saveGlobalSearchRules,
   saveRequestSearchRules,
   searchTmdb,
-  sendBatchToQbittorrent,
-  sendToQbittorrent,
+  sendBatchToProwlarr,
+  sendToProwlarr,
   stopScan,
   cleanupScanResults,
   getJellyseerrRefreshStatus,

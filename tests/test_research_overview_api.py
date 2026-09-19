@@ -25,7 +25,11 @@ def test_research_overview_hides_available_content_without_mutating_source(monke
     monkeypatch.setattr(research_overview, "_get_total_blacklist_counts", lambda: (2, 3))
 
     payload = research_overview.build_research_overview_snapshot(
-        {"SEARCH_RULES": {}, "QBITTORRENT_URL": "http://qb", "QBITTORRENT_USERNAME": "user", "QBITTORRENT_PASSWORD": "secret"},
+        {
+            "SEARCH_RULES": {},
+            "PROWLARR_URL": "https://prowlarr.invalid",
+            "PROWLARR_API_KEY": "secret",
+        },
         True,
         scan_status={"last_summary": results, "running": False},
         cached_overview=(overview, "2026-08-11T12:00:00+00:00"),
@@ -38,6 +42,7 @@ def test_research_overview_hides_available_content_without_mutating_source(monke
     assert payload["probe_counts"] == {"blacklist": 2, "incomplete": 3}
     assert payload["search_defaults"] == {"target_languages": [], "exclude_tags": []}
     assert payload["qbittorrent_available"] is True
+    assert payload["torrent_clients"] == []
     assert [item["request_id"] for item in results["items"]] == [436, 451]
     assert "secret" not in json.dumps(payload)
 
