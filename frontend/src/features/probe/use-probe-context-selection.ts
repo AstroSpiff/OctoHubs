@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { selectedAvailableLibraryIds } from "@/features/probe/probe-library-selection";
+import {
+  persistProbeLibraryServerId,
+  persistProbeRecentServerId,
+  readProbeLibraryServerId,
+  readProbeRecentServerId,
+} from "@/features/probe/probe-context-preferences";
 import { selectedAvailableProbeServerId } from "@/features/probe/probe-server-selection";
 import type {
   ProbeLibrariesPayload,
@@ -20,25 +26,32 @@ function useProbeContextSelection({
   confirmDiscardRecentConfigDraft: () => Promise<boolean>;
   scope: ProbeScope;
 }) {
-  const [libraryServerId, setLibraryServerId] = useState("");
-  const [recentServerId, setRecentServerId] = useState("all");
+  const [libraryServerId, setLibraryServerId] = useState(
+    readProbeLibraryServerId,
+  );
+  const [recentServerId, setRecentServerId] = useState(
+    readProbeRecentServerId,
+  );
   const [discoveryLibraries, setDiscoveryLibraries] = useState<string[]>([]);
   const [processingLibraries, setProcessingLibraries] = useState<string[]>([]);
   const initializedLibrarySelection = useRef<string | null>(null);
 
   useEffect(() => {
+    if (!servers.length) return;
     const availableLibraryServerId = selectedAvailableProbeServerId(
       libraryServerId,
       servers,
     );
     if (availableLibraryServerId !== libraryServerId) {
       setLibraryServerId(availableLibraryServerId);
+      persistProbeLibraryServerId(availableLibraryServerId);
     }
     if (
       recentServerId !== "all" &&
       !servers.some((server) => server.id === recentServerId)
     ) {
       setRecentServerId("all");
+      persistProbeRecentServerId("all");
     }
   }, [libraryServerId, recentServerId, servers]);
 
@@ -81,12 +94,17 @@ function useProbeContextSelection({
   }, [availableLibraryIds, libraryServerId, libraries]);
 
   const targetIds = useMemo(
-    () =>
-      scope === "recent" && recentServerId === "all"
-        ? servers.map((server) => server.id)
-        : [scope === "recent" ? recentServerId : libraryServerId].filter(
-            Boolean,
-          ),
+    () => {
+      if (scope === "recent" && recentServerId === "all") {
+        return servers.map((server) => server.id);
+      }
+      const selectedServerId = scope === "recent"
+        ? recentServerId
+        : libraryServerId;
+      return servers.some((server) => server.id === selectedServerId)
+        ? [selectedServerId]
+        : [];
+    },
     [libraryServerId, recentServerId, scope, servers],
   );
 
@@ -94,6 +112,7 @@ function useProbeContextSelection({
     if (nextServerId === recentServerId) return true;
     if (!(await confirmDiscardRecentConfigDraft())) return false;
     setRecentServerId(nextServerId);
+    persistProbeRecentServerId(nextServerId);
     return true;
   }
 
@@ -101,6 +120,7 @@ function useProbeContextSelection({
     if (nextServerId === libraryServerId) return true;
     if (!(await confirmDiscardRecentConfigDraft())) return false;
     setLibraryServerId(nextServerId);
+    persistProbeLibraryServerId(nextServerId);
     return true;
   }
 

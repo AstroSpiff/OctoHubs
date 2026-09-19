@@ -18,6 +18,9 @@ describe("ProbeWorkspace", () => {
 
     expect(markup).toContain('id="probe-recent-workspace"');
     expect(markup).toContain('aria-labelledby="probe-workspace-title"');
+    expect(markup).toContain("probe-workspace-context");
+    expect(markup).toContain('aria-label="Server Emby"');
+    expect(markup).toContain('<option value="all" selected="">Tutti</option>');
     expect(markup).not.toContain('role="tabpanel"');
   });
 });

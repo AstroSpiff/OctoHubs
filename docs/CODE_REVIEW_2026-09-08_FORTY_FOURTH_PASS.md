@@ -1573,3 +1573,33 @@ stati modificati dati o configurazione del deployment Hetzner.
   Python/npm, complessità, contratto API strict, Compose base/secrets/bootstrap,
   doppia build Docker riproducibile, identità runtime non-root, smoke
   autenticato su PostgreSQL esterno e `git diff --check` verdi.
+
+### Follow-up operativo v0.5.17 — contesto server persistente Media Probe
+
+- **Baseline:** `712b3a5c1c25e4273b11144037420aebecfdbdc8` (`v0.5.16`),
+  worktree pulito prima dell'intervento.
+- **Causa — resolved (famiglia: stato di navigazione frontend):** le selezioni
+  server di “Ultimi aggiunti” e “Librerie” erano inizializzate rispettivamente
+  con `all` e stringa vuota e vivevano soltanto nello stato React. Un refresh
+  perdeva quindi la scelta e Librerie ricadeva sul primo server disponibile.
+  L'intestazione con il selettore usciva inoltre dal viewport durante lo scroll,
+  facendo perdere il contesto dei dati e dei comandi sottostanti.
+- **Soluzione:** le due selezioni vengono salvate separatamente nello storage
+  locale sicuro e ripristinate soltanto se il server esiste ancora. Un valore
+  obsoleto non genera richieste e, dopo il caricamento dell'inventario, viene
+  sostituito dal fallback valido; `Tutti` resta una scelta persistibile soltanto
+  per Ultimi aggiunti. L'intestazione di ambito e il selettore sono ora sticky;
+  sotto 680 px i pulsanti lasciano posto a un menu compatto controllato, così il
+  riferimento rimane visibile senza coprire gran parte della schermata.
+- **Regressori e superfici analoghe:** coperti ripristino indipendente dei due
+  ambiti, conferma rifiutata, persistenza di `Tutti`, caricamento asincrono e
+  rimozione del server precedentemente salvato. Riesaminati selettore della
+  configurazione Probe, inventario realtime, target delle query e layout
+  desktop/mobile; route, API, worker, ordine e dati persistiti non cambiano.
+- **Rischio residuo:** la preferenza è locale al browser, come le altre
+  preferenze di presentazione dell'applicazione; su un browser o dispositivo
+  nuovo il primo accesso usa i fallback esistenti.
+- **Gate finali:** regressori mirati 6/6; frontend 280 file/777 test; ESLint,
+  TypeScript/Vite production build, audit npm completo/runtime e
+  `git diff --check` verdi. Nessun backend, schema, dipendenza o contratto HTTP
+  è stato modificato.

@@ -37,6 +37,7 @@ function ProbeWorkspace({
     >
       <WorkspaceHeading
         level="section"
+        className="probe-workspace-context"
         leading={<FlaskConical size={18} aria-hidden="true" />}
         titleId="probe-workspace-title"
         title={probeScopeLabel(scope)}
