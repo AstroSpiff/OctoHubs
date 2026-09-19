@@ -82,7 +82,7 @@ function ProbeWorkerCard({
           ))}
         </dl>
       ) : null}
-      {progress ? (
+      {running && progress ? (
         <div
           className="probe-worker-progress"
           aria-label={`Avanzamento ${progressPercent}%`}

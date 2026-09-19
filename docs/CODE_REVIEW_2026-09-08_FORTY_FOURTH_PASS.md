@@ -1603,3 +1603,35 @@ stati modificati dati o configurazione del deployment Hetzner.
   TypeScript/Vite production build, audit npm completo/runtime e
   `git diff --check` verdi. Nessun backend, schema, dipendenza o contratto HTTP
   è stato modificato.
+
+### Follow-up operativo v0.5.18 — esiti e allineamento workflow Media Probe
+
+- **Baseline:** `9a8568997a9c3323061bb63b6c128b01eae8d249` (`v0.5.17`),
+  worktree pulito prima dell'intervento.
+- **Causa — resolved (famiglia: proiezione stato frontend):** il Kanban
+  classificava ogni attività non più attiva come “Completato”, perdendo la
+  distinzione fra successo, interruzione, risultato parziale ed errore. Le
+  schede dei due worker usavano inoltre una griglia implicita che distribuiva
+  verticalmente lo spazio quando le altezze differivano; la barra di
+  avanzamento dipendeva dai soli contatori e poteva restare visibile dopo lo
+  stop.
+- **Soluzione:** la colonna terminale è ora “Terminato” e ogni scheda espone
+  l'esito registrato dal backend: completato verde, interrotto/parziale giallo,
+  errore rosso e attività in corso blu. Gli esiti dell'ultimo run non vengono
+  riutilizzati mentre un nuovo workflow è attivo. I contenuti dei worker sono
+  allineati in alto con i comandi mantenuti al fondo; la barra è renderizzata
+  soltanto se il worker è effettivamente in esecuzione. Il progresso parziale
+  resta invece intenzionalmente nella scheda terminale del Kanban come evidenza
+  di quanto era stato elaborato prima dell'interruzione.
+- **Regressori e superfici analoghe:** coperti successo, interruzione, parziale,
+  errore, nuovo run con snapshot precedente e barra residua passata
+  direttamente al componente. Riesaminati workflow combinato e worker singoli
+  di Librerie e Ultimi aggiunti. La review indipendente non ha rilevato
+  modifiche a worker, ordine, coda, persistenza, route o contratti HTTP.
+- **Rischio residuo:** gli snapshot creati da versioni che non registravano un
+  esito per singola fase possono usare soltanto lo stato terminale globale; i
+  nuovi run hanno già il dettaglio necessario.
+- **Gate finali:** regressori mirati 4 file/28 test; frontend 281 file/785 test;
+  ESLint, TypeScript/Vite production build, audit npm completo/runtime e
+  `git diff --check` verdi. Nessun backend, schema o dipendenza è stato
+  modificato.

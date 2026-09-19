@@ -70,6 +70,7 @@ export function mergeProbeWorkerStatuses(statuses: ProbeWorkerStatus[]): ProbeWo
 }
 
 export function probeProgress(status?: ProbeWorkerStatus): { completed: number; total: number } | undefined {
+  if (!status?.running) return undefined;
   const total = Number(status?.total || 0);
   if (!total) return undefined;
   const completed = Number(status?.processed || 0) + Number(status?.incomplete || 0) + Number(status?.errors || 0);

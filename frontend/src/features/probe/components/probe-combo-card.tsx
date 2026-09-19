@@ -6,12 +6,16 @@ import type { Severity } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ProgressFill } from "@/components/ui/progress-fill";
 import {
+  comboTaskOutcome,
   comboTasksForServers,
   comboTaskState,
   currentItemForComboTask,
   progressForComboTask,
 } from "@/features/probe/probe-combo-presentation";
-import type { ProbeComboServerStatusLike } from "@/features/probe/probe-combo-presentation";
+import type {
+  ProbeComboOutcome,
+  ProbeComboServerStatusLike,
+} from "@/features/probe/probe-combo-presentation";
 import {
   formatProbeDate,
   mergeProbeWorkerStatuses,
@@ -118,11 +122,11 @@ function ProbeComboBoard({
   tasks: ProbeComboTask[];
   serverStatuses: ProbeComboServerStatus[];
 }) {
-  const columns = ["todo", "running", "done"] as const;
+  const columns = ["todo", "running", "terminal"] as const;
   const labels = {
     todo: "Da fare",
     running: "In esecuzione",
-    done: "Completato",
+    terminal: "Terminato",
   };
 
   return (
@@ -150,6 +154,7 @@ function ProbeComboBoard({
                     }
                     task={task}
                     serverStatuses={serverStatuses}
+                    state={column}
                   />
                 ))
               ) : (
@@ -166,9 +171,11 @@ function ProbeComboBoard({
 function ProbeComboTaskCard({
   task,
   serverStatuses,
+  state,
 }: {
   task: ProbeComboTask;
   serverStatuses: ProbeComboServerStatus[];
+  state: "todo" | "running" | "terminal";
 }) {
   const progress = progressForComboTask(task, serverStatuses);
   const currentItem = currentItemForComboTask(task, serverStatuses);
@@ -181,10 +188,22 @@ function ProbeComboTaskCard({
   const progressPercent = progress?.total
     ? Math.round((progress.completed / progress.total) * 100)
     : 0;
+  const outcome = state === "terminal"
+    ? comboTaskOutcome(task, serverStatuses)
+    : undefined;
 
   return (
-    <article className="probe-combo-task">
-      <strong>{phaseLabel}</strong>
+    <article
+      className={`probe-combo-task is-${outcome || state}`}
+    >
+      <header>
+        <strong>{phaseLabel}</strong>
+        {outcome ? (
+          <StatusBadge severity={comboOutcomeSeverity(outcome)}>
+            {comboOutcomeLabel(outcome)}
+          </StatusBadge>
+        ) : null}
+      </header>
       <span>{[serverName, task.library_name].filter(Boolean).join(" · ")}</span>
       {progress ? (
         <>
@@ -350,6 +369,21 @@ function lastRunStatusSeverity(status?: string): Severity {
   if (status === "error") return "error";
   if (status === "interrupted" || status === "partial") return "warning";
   return "ok";
+}
+
+function comboOutcomeSeverity(outcome: ProbeComboOutcome): Severity {
+  if (outcome === "error") return "error";
+  if (outcome === "interrupted" || outcome === "partial") return "warning";
+  if (outcome === "skipped") return "neutral";
+  return "ok";
+}
+
+function comboOutcomeLabel(outcome: ProbeComboOutcome): string {
+  if (outcome === "error") return "Errore";
+  if (outcome === "interrupted") return "Interrotto";
+  if (outcome === "partial") return "Parziale";
+  if (outcome === "skipped") return "Non necessario";
+  return "Completato";
 }
 
 function lastRunStatusLabel(status?: string): string {

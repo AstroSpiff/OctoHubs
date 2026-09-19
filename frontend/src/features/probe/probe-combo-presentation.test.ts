@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   comboTasksForServers,
+  comboTaskOutcome,
   comboTaskState,
   currentItemForComboTask,
   progressForComboTask,
@@ -71,7 +72,7 @@ describe("comboTasksForServers", () => {
         started_at: "2026-09-19T08:00:00Z",
       },
       processingStatus: { running: true, processed: 4, total: 10 },
-    }])).toBe("done");
+    }])).toBe("terminal");
     expect(comboTaskState(processing, [{
       serverId: "green",
       serverName: "Green",
@@ -104,7 +105,7 @@ describe("comboTasksForServers", () => {
       statuses,
     );
 
-    expect(comboTaskState(completed, statuses)).toBe("done");
+    expect(comboTaskState(completed, statuses)).toBe("terminal");
     expect(comboTaskState(running, statuses)).toBe("running");
     expect(comboTaskState(pending, statuses)).toBe("todo");
   });
@@ -255,7 +256,7 @@ describe("comboTasksForServers", () => {
     ]);
   });
 
-  it("porta a completato tutte le attività al termine del workflow", () => {
+  it("porta tra i terminati tutte le attività al termine del workflow", () => {
     const task = {
       id: "done",
       type: "processing",
@@ -267,7 +268,82 @@ describe("comboTasksForServers", () => {
       status: { running: false, board_reset: true, queue: [task] },
     }];
 
-    expect(comboTaskState(task, statuses)).toBe("done");
+    expect(comboTaskState(task, statuses)).toBe("terminal");
+    expect(comboTaskOutcome(task, statuses)).toBe("completed");
+  });
+
+  it("distingue un task interrotto da uno completato", () => {
+    const task = {
+      id: "stopped",
+      type: "processing",
+      server_id: "black",
+      library_id: "series",
+    };
+    const statuses = [{
+      serverId: "black",
+      serverName: "Black",
+      status: {
+        running: false,
+        board_reset: true,
+        queue: [task],
+        last_run: {
+          status: "interrupted",
+          tasks: [{ ...task, result: "warning", note: "Interrotto" }],
+        },
+      },
+    }];
+
+    expect(comboTaskState(task, statuses)).toBe("terminal");
+    expect(comboTaskOutcome(task, statuses)).toBe("interrupted");
+  });
+
+  it("mantiene distinti gli esiti di errore e parziale", () => {
+    const errorTask = { id: "error", type: "processing", server_id: "black" };
+    const partialTask = { id: "partial", type: "processing", server_id: "black" };
+    const statuses = [{
+      serverId: "black",
+      serverName: "Black",
+      status: {
+        running: false,
+        board_reset: true,
+        queue: [errorTask, partialTask],
+        last_run: {
+          status: "error",
+          tasks: [
+            { ...errorTask, result: "error", note: "Errore: timeout" },
+            { ...partialTask, result: "warning", note: "Incompleti: 2" },
+          ],
+        },
+      },
+    }];
+
+    expect(comboTaskOutcome(errorTask, statuses)).toBe("error");
+    expect(comboTaskOutcome(partialTask, statuses)).toBe("partial");
+  });
+
+  it("non riusa l'esito dell'ultimo run mentre un nuovo workflow è attivo", () => {
+    const task = { id: "same-task", type: "discovery", server_id: "black" };
+    const statuses = [{
+      serverId: "black",
+      serverName: "Black",
+      status: {
+        running: true,
+        phase: "processing",
+        queue: [task],
+        last_run: {
+          status: "interrupted",
+          tasks: [{ ...task, result: "warning", note: "Interrotto" }],
+        },
+      },
+      discoveryStatus: {
+        running: false,
+        started_at: "2026-09-19T09:00:00Z",
+        last_log: "Discovery completata",
+      },
+    }];
+
+    expect(comboTaskState(task, statuses)).toBe("terminal");
+    expect(comboTaskOutcome(task, statuses)).toBe("completed");
   });
 
   it("usa lo stato della fase per progresso e dettaglio del task", () => {

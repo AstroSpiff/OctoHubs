@@ -36,10 +36,20 @@ describe("mergeProbeWorkerStatuses", () => {
 
 describe("probeProgress", () => {
   it("calcola l'avanzamento e non supera il totale", () => {
-    expect(probeProgress({ processed: 4, incomplete: 2, errors: 1, total: 5 })).toEqual({ completed: 5, total: 5 });
+    expect(probeProgress({ running: true, processed: 4, incomplete: 2, errors: 1, total: 5 })).toEqual({ completed: 5, total: 5 });
   });
 
   it("non mostra una barra senza un totale disponibile", () => {
-    expect(probeProgress({ processed: 4 })).toBeUndefined();
+    expect(probeProgress({ running: true, processed: 4 })).toBeUndefined();
+  });
+
+  it("rimuove la barra quando il worker viene fermato", () => {
+    expect(probeProgress({
+      running: false,
+      processed: 4,
+      incomplete: 1,
+      total: 10,
+      last_log: "Processing interrotto dall'utente",
+    })).toBeUndefined();
   });
 });

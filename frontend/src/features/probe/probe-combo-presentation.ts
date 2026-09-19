@@ -13,7 +13,13 @@ type ProbeComboServerStatusLike = {
   processingStatus?: ProbeWorkerStatus;
 };
 
-type ProbeComboColumn = "todo" | "running" | "done";
+type ProbeComboColumn = "todo" | "running" | "terminal";
+type ProbeComboOutcome =
+  | "completed"
+  | "interrupted"
+  | "error"
+  | "partial"
+  | "skipped";
 
 /**
  * The recent-items worker can begin before it has published its queue. Keep the
@@ -158,7 +164,7 @@ export function comboTaskState(
 
   if (comboStatus?.running) {
     if (comboStatus.phase === "processing" && task.type === "discovery") {
-      return "done";
+      return "terminal";
     }
     if (comboStatus.phase !== task.type) return "todo";
     return activePhaseTaskState(
@@ -172,8 +178,59 @@ export function comboTaskState(
 
   const standaloneState = standalonePhaseTaskState(task, phaseStatus);
   if (standaloneState) return standaloneState;
-  if (comboStatus?.board_reset) return "done";
+  if (comboStatus?.board_reset) return "terminal";
   return "todo";
+}
+
+export function comboTaskOutcome(
+  task: ProbeComboTask,
+  statuses: ProbeComboServerStatusLike[],
+): ProbeComboOutcome | undefined {
+  const server = statuses.find((entry) => entry.serverId === task.server_id);
+  const comboStatus = server?.status;
+  const phaseStatus = task.type === "processing"
+    ? server?.processingStatus
+    : server?.discoveryStatus;
+  const recordedTask = comboStatus?.running
+    ? undefined
+    : comboStatus?.last_run?.tasks?.find((candidate) =>
+        sameComboTask(candidate, task)
+      );
+
+  if (recordedTask) return recordedTaskOutcome(recordedTask);
+
+  const libraryId = String(task.library_id || "");
+  if (libraryId && phaseStatus) {
+    if ((phaseStatus.error_library_ids || []).map(String).includes(libraryId)) {
+      return "error";
+    }
+    if (task.type === "processing") {
+      const result = phaseStatus.library_queue_results?.[libraryId];
+      if (Number(result?.errors || 0) > 0) return "error";
+      if (Number(result?.incomplete || 0) > 0) return "partial";
+      if (libraryProcessingComplete(phaseStatus, libraryId)) return "completed";
+    }
+    if ((phaseStatus.completed_library_ids || []).map(String).includes(libraryId)) {
+      return "completed";
+    }
+  }
+
+  const lastLog = String(phaseStatus?.last_log || comboStatus?.last_log || "")
+    .toLowerCase();
+  if (lastLog.includes("interrott") || lastLog.includes("fermat")) {
+    return "interrupted";
+  }
+  if (lastLog.includes("errore") || lastLog.includes("fallit")) return "error";
+  if (Number(phaseStatus?.errors || 0) > 0) return "error";
+  if (Number(phaseStatus?.incomplete || 0) > 0) return "partial";
+  if (!comboStatus?.running) {
+    if (comboStatus?.last_run?.status === "interrupted") return "interrupted";
+    if (comboStatus?.last_run?.status === "error") return "error";
+    if (comboStatus?.last_run?.status === "partial") return "partial";
+  }
+  return comboTaskState(task, statuses) === "terminal"
+    ? "completed"
+    : undefined;
 }
 
 export function statusForComboTask(
@@ -243,7 +300,7 @@ function standalonePhaseTaskState(
 ): ProbeComboColumn | undefined {
   if (!phaseStatus) return undefined;
   if (phaseStatus.running) return activePhaseTaskState(task, phaseStatus);
-  return hasWorkerRun(phaseStatus) ? "done" : undefined;
+  return hasWorkerRun(phaseStatus) ? "terminal" : undefined;
 }
 
 function activePhaseTaskState(
@@ -259,7 +316,7 @@ function activePhaseTaskState(
     ...(phaseStatus.error_library_ids || []),
   ].map(String));
   if (completed.has(libraryId) || libraryProcessingComplete(phaseStatus, libraryId)) {
-    return "done";
+    return "terminal";
   }
 
   const currentLibraryId = String(phaseStatus.current_library_id || "");
@@ -289,4 +346,26 @@ function hasWorkerRun(status: ProbeWorkerStatus): boolean {
   return Boolean(status.started_at || status.last_log);
 }
 
-export type { ProbeComboServerStatusLike, ProbeComboColumn };
+function sameComboTask(left: ProbeComboTask, right: ProbeComboTask): boolean {
+  if (left.id && right.id) return left.id === right.id;
+  return left.type === right.type
+    && String(left.server_id || "") === String(right.server_id || "")
+    && String(left.library_id || "") === String(right.library_id || "");
+}
+
+function recordedTaskOutcome(task: ProbeComboTask): ProbeComboOutcome {
+  const note = String(task.note || "").toLowerCase();
+  if (task.result === "error") return "error";
+  if (task.result === "skipped") return "skipped";
+  if (note.includes("interrott") || note.includes("fermat")) {
+    return "interrupted";
+  }
+  if (task.result === "warning") return "partial";
+  return "completed";
+}
+
+export type {
+  ProbeComboColumn,
+  ProbeComboOutcome,
+  ProbeComboServerStatusLike,
+};

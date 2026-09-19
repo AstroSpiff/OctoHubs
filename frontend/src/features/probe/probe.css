@@ -39,8 +39,10 @@
   gap: 10px;
 }
 .probe-worker-card {
-  display: grid;
+  display: flex;
   min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
   gap: 12px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-panel);
@@ -136,6 +138,7 @@
 .probe-worker-card footer {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
+  margin-top: auto;
 }
 .probe-worker-card footer .inline-flex {
   width: 100%;
@@ -629,9 +632,33 @@
   background: var(--color-surface-raised);
   padding: 7px;
 }
-.probe-combo-task strong {
+.probe-combo-task > header {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+}
+.probe-combo-task > header strong {
   color: var(--color-ink);
   font-size: 11px;
+}
+.probe-combo-task.is-running {
+  border-left-color: var(--color-info);
+}
+.probe-combo-task.is-todo,
+.probe-combo-task.is-skipped {
+  border-left-color: var(--color-border);
+}
+.probe-combo-task.is-completed {
+  border-left-color: var(--color-success);
+}
+.probe-combo-task.is-interrupted,
+.probe-combo-task.is-partial {
+  border-left-color: var(--color-warning);
+}
+.probe-combo-task.is-error {
+  border-left-color: var(--color-danger);
 }
 .probe-combo-task span,
 .probe-combo-task small {

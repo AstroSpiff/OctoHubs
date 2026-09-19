@@ -19,8 +19,75 @@ describe("ProbeComboCard", () => {
 
     expect(markup.match(/Da fare/g)).toHaveLength(1);
     expect(markup.match(/In esecuzione/g)).toHaveLength(1);
-    expect(markup.match(/Completato/g)).toHaveLength(1);
+    expect(markup.match(/Terminato/g)).toHaveLength(1);
     expect(markup).not.toContain("probe-worker-stats");
+  });
+
+  it("mostra un'interruzione nella colonna terminata con esito esplicito", () => {
+    const task = {
+      id: "stopped",
+      type: "processing",
+      server_id: "black",
+      library_id: "series",
+    };
+    const markup = renderToStaticMarkup(
+      <ProbeComboCard
+        scope="libraries"
+        serverStatuses={[{
+          serverId: "black",
+          serverName: "BlackPrimrose",
+          libraryNames: { series: "Serie TV" },
+          status: {
+            running: false,
+            board_reset: true,
+            queue: [task],
+            last_run: {
+              status: "interrupted",
+              tasks: [{ ...task, result: "warning", note: "Interrotto" }],
+            },
+          },
+        }]}
+        actions={[]}
+      />,
+    );
+
+    expect(markup).toContain("Terminato");
+    expect(markup).toContain("Interrotto");
+    expect(markup).toContain("is-interrupted");
+  });
+
+  it("assegna colori semantici distinti agli esiti terminali", () => {
+    const tasks = [
+      { id: "ok", type: "processing", server_id: "black" },
+      { id: "partial", type: "processing", server_id: "black" },
+      { id: "error", type: "processing", server_id: "black" },
+    ];
+    const markup = renderToStaticMarkup(
+      <ProbeComboCard
+        scope="libraries"
+        serverStatuses={[{
+          serverId: "black",
+          serverName: "Black",
+          status: {
+            board_reset: true,
+            queue: tasks,
+            last_run: {
+              status: "error",
+              tasks: [
+                { ...tasks[0], result: "success", note: "Completato" },
+                { ...tasks[1], result: "warning", note: "Incompleti: 2" },
+                { ...tasks[2], result: "error", note: "Errore" },
+              ],
+            },
+          },
+        }]}
+        actions={[]}
+      />,
+    );
+
+    expect(markup).toContain("is-completed");
+    expect(markup).toContain("is-partial");
+    expect(markup).toContain("is-error");
   });
 
   it("mostra nome e progresso propri per ogni libreria", () => {
