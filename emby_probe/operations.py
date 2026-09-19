@@ -169,7 +169,11 @@ def _monitor_probe_worker(
                     message=message,
                     current=current,
                     total=total,
-                    details={"current_step_label": message, "servers": states},
+                    details={
+                        "current_step_label": message,
+                        "servers": states,
+                        **_worker_context(states),
+                    },
                 )
             elif seen_running or any(states.values()):
                 _complete_probe_operation(tracker, operation_id, message, states)
@@ -229,6 +233,21 @@ def _worker_progress(
     if total <= 0:
         return current, None
     return min(current, total), total
+
+
+def _worker_context(
+    states: Mapping[str, Mapping[str, Any]],
+) -> dict[str, str]:
+    library_names = list(
+        dict.fromkeys(
+            str(state.get("current_library_name") or "").strip()
+            for state in states.values()
+            if str(state.get("current_library_name") or "").strip()
+        )
+    )
+    if not library_names:
+        return {}
+    return {"library_name": ", ".join(library_names)}
 
 
 def _complete_probe_operation(

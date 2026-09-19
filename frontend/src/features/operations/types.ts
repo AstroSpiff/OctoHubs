@@ -11,6 +11,7 @@ export type OperationWorkflowStep = {
 export type OperationDetails = Record<string, unknown> & {
   can_stop?: boolean;
   current_step_label?: string;
+  library_name?: string;
   workflow_steps?: OperationWorkflowStep[];
 };
 

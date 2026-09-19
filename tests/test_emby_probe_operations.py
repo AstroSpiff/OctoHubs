@@ -101,6 +101,7 @@ def test_probe_worker_monitor_is_bound_to_the_original_worker_and_reports_progre
             "black": {
                 "processing": {
                     "last_log": "Processing completato",
+                    "current_library_name": "Serie TV",
                     "processed": 6,
                     "incomplete": 1,
                     "errors": 1,
@@ -124,6 +125,7 @@ def test_probe_worker_monitor_is_bound_to_the_original_worker_and_reports_progre
 
     assert tracker.updates[0][1]["current"] == 8
     assert tracker.updates[0][1]["total"] == 10
+    assert tracker.updates[0][1]["details"]["library_name"] == "Serie TV"
     assert tracker.finished
     assert manager.running == [True, True]
 

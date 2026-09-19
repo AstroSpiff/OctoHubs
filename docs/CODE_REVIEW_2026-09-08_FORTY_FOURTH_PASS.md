@@ -1549,3 +1549,27 @@ stati modificati dati o configurazione del deployment Hetzner.
   API strict, Compose base/secrets/bootstrap, doppia build Docker riproducibile,
   identità runtime non-root, smoke autenticato su PostgreSQL esterno e
   `git diff --check` verdi.
+
+### Follow-up operativo v0.5.16 — contesto compatto operazioni Probe
+
+- **Baseline:** `0edc41c6273f08990bef9efb40d5b42dcd9d93c7` (`v0.5.15`),
+  worktree pulito prima dell'intervento.
+- **Causa — resolved (famiglia: proiezione operazioni):** il monitor pubblicava
+  lo stesso testo sia come messaggio principale sia come
+  `current_step_label`; la UI rendeva entrambi e duplicava quindi integralmente
+  l'elemento corrente. Lo stato backend possedeva il nome della libreria in
+  lavorazione, ma non lo promuoveva nel contesto compatto dell'operazione.
+- **Soluzione:** un dettaglio di fase uguale al messaggio o all'errore non viene
+  più ripetuto. Il monitor ricava `current_library_name` dagli stati dei server
+  e la scheda mostra soltanto l'informazione aggiuntiva `Libreria: <nome>`.
+  Messaggi di fase realmente diversi restano disponibili.
+- **Regressori e superfici analoghe:** coperti deduplicazione esatta,
+  conservazione dei dettagli differenti e pubblicazione del nome libreria dal
+  monitor processing. Riesaminati discovery, processing, più server e
+  operazioni non-Probe; esecuzione, coda, risultati e API restano invariati.
+- **Gate finali:** regressori mirati backend 4/4 e frontend 4/4; backend 2325
+  passed, 78 skipped e 34 subtests passed; PostgreSQL 16 reale 83 passed;
+  frontend 280 file/774 test; Ruff, Pyright, ESLint, build Vite, audit
+  Python/npm, complessità, contratto API strict, Compose base/secrets/bootstrap,
+  doppia build Docker riproducibile, identità runtime non-root, smoke
+  autenticato su PostgreSQL esterno e `git diff --check` verdi.

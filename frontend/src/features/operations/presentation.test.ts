@@ -40,4 +40,15 @@ describe("operation presentation", () => {
       { key: "target_server", value: "Green" },
     ]);
   });
+
+  it("hides a repeated step message and labels the current Probe library", () => {
+    expect(operationDetailTags({
+      ...workflow,
+      message: "Analisi: episodio corrente",
+      details: {
+        current_step_label: "Analisi: episodio corrente",
+        library_name: "Serie TV",
+      },
+    })).toEqual([{ key: "library_name", value: "Libreria: Serie TV" }]);
+  });
 });

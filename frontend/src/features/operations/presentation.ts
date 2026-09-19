@@ -55,10 +55,18 @@ export function operationWorkflowSteps(operation: Operation): OperationWorkflowS
 }
 
 export function operationDetailTags(operation: Operation) {
-  const keys = ["current_step_label", "server", "user", "client", "title", "rule_name", "source_username", "target_username", "target_server", "group_name", "target_count", "mode"];
+  const keys = ["current_step_label", "library_name", "server", "user", "client", "title", "rule_name", "source_username", "target_username", "target_server", "group_name", "target_count", "mode"];
   return keys.flatMap((key) => {
     const value = operation.details[key];
     if (typeof value !== "string" && typeof value !== "number") return [];
-    return [{ key, value: String(value) }];
+    const normalized = String(value);
+    if (
+      key === "current_step_label" &&
+      (normalized === operation.message || normalized === operation.error)
+    ) return [];
+    return [{
+      key,
+      value: key === "library_name" ? `Libreria: ${normalized}` : normalized,
+    }];
   });
 }
