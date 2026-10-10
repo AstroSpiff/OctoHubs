@@ -70,7 +70,15 @@ def create_app() -> FastAPI:
     load_config_env_file()
     password_cipher_from_environment(os.environ)
 
-    fastapi_app = FastAPI(lifespan=_application_lifespan)
+    # The default FastAPI documentation page depends on remote CDN assets and
+    # inline JavaScript, both intentionally rejected by OctoHubs' CSP.  Private,
+    # self-hosted documentation routes are registered with the other routers.
+    fastapi_app = FastAPI(
+        lifespan=_application_lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
 
     def _log_flush(msg: str) -> None:
         """Print con flush immediato per debugging real-time."""

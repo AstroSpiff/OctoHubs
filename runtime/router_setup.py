@@ -36,6 +36,7 @@ from services.workflow_routes import init_workflow_routes, router as workflow_ro
 from telegram.api_routes import init_telegram_api_routes, router as telegram_api_router
 from web.auth_routes import init_auth_routes, router as auth_router
 from web.account_routes import init_account_routes, router as account_router
+from web.api_docs_routes import init_api_docs_routes, router as api_docs_router
 from web.config_routes import init_config_routes, router as config_router
 from web.configuration_api_routes import init_configuration_api_routes, router as configuration_api_router
 from web.dashboard_routes import init_dashboard_routes, router as dashboard_router
@@ -210,6 +211,8 @@ def register_routes(app: FastAPI, templates: Jinja2Templates, logger: logging.Lo
         _require_auth,
     )
     app.include_router(account_router)
+    init_api_docs_routes(get_current_user_optional)
+    app.include_router(api_docs_router)
     init_frontend_routes(
         get_current_user_optional,
         get_csrf_token,

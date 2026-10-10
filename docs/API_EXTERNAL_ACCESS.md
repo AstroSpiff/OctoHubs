@@ -58,10 +58,21 @@ the operations the current token may actually call. Each operation declares:
 - `x-octohubs-operation-kind`;
 - typed success responses and the standard `401`/`403` errors.
 
-Use this endpoint instead of the development `/openapi.json`, which also contains
-browser/session surfaces. Historical unversioned public control paths return
-`410 Gone` with their `/api/v1` successor. Future incompatible changes require a
-new version rather than a silent change to v1.
+Use this endpoint instead of the internal `/openapi.json`, which also contains
+browser/session surfaces. The complete schema requires an authenticated
+OctoHubs administrator session and is always served with `Cache-Control:
+no-store`.
+
+An administrator session can browse the complete schema at `/docs`. Swagger UI
+is built into the frontend and served from the same origin, so it has no CDN
+dependency and does not weaken the Content Security Policy. The internal
+catalog is intentionally read-only; external automation must use the v1
+contract with an API token. The historical `/redoc` bookmark redirects to
+`/docs`.
+
+Historical unversioned public control paths return `410 Gone` with their
+`/api/v1` successor. Future incompatible changes require a new version rather
+than a silent change to v1.
 
 ## Supported client and safe smoke tests
 

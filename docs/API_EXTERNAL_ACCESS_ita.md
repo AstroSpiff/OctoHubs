@@ -273,9 +273,17 @@ lo scope richiesto in `x-octohubs-required-scope`, il tipo di operazione in
 La risposta del catalogo invia anche l'header
 `X-OctoHubs-API-Contract: 1.0`.
 
-`GET /openapi.json` resta lo schema completo di sviluppo FastAPI: non e il
-contratto da dare a strumenti esterni, perche include anche superfici di UI e
-sessione che non fanno parte dell'accesso API pubblico.
+`GET /openapi.json` resta lo schema completo interno FastAPI: non e il contratto
+da dare a strumenti esterni, perche include anche superfici di UI e sessione
+che non fanno parte dell'accesso API pubblico. Per questo e accessibile solo da
+una sessione OctoHubs amministratore e invia sempre `Cache-Control: no-store`.
+
+La stessa sessione amministratore puo consultare lo schema da `/docs` tramite
+Swagger UI. CSS e JavaScript sono compilati nel frontend e serviti dalla stessa
+origine: la pagina non dipende da CDN e non richiede eccezioni alla Content
+Security Policy. Il catalogo interno e deliberatamente in sola consultazione;
+le automazioni devono usare il contratto v1 con un API token. Il vecchio
+segnalibro `/redoc` reindirizza a `/docs`.
 
 Gli strumenti esterni devono usare le route `/api/v1/*` con
 `Authorization: Bearer <API_TOKEN>` e inviare i corpi JSON indicati dallo

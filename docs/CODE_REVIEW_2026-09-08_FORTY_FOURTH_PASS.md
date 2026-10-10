@@ -1943,3 +1943,49 @@ stati modificati dati o configurazione del deployment Hetzner.
   skipped e 34 subtests passed) e PostgreSQL 16 reale (83 passed). Il frontend
   applicativo è invariato rispetto allo snapshot v0.5.26, sul quale Vitest (284
   file/799 test), ESLint e build TypeScript/Vite risultano verdi.
+
+### Follow-up operativo post-v0.5.27 — API-DOCS-CSP-01
+
+- **Baseline:** `64b57c5` (`v0.5.27`), worktree pulito prima
+  dell'intervento.
+- **Causa — resolved (famiglia: documentazione API incompatibile con CSP):**
+  le route FastAPI predefinite restituivano `200`, ma Swagger caricava CSS e
+  JavaScript da una CDN e usava uno script inline. La Content Security Policy
+  di OctoHubs accetta correttamente soltanto script same-origin e bloccava
+  entrambi, producendo una pagina bianca. Inoltre lo schema interno completo
+  era raggiungibile senza sessione e includeva superfici browser non destinate
+  al contratto esterno.
+- **Soluzione:** le route FastAPI predefinite sono disabilitate e sostituite da
+  `/docs`, `/redoc` e `/openapi.json` dedicate. Gli asset Swagger sono
+  versionati, compilati dal frontend e serviti localmente senza allargare la
+  CSP; documentazione e schema completo richiedono una sessione amministratore,
+  rifiutano Bearer token e risposte memorizzabili, mentre `/redoc` conserva il
+  vecchio segnalibro reindirizzando a `/docs`. La UI è in sola consultazione:
+  le automazioni continuano a usare il contratto pubblico versionato
+  `/api/v1/external/openapi.json`. Durante i gate `urllib3` è stato portato a
+  `2.8.0` perché l'audit ha rilevato tre advisory sulla versione `2.7.0`; i
+  lock hashati runtime e sviluppo sono stati rigenerati.
+- **Regressori, canary e superfici analoghe:** coperti redirect anonimo,
+  rifiuto sessione non amministratore e Bearer, schema amministratore,
+  assenza di asset remoti, disabilitazione delle mutazioni Swagger e confine
+  cache privata comune a tutte e tre le route. Riesaminati il catalogo esterno
+  v1, l'inizializzazione router, il middleware CSP/cache, il build multi-page e
+  lo smoke dell'immagine. Il canary Chrome apre una sezione reale dello schema
+  nell'immagine candidata e verifica schema `200`, operazioni renderizzate,
+  console pulita e nessuna richiesta fallita.
+- **Review indipendente:** non sono emerse route FastAPI predefinite residue,
+  eccezioni CSP, CDN, superfici di mutazione o modifiche al contratto pubblico.
+  Gli asset Swagger formano un chunk amministrativo separato e vengono caricati
+  soltanto visitando `/docs`; il costo non grava sul bundle principale.
+- **Rischio residuo:** il chunk Swagger minificato è circa 1,46 MB (circa
+  426 KB gzip), accettabile per una pagina amministrativa caricata su domanda.
+  Non è stata introdotta autenticazione HTTP Basic separata: la documentazione
+  segue deliberatamente la sessione e i ruoli già gestiti da OctoHubs.
+- **Gate finali:** backend 2361 passed, 85 skipped e 34 subtests passed;
+  PostgreSQL 16 reale 83 passed; frontend 284 file/799 test; Ruff, baseline
+  complessità, Pyright, contratto API strict, ESLint, build TypeScript/Vite,
+  audit Python e npm runtime/completi, Compose base e `git diff --check` verdi.
+  L'immagine candidata installa `urllib3 2.8.0` con hash verificati e passa lo
+  smoke autenticato su PostgreSQL esterno. Chrome reale conferma `/docs` 200,
+  `/openapi.json` 200, 11 operazioni nella prima sezione aperta, console e rete
+  pulite.

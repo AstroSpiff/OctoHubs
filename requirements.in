@@ -1,6 +1,8 @@
 # Direct production dependencies. Regenerate requirements.txt with the command
 # documented in docs/DEPENDENCY_LOCKS.md.
 requests==2.34.2
+# Direct security floor for the HTTP transport used by requests.
+urllib3==2.8.0
 SQLAlchemy==2.0.45
 alembic==1.19.1
 psycopg2-binary==2.9.11

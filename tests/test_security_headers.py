@@ -74,6 +74,9 @@ async def test_security_headers_do_not_overwrite_route_specific_values():
 @pytest.mark.parametrize(
     "path",
     [
+        "/docs",
+        "/redoc",
+        "/openapi.json",
         "/api/account/me",
         "/api/account/tokens",
         "/api/account/tokens/audit",
@@ -130,4 +133,11 @@ def test_every_account_get_route_is_inside_the_private_cache_boundary():
     assert all(
         _is_private_api_response({"path": path})
         for path in get_paths
+    )
+
+
+def test_internal_documentation_is_inside_the_private_cache_boundary():
+    assert all(
+        _is_private_api_response({"path": path})
+        for path in ("/docs", "/redoc", "/openapi.json")
     )

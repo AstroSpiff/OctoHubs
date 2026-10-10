@@ -9,6 +9,16 @@ fi
 image="$1"
 container_name="octohubs-release-smoke-${GITHUB_RUN_ID:-local}-$$"
 runtime_dir="$(mktemp -d)"
+if [[ -n "${OCTOHUBS_SMOKE_PYTHON:-}" ]]; then
+  python_command="$OCTOHUBS_SMOKE_PYTHON"
+elif command -v python3 >/dev/null 2>&1; then
+  python_command="python3"
+elif command -v python >/dev/null 2>&1; then
+  python_command="python"
+else
+  echo "Production smoke requires python3 or python to validate OpenAPI JSON." >&2
+  exit 1
+fi
 mkdir -p "$runtime_dir/config"
 chmod 0777 "$runtime_dir/config"
 
@@ -51,7 +61,12 @@ for _attempt in $(seq 1 60); do
     cookie_jar="$runtime_dir/cookies.txt"
     login_html="$runtime_dir/login.html"
     app_html="$runtime_dir/app.html"
+    docs_html="$runtime_dir/docs.html"
+    docs_headers="$runtime_dir/docs-headers.txt"
+    openapi_json="$runtime_dir/openapi.json"
     base_url="http://127.0.0.1:${published_port}"
+    test "$(curl --silent --output /dev/null --write-out '%{http_code}' "$base_url/docs")" = "303"
+    test "$(curl --silent --output /dev/null --write-out '%{http_code}' "$base_url/openapi.json")" = "401"
     curl --fail --silent --show-error --cookie-jar "$cookie_jar" "$base_url/login" >"$login_html"
     csrf_token="$(sed -n 's/.*name="csrf_token" value="\([^"]*\)".*/\1/p' "$login_html" | head -n 1)"
     test -n "$csrf_token"
@@ -65,6 +80,32 @@ for _attempt in $(seq 1 60); do
     asset_path="$(sed -n 's/.*src="\(\/app\/assets\/[^"]*\)".*/\1/p' "$app_html" | head -n 1)"
     test -n "$asset_path"
     curl --fail --silent --show-error --cookie "$cookie_jar" "$base_url$asset_path" >/dev/null
+    curl --fail --silent --show-error --dump-header "$docs_headers" \
+      --cookie "$cookie_jar" "$base_url/docs" >"$docs_html"
+    grep -q '<div id="swagger-ui"></div>' "$docs_html"
+    ! grep -Eq 'https?://' "$docs_html"
+    grep -qi "content-security-policy: .*script-src 'self'" "$docs_headers"
+    docs_asset_count=0
+    while IFS= read -r docs_asset_path; do
+      test -n "$docs_asset_path"
+      curl --fail --silent --show-error --cookie "$cookie_jar" \
+        "$base_url$docs_asset_path" >/dev/null
+      docs_asset_count=$((docs_asset_count + 1))
+    done <<EOF
+$(grep -Eo '(src|href)="/app/assets/[^"?]+"' "$docs_html" | sed -E 's/^(src|href)="([^"]+)"$/\2/')
+EOF
+    test "$docs_asset_count" -ge 2
+    curl --fail --silent --show-error --cookie "$cookie_jar" \
+      "$base_url/openapi.json" >"$openapi_json"
+    "$python_command" - "$openapi_json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+schema = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+assert schema.get("openapi")
+assert schema.get("paths")
+PY
     api_endpoints=(
       /api/ui/session
       /api/v1/account/me
@@ -88,7 +129,7 @@ for _attempt in $(seq 1 60); do
       curl --fail --silent --show-error --cookie "$cookie_jar" \
         "$base_url$endpoint" >/dev/null
     done
-    echo "Production image reached readiness, served the authenticated SPA, and passed the read-only feature smoke."
+    echo "Production image reached readiness, served the authenticated SPA and private Swagger UI, and passed the read-only feature smoke."
     exit 0
   fi
   if [[ "$(docker inspect --format '{{.State.Running}}' "$container_name")" != "true" ]]; then

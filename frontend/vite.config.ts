@@ -7,6 +7,14 @@ const apiTarget = process.env.OCTOHUBS_API_PROXY_TARGET || "http://127.0.0.1:505
 
 export default defineConfig({
   base: "/app/",
+  build: {
+    rollupOptions: {
+      input: {
+        app: fileURLToPath(new URL("./index.html", import.meta.url)),
+        swagger: fileURLToPath(new URL("./swagger.html", import.meta.url)),
+      },
+    },
+  },
   resolve: {
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
   },

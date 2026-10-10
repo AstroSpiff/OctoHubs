@@ -25,6 +25,7 @@ PRIVATE_RESPONSE_HEADERS = {
     b"pragma": b"no-cache",
 }
 PRIVATE_API_PREFIXES = ("/api/account/", "/api/admin/")
+PRIVATE_DOCUMENTATION_PATHS = frozenset({"/docs", "/redoc", "/openapi.json"})
 
 ASGIMessage = dict[str, Any]
 Receive = Callable[[], Awaitable[ASGIMessage]]
@@ -68,7 +69,7 @@ class SecurityHeadersMiddleware:
 
 def _is_private_api_response(scope: dict[str, Any]) -> bool:
     path = str(scope.get("path") or "")
-    return any(
+    return path in PRIVATE_DOCUMENTATION_PATHS or any(
         path == prefix.removesuffix("/") or path.startswith(prefix)
         for prefix in PRIVATE_API_PREFIXES
     )
