@@ -161,5 +161,6 @@ def test_swagger_source_has_no_remote_asset_or_mutation_surface():
     assert "https://" not in html
     assert "http://" not in html
     assert 'url: "/openapi.json"' in source
+    assert 'tagsSorter: "alpha"' in source
     assert "supportedSubmitMethods: []" in source
     assert 'validatorUrl: ""' in source

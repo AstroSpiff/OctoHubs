@@ -9,6 +9,7 @@ SwaggerUI({
   displayRequestDuration: true,
   filter: true,
   docExpansion: "none",
+  tagsSorter: "alpha",
   persistAuthorization: false,
   supportedSubmitMethods: [],
   validatorUrl: "",

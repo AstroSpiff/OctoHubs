@@ -1989,3 +1989,42 @@ stati modificati dati o configurazione del deployment Hetzner.
   smoke autenticato su PostgreSQL esterno. Chrome reale conferma `/docs` 200,
   `/openapi.json` 200, 11 operazioni nella prima sezione aperta, console e rete
   pulite.
+
+### Follow-up operativo post-v0.5.28 — API-DOCS-TAXONOMY-01
+
+- **Baseline:** `5464984fecdf43047f4fe0256eca990d10cbd810` (`v0.5.28`),
+  worktree pulito prima dell'intervento.
+- **Causa — resolved (famiglia: navigabilità del contratto OpenAPI):** 222 delle
+  223 operazioni dello schema interno non avevano alcun tag e l'unico gruppo
+  esplicito era il generico `External API`. La documentazione autenticata era
+  tecnicamente completa, ma presentava quindi un elenco piatto dipendente
+  dall'ordine dei router, poco utile per orientarsi fra i domini di OctoHubs.
+- **Soluzione:** una tassonomia centrale assegna ogni operazione a un solo
+  gruppo `Dominio · Sottodominio`, indipendente dalle pagine della UI. Le
+  regole esatte e per prefisso sono dichiarative e ordinate; Swagger ordina i
+  24 gruppi alfabeticamente e il catalogo esterno conserva soltanto le
+  definizioni ancora usate dopo il filtro dei permessi. URL, metodi, parametri,
+  risposte e autorizzazioni non cambiano.
+- **Regressori, canary e superfici analoghe:** il gate di contratto copre tutte
+  le 223 operazioni interne e le 205 esterne, richiede un solo tag noto per
+  operazione, descrizioni non vuote e nessun ricorso a `Sistema · Altro`.
+  Riesaminati schema interno, catalogo esterno filtrato, inizializzazione
+  FastAPI, UI Swagger e smoke dell'immagine. Il canary Chrome nell'immagine
+  candidata mostra 24 gruppi ordinati, espande `Emby · Utenti` con 30
+  operazioni e non rileva errori di console o rete nella pagina Swagger.
+- **Review indipendente:** la seconda lettura del diff non ha rilevato
+  sovrapposizioni di prefissi, route non classificate, mutazioni del contratto
+  o dipendenze dalla struttura della UI. La prima implementazione ramificata
+  superava il gate di complessità; e stata sostituita prima della pubblicazione
+  da tabelle canoniche con lo stesso inventario verificato.
+- **Rischio residuo:** Swagger espone tag piatti e non veri gruppi annidati; il
+  prefisso leggibile e la scelta deliberata. Plugin o estensioni `x-tagGroups`
+  aggiungerebbero complessità e dipendenza da renderer senza migliorare il
+  contratto. Ogni nuovo dominio richiede l'aggiunta intenzionale di una regola;
+  il gate fallisce se la route resta nel fallback.
+- **Gate finali:** regressori mirati 19/19; backend 2364 passed, 85 skipped e
+  34 subtests passed; PostgreSQL 16 reale 83 passed; frontend 284 file/799
+  test; Ruff, baseline complessità, Pyright, contratto API strict, ESLint,
+  build TypeScript/Vite, audit Python/npm, Compose base/secrets/admin-bootstrap,
+  build Docker, smoke autenticato su PostgreSQL esterno, canary Chrome e
+  `git diff --check` verdi.

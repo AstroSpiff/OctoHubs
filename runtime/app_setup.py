@@ -26,6 +26,7 @@ from runtime.bootstrap import (
 )
 from runtime.health import mark_runtime_started, mark_runtime_starting
 from runtime.router_setup import register_routes
+from web.openapi_taxonomy import configure_openapi_taxonomy
 from web.api_versioning import ApiV1GatewayMiddleware
 from web.auth_db_session_middleware import AuthDatabaseSessionMiddleware
 from web.csrf_protection import SessionCsrfProtectionMiddleware
@@ -120,6 +121,7 @@ def create_app() -> FastAPI:
     init_template_helpers(templates)
 
     register_routes(fastapi_app, templates, logger)
+    configure_openapi_taxonomy(fastapi_app)
 
     # Mount static files on /static.
     fastapi_app.mount("/static", StaticFiles(directory="static"), name="static")

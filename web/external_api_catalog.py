@@ -197,6 +197,23 @@ def build_external_openapi(
 
     components = _external_components(dict(source_schema.get("components") or {}))
     source_info = dict(source_schema.get("info") or {})
+    used_tags = {
+        str(tag)
+        for path_item in filtered_paths.values()
+        for operation in path_item.values()
+        if isinstance(operation, Mapping)
+        for tag in (operation.get("tags") or [])
+    }
+    source_tags = [
+        deepcopy(dict(tag))
+        for tag in (source_schema.get("tags") or [])
+        if isinstance(tag, Mapping) and str(tag.get("name") or "") in used_tags
+    ]
+    declared_tag_names = {str(tag.get("name") or "") for tag in source_tags}
+    source_tags.extend(
+        {"name": tag_name}
+        for tag_name in sorted(used_tags - declared_tag_names, key=str.casefold)
+    )
 
     return {
         "openapi": str(source_schema.get("openapi") or "3.1.0"),
@@ -211,6 +228,7 @@ def build_external_openapi(
             "x-octohubs-app-version": str(source_info.get("version") or "current"),
         },
         "x-octohubs-contract-version": EXTERNAL_API_CONTRACT_VERSION,
+        "tags": source_tags,
         "paths": filtered_paths,
         "components": components,
     }

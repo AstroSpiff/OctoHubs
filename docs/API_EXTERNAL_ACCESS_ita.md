@@ -285,6 +285,13 @@ Security Policy. Il catalogo interno e deliberatamente in sola consultazione;
 le automazioni devono usare il contratto v1 con un API token. Il vecchio
 segnalibro `/redoc` reindirizza a `/docs`.
 
+Swagger presenta le operazioni per dominio e sottodominio tramite tag con un
+prefisso coerente, per esempio `Emby · Utenti`, `Emby · Media Probe` e
+`Ricerca · Download`. La tassonomia e indipendente dalle pagine della UI: ogni
+operazione appartiene a un solo gruppo, e un gate di contratto impedisce che
+nuove route restino senza classificazione. Anche il catalogo esterno conserva
+soltanto i gruppi effettivamente presenti dopo il filtro dei permessi.
+
 Gli strumenti esterni devono usare le route `/api/v1/*` con
 `Authorization: Bearer <API_TOKEN>` e inviare i corpi JSON indicati dallo
 schema filtrato. Il gateway v1 raggiunge gli stessi handler e servizi della UI:

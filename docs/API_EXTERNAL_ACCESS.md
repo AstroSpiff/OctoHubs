@@ -70,6 +70,14 @@ catalog is intentionally read-only; external automation must use the v1
 contract with an API token. The historical `/redoc` bookmark redirects to
 `/docs`.
 
+Swagger groups operations by domain and subdomain through consistently prefixed
+tags such as `Emby · Utenti`, `Emby · Media Probe`, and `Ricerca · Download`.
+Tag labels follow the application's Italian interface.
+The taxonomy is independent from UI pages: every operation belongs to exactly
+one group, and a contract gate prevents new routes from remaining unclassified.
+The external catalog retains only the groups still used after permission
+filtering.
+
 Historical unversioned public control paths return `410 Gone` with their
 `/api/v1` successor. Future incompatible changes require a new version rather
 than a silent change to v1.

@@ -105,6 +105,16 @@ import sys
 schema = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 assert schema.get("openapi")
 assert schema.get("paths")
+assert schema.get("x-octohubs-taxonomy") == "domain-subdomain-v1"
+operations = [
+    operation
+    for path_item in schema["paths"].values()
+    for method, operation in path_item.items()
+    if method.lower() in {"get", "put", "post", "delete", "patch", "head", "options"}
+]
+assert operations
+assert all(len(operation.get("tags") or []) == 1 for operation in operations)
+assert all(operation["tags"][0] != "Sistema · Altro" for operation in operations)
 PY
     api_endpoints=(
       /api/ui/session
