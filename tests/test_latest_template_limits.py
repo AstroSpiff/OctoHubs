@@ -148,6 +148,41 @@ def test_template_rendering_preserves_the_migrated_complete_series_preset():
     assert "Audio – Italiano AC3" in rendered
 
 
+def test_complete_series_preset_accepts_full_large_version_context():
+    versions = [
+        {
+            "quality": "1080p" if index % 2 == 0 else "720p",
+            "video_codec": "H264",
+            "audio_details": "English DTS · Italiano AC3",
+            "audio_langs": "eng,ita",
+            **{f"raw_field_{field}": f"value-{index}-{field}" for field in range(23)},
+        }
+        for index in range(215)
+    ]
+
+    rendered = render_template(
+        MIGRATED_COMPLETE_TEMPLATE,
+        {
+            "type": "series",
+            "title": "The Middle",
+            "year": "2009",
+            "genres": "Commedia",
+            "overview": "Una famiglia affronta la vita quotidiana.",
+            "season_count": "9",
+            "episodes_compact": "S01E01-S09E24",
+            "season_number": "",
+            "versions": versions,
+            "library_name": "Serie TV",
+            "update_label": "Nuovi episodi",
+        },
+        strict=True,
+    )
+
+    assert "The Middle" in rendered
+    assert rendered.count("<b>Versione 1080p</b>") == 1
+    assert rendered.count("<b>Versione 720p</b>") == 1
+
+
 def test_template_iteration_is_bounded_for_context_and_split_values():
     rendered_context = render_template(
         "{% for value in values %}x{% endfor %}",
@@ -244,8 +279,28 @@ def test_template_rendering_has_one_aggregate_iteration_budget():
         )
 
 
-def test_template_rendering_rejects_one_oversized_context_string():
-    with pytest.raises(TemplateResourceLimitError, match="Valore del contesto"):
+def test_template_rendering_accepts_large_raw_context_when_output_is_bounded():
+    versions = [
+        {
+            "quality": "1080p",
+            "video_codec": "h264",
+            "audio_details": "Italiano AC3 5.1",
+            **{f"raw_field_{field}": f"value-{index}-{field}" for field in range(24)},
+        }
+        for index in range(215)
+    ]
+
+    rendered = render_template(
+        "{{ versions[214].quality }} {{ versions[214].raw_field_23 }}",
+        {"versions": versions},
+        strict=True,
+    )
+
+    assert rendered == "1080p value-214-23"
+
+
+def test_template_rendering_still_rejects_large_output_from_raw_context():
+    with pytest.raises(TemplateResourceLimitError, match="Output"):
         render_template("{{ value }}", {"value": "x" * 65_537}, strict=True)
 
 

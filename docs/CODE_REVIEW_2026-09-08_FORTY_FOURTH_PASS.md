@@ -2028,3 +2028,43 @@ stati modificati dati o configurazione del deployment Hetzner.
   build TypeScript/Vite, audit Python/npm, Compose base/secrets/admin-bootstrap,
   build Docker, smoke autenticato su PostgreSQL esterno, canary Chrome e
   `git diff --check` verdi.
+
+### Follow-up operativo post-v0.5.29 — LATEST-TEMPLATE-CONTEXT-01
+
+- **Baseline:** `1e4348b075551f8aa0276d2449422a308c4c301b` (`v0.5.29`),
+  worktree pulito prima dell'intervento.
+- **Causa — resolved (famiglia: rifiuto prematuro del contesto notifiche):**
+  il renderer respingeva l'intero contesto Jinja prima di eseguire il preset
+  quando i dati grezzi superavano 5.000 valori annidati, 256 KiB complessivi o
+  64 KiB per singola stringa. Una pubblicazione reale di `The Middle` con 215
+  versioni raggiungeva circa 203 KiB e superava il conteggio degli elementi,
+  benché il preset `Completa` producesse soltanto 711 caratteri.
+- **Soluzione:** il contesto grezzo viene conservato e reso disponibile al
+  preset senza soglie preventive su dimensione, numero di elementi o lunghezza
+  dei campi. Restano intenzionalmente i limiti sulla sorgente del template,
+  sul lavoro effettivamente eseguito dal sandbox Jinja e sull'output generato:
+  proteggono il processo senza cancellare o alterare i dati di ingresso.
+- **Regressori, canary e superfici analoghe:** coperti il preset `Completa`
+  migrato con 215 versioni e campi aggiuntivi, l'accesso all'ultimo elemento
+  del contesto senza troncamento e il rifiuto di un output oltre il limite.
+  Applicata la stessa rimozione del controllo preventivo sia al renderer Jinja
+  sia alla sostituzione canonica dei token. Il canary con dati reali salvati e
+  preset reale rende `The Middle` senza errore, conserva 215 versioni e produce
+  711 caratteri con immagine.
+- **Review indipendente:** il diff non modifica raccolta, persistenza,
+  selezione delle pubblicazioni, invio Telegram o struttura dei preset. Non
+  restano riferimenti alle vecchie soglie del contesto; i limiti di esecuzione
+  e output continuano a coprire template costosi o espansioni eccessive.
+- **Rischio residuo e baseline test:** cinque test del collector `Ultimi
+  aggiunti` falliscono anche su un worktree separato e pulito di `v0.5.29`:
+  cercano chiavi di stato `tmdb:*` che il codice corrente non salva in quella
+  posizione. Sono debito preesistente, estraneo al renderer e da verificare in
+  un intervento separato prima di cambiare il contratto di persistenza.
+- **Gate finali:** regressori template 57/57; frontend 284 file/799 test,
+  ESLint e build TypeScript/Vite verdi; Ruff, baseline complessità, Pyright,
+  contratto API strict, audit Python/npm, Compose base, build Docker e
+  smoke autenticato dell'immagine su PostgreSQL esterno e `git diff --check`
+  verdi. Suite backend: 2361 passed, 85 skipped, 34 subtest passed e i cinque
+  fallimenti preesistenti riprodotti invariati sulla baseline pulita;
+  PostgreSQL 16 reale: 83 passed. La verifica in produzione viene completata
+  dopo la pubblicazione del commit di rilascio.

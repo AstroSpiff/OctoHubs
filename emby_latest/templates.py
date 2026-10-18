@@ -45,9 +45,6 @@ _LATEST_JINJA_TOKEN_REGEX = re.compile(r"{{\s*([a-zA-Z0-9_]+)[^}]*}}")
 _TEMPLATE_ENV = None
 MAX_TEMPLATE_SOURCE_LENGTH = 16_384
 MAX_TEMPLATE_OUTPUT_LENGTH = 65_536
-MAX_TEMPLATE_CONTEXT_SIZE = 262_144
-MAX_TEMPLATE_CONTEXT_ITEMS = 5_000
-MAX_TEMPLATE_CONTEXT_STRING_LENGTH = 65_536
 
 
 def _finalize_template_value(value: Any) -> Any:
@@ -72,34 +69,6 @@ class _LatestTemplateEnvironment(SandboxedEnvironment):
         if isinstance(obj, Macro):
             consume_template_work(MAX_TEMPLATE_MACRO_OUTPUT_PARTS)
         return super().call(context, obj, *args, **kwargs)
-
-
-def _validate_context_budget(value: Any, *, depth: int = 0) -> tuple[int, int]:
-    if depth > 8:
-        raise TemplateResourceLimitError("Contesto template troppo annidato")
-    if value is None or isinstance(value, (bool, int, float)):
-        return 16, 1
-    if isinstance(value, str):
-        if len(value) > MAX_TEMPLATE_CONTEXT_STRING_LENGTH:
-            raise TemplateResourceLimitError("Valore del contesto template troppo grande")
-        return len(value), 1
-    if isinstance(value, dict):
-        size = 0
-        count = 1
-        for key, item in value.items():
-            child_size, child_count = _validate_context_budget(item, depth=depth + 1)
-            size += len(str(key)) + child_size
-            count += child_count
-        return size, count
-    if isinstance(value, (list, tuple, set)):
-        size = 0
-        count = 1
-        for item in value:
-            child_size, child_count = _validate_context_budget(item, depth=depth + 1)
-            size += child_size
-            count += child_count
-        return size, count
-    return len(str(value)), 1
 
 
 def validate_template(template: str) -> str:
@@ -245,9 +214,6 @@ def render_template(template: str, context: Dict[str, Any], strict: bool = False
     env = get_template_env()
 
     try:
-        context_size, context_items = _validate_context_budget(context or {})
-        if context_size > MAX_TEMPLATE_CONTEXT_SIZE or context_items > MAX_TEMPLATE_CONTEXT_ITEMS:
-            raise TemplateResourceLimitError("Contesto template troppo grande")
         chunks = []
         output_size = 0
         bounded_context = bound_template_context(context or {})
@@ -273,9 +239,6 @@ def apply_template(template: str, context: Dict[str, Any]) -> str:
     text = template or ""
     if len(text) > MAX_TEMPLATE_SOURCE_LENGTH:
         raise TemplateResourceLimitError("Template troppo lungo")
-    context_size, context_items = _validate_context_budget(context or {})
-    if context_size > MAX_TEMPLATE_CONTEXT_SIZE or context_items > MAX_TEMPLATE_CONTEXT_ITEMS:
-        raise TemplateResourceLimitError("Contesto template troppo grande")
     if not context:
         return text
 
