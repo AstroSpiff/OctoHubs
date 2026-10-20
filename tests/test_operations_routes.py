@@ -114,6 +114,26 @@ class OperationRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["active_count"], 1)
         self.assertEqual([item["id"] for item in payload["operations"]], ["active", "done"])
 
+    async def test_global_operations_route_hides_legacy_transcode_guard_events(self):
+        class Tracker:
+            def list_operations(self):
+                return [
+                    {"id": "guard", "kind": "transcode_guard", "status": "running"},
+                    {"id": "workflow", "kind": "workflow", "status": "running"},
+                    {"id": "probe", "kind": "probe_processing", "status": "success"},
+                ]
+
+        init_operations_routes(
+            require_auth=lambda _request: {"id": "admin"},
+            validate_csrf=lambda _request, _token: True,
+            get_operation_tracker=Tracker,
+        )
+
+        payload = await api_operations(object())
+
+        self.assertEqual([item["id"] for item in payload["operations"]], ["workflow", "probe"])
+        self.assertEqual(payload["active_count"], 1)
+
     async def test_global_operations_clear_completed_uses_tracker(self):
         tracker = _Tracker()
         init_operations_routes(

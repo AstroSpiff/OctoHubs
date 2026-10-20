@@ -58,9 +58,3 @@ def _default_pause_session(server: Dict[str, Any], session_id: str):
     from emby_runtime.api_clients import _pause_emby_playback_session
 
     return _pause_emby_playback_session(server, session_id)
-
-
-def _default_operation_tracker_provider():
-    from app_state import get_operation_tracker
-
-    return get_operation_tracker()

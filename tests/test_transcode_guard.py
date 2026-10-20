@@ -1252,7 +1252,7 @@ def test_forget_server_clears_violations_and_rejects_late_scan_results():
     assert service._capture_server_generation("server-a") >= 0
 
 
-def test_service_warns_then_stops_persistent_video_transcode():
+def test_service_warns_then_stops_without_polluting_global_operations(monkeypatch):
     storage = _Storage()
     clock = _Clock()
     tracker = _Tracker()
@@ -1268,13 +1268,13 @@ def test_service_warns_then_stops_persistent_video_transcode():
     }
     messages = []
     stops = []
+    monkeypatch.setattr("app_state.get_operation_tracker", lambda: tracker)
     service = TranscodeGuardService(
         storage_provider=lambda: storage,
         load_config=lambda: ({"EMBY": {"SERVERS": [server]}}, True),
         fetch_sessions=lambda _server: ([stream], None),
         send_message=lambda _server, session_id, header, text, timeout_ms: messages.append((session_id, header, text, timeout_ms)) or (True, {}),
         stop_session=lambda _server, session_id: stops.append(session_id) or (True, {}),
-        operation_tracker_provider=lambda: tracker,
         now=clock,
     )
     _save_settings(service, {
@@ -1293,8 +1293,7 @@ def test_service_warns_then_stops_persistent_video_transcode():
     assert second["stopped"] == 1
     assert messages and messages[0][0] == "session-1"
     assert stops == ["session-1"]
-    assert tracker.started[-1]["kind"] == "transcode_guard"
-    assert tracker.finished[-1][1] == "Sessione fermata da Transcode Guard"
+    assert tracker.started == []
 
 
 def test_service_warns_immediately_without_a_pre_warning_delay():
@@ -2448,7 +2447,6 @@ def test_service_does_not_delay_stop_with_extra_warning_when_correction_window_e
 
 def test_service_message_template_supports_device_and_reasons_placeholders():
     storage = _Storage()
-    tracker = _Tracker()
     server = {"id": "server-a", "name": "Blue", "enabled": True}
     messages = []
     service = TranscodeGuardService(
@@ -2467,7 +2465,6 @@ def test_service_message_template_supports_device_and_reasons_placeholders():
         }], None),
         send_message=lambda _server, session_id, header, text, timeout_ms: messages.append((session_id, header, text, timeout_ms)) or (True, {}),
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
-        operation_tracker_provider=lambda: tracker,
     )
     _save_settings(service, {
         "enabled": True,
@@ -2551,7 +2548,6 @@ def test_service_can_send_confirmation_message_without_timeout():
 
 def test_service_stops_for_a_canonical_stop_rule():
     storage = _Storage()
-    tracker = _Tracker()
     server = {"id": "server-a", "name": "Blue", "enabled": True}
     stops = []
     service = TranscodeGuardService(
@@ -2567,7 +2563,6 @@ def test_service_stops_for_a_canonical_stop_rule():
         send_message=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected message")),
         pause_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected pause")),
         stop_session=lambda _server, session_id: stops.append(session_id) or (True, {}),
-        operation_tracker_provider=lambda: tracker,
     )
     _save_settings(service, {
         "enabled": True,
@@ -2579,12 +2574,10 @@ def test_service_stops_for_a_canonical_stop_rule():
     assert result["stopped"] == 1
     assert result["paused"] == 0
     assert stops == ["session-pause"]
-    assert tracker.finished[-1][1] == "Sessione fermata da Transcode Guard"
 
 
 def test_service_does_not_act_when_only_audio_is_transcoded():
     storage = _Storage()
-    tracker = _Tracker()
     server = {"id": "server-a", "name": "Blue", "enabled": True}
     service = TranscodeGuardService(
         storage_provider=lambda: storage,
@@ -2599,7 +2592,6 @@ def test_service_does_not_act_when_only_audio_is_transcoded():
         }], None),
         send_message=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected message")),
         stop_session=lambda *_args: (_ for _ in ()).throw(AssertionError("unexpected stop")),
-        operation_tracker_provider=lambda: tracker,
     )
     _save_settings(service, {"enabled": True, "mode": "stop", "server_ids": ["server-a"]})
 
@@ -2607,7 +2599,6 @@ def test_service_does_not_act_when_only_audio_is_transcoded():
 
     assert result["checked"] == 1
     assert result["violations"] == 0
-    assert tracker.started == []
 
 
 def test_emby_session_message_and_stop_use_expected_api_paths(monkeypatch):

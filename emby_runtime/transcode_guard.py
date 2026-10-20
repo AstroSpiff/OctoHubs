@@ -9,7 +9,6 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from emby_runtime.transcode_guard_adapters import (
     _default_fetch_sessions,
     _default_load_config,
-    _default_operation_tracker_provider,
     _default_pause_session,
     _default_send_message,
     _default_stop_session,
@@ -61,7 +60,6 @@ class TranscodeGuardService(
         send_message: Optional[Callable[[Dict[str, Any], str, str, str, int], Tuple[bool, Any]]] = None,
         pause_session: Optional[Callable[[Dict[str, Any], str], Tuple[bool, Any]]] = None,
         stop_session: Optional[Callable[[Dict[str, Any], str], Tuple[bool, Any]]] = None,
-        operation_tracker_provider: Optional[Callable[[], Any]] = None,
         now: Optional[Callable[[], float]] = None,
     ):
         self._storage_provider = storage_provider or _default_storage_provider
@@ -70,7 +68,6 @@ class TranscodeGuardService(
         self._send_message = send_message or _default_send_message
         self._pause_session = pause_session or _default_pause_session
         self._stop_session = stop_session or _default_stop_session
-        self._operation_tracker_provider = operation_tracker_provider or _default_operation_tracker_provider
         self._now = now or time.time
         self._lock = threading.RLock()
         self._violations: Dict[str, Dict[str, Any]] = {}

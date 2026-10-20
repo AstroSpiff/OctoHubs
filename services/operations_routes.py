@@ -23,6 +23,7 @@ from web.openapi_requests import no_request_body
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+_HIDDEN_OPERATION_KINDS = frozenset({"transcode_guard"})
 
 _require_auth: Optional[Callable[[Request], Any]] = None
 _validate_csrf: Optional[Callable[[Request, Optional[str]], bool]] = None
@@ -105,6 +106,11 @@ async def api_operations(request: Request):
         return _operations_error(exc, 503)
     except Exception as exc:
         return _operations_error(exc, 500)
+    operations = [
+        operation
+        for operation in operations
+        if operation.get("kind") not in _HIDDEN_OPERATION_KINDS
+    ]
     operations = present_operation_server_names(
         operations,
         await run_in_threadpool(_configured_server_names),

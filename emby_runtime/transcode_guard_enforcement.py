@@ -202,17 +202,9 @@ class TranscodeGuardEnforcementMixin:
         header = _format_message_value(settings.get("message_header"), settings, server, stream, fallback=DEFAULT_TRANSCODE_GUARD_SETTINGS["message_header"])
         text = _format_message(settings, server, stream)
         timeout_ms = None if settings.get("message_display_mode") == "confirmation" else int(settings.get("warning_timeout_ms") or DEFAULT_TRANSCODE_GUARD_SETTINGS["warning_timeout_ms"])
-        success, payload = self._send_message(server, session_id, header, text, timeout_ms)
+        success, _payload = self._send_message(server, session_id, header, text, timeout_ms)
         action = "warn" if success else "warning_error"
         self._record_event_action(state.get("event_id"), action, "Avviso inviato" if success else "Errore avviso", server, stream, decision, success=bool(success))
-        self._record_operation_event(
-            "Avviso Transcode Guard",
-            "Messaggio inviato da Transcode Guard" if success else f"Errore messaggio Transcode Guard: {payload}",
-            server,
-            stream,
-            {"action": action, "success": bool(success), "decision": decision, "response": payload},
-            success=bool(success),
-        )
         return bool(success)
 
     def _pause_stream(
@@ -223,20 +215,12 @@ class TranscodeGuardEnforcementMixin:
         state: Dict[str, Any],
     ) -> str:
         session_id = str(stream.get("session_id") or "")
-        success, payload = self._pause_session(server, session_id)
+        success, _payload = self._pause_session(server, session_id)
         with self._lock:
             state["paused"] = float(self._now()) if success else None
             state["paused_at"] = _utc_timestamp() if success else None
             state["state"] = "paused" if success else "error"
         self._record_event_action(state.get("event_id"), "pause", "Sessione in pausa" if success else "Errore pausa", server, stream, decision, success=bool(success))
-        self._record_operation_event(
-            "Pausa Transcode Guard",
-            "Sessione messa in pausa da Transcode Guard" if success else f"Errore pausa Transcode Guard: {payload}",
-            server,
-            stream,
-            {"action": "pause", "success": bool(success), "decision": decision, "response": payload},
-            success=bool(success),
-        )
         return "paused" if success else "error"
 
     def _stop_stream(
@@ -247,66 +231,13 @@ class TranscodeGuardEnforcementMixin:
         state: Dict[str, Any],
     ) -> str:
         session_id = str(stream.get("session_id") or "")
-        success, payload = self._stop_session(server, session_id)
+        success, _payload = self._stop_session(server, session_id)
         with self._lock:
             state["stopped"] = float(self._now()) if success else None
             state["stopped_at"] = _utc_timestamp() if success else None
             state["state"] = "stopped" if success else "error"
         self._record_event_action(state.get("event_id"), "stop", "Sessione fermata" if success else "Errore stop", server, stream, decision, success=bool(success))
-        self._record_operation_event(
-            "Blocco Transcode Guard",
-            "Sessione fermata da Transcode Guard" if success else f"Errore stop Transcode Guard: {payload}",
-            server,
-            stream,
-            {"action": "stop", "success": bool(success), "decision": decision, "response": payload},
-            success=bool(success),
-        )
         return "stopped" if success else "error"
-
-    def _record_operation_event(
-        self,
-        title: str,
-        message: str,
-        server: Dict[str, Any],
-        stream: Dict[str, Any],
-        result: Dict[str, Any],
-        *,
-        success: bool,
-    ) -> None:
-        try:
-            tracker = self._operation_tracker_provider()
-        except Exception:
-            tracker = None
-        if not tracker:
-            return
-        details = {
-            "server": _server_label(server),
-            "server_id": server.get("id") or "",
-            "user": stream.get("user") or "",
-            "client": stream.get("client") or "",
-            "title": stream.get("title") or "Stream",
-            "source_height": _extract_video_height(stream),
-            "action": result.get("action"),
-            "rule_id": result.get("decision", {}).get("rule_id") if isinstance(result.get("decision"), dict) else "",
-            "rule_name": result.get("decision", {}).get("rule_name") if isinstance(result.get("decision"), dict) else "",
-        }
-        try:
-            operation = tracker.start(
-                "transcode_guard",
-                title,
-                summary=details["title"],
-                details=details,
-                total=1,
-            )
-            operation_id = operation.get("id") if isinstance(operation, dict) else None
-            if not operation_id:
-                return
-            if success:
-                tracker.finish(operation_id, message, result=result)
-            else:
-                tracker.fail(operation_id, message, result=result)
-        except Exception:
-            return
 
     def _record_later_success(
         self,
