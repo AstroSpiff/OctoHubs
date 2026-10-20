@@ -225,7 +225,7 @@ function OperationsCenterView({
         }
       >
         <ListChecks size={17} aria-hidden="true" />
-        Operazioni
+        <span className="operations-center-toggle-label">Operazioni</span>
         <strong>{activeCount || operations.length}</strong>
       </Button>
       {confirmation.dialog}

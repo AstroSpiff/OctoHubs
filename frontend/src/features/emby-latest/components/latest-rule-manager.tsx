@@ -17,7 +17,7 @@ import type {
   LatestTelegramPreset,
 } from "@/features/emby-latest/types";
 
-function LatestRuleManager({
+export function LatestRuleManager({
   rules,
   servers,
   presets,
@@ -71,6 +71,8 @@ function LatestRuleManager({
         </div>
         <Button
           type="button"
+          className="latest-rule-create-button"
+          aria-label="Nuova regola di notifica"
           requiresWriteAccess
           variant="primary"
           size="compact"
@@ -78,7 +80,7 @@ function LatestRuleManager({
           onClick={() => openEditor(emptyLatestRuleInput())}
         >
           <Plus size={15} aria-hidden="true" />
-          Nuova regola
+          Nuova
         </Button>
       </header>
       {rules.length ? (
@@ -181,5 +183,3 @@ function LatestRuleManager({
     </section>
   );
 }
-
-export { LatestRuleManager };

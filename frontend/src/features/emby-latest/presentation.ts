@@ -16,10 +16,10 @@ export function formatLatestAge(value?: string | null) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Aggiornato";
   const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
-  if (seconds < 60) return `Ultimo aggiornamento: ${seconds}s fa`;
+  if (seconds < 60) return `Aggiornato ${seconds}s fa`;
   if (seconds < 3600)
-    return `Ultimo aggiornamento: ${Math.floor(seconds / 60)} min fa`;
-  return `Ultimo aggiornamento: ${Math.floor(seconds / 3600)} h fa`;
+    return `Aggiornato ${Math.floor(seconds / 60)} min fa`;
+  return `Aggiornato ${Math.floor(seconds / 3600)} h fa`;
 }
 
 export function formatRuntime(value?: number) {

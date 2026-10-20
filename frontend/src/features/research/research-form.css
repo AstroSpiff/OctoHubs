@@ -62,13 +62,13 @@
 .research-page input:not([type="checkbox"]),
 .research-page select {
   width: 100%;
-  min-height: 42px;
+  min-height: var(--control-height);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-control);
-  padding: 8px 10px;
+  padding: 6px 9px;
   background: var(--color-surface-raised);
   color: var(--color-ink-strong);
-  font-size: 14px;
+  font-size: var(--control-font-size);
   outline: none;
 }
 .research-page input:not([type="checkbox"]):focus,
@@ -82,11 +82,11 @@
 .research-search-input {
   display: flex;
   align-items: center;
-  min-height: 42px;
-  gap: 8px;
+  min-height: var(--control-height);
+  gap: 6px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-control);
-  padding: 0 10px;
+  padding: 0 9px;
   background: var(--color-surface-raised);
   color: var(--color-muted);
 }
@@ -96,7 +96,7 @@
 }
 .research-search-input input {
   min-width: 0;
-  min-height: 38px !important;
+  min-height: calc(var(--control-height) - 2px) !important;
   padding: 0 !important;
   border: 0 !important;
   box-shadow: none !important;
@@ -402,7 +402,7 @@
   flex: 1 1 260px;
 }
 .research-toggle--custom {
-  min-height: 42px;
+  min-height: var(--control-height);
   padding: 0 4px;
   font-weight: 750;
 }
@@ -416,10 +416,10 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 42px;
+  min-height: var(--control-height);
   padding: 0 12px;
   color: var(--color-ink);
-  font-size: 13px;
+  font-size: var(--control-font-size);
   font-weight: 750;
   cursor: pointer;
 }

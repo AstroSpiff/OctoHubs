@@ -18,7 +18,6 @@ import {
   previewLatest,
   refreshLatest,
   resetLatest,
-  resetLatestScanTracking,
   saveLatestPreset,
   saveLatestRule,
   setLatestRuleEnabled,
@@ -155,11 +154,6 @@ function useEmbyLatest() {
     mutationFn: resetLatest,
     onSuccess: refreshSnapshot,
   });
-  const resetScanTracking = useMutation({
-    mutationFn: resetLatestScanTracking,
-    onSuccess: refreshSnapshot,
-  });
-
   useEffect(() => {
     if (!progressEnabled || !progress.data || progress.data.refreshing) return;
     setRefreshPending(false);
@@ -185,7 +179,6 @@ function useEmbyLatest() {
     enrich,
     clearState,
     reset,
-    resetScanTracking,
     fetchLimits,
     refreshSnapshot,
     refreshConfiguration,

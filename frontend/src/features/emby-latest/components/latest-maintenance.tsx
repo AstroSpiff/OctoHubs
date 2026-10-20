@@ -1,85 +1,90 @@
-import { DatabaseZap, History, Trash2 } from "@/components/ui/icons";
+import { History, Trash2 } from "@/components/ui/icons";
 
 import { Button } from "@/components/ui/button";
 
-function LatestMaintenance({
-  resetting,
-  clearing,
-  clearingScans,
-  onReset,
-  onClearState,
-  onClearScans,
+function LatestMaintenanceAction({
+  action,
+  busy,
+  description,
+  icon,
+  status,
+  title,
 }: {
-  resetting: boolean;
-  clearing: boolean;
-  clearingScans: boolean;
-  onReset: () => void;
-  onClearState: () => void;
-  onClearScans: () => void;
+  action: { label: string; onClick: () => void };
+  busy: boolean;
+  description: string;
+  icon: "history" | "trash";
+  status: string;
+  title: string;
 }) {
-  const busy = resetting || clearing || clearingScans;
-
   return (
     <section className="latest-config-card latest-maintenance">
       <header>
-        <h4>Manutenzione</h4>
-        <p>
-          Interventi sui dati persistiti. Preset e regole non vengono rimossi.
-        </p>
+        <h4>{title}</h4>
       </header>
       <div>
-        <p>Reset completo delle pubblicazioni: STATE + CACHE.</p>
+        <p>{description}</p>
         <Button
           type="button"
           requiresWriteAccess
           variant="danger"
           size="compact"
-          onClick={onReset}
+          onClick={action.onClick}
           disabled={busy}
         >
-          <Trash2 size={15} aria-hidden="true" />
-          Reset totale pubblicazioni
-        </Button>
-      </div>
-      <div>
-        <p>
-          Azzera il tracking delle notifiche mantenendo cache, preset e regole.
-        </p>
-        <Button
-          type="button"
-          requiresWriteAccess
-          variant="danger"
-          size="compact"
-          onClick={onClearState}
-          disabled={busy}
-        >
-          <History size={15} aria-hidden="true" />
-          Azzera STATE pubblicazioni
-        </Button>
-      </div>
-      <div>
-        <p>
-          Rimuovi i record persistiti per scansione e aggiornamenti metadata.
-        </p>
-        <Button
-          type="button"
-          requiresWriteAccess
-          variant="danger"
-          size="compact"
-          onClick={onClearScans}
-          disabled={busy}
-        >
-          <DatabaseZap size={15} aria-hidden="true" />
-          Pulisci dati scan/metadata
+          {icon === "trash" ? (
+            <Trash2 size={15} aria-hidden="true" />
+          ) : (
+            <History size={15} aria-hidden="true" />
+          )}
+          {action.label}
         </Button>
       </div>
       {busy ? (
         <p className="latest-form-status" role="status">
-          Manutenzione pubblicazioni in corso...
+          {status}
         </p>
       ) : null}
     </section>
   );
 }
 
-export { LatestMaintenance };
+function LatestPublicationsMaintenance({
+  resetting,
+  onReset,
+}: {
+  resetting: boolean;
+  onReset: () => void;
+}) {
+  return (
+    <LatestMaintenanceAction
+      title="Manutenzione pubblicazioni"
+      description="Cancella i dati salvati e li ricostruisce al prossimo aggiornamento. Gli elementi già inviati potrebbero tornare notificabili."
+      action={{ label: "Ricostruisci pubblicazioni", onClick: onReset }}
+      icon="trash"
+      busy={resetting}
+      status="Ricostruzione pubblicazioni in corso..."
+    />
+  );
+}
+
+function LatestNotificationsMaintenance({
+  clearing,
+  onClearState,
+}: {
+  clearing: boolean;
+  onClearState: () => void;
+}) {
+  return (
+    <LatestMaintenanceAction
+      title="Manutenzione notifiche"
+      description="Dimentica quali pubblicazioni risultano già inviate. Il prossimo invio potrebbe ripeterle; preset e regole restano invariati."
+      action={{ label: "Reimposta notifiche inviate", onClick: onClearState }}
+      icon="history"
+      busy={clearing}
+      status="Reimpostazione notifiche in corso..."
+    />
+  );
+}
+
+export { LatestNotificationsMaintenance, LatestPublicationsMaintenance };

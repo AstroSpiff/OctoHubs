@@ -1,13 +1,27 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import { LatestDataVerify } from "@/features/emby-latest/components/latest-data-verify";
-import { LatestMaintenance } from "@/features/emby-latest/components/latest-maintenance";
+import { LatestDisplayLimitControl } from "@/features/emby-latest/components/latest-display-limit-control";
+import {
+  LatestNotificationsMaintenance,
+  LatestPublicationsMaintenance,
+} from "@/features/emby-latest/components/latest-maintenance";
 import { LatestNotificationPreview } from "@/features/emby-latest/components/latest-notification-preview";
 import { LatestPresetManager } from "@/features/emby-latest/components/latest-preset-manager";
 import { LatestRefreshProgress } from "@/features/emby-latest/components/latest-refresh-progress";
 import { LatestReleaseColumn } from "@/features/emby-latest/components/latest-release-card";
-import { LatestReleaseControls } from "@/features/emby-latest/components/latest-release-controls";
+import {
+  LatestNotificationActions,
+  LatestPublicationActions,
+  LatestReleaseHeader,
+  LatestServerSelector,
+} from "@/features/emby-latest/components/latest-release-controls";
 import { LatestRuleManager } from "@/features/emby-latest/components/latest-rule-manager";
+import {
+  LatestViewTabs,
+  type LatestView,
+} from "@/features/emby-latest/components/latest-view-tabs";
 import {
   readLatestDisplayLimit,
   saveLatestDisplayLimit,
@@ -28,7 +42,6 @@ import { useEmbyLatest } from "@/features/emby-latest/use-emby-latest";
 import { useLatestActionFeedback } from "@/features/emby-latest/use-latest-action-feedback";
 import { useConfirmationDialog } from "@/components/ui/use-confirmation-dialog";
 import { QueryStateBoundary } from "@/components/ui/query-state-boundary";
-import { WorkspaceHeading } from "@/components/ui/workspace-heading";
 import { WorkspacePage } from "@/components/ui/workspace-layout";
 import { useBeforeUnloadWarning } from "@/lib/use-before-unload-warning";
 import { useUnsavedChangesNavigationGuard } from "@/lib/use-unsaved-changes-navigation-guard";
@@ -40,6 +53,7 @@ function LatestPage() {
   const latest = useEmbyLatest();
   const confirmation = useConfirmationDialog();
   const actionFeedback = useLatestActionFeedback();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { mutate: previewLatest } = latest.preview;
   const [serverId, setServerId] = useState("all");
   const [displayLimit, setDisplayLimit] = useState(readLatestDisplayLimit);
@@ -47,6 +61,9 @@ function LatestPage() {
   const [selectedPresetId, setSelectedPresetId] = useState("");
   const [previewDraft, setPreviewDraft] = useState<LatestPresetInput | null>(null);
   const [drafts, setDrafts] = useState({ preset: false, rule: false });
+  const [activeView, setActiveView] = useState<LatestView>(() =>
+    searchParams.get("view") === "telegram" ? "telegram" : "publications",
+  );
   const hasUnsavedChanges = drafts.preset || drafts.rule;
   useBeforeUnloadWarning(hasUnsavedChanges);
   useUnsavedChangesNavigationGuard(hasUnsavedChanges, confirmation.confirm);
@@ -76,6 +93,12 @@ function LatestPage() {
     );
   }, [activePreset?.id, presets]);
 
+  useEffect(() => {
+    const view =
+      searchParams.get("view") === "telegram" ? "telegram" : "publications";
+    setActiveView((current) => (current === view ? current : view));
+  }, [searchParams]);
+
   const movieItems = useMemo(
     () => visibleLatestItems(movies, serverId, displayLimit),
     [movies, serverId, displayLimit],
@@ -96,6 +119,16 @@ function LatestPage() {
     setDisplayLimit(limit);
     saveLatestDisplayLimit(limit);
   }, []);
+  const updateView = useCallback(
+    (view: LatestView) => {
+      setActiveView(view);
+      const next = new URLSearchParams(searchParams);
+      if (view === "publications") next.delete("view");
+      else next.set("view", view);
+      setSearchParams(next);
+    },
+    [searchParams, setSearchParams],
+  );
   const updateDirty = useCallback((scope: "preset" | "rule", dirty: boolean) => {
     setDrafts((current) => current[scope] === dirty ? current : { ...current, [scope]: dirty });
   }, []);
@@ -149,53 +182,9 @@ function LatestPage() {
         retrying={latest.configuration.isFetching}
         onRetry={() => void latest.configuration.refetch()}
       >
-      <LatestReleaseControls
-        servers={configuration?.servers || []}
-        selectedServer={serverId}
-        displayLimit={displayLimit}
-        maxMovies={configuration?.settings.limits.max_movies}
-        maxSeries={configuration?.settings.limits.max_series}
-        loading={latest.snapshot.isLoading}
-        refreshing={latest.refresh.isPending || latest.isRefreshing}
-        notifying={latest.notify.isPending}
+      <LatestReleaseHeader
         workflowing={latest.workflow.isPending || latest.workflowActive}
-        onServerChange={setServerId}
-        onLimitChange={updateDisplayLimit}
-        onRefresh={() => {
-          void actionFeedback
-            .run(
-              () => latest.refresh.mutateAsync(latest.fetchLimits),
-              "Aggiornamento pubblicazioni avviato.",
-            )
-            .catch(() => undefined);
-        }}
-        onNotify={() =>
-          void actionFeedback
-            .run(
-              () => latest.notify.mutateAsync(latest.fetchLimits.perServerLimit),
-              "Invio notifiche completato.",
-            )
-            .catch(() => undefined)
-        }
-        onWorkflow={() => {
-          void actionFeedback
-            .run(() => latest.workflow.mutateAsync(), "Workflow avviato.")
-            .catch(() => undefined);
-        }}
-        onVerify={() => {
-          latest.enrich.reset();
-          setVerifyOpen(true);
-        }}
       />
-      {snapshot?.cached_at || latest.isRefreshing ? (
-        <p className="latest-cache-status">
-          {formatLatestAge(snapshot?.cached_at)}
-          {latest.isRefreshing ? " · aggiornamento in corso" : ""}
-        </p>
-      ) : null}
-      {latest.isRefreshing ? (
-        <LatestRefreshProgress progress={latest.progress.data} />
-      ) : null}
       {actionFeedback.notice ? (
         <div
           className={`inline-alert inline-alert--${actionFeedback.notice.tone}`}
@@ -204,51 +193,146 @@ function LatestPage() {
           {actionFeedback.notice.message}
         </div>
       ) : null}
-      <QueryStateBoundary
-        error={latest.snapshot.error}
-        hasData={Boolean(snapshot)}
-        loadingLabel="Caricamento pubblicazioni..."
-        retrying={latest.snapshot.isFetching}
-        onRetry={() => void latest.snapshot.refetch()}
+      <div className="latest-view-layout">
+        <div className="latest-view-controls">
+          <LatestViewTabs activeView={activeView} onChange={updateView} />
+          <div
+            className={`latest-context-toolbar latest-context-toolbar--${activeView}`}
+          >
+            <LatestServerSelector
+              servers={configuration?.servers || []}
+              selectedServer={serverId}
+              onServerChange={setServerId}
+            />
+            <div className="latest-context-commands">
+              {activeView === "publications" ? (
+                <>
+                  <LatestPublicationActions
+                    loading={latest.snapshot.isLoading}
+                    refreshing={latest.refresh.isPending || latest.isRefreshing}
+                    notifying={latest.notify.isPending}
+                    workflowing={latest.workflow.isPending || latest.workflowActive}
+                    onRefresh={() => {
+                      void actionFeedback
+                        .run(
+                          () => latest.refresh.mutateAsync(latest.fetchLimits),
+                          "Aggiornamento pubblicazioni avviato.",
+                        )
+                        .catch(() => undefined);
+                    }}
+                    onWorkflow={() => {
+                      void actionFeedback
+                        .run(() => latest.workflow.mutateAsync(), "Workflow avviato.")
+                        .catch(() => undefined);
+                    }}
+                    onVerify={() => {
+                      latest.enrich.reset();
+                      setVerifyOpen(true);
+                    }}
+                  />
+                  <div className="latest-publications-toolbar-meta">
+                    {snapshot?.cached_at || latest.isRefreshing ? (
+                      <p className="latest-cache-status">
+                        {formatLatestAge(snapshot?.cached_at)}
+                        {latest.isRefreshing ? " · aggiornamento in corso" : ""}
+                      </p>
+                    ) : null}
+                    <LatestDisplayLimitControl
+                      displayLimit={displayLimit}
+                      maxMovies={configuration?.settings.limits.max_movies}
+                      maxSeries={configuration?.settings.limits.max_series}
+                      onLimitChange={updateDisplayLimit}
+                    />
+                  </div>
+                </>
+              ) : (
+                <LatestNotificationActions
+                  loading={latest.snapshot.isLoading}
+                  refreshing={latest.refresh.isPending || latest.isRefreshing}
+                  notifying={latest.notify.isPending}
+                  workflowing={latest.workflow.isPending || latest.workflowActive}
+                  onNotify={() =>
+                    void actionFeedback
+                      .run(
+                        () => latest.notify.mutateAsync(latest.fetchLimits.perServerLimit),
+                        "Invio notifiche completato.",
+                      )
+                      .catch(() => undefined)
+                  }
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      <section
+        id="latest-view-panel-publications"
+        className="latest-view-panel latest-publications-panel"
+        role="tabpanel"
+        aria-labelledby="latest-view-tab-publications"
+        tabIndex={0}
+        hidden={activeView !== "publications"}
       >
-      <div className="latest-release-grid">
-        <LatestReleaseColumn
-          title="Film"
-          items={movieItems}
-          total={
-            serverId === "all"
-              ? movies.length
-              : movies.filter((item) => item.server_id === serverId).length
-          }
-          emptyText={
-            latest.isRefreshing
-              ? "Aggiornamento Pubblicazioni in corso..."
-              : "Nessun film trovato"
+        {latest.isRefreshing ? (
+          <LatestRefreshProgress progress={latest.progress.data} />
+        ) : null}
+        <QueryStateBoundary
+          error={latest.snapshot.error}
+          hasData={Boolean(snapshot)}
+          loadingLabel="Caricamento pubblicazioni..."
+          retrying={latest.snapshot.isFetching}
+          onRetry={() => void latest.snapshot.refetch()}
+        >
+          <div className="latest-release-grid">
+            <LatestReleaseColumn
+              title="Film"
+              items={movieItems}
+              total={
+                serverId === "all"
+                  ? movies.length
+                  : movies.filter((item) => item.server_id === serverId).length
+              }
+              emptyText={
+                latest.isRefreshing
+                  ? "Aggiornamento Pubblicazioni in corso..."
+                  : "Nessun film trovato"
+              }
+            />
+            <LatestReleaseColumn
+              title="Serie TV"
+              items={seriesItems}
+              total={
+                serverId === "all"
+                  ? series.length
+                  : series.filter((item) => item.server_id === serverId).length
+              }
+              emptyText={
+                latest.isRefreshing
+                  ? "Aggiornamento Pubblicazioni in corso..."
+                  : "Nessuna serie trovata"
+              }
+            />
+          </div>
+        </QueryStateBoundary>
+        <LatestPublicationsMaintenance
+          resetting={latest.reset.isPending}
+          onReset={() =>
+            void confirmAction(
+              "Ricostruisci pubblicazioni",
+              "Cancella i dati salvati delle pubblicazioni e il registro degli invii. Al prossimo aggiornamento i contenuti verranno ricostruiti da Emby e quelli già inviati potrebbero tornare notificabili. Continuare?",
+              "Pubblicazioni reimpostate.",
+              () => latest.reset.mutateAsync(),
+            )
           }
         />
-        <LatestReleaseColumn
-          title="Serie TV"
-          items={seriesItems}
-          total={
-            serverId === "all"
-              ? series.length
-              : series.filter((item) => item.server_id === serverId).length
-          }
-          emptyText={
-            latest.isRefreshing
-              ? "Aggiornamento Pubblicazioni in corso..."
-              : "Nessuna serie trovata"
-          }
-        />
-      </div>
-      </QueryStateBoundary>
-      <section className="latest-configuration">
-        <WorkspaceHeading
-          level="subsection"
-          context="Invio automatico"
-          title="Notifiche Telegram"
-          description="Configura preset messaggi e regole di notifica per le pubblicazioni recenti."
-        />
+      </section>
+      <section
+        id="latest-view-panel-telegram"
+        className="latest-view-panel latest-configuration"
+        role="tabpanel"
+        aria-labelledby="latest-view-tab-telegram"
+        tabIndex={0}
+        hidden={activeView !== "telegram"}
+      >
         <div className="latest-configuration-grid">
           <LatestPresetManager
             presets={presets}
@@ -325,38 +409,21 @@ function LatestPage() {
               onRemove={(rule) => void removeRule(rule)}
               onDirtyChange={(dirty) => updateDirty("rule", dirty)}
             />
-            <LatestMaintenance
-              resetting={latest.reset.isPending}
+            <LatestNotificationsMaintenance
               clearing={latest.clearState.isPending}
-              clearingScans={latest.resetScanTracking.isPending}
-              onReset={() =>
-                void confirmAction(
-                  "Reimposta pubblicazioni",
-                  "Questa operazione azzera STATE + CACHE delle pubblicazioni. I contenuti verranno ricalcolati al prossimo aggiornamento. Continuare?",
-                  "Pubblicazioni reimpostate.",
-                  () => latest.reset.mutateAsync(),
-                )
-              }
               onClearState={() =>
                 void confirmAction(
-                  "Azzera tracking notifiche",
-                  "Azzera lo stato di tracking delle notifiche mantenendo tutte le altre configurazioni?",
-                  "Tracking notifiche azzerato.",
+                  "Reimposta notifiche inviate",
+                  "Dimenticare quali pubblicazioni risultano già inviate? Il prossimo invio potrebbe ripeterle; preset e regole resteranno invariati.",
+                  "Registro notifiche reimpostato.",
                   () => latest.clearState.mutateAsync(),
-                )
-              }
-              onClearScans={() =>
-                void confirmAction(
-                  "Elimina dati scansione",
-                  "Elimina i dati salvati su scansioni e refresh metadata?",
-                  "Dati scansione eliminati.",
-                  () => latest.resetScanTracking.mutateAsync(),
                 )
               }
             />
           </div>
         </div>
       </section>
+      </div>
       <LatestDataVerify
         open={verifyOpen}
         servers={configuration?.servers || []}

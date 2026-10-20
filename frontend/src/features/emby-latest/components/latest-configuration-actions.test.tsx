@@ -2,24 +2,31 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { LatestDataVerify } from "@/features/emby-latest/components/latest-data-verify";
-import { LatestMaintenance } from "@/features/emby-latest/components/latest-maintenance";
+import {
+  LatestNotificationsMaintenance,
+  LatestPublicationsMaintenance,
+} from "@/features/emby-latest/components/latest-maintenance";
 import { LatestPresetManager } from "@/features/emby-latest/components/latest-preset-manager";
+import { LatestRuleManager } from "@/features/emby-latest/components/latest-rule-manager";
 
 describe("Latest configuration actions", () => {
-  it("holds all maintenance actions while one persistent cleanup is running", () => {
-    const markup = renderToStaticMarkup(
-      <LatestMaintenance
-        resetting
-        clearing={false}
-        clearingScans={false}
-        onReset={() => undefined}
+  it("keeps each maintenance action in its own domain", () => {
+    const publications = renderToStaticMarkup(
+      <LatestPublicationsMaintenance resetting onReset={() => undefined} />,
+    );
+    const notifications = renderToStaticMarkup(
+      <LatestNotificationsMaintenance
+        clearing
         onClearState={() => undefined}
-        onClearScans={() => undefined}
       />,
     );
 
-    expect(markup).toContain("Manutenzione pubblicazioni in corso...");
-    expect(markup.match(/<button[^>]*\sdisabled(?:=|\s|>)/g)).toHaveLength(3);
+    expect(publications).toContain("Ricostruisci pubblicazioni");
+    expect(publications).not.toContain("Reimposta notifiche inviate");
+    expect(notifications).toContain("Reimposta notifiche inviate");
+    expect(notifications).not.toContain("scan/metadata");
+    expect(publications.match(/<button[^>]*\sdisabled(?:=|\s|>)/g)).toHaveLength(1);
+    expect(notifications.match(/<button[^>]*\sdisabled(?:=|\s|>)/g)).toHaveLength(1);
   });
 
   it("locks preset changes and keeps their failure in the preset card", () => {
@@ -57,5 +64,24 @@ describe("Latest configuration actions", () => {
     );
 
     expect(markup.match(/<select[^>]*\sdisabled(?:=|\s|>)/g)).toHaveLength(3);
+  });
+
+  it("keeps the new notification action concise without losing its accessible name", () => {
+    const markup = renderToStaticMarkup(
+      <LatestRuleManager
+        rules={[]}
+        servers={[]}
+        presets={[]}
+        telegramPresets={[]}
+        saving={false}
+        onSave={async () => undefined}
+        onToggle={() => undefined}
+        onRemove={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Nuova regola di notifica"');
+    expect(markup).toMatch(/<button[^>]*>.*Nuova<\/button>/);
+    expect(markup).not.toContain("Nuova regola</button>");
   });
 });

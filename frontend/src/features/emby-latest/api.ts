@@ -147,10 +147,3 @@ export function resetLatest(): Promise<LatestActionResult> {
     body: JSON.stringify({}),
   });
 }
-
-export function resetLatestScanTracking(): Promise<LatestActionResult> {
-  return request<LatestActionResult>("/api/v1/emby/scan-jobs/reset", {
-    method: "POST",
-    body: JSON.stringify({}),
-  });
-}

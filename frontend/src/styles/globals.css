@@ -87,8 +87,12 @@
   --color-preset-rose: #f43f5e;
   --radius-control: 7px;
   --radius-panel: 8px;
-  --control-height: 36px;
-  --control-height-compact: 32px;
+  --control-height: 32px;
+  --control-height-compact: 28px;
+  --control-font-size: 12px;
+  --control-font-size-compact: 12px;
+  --control-icon-size: 14px;
+  --section-tab-font-size: 14px;
   --space-workspace: 18px;
   --space-tab-content: 14px;
   --motion-fast: 150ms ease;
@@ -206,6 +210,39 @@ input,
 select,
 textarea {
   font: inherit;
+}
+input:not([type="checkbox"]):not([type="radio"]):not([type="color"]),
+select,
+textarea {
+  font-size: var(--control-font-size);
+}
+.app-button {
+  font-size: var(--control-font-size);
+  line-height: 1.1;
+  text-align: center;
+}
+.app-button--compact {
+  font-size: var(--control-font-size-compact);
+}
+.app-button--text {
+  height: auto;
+  white-space: normal;
+}
+.app-button--icon {
+  width: var(--control-height-compact);
+  height: var(--control-height-compact);
+  white-space: nowrap;
+}
+.app-button > svg {
+  width: var(--control-icon-size);
+  height: var(--control-icon-size);
+  flex: none;
+}
+@media (pointer: coarse) {
+  :root {
+    --control-height: 40px;
+    --control-height-compact: 36px;
+  }
 }
 button,
 a,

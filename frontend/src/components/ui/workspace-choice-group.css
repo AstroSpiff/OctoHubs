@@ -17,7 +17,7 @@
   padding: 0 10px;
   color: var(--color-ink);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--control-font-size-compact);
   font-weight: 750;
 }
 

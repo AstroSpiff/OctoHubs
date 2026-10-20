@@ -20,7 +20,7 @@
   padding: 0 13px;
   color: var(--color-muted);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--control-font-size);
   font-weight: 750;
   text-decoration: none;
   white-space: nowrap;
@@ -56,10 +56,22 @@
 .workspace-tabs--context > :is(a, button) {
   min-height: var(--control-height-compact);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--control-font-size-compact);
 }
 
 .workspace-tabs--context > :is(a, button):active {
+  cursor: pointer;
+}
+
+/* Section tabs replace repeated panel headings and therefore carry more hierarchy. */
+.workspace-tabs--section > :is(a, button) {
+  min-height: var(--control-height);
+  cursor: pointer;
+  font-size: var(--section-tab-font-size);
+  font-weight: 800;
+}
+
+.workspace-tabs--section > :is(a, button):active {
   cursor: pointer;
 }
 
@@ -89,11 +101,16 @@
     scroll-snap-align: center;
     gap: 0;
     padding-inline: 10px;
-    font-size: 12px;
+    font-size: var(--control-font-size);
   }
 
   .workspace-tabs--context > :is(a, button) {
     min-height: var(--control-height-compact);
+  }
+
+  .workspace-tabs--section > :is(a, button) {
+    min-height: var(--control-height);
+    font-size: var(--section-tab-font-size);
   }
 
   .workspace-tabs .tab-reorder-grip {

@@ -1,10 +1,5 @@
 .latest-configuration {
-  border-top: 1px solid var(--color-border);
-  padding-top: 18px;
-}
-
-.latest-configuration > .workspace-heading {
-  margin-bottom: 12px;
+  padding-top: 0;
 }
 
 .latest-configuration-grid {
@@ -414,6 +409,16 @@
 
   .latest-configuration-side {
     grid-column: auto;
+  }
+}
+
+@container latest-workspace (max-width: 480px) {
+  .latest-rule-manager > header {
+    flex-direction: column;
+  }
+
+  .latest-rule-create-button {
+    align-self: flex-start;
   }
 }
 

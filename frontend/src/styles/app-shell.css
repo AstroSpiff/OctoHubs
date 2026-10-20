@@ -2,6 +2,7 @@
   --app-sidebar-width: 244px;
   --app-topbar-height: 68px;
   --app-sticky-offset: var(--app-topbar-height);
+  --mobile-primary-navigation-height: 68px;
 }
 
 .app-shell {
@@ -764,7 +765,8 @@
   }
 
   .app-main {
-    padding: 20px 14px calc(94px + env(safe-area-inset-bottom));
+    padding: 20px 14px
+      calc(var(--mobile-primary-navigation-height) + 26px + env(safe-area-inset-bottom));
   }
 
   .mobile-primary-navigation {
@@ -775,7 +777,9 @@
     left: 0;
     display: grid;
     grid-template-columns: repeat(var(--mobile-primary-navigation-count, 5), minmax(0, 1fr));
-    min-height: calc(68px + env(safe-area-inset-bottom));
+    min-height: calc(
+      var(--mobile-primary-navigation-height) + env(safe-area-inset-bottom)
+    );
     border-top: 1px solid var(--color-border);
     background: var(--color-surface-translucent);
     box-shadow: var(--shadow-control);
@@ -814,11 +818,6 @@
 
   .mobile-navigation-link.is-dragging {
     opacity: 0.42;
-  }
-
-  .operations-center {
-    right: max(12px, env(safe-area-inset-right));
-    bottom: calc(78px + env(safe-area-inset-bottom));
   }
 
   .navigation-preferences-backdrop {
