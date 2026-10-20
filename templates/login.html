@@ -6,6 +6,7 @@
     <meta name="csrf-token" content="{{ csrf_token() }}">
     <title>Login - OctoHubs</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='login.css') }}">
+    <script src="{{ url_for('static', filename='login.js') }}" defer></script>
 </head>
 <body class="login-page">
     <main class="login-shell">
@@ -27,7 +28,7 @@
                 {% endif %}
             {% endwith %}
 
-            <form method="POST" class="login-form">
+            <form method="POST" class="login-form" data-csrf-refresh-url="/login/csrf">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 {% if next_page %}
                     <input type="hidden" name="next" value="{{ next_page }}">

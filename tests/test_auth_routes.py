@@ -37,6 +37,17 @@ async def test_login_page_opens_react_workspace_for_an_active_session():
 
 
 @pytest.mark.anyio
+async def test_login_csrf_refreshes_the_anonymous_session_without_caching():
+    auth_routes = _init_auth_routes()
+
+    response = await auth_routes.login_csrf(SimpleNamespace())
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert json.loads(response.body) == {"csrf_token": "csrf"}
+
+
+@pytest.mark.anyio
 async def test_login_submit_uses_react_workspace_as_the_safe_default(monkeypatch):
     auth_routes = _init_auth_routes()
     user = SimpleNamespace(

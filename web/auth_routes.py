@@ -124,6 +124,15 @@ async def login_page(request: Request):
     return _login_page_response(request)
 
 
+@router.get("/login/csrf", include_in_schema=False)
+async def login_csrf(request: Request):
+    """Refresh the anonymous login session token without weakening CSRF checks."""
+    return JSONResponse(
+        {"csrf_token": _get_csrf_token_dep(request)},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.post("/login")
 async def login_submit(
     request: Request,
