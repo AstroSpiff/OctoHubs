@@ -2068,3 +2068,156 @@ stati modificati dati o configurazione del deployment Hetzner.
   fallimenti preesistenti riprodotti invariati sulla baseline pulita;
   PostgreSQL 16 reale: 83 passed. La verifica in produzione viene completata
   dopo la pubblicazione del commit di rilascio.
+
+### Follow-up operativo post-v0.5.30 — LATEST-VIEW-NAVIGATION-01
+
+- **Baseline:** `5a62462` (`v0.5.30`), worktree pulito prima
+  dell'intervento.
+- **Causa — resolved (famiglia: gerarchia e navigazione di Pubblicazioni):**
+  elenco delle pubblicazioni, configurazione Telegram e tre reset di ambiti
+  diversi erano disposti in un'unica pagina lunga. Per raggiungere Telegram
+  bisognava attraversare tutte le card; `Mostra` sembrava influire anche sulle
+  anteprime e il reset dello storico librerie duplicava un'azione già presente
+  nel suo contesto corretto. Il pulsante `Nuova regola` ripeteva inoltre il
+  sostantivo del titolo e, se compresso, manteneva altezza e interlinea non
+  adatte a due righe.
+- **Soluzione:** l'intestazione resta comune; due sottoschede URL-addressable
+  separano `Ultime pubblicazioni` e `Notifiche Telegram`. Il selettore server,
+  unico e condiviso dalle due viste, si trova subito sotto le sottoschede: la
+  posizione chiarisce la gerarchia visiva senza duplicare lo stato e la
+  selezione resta invariata passando da una vista all'altra. Le azioni seguono
+  il proprio compito: `Aggiorna tutto`, `Aggiorna`
+  e `Verifica dati` stanno con l'elenco; `Invia notifiche` sta con Telegram. Il
+  limite `Mostra` appartiene soltanto all'elenco. I due pannelli restano montati
+  quando si cambia scheda, quindi una bozza Telegram non viene persa; lo stato
+  visivo è aggiornato subito anche mentre la protezione delle modifiche non
+  salvate è attiva. `Ricostruisci pubblicazioni` resta con l'elenco,
+  `Reimposta notifiche inviate` con Telegram e il duplicato del reset dello
+  storico librerie viene rimosso. Le descrizioni espongono conseguenze e
+  rischio di reinvio invece dei vecchi nomi tecnici.
+- **Azioni e responsive:** l'etichetta visibile dell'azione è `Nuova`, mentre il
+  nome accessibile completo resta `Nuova regola di notifica`. Desktop e tablet
+  mantengono l'azione a destra; soltanto sotto i 480 pixel del contenitore passa
+  sotto il testo. Il `Button` condiviso usa interlinea 1,1, altezza minima
+  elastica e testo centrato per le azioni testuali. La densita dei controlli e
+  governata da token condivisi: pulsanti, campi, select, filtri e schede usano
+  altezze e testo coerenti, con icone proporzionate; sui dispositivi touch
+  l'area torna piu ampia. I pulsanti icon-only restano quadrati e non vanno a
+  capo. Le due sottoschede principali hanno invece corpo 14 e peso 800: poiche
+  sostituiscono i titoli ripetuti dei pannelli, mantengono la gerarchia di
+  sezione senza confondersi con filtri e azioni. La pagina usa una cadenza
+  locale di 6 pixel tra elementi strettamente correlati e 12 pixel tra blocchi.
+  Subito sotto le schede, un'unica barra contestuale raccoglie selettore server,
+  azioni della vista e, per l'elenco, ultimo aggiornamento, limite e capienza
+  database. I server rimangono su una sola riga scorrevole invece di aumentare
+  l'altezza della pagina. In Telegram la spiegazione ridondante viene rimossa e
+  `Invia notifiche` condivide la stessa fascia dei server. Nell'elenco,
+  `Ultimo aggiornamento` diventa il piu compatto `Aggiornato` e la capienza
+  conserva i valori visibili con il significato completo nell'etichetta
+  accessibile. I pulsanti vanno a capo secondo lo spazio reale, senza imporre
+  una griglia mobile sovradimensionata. Sotto i 900 pixel il centro
+  `Operazioni` usa la stessa altezza canonica della navigazione primaria
+  mobile e resta 10 pixel sopra di essa, inclusa la safe area. Sotto i 620
+  pixel anche il pannello aperto e la sua lista si adattano all'altezza utile
+  della viewport, evitando sia la sovrapposizione al menu sia il taglio in
+  alto. Alla stessa soglia l'etichetta visiva `Operazioni` viene nascosta,
+  lasciando icona e contatore nel pulsante circolare; l'etichetta ARIA completa
+  resta disponibile ai lettori di schermo e torna visibile sul desktop. Il
+  toggle occupa sempre la seconda riga della griglia mobile: aprire il pannello
+  riempie la riga superiore senza spostare verticalmente il comando. Le regole
+  tipografiche del titolo e del sottotitolo sono limitate al primo blocco
+  dell'intestazione: non trasformano piu i badge di esito in elementi `block`,
+  che mantengono quindi la centratura verticale `flex` prevista dal componente.
+- **Regressori e canary reale:** coperti contratti ARIA delle sottoschede,
+  collocazione dei controlli, breakpoint, reset rimossi e comportamento dei
+  pulsanti. Un'immagine Docker candidata su PostgreSQL 16 effimero è stata
+  aperta con Chrome reale: desktop e 390 pixel non presentano overflow; la
+  navigazione aggiorna URL, pannello e stato selezionato; una bozza regola
+  rimane integra passando da Telegram all'elenco e ritorno. Un'etichetta
+  generica forzata a 74 pixel usa due righe senza debordare. A 390x844 il
+  pulsante `Operazioni` mantiene 10 pixel di separazione dal menu quando il
+  pannello e aperto, il pannello resta interamente nella viewport e non genera
+  overflow orizzontale; la stessa separazione e verificata a 768x1024. Dopo la
+  compattazione dell'elenco, a 1440 pixel la prima sezione dei contenuti inizia
+  circa 117 pixel prima; a 390 pixel il toggle mostra soltanto icona e
+  contatore, mentre a 1440 pixel ripristina l'etichetta testuale. A 390x844 il
+  bordo superiore e inferiore del toggle restano rispettivamente a 718 e 766
+  pixel sia da chiuso sia da aperto: spostamento misurato pari a zero. Con i
+  sei filtri server simulati, la barra Pubblicazioni a 1440 pixel scende da 62
+  a 28 pixel; a 390 pixel scende da 122 a 96 pixel. La barra Telegram resta di
+  28 pixel anche a 390 pixel, con scorrimento orizzontale dei soli server e
+  nessun overflow della pagina.
+- **Rischio residuo:** nessuna modifica a schema dati o API. Il reset completo
+  delle pubblicazioni conserva il comportamento esistente e può rendere di
+  nuovo notificabili elementi già inviati; avviso e conferma lo dichiarano.
+  Il canary locale non contiene librerie Emby reali, quindi verifica navigazione,
+  stato e layout, non il popolamento delle card.
+- **Gate locali:** regressori mirati e collocazione azioni verdi; frontend
+  completo 287 file/816 test; ESLint, build TypeScript/Vite, build Docker, readiness del
+  canary e `git diff --check` verdi.
+
+### Follow-up locale post-v0.5.30 — LOGIN-CSRF-REFRESH-01
+
+- **Baseline e perimetro:** `5a62462` (`v0.5.30`); il worktree conteneva gia
+  modifiche locali non pubblicate alla UI di Pubblicazioni e Operazioni. Questo
+  follow-up resta locale e non costituisce un checkpoint isolato.
+- **Causa — resolved (famiglia: sessione anonima e form longevo):** il cookie di
+  sessione e il token CSRF scadono dopo 60 minuti. Una pagina di login gia
+  aperta conservava nel DOM il token precedente mentre il browser non inviava
+  piu il cookie scaduto; il primo POST veniva quindi rifiutato prima della
+  verifica della password, il redirect creava una sessione nuova e soltanto il
+  secondo tentativo riusciva.
+- **Soluzione:** il form rinnova il token tramite la route interna e non
+  documentata `GET /login/csrf`, con credenziali same-origin e cache disabilitata,
+  immediatamente prima della normale submission HTML. La route restituisce
+  soltanto il token della sessione anonima e impone `Cache-Control: no-store`.
+  Se il rinnovo di rete non riesce, il form conserva il fallback server-side
+  sicuro invece di aggirare la verifica CSRF. Durata della sessione, password e
+  policy CSRF non cambiano.
+- **Regressori e canary reale:** i test coprono route, intestazione no-store,
+  wiring del form e mantenimento della submission nativa. Nel canary Chrome e
+  stato aperto il login, poi il cookie e stato cancellato lasciando apposta nel
+  DOM il token vecchio: `admin/admin` ha effettuato il login al primo clic, ha
+  ricreato il cookie e ha aperto il workspace senza mostrare l'errore CSRF.
+- **Rischio residuo:** il rinnovo trasparente richiede JavaScript; senza script
+  resta il comportamento sicuro precedente, con rigetto del token scaduto e
+  nuova pagina di login. La CSP accetta lo script perche l'asset e servito da
+  OctoHubs stesso e non richiede inline script o origini aggiuntive.
+- **Gate locali:** regressori mirati verdi; suite backend completa 2364 passed,
+  85 skipped e 34 subtests passed. Restano invariati i cinque fallimenti
+  preesistenti del collector Pubblicazioni sulle vecchie chiavi `tmdb:*`, non
+  coinvolti da questo intervento; PostgreSQL 16 reale 83 passed.
+
+### Follow-up locale post-v0.5.30 — OPERATIONS-TRANSCODE-GUARD-NOISE-01
+
+- **Causa — resolved (famiglia: duplicazione tra telemetria e operazioni):**
+  ogni avviso, pausa o blocco di Transcode Guard generava sia la registrazione
+  nello storico dedicato sia un'operazione globale conclusa. Il registro
+  Operazioni conserva al massimo 40 record: un flusso frequente poteva quindi
+  saturare il pannello ed espellere attivita piu rilevanti degli altri domini.
+  Nascondere le sole card nel frontend non avrebbe impedito questa espulsione.
+- **Soluzione:** Transcode Guard non dipende piu dal tracker globale e conserva
+  azioni, esiti e problemi soltanto nella propria attivita e nello storico
+  stream. L'API del centro Operazioni esclude inoltre i record legacy con kind
+  `transcode_guard`, quindi spariscono subito dal pannello e non partecipano al
+  contatore attivo. Avvisi Emby, pause, blocchi, log e storico del Guard non
+  cambiano.
+- **Regressori, superfici analoghe e canary:** il comportamento warn/stop
+  verifica esplicitamente che il tracker globale resti vuoto; la route globale
+  filtra un record legacy attivo senza nascondere workflow e Probe e ricalcola
+  `active_count` sul risultato visibile. Riesaminati i tre produttori `warn`,
+  `pause` e `stop`: nessuno pubblica piu nel tracker. Nel canary autenticato
+  `/api/v1/operations` restituisce `200`, due record `latest_refresh`, zero kind
+  `transcode_guard` e un contatore coerente.
+- **Rischio residuo:** i vecchi record restano nello storage finche non vengono
+  rimossi dalla normale pulizia delle operazioni concluse; sono invisibili e,
+  non essendone piu creati di nuovi, non possono continuare a espellere altre
+  operazioni. La rimozione fisica automatica in lettura e stata scartata per
+  evitare una mutazione nascosta in una route GET.
+- **Gate locali:** regressori mirati verdi; suite backend completa 2364 passed,
+  85 skipped e 34 subtests passed. Restano invariati i cinque fallimenti
+  preesistenti del collector Pubblicazioni sulle vecchie chiavi `tmdb:*`, non
+  coinvolti da questo intervento; PostgreSQL 16 reale 83 passed. Frontend
+  completo 287 file/816 test, ESLint, build TypeScript/Vite, Ruff, baseline
+  complessita, Pyright, contratto API strict, build Docker, readiness del
+  canary e `git diff --check` verdi.
